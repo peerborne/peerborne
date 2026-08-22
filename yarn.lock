@@ -4714,6 +4714,7 @@ __metadata:
     datastore-idb-v4: "npm:datastore-idb@4.0.1"
     eslint: "npm:^10.4.1"
     fake-indexeddb: "npm:^6.2.5"
+    fast-check: "npm:^4.9.0"
     helia: "npm:^7.1.7"
     helia-v6: "npm:helia@6.1.4"
     ipns: "npm:^11.0.1"
@@ -7873,6 +7874,15 @@ __metadata:
   version: 6.2.5
   resolution: "fake-indexeddb@npm:6.2.5"
   checksum: 10/a0b6a81413a8dd40d3ae31d6158ffa8a3d113981b11644e206874847c454d5a1519a9fe2b6008d8f66d5630ba96b3da43789a20b6462a0e7cadc008caea15ae8
+  languageName: node
+  linkType: hard
+
+"fast-check@npm:^4.9.0":
+  version: 4.9.0
+  resolution: "fast-check@npm:4.9.0"
+  dependencies:
+    pure-rand: "npm:^8.0.0"
+  checksum: 10/b549435b29f7b60bc93cb2b19c194c35804bff15aaeb723bc94c65fef5b06fb2c3652bcd98379e3257d461cb61c40d2f4b0001fcb6b515f1085ebbcc6163d1e5
   languageName: node
   linkType: hard
 
@@ -12899,6 +12909,13 @@ __metadata:
   version: 6.1.0
   resolution: "pure-rand@npm:6.1.0"
   checksum: 10/256aa4bcaf9297256f552914e03cbdb0039c8fe1db11fa1e6d3f80790e16e563eb0a859a1e61082a95e224fc0c608661839439f8ecc6a3db4e48d46d99216ee4
+  languageName: node
+  linkType: hard
+
+"pure-rand@npm:^8.0.0":
+  version: 8.4.2
+  resolution: "pure-rand@npm:8.4.2"
+  checksum: 10/6c118f0ef4e1d5856cc9085a172c2e3c9b2b5009c9437d96df55515585847cc4a5c4abcdc5c62692f352b3343b6eebd694c8ff609705a1d45cf524dc429e20d1
   languageName: node
   linkType: hard
 

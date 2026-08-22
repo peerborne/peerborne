@@ -17,7 +17,8 @@
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
     "doc": "typedoc --excludePrivate --excludeProtected --excludeInternal",
-    "benchmark": "tsc -b tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node dist-bench/__benchmarks__/run.js"
+    "benchmark": "tsc -b tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node dist-bench/__benchmarks__/run.js",
+    "test:coverage": "jest --coverage"
   },
   "main": "dist/cjs/src/index.js",
   "types": "dist/esm/src/index.d.ts",
@@ -65,6 +66,7 @@
     "datastore-idb-v4": "npm:datastore-idb@4.0.1",
     "eslint": "^10.4.1",
     "fake-indexeddb": "^6.2.5",
+    "fast-check": "^4.9.0",
     "helia-v6": "npm:helia@6.1.4",
     "jest": "^29.2.5",
     "ts-jest": "^29.2.5",
@@ -118,7 +120,12 @@
       "<rootDir>/src"
     ],
     "transform": {
-      "^.+\\.tsx?$": "ts-jest"
+      "^.+.tsx?$": [
+        "ts-jest",
+        {
+          "diagnostics": false
+        }
+      ]
     },
     "moduleFileExtensions": [
       "ts",
@@ -137,8 +144,24 @@
       "<rootDir>/jest.setup.js"
     ],
     "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
-    }
+      "^(.{1,2}/.*).js$": "$1"
+    },
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "!src/**/*.test.ts",
+      "!src/**/*.benchmark.ts",
+      "!src/**/__mocks__/**",
+      "!src/**/__benchmarks__/**"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(fast-check)/)"
+    ]
   },
   "module": "dist/esm/src/index.js"
 }
