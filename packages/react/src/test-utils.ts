@@ -1,17 +1,20 @@
 import { jest } from '@jest/globals';
 import React, { useState } from 'react';
 import { PeerborneContext, usePeerborneDocumentState } from './hooks.js';
-import { openTasks, openTaskResults, subscriberCounts } from './hooks-cache.js';
+import {
+  getPeerborneHookCaches,
+  resetPeerborneHookCaches,
+} from './hooks-cache.js';
 
 /** Reset all module-level caches. Test-only helper. */
 export function resetCaches() {
-  openTasks.clear();
-  openTaskResults.clear();
-  subscriberCounts.clear();
+  resetPeerborneHookCaches();
 }
 
 /** Read-only access to module-level cache sizes. Test-only helper. */
-export function getCacheSizes() {
+export function getCacheSizes(peerborne: object) {
+  const { openTasks, openTaskResults, subscriberCounts } =
+    getPeerborneHookCaches(peerborne);
   return {
     openTasks: openTasks.size,
     openTaskResults: openTaskResults.size,

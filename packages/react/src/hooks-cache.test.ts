@@ -1,34 +1,29 @@
 import { describe, expect, test, beforeEach, afterEach } from '@jest/globals';
-import { openTasks, openTaskResults, subscriberCounts } from './hooks-cache.js';
-
-function resetCaches() {
-  openTasks.clear();
-  openTaskResults.clear();
-  subscriberCounts.clear();
-}
+import {
+  getPeerborneHookCaches,
+  resetPeerborneHookCaches,
+} from './hooks-cache.js';
 
 beforeEach(() => {
-  resetCaches();
+  resetPeerborneHookCaches();
 });
 
 afterEach(() => {
-  resetCaches();
+  resetPeerborneHookCaches();
 });
 
-describe('hooks-cache module-level maps', () => {
-  test('openTasks starts empty', () => {
+describe('per-Peerborne hook caches', () => {
+  test('a new Peerborne instance starts with empty caches', () => {
+    const { openTasks, openTaskResults, subscriberCounts } =
+      getPeerborneHookCaches({});
+
     expect(openTasks.size).toBe(0);
-  });
-
-  test('openTaskResults starts empty', () => {
     expect(openTaskResults.size).toBe(0);
-  });
-
-  test('subscriberCounts starts empty', () => {
     expect(subscriberCounts.size).toBe(0);
   });
 
   test('openTasks stores and retrieves promises by document path', async () => {
+    const { openTasks } = getPeerborneHookCaches({});
     const mockResult = { docRef: { document: 'test' } as any, readers: ['r1'], writers: ['w1'] };
     const promise = Promise.resolve(mockResult);
     openTasks.set('/doc/a', promise);
@@ -41,6 +36,7 @@ describe('hooks-cache module-level maps', () => {
   });
 
   test('openTaskResults stores and retrieves results by document path', () => {
+    const { openTaskResults } = getPeerborneHookCaches({});
     const result = { docRef: { document: 'hello' } as any, readers: ['r'], writers: ['w'] };
     openTaskResults.set('/my-doc', result);
 
@@ -49,6 +45,7 @@ describe('hooks-cache module-level maps', () => {
   });
 
   test('subscriberCounts increments and decrements correctly', () => {
+    const { subscriberCounts } = getPeerborneHookCaches({});
     subscriberCounts.set('/doc', 1);
     expect(subscriberCounts.get('/doc')).toBe(1);
 
@@ -60,7 +57,8 @@ describe('hooks-cache module-level maps', () => {
     expect(subscriberCounts.get('/doc')).toBe(1);
   });
 
-  test('multiple document paths are independent', () => {
+  test('multiple document paths are independent within one Peerborne instance', () => {
+    const { openTaskResults, subscriberCounts } = getPeerborneHookCaches({});
     subscriberCounts.set('/doc/a', 3);
     subscriberCounts.set('/doc/b', 1);
     openTaskResults.set('/doc/a', { docRef: {} as any });
@@ -75,16 +73,35 @@ describe('hooks-cache module-level maps', () => {
     expect(openTaskResults.has('/doc/b')).toBe(false);
   });
 
-  test('clear removes all entries from all caches', () => {
-    openTasks.set('/a', Promise.resolve({}));
-    openTasks.set('/b', Promise.resolve({}));
-    openTaskResults.set('/a', { docRef: {} as any });
-    subscriberCounts.set('/a', 2);
+  test('the same document path is independent across Peerborne instances', () => {
+    const first = getPeerborneHookCaches({});
+    const second = getPeerborneHookCaches({});
+    const firstResult = { docRef: { document: 'first' } as any };
+    const secondResult = { docRef: { document: 'second' } as any };
 
-    resetCaches();
+    first.openTaskResults.set('/shared', firstResult);
+    first.subscriberCounts.set('/shared', 1);
+    second.openTaskResults.set('/shared', secondResult);
+    second.subscriberCounts.set('/shared', 2);
 
-    expect(openTasks.size).toBe(0);
-    expect(openTaskResults.size).toBe(0);
-    expect(subscriberCounts.size).toBe(0);
+    expect(first.openTaskResults.get('/shared')).toBe(firstResult);
+    expect(first.subscriberCounts.get('/shared')).toBe(1);
+    expect(second.openTaskResults.get('/shared')).toBe(secondResult);
+    expect(second.subscriberCounts.get('/shared')).toBe(2);
+  });
+
+  test('reset replaces all per-instance caches', () => {
+    const peerborne = {};
+    const caches = getPeerborneHookCaches(peerborne);
+    caches.openTasks.set('/a', Promise.resolve({}));
+    caches.openTaskResults.set('/a', { docRef: {} as any });
+    caches.subscriberCounts.set('/a', 2);
+
+    resetPeerborneHookCaches();
+
+    const resetCaches = getPeerborneHookCaches(peerborne);
+    expect(resetCaches.openTasks.size).toBe(0);
+    expect(resetCaches.openTaskResults.size).toBe(0);
+    expect(resetCaches.subscriberCounts.size).toBe(0);
   });
 });

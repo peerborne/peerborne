@@ -145,7 +145,7 @@ describe('Cache cleanup on unmount', () => {
 
     // After the full open chain completes, caches should be populated.
     await waitFor(() => {
-      const sizesAfterMount = getCacheSizes();
+      const sizesAfterMount = getCacheSizes(mockSwarm);
       expect(sizesAfterMount.openTasks).toBeGreaterThanOrEqual(1);
       expect(sizesAfterMount.openTaskResults).toBeGreaterThanOrEqual(1);
       expect(sizesAfterMount.subscriberCounts).toBeGreaterThanOrEqual(1);
@@ -158,7 +158,7 @@ describe('Cache cleanup on unmount', () => {
     // After unmount of the last subscriber, openTaskResults and subscriberCounts
     // should be cleared. openTasks is cleared asynchronously after the promise settles.
     await waitFor(() => {
-      const sizesAfterUnmount = getCacheSizes();
+      const sizesAfterUnmount = getCacheSizes(mockSwarm);
       expect(sizesAfterUnmount.openTaskResults).toBe(0);
       expect(sizesAfterUnmount.subscriberCounts).toBe(0);
     });
@@ -231,7 +231,7 @@ describe('Multiple subscribers to the same document', () => {
     });
 
     // Two subscribers should be tracked.
-    const sizesWithBoth = getCacheSizes();
+    const sizesWithBoth = getCacheSizes(mockSwarm);
     expect(sizesWithBoth.subscriberCounts).toBeGreaterThanOrEqual(1);
 
     // Unmount one subscriber by hiding the second consumer.
@@ -240,7 +240,7 @@ describe('Multiple subscribers to the same document', () => {
     });
 
     // Caches should still be populated because one subscriber remains.
-    const sizesAfterPartialUnmount = getCacheSizes();
+    const sizesAfterPartialUnmount = getCacheSizes(mockSwarm);
     expect(sizesAfterPartialUnmount.openTaskResults).toBeGreaterThanOrEqual(1);
     // subscriberCounts entry should still exist (decremented but not zero).
     expect(sizesAfterPartialUnmount.subscriberCounts).toBeGreaterThanOrEqual(1);

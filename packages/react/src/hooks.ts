@@ -10,8 +10,19 @@ import {
   PeerborneDocument,
   PeerborneConfig,
 } from '@peerborne/core';
-import { useEffect, useState, useContext, useRef, createContext } from 'react';
-import { openTasks, openTaskResults, subscriberCounts } from './hooks-cache.js';
+import {
+  useEffect,
+  useState,
+  useContext,
+  useRef,
+  createContext,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
+import {
+  getPeerborneDocumentCacheKey,
+  getPeerborneHookCaches,
+} from './hooks-cache.js';
 
 export type PeerborneContextOpenResult<
   DocType,
@@ -34,32 +45,50 @@ export type PeerborneContextOpenResult<
 };
 
 export const PeerborneContext = createContext<{
-  // Caches are evicted when the last subscriber for a document path unmounts (see cleanup below).
-  docCache: {
-    [docPath: string]: PeerborneDocument<any, any, any, any, any, any>;
-  };
-  docDataCache: { [docPath: string]: any };
-  docReadersCache: { [docPath: string]: any[] };
-  docWritersCache: { [docPath: string]: any[] };
-  setDocCache: (docCache: {
-    [docPath: string]: PeerborneDocument<any, any, any, any, any, any>;
-  }) => void;
-  setDocDataCache: (docDataCache: { [docPath: string]: any }) => void;
-  setDocReadersCache: (docReadersCache: { [docPath: string]: any[] }) => void;
-  setDocWritersCache: (docWritersCache: { [docPath: string]: any[] }) => void;
+  // Cache keys are scoped by Peerborne instance and document path.
+  docCache: Record<string, PeerborneDocument<any, any, any, any, any, any>>;
+  docDataCache: Record<string, any>;
+  docReadersCache: Record<string, any[]>;
+  docWritersCache: Record<string, any[]>;
+  setDocCache: Dispatch<
+    SetStateAction<Record<string, PeerborneDocument<any, any, any, any, any, any>>>
+  >;
+  setDocDataCache: Dispatch<SetStateAction<Record<string, any>>>;
+  setDocReadersCache: Dispatch<SetStateAction<Record<string, any[]>>>;
+  setDocWritersCache: Dispatch<SetStateAction<Record<string, any[]>>>;
 }>({
   // Default no-op setters; real implementations are provided by the context provider component.
   docCache: {},
   docDataCache: {},
   docReadersCache: {},
   docWritersCache: {},
-  setDocCache: (docCache: {
-    [docPath: string]: PeerborneDocument<any, any, any, any, any, any>;
-  }) => {},
-  setDocDataCache: (docDataCache: { [docPath: string]: any }) => {},
-  setDocReadersCache: (docReadersCache: { [docPath: string]: any[] }) => {},
-  setDocWritersCache: (docWritersCache: { [docPath: string]: any[] }) => {},
+  setDocCache: () => {},
+  setDocDataCache: () => {},
+  setDocReadersCache: () => {},
+  setDocWritersCache: () => {},
 });
+
+function setCacheEntry<Cache extends Record<string, Value>, Value>(
+  setter: Dispatch<SetStateAction<Cache>>,
+  key: string,
+  value: Value,
+): void {
+  setter((cache) => {
+    return { ...cache, [key]: value };
+  });
+}
+
+function deleteCacheEntry<Cache extends Record<string, unknown>>(
+  setter: Dispatch<SetStateAction<Cache>>,
+  key: string,
+): void {
+  setter((cache) => {
+    if (!(key in cache)) return cache;
+    const next = { ...cache };
+    delete next[key];
+    return next;
+  });
+}
 
 export function usePeerborne<
   DocType,
@@ -155,23 +184,78 @@ export function usePeerborneDocumentState<
     setDocReadersCache,
     setDocWritersCache,
   } = useContext(PeerborneContext);
-
-  // Unique subscription ID per hook instance to avoid collisions when
-  // multiple components subscribe to the same or different documents.
+  const hookCaches = getPeerborneHookCaches(peerborne);
+  const documentCacheKey = getPeerborneDocumentCacheKey(hookCaches, documentPath);
   const subscriptionIdRef = useRef(`usePeerborneDocumentState-${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
-    // Track whether this effect is still active (not unmounted/dep-changed).
-    // The async IIFE checks this after each await to avoid operating on stale state.
+    const { openTasks, openTaskResults, subscriberCounts } = hookCaches;
     let active = true;
-    let subscribedDocPath: string | null = null;
+    let subscribedDocRef: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    > | null = null;
 
-    // Increment subscriber count for this documentPath.
     subscriberCounts.set(documentPath, (subscriberCounts.get(documentPath) || 0) + 1);
 
+    const updateContext = (
+      docRef: PeerborneDocument<
+        DocType,
+        ChangesType,
+        ChangeFnType,
+        PrivateKey,
+        PublicKey,
+        DocumentKey
+      >,
+      current: DocType,
+      readers: PublicKey[],
+      writers: PublicKey[],
+    ) => {
+      setCacheEntry(setDocCache, documentCacheKey, docRef);
+      setCacheEntry(setDocDataCache, documentCacheKey, current);
+      setCacheEntry(setDocReadersCache, documentCacheKey, readers);
+      setCacheEntry(setDocWritersCache, documentCacheKey, writers);
+    };
+
     (async () => {
-      let newDocCache: {
-        [docPath: string]: PeerborneDocument<
+      let openTask = openTasks.get(documentPath) as
+        | Promise<
+            PeerborneContextOpenResult<
+              DocType,
+              ChangesType,
+              ChangeFnType,
+              PrivateKey,
+              PublicKey,
+              DocumentKey
+            >
+          >
+        | undefined;
+
+      try {
+        if (!openTask) {
+          const docRef = peerborne.doc(documentPath);
+          if (!docRef) {
+            console.warn(`Failed to open/find document: ${documentPath}`);
+            return;
+          }
+          openTask = (async () => {
+            await docRef.open();
+            const readers = await docRef.getReaders();
+            const writers = await docRef.getWriters();
+            return { docRef, readers, writers };
+          })();
+          openTasks.set(documentPath, openTask);
+        }
+
+        const result = await openTask;
+        if (!active || !result.docRef) return;
+
+        const cachedResult = openTaskResults.get(documentPath);
+        const docRef = (cachedResult?.docRef || result.docRef) as PeerborneDocument<
           DocType,
           ChangesType,
           ChangeFnType,
@@ -179,331 +263,99 @@ export function usePeerborneDocumentState<
           PublicKey,
           DocumentKey
         >;
-      } = docCache;
-      let newDocDataCache: { [docPath: string]: DocType } = docDataCache;
-      let newDocReadersCache: {
-        [docPath: string]: PublicKey[];
-      } = docReadersCache;
-      let newDocWritersCache: {
-        [docPath: string]: PublicKey[];
-      } = docWritersCache;
-      let docRef: PeerborneDocument<
-        DocType,
-        ChangesType,
-        ChangeFnType,
-        PrivateKey,
-        PublicKey,
-        DocumentKey
-      > | null = docCache[documentPath] || null;
-      const taskExists = openTasks.has(documentPath);
-      if (!docRef) {
-        if (taskExists) {
-          // Another hook instance is already opening this document.
-          // Await its completion and subscribe this instance.
-          const existingTask = openTasks.get(documentPath);
-          if (existingTask) {
-            const result = await existingTask;
-            if (!active) return;
-            if (result.docRef) {
-              docRef = result.docRef as PeerborneDocument<
-                DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
-              >;
-              // If the opener unmounted before populating caches, do it here.
-              if (!openTaskResults.has(documentPath)) {
-                openTaskResults.set(documentPath, result);
-              }
-              // Rebuild all caches (doc, data, readers, writers) from openTaskResults.
-              const freshDocCache: { [p: string]: any } = {};
-              const freshDataCache: { [p: string]: any } = {};
-              const freshReadersCache: { [p: string]: any[] } = {};
-              const freshWritersCache: { [p: string]: any[] } = {};
-              openTaskResults.forEach((r, p) => {
-                if (r.docRef) { freshDocCache[p] = r.docRef; freshDataCache[p] = r.docRef.document; }
-                if (r.readers) freshReadersCache[p] = r.readers;
-                if (r.writers) freshWritersCache[p] = r.writers;
-              });
-              setDocCache(freshDocCache);
-              setDocDataCache(freshDataCache);
-              setDocReadersCache(freshReadersCache);
-              setDocWritersCache(freshWritersCache);
-              // Subscribe this late-arriving instance.
-              docRef.subscribe(
-                subscriptionIdRef.current,
-                (current, readers, writers) => {
-                  const currentResults = openTaskResults.get(documentPath);
-                  if (currentResults) {
-                    openTaskResults.set(documentPath, { ...currentResults, readers, writers });
-                  }
-                  const newDataCache: { [p: string]: DocType } = {};
-                  const newReadersCache: { [p: string]: PublicKey[] } = {};
-                  const newWritersCache: { [p: string]: PublicKey[] } = {};
-                  openTaskResults.forEach((r, p) => {
-                    if (r.docRef) newDataCache[p] = p === documentPath ? current : r.docRef.document;
-                    if (r.readers) newReadersCache[p] = r.readers;
-                    if (r.writers) newWritersCache[p] = r.writers;
-                  });
-                  // Always set current path explicitly in case openTaskResults is missing it.
-                  newDataCache[documentPath] = current;
-                  newReadersCache[documentPath] = readers;
-                  newWritersCache[documentPath] = writers;
-                  setDocDataCache(newDataCache);
-                  setDocReadersCache(newReadersCache);
-                  setDocWritersCache(newWritersCache);
-                },
-                originFilter,
-              );
-              subscribedDocPath = documentPath;
-            }
-          }
-        } else {
-          docRef = peerborne.doc(documentPath);
-          const openPromise: Promise<
-            PeerborneContextOpenResult<any, any, any, any, any, any>
-          > = (async () => {
-            if (docRef) {
-              await docRef.open();
-              const readers = await docRef.getReaders();
-              const writers = await docRef.getWriters();
-              return { docRef, readers, writers };
-            }
-            return {};
-          })();
-          openTasks.set(documentPath, openPromise);
-          const openTaskResult: PeerborneContextOpenResult<
-            DocType,
-            ChangesType,
-            ChangeFnType,
-            PrivateKey,
-            PublicKey,
-            DocumentKey
-          > = await openPromise;
-          if (!active) return;
-          openTaskResults.set(documentPath, openTaskResult);
-          const { docRef: currentDocRef, readers, writers } = openTaskResult;
-          if (currentDocRef) {
-            // We can't use the values from the PeerborneContext created above as those may be "stale"/out of date.
-            // Instead we use a global cache (ew, global state) for now to rebuild these caches as they should be.
-            newDocCache = {};
-            newDocDataCache = {};
-            newDocReadersCache = {};
-            newDocWritersCache = {};
-            openTaskResults.forEach(
-              (
-                openTaskResult: PeerborneContextOpenResult<
-                  DocType,
-                  ChangesType,
-                  ChangeFnType,
-                  PrivateKey,
-                  PublicKey,
-                  DocumentKey
-                >,
-                path,
-              ) => {
-                if (openTaskResult.docRef) {
-                  newDocCache[path] = openTaskResult.docRef;
-                  newDocDataCache[path] = openTaskResult.docRef.document;
-                }
-                if (openTaskResult.readers) {
-                  newDocReadersCache[path] = openTaskResult.readers;
-                }
-                if (openTaskResult.writers) {
-                  newDocWritersCache[path] = openTaskResult.writers;
-                }
-              },
-            );
+        const current = (cachedResult?.document ?? docRef.document) as DocType;
+        const readers = (cachedResult?.readers ?? result.readers ?? []) as PublicKey[];
+        const writers = (cachedResult?.writers ?? result.writers ?? []) as PublicKey[];
+        openTaskResults.set(documentPath, { docRef, document: current, readers, writers });
+        updateContext(docRef, current, readers, writers);
 
-            // Subscribe to document changes (skip if effect was cancelled during open).
-            if (!active) return;
-            currentDocRef.subscribe(
-              subscriptionIdRef.current,
-              (current, readers, writers) => {
-                // We can't use the values from the PeerborneContext created above as those may be "stale"/out of date.
-                // Instead we use a global cache (ew, global state) for now to rebuild these caches as they should be.
-                const currentResults = openTaskResults.get(documentPath);
-                const newResults = { ...currentResults, readers, writers };
-                openTaskResults.set(documentPath, newResults);
-                const newDocDataCache: { [docPath: string]: DocType } = {};
-                const newDocReadersCache: {
-                  [docPath: string]: PublicKey[];
-                } = {};
-                const newDocWritersCache: {
-                  [docPath: string]: PublicKey[];
-                } = {};
-                openTaskResults.forEach(
-                  (
-                    openTaskResult: PeerborneContextOpenResult<
-                      DocType,
-                      ChangesType,
-                      ChangeFnType,
-                      PrivateKey,
-                      PublicKey,
-                      DocumentKey
-                    >,
-                    path,
-                  ) => {
-                    if (openTaskResult.docRef) {
-                      newDocCache[path] = openTaskResult.docRef;
-                      if (path === documentPath) {
-                        newDocDataCache[path] = current;
-                      } else {
-                        newDocDataCache[path] = openTaskResult.docRef.document;
-                      }
-                    }
-                    if (openTaskResult.readers) {
-                      newDocReadersCache[path] = openTaskResult.readers;
-                    }
-                    if (openTaskResult.writers) {
-                      newDocWritersCache[path] = openTaskResult.writers;
-                    }
-                  },
-                );
-                setDocDataCache(newDocDataCache);
-                setDocReadersCache(newDocReadersCache);
-                setDocWritersCache(newDocWritersCache);
-              },
-              originFilter,
-            );
-
-            // Mark that we subscribed so the cleanup function can unsubscribe.
-            subscribedDocPath = documentPath;
-          }
-        }
-      } else {
-        // Doc is already cached -- subscribe this instance so it receives updates.
-        // Each hook instance uses a unique subscription ID so they don't collide.
-        if (!active) return;
         docRef.subscribe(
           subscriptionIdRef.current,
-          (current, readers, writers) => {
-            const newDocDataCache: { [docPath: string]: DocType } = {};
-            const newDocReadersCache: { [docPath: string]: PublicKey[] } = {};
-            const newDocWritersCache: { [docPath: string]: PublicKey[] } = {};
-            openTaskResults.forEach((r, path) => {
-              if (r.docRef) {
-                newDocDataCache[path] = path === documentPath ? current : r.docRef.document;
-              }
-              if (r.readers) newDocReadersCache[path] = r.readers;
-              if (r.writers) newDocWritersCache[path] = r.writers;
+          (current, nextReaders, nextWriters) => {
+            if (!active) return;
+            openTaskResults.set(documentPath, {
+              docRef,
+              document: current,
+              readers: nextReaders,
+              writers: nextWriters,
             });
-            // Always set current path explicitly in case openTaskResults is missing it.
-            newDocDataCache[documentPath] = current;
-            const currentResults = openTaskResults.get(documentPath);
-            if (currentResults) {
-              openTaskResults.set(documentPath, { ...currentResults, readers, writers });
-            }
-            newDocReadersCache[documentPath] = readers;
-            newDocWritersCache[documentPath] = writers;
-            setDocDataCache(newDocDataCache);
-            setDocReadersCache(newDocReadersCache);
-            setDocWritersCache(newDocWritersCache);
+            updateContext(docRef, current, nextReaders, nextWriters);
           },
           originFilter,
         );
-        subscribedDocPath = documentPath;
-      }
-
-      if (!docRef) {
-        if (!taskExists) {
+        subscribedDocRef = docRef;
+      } catch {
+        if (active) {
           console.warn(`Failed to open/find document: ${documentPath}`);
         }
-        return;
-      }
-
-      if (docCache !== newDocCache) {
-        setDocCache(newDocCache);
-      }
-      if (docDataCache !== newDocDataCache) {
-        setDocDataCache(newDocDataCache);
-      }
-      if (docReadersCache !== newDocReadersCache) {
-        setDocReadersCache(newDocReadersCache);
-      }
-      if (docWritersCache !== newDocWritersCache) {
-        setDocWritersCache(newDocWritersCache);
       }
     })();
 
-    // Cleanup: cancel async work, unsubscribe this instance's handler.
     return () => {
       active = false;
-      if (subscribedDocPath) {
-        const taskResult = openTaskResults.get(subscribedDocPath);
-        if (taskResult?.docRef) {
-          taskResult.docRef.unsubscribe(subscriptionIdRef.current);
-        }
+      subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
+
+      const count = (subscriberCounts.get(documentPath) || 1) - 1;
+      if (count > 0) {
+        subscriberCounts.set(documentPath, count);
+        return;
       }
 
-      // Decrement subscriber count -- only evict shared caches when the last subscriber unmounts.
-      const count = (subscriberCounts.get(documentPath) || 1) - 1;
-      if (count <= 0) {
-        subscriberCounts.delete(documentPath);
-        // Only delete openTasks once the promise has settled to prevent a
-        // rapid remount (e.g. React strict-mode) from calling open() again
-        // on an already-opened document. openTaskResults is safe to delete
-        // immediately since it's only populated after the promise resolves.
-        const pendingTask = openTasks.get(documentPath);
-        if (pendingTask) {
-          pendingTask.then((result) => {
-            // Re-check: if a new subscriber appeared while we waited, don't evict.
-            if ((subscriberCounts.get(documentPath) || 0) === 0) {
-              openTasks.delete(documentPath);
-              // Close orphaned document to free network/pubsub resources.
-              if (result?.docRef && typeof result.docRef.close === 'function') {
-                result.docRef.close().catch(() => {});
-              }
-            }
-          }).catch(() => {
-            openTasks.delete(documentPath);
-          });
-        }
-        openTaskResults.delete(documentPath);
-        // Rebuild context caches from openTaskResults (the source of truth) rather than
-        // using stale captured values, which could clobber entries from other documents.
-        const freshDocCache: typeof docCache = {};
-        const freshDocDataCache: typeof docDataCache = {};
-        const freshDocReadersCache: typeof docReadersCache = {};
-        const freshDocWritersCache: typeof docWritersCache = {};
-        openTaskResults.forEach((result, path) => {
-          if (result.docRef) {
-            freshDocCache[path] = result.docRef;
-            freshDocDataCache[path] = result.docRef.document;
-          }
-          if (result.readers) freshDocReadersCache[path] = result.readers;
-          if (result.writers) freshDocWritersCache[path] = result.writers;
-        });
-        setDocCache(freshDocCache);
-        setDocDataCache(freshDocDataCache);
-        setDocReadersCache(freshDocReadersCache);
-        setDocWritersCache(freshDocWritersCache);
-      } else {
-        subscriberCounts.set(documentPath, count);
+      subscriberCounts.delete(documentPath);
+      openTaskResults.delete(documentPath);
+      deleteCacheEntry(setDocCache, documentCacheKey);
+      deleteCacheEntry(setDocDataCache, documentCacheKey);
+      deleteCacheEntry(setDocReadersCache, documentCacheKey);
+      deleteCacheEntry(setDocWritersCache, documentCacheKey);
+
+      const pendingTask = openTasks.get(documentPath);
+      if (!pendingTask) {
+        return;
       }
+
+      pendingTask
+        .then((result) => {
+          if (
+            (subscriberCounts.get(documentPath) || 0) === 0 &&
+            openTasks.get(documentPath) === pendingTask
+          ) {
+            openTasks.delete(documentPath);
+            if (result.docRef && typeof result.docRef.close === 'function') {
+              result.docRef.close().catch(() => {});
+            }
+          }
+        })
+        .catch(() => {
+          if (openTasks.get(documentPath) === pendingTask) {
+            openTasks.delete(documentPath);
+          }
+        });
     };
-  }, [documentPath, peerborne, originFilter]);
+  }, [documentCacheKey, documentPath, hookCaches, originFilter, peerborne]);
 
   return [
-    docDataCache[documentPath],
+    docDataCache[documentCacheKey],
     (fn: ChangeFnType, message?: string) => {
-      const docRef = docCache[documentPath];
+      const docRef = docCache[documentCacheKey];
       docRef && docRef.change(fn, message);
     },
     {
-      readers: docReadersCache[documentPath],
+      readers: docReadersCache[documentCacheKey],
       addReader: async (user: PublicKey) => {
-        const docRef = docCache[documentPath];
+        const docRef = docCache[documentCacheKey];
         await docRef.addReader(user);
       },
       removeReader: async (user: PublicKey) => {
-        const docRef = docCache[documentPath];
+        const docRef = docCache[documentCacheKey];
         await docRef.removeReader(user);
       },
-      writers: docWritersCache[documentPath],
+      writers: docWritersCache[documentCacheKey],
       addWriter: async (user: PublicKey) => {
-        const docRef = docCache[documentPath];
+        const docRef = docCache[documentCacheKey];
         await docRef.addWriter(user);
       },
       removeWriter: async (user: PublicKey) => {
-        const docRef = docCache[documentPath];
+        const docRef = docCache[documentCacheKey];
         await docRef.removeWriter(user);
       },
     },

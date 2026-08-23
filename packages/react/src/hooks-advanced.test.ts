@@ -1,7 +1,7 @@
 import { describe, expect, test, jest, afterEach } from '@jest/globals';
 import React, { useState } from 'react';
 import { render, act, cleanup, waitFor } from '@testing-library/react';
-import { openTaskResults, subscriberCounts } from './hooks-cache.js';
+import { getPeerborneHookCaches } from './hooks-cache.js';
 import {
   resetCaches,
   createMockDocument,
@@ -309,6 +309,7 @@ describe('Multiple different document paths', () => {
       '/doc-a': mockDocA,
       '/doc-b': mockDocB,
     });
+    const { openTaskResults, subscriberCounts } = getPeerborneHookCaches(mockSwarm);
 
     const captureA = { current: null as any };
     const captureB = { current: null as any };
@@ -353,6 +354,7 @@ describe('Multiple different document paths', () => {
       '/doc-x': mockDocA,
       '/doc-y': mockDocB,
     });
+    const { openTaskResults, subscriberCounts } = getPeerborneHookCaches(mockSwarm);
 
     let setShowA: (show: boolean) => void;
 
@@ -426,6 +428,67 @@ describe('Error handling', () => {
           expect.stringContaining('Failed to open/find document'),
         );
       });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('a rejected open is handled, evicted on unmount, and retried on remount', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValueOnce(new Error('sensitive failure details'));
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const caches = getPeerborneHookCaches(mockSwarm);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      let unmount: () => void;
+      await act(async () => {
+        const result = render(
+          React.createElement(
+            TestProvider,
+            null,
+            React.createElement(TestConsumer, {
+              peerborne: mockSwarm,
+              documentPath: '/open-retry',
+            }),
+          ),
+        );
+        unmount = result.unmount;
+      });
+
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Failed to open/find document: /open-retry',
+        );
+      });
+      expect(caches.openTasks.has('/open-retry')).toBe(true);
+      expect(caches.openTaskResults.has('/open-retry')).toBe(false);
+
+      act(() => {
+        unmount!();
+      });
+      await waitFor(() => {
+        expect(caches.openTasks.has('/open-retry')).toBe(false);
+        expect(caches.subscriberCounts.has('/open-retry')).toBe(false);
+      });
+
+      await act(async () => {
+        render(
+          React.createElement(
+            TestProvider,
+            null,
+            React.createElement(TestConsumer, {
+              peerborne: mockSwarm,
+              documentPath: '/open-retry',
+            }),
+          ),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockDoc.subscribe).toHaveBeenCalled();
+      });
+      expect(mockDoc.open).toHaveBeenCalledTimes(2);
     } finally {
       consoleSpy.mockRestore();
     }
@@ -582,6 +645,67 @@ describe('Late joiner subscribes via existing open task', () => {
     });
 
     // The document should only have been opened once.
+    expect(mockDoc.open).toHaveBeenCalledTimes(1);
+  });
+
+  test('late joiners use the latest document and ACL state', async () => {
+    const mockDoc = createMockDocument({ version: 'initial' });
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const captureA = { current: null as any };
+    const captureB = { current: null as any };
+    let setShowSecond: (show: boolean) => void;
+
+    function Parent() {
+      const [showSecond, updateShowSecond] = useState(false);
+      setShowSecond = updateShowSecond;
+      return React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/late-current-state',
+          captureRef: captureA,
+        }),
+        showSecond
+          ? React.createElement(TestConsumer, {
+              peerborne: mockSwarm,
+              documentPath: '/late-current-state',
+              captureRef: captureB,
+            })
+          : null,
+      );
+    }
+
+    await act(async () => {
+      render(React.createElement(Parent));
+    });
+    await waitFor(() => {
+      expect(mockDoc.subscribe).toHaveBeenCalledTimes(1);
+    });
+
+    const handler = mockDoc.subscribe.mock.calls[0][1] as Function;
+    await act(async () => {
+      handler(
+        { version: 'updated' },
+        ['updated-reader'],
+        ['updated-writer'],
+      );
+    });
+    await waitFor(() => {
+      expect(captureA.current.docData).toEqual({ version: 'updated' });
+      expect(captureA.current.acl.readers).toEqual(['updated-reader']);
+    });
+
+    await act(async () => {
+      setShowSecond!(true);
+    });
+
+    await waitFor(() => {
+      expect(captureB.current.docData).toEqual({ version: 'updated' });
+      expect(captureB.current.acl.readers).toEqual(['updated-reader']);
+      expect(captureB.current.acl.writers).toEqual(['updated-writer']);
+    });
+    expect(captureA.current.acl.readers).toEqual(['updated-reader']);
     expect(mockDoc.open).toHaveBeenCalledTimes(1);
   });
 });
