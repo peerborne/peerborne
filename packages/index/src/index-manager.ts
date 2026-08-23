@@ -24,6 +24,7 @@ export class IndexManager<DocType> {
     number,
     { options: QueryOptions; callback: (result: QueryResult<Record<string, unknown>>) => void }
   > = new Map();
+  private _documentOperations: Map<string, Promise<void>> = new Map();
   private _nextSubscriptionId = 1;
 
   constructor(storage: IndexStorage, extractor: DocumentSnapshotExtractor<DocType>) {
@@ -75,7 +76,7 @@ export class IndexManager<DocType> {
    */
   async updateIndex(documentPath: string, document: DocType): Promise<void> {
     const snapshot = this._extractor(document);
-    let changed = false;
+    const entries: Array<{ indexName: string; fields: Record<string, unknown> }> = [];
 
     for (const [indexName, definition] of this._definitions) {
       if (!documentPath.startsWith(definition.collectionPrefix)) {
@@ -87,29 +88,39 @@ export class IndexManager<DocType> {
         this._setNestedField(fields, fieldDef.path, extractField(snapshot, fieldDef.path));
       }
 
-      // Diff against previous entry -- skip write if unchanged
-      const existing = await this._storage.get(indexName, documentPath);
-      if (existing && this._fieldsEqual(existing, fields)) {
-        continue;
+      entries.push({ indexName, fields });
+    }
+
+    await this._enqueueDocumentOperation(documentPath, async () => {
+      let changed = false;
+
+      for (const { indexName, fields } of entries) {
+        // Diff against previous entry -- skip write if unchanged
+        const existing = await this._storage.get(indexName, documentPath);
+        if (existing && this._fieldsEqual(existing, fields)) {
+          continue;
+        }
+
+        await this._storage.put(indexName, documentPath, fields);
+        changed = true;
       }
 
-      await this._storage.put(indexName, documentPath, fields);
-      changed = true;
-    }
-
-    if (changed) {
-      this._notifySubscribers();
-    }
+      if (changed) {
+        this._notifySubscribers();
+      }
+    });
   }
 
   /**
    * Remove a document from all indexes.
    */
   async removeFromIndex(documentPath: string): Promise<void> {
-    for (const indexName of this._definitions.keys()) {
-      await this._storage.delete(indexName, documentPath);
-    }
-    this._notifySubscribers();
+    await this._enqueueDocumentOperation(documentPath, async () => {
+      for (const indexName of this._definitions.keys()) {
+        await this._storage.delete(indexName, documentPath);
+      }
+      this._notifySubscribers();
+    });
   }
 
   /**
@@ -238,6 +249,26 @@ export class IndexManager<DocType> {
       }
     }
     return true;
+  }
+
+  private _enqueueDocumentOperation(
+    documentPath: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this._documentOperations.get(documentPath);
+    const current = previous
+      ? previous.then(operation, operation)
+      : Promise.resolve().then(operation);
+    this._documentOperations.set(documentPath, current);
+
+    const cleanup = (): void => {
+      if (this._documentOperations.get(documentPath) === current) {
+        this._documentOperations.delete(documentPath);
+      }
+    };
+    void current.then(cleanup, cleanup);
+
+    return current;
   }
 
   /**

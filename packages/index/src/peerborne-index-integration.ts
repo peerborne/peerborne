@@ -25,7 +25,10 @@ const INDEX_HANDLER_PREFIX = '__peerborne_index_';
  */
 export class PeerborneIndexIntegration<DocType> {
   private _manager: IndexManager<DocType>;
-  private _trackedDocuments: Map<string, SubscribableDocument<DocType>> = new Map();
+  private _trackedDocuments: Map<
+    string,
+    { document: SubscribableDocument<DocType> }
+  > = new Map();
 
   constructor(manager: IndexManager<DocType>) {
     this._manager = manager;
@@ -44,13 +47,17 @@ export class PeerborneIndexIntegration<DocType> {
       return;
     }
 
-    this._trackedDocuments.set(doc.documentPath, doc);
+    const registration = { document: doc };
+    this._trackedDocuments.set(doc.documentPath, registration);
 
     const handlerId = INDEX_HANDLER_PREFIX + doc.documentPath;
 
     doc.subscribe(
       handlerId,
       (current: DocType) => {
+        if (this._trackedDocuments.get(doc.documentPath) !== registration) {
+          return;
+        }
         this._manager.updateIndex(doc.documentPath, current).catch((err) => {
           console.warn(`PeerborneIndexIntegration: failed to update index for ${doc.documentPath}`, err);
         });
@@ -74,8 +81,8 @@ export class PeerborneIndexIntegration<DocType> {
     const tracked = this._trackedDocuments.get(path);
     if (!tracked) return;
     const handlerId = INDEX_HANDLER_PREFIX + path;
-    tracked.unsubscribe(handlerId);
     this._trackedDocuments.delete(path);
+    tracked.document.unsubscribe(handlerId);
     this._manager.removeFromIndex(path).catch((err) => {
       console.warn(`PeerborneIndexIntegration: failed to remove ${path} from index`, err);
     });
@@ -93,10 +100,11 @@ export class PeerborneIndexIntegration<DocType> {
    * Does not close the index manager's storage.
    */
   async dispose(): Promise<void> {
-    for (const [, doc] of this._trackedDocuments) {
-      const handlerId = INDEX_HANDLER_PREFIX + doc.documentPath;
-      doc.unsubscribe(handlerId);
-    }
+    const trackedDocuments = Array.from(this._trackedDocuments.values());
     this._trackedDocuments.clear();
+    for (const { document } of trackedDocuments) {
+      const handlerId = INDEX_HANDLER_PREFIX + document.documentPath;
+      document.unsubscribe(handlerId);
+    }
   }
 }
