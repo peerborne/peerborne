@@ -1,8 +1,8 @@
 FROM node:22-alpine AS build
 RUN corepack enable
 WORKDIR /app
-COPY package.json yarn.lock ./
-RUN yarn install
+COPY package.json yarn.lock .yarnrc.yml ./
+RUN yarn install --immutable --mode=skip-build
 COPY . .
 RUN yarn build
 
