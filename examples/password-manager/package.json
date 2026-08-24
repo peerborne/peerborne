@@ -23,7 +23,7 @@
     "typescript": "^5.9.3",
     "uuid": "^14.0.2",
     "web-vitals": "^5.2.0",
-    "yjs": "^13.6.30"
+    "yjs": "^13.6.32"
   },
   "type": "module",
   "devDependencies": {

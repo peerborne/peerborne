@@ -4144,7 +4144,7 @@ __metadata:
     uuid: "npm:^14.0.2"
     vite: "npm:^6.1.0"
     web-vitals: "npm:^5.2.0"
-    yjs: "npm:^13.6.30"
+    yjs: "npm:^13.6.32"
   languageName: unknown
   linkType: soft
 
@@ -4201,7 +4201,7 @@ __metadata:
     typedoc: "npm:^0.28.19"
     typedoc-plugin-markdown: "npm:^4.6.0"
     typescript: "npm:^5.9.3"
-    yjs: "npm:^13.6.30"
+    yjs: "npm:^13.6.32"
   languageName: unknown
   linkType: soft
 
@@ -4259,9 +4259,9 @@ __metadata:
     ts-jest: "npm:^29.2.5"
     ts-node: "npm:^10.1.0"
     typescript: "npm:^5.9.3"
-    yjs: "npm:^13.6.30"
+    yjs: "npm:^13.6.32"
   peerDependencies:
-    yjs: ^13.6.30
+    yjs: ^13.6.32
   bin:
     peerborne-yjs-d: dist/esm/bin/peerborne-yjs-d.js
   languageName: unknown
@@ -15879,12 +15879,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yjs@npm:^13.6.30":
-  version: 13.6.30
-  resolution: "yjs@npm:13.6.30"
+"yjs@npm:^13.6.32":
+  version: 13.6.32
+  resolution: "yjs@npm:13.6.32"
   dependencies:
     lib0: "npm:^0.2.99"
-  checksum: 10/0414a42da1f2a9a99b8eb1821c7586eaa7a519833a949fac7c95609f6ea915a148371ba48abfc10328af7fdf5bf3be8992c62f590c5c8ab79810eb23be33c5c8
+  checksum: 10/2b34da80105f138cf65e2154ac18155e818bddc8dbca689c190f186068ded7d648aeff69ae84ccc76166f3efb4524c6146d7a4befdda6b0c0ae394f97d421d02
   languageName: node
   linkType: hard
 
