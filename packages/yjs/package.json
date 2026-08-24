@@ -55,13 +55,13 @@
     "ts-jest": "^29.2.5",
     "ts-node": "^10.1.0",
     "typescript": "^5.9.3",
-    "yjs": "^13.6.30"
+    "yjs": "^13.6.32"
   },
   "dependencies": {
     "@peerborne/core": "workspace:^"
   },
   "peerDependencies": {
-    "yjs": "^13.6.30"
+    "yjs": "^13.6.32"
   },
   "publishConfig": {
     "access": "public"
