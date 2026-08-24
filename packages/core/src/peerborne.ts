@@ -79,22 +79,49 @@ export type PeerbornePeersHandler = (
  * The peerborne object is the main entry point for the peerborne library.
  *
  * @example
- * import { Peerborne } from '@peerborne/core';
- * import { AutomergeJSONSerializer, AutomergeProvider } from '@peerborne/automerge';
+ * import {
+ *   Peerborne,
+ *   SubtleCrypto,
+ *   defaultBootstrapConfig,
+ *   defaultConfig,
+ * } from '@peerborne/core';
+ * import {
+ *   AutomergeACLProvider,
+ *   AutomergeJSONSerializer,
+ *   AutomergeKeychainProvider,
+ *   AutomergeProvider,
+ * } from '@peerborne/automerge';
  *
  * // Create the necessary providers and pass them to the peerborne constructor.
+ * const userKeyPair = await crypto.subtle.generateKey(
+ *   { name: 'ECDSA', namedCurve: 'P-384' },
+ *   true,
+ *   ['sign', 'verify'],
+ * ) as CryptoKeyPair;
  * const crdt = new AutomergeProvider();
  * const serializer = new AutomergeJSONSerializer();
- * const peerborne = new Peerborne(crdt, serializer, serializer);
+ * const peerborne = new Peerborne(
+ *   userKeyPair.privateKey,
+ *   userKeyPair.publicKey,
+ *   crdt,
+ *   serializer,
+ *   serializer,
+ *   serializer,
+ *   new SubtleCrypto(),
+ *   new AutomergeACLProvider(),
+ *   new AutomergeKeychainProvider(),
+ * );
  *
  * // Set the config for your peerborne object and startup a Helia node.
- * await peerborne.initialize(config);
+ * await peerborne.initialize(defaultConfig(defaultBootstrapConfig([])));
  *
- * // Connect to a swarm (an address of any member of the swarm works here).
- * await peerborne.connect(["/some/libp2p/peer/address"]);
+ * // Optionally connect to a known peer.
+ * // await peerborne.connect(['/dns4/relay.example.com/tcp/443/wss/p2p/12D3...']);
  *
  * // Open a document.
- * const doc1 = peerborne.doc("/my-doc1-path");
+ * const doc = peerborne.doc('/my-doc-path');
+ * if (!doc) throw new Error('Failed to create document');
+ * await doc.open();
  * @typeParam DocType The CRDT document type
  * @typeParam ChangesType A block of CRDT change(s)
  * @typeParam ChangeFnType A function for applying changes to a document
