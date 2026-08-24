@@ -54,7 +54,7 @@ yarn test:e2e                     # three Vite example smoke suites; no Docker
 
 Use `yarn exec playwright install chromium --with-deps` when Linux system browser dependencies are also needed.
 
-The benchmark sources currently have a runner module mismatch. Do not present `yarn benchmark:all` as working until that is fixed; benchmark work should also define repeatable budgets.
+`yarn benchmark:all` executes both benchmark packages. Results are informational; benchmark work should define repeatable environments and budgets before making regression claims. Use `--iterations 1 --max-documents 100` for a bounded smoke run.
 
 ## Docker-backed suites
 

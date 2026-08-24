@@ -66,11 +66,12 @@ Status meanings:
 | --- | --- | --- | --- |
 | React hooks and lifecycle management | Verified | 42 passing hook/cache/lifecycle tests; password-manager typechecked build and Chromium smoke | StrictMode and real reconnect behavior should be browser-tested. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
-| Field extraction and local indexes | Verified | Index manager and extractor suites | Schema evolution and heterogeneous documents need coverage. |
-| Memory and IndexedDB index storage | Verified | Storage suites | Migration/versioning behavior is not specified. |
+| Field extraction and local indexes | Verified | V1 manager/extractor suites plus v2 planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
+| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, legacy-backfill, and corrupted-row suites | Persistent migration should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
 | Bloom-filter CRDT and peer gossip | Partial | Bloom CRDT/gossip suites; clean `--detectOpenHandles` run | Malformed/hostile high-volume gossip still needs resource limits. |
 | React query subscription binding | Verified | Index React suite | No reference application demonstrates distributed search. |
+| Signed distributed search protocol | Partial | Manifest, replacement-routing, wire binding/replay, blind-disclosure, transport-adapter, and hostile-candidate federation suites | Production libp2p handlers, membership/key distribution, authorized resolver, and multi-peer acceptance tests are not implemented. |
 
 ## Applications, packaging, and operations
 
@@ -84,7 +85,7 @@ Status meanings:
 | Relay server | Verified | TypeScript build and 57 tests | Deployment smoke test and live health/readiness behavior remain unverified. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |
-| Performance benchmarks | Partial | Crypto, sync, convergence, Bloom, and query benchmarks | Results are informational and lack pass/fail budgets. |
+| Performance benchmarks | Partial | Runnable ESM crypto, sync, convergence, Bloom, blind-index, and v2 physical-query benchmarks | Results are informational and lack pass/fail budgets. |
 
 ## Cross-cutting design findings
 

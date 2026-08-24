@@ -95,6 +95,8 @@ import {
   beekemPathUpdateV1,
   beekemWelcomeV1,
   bloomFilterUpdateV1,
+  searchIndexAdvertiseV1,
+  searchQueryV1,
   tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
@@ -201,6 +203,8 @@ export {
   bloomFilterUpdateV1,
   beekemWelcomeV1,
   beekemPathUpdateV1,
+  searchIndexAdvertiseV1,
+  searchQueryV1,
   tipAdvertiseV1,
   // BeeKEM document-key derivation
   DOC_KEY_INFO,

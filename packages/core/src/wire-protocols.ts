@@ -236,3 +236,7 @@ export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';
 // treat surviving-reader connectivity at revocation time as a
 // liveness requirement.
 export const beekemPathUpdateV1 = '/collabswarm/beekem-pathupdate/1.0.0';
+
+// The historical protocol namespace is retained as a wire-compatibility boundary.
+export const searchIndexAdvertiseV1 = '/collabswarm/search-index-advertise/1.0.0';
+export const searchQueryV1 = '/collabswarm/search-query/1.0.0';

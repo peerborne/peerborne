@@ -42,9 +42,9 @@ export class PeerborneIndexIntegration<DocType> {
   /**
    * Begin tracking a document. Subscribes to all changes and indexes the current state.
    */
-  trackDocument(doc: SubscribableDocument<DocType>): void {
+  trackDocument(doc: SubscribableDocument<DocType>): Promise<void> {
     if (this._trackedDocuments.has(doc.documentPath)) {
-      return;
+      return Promise.resolve();
     }
 
     const registration = { document: doc };
@@ -58,34 +58,38 @@ export class PeerborneIndexIntegration<DocType> {
         if (this._trackedDocuments.get(doc.documentPath) !== registration) {
           return;
         }
-        this._manager.updateIndex(doc.documentPath, current).catch((err) => {
-          console.warn(`PeerborneIndexIntegration: failed to update index for ${doc.documentPath}`, err);
+        this._manager.updateIndex(doc.documentPath, current).catch(() => {
+          console.warn(`PeerborneIndexIntegration: failed to update index for ${doc.documentPath}`);
         });
       },
       'all',
     );
 
     // Index current state immediately
-    this._manager.updateIndex(doc.documentPath, doc.document).catch((err) => {
-      console.warn(`PeerborneIndexIntegration: failed to index initial state of ${doc.documentPath}`, err);
+    const ready = this._manager.updateIndex(doc.documentPath, doc.document);
+    ready.catch(() => {
+      console.warn(`PeerborneIndexIntegration: failed to index initial state of ${doc.documentPath}`);
     });
+    return ready;
   }
 
   /**
    * Stop tracking a document. Unsubscribes from changes and removes from index.
    */
-  untrackDocument(documentPath: string): void;
-  untrackDocument(doc: SubscribableDocument<DocType>): void;
-  untrackDocument(docOrPath: SubscribableDocument<DocType> | string): void {
+  untrackDocument(documentPath: string): Promise<void>;
+  untrackDocument(doc: SubscribableDocument<DocType>): Promise<void>;
+  untrackDocument(docOrPath: SubscribableDocument<DocType> | string): Promise<void> {
     const path = typeof docOrPath === 'string' ? docOrPath : docOrPath.documentPath;
     const tracked = this._trackedDocuments.get(path);
-    if (!tracked) return;
+    if (!tracked) return Promise.resolve();
     const handlerId = INDEX_HANDLER_PREFIX + path;
     this._trackedDocuments.delete(path);
     tracked.document.unsubscribe(handlerId);
-    this._manager.removeFromIndex(path).catch((err) => {
-      console.warn(`PeerborneIndexIntegration: failed to remove ${path} from index`, err);
+    const removed = this._manager.removeFromIndex(path);
+    removed.catch(() => {
+      console.warn(`PeerborneIndexIntegration: failed to remove ${path} from index`);
     });
+    return removed;
   }
 
   /**
@@ -106,5 +110,6 @@ export class PeerborneIndexIntegration<DocType> {
       const handlerId = INDEX_HANDLER_PREFIX + document.documentPath;
       document.unsubscribe(handlerId);
     }
+    await this._manager.flush();
   }
 }
