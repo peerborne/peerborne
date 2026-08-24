@@ -27,7 +27,10 @@ export type FederatedCoverageReason =
   | 'source-error'
   | 'source-timeout'
   | 'source-truncated'
-  | 'candidate-budget-exhausted';
+  | 'candidate-budget-exhausted'
+  | 'candidate-resolution-error'
+  | 'candidate-resolution-budget-exhausted'
+  | 'candidate-resolution-timeout';
 
 export interface FederatedQueryCoverage {
   partial: boolean;
@@ -62,6 +65,8 @@ export interface FederatedSearchConfig {
   maxCandidatesPerSource?: number;
   maxTotalCandidates?: number;
   resolveConcurrency?: number;
+  resolveBudgetMs?: number;
+  resolveTimeoutMs?: number;
   sourceTimeoutMs?: number;
 }
 
@@ -71,6 +76,8 @@ export class FederatedSearchCoordinator<DocType> {
   private readonly _maxCandidatesPerSource: number;
   private readonly _maxTotalCandidates: number;
   private readonly _resolveConcurrency: number;
+  private readonly _resolveBudgetMs: number;
+  private readonly _resolveTimeoutMs: number;
   private readonly _sourceTimeoutMs: number;
 
   constructor(
@@ -82,12 +89,16 @@ export class FederatedSearchCoordinator<DocType> {
     this._maxCandidatesPerSource = config.maxCandidatesPerSource ?? 256;
     this._maxTotalCandidates = config.maxTotalCandidates ?? 1024;
     this._resolveConcurrency = config.resolveConcurrency ?? 4;
+    this._resolveBudgetMs = config.resolveBudgetMs ?? 10_000;
+    this._resolveTimeoutMs = config.resolveTimeoutMs ?? 3000;
     this._sourceTimeoutMs = config.sourceTimeoutMs ?? 3000;
     for (const [name, value, maximum] of [
       ['maxSources', this._maxSources, 256],
       ['maxCandidatesPerSource', this._maxCandidatesPerSource, 4096],
       ['maxTotalCandidates', this._maxTotalCandidates, 65_536],
       ['resolveConcurrency', this._resolveConcurrency, 256],
+      ['resolveBudgetMs', this._resolveBudgetMs, 60_000],
+      ['resolveTimeoutMs', this._resolveTimeoutMs, 60_000],
       ['sourceTimeoutMs', this._sourceTimeoutMs, 60_000],
     ] as const) {
       if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
@@ -164,28 +175,49 @@ export class FederatedSearchCoordinator<DocType> {
 
     const verified = new Map<string, { documentPath: string; fields: Record<string, unknown> }>();
     const claimed = new Set<string>();
+    let resolutionError = false;
+    let resolutionTimeout = false;
+    let resolutionBudgetExhausted = false;
     for (const document of local.documents) {
       verified.set(document.documentPath, { documentPath: document.documentPath, fields: document.snapshot });
     }
     let cursor = 0;
+    const resolutionDeadline = Date.now() + this._resolveBudgetMs;
     const workers = Array.from({ length: Math.min(this._resolveConcurrency, interleaved.length) }, async () => {
       while (true) {
         const position = cursor++;
         const item = interleaved[position];
         if (!item) return;
+        const remainingResolveTime = resolutionDeadline - Date.now();
+        if (remainingResolveTime <= 0) {
+          resolutionBudgetExhausted = true;
+          return;
+        }
         const { candidate, sourceIndex } = item;
         if (!validCandidate(candidate) || !candidate.documentPath.startsWith(definition.collectionPrefix) ||
             verified.has(candidate.documentPath) || claimed.has(candidate.documentPath)) continue;
         claimed.add(candidate.documentPath);
         try {
-          const resolved = await this._resolver.resolveAuthorized(candidate.documentPath, candidate.revision);
+          const abortController = new AbortController();
+          const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
+          const resolveDeadline = Date.now() + timeoutMs;
+          const resolved = await withTimeout(
+            this._resolver.resolveAuthorized(candidate.documentPath, candidate.revision, {
+              deadline: resolveDeadline,
+              signal: abortController.signal,
+            }),
+            timeoutMs,
+            () => abortController.abort(),
+          );
           if (!resolved || resolved.documentPath !== candidate.documentPath ||
               (candidate.revision !== undefined && resolved.revision !== candidate.revision)) continue;
           const fields = materializeIndexedFields(resolved.snapshot, definition);
           if (!fields || !evaluateQueryExpression(fields, query.where, definition)) continue;
           verified.set(candidate.documentPath, { documentPath: candidate.documentPath, fields });
           sourceExecutions[sourceIndex].candidatesAccepted++;
-        } catch {
+        } catch (error) {
+          if (error instanceof SourceTimeoutError) resolutionTimeout = true;
+          else resolutionError = true;
           // Authorization, retrieval, and decryption failures are fail-closed candidate misses.
         }
       }
@@ -230,6 +262,9 @@ export class FederatedSearchCoordinator<DocType> {
     if (candidatesReceived > interleaved.length) {
       reasons.add('candidate-budget-exhausted');
     }
+    if (resolutionTimeout) reasons.add('candidate-resolution-timeout');
+    if (resolutionError) reasons.add('candidate-resolution-error');
+    if (resolutionBudgetExhausted) reasons.add('candidate-resolution-budget-exhausted');
     return {
       documents: page.map((entry) => ({
         documentPath: entry.documentPath,
@@ -323,9 +358,16 @@ function validateSourceId(value: string): void {
 
 class SourceTimeoutError extends Error {}
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new SourceTimeoutError()), timeoutMs);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new SourceTimeoutError());
+    }, timeoutMs);
     promise.then(
       (value) => {
         clearTimeout(timer);

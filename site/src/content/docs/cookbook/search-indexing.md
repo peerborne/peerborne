@@ -117,6 +117,7 @@ Applications must define authenticated token transport and key distribution. Det
 **Status: Protocol and orchestration primitives implemented; production networking remains incomplete.** The package includes signed collection manifests, signed expiring replacement Bloom advertisements, bounded signed direct-query codecs, replay guards, a transport adapter, and a federation coordinator. Production libp2p handlers, collection search-membership/key distribution, blind-token publication, and an authorized `PeerborneDocument` resolver are not yet wired.
 
 A remote response is an untrusted candidate list, even when signed. The requester must load each nominated document through normal signature, ACL, history, and decryption checks, extract only declared fields, and re-evaluate the complete predicate. Remote ordering, counts, continuations, and exhaustion claims are advisory. Distributed coverage stays partial and counts are verified lower bounds because a malicious or offline peer can omit matches.
+Authorized candidate resolution is concurrency-, per-document timeout-, and total-budget-bounded and receives an abort signal; adapters should propagate that signal through document loading.
 
 `PlaintextDistributedQueryEncoder` reveals the AST to the recipient. `BlindEqualityRequestEncoder` sends caller-derived opaque terms but supports equality-style routing only and still leaks equality/frequency information to search-key holders. No encoder is selected implicitly.
 

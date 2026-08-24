@@ -33,6 +33,11 @@ export interface AuthorizedDocumentSnapshot {
   snapshot: Record<string, unknown>;
 }
 
+export interface AuthorizedDocumentResolveOptions {
+  deadline: number;
+  signal: AbortSignal;
+}
+
 /**
  * Security boundary for candidate materialization. Implementations must authenticate the
  * caller, enforce current ACL/history policy, retrieve authenticated state, and decrypt it.
@@ -42,5 +47,6 @@ export interface AuthorizedDocumentResolver {
   resolveAuthorized(
     documentPath: string,
     revision?: string,
+    options?: AuthorizedDocumentResolveOptions,
   ): Promise<AuthorizedDocumentSnapshot | undefined>;
 }

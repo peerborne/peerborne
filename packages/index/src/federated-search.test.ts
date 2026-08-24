@@ -166,6 +166,42 @@ describe('FederatedSearchCoordinator', () => {
     expect(result.sources[0].candidatesAccepted).toBe(1);
     expect(result.coverage.reasons).not.toContain('candidate-budget-exhausted');
   });
+
+  test('bounds authorized resolution and exposes an abort signal', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    let aborted = false;
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized(_documentPath, _revision, options) {
+        options?.signal.addEventListener('abort', () => { aborted = true; });
+        return new Promise(() => undefined);
+      },
+    }, { resolveTimeoutMs: 5 });
+    const result = await coordinator.search(query(), [
+      new StaticSource('unresponsive-document', [{ documentPath: '/articles/hanging' }]),
+    ]);
+    expect(aborted).toBe(true);
+    expect(result.coverage.reasons).toContain('candidate-resolution-timeout');
+  });
+
+  test('bounds the complete candidate-resolution phase', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized() { return new Promise(() => undefined); },
+    }, {
+      maxCandidatesPerSource: 2,
+      resolveBudgetMs: 5,
+      resolveTimeoutMs: 1000,
+      resolveConcurrency: 1,
+    });
+    const result = await coordinator.search(query(), [new StaticSource('slow-documents', [
+      { documentPath: '/articles/slow-one' },
+      { documentPath: '/articles/slow-two' },
+    ])]);
+    expect(result.coverage.reasons).toContain('candidate-resolution-budget-exhausted');
+    expect(result.coverage.reasons).toContain('candidate-resolution-timeout');
+  });
 });
 
 function query(): QueryAst {

@@ -108,6 +108,7 @@ export type {
   CandidateSearchResult,
   QueryCandidateSource,
   AuthorizedDocumentSnapshot,
+  AuthorizedDocumentResolveOptions,
   AuthorizedDocumentResolver,
 } from './candidate-source.js';
 export type {
