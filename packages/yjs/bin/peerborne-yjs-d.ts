@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { webcrypto } from 'node:crypto';
 import {
   defaultBootstrapConfig,
   SubtleCrypto,
@@ -15,7 +16,7 @@ import {
   YjsProvider,
 } from '../src/index.js';
 
-global.crypto = require('crypto').webcrypto;
+const crypto = webcrypto as Crypto;
 
 console.log('Creating a new swarm node...');
 const crdt = new YjsProvider();
@@ -23,7 +24,7 @@ const serializer = new YjsJSONSerializer();
 const auth = new SubtleCrypto();
 const acl = new YjsACLProvider();
 const keychain = new YjsKeychainProvider();
-crypto.subtle
+void crypto.subtle
   .generateKey(
     {
       name: 'ECDSA',
@@ -32,8 +33,8 @@ crypto.subtle
     true,
     ['sign', 'verify'],
   )
-  .then((keypair) => {
-    const swarmNode = new PeerborneNode(
+  .then(async (keypair) => {
+    const peerborneNode = new PeerborneNode(
       keypair.privateKey,
       keypair.publicKey,
       crdt,
@@ -46,5 +47,10 @@ crypto.subtle
       defaultNodeConfig(defaultBootstrapConfig([])),
     );
     console.log('Starting node...');
-    swarmNode.start();
+    await peerborneNode.start();
+    console.log('Node started.');
+  })
+  .catch((error: unknown) => {
+    console.error('Failed to start node:', error);
+    process.exitCode = 1;
   });

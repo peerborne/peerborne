@@ -52,14 +52,13 @@ import { webSockets } from '@libp2p/websockets';
 // `filter` option from `WebSocketsInit`. WebSocket dial filtering is now
 // internal to the transport.
 import { webTransport } from '@libp2p/webtransport';
-import { IDBBlockstore } from 'blockstore-idb';
-import { IDBDatastore } from 'datastore-idb';
 import { ipnsSelector } from 'ipns/selector';
 import { ipnsValidator } from 'ipns/validator';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
+import { createNodeHeliaStores } from './node-stores.js';
 
 /**
  * Default config for Node.js environments.
@@ -71,6 +70,10 @@ import { hasBootstrapPeers } from './bootstrap-config.js';
  * local network, privacy-sensitive deployments should disable it by building a
  * custom config (copy this one and omit `mdns()` from `peerDiscovery`) rather
  * than using `defaultNodeConfig` directly.
+ *
+ * The default blockstore and datastore are process-local and ephemeral. Node
+ * applications that require persistence should replace `config.helia`'s
+ * stores before starting Peerborne.
  *
  * @param bootstrapConfig Bootstrap peer list to seed peer discovery.
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.
@@ -90,8 +93,7 @@ export const defaultNodeConfig = (
   const { sourceIceServers, exposedIceServers } = resolveIceServers(webrtcIceServers);
   return ({
     helia: {
-      blockstore: new IDBBlockstore('/collabswarm-blocks'),
-      datastore: new IDBDatastore('/collabswarm-data'),
+      ...createNodeHeliaStores(),
       libp2p: {
         // See: https://github.com/ipfs/helia/blob/main/packages/libp2p/src/utils/libp2p-defaults.browser.ts
         addresses: {

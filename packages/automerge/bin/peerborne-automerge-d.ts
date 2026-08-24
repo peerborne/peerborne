@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { webcrypto } from 'node:crypto';
 import {
   defaultBootstrapConfig,
   SubtleCrypto,
@@ -14,8 +15,7 @@ import {
   AutomergeKeychainProvider,
 } from '../src/peerborne-automerge.js';
 
-const crypto: Crypto = require('crypto').webcrypto;
-global.crypto = crypto;
+const crypto = webcrypto as Crypto;
 
 console.log('Creating a new swarm node...');
 const crdt = new AutomergeProvider();
@@ -23,7 +23,7 @@ const serializer = new AutomergeJSONSerializer();
 const auth = new SubtleCrypto();
 const acl = new AutomergeACLProvider();
 const keychain = new AutomergeKeychainProvider();
-crypto.subtle
+void crypto.subtle
   .generateKey(
     {
       name: 'ECDSA',
@@ -32,8 +32,8 @@ crypto.subtle
     true,
     ['sign', 'verify'],
   )
-  .then((keypair) => {
-    const swarmNode = new PeerborneNode(
+  .then(async (keypair) => {
+    const peerborneNode = new PeerborneNode(
       keypair.privateKey,
       keypair.publicKey,
       crdt,
@@ -46,5 +46,10 @@ crypto.subtle
       defaultNodeConfig(defaultBootstrapConfig([])),
     );
     console.log('Starting node...');
-    swarmNode.start();
+    await peerborneNode.start();
+    console.log('Node started.');
+  })
+  .catch((error: unknown) => {
+    console.error('Failed to start node:', error);
+    process.exitCode = 1;
   });

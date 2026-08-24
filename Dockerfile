@@ -67,5 +67,4 @@ RUN dos2unix /app/wait-for-file.sh
 WORKDIR /app
 RUN chown -R node:node /app
 USER node
-# CMD peerborne-automerge-d
-CMD yarn workspace @peerborne/automerge run peerborne-automerge-d
+CMD ["node", "packages/automerge/dist/esm/bin/peerborne-automerge-d.js"]
