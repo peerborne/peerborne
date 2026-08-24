@@ -1,6 +1,6 @@
 # End-to-End Tests
 
-This directory contains end-to-end tests for swarmbase using Playwright. These tests simulate real user interactions and multi-user connectivity scenarios.
+This directory contains end-to-end tests for peerborne using Playwright. These tests simulate real user interactions and multi-user connectivity scenarios.
 
 ## Overview
 
@@ -166,7 +166,7 @@ test.setTimeout(60000); // 60 seconds
 ### Application Not Starting
 Check Docker logs and ensure all dependencies are built:
 ```bash
-yarn workspace @swarmbase/collabswarm tsc
-yarn workspace @swarmbase/collabswarm-automerge tsc
+yarn workspace @peerborne/core tsc
+yarn workspace @peerborne/automerge tsc
 docker compose logs browser-test
 ```

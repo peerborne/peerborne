@@ -1,18 +1,18 @@
 ---
 title: "Quick start from source"
-description: Build Swarmbase and open a real encrypted document in Chromium from a clean checkout.
+description: Build Peerborne and open a real encrypted document in Chromium from a clean checkout.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Packages are not published yet">
-The `@swarmbase/*` packages are not currently available from npm. This guide
+The `@peerborne/*` packages are not currently available from npm. This guide
 uses the repository workspaces and only includes commands that work today.
 Published-package installation and a standalone application template will be
 added before the first npm release.
 </Aside>
 
-In about five minutes, you will build the six Swarmbase library workspaces and
+In about five minutes, you will build the six Peerborne library workspaces and
 run the real browser example in Chromium. The smoke test initializes Helia and
 libp2p, opens an Automerge document, and fails on browser runtime errors.
 
@@ -30,8 +30,8 @@ Docker is not required for this quick start.
 1. **Clone the repository and enable Yarn.**
 
    ```sh
-   git clone https://github.com/swarmbase/swarmbase.git
-   cd swarmbase
+   git clone https://github.com/Peerborne/peerborne.git peerborne
+   cd peerborne
    corepack enable
    ```
 
@@ -74,13 +74,13 @@ Docker is not required for this quick start.
 
    A successful run ends with one passing Playwright test. It proves that the
    Vite browser application starts without runtime errors and that a real
-   Swarmbase document opens using the configured Automerge, crypto, ACL, and
+   Peerborne document opens using the configured Automerge, crypto, ACL, and
    keychain providers.
 
 5. **Run the example interactively.**
 
    ```sh
-   yarn workspace @swarmbase/browser-test start
+   yarn workspace @peerborne/browser-test start
    ```
 
    Open the URL printed by Vite. In the **Open Document** field, enter a path
@@ -91,7 +91,7 @@ Docker is not required for this quick start.
 
 ## What this verifies
 
-This quick start exercises a real Swarmbase document in one browser process:
+This quick start exercises a real Peerborne document in one browser process:
 
 - workspace package compilation and TypeScript declarations;
 - browser initialization of Helia and libp2p;
@@ -115,13 +115,13 @@ The repository also contains heavier acceptance suites:
   Compose services are running.
 - `yarn test:nat` exercises NAT traversal after its Docker Compose topology is
   running.
-- `yarn test:swarmbase-nat` verifies encrypted Automerge document retrieval
+- `yarn test:peerborne-nat` verifies encrypted Automerge document retrieval
   across two NAT-isolated Chromium processes. The test restores the document key
   through a test-only bridge; it does not prove end-user invitation or live
   post-load convergence.
 
 The Docker-backed suites are started and cleaned up by their corresponding CI
-jobs in [the repository workflow](https://github.com/swarmbase/swarmbase/blob/main/.github/workflows/ci.yml).
+jobs in [the repository workflow](https://github.com/Peerborne/peerborne/blob/main/.github/workflows/ci.yml).
 Use that workflow as the canonical command sequence rather than running the test
 commands without their services.
 
@@ -134,21 +134,21 @@ build. The packages remain unpublished; this does not prove registry
 installation, browser runtime behavior, or packaged daemon execution. Until
 publication:
 
-- use Yarn workspace package names such as `@swarmbase/collabswarm`;
+- use Yarn workspace package names such as `@peerborne/core`;
 - do not copy future `npm install` commands from issues or old documentation;
 - treat private signing keys, KEM keys, and document keys as distinct persisted
   data when designing an application;
 - consult the
-  [feature and verification audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md)
+  [feature and verification audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md)
   for the evidence behind capability claims.
 
 ## Useful source examples
 
-- [`examples/browser-test`](https://github.com/swarmbase/swarmbase/tree/main/examples/browser-test)
+- [`examples/browser-test`](https://github.com/Peerborne/peerborne/tree/main/examples/browser-test)
   shows the core Automerge and Redux stack.
-- [`examples/wiki-swarm`](https://github.com/swarmbase/swarmbase/tree/main/examples/wiki-swarm)
+- [`examples/wiki-swarm`](https://github.com/Peerborne/peerborne/tree/main/examples/wiki-swarm)
   is a larger collaborative editor example.
-- [`examples/password-manager`](https://github.com/swarmbase/swarmbase/tree/main/examples/password-manager)
+- [`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager)
   demonstrates the React and Yjs integrations, but should not yet be treated as
   proof of distinct-identity invitation.
 
@@ -157,7 +157,7 @@ For a change to these packages, the minimum completion commands are:
 ```sh
 yarn build
 yarn test
-yarn workspace @swarmbase/site build
+yarn workspace @peerborne/site build
 ```
 
 Run the focused browser or Docker-backed suite as well when changing the behavior
@@ -165,7 +165,7 @@ it covers.
 
 ## Next steps
 
-- [Why Swarmbase?](../../concepts/why-swarmbase/) — understand the value proposition and when to use it
+- [Why Peerborne?](../../concepts/why-peerborne/) — understand the value proposition and when to use it
 - [Architecture](../../concepts/architecture/) — see how the pieces fit together with diagrams
 - [Concepts](../../concepts/local-first/) — dive into local-first design, CRDTs, networking, storage, and security
 - [Cookbook](../../cookbook/collaborative-wiki/) — try runnable recipes for wikis, password managers, React, Redux, and more

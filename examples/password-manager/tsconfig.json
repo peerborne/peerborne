@@ -21,13 +21,13 @@
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/reportWebVitals.ts", "src/setupTests.ts"],
   "references": [
     {
-      "path": "../../packages/collabswarm"
+      "path": "../../packages/core"
     },
     {
-      "path": "../../packages/collabswarm-yjs"
+      "path": "../../packages/yjs"
     },
     {
-      "path": "../../packages/collabswarm-react"
+      "path": "../../packages/react"
     }
   ]
 }

@@ -1,3 +1,5 @@
+> Historical design note: names and capability ideas below predate the Peerborne rebrand and are retained for context.
+
 # `automerge-db-redux`
 
 A fully-featured automerge-db pinning/backbone node.

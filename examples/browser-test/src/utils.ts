@@ -1,10 +1,10 @@
 import {
-  CollabswarmActions,
-  CollabswarmState,
-} from '@swarmbase/collabswarm-redux';
+  PeerborneActions,
+  PeerborneState,
+} from '@peerborne/redux';
 import { Doc, Change } from '@automerge/automerge';
 
-export type AutomergeSwarmState<T = any> = CollabswarmState<
+export type AutomergeSwarmState<T = any> = PeerborneState<
   Doc<T>,
   Change[],
   (doc: T) => void,
@@ -12,7 +12,7 @@ export type AutomergeSwarmState<T = any> = CollabswarmState<
   CryptoKey,
   CryptoKey
 >;
-export type AutomergeSwarmActions<T = any> = CollabswarmActions<
+export type AutomergeSwarmActions<T = any> = PeerborneActions<
   Doc<T>,
   Change[],
   (doc: T) => void,

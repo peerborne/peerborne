@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('password-manager loads the packaged Swarmbase stack without runtime errors', async ({
+test('password-manager loads the packaged Peerborne stack without runtime errors', async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -12,7 +12,7 @@ test('password-manager loads the packaged Swarmbase stack without runtime errors
   });
 
   await page.goto('/');
-  await expect(page).toHaveTitle('Swarmbase Password Manager');
+  await expect(page).toHaveTitle('Peerborne Password Manager');
   await page.waitForTimeout(1_000);
   await expect(page.locator('#root')).not.toBeEmpty();
   await expect(page.getByRole('button', { name: 'Login' })).toBeVisible();

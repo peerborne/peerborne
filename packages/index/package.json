@@ -1,0 +1,148 @@
+{
+  "name": "@peerborne/index",
+  "description": "Local and privacy-oriented indexing primitives for Peerborne documents",
+  "version": "0.1.0",
+  "homepage": "https://peerborne.io/",
+  "bugs": {
+    "url": "https://github.com/Peerborne/peerborne/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "directory": "packages/index"
+  },
+  "scripts": {
+    "tsc": "tsc -b && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "prepublishOnly": "yarn tsc",
+    "test": "jest",
+    "tsc-watch": "tsc -w -p tsconfig.json",
+    "benchmark": "tsc -b tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node dist-bench/__benchmarks__/run.js"
+  },
+  "main": "dist/cjs/src/index.js",
+  "types": "dist/esm/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/src/index.d.ts",
+      "import": "./dist/esm/src/index.js",
+      "require": "./dist/cjs/src/index.js",
+      "default": "./dist/esm/src/index.js"
+    },
+    "./package.json": "./package.json",
+    "./react": {
+      "types": "./dist/esm/src/react.d.ts",
+      "import": "./dist/esm/src/react.js",
+      "require": "./dist/cjs/src/react.js",
+      "default": "./dist/esm/src/react.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.spec.*",
+    "!dist/**/__tests__/**",
+    "!dist/**/__benchmarks__/**",
+    "!dist/**/__mocks__/**",
+    "!dist/**/*.map",
+    "!dist/**/*.tsbuildinfo"
+  ],
+  "author": "allegrormc@gmail.com",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "@peculiar/webcrypto": "^1.7.1",
+    "@types/node": "^22.7.5",
+    "fake-indexeddb": "^6.0.0",
+    "jest": "^29.2.5",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.1.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@peerborne/core": "workspace:^",
+    "idb": "^8.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "jest": {
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true
+        }
+      ]
+    },
+    "moduleFileExtensions": [
+      "ts",
+      "tsx",
+      "js",
+      "jsx",
+      "json",
+      "node"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "__benchmarks__"
+    ],
+    "setupFiles": [
+      "<rootDir>/jest.setup.cjs"
+    ],
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^@peerborne/core$": "<rootDir>/../core/src/index.ts",
+      "^@chainsafe/libp2p-noise$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@chainsafe/libp2p-yamux$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/gossipsub$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/bootstrap$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/pubsub-peer-discovery$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/circuit-relay-v2$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/webrtc$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/webtransport$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/websockets$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/websockets/filters$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/identify$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/dcutr$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/autonat$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/kad-dht$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/interface$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/mdns$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/peer-id$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@libp2p/ping$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^ipns/selector$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^ipns/validator$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@helia/bitswap$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@helia/interface$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@helia/libp2p$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@helia/unixfs$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@ipld/(.*)$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^helia$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^datastore-idb$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^blockstore-idb$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^libp2p$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^it-pipe$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^bl$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^multiformats$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^multiformats/(.*)$": "<rootDir>/src/__mocks__/empty-module.cjs",
+      "^@multiformats/multiaddr$": "<rootDir>/src/__mocks__/empty-module.cjs"
+    }
+  },
+  "module": "dist/esm/src/index.js"
+}

@@ -1,18 +1,17 @@
 {
-  "name": "@swarmbase/password-manager",
+  "name": "@peerborne/password-manager",
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@peerborne/core": "workspace:packages/core",
+    "@peerborne/react": "workspace:packages/react",
+    "@peerborne/yjs": "workspace:packages/yjs",
     "@popperjs/core": "^2.11.8",
-    "@swarmbase/collabswarm": "workspace:packages/collabswarm",
-    "@swarmbase/collabswarm-react": "workspace:packages/collabswarm-react",
-    "@swarmbase/collabswarm-yjs": "workspace:packages/collabswarm-yjs",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.5",
     "@types/node": "^22.7.5",
-    "@types/react-router-bootstrap": "^0.26.8",
     "@types/react-router-dom": "^5.3.3",
     "@types/uuid": "^11.0.0",
     "bootstrap": "^5.3.8",
@@ -20,7 +19,6 @@
     "react": "^19.2.6",
     "react-bootstrap": "^2.10.10",
     "react-dom": "^19.2.6",
-    "react-router-bootstrap": "0.26.3",
     "react-router-dom": "^5.3.4",
     "typescript": "^5.9.3",
     "uuid": "^14.0.2",
@@ -38,7 +36,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit && vite build",
-    "build:tsc": "yarn workspace @swarmbase/collabswarm tsc && yarn workspace @swarmbase/collabswarm-yjs tsc && yarn workspace @swarmbase/collabswarm-react tsc",
+    "build:tsc": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc && yarn workspace @peerborne/react tsc",
     "start": "vite"
   },
   "engines": {

@@ -1,7 +1,7 @@
-# Swarmbase wiki
+# Peerborne wiki
 
 This Vite and React example explores a collaborative wiki interface with the
-Swarmbase Automerge and Redux packages.
+Peerborne Automerge and Redux packages.
 
 This workspace is a source example with startup coverage, not a complete collaborative product.
 
@@ -13,7 +13,7 @@ Use Node.js 22.19.0 and Yarn 4.5.0 through Corepack. From the repository root:
 corepack enable
 yarn install --immutable
 yarn build
-yarn workspace @swarmbase/wiki-swarm start
+yarn workspace @peerborne/wiki-swarm start
 ```
 
 Open the URL printed by Vite. The landing page provides a document ID field for
@@ -31,6 +31,6 @@ the wiki interface renders in Chromium without runtime errors. It does not
 assert article mutation, two-browser synchronization, concurrent editing,
 restart recovery, or invitation delivery.
 
-- [Collaborative wiki guide](https://swarmbase.github.io/swarmbase/cookbook/collaborative-wiki/)
-- [Verified quick start](https://swarmbase.github.io/swarmbase/getting-started/quick-start/)
-- [Current limitations](https://swarmbase.github.io/swarmbase/concepts/limitations/)
+- [Collaborative wiki guide](https://peerborne.io/cookbook/collaborative-wiki/)
+- [Verified quick start](https://peerborne.io/getting-started/quick-start/)
+- [Current limitations](https://peerborne.io/concepts/limitations/)

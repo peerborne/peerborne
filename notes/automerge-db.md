@@ -1,3 +1,5 @@
+> Historical design note: names and capability ideas below predate the Peerborne rebrand and are retained for context.
+
 # `collabswarm`
 
 A fully decentralized (eventually) json document store backed by CRDTs.

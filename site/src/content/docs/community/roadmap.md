@@ -1,9 +1,9 @@
 ---
 title: Roadmap
-description: Current development priorities and future directions for Swarmbase.
+description: Current development priorities and future directions for Peerborne.
 ---
 
-Swarmbase is under active development. This page tracks the most important gaps between the current implementation and a production-ready system.
+Peerborne is under active development. This page tracks the most important gaps between the current implementation and a production-ready system.
 
 ## Priority gaps
 
@@ -38,7 +38,7 @@ What needs to happen:
 
 ### 4. Pinning publisher and restore
 
-**Status: Incomplete.** A `CollabswarmNode` listener exists for pinning events, but the core commit path does not publish to it. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
+**Status: Incomplete.** A `PeerborneNode` listener exists for pinning events, but the core commit path does not publish to it. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
 
 What needs to happen:
 - Publisher integration so every block write fires a pinning event
@@ -56,10 +56,10 @@ What needs to happen:
 
 ### 6. External package publication
 
-**Status: Not implemented.** The `@swarmbase/*` packages are source workspaces, not published to npm. The release workflow (#321) defines the publication pipeline but npm scope ownership, `NPM_TOKEN`, and publication gates are not yet configured.
+**Status: Not implemented.** The `@peerborne/*` packages are source workspaces, not published to npm. The release workflow (#321) defines the publication pipeline but npm scope ownership, `NPM_TOKEN`, and publication gates are not yet configured.
 
 What needs to happen:
-- npm scope `@swarmbase` claimed
+- npm scope `@peerborne` claimed
 - `NPM_TOKEN` and `NPM_PUBLISH_ENABLED` secrets configured
 - First npm release published
 - External consumer validation (import from npm, build, run)
@@ -100,9 +100,20 @@ What needs to happen:
 - Key exchange and permission management in password-manager
 - Offline → online → convergence in browser-test
 
+### 11. Transport abstraction and Reticulum adapter
+
+**Status: Planned; not currently supported.** The core currently constructs Helia/libp2p networking directly. Reticulum is not a configuration switch for that stack, so claiming support would be premature.
+
+What needs to happen:
+- Separate document synchronization from the current Helia/libp2p transport implementation
+- Define bounded message, retry, acknowledgement, and durable-outbox behavior
+- Build a companion adapter over [Reticulum Links and Resources](https://reticulum.network/manual/understanding.html) or LXMF
+- Verify two intermittently connected peers can edit during a partition, exchange encrypted state after reconnecting, and converge
+- Document the metadata, identity, throughput, and operational trade-offs of the adapter
+
 ## Completed recently
 
-- Rename package scope from `@collabswarm` to `@swarmbase`
+- Rebrand the public packages and APIs as Peerborne while retaining legacy wire, key-derivation, Redux, and IndexedDB identifiers for compatibility
 - Documentation site with Starlight (concepts, cookbook, API reference, community)
 - Cross-NAT encrypted document retrieval verified in CI
 - Release workflow with secretless validation and gated publishing
@@ -110,4 +121,4 @@ What needs to happen:
 
 ## How to contribute
 
-See the [contributing guide](../contributing/) for setup instructions and the [help wanted page](../help-wanted/) for specific tasks. The [feature audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md) is the definitive capability map — every claim should be backed by CI evidence.
+See the [contributing guide](../contributing/) for setup instructions and the [help wanted page](../help-wanted/) for specific tasks. The [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) is the definitive capability map — every claim should be backed by CI evidence.

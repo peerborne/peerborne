@@ -1,8 +1,8 @@
-import { useCollabswarmDocumentState } from '@swarmbase/collabswarm-react';
-import { deserializeKey, serializeKey } from '@swarmbase/collabswarm-yjs';
+import { usePeerborneDocumentState } from '@peerborne/react';
+import { deserializeKey, serializeKey } from '@peerborne/yjs';
 import { useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
-import { YjsCollabswarm } from './utils';
+import { YjsPeerborne } from './utils';
 
 type DisplayPermission = {
   key: CryptoKey;
@@ -12,16 +12,16 @@ type DisplayPermission = {
 
 export function PermissionsTable({
   passwordId,
-  collabswarm,
+  peerborne,
 }: {
   passwordId?: string;
-  collabswarm: YjsCollabswarm;
+  peerborne: YjsPeerborne;
 }) {
   const [
     ,
     ,
     { readers, addReader, removeReader, writers, addWriter, removeWriter },
-  ] = useCollabswarmDocumentState(collabswarm, `/passwords/${passwordId}`);
+  ] = usePeerborneDocumentState(peerborne, `/passwords/${passwordId}`);
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');

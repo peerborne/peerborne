@@ -5,10 +5,10 @@ description: Assess the password-manager source example and the incomplete disti
 
 **Status: Runnable from source for startup smoke; Deferred/incomplete integration for sharing and revocation.**
 
-[`examples/password-manager`](https://github.com/swarmbase/swarmbase/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its typechecked production build and strict Chromium startup smoke test pass. It has no acceptance test proving two-user sharing, invitation delivery, restart recovery, or revocation.
+[`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its typechecked production build and strict Chromium startup smoke test pass. It has no acceptance test proving two-user sharing, invitation delivery, restart recovery, or revocation.
 
 :::caution
-Do not store real passwords, recovery codes, API tokens, or other credentials in this example. Swarmbase is under active development, is not independently audited, and has no assured durability or recovery path.
+Do not store real passwords, recovery codes, API tokens, or other credentials in this example. Peerborne is under active development, is not independently audited, and has no assured durability or recovery path.
 :::
 
 Packages are unpublished. From a repository checkout prepared with the [quick start](../../getting-started/quick-start/), run:
@@ -17,14 +17,14 @@ Build and smoke-test the application:
 
 ```sh
 yarn build
-yarn workspace @swarmbase/password-manager build
+yarn workspace @peerborne/password-manager build
 yarn test:e2e:password-manager
 ```
 
 To run the Vite development server separately:
 
 ```sh
-yarn workspace @swarmbase/password-manager start
+yarn workspace @peerborne/password-manager start
 ```
 
 The smoke test proves startup only, not operational sharing.
@@ -37,7 +37,7 @@ A deployable application must generate, authenticate, persist, restore, and back
 - a stable **ECDH P-256** KEM key pair whose private key permits `deriveBits`, for encrypted BeeKEM Welcomes;
 - document epoch keys and membership state needed for recovery.
 
-The application, not Swarmbase, owns identity binding and recovery. Exchange the recipient's signing public key and raw 65-byte SEC1-uncompressed KEM public key over an authenticated out-of-band channel. A pasted, unauthenticated key is vulnerable to substitution.
+The application, not Peerborne, owns identity binding and recovery. Exchange the recipient's signing public key and raw 65-byte SEC1-uncompressed KEM public key over an authenticated out-of-band channel. A pasted, unauthenticated key is vulnerable to substitution.
 
 ## Correct onboarding sequence
 

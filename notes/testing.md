@@ -1,3 +1,5 @@
+> Historical note: this document predates the Peerborne rename and no longer reflects current package names, commands, or test counts. Use `AGENTS.md` and `CONTRIBUTING.md` for current instructions.
+
 ## Running Tests
 
 ### Unit Tests
@@ -122,4 +124,3 @@ All tests run automatically on GitHub Actions:
 - Tests are configured to ignore node_modules and use ts-jest transformer
 - E2E tests use Playwright with Docker Compose for realistic multi-user scenarios
 - See `e2e/README.md` for detailed E2E testing documentation
-

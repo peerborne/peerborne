@@ -1,7 +1,7 @@
 <section class="sync-demo not-content" aria-label="Illustrative encrypted Yjs sync simulation">
   <div class="demo-fallback" data-demo-fallback>
     This simulation needs JavaScript and the Web Crypto API. See the
-    <a href="https://github.com/swarmbase/swarmbase/tree/main/examples"
+    <a href="https://github.com/Peerborne/peerborne/tree/main/examples"
       >runnable repository examples</a
     > instead.
   </div>
@@ -52,20 +52,20 @@
   </p>
   <p class="demo-note">
     <strong>Illustrative simulation:</strong> this runs real Yjs delta/merge via
-    Swarmbase&rsquo;s <code>YjsProvider</code> and uses its <code>SubtleCrypto</code>
+    Peerborne&rsquo;s <code>YjsProvider</code> and uses its <code>SubtleCrypto</code>
     helper for AES&#8209;GCM encryption and ECDSA&nbsp;P&#8209;384 signatures. It is
-    not protocol-equivalent to Swarmbase networking and does not exercise
-    <code>CollabswarmDocument</code>, ACL or key onboarding, Helia or a
+    not protocol-equivalent to Peerborne networking and does not exercise
+    <code>PeerborneDocument</code>, ACL or key onboarding, Helia or a
     blockstore, libp2p or GossipSub, or any real transport. See the
-    <a href="https://github.com/swarmbase/swarmbase/tree/main/examples"
+    <a href="https://github.com/Peerborne/peerborne/tree/main/examples"
       >runnable examples</a
     > for full application setups.
   </p>
 </section>
 
 <script>
-  import { YjsProvider } from '@swarmbase/collabswarm-yjs';
-  import { SubtleCrypto } from '@swarmbase/collabswarm';
+  import { YjsProvider } from '@peerborne/yjs';
+  import { SubtleCrypto } from '@peerborne/core';
   import type { Doc } from 'yjs';
 
   type Side = 'alice' | 'bob';

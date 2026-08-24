@@ -1,6 +1,6 @@
-# SwarmDB Coordination Server Guide
+# Peerborne Coordination Server Guide
 
-This document describes the server infrastructure required to run SwarmDB in production. SwarmDB is a peer-to-peer system, but browsers cannot directly connect to each other without coordination servers to bootstrap the network.
+This document describes the server infrastructure required to run Peerborne in production. Peerborne is a peer-to-peer system, but browsers cannot directly connect to each other without coordination servers to bootstrap the network.
 
 ## Table of Contents
 
@@ -16,19 +16,19 @@ This document describes the server infrastructure required to run SwarmDB in pro
 
 ## 1. Server Types Overview
 
-SwarmDB uses [libp2p](https://libp2p.io/) for networking. The following server types facilitate peer-to-peer connectivity, especially for browser-based peers.
+Peerborne uses [libp2p](https://libp2p.io/) for networking. The following server types facilitate peer-to-peer connectivity, especially for browser-based peers.
 
 ### 1.1 Bootstrap / Signaling Node
 
 | | |
 |---|---|
-| **Purpose** | Initial peer discovery. When a SwarmDB client starts, it dials the bootstrap node to join the network and discover other peers. |
+| **Purpose** | Initial peer discovery. When a Peerborne client starts, it dials the bootstrap node to join the network and discover other peers. |
 | **When needed** | Always. At least one bootstrap node must be reachable for a new peer to join the swarm. |
 | **Required?** | **Yes** (minimum 1) |
 | **Protocol** | WebSocket (`/ip4/<IP>/tcp/<PORT>/ws`) or WebSocket Secure (`/ip4/<IP>/tcp/<PORT>/wss`) |
 | **Ports** | TCP 9001 (WebSocket), TCP 9002 (TCP for node-to-node) |
 
-In SwarmDB, the bootstrap node and relay node are combined into a single process (`relay-server/`). The relay server listens on WebSocket (port 9001) and TCP (port 9002), runs the libp2p identify protocol, and participates in GossipSub peer discovery via the `swarmdb._peer-discovery._p2p._pubsub` topic.
+In Peerborne, the bootstrap node and relay node are combined into a single process (`relay-server/`). The relay server listens on WebSocket (port 9001) and TCP (port 9002), runs the libp2p identify protocol, and participates in GossipSub peer discovery via the `swarmdb._peer-discovery._p2p._pubsub` topic.
 
 **How it works:**
 1. Browser client is configured with the relay's multiaddress (e.g., `/ip4/1.2.3.4/tcp/9001/ws/p2p/<PEER_ID>`)
@@ -47,7 +47,7 @@ In SwarmDB, the bootstrap node and relay node are combined into a single process
 | **Protocol** | Circuit Relay V2 (`@libp2p/circuit-relay-v2`) |
 | **Ports** | Same as bootstrap node (combined process) |
 
-In SwarmDB's architecture, the relay server runs `circuitRelayServer()` which implements libp2p Circuit Relay V2. Browser clients configure `circuitRelayTransport()` to connect through the relay.
+In Peerborne's architecture, the relay server runs `circuitRelayServer()` which implements libp2p Circuit Relay V2. Browser clients configure `circuitRelayTransport()` to connect through the relay.
 
 **Data flow through relay:**
 ```text
@@ -67,7 +67,7 @@ After the relayed connection is established, libp2p may upgrade to a direct WebR
 | **Protocol** | STUN (RFC 5389) |
 | **Ports** | UDP 3478 (standard STUN port) |
 
-SwarmDB's browser clients use `@libp2p/webrtc` which relies on the browser's built-in WebRTC stack. The browser's RTCPeerConnection uses STUN servers configured at the system/browser level, or defaults to public servers. You do not typically need to run your own STUN server.
+Peerborne's browser clients use `@libp2p/webrtc` which relies on the browser's built-in WebRTC stack. The browser's RTCPeerConnection uses STUN servers configured at the system/browser level, or defaults to public servers. You do not typically need to run your own STUN server.
 
 ### 1.4 TURN Server
 
@@ -78,7 +78,7 @@ SwarmDB's browser clients use `@libp2p/webrtc` which relies on the browser's bui
 | **Required?** | **Optional** (Circuit Relay V2 serves a similar purpose at the libp2p layer) |
 | **Ports** | UDP/TCP 3478 |
 
-In practice, SwarmDB's Circuit Relay V2 provides relay functionality at the libp2p protocol layer, making a separate TURN server less critical. However, adding TURN support improves connection success rates in networks with aggressive firewalls.
+In practice, Peerborne's Circuit Relay V2 provides relay functionality at the libp2p protocol layer, making a separate TURN server less critical. However, adding TURN support improves connection success rates in networks with aggressive firewalls.
 
 If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open source) or hosted services like Twilio or Xirsys.
 
@@ -91,9 +91,9 @@ If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open sour
 | **Required?** | **Optional** but strongly recommended for production |
 | **Protocol** | IPFS Bitswap (built into Helia) |
 
-SwarmDB's `CollabswarmNode` (the server-side node) includes automatic pinning logic: it subscribes to the `/documents` pubsub topic and pins all received CIDs using `helia.pins.add()`.
+Peerborne's Node-only `PeerborneNode` includes the listener side of a pinning flow, but the normal document commit path does not publish the announcements that activate it. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
 
-For self-hosted pinning, run a `CollabswarmNode` instance with sufficient storage. For managed pinning, see [Public Alternatives](#4-public-alternatives).
+Self-hosted pinning therefore requires application-specific publication, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
 
 ### 1.6 DHT Bootstrap Node
 
@@ -101,9 +101,9 @@ For self-hosted pinning, run a `CollabswarmNode` instance with sufficient storag
 |---|---|
 | **Purpose** | Kademlia DHT for large-scale peer discovery. The DHT enables peers to find each other without relying solely on pubsub-based discovery. |
 | **When needed** | At scale (hundreds+ of peers) where pubsub discovery alone is insufficient. |
-| **Required?** | **No** (SwarmDB clients run DHT in `clientMode: true` by default) |
+| **Required?** | **No** (Peerborne clients run DHT in `clientMode: true` by default) |
 
-SwarmDB clients configure `kadDHT({ clientMode: true })` which means they query the DHT but do not serve DHT requests. For large deployments, running dedicated DHT server nodes improves peer discovery reliability.
+Peerborne clients configure `kadDHT({ clientMode: true })` which means they query the DHT but do not serve DHT requests. For large deployments, running dedicated DHT server nodes improves peer discovery reliability.
 
 ### Summary Table
 
@@ -112,14 +112,14 @@ SwarmDB clients configure `kadDHT({ clientMode: true })` which means they query 
 | Bootstrap/Relay | Yes | 9001 (WS), 9002 (TCP) | Yes (`relay-server/`) | No |
 | STUN | Yes (WebRTC) | 3478 (UDP) | Optional | Yes (Google, etc.) |
 | TURN | Optional | 3478 (UDP/TCP) | coturn | Yes (Twilio, Xirsys) |
-| Pinning | Recommended | N/A (Bitswap) | Yes (`CollabswarmNode`) | Yes (Pinata, web3.storage) |
+| Pinning | Recommended | N/A (Bitswap) | Incomplete hooks only | Yes (Pinata, web3.storage) |
 | DHT Bootstrap | At scale | Same as relay | Yes | No |
 
 ---
 
 ## 2. Minimal Single-Server Setup
 
-This section describes running everything needed for SwarmDB on a single machine.
+This section describes running everything needed for Peerborne on a single machine.
 
 ### 2.1 What You Need
 
@@ -175,10 +175,10 @@ The relay server will:
 
 ### 2.4 Connecting Clients
 
-After the relay starts, configure your SwarmDB client with the relay's multiaddress:
+After the relay starts, configure your Peerborne client with the relay's multiaddress:
 
 ```typescript
-import { defaultNodeConfig } from '@swarmbase/collabswarm/node';
+import { defaultNodeConfig } from '@peerborne/core/node';
 
 // The relay's multiaddress is printed on startup and written to relay-info.json
 const relayMultiaddr = '/ip4/<YOUR_SERVER_IP>/tcp/9001/ws/p2p/<RELAY_PEER_ID>';
@@ -453,7 +453,7 @@ For persistent data storage without running your own pinning node:
 | [Infura IPFS](https://infura.io/) | 5 GB | Ethereum-focused |
 | [Filebase](https://filebase.com/) | 5 GB | S3-compatible API |
 
-**Note:** These services pin standard IPFS content. SwarmDB's CRDT data stored as IPFS blocks can be pinned by any IPFS-compatible pinning service, but the pinning service cannot interpret the CRDT semantics. Running a `CollabswarmNode` as your pinning node gives you CRDT-aware pinning (automatic subscription and pin on document publish).
+**Note:** These services pin standard IPFS content. Peerborne's CRDT data stored as IPFS blocks can be pinned by any IPFS-compatible pinning service, but the service cannot interpret CRDT semantics or reconstruct the document's keys, graph state, or metadata. Peerborne does not yet provide the complete publication and recovery path needed to use `PeerborneNode` as a durability service.
 
 ### 4.4 Cost Considerations
 
@@ -464,7 +464,7 @@ For persistent data storage without running your own pinning node:
 | TURN | $10-50/month (VPS + bandwidth) | $0.40-1.00 per GB relayed |
 | Pinning | $5-20/month (storage VPS) | Free tier usually sufficient for dev |
 
-**Key takeaway:** The minimum cost for a production SwarmDB deployment is roughly **$2-5/month**: a Fly.io `shared-cpu-1x` VM (≈$2/month) running the relay server, plus free public STUN servers. See [Section 5](#5-flyio-deployment) for a step-by-step Fly.io guide.
+**Key takeaway:** The minimum cost for a production Peerborne deployment is roughly **$2-5/month**: a Fly.io `shared-cpu-1x` VM (≈$2/month) running the relay server, plus free public STUN servers. See [Section 5](#5-flyio-deployment) for a step-by-step Fly.io guide.
 
 ---
 
@@ -603,16 +603,16 @@ The public multiaddr your clients should use is constructed from the Fly hostnam
 
 ### 5.4 Client Configuration
 
-Once you have the multiaddr, configure your SwarmDB client.
+Once you have the multiaddr, configure your Peerborne client.
 
 In a **browser** application, combine `defaultConfig` and
-`defaultBootstrapConfig` (both exported from `@swarmbase/collabswarm`):
+`defaultBootstrapConfig` (both exported from `@peerborne/core`):
 
 ```typescript
 import {
   defaultConfig,
   defaultBootstrapConfig,
-} from '@swarmbase/collabswarm';
+} from '@peerborne/core';
 
 const config = defaultConfig(
   defaultBootstrapConfig([
@@ -624,7 +624,7 @@ const config = defaultConfig(
 In a **Node** process, import the Node-only helper from the `/node` subpath:
 
 ```typescript
-import { defaultNodeConfig } from '@swarmbase/collabswarm/node';
+import { defaultNodeConfig } from '@peerborne/core/node';
 
 const config = defaultNodeConfig({
   list: [

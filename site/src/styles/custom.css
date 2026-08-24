@@ -1,4 +1,4 @@
-/* Swarmbase brand accents (indigo primary, teal secondary, slate neutral). */
+/* Peerborne brand accents (indigo primary, teal secondary, slate neutral). */
 :root {
   --sl-color-accent-low: #1e1b4b;
   --sl-color-accent: #6366f1;
@@ -47,7 +47,7 @@ aside:is([aria-label='Note'], [aria-label='Tip']) {
   border-left-color: var(--sw-color-teal);
 }
 
-a[href^='http']:not([href*='github.com/swarmbase']):not([href*='swarmbase.github.io'])::after {
+a[href^='http']:not([href*='github.com/Peerborne']):not([href*='peerborne.io'])::after {
   content: ' ↗';
   font-size: 0.75em;
   opacity: 0.6;

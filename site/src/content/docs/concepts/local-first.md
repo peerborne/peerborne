@@ -1,13 +1,13 @@
 ---
 title: Local-first design
-description: What "local-first" means in Swarmbase, what is implemented today, and where the boundaries are.
+description: What "local-first" means in Peerborne, what is implemented today, and where the boundaries are.
 ---
 
 ## Design intent
 
 A local-first application stores its primary data on the user's device — not on a remote server. Changes apply to the local replica immediately, with zero network latency. The network is used to sync state between peers, not to enforce a global write order.
 
-Swarmbase adopts these local-first principles:
+Peerborne adopts these local-first principles:
 
 - **Local replica near the user.** The application reads and writes a local CRDT document. There is no server round-trip for reads or writes.
 - **Work offline.** Once a document is loaded, the local replica can be edited without network access. Changes are applied immediately to the CRDT and stored locally in IndexedDB.
@@ -18,7 +18,7 @@ Swarmbase adopts these local-first principles:
 
 ### Offline editing (loaded replicas only)
 
-A Swarmbase document that has already been loaded can be edited offline. The `document.change()` call applies the mutation to the local Yjs or Automerge replica immediately and returns a promise that covers signing, encryption, storage to the local Helia blockstore, and publication to connected peers.
+A Peerborne document that has already been loaded can be edited offline. The `document.change()` call applies the mutation to the local Yjs or Automerge replica immediately and returns a promise that covers signing, encryption, storage to the local Helia blockstore, and publication to connected peers.
 
 ```ts
 await todos.change((state) => {
@@ -45,7 +45,7 @@ If storage or publication fails (e.g., IndexedDB quota exceeded, network error),
 
 ### No durable outbox
 
-If a peer is unreachable when `change()` publishes to GossipSub, the update may not reach them. Swarmbase does not persist a queue of outgoing changes to retry later. There is no delivery acknowledgment or guaranteed-at-least-once semantics.
+If a peer is unreachable when `change()` publishes to GossipSub, the update may not reach them. Peerborne does not persist a queue of outgoing changes to retry later. There is no delivery acknowledgment or guaranteed-at-least-once semantics.
 
 ### No delivery acknowledgment
 
@@ -53,7 +53,7 @@ When a change is published, there is no confirmation that remote peers received,
 
 ### No automatic reconnection
 
-If the libp2p connection drops, Swarmbase does not automatically reconnect. The application must detect disconnection and reinitialize the transport. See the [networking page](../networking/) for transport details.
+If the libp2p connection drops, Peerborne does not automatically reconnect. The application must detect disconnection and reinitialize the transport. See the [networking page](../networking/) for transport details.
 
 ### No close/restart recovery verified in CI
 
@@ -65,7 +65,7 @@ If part of the `change()` pipeline fails (e.g., storage quota exceeded), the CRD
 
 ## The infrastructure boundary
 
-"Local-first" does not mean "infrastructure-free." Browser peers cannot listen for incoming connections and cannot participate in a DHT without a bootstrap node. Most Swarmbase deployments need:
+"Local-first" does not mean "infrastructure-free." Browser peers cannot listen for incoming connections and cannot participate in a DHT without a bootstrap node. Most Peerborne deployments need:
 
 - **Relay nodes** to bridge NAT for browser peers
 - **Bootstrap nodes** as well-known entry points for the libp2p network
@@ -75,12 +75,12 @@ These infrastructure components carry **encrypted traffic only** — they never 
 
 See [running a relay](../../cookbook/running-a-relay/) for the development relay setup.
 
-## What local-first Swarmbase is a good fit for
+## What local-first Peerborne is a good fit for
 
-Swarmbase's local-first model works well for:
+Peerborne's local-first model works well for:
 
 - **Small collaborative documents** (todos, notes, wikis, password vaults) where the document fits in a single CRDT replica
-- **Applications that own identity and recovery** — Swarmbase does not provide authentication or key recovery
+- **Applications that own identity and recovery** — Peerborne does not provide authentication or key recovery
 - **Deployments where you control the relay infrastructure** — there is no cloud service to delegate to
 - **Experiments and prototypes** learning about local-first architecture
 

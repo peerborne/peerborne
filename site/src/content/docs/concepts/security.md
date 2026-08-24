@@ -1,24 +1,24 @@
 ---
 title: Security
-description: Identity model, encryption, access control, quorum loading, and revocation in Swarmbase.
+description: Identity model, encryption, access control, quorum loading, and revocation in Peerborne.
 ---
 
 ## Overview
 
-Swarmbase encrypts documents end-to-end and signs every change. No server — relay, bootstrap, or pinning service — ever sees document plaintext or signing keys. Access control is enforced cryptographically: a peer without the document key cannot decrypt content, and a peer without a valid writer key cannot publish changes that other peers will accept.
+Peerborne encrypts documents end-to-end and signs every change. No server — relay, bootstrap, or pinning service — ever sees document plaintext or signing keys. Access control is enforced cryptographically: a peer without the document key cannot decrypt content, and a peer without a valid writer key cannot publish changes that other peers will accept.
 
 ## Identity and trust roots
 
-Swarmbase uses two separate key systems:
+Peerborne uses two separate key systems:
 
 | Key | Algorithm | Purpose | Managed by |
 |---|---|---|---|
 | **Signing key** | ECDSA P-384 | Signs document changes; proves authorship | Application |
 | **KEM key** | ECDH P-256 | Key encapsulation for document key sharing (BeeKEM) | Application |
-| **Document key** | AES-GCM (256-bit) | Encrypts/decrypts document content | Swarmbase (per-document) |
+| **Document key** | AES-GCM (256-bit) | Encrypts/decrypts document content | Peerborne (per-document) |
 | **Libp2p peer ID** | Ed25519 | Identifies the node on the libp2p network | libp2p (auto-generated) |
 
-The signing key and KEM key are **application-supplied**. Swarmbase does not generate, store, recover, or back up user keys — key management is entirely the application's responsibility.
+The signing key and KEM key are **application-supplied**. Peerborne does not generate, store, recover, or back up user keys — key management is entirely the application's responsibility.
 
 The libp2p peer ID is separate from the signing identity. This means:
 - Changing the libp2p key (e.g., relay restart) does not affect document authorship
@@ -59,7 +59,7 @@ The current writer list on the document is the only authorization check. There i
 
 ### UCAN capabilities
 
-UCAN (User Controlled Authorization Networks) helpers exist in `@swarmbase/collabswarm` as a standalone module. They are **not integrated** into the document change path. The UCAN module can:
+UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core` as a standalone module. They are **not integrated** into the document change path. The UCAN module can:
 
 - Issue capability tokens delegating specific permissions
 - Verify capability chains
@@ -83,7 +83,7 @@ const block = {
 
 ### Signing configuration
 
-Document signing is controlled by `CollabswarmConfig.enableSigning` (default: `true`):
+Document signing is controlled by `PeerborneConfig.enableSigning` (default: `true`):
 
 | Setting | Effect |
 |---|---|
@@ -94,7 +94,7 @@ Documents are always encrypted at rest and in transit. There is no configuration
 
 ## Initial-load quorum
 
-Before trusting a document's state, Swarmbase can require **Q-of-K** bootstrap peers to agree on the current tip hashes. This prevents loading a fork or a truncated history. Quorum is configured via `CollabswarmConfig`:
+Before trusting a document's state, Peerborne can require **Q-of-K** bootstrap peers to agree on the current tip hashes. This prevents loading a fork or a truncated history. Quorum is configured via `PeerborneConfig`:
 
 ```ts
 // Set loadQuorumK and loadQuorumQ when initializing:
@@ -164,7 +164,7 @@ This metadata may reveal:
 - The rough size of documents (encrypted block sizes)
 - The network location of peers (IP addresses, relay selection)
 
-Swarmbase does not protect against traffic analysis or metadata leakage.
+Peerborne does not protect against traffic analysis or metadata leakage.
 
 ## CI-backed evidence
 

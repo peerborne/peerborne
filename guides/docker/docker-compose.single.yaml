@@ -1,7 +1,7 @@
-# SwarmDB Single-Server Deployment
+# Peerborne Single-Server Deployment
 #
 # Runs the relay/bootstrap server on a single machine.
-# This is the minimum infrastructure needed for SwarmDB.
+# This is the minimum infrastructure needed for Peerborne.
 #
 # Usage:
 #   docker compose -f guides/docker/docker-compose.single.yaml up -d
@@ -9,7 +9,7 @@
 # After startup, retrieve the relay multiaddress:
 #   docker compose -f guides/docker/docker-compose.single.yaml exec relay cat /shared/relay-info.json
 #
-# Configure your SwarmDB client with the wsMultiaddr from relay-info.json.
+# Configure your Peerborne client with the wsMultiaddr from relay-info.json.
 
 services:
   relay:

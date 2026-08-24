@@ -33,7 +33,7 @@ describe('shouldAutoSubscribe', () => {
   describe('allowlist filtering', () => {
     it('subscribes when a topic matches an allowlist prefix', () => {
       const decision = shouldAutoSubscribe('/document/abc', {
-        allowlist: ['/document/', '/swarmdb/'],
+        allowlist: ['/document/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -42,8 +42,8 @@ describe('shouldAutoSubscribe', () => {
     })
 
     it('subscribes when topic matches the second prefix', () => {
-      const decision = shouldAutoSubscribe('/swarmdb/xyz', {
-        allowlist: ['/document/', '/swarmdb/'],
+      const decision = shouldAutoSubscribe('/peerborne/xyz', {
+        allowlist: ['/document/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -53,7 +53,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('rejects topics that do not match any prefix', () => {
       const decision = shouldAutoSubscribe('/other/abc', {
-        allowlist: ['/document/', '/swarmdb/'],
+        allowlist: ['/document/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,

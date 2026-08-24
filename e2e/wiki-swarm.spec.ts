@@ -12,10 +12,13 @@ test('wiki-swarm loads Automerge WASM and renders without runtime errors', async
   });
 
   await page.goto('/');
-  await expect(page).toHaveTitle('Swarmbase Wiki');
+  await expect(page).toHaveTitle('Peerborne Wiki');
   await page.waitForTimeout(1_000);
   await expect(page.locator('#root')).not.toBeEmpty();
   await expect(page.getByRole('textbox', { name: 'Document ID' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Search' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Search' })).toHaveAttribute(
+    'href',
+    '/document/',
+  );
   expect(errors, 'application startup errors').toEqual([]);
 });

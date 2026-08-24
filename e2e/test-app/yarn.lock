@@ -1022,16 +1022,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@sindresorhus/fnv1a@npm:^3.1.0":
-  version: 3.1.0
-  resolution: "@sindresorhus/fnv1a@npm:3.1.0"
-  checksum: 10/9816f4382da21df562e9049bd40dca95bc952afbc5f2257750b1b537af0810850749ee113c8b97f0b4c49a2d82c225fc8e0e14fda191333de9e1f73730a428e3
-  languageName: node
-  linkType: hard
-
-"@swarmbase/integration-test-app@workspace:.":
+"@peerborne/integration-test-app@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@swarmbase/integration-test-app@workspace:."
+  resolution: "@peerborne/integration-test-app@workspace:."
   dependencies:
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
@@ -1050,6 +1043,13 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
   languageName: unknown
   linkType: soft
+
+"@sindresorhus/fnv1a@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@sindresorhus/fnv1a@npm:3.1.0"
+  checksum: 10/9816f4382da21df562e9049bd40dca95bc952afbc5f2257750b1b537af0810850749ee113c8b97f0b4c49a2d82c225fc8e0e14fda191333de9e1f73730a428e3
+  languageName: node
+  linkType: hard
 
 "@zeit/schemas@npm:2.36.0":
   version: 2.36.0

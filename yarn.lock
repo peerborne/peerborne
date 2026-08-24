@@ -3974,6 +3974,299 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peerborne/automerge@workspace:packages/automerge":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/automerge@workspace:packages/automerge"
+  dependencies:
+    "@automerge/automerge": "npm:^3.2.6"
+    "@peculiar/webcrypto": "npm:^1.7.1"
+    "@peerborne/core": "workspace:^"
+    "@types/node": "npm:^22.7.5"
+    eslint: "npm:^10.4.1"
+    jest: "npm:^29.2.5"
+    ts-jest: "npm:^29.2.5"
+    ts-node: "npm:^10.1.0"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    "@automerge/automerge": ^3.2.6
+  bin:
+    peerborne-automerge-d: dist/esm/bin/peerborne-automerge-d.js
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/browser-test@workspace:examples/browser-test":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/browser-test@workspace:examples/browser-test"
+  dependencies:
+    "@automerge/automerge": "npm:^3.2.6"
+    "@chainsafe/libp2p-noise": "npm:^17.0.0"
+    "@chainsafe/libp2p-yamux": "npm:^8.0.1"
+    "@libp2p/autonat": "npm:^3.0.26"
+    "@libp2p/circuit-relay-v2": "npm:^4.2.11"
+    "@libp2p/gossipsub": "npm:^17.0.0"
+    "@libp2p/identify": "npm:^4.1.12"
+    "@libp2p/interface": "npm:^3.2.5"
+    "@libp2p/tcp": "npm:^11.0.26"
+    "@libp2p/websockets": "npm:^10.1.19"
+    "@peerborne/automerge": "workspace:packages/automerge"
+    "@peerborne/core": "workspace:packages/core"
+    "@peerborne/redux": "workspace:packages/redux"
+    "@testing-library/dom": "npm:^10.4.0"
+    "@testing-library/jest-dom": "npm:^6.9.1"
+    "@testing-library/react": "npm:^16.3.2"
+    "@testing-library/user-event": "npm:^14.6.5"
+    "@types/jest": "npm:^29.5.13"
+    "@types/jsoneditor": "npm:^9.9.6"
+    "@types/node": "npm:^22.7.5"
+    "@types/react": "npm:^19.2.3"
+    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-redux": "npm:^7.1.34"
+    "@vitejs/plugin-react": "npm:^4.3.4"
+    jsondiffpatch: "npm:^0.7.2"
+    jsoneditor: "npm:^10"
+    jsoneditor-react: "npm:^3.1.2"
+    libp2p: "npm:^3.3.8"
+    react: "npm:^19.2.6"
+    react-dom: "npm:^19.2.6"
+    react-redux: "npm:^9.2.0"
+    redux: "npm:^5.0.1"
+    redux-thunk: "npm:^3.1.0"
+    typescript: "npm:^5.9.3"
+    uint8arraylist: "npm:^3.0.2"
+    vite: "npm:^6.1.0"
+    vite-plugin-top-level-await: "npm:^1.6.0"
+    vite-plugin-wasm: "npm:^3.6.0"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/core@workspace:*, @peerborne/core@workspace:^, @peerborne/core@workspace:packages/core":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/core@workspace:packages/core"
+  dependencies:
+    "@chainsafe/libp2p-noise": "npm:^17.0.0"
+    "@chainsafe/libp2p-yamux": "npm:^8.0.1"
+    "@helia/bitswap": "npm:^4.0.11"
+    "@helia/libp2p": "npm:^2.1.0"
+    "@helia/unixfs": "npm:^8.0.5"
+    "@ipld/dag-cbor": "npm:^10.0.1"
+    "@ipld/dag-json": "npm:^11.0.0"
+    "@libp2p/autonat": "npm:^3.0.26"
+    "@libp2p/bootstrap": "npm:^12.0.29"
+    "@libp2p/circuit-relay-v2": "npm:^4.2.11"
+    "@libp2p/dcutr": "npm:^3.0.26"
+    "@libp2p/gossipsub": "npm:^17.0.0"
+    "@libp2p/identify": "npm:^4.1.12"
+    "@libp2p/interface": "npm:^3.2.5"
+    "@libp2p/kad-dht": "npm:^16.4.3"
+    "@libp2p/mdns": "npm:^12.0.29"
+    "@libp2p/peer-id": "npm:^6.0.14"
+    "@libp2p/ping": "npm:^3.1.11"
+    "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
+    "@libp2p/webrtc": "npm:^6.0.29"
+    "@libp2p/websockets": "npm:^10.1.19"
+    "@libp2p/webtransport": "npm:^6.0.35"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@peculiar/webcrypto": "npm:^1.7.1"
+    "@types/node": "npm:^22.7.5"
+    bl: "npm:^6.1.6"
+    blockstore-core: "npm:^7.0.1"
+    blockstore-idb: "npm:^4.0.1"
+    blockstore-idb-v3: "npm:blockstore-idb@3.0.1"
+    datastore-core: "npm:^12.0.1"
+    datastore-idb: "npm:^5.0.1"
+    datastore-idb-v4: "npm:datastore-idb@4.0.1"
+    eslint: "npm:^10.4.1"
+    fake-indexeddb: "npm:^6.2.5"
+    fast-check: "npm:^4.9.0"
+    helia: "npm:^7.1.7"
+    helia-v6: "npm:helia@6.1.4"
+    ipns: "npm:^11.0.1"
+    jest: "npm:^29.2.5"
+    js-base64: "npm:^3.7.8"
+    libp2p: "npm:^3.3.8"
+    multiformats: "npm:^14.0.5"
+    ts-jest: "npm:^29.2.5"
+    ts-node: "npm:^10.1.0"
+    typedoc: "npm:^0.28.19"
+    typescript: "npm:^5.9.3"
+    uint8arraylist: "npm:^3.0.2"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/index@workspace:packages/index":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/index@workspace:packages/index"
+  dependencies:
+    "@peculiar/webcrypto": "npm:^1.7.1"
+    "@peerborne/core": "workspace:^"
+    "@types/node": "npm:^22.7.5"
+    fake-indexeddb: "npm:^6.0.0"
+    idb: "npm:^8.0.0"
+    jest: "npm:^29.2.5"
+    ts-jest: "npm:^29.2.5"
+    ts-node: "npm:^10.1.0"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    react: ^18.0.0 || ^19.0.0
+  peerDependenciesMeta:
+    react:
+      optional: true
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/password-manager@workspace:examples/password-manager":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/password-manager@workspace:examples/password-manager"
+  dependencies:
+    "@peerborne/core": "workspace:packages/core"
+    "@peerborne/react": "workspace:packages/react"
+    "@peerborne/yjs": "workspace:packages/yjs"
+    "@popperjs/core": "npm:^2.11.8"
+    "@testing-library/dom": "npm:^10.4.0"
+    "@testing-library/jest-dom": "npm:^6.9.1"
+    "@testing-library/react": "npm:^16.3.2"
+    "@testing-library/user-event": "npm:^14.6.5"
+    "@types/bootstrap": "npm:^5.2.11"
+    "@types/node": "npm:^22.7.5"
+    "@types/react": "npm:^19.2.3"
+    "@types/react-bootstrap": "npm:^1.1.0"
+    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-router-dom": "npm:^5.3.3"
+    "@types/uuid": "npm:^11.0.0"
+    "@vitejs/plugin-react": "npm:^4.3.4"
+    bootstrap: "npm:^5.3.8"
+    quill-delta: "npm:^5.1.0"
+    react: "npm:^19.2.6"
+    react-bootstrap: "npm:^2.10.10"
+    react-dom: "npm:^19.2.6"
+    react-router-dom: "npm:^5.3.4"
+    typescript: "npm:^5.9.3"
+    uuid: "npm:^14.0.2"
+    vite: "npm:^6.1.0"
+    web-vitals: "npm:^5.2.0"
+    yjs: "npm:^13.6.30"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/react@workspace:packages/react":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/react@workspace:packages/react"
+  dependencies:
+    "@peculiar/webcrypto": "npm:^1.7.1"
+    "@peerborne/core": "workspace:^"
+    "@testing-library/dom": "npm:^10.4.0"
+    "@testing-library/react": "npm:^16.3.2"
+    "@types/react": "npm:^19.2.3"
+    eslint: "npm:^10.4.1"
+    jest: "npm:^29.2.5"
+    jest-environment-jsdom: "npm:^30.3.0"
+    react: "npm:^19.2.6"
+    react-dom: "npm:^19.2.6"
+    redux: "npm:^5.0.1"
+    redux-thunk: "npm:^3.1.0"
+    ts-jest: "npm:^29.2.5"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    react: ^18.0.0 || ^19.0.0
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/redux@workspace:packages/redux":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/redux@workspace:packages/redux"
+  dependencies:
+    "@types/jest": "npm:^29.5.14"
+    eslint: "npm:^10.4.1"
+    jest: "npm:^29.2.5"
+    redux: "npm:^5.0.1"
+    redux-thunk: "npm:^3.1.0"
+    ts-jest: "npm:^29.2.5"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    "@peerborne/core": "workspace:^"
+    redux: ^4.0.0 || ^5.0.0
+    redux-thunk: ^2.0.0 || ^3.0.0
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/site@workspace:site":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/site@workspace:site"
+  dependencies:
+    "@astrojs/starlight": "npm:^0.41.3"
+    "@peerborne/core": "workspace:*"
+    "@peerborne/yjs": "workspace:*"
+    astro: "npm:^7.0.7"
+    starlight-typedoc: "npm:^0.23.0"
+    typedoc: "npm:^0.28.19"
+    typedoc-plugin-markdown: "npm:^4.6.0"
+    typescript: "npm:^5.9.3"
+    yjs: "npm:^13.6.30"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/wiki-swarm@workspace:examples/wiki-swarm":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/wiki-swarm@workspace:examples/wiki-swarm"
+  dependencies:
+    "@automerge/automerge": "npm:^3.2.6"
+    "@peerborne/automerge": "workspace:packages/automerge"
+    "@peerborne/core": "workspace:packages/core"
+    "@peerborne/redux": "workspace:packages/redux"
+    "@popperjs/core": "npm:^2.11.8"
+    "@testing-library/dom": "npm:^10.4.0"
+    "@testing-library/jest-dom": "npm:^6.9.1"
+    "@testing-library/react": "npm:^16.3.2"
+    "@testing-library/user-event": "npm:^14.6.5"
+    "@types/jest": "npm:^29.5.13"
+    "@types/node": "npm:^22.7.5"
+    "@types/react": "npm:^19.2.3"
+    "@types/react-bootstrap": "npm:^1.1.0"
+    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-redux": "npm:^7.1.34"
+    "@types/react-router-dom": "npm:^5.3.3"
+    "@types/slate": "npm:^0.47.16"
+    "@vitejs/plugin-react": "npm:^4.3.4"
+    bootstrap: "npm:^5.3.8"
+    dayjs: "npm:^1.11.13"
+    react: "npm:^19.2.6"
+    react-bootstrap: "npm:^2.10.10"
+    react-bootstrap-icons: "npm:^1.11.6"
+    react-dom: "npm:^19.2.6"
+    react-redux: "npm:^9.2.0"
+    react-router-dom: "npm:^5.3.4"
+    redux: "npm:^5.0.1"
+    redux-thunk: "npm:^3.1.0"
+    slate: "npm:^0.103.0"
+    slate-history: "npm:^0.113.1"
+    slate-react: "npm:^0.110.1"
+    typescript: "npm:^5.9.3"
+    vite: "npm:^6.1.0"
+    vite-plugin-top-level-await: "npm:^1.6.0"
+    vite-plugin-wasm: "npm:^3.6.0"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/yjs@workspace:*, @peerborne/yjs@workspace:packages/yjs":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/yjs@workspace:packages/yjs"
+  dependencies:
+    "@peculiar/webcrypto": "npm:^1.7.1"
+    "@peerborne/core": "workspace:^"
+    "@types/node": "npm:^22.7.5"
+    eslint: "npm:^10.4.1"
+    jest: "npm:^29.2.5"
+    ts-jest: "npm:^29.2.5"
+    ts-node: "npm:^10.1.0"
+    typescript: "npm:^5.9.3"
+    yjs: "npm:^13.6.30"
+  peerDependencies:
+    yjs: ^13.6.30
+  bin:
+    peerborne-yjs-d: dist/esm/bin/peerborne-yjs-d.js
+  languageName: unknown
+  linkType: soft
+
 "@pkgjs/parseargs@npm:^0.11.0":
   version: 0.11.0
   resolution: "@pkgjs/parseargs@npm:0.11.0"
@@ -4530,301 +4823,6 @@ __metadata:
   checksum: 10/60be08eb37d873a7e8e7987d348d09363237934e2827ded6df6322a113aa30b19de36edb6ce74749aad3039fdf3ccc386cdd6b30b74d2f0ba8c772d5cfa5b3fc
   languageName: node
   linkType: hard
-
-"@swarmbase/browser-test@workspace:examples/browser-test":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/browser-test@workspace:examples/browser-test"
-  dependencies:
-    "@automerge/automerge": "npm:^3.2.6"
-    "@chainsafe/libp2p-noise": "npm:^17.0.0"
-    "@chainsafe/libp2p-yamux": "npm:^8.0.1"
-    "@libp2p/autonat": "npm:^3.0.26"
-    "@libp2p/circuit-relay-v2": "npm:^4.2.11"
-    "@libp2p/gossipsub": "npm:^17.0.0"
-    "@libp2p/identify": "npm:^4.1.12"
-    "@libp2p/interface": "npm:^3.2.5"
-    "@libp2p/tcp": "npm:^11.0.26"
-    "@libp2p/websockets": "npm:^10.1.19"
-    "@swarmbase/collabswarm": "workspace:packages/collabswarm"
-    "@swarmbase/collabswarm-automerge": "workspace:packages/collabswarm-automerge"
-    "@swarmbase/collabswarm-redux": "workspace:packages/collabswarm-redux"
-    "@testing-library/dom": "npm:^10.4.0"
-    "@testing-library/jest-dom": "npm:^6.9.1"
-    "@testing-library/react": "npm:^16.3.2"
-    "@testing-library/user-event": "npm:^14.6.5"
-    "@types/jest": "npm:^29.5.13"
-    "@types/jsoneditor": "npm:^9.9.6"
-    "@types/node": "npm:^22.7.5"
-    "@types/react": "npm:^19.2.3"
-    "@types/react-dom": "npm:^19.2.3"
-    "@types/react-redux": "npm:^7.1.34"
-    "@vitejs/plugin-react": "npm:^4.3.4"
-    jsondiffpatch: "npm:^0.7.2"
-    jsoneditor: "npm:^10"
-    jsoneditor-react: "npm:^3.1.2"
-    libp2p: "npm:^3.3.8"
-    react: "npm:^19.2.6"
-    react-dom: "npm:^19.2.6"
-    react-redux: "npm:^9.2.0"
-    redux: "npm:^5.0.1"
-    redux-thunk: "npm:^3.1.0"
-    typescript: "npm:^5.9.3"
-    uint8arraylist: "npm:^3.0.2"
-    vite: "npm:^6.1.0"
-    vite-plugin-top-level-await: "npm:^1.6.0"
-    vite-plugin-wasm: "npm:^3.6.0"
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm-automerge@workspace:packages/collabswarm-automerge":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm-automerge@workspace:packages/collabswarm-automerge"
-  dependencies:
-    "@automerge/automerge": "npm:^3.2.6"
-    "@peculiar/webcrypto": "npm:^1.7.1"
-    "@swarmbase/collabswarm": "workspace:^"
-    "@types/node": "npm:^22.7.5"
-    eslint: "npm:^10.4.1"
-    jest: "npm:^29.2.5"
-    ts-jest: "npm:^29.2.5"
-    ts-node: "npm:^10.1.0"
-    typescript: "npm:^5.9.3"
-  peerDependencies:
-    "@automerge/automerge": ^3.2.6
-  bin:
-    collabswarm-automerge-d: dist/esm/bin/collabswarm-automerge-d.js
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm-index@workspace:packages/collabswarm-index":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm-index@workspace:packages/collabswarm-index"
-  dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.1"
-    "@swarmbase/collabswarm": "workspace:^"
-    "@types/node": "npm:^22.7.5"
-    fake-indexeddb: "npm:^6.0.0"
-    idb: "npm:^8.0.0"
-    jest: "npm:^29.2.5"
-    ts-jest: "npm:^29.2.5"
-    ts-node: "npm:^10.1.0"
-    typescript: "npm:^5.9.3"
-  peerDependencies:
-    react: ^18.0.0 || ^19.0.0
-  peerDependenciesMeta:
-    react:
-      optional: true
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm-react@workspace:packages/collabswarm-react":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm-react@workspace:packages/collabswarm-react"
-  dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.1"
-    "@swarmbase/collabswarm": "workspace:^"
-    "@testing-library/dom": "npm:^10.4.0"
-    "@testing-library/react": "npm:^16.3.2"
-    "@types/react": "npm:^19.2.3"
-    eslint: "npm:^10.4.1"
-    jest: "npm:^29.2.5"
-    jest-environment-jsdom: "npm:^30.3.0"
-    react: "npm:^19.2.6"
-    react-dom: "npm:^19.2.6"
-    redux: "npm:^5.0.1"
-    redux-thunk: "npm:^3.1.0"
-    ts-jest: "npm:^29.2.5"
-    typescript: "npm:^5.9.3"
-  peerDependencies:
-    react: ^18.0.0 || ^19.0.0
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm-redux@workspace:packages/collabswarm-redux":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm-redux@workspace:packages/collabswarm-redux"
-  dependencies:
-    "@types/jest": "npm:^29.5.14"
-    eslint: "npm:^10.4.1"
-    jest: "npm:^29.2.5"
-    redux: "npm:^5.0.1"
-    redux-thunk: "npm:^3.1.0"
-    ts-jest: "npm:^29.2.5"
-    typescript: "npm:^5.9.3"
-  peerDependencies:
-    "@swarmbase/collabswarm": "workspace:^"
-    redux: ^4.0.0 || ^5.0.0
-    redux-thunk: ^2.0.0 || ^3.0.0
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm-yjs@workspace:*, @swarmbase/collabswarm-yjs@workspace:packages/collabswarm-yjs":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm-yjs@workspace:packages/collabswarm-yjs"
-  dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.1"
-    "@swarmbase/collabswarm": "workspace:^"
-    "@types/node": "npm:^22.7.5"
-    eslint: "npm:^10.4.1"
-    jest: "npm:^29.2.5"
-    ts-jest: "npm:^29.2.5"
-    ts-node: "npm:^10.1.0"
-    typescript: "npm:^5.9.3"
-    yjs: "npm:^13.6.30"
-  peerDependencies:
-    yjs: ^13.6.30
-  bin:
-    collabswarm-yjs-d: dist/esm/bin/collabswarm-yjs-d.js
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/collabswarm@workspace:*, @swarmbase/collabswarm@workspace:^, @swarmbase/collabswarm@workspace:packages/collabswarm":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/collabswarm@workspace:packages/collabswarm"
-  dependencies:
-    "@chainsafe/libp2p-noise": "npm:^17.0.0"
-    "@chainsafe/libp2p-yamux": "npm:^8.0.1"
-    "@helia/bitswap": "npm:^4.0.11"
-    "@helia/libp2p": "npm:^2.1.0"
-    "@helia/unixfs": "npm:^8.0.5"
-    "@ipld/dag-cbor": "npm:^10.0.1"
-    "@ipld/dag-json": "npm:^11.0.0"
-    "@libp2p/autonat": "npm:^3.0.26"
-    "@libp2p/bootstrap": "npm:^12.0.29"
-    "@libp2p/circuit-relay-v2": "npm:^4.2.11"
-    "@libp2p/dcutr": "npm:^3.0.26"
-    "@libp2p/gossipsub": "npm:^17.0.0"
-    "@libp2p/identify": "npm:^4.1.12"
-    "@libp2p/interface": "npm:^3.2.5"
-    "@libp2p/kad-dht": "npm:^16.4.3"
-    "@libp2p/mdns": "npm:^12.0.29"
-    "@libp2p/peer-id": "npm:^6.0.14"
-    "@libp2p/ping": "npm:^3.1.11"
-    "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
-    "@libp2p/webrtc": "npm:^6.0.29"
-    "@libp2p/websockets": "npm:^10.1.19"
-    "@libp2p/webtransport": "npm:^6.0.35"
-    "@multiformats/multiaddr": "npm:^13.0.3"
-    "@peculiar/webcrypto": "npm:^1.7.1"
-    "@types/node": "npm:^22.7.5"
-    bl: "npm:^6.1.6"
-    blockstore-idb: "npm:^4.0.1"
-    blockstore-idb-v3: "npm:blockstore-idb@3.0.1"
-    datastore-idb: "npm:^5.0.1"
-    datastore-idb-v4: "npm:datastore-idb@4.0.1"
-    eslint: "npm:^10.4.1"
-    fake-indexeddb: "npm:^6.2.5"
-    fast-check: "npm:^4.9.0"
-    helia: "npm:^7.1.7"
-    helia-v6: "npm:helia@6.1.4"
-    ipns: "npm:^11.0.1"
-    jest: "npm:^29.2.5"
-    js-base64: "npm:^3.7.8"
-    libp2p: "npm:^3.3.8"
-    multiformats: "npm:^14.0.5"
-    ts-jest: "npm:^29.2.5"
-    ts-node: "npm:^10.1.0"
-    typedoc: "npm:^0.28.19"
-    typescript: "npm:^5.9.3"
-    uint8arraylist: "npm:^3.0.2"
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/password-manager@workspace:examples/password-manager":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/password-manager@workspace:examples/password-manager"
-  dependencies:
-    "@popperjs/core": "npm:^2.11.8"
-    "@swarmbase/collabswarm": "workspace:packages/collabswarm"
-    "@swarmbase/collabswarm-react": "workspace:packages/collabswarm-react"
-    "@swarmbase/collabswarm-yjs": "workspace:packages/collabswarm-yjs"
-    "@testing-library/dom": "npm:^10.4.0"
-    "@testing-library/jest-dom": "npm:^6.9.1"
-    "@testing-library/react": "npm:^16.3.2"
-    "@testing-library/user-event": "npm:^14.6.5"
-    "@types/bootstrap": "npm:^5.2.11"
-    "@types/node": "npm:^22.7.5"
-    "@types/react": "npm:^19.2.3"
-    "@types/react-bootstrap": "npm:^1.1.0"
-    "@types/react-dom": "npm:^19.2.3"
-    "@types/react-router-bootstrap": "npm:^0.26.8"
-    "@types/react-router-dom": "npm:^5.3.3"
-    "@types/uuid": "npm:^11.0.0"
-    "@vitejs/plugin-react": "npm:^4.3.4"
-    bootstrap: "npm:^5.3.8"
-    quill-delta: "npm:^5.1.0"
-    react: "npm:^19.2.6"
-    react-bootstrap: "npm:^2.10.10"
-    react-dom: "npm:^19.2.6"
-    react-router-bootstrap: "npm:0.26.3"
-    react-router-dom: "npm:^5.3.4"
-    typescript: "npm:^5.9.3"
-    uuid: "npm:^14.0.2"
-    vite: "npm:^6.1.0"
-    web-vitals: "npm:^5.2.0"
-    yjs: "npm:^13.6.30"
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/site@workspace:site":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/site@workspace:site"
-  dependencies:
-    "@astrojs/starlight": "npm:^0.41.3"
-    "@swarmbase/collabswarm": "workspace:*"
-    "@swarmbase/collabswarm-yjs": "workspace:*"
-    astro: "npm:^7.0.7"
-    starlight-typedoc: "npm:^0.23.0"
-    typedoc: "npm:^0.28.19"
-    typedoc-plugin-markdown: "npm:^4.6.0"
-    typescript: "npm:^5.9.3"
-    yjs: "npm:^13.6.30"
-  languageName: unknown
-  linkType: soft
-
-"@swarmbase/wiki-swarm@workspace:examples/wiki-swarm":
-  version: 0.0.0-use.local
-  resolution: "@swarmbase/wiki-swarm@workspace:examples/wiki-swarm"
-  dependencies:
-    "@automerge/automerge": "npm:^3.2.6"
-    "@popperjs/core": "npm:^2.11.8"
-    "@swarmbase/collabswarm": "workspace:packages/collabswarm"
-    "@swarmbase/collabswarm-automerge": "workspace:packages/collabswarm-automerge"
-    "@swarmbase/collabswarm-redux": "workspace:packages/collabswarm-redux"
-    "@testing-library/dom": "npm:^10.4.0"
-    "@testing-library/jest-dom": "npm:^6.9.1"
-    "@testing-library/react": "npm:^16.3.2"
-    "@testing-library/user-event": "npm:^14.6.5"
-    "@types/jest": "npm:^29.5.13"
-    "@types/node": "npm:^22.7.5"
-    "@types/react": "npm:^19.2.3"
-    "@types/react-bootstrap": "npm:^1.1.0"
-    "@types/react-dom": "npm:^19.2.3"
-    "@types/react-redux": "npm:^7.1.34"
-    "@types/react-router-bootstrap": "npm:^0.26.8"
-    "@types/react-router-dom": "npm:^5.3.3"
-    "@types/slate": "npm:^0.47.16"
-    "@vitejs/plugin-react": "npm:^4.3.4"
-    bootstrap: "npm:^5.3.8"
-    dayjs: "npm:^1.11.13"
-    react: "npm:^19.2.6"
-    react-bootstrap: "npm:^2.10.10"
-    react-bootstrap-icons: "npm:^1.11.6"
-    react-dom: "npm:^19.2.6"
-    react-redux: "npm:^9.2.0"
-    react-router-bootstrap: "npm:0.26.3"
-    react-router-dom: "npm:^5.3.4"
-    redux: "npm:^5.0.1"
-    redux-thunk: "npm:^3.1.0"
-    slate: "npm:^0.103.0"
-    slate-history: "npm:^0.113.1"
-    slate-react: "npm:^0.110.1"
-    typescript: "npm:^5.9.3"
-    vite: "npm:^6.1.0"
-    vite-plugin-top-level-await: "npm:^1.6.0"
-    vite-plugin-wasm: "npm:^3.6.0"
-  languageName: unknown
-  linkType: soft
 
 "@swc/core-darwin-arm64@npm:1.15.43":
   version: 1.15.43
@@ -5410,15 +5408,6 @@ __metadata:
     hoist-non-react-statics: "npm:^3.3.0"
     redux: "npm:^4.0.0"
   checksum: 10/febcd1db0c83c5002c6bee0fdda9e70da0653454ffbb72d6c37cbf2f5c005e06fb5271cff344d7164c385c944526565282de9a95ff379e040476b71d27fc2512
-  languageName: node
-  linkType: hard
-
-"@types/react-router-bootstrap@npm:^0.26.8":
-  version: 0.26.8
-  resolution: "@types/react-router-bootstrap@npm:0.26.8"
-  dependencies:
-    "@types/react": "npm:*"
-  checksum: 10/a67c804ab0abb4972785be59f13293ecc6dd25661cd624298ccb989a17559e0af656bbf98859c5483cc69e912c00bac5ec79651e5892d488acd06443f1b249c9
   languageName: node
   linkType: hard
 
@@ -13141,18 +13130,6 @@ __metadata:
   version: 0.17.0
   resolution: "react-refresh@npm:0.17.0"
   checksum: 10/5e94f07d43bb1cfdc9b0c6e0c8c73e754005489950dcff1edb53aa8451d1d69a47b740b195c7c80fb4eb511c56a3585dc55eddd83f0097fb5e015116a1460467
-  languageName: node
-  linkType: hard
-
-"react-router-bootstrap@npm:0.26.3":
-  version: 0.26.3
-  resolution: "react-router-bootstrap@npm:0.26.3"
-  dependencies:
-    prop-types: "npm:^15.7.2"
-  peerDependencies:
-    react: ">=16.13.1"
-    react-router-dom: ">=6.0.0"
-  checksum: 10/8ed506caa670d96b99599f238d04db842a71fb1b18442e2fa374ddad81e6111b36892db335734beacf60ae7523dc07d3bd2ccb2f33a0833b52ab074fa9c5ab0f
   languageName: node
   linkType: hard
 

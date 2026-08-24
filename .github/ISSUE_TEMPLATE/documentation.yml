@@ -1,5 +1,5 @@
 name: Documentation issue
-description: Report missing, inaccurate, or unclear Swarmbase documentation.
+description: Report missing, inaccurate, or unclear Peerborne documentation.
 title: "[Docs]: "
 labels:
   - documentation
@@ -7,15 +7,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this form for actionable documentation changes. Ask open-ended questions and discuss new ideas in [GitHub Discussions](https://github.com/swarmbase/swarmbase/discussions).
+        Use this form for actionable documentation changes. Ask open-ended questions and discuss new ideas in [GitHub Discussions](https://github.com/Peerborne/peerborne/discussions).
 
-        Capability and security claims must match the [feature and verification audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md).
+        Capability and security claims must match the [feature and verification audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md).
   - type: input
     id: location
     attributes:
       label: Documentation location
       description: Link the page or give the repository path and section.
-      placeholder: https://swarmbase.github.io/swarmbase/concepts/security/
+      placeholder: https://peerborne.io/concepts/security/
     validations:
       required: true
   - type: textarea

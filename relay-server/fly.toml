@@ -1,4 +1,4 @@
-# Fly.io deployment configuration for the SwarmDB relay server.
+# Fly.io deployment configuration for the Peerborne relay server.
 #
 # Usage:
 #   cd relay-server
@@ -9,7 +9,7 @@
 # Run `fly platform regions` to see all available regions; pick the one
 # closest to your users.
 
-app = "swarmdb-relay"            # TODO: change to a unique name, e.g. "myapp-relay"
+app = "peerborne-relay"            # TODO: change to a unique name, e.g. "myapp-relay"
 primary_region = "iad"           # US East (Virginia); change to your nearest region
 
 [build]

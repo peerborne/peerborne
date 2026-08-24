@@ -1,12 +1,12 @@
 {
   "private": true,
   "workspaces": [
-    "packages/collabswarm",
-    "packages/collabswarm-automerge",
-    "packages/collabswarm-yjs",
-    "packages/collabswarm-react",
-    "packages/collabswarm-redux",
-    "packages/collabswarm-index",
+    "packages/core",
+    "packages/automerge",
+    "packages/yjs",
+    "packages/react",
+    "packages/redux",
+    "packages/index",
     "examples/browser-test",
     "examples/wiki-swarm",
     "examples/password-manager",
@@ -23,23 +23,23 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "yarn workspaces foreach -Atvi --include '@swarmbase/collabswarm' --include '@swarmbase/collabswarm-automerge' --include '@swarmbase/collabswarm-yjs' --include '@swarmbase/collabswarm-react' --include '@swarmbase/collabswarm-redux' --include '@swarmbase/collabswarm-index' run tsc",
-    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@swarmbase/browser-test' --include '@swarmbase/wiki-swarm' --include '@swarmbase/password-manager' run build",
-    "test": "yarn workspaces foreach -Apvi --include '@swarmbase/collabswarm' --include '@swarmbase/collabswarm-yjs' --include '@swarmbase/collabswarm-react' --include '@swarmbase/collabswarm-automerge' --include '@swarmbase/collabswarm-redux' --include '@swarmbase/collabswarm-index' run test",
+    "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' run tsc",
+    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' run build",
+    "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' run test",
     "test:e2e": "yarn test:e2e:examples",
     "test:e2e:examples": "yarn test:e2e:password-manager && yarn test:e2e:wiki-swarm && yarn test:e2e:browser-test",
-    "test:e2e:password-manager": "yarn workspace @swarmbase/password-manager build && playwright test --config=playwright.password-manager.config.ts",
-    "test:e2e:wiki-swarm": "yarn workspace @swarmbase/wiki-swarm build && playwright test --config=playwright.wiki-swarm.config.ts",
-    "test:e2e:browser-test": "yarn workspace @swarmbase/browser-test build && playwright test --config=playwright.browser-test.config.ts",
+    "test:e2e:password-manager": "yarn workspace @peerborne/password-manager build && playwright test --config=playwright.password-manager.config.ts",
+    "test:e2e:wiki-swarm": "yarn workspace @peerborne/wiki-swarm build && playwright test --config=playwright.wiki-swarm.config.ts",
+    "test:e2e:browser-test": "yarn workspace @peerborne/browser-test build && playwright test --config=playwright.browser-test.config.ts",
     "test:integration": "playwright test --config=playwright.integration.config.ts",
     "test:nat": "playwright test --config=playwright.nat-test.config.ts",
-    "test:swarmbase-nat": "playwright test --config=playwright.swarmbase-nat.config.ts",
+    "test:peerborne-nat": "playwright test --config=playwright.peerborne-nat.config.ts",
     "test:relay": "yarn --cwd relay-server test",
     "test:release": "node --test scripts/release-packages.test.mjs scripts/publish-release.tests.mjs",
     "version:set": "node scripts/set-version.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:validate-consumer": "node scripts/validate-release-consumer.mjs",
-    "benchmark:all": "yarn workspaces foreach -Apvi --include '@swarmbase/collabswarm' --include '@swarmbase/collabswarm-index' run benchmark"
+    "benchmark:all": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/index' run benchmark"
   },
   "packageManager": "yarn@4.5.0"
 }

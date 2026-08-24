@@ -1,6 +1,6 @@
-# SwarmDB Coordination Server Deployment Guide
+# Peerborne Coordination Server Deployment Guide
 
-SwarmDB browser peers connect through coordination servers that provide two
+Peerborne browser peers connect through coordination servers that provide two
 functions: **circuit relay** (proxying connections between browsers that cannot
 reach each other directly) and **bootstrap** (helping new peers discover the
 network via pubsub peer discovery).
@@ -11,7 +11,7 @@ peers can also connect over TCP.
 
 > **Scope.** This document is the operational reference for running the
 > relay/bootstrap server (Docker images, TLS, multi-relay, Kubernetes,
-> monitoring, troubleshooting). For a broader overview of *all* SwarmDB
+> monitoring, troubleshooting). For a broader overview of *all* Peerborne
 > coordination server types -- including signaling, STUN/TURN, and pinning
 > services -- see [`guides/coordination-servers.md`](../guides/coordination-servers.md).
 > Where the two documents disagree on relay/bootstrap operations, this one is
@@ -23,15 +23,15 @@ The fastest way to get a relay running:
 
 ```bash
 # Build the relay image
-docker build -t swarmdb-relay relay-server/
+docker build -t peerborne-relay relay-server/
 
 # Run it
 docker run -d \
-  --name swarmdb-relay \
+  --name peerborne-relay \
   -p 9001:9001 \
   -p 9002:9002 \
   -v relay-data:/shared \
-  swarmdb-relay
+  peerborne-relay
 ```
 
 Port 9001 serves WebSocket connections (browsers). Port 9002 serves TCP
@@ -41,7 +41,7 @@ After startup the relay writes `/shared/relay-info.json` containing its peer ID
 and multiaddresses. Retrieve it with:
 
 ```bash
-docker exec swarmdb-relay cat /shared/relay-info.json
+docker exec peerborne-relay cat /shared/relay-info.json
 ```
 
 Example output:
@@ -72,7 +72,7 @@ or for a bare IP:
 /ip4/<PUBLIC_IP>/tcp/9001/ws/p2p/<peerId>
 ```
 
-Pass this constructed multiaddr to your SwarmDB client configuration so browsers
+Pass this constructed multiaddr to your Peerborne client configuration so browsers
 know where to connect.
 
 Or use the provided single-server Compose file:
@@ -233,7 +233,7 @@ Caddy (or your own load balancer) at their IP addresses.
 - Use `restart: unless-stopped` in Compose (already set in the production file).
 - Monitor container health via Docker's built-in `HEALTHCHECK` -- the relay
   image's health check verifies port 9001 is accepting TCP connections
-  (`docker inspect --format='{{.State.Health.Status}}' swarmdb-relay`). There
+  (`docker inspect --format='{{.State.Health.Status}}' peerborne-relay`). There
   is no HTTP health endpoint.
 
 ## Docker Images
@@ -242,10 +242,10 @@ The repository provides four relay-related Dockerfiles:
 
 | File | Purpose | Build command |
 | --- | --- | --- |
-| `relay-server/Dockerfile` | Standard relay (used by `docker-compose.yaml`) | `docker build -t swarmdb-relay relay-server/` |
-| `Dockerfile.relay` | Relay built from repo root context | `docker build -f Dockerfile.relay -t swarmdb-relay .` |
-| `guides/docker/Dockerfile.relay` | Standalone relay with extended comments | `docker build -f guides/docker/Dockerfile.relay -t swarmdb-relay relay-server/` |
-| `guides/docker/Dockerfile.bootstrap` | Relay with pubsub peer discovery (same code) | `docker build -f guides/docker/Dockerfile.bootstrap -t swarmdb-bootstrap relay-server/` |
+| `relay-server/Dockerfile` | Standard relay (used by `docker-compose.yaml`) | `docker build -t peerborne-relay relay-server/` |
+| `Dockerfile.relay` | Relay built from repo root context | `docker build -f Dockerfile.relay -t peerborne-relay .` |
+| `guides/docker/Dockerfile.relay` | Standalone relay with extended comments | `docker build -f guides/docker/Dockerfile.relay -t peerborne-relay relay-server/` |
+| `guides/docker/Dockerfile.bootstrap` | Relay with pubsub peer discovery (same code) | `docker build -f guides/docker/Dockerfile.bootstrap -t peerborne-bootstrap relay-server/` |
 
 All images are based on `node:22-alpine`, run as a non-root `app` user, and
 include a built-in health check (TCP connect on port 9001).
@@ -268,7 +268,7 @@ all peer discovery goes through GossipSub pubsub.
 
 ## Kubernetes Deployment
 
-SwarmDB relay servers are straightforward to run on Kubernetes, but they are
+Peerborne relay servers are straightforward to run on Kubernetes, but they are
 **not** fully interchangeable replicas: each pod has its own libp2p peer
 identity. That identity matters because clients dial relays using multiaddrs
 such as `/dns4/relay.example.com/tcp/9001/wss/p2p/<peerId>`. If a load
@@ -286,7 +286,7 @@ previously advertised addresses can also break.
 - **Stable relay identity**: For multi-replica Kubernetes deployments, prefer a
   `StatefulSet` with one persisted libp2p identity per replica and a headless
   Service that gives each pod stable DNS (for example,
-  `swarmdb-relay-0.swarmdb-relay-headless.default.svc.cluster.local`). Publish
+  `peerborne-relay-0.peerborne-relay-headless.default.svc.cluster.local`). Publish
   each pod's own address with its own peer ID, and let clients dial the
   specific replica they intend to reach. The current `relay-server/` code does
   not expose a configuration option for a deterministic peer identity -- every
@@ -321,20 +321,20 @@ behind one shared relay address.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: swarmdb-relay
+  name: peerborne-relay
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: swarmdb-relay
+      app: peerborne-relay
   template:
     metadata:
       labels:
-        app: swarmdb-relay
+        app: peerborne-relay
     spec:
       containers:
         - name: relay
-          image: swarmdb-relay:latest
+          image: peerborne-relay:latest
           ports:
             - containerPort: 9001
               name: ws
@@ -366,12 +366,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: swarmdb-relay
+  name: peerborne-relay
 spec:
   type: ClusterIP
   sessionAffinity: ClientIP
   selector:
-    app: swarmdb-relay
+    app: peerborne-relay
   ports:
     - name: ws
       port: 9001
@@ -388,7 +388,7 @@ browser access:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: swarmdb-relay
+  name: peerborne-relay
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
@@ -405,7 +405,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: swarmdb-relay
+                name: peerborne-relay
                 port:
                   number: 9001
 ```
@@ -424,7 +424,7 @@ to monitor relay health.
 ## Troubleshooting
 
 **Peers cannot discover each other**
-- Verify the relay is running and healthy: `docker exec swarmdb-relay cat /shared/relay-info.json`
+- Verify the relay is running and healthy: `docker exec peerborne-relay cat /shared/relay-info.json`
 - Ensure browser clients are configured with a constructed public dialable
   multiaddr (e.g. `/dns4/relay.example.com/tcp/443/wss/p2p/<peerId>` or
   `/ip4/<PUBLIC_IP>/tcp/9001/ws/p2p/<peerId>`) -- not the raw `wsMultiaddr`

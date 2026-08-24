@@ -2,7 +2,7 @@
 
 ## 1. Problem Statement
 
-SwarmDB stores document changes as a Merkle-DAG where every edit produces a new `CRDTChangeNode` linked to its parent(s). This design provides causal ordering, deduplication, and tamper detection, but the change history **grows unboundedly**:
+Peerborne stores document changes as a Merkle-DAG where every edit produces a new `CRDTChangeNode` linked to its parent(s). This design provides causal ordering, deduplication, and tamper detection, but the change history **grows unboundedly**:
 
 - **N edits = N DAG nodes** (plus ACL change nodes for reader/writer modifications)
 - Each node is stored encrypted in Helia blockstore and referenced in the sync tree
@@ -79,7 +79,7 @@ After a snapshot is created, the change nodes prior to `lastChangeNodeCID` can b
 
 ### 2.4.1 Lazy Loading
 
-Once a change has been pruned from `_lastSyncMessage.changes`, its `ChangesType` payload is no longer kept in memory. The public method `CollabswarmDocument.loadChangeBlock(cid)` resolves an old CID on demand by calling `blockstore.get()` and decrypting via the document keychain.
+Once a change has been pruned from `_lastSyncMessage.changes`, its `ChangesType` payload is no longer kept in memory. The public method `PeerborneDocument.loadChangeBlock(cid)` resolves an old CID on demand by calling `blockstore.get()` and decrypting via the document keychain.
 
 Semantics:
 
@@ -87,7 +87,7 @@ Semantics:
 - CIDs whose underlying block is missing locally (e.g. it was GC'd and no peer has re-served it) return `undefined`. Callers can decide whether to surface the failure or dial peers via the existing sync protocols.
 - Malformed CIDs throw.
 
-`CollabswarmDocument.hasChange(cid)` is a cheap synchronous check that callers can use before attempting a lazy load.
+`PeerborneDocument.hasChange(cid)` is a cheap synchronous check that callers can use before attempting a lazy load.
 
 The key insight: **CRDTs are designed to converge from any state**. A Yjs `encodeStateAsUpdateV2` produces a snapshot directly applicable via `remoteChange()`. Automerge `save()` produces a compact binary blob that requires `CRDTProvider.applySnapshot()` (which uses `Automerge.load()` + `merge()`) since the save format differs from incremental changes. Either way, the peer arrives at the same state without needing individual change history.
 
@@ -205,17 +205,17 @@ Response: `CRDTSyncMessage` with `snapshot` field populated
 ## 4. Implementation Plan
 
 ### Files to Create
-1. `packages/collabswarm/src/snapshot-node.ts` -- `CRDTSnapshotNode` type
-2. `packages/collabswarm/src/compaction-config.ts` -- `CompactionConfig` type with defaults
+1. `packages/core/src/snapshot-node.ts` -- `CRDTSnapshotNode` type
+2. `packages/core/src/compaction-config.ts` -- `CompactionConfig` type with defaults
 
 ### Files to Modify
-1. `packages/collabswarm/src/collabswarm-document.ts` -- Snapshot creation, load-from-snapshot, compaction triggers
-2. `packages/collabswarm/src/collabswarm-config.ts` -- Add `CompactionConfig` to `CollabswarmConfig`
-3. `packages/collabswarm/src/crdt-sync-message.ts` -- Add optional `snapshot` field
-4. `packages/collabswarm/src/wire-protocols.ts` -- Add `snapshotLoadV1` constant
-5. `packages/collabswarm/src/crdt-provider.ts` -- Document `getSnapshot()` requirement for compaction
-6. `packages/collabswarm/src/index.ts` -- Export new types
+1. `packages/core/src/peerborne-document.ts` -- Snapshot creation, load-from-snapshot, compaction triggers
+2. `packages/core/src/peerborne-config.ts` -- Add `CompactionConfig` to `PeerborneConfig`
+3. `packages/core/src/crdt-sync-message.ts` -- Add optional `snapshot` field
+4. `packages/core/src/wire-protocols.ts` -- Add `snapshotLoadV1` constant
+5. `packages/core/src/crdt-provider.ts` -- Document `getSnapshot()` requirement for compaction
+6. `packages/core/src/index.ts` -- Export new types
 
 ### Tests to Create
-1. `packages/collabswarm/src/snapshot-node.test.ts` -- Snapshot node creation and field validation
-2. `packages/collabswarm/src/compaction.test.ts` -- Compaction trigger logic, config validation, pruning behavior
+1. `packages/core/src/snapshot-node.test.ts` -- Snapshot node creation and field validation
+2. `packages/core/src/compaction.test.ts` -- Compaction trigger logic, config validation, pruning behavior

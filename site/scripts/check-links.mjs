@@ -12,7 +12,7 @@ const defaultRepositoryDirectory = fileURLToPath(
 const repositoryDirectory = resolve(
   process.argv[3] ?? defaultRepositoryDirectory,
 );
-const repositoryUrl = new URL('https://github.com/swarmbase/swarmbase/');
+const repositoryUrl = new URL('https://github.com/Peerborne/peerborne/');
 const repositoryWebRoutes = new Set([
   'actions',
   'branches',
@@ -279,12 +279,23 @@ function repositoryTargetFor(url) {
   if (url.origin !== repositoryUrl.origin) return;
 
   const segments = decodedPath(url.pathname).split('/').filter(Boolean);
-  if (segments[0] !== 'swarmbase' || segments[1] !== 'swarmbase') return;
-  if (segments.length === 2) {
+  const repositorySegments = decodedPath(repositoryUrl.pathname)
+    .split('/')
+    .filter(Boolean);
+  if (
+    repositorySegments.some(
+      (segment, index) => segments[index] !== segment,
+    )
+  ) {
+    return;
+  }
+  if (segments.length === repositorySegments.length) {
     return { kind: 'tree', relativePath: '' };
   }
 
-  const [kind, branch, ...pathSegments] = segments.slice(2);
+  const [kind, branch, ...pathSegments] = segments.slice(
+    repositorySegments.length,
+  );
   if (!['blob', 'tree'].includes(kind)) {
     if (repositoryWebRoutes.has(kind)) return;
     const route = [kind, branch].filter(Boolean).join('/');

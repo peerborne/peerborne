@@ -1,6 +1,6 @@
 ---
 title: Redux integration
-description: Initialize and read Swarmbase state through Redux while accounting for the current local-change ordering bug.
+description: Initialize and read Peerborne state through Redux while accounting for the current local-change ordering bug.
 ---
 
 **Status: Runnable from source for setup, open, read, and remote subscription; local editing is illustrative/deferred.**
@@ -18,23 +18,23 @@ import {
   SubtleCrypto,
   defaultBootstrapConfig,
   defaultConfig,
-} from '@swarmbase/collabswarm';
+} from '@peerborne/core';
 import {
   YjsACLProvider,
   YjsJSONSerializer,
   YjsKeychainProvider,
   YjsProvider,
-} from '@swarmbase/collabswarm-yjs';
+} from '@peerborne/yjs';
 import {
-  CollabswarmState,
+  PeerborneState,
   closeDocumentAsync,
-  collabswarmReducer,
+  peerborneReducer,
   initializeAsync,
   openDocumentAsync,
-} from '@swarmbase/collabswarm-redux';
+} from '@peerborne/redux';
 import * as Y from 'yjs';
 
-type SwarmState = CollabswarmState<
+type SwarmState = PeerborneState<
   Y.Doc,
   Uint8Array,
   (doc: Y.Doc) => void,
@@ -49,7 +49,7 @@ const selectSwarm = (state: RootState) => state.swarm;
 function createSwarmStore(identity: CryptoKeyPair) {
   const serializer = new YjsJSONSerializer();
   const reducer = combineReducers({
-    swarm: collabswarmReducer(
+    swarm: peerborneReducer(
       identity.privateKey,
       identity.publicKey,
       new YjsProvider(),

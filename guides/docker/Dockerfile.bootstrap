@@ -1,4 +1,4 @@
-# SwarmDB DHT Bootstrap Node
+# Peerborne DHT Bootstrap Node
 #
 # A lightweight node that serves as a Kademlia DHT bootstrap peer.
 # Use this for large deployments (500+ peers) where pubsub-based
@@ -8,10 +8,10 @@
 # the DHT in server mode rather than client mode.
 #
 # Build (from repository root):
-#   docker build -f guides/docker/Dockerfile.bootstrap -t swarmdb-bootstrap relay-server/
+#   docker build -f guides/docker/Dockerfile.bootstrap -t peerborne-bootstrap relay-server/
 #
 # Run:
-#   docker run -p 9001:9001 -p 9002:9002 swarmdb-bootstrap
+#   docker run -p 9001:9001 -p 9002:9002 peerborne-bootstrap
 #
 # For most deployments, the standard relay server (Dockerfile.relay) is
 # sufficient since it already provides bootstrap functionality via

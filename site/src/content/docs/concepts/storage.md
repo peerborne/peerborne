@@ -1,11 +1,11 @@
 ---
 title: Storage
-description: How Swarmbase stores documents — local IndexedDB persistence, the Helia blockstore, pinning, recovery, and compaction.
+description: How Peerborne stores documents — local IndexedDB persistence, the Helia blockstore, pinning, recovery, and compaction.
 ---
 
 ## Overview
 
-Swarmbase uses **Helia** (the JavaScript IPFS implementation) for content-addressed storage. Every document block — a signed, encrypted CRDT update — is stored in a local Helia blockstore backed by IndexedDB in the browser or the filesystem in Node.js. Blocks are addressed by their **CID** (Content Identifier), a SHA-256 hash of the encrypted content.
+Peerborne uses **Helia** (the JavaScript IPFS implementation) for content-addressed storage. Every document block — a signed, encrypted CRDT update — is stored in a local Helia blockstore backed by IndexedDB in the browser or the filesystem in Node.js. Blocks are addressed by their **CID** (Content Identifier), a SHA-256 hash of the encrypted content.
 
 ## Implemented model
 
@@ -31,14 +31,14 @@ Blocks are immutable. Once stored, a block's CID is stable forever. The document
 
 ### Inline vs deferred payloads
 
-To reduce block size and improve deduplication, Swarmbase can split payload content across referenced blocks:
+To reduce block size and improve deduplication, Peerborne can split payload content across referenced blocks:
 
 - **Inline**: The full encrypted update is embedded in the `CRDTChangeBlock`.
 - **Deferred**: The encrypted update is stored as a separate block referenced by CID from the `CRDTChangeBlock`. Useful when the same encrypted payload appears in multiple sync contexts.
 
 ### No Merkle-DAG parent commitment
 
-Swarmbase's shadow sync graph does **not** use Merkle hash linking. Blocks reference parents by CID but do not commit to parent hashes. This means the graph structure can change after blocks are written (e.g., adding new parents during catch-up). This is intentional — it allows the sync layer to add concurrent parents discovered later without rewriting blocks.
+Peerborne's shadow sync graph does **not** use Merkle hash linking. Blocks reference parents by CID but do not commit to parent hashes. This means the graph structure can change after blocks are written (e.g., adding new parents during catch-up). This is intentional — it allows the sync layer to add concurrent parents discovered later without rewriting blocks.
 
 ## Browser persistence
 
@@ -49,7 +49,7 @@ import { IDBBlockstore } from 'blockstore-idb';
 import { IDBDatastore } from 'datastore-idb';
 
 const blockstore = new IDBBlockstore('/collabswarm-blocks');
-// In practice, pass these via CollabswarmConfig.helia to initialize()
+// In practice, pass these via PeerborneConfig.helia to initialize()
 ```
 
 Encrypted blocks, IPNS records, and the libp2p peer store are all persisted to IndexedDB under the origin. This means a browser tab refresh should preserve document state.
@@ -58,13 +58,13 @@ Encrypted blocks, IPNS records, and the libp2p peer store are all persisted to I
 
 ### No automatic replication factor
 
-Swarmbase does not replicate blocks automatically. If you have 3 peers and one stores a block, the other 2 may fetch it on demand (bitswap) or may not. There is no "store on at least N peers" guarantee.
+Peerborne does not replicate blocks automatically. If you have 3 peers and one stores a block, the other 2 may fetch it on demand (bitswap) or may not. There is no "store on at least N peers" guarantee.
 
 ## Pinning status
 
 Pinning is **incomplete**. What exists:
 
-- A `CollabswarmNode` listener that fires when blocks are stored locally
+- A `PeerborneNode` listener that fires when blocks are stored locally
 - No publisher in the core commit path (the listener is never notified)
 - No generic IPFS pinning client (e.g., to pin to a remote IPFS node, S3, or Filecoin)
 

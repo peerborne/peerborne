@@ -1,4 +1,4 @@
-# Swarmbase
+# Peerborne
 
 > TypeScript toolkit for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. Composes Yjs/Automerge CRDT libraries with libp2p networking, Helia content-addressed storage, ECDSA P-384 signing, and AES-GCM encryption.
 
@@ -6,54 +6,54 @@ Use the feature audit and concept documentation as the authority for capability 
 
 ## Start
 
-- [Full handwritten documentation corpus](https://swarmbase.github.io/swarmbase/llms-full.txt): Every hand-authored site page plus the feature and verification audit in one generated file.
-- [Quick start](https://swarmbase.github.io/swarmbase/getting-started/quick-start/): Build Swarmbase from source and exercise the verified browser path.
-- [Why Swarmbase](https://swarmbase.github.io/swarmbase/concepts/why-swarmbase/): Value proposition, when to use/not use.
-- [Architecture](https://swarmbase.github.io/swarmbase/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
-- [Examples](https://github.com/swarmbase/swarmbase/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager).
-- [API reference](https://swarmbase.github.io/swarmbase/reference/): Generated package documentation for all six @swarmbase/* packages.
-- [Comparisons](https://swarmbase.github.io/swarmbase/reference/comparisons/): Swarmbase vs Yjs, Automerge, Liveblocks, RxDB, Jazz, ElectricSQL.
+- [Full handwritten documentation corpus](https://peerborne.io/llms-full.txt): Every hand-authored site page plus the feature and verification audit in one generated file.
+- [Quick start](https://peerborne.io/getting-started/quick-start/): Build Peerborne from source and exercise the verified browser path.
+- [Why Peerborne](https://peerborne.io/concepts/why-peerborne/): Value proposition, when to use/not use.
+- [Architecture](https://peerborne.io/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
+- [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager).
+- [API reference](https://peerborne.io/reference/): Generated package documentation for all six @peerborne/* packages.
+- [Comparisons](https://peerborne.io/reference/comparisons/): Peerborne vs Yjs, Automerge, Liveblocks, RxDB, Jazz, ElectricSQL.
 
 ## Packages
 
 The six libraries are source workspaces and are not yet published to npm. Most applications combine the core package with one CRDT adapter and optional framework bindings.
 
-- [`@swarmbase/collabswarm`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/README.md): Core document and runtime APIs, with dedicated Node and browser-primitives entry points.
-- [`@swarmbase/collabswarm-automerge`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-automerge/README.md): Automerge provider, serialization, ACL, and keychain adapters.
-- [`@swarmbase/collabswarm-yjs`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-yjs/README.md): Yjs provider, serialization, ACL, and keychain adapters.
-- [`@swarmbase/collabswarm-react`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-react/README.md): React context and hooks for applications that supply compatible document adapters.
-- [`@swarmbase/collabswarm-redux`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-redux/README.md): Redux actions, thunks, and reducers; review the documented local-change ordering limitation.
-- [`@swarmbase/collabswarm-index`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-index/README.md): Local memory and IndexedDB indexing with optional React hooks; distributed search remains incomplete.
+- [`@peerborne/core`](https://github.com/Peerborne/peerborne/blob/main/packages/core/README.md): Core document and runtime APIs, with dedicated Node and browser-primitives entry points.
+- [`@peerborne/automerge`](https://github.com/Peerborne/peerborne/blob/main/packages/automerge/README.md): Automerge provider, serialization, ACL, and keychain adapters.
+- [`@peerborne/yjs`](https://github.com/Peerborne/peerborne/blob/main/packages/yjs/README.md): Yjs provider, serialization, ACL, and keychain adapters.
+- [`@peerborne/react`](https://github.com/Peerborne/peerborne/blob/main/packages/react/README.md): React context and hooks for applications that supply compatible document adapters.
+- [`@peerborne/redux`](https://github.com/Peerborne/peerborne/blob/main/packages/redux/README.md): Redux actions, thunks, and reducers; review the documented local-change ordering limitation.
+- [`@peerborne/index`](https://github.com/Peerborne/peerborne/blob/main/packages/index/README.md): Local memory and IndexedDB indexing with optional React hooks; distributed search remains incomplete.
 
 ## Concepts
 
-- [Local-first design](https://swarmbase.github.io/swarmbase/concepts/local-first/): What "local-first" means, implemented behavior, missing features (no outbox, no reconnect, no restart recovery).
-- [CRDT model](https://swarmbase.github.io/swarmbase/concepts/crdts/): Yjs and Automerge integration, shadow sync graph, document.change() lifecycle, CRDTProvider interface, convergence boundaries, snapshots/compaction.
-- [Networking](https://swarmbase.github.io/swarmbase/concepts/networking/): libp2p transports (WebSocket, WebRTC, WebTransport), Circuit Relay v2, GossipSub pubsub, peer discovery (bootstrap, Kademlia DHT, AutoNAT), NAT traversal (DCUtR, STUN/TURN), relay trust model.
-- [Storage](https://swarmbase.github.io/swarmbase/concepts/storage/): Content-addressed blocks, Helia blockstore (IndexedDB), shadow sync graph, pinning status (incomplete), recovery requirements, compaction/GC.
-- [Security](https://swarmbase.github.io/swarmbase/concepts/security/): ECDSA P-384 signing, AES-GCM encryption, reader/writer ACL, BeeKEM key encapsulation, UCAN capabilities (standalone), K-of-Q quorum loading, revocation (partial, memory-only BeeKEM state).
-- [Limitations](https://swarmbase.github.io/swarmbase/concepts/limitations/): Complete catalog of current gaps — distribution, offline, storage, networking, auth, convergence, examples.
+- [Local-first design](https://peerborne.io/concepts/local-first/): What "local-first" means, implemented behavior, missing features (no outbox, no reconnect, no restart recovery).
+- [CRDT model](https://peerborne.io/concepts/crdts/): Yjs and Automerge integration, shadow sync graph, document.change() lifecycle, CRDTProvider interface, convergence boundaries, snapshots/compaction.
+- [Networking](https://peerborne.io/concepts/networking/): libp2p transports (WebSocket, WebRTC, WebTransport), Circuit Relay v2, GossipSub pubsub, peer discovery (bootstrap, Kademlia DHT, AutoNAT), NAT traversal (DCUtR, STUN/TURN), relay trust model.
+- [Storage](https://peerborne.io/concepts/storage/): Content-addressed blocks, Helia blockstore (IndexedDB), shadow sync graph, pinning status (incomplete), recovery requirements, compaction/GC.
+- [Security](https://peerborne.io/concepts/security/): ECDSA P-384 signing, AES-GCM encryption, reader/writer ACL, BeeKEM key encapsulation, UCAN capabilities (standalone), K-of-Q quorum loading, revocation (partial, memory-only BeeKEM state).
+- [Limitations](https://peerborne.io/concepts/limitations/): Complete catalog of current gaps — distribution, offline, storage, networking, auth, convergence, examples.
 
 ## Cookbook
 
-- [Collaborative wiki](https://swarmbase.github.io/swarmbase/cookbook/collaborative-wiki/): Run the wiki-swarm example (Vite, Redux, Automerge). Startup smoke only.
-- [Password manager](https://swarmbase.github.io/swarmbase/cookbook/password-manager/): Run the password-manager example with key material setup and ACL management.
-- [React integration](https://swarmbase.github.io/swarmbase/cookbook/react/): useCollabswarmDocumentState hooks, CollabswarmContext provider, document open/change patterns.
-- [Redux integration](https://swarmbase.github.io/swarmbase/cookbook/redux/): Store setup, collabswarmReducer, initializeAsync, openDocumentAsync, selector patterns.
-- [Search indexing](https://swarmbase.github.io/swarmbase/cookbook/search-indexing/): IndexManager (materialized indexes), blind-index primitives, bloom-filter gossip (deferred).
-- [Yjs schema design](https://swarmbase.github.io/swarmbase/cookbook/yjs-schema-design/): Y.Map, Y.Array, Y.Text merge behaviors, mutation patterns, ID/counter patterns, migration.
-- [Running a relay](https://swarmbase.github.io/swarmbase/cookbook/running-a-relay/): Docker build/run, Vite client configuration, operational limits (no stable identity, no meshing).
-- [Pinning](https://swarmbase.github.io/swarmbase/cookbook/pinning/): What exists vs what's missing, 10-step integration checklist.
+- [Collaborative wiki](https://peerborne.io/cookbook/collaborative-wiki/): Run the wiki-swarm example (Vite, Redux, Automerge). Startup smoke only.
+- [Password manager](https://peerborne.io/cookbook/password-manager/): Run the password-manager example with key material setup and ACL management.
+- [React integration](https://peerborne.io/cookbook/react/): usePeerborneDocumentState hooks, PeerborneContext provider, document open/change patterns.
+- [Redux integration](https://peerborne.io/cookbook/redux/): Store setup, peerborneReducer, initializeAsync, openDocumentAsync, selector patterns.
+- [Search indexing](https://peerborne.io/cookbook/search-indexing/): IndexManager (materialized indexes), blind-index primitives, bloom-filter gossip (deferred).
+- [Yjs schema design](https://peerborne.io/cookbook/yjs-schema-design/): Y.Map, Y.Array, Y.Text merge behaviors, mutation patterns, ID/counter patterns, migration.
+- [Running a relay](https://peerborne.io/cookbook/running-a-relay/): Docker build/run, Vite client configuration, operational limits (no stable identity, no meshing).
+- [Pinning](https://peerborne.io/cookbook/pinning/): What exists vs what's missing, 10-step integration checklist.
 
 ## Community
 
-- [FAQ](https://swarmbase.github.io/swarmbase/community/faq/): Production readiness, key management, relay requirements, conflict handling, browser support, offline capability.
-- [Roadmap](https://swarmbase.github.io/swarmbase/community/roadmap/): 10 priority gaps — persistence, key exchange, convergence, pinning, relay identity, publication, docs, benchmarks, search, examples.
-- [Contributing](https://swarmbase.github.io/swarmbase/community/contributing/): Node 22.19.0 setup, Yarn 4.5.0, build/test commands, Docker-backed suite readiness helpers, PR expectations.
-- [Help wanted](https://swarmbase.github.io/swarmbase/community/help-wanted/): Specific contribution areas with evidence gaps.
+- [FAQ](https://peerborne.io/community/faq/): Production readiness, key management, relay requirements, conflict handling, browser support, offline capability.
+- [Roadmap](https://peerborne.io/community/roadmap/): 11 priority gaps — persistence, key exchange, convergence, pinning, relay identity, publication, docs, benchmarks, search, examples, and a Reticulum transport adapter.
+- [Contributing](https://peerborne.io/community/contributing/): Node 22.19.0 setup, Yarn 4.5.0, build/test commands, Docker-backed suite readiness helpers, PR expectations.
+- [Help wanted](https://peerborne.io/community/help-wanted/): Specific contribution areas with evidence gaps.
 
 ## Architecture, evidence, and limits
 
-- [Feature and verification audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md): Capability-to-evidence map — the authoritative reference for what works and what doesn't.
-- [Repository](https://github.com/swarmbase/swarmbase): Source, issues, and discussions.
-- [AGENTS.md](https://github.com/swarmbase/swarmbase/blob/main/AGENTS.md): Repository map, toolchain setup, commands, engineering rules for contributors and agents.
+- [Feature and verification audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md): Capability-to-evidence map — the authoritative reference for what works and what doesn't.
+- [Repository](https://github.com/Peerborne/peerborne): Source, issues, and discussions.
+- [AGENTS.md](https://github.com/Peerborne/peerborne/blob/main/AGENTS.md): Repository map, toolchain setup, commands, engineering rules for contributors and agents.

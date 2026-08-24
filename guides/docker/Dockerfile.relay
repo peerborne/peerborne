@@ -1,17 +1,17 @@
-# SwarmDB Circuit Relay / Bootstrap Node
+# Peerborne Circuit Relay / Bootstrap Node
 #
 # This is a standalone Dockerfile for the relay server.
 # Use this when deploying the relay independently from the monorepo.
 #
 # Build:
-#   docker build -f guides/docker/Dockerfile.relay -t swarmdb-relay relay-server/
+#   docker build -f guides/docker/Dockerfile.relay -t peerborne-relay relay-server/
 #
 # Run:
-#   docker run -p 9001:9001 -p 9002:9002 swarmdb-relay
+#   docker run -p 9001:9001 -p 9002:9002 peerborne-relay
 #
 # The relay writes its connection info (peer ID and multiaddresses)
 # to /shared/relay-info.json on startup. Mount a volume to access it:
-#   docker run -p 9001:9001 -p 9002:9002 -v relay-data:/shared swarmdb-relay
+#   docker run -p 9001:9001 -p 9002:9002 -v relay-data:/shared peerborne-relay
 
 FROM node:22-alpine
 RUN corepack enable

@@ -1,23 +1,23 @@
 import React from 'react';
 import { Button, ListGroup, Container, Col, Row, Form } from 'react-bootstrap';
-import { useCollabswarmDocumentState } from '@swarmbase/collabswarm-react';
+import { usePeerborneDocumentState } from '@peerborne/react';
 import * as uuid from 'uuid';
-import { YjsCollabswarm } from './utils';
+import { YjsPeerborne } from './utils';
 import * as Y from 'yjs';
 import { PasswordEditor } from './PasswordEditor';
 
 export function PasswordList({
   userId,
-  collabswarm,
+  peerborne,
 }: {
   userId: string;
-  collabswarm: YjsCollabswarm;
+  peerborne: YjsPeerborne;
 }) {
   const [currentPassword, setCurrentPassword] = React.useState<
     Y.Map<Y.Text> | undefined
   >();
-  const [passwords, changePasswords] = useCollabswarmDocumentState(
-    collabswarm,
+  const [passwords, changePasswords] = usePeerborneDocumentState(
+    peerborne,
     `/${userId}/passwords-index`,
   );
   const [importingPassword, setImportingPassword] = React.useState(false);
@@ -133,7 +133,7 @@ export function PasswordList({
           {currentPassword && (
             <PasswordEditor
               userId={userId}
-              collabswarm={collabswarm}
+              peerborne={peerborne}
               passwordId={currentPasswordId}
             />
           )}

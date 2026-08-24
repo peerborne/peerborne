@@ -95,11 +95,11 @@ test('rewrites site links without changing fenced examples', () => {
 
   assert.match(
     output,
-    /\[Limitations\]\(https:\/\/swarmbase\.github\.io\/swarmbase\/concepts\/limitations\/\)/,
+    /\[Limitations\]\(https:\/\/peerborne\.io\/concepts\/limitations\/\)/,
   );
   assert.match(
     output,
-    /\[Audit\]\(https:\/\/github\.com\/swarmbase\/swarmbase\/blob\/main\/docs\/feature-audit\.md\)/,
+    /\[Audit\]\(https:\/\/github\.com\/Peerborne\/peerborne\/blob\/main\/docs\/feature-audit\.md\)/,
   );
   assert.match(output, /\[Example\]\(\.\.\/kept-relative\/\)/);
 });
@@ -117,15 +117,15 @@ test('rewrites repository file, directory, and fragment links', () => {
 
   assert.match(
     output,
-    /\[README\]\(https:\/\/github\.com\/swarmbase\/swarmbase\/blob\/main\/README\.md\)/,
+    /\[README\]\(https:\/\/github\.com\/Peerborne\/peerborne\/blob\/main\/README\.md\)/,
   );
   assert.match(
     output,
-    /\[Examples\]\(https:\/\/github\.com\/swarmbase\/swarmbase\/tree\/main\/examples\)/,
+    /\[Examples\]\(https:\/\/github\.com\/Peerborne\/peerborne\/tree\/main\/examples\)/,
   );
   assert.match(
     output,
-    /\[Section\]\(https:\/\/github\.com\/swarmbase\/swarmbase\/blob\/main\/docs\/feature-audit\.md#evidence\)/,
+    /\[Section\]\(https:\/\/github\.com\/Peerborne\/peerborne\/blob\/main\/docs\/feature-audit\.md#evidence\)/,
   );
 });
 

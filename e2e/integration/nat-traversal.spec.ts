@@ -1,7 +1,7 @@
 /**
  * NAT Traversal Integration Tests
  *
- * These tests verify that SwarmDB peers on isolated Docker networks
+ * These tests verify that Peerborne peers on isolated Docker networks
  * can discover each other and sync data through the Circuit Relay V2 server.
  *
  * Requires: docker compose -f docker-compose.nat-test.yaml up -d

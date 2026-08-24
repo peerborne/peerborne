@@ -1,17 +1,17 @@
 # Releasing
 
-The six `@swarmbase/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
+The six `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
 
 ## Release allowlist and versioning
 
 Releases contain exactly these packages, in dependency-first order:
 
-1. `@swarmbase/collabswarm`
-2. `@swarmbase/collabswarm-automerge`
-3. `@swarmbase/collabswarm-yjs`
-4. `@swarmbase/collabswarm-react`
-5. `@swarmbase/collabswarm-redux`
-6. `@swarmbase/collabswarm-index`
+1. `@peerborne/core`
+2. `@peerborne/automerge`
+3. `@peerborne/yjs`
+4. `@peerborne/react`
+5. `@peerborne/redux`
+6. `@peerborne/index`
 
 Set one strict SemVer across the allowlist and update the Yarn lockfile:
 
@@ -54,7 +54,7 @@ yarn release:validate-consumer "$ARTIFACT_DIR" "$(dirname "$ARTIFACT_DIR")"
 
 Before pushing the first tag:
 
-1. Confirm the npm `@swarmbase` scope is owned and all maintainers use 2FA.
+1. Confirm the npm `@peerborne` scope is owned and all maintainers use 2FA.
 2. Create a short-lived granular npm token with only the organization/package write access needed for bootstrap publication and dist-tag changes.
 3. Create a protected GitHub environment named `npm-publish`; store the token only as its `NPM_TOKEN` environment secret.
 4. Require designated reviewers for that environment, restrict deployment branches/tags to the intended `v*` release tags, and disable administrator bypass. These controls are mandatory because a tag push is the publication approval boundary.

@@ -1,6 +1,6 @@
-# Y.js Schema Design Guide for SwarmDB
+# Y.js Schema Design Guide for Peerborne
 
-A comprehensive reference for designing application schemas that work well with Y.js CRDTs in SwarmDB.
+A comprehensive reference for designing application schemas that work well with Y.js CRDTs in Peerborne.
 
 ---
 
@@ -13,7 +13,7 @@ A comprehensive reference for designing application schemas that work well with 
 5. [Anti-Patterns](#5-anti-patterns)
 6. [Performance Considerations](#6-performance-considerations)
 7. [Migration Strategies](#7-migration-strategies)
-8. [Integration with SwarmDB](#8-integration-with-swarmdb)
+8. [Integration with Peerborne](#8-integration-with-peerborne)
 
 ---
 
@@ -21,7 +21,7 @@ A comprehensive reference for designing application schemas that work well with 
 
 ### 1.1 Why Schema Design Matters for CRDTs
 
-In a traditional database, schema design determines how data is stored and queried. In a CRDT-based system like SwarmDB, schema design additionally determines **how conflicts are resolved**. Every choice of Y.js shared type carries an implicit conflict resolution policy:
+In a traditional database, schema design determines how data is stored and queried. In a CRDT-based system like Peerborne, schema design additionally determines **how conflicts are resolved**. Every choice of Y.js shared type carries an implicit conflict resolution policy:
 
 - A `Y.Map` key resolves concurrent writes by last-writer-wins.
 - A `Y.Array` preserves all concurrent insertions, ordering them deterministically.
@@ -40,12 +40,12 @@ Key properties:
 - **Last-writer-wins for maps**: When two users set the same key in a `Y.Map`, the operation with the higher client ID wins. There is no merge — one value replaces the other.
 - **Tombstones**: Deleted items are marked as tombstones rather than removed, so that late-arriving operations referencing them can still be ordered correctly. Tombstones are a permanent cost.
 
-### 1.3 Y.js Shared Types and SwarmDB Documents
+### 1.3 Y.js Shared Types and Peerborne Documents
 
-In SwarmDB, each document wraps a single `Y.Doc`. The `YjsProvider` mediates between SwarmDB's generic provider interface and Y.js operations:
+In Peerborne, each document wraps a single `Y.Doc`. The `YjsProvider` mediates between Peerborne's generic provider interface and Y.js operations:
 
 ```typescript
-// SwarmDB creates a Y.Doc per document
+// Peerborne creates a Y.Doc per document
 const provider = new YjsProvider();
 const doc: Y.Doc = provider.newDocument();
 
@@ -55,10 +55,10 @@ const content = doc.getText('content');
 const items = doc.getArray('items');
 ```
 
-The `document.change(fn)` API passes the `Y.Doc` to your change function, where you manipulate shared types. SwarmDB then serializes, signs, encrypts, and broadcasts the resulting update to peers.
+The `document.change(fn)` API passes the `Y.Doc` to your change function, where you manipulate shared types. Peerborne then serializes, signs, encrypts, and broadcasts the resulting update to peers.
 
 ```typescript
-// Through SwarmDB's API
+// Through Peerborne's API
 document.change((doc: Y.Doc) => {
   doc.getMap('metadata').set('title', 'Meeting Notes');
   doc.getText('content').insert(0, 'Attendees: ...');
@@ -607,7 +607,7 @@ A wiki with pages containing rich text content, metadata, and inter-page links.
 ```typescript
 import * as Y from 'yjs';
 
-// Each wiki page is a separate SwarmDB document (separate Y.Doc).
+// Each wiki page is a separate Peerborne document (separate Y.Doc).
 // A page index document tracks all pages.
 
 // --- Page Index Document ---
@@ -669,7 +669,7 @@ function addWikiLink(
 ```
 
 **Design decisions**:
-- Each page is a separate SwarmDB document so pages can be loaded lazily.
+- Each page is a separate Peerborne document so pages can be loaded lazily.
 - The page index is a single document shared by all users.
 - Rich text uses `Y.Text` for character-level merging.
 - For rich text editors like ProseMirror or Slate, use `Y.XmlFragment` instead of `Y.Text`.
@@ -681,7 +681,7 @@ Messages organized by channels with reactions and read receipts.
 ```typescript
 import * as Y from 'yjs';
 
-// Each channel is a separate SwarmDB document.
+// Each channel is a separate Peerborne document.
 
 function createChannelSchema(doc: Y.Doc) {
   // Channel metadata
@@ -1234,7 +1234,7 @@ Y.js documents grow monotonically because deleted items become tombstones. Growt
 Split a single Y.Doc into multiple documents when:
 
 1. **Independent entities**: A wiki with 1,000 pages should not load all pages into one document. Each page should be a separate document.
-2. **Access control boundaries**: Different parts of the data need different read/write permissions. SwarmDB enforces ACL per document.
+2. **Access control boundaries**: Different parts of the data need different read/write permissions. Peerborne enforces ACL per document.
 3. **Document exceeds ~1 MB** of encoded state. Performance degrades with very large documents due to encoding/decoding cost.
 4. **High write contention on independent sections**: If two groups of users edit different sections, separate documents reduce merge overhead.
 5. **Lazy loading**: Users should not need to download the entire dataset to view one item.
@@ -1246,7 +1246,7 @@ Split a single Y.Doc into multiple documents when:
 const index = doc.getMap<Y.Map<any>>('documents');
 index.set('doc-abc', { title: 'Meeting Notes', createdAt: Date.now() });
 
-// Each child is a separate SwarmDB document opened on demand
+// Each child is a separate Peerborne document opened on demand
 const meetingNotes = await swarm.openDocument('/docs/doc-abc');
 ```
 
@@ -1389,18 +1389,18 @@ function migrateFlatten(doc: Y.Doc): void {
 
 ---
 
-## 8. Integration with SwarmDB
+## 8. Integration with Peerborne
 
-### 8.1 How Schemas Map to SwarmDB's Provider Pattern
+### 8.1 How Schemas Map to Peerborne's Provider Pattern
 
-SwarmDB's `YjsProvider` wraps `Y.Doc` operations. Your schema defines the structure of each document's `Y.Doc`:
+Peerborne's `YjsProvider` wraps `Y.Doc` operations. Your schema defines the structure of each document's `Y.Doc`:
 
 ```typescript
-import { Collabswarm, CollabswarmDocument, SubtleCrypto } from '@swarmbase/collabswarm';
-import { YjsProvider, YjsJSONSerializer, YjsACLProvider, YjsKeychainProvider } from '@swarmbase/collabswarm-yjs';
+import { Peerborne, PeerborneDocument, SubtleCrypto } from '@peerborne/core';
+import { YjsProvider, YjsJSONSerializer, YjsACLProvider, YjsKeychainProvider } from '@peerborne/yjs';
 import * as Y from 'yjs';
 
-// Initialize SwarmDB with Yjs provider
+// Initialize Peerborne with Yjs provider
 const crdt = new YjsProvider();
 const serializer = new YjsJSONSerializer();
 const auth = new SubtleCrypto();
@@ -1423,11 +1423,11 @@ swarmDoc.change((doc: Y.Doc) => {
 });
 ```
 
-The `YjsProvider.localChange()` method calls your function with the `Y.Doc`, then encodes the resulting state as a `Uint8Array` via `encodeStateAsUpdateV2()`. This binary is then signed, encrypted, and broadcast by SwarmDB.
+The `YjsProvider.localChange()` method calls your function with the `Y.Doc`, then encodes the resulting state as a `Uint8Array` via `encodeStateAsUpdateV2()`. This binary is then signed, encrypted, and broadcast by Peerborne.
 
-### 8.2 Using Schemas with SwarmDB's ACL System
+### 8.2 Using Schemas with Peerborne's ACL System
 
-SwarmDB enforces access control at the document level. Schema design should align with ACL boundaries:
+Peerborne enforces access control at the document level. Schema design should align with ACL boundaries:
 
 ```typescript
 // Pattern: separate documents for different access levels
@@ -1450,12 +1450,12 @@ const adminDoc = await swarm.openDocument('/projects/proj-123/admin');
 
 **Guidelines**:
 - Data that different user groups should access belongs in different documents.
-- Don't store public and private data in the same Y.Doc — SwarmDB encrypts the entire document with one key.
+- Don't store public and private data in the same Y.Doc — Peerborne encrypts the entire document with one key.
 - Use an index document (readable by all) to reference restricted child documents.
 
 ### 8.3 Schema Design Implications for Indexing
 
-When SwarmDB's indexing support is implemented (WS-5 in the roadmap), indexed fields must be readable from the Y.Doc structure. Design schemas with queryable fields at predictable paths:
+When Peerborne's indexing support is implemented (WS-5 in the roadmap), indexed fields must be readable from the Y.Doc structure. Design schemas with queryable fields at predictable paths:
 
 ```typescript
 // GOOD: consistent field paths for indexing
@@ -1479,7 +1479,7 @@ meta.set('assignee', 'alice');
 
 ### 8.4 Encryption Considerations
 
-SwarmDB encrypts the entire Y.Doc state with AES-GCM using a document key managed by the `YjsKeychain`. Schema design implications:
+Peerborne encrypts the entire Y.Doc state with AES-GCM using a document key managed by the `YjsKeychain`. Schema design implications:
 
 - **All data in a Y.Doc is encrypted with the same key.** You cannot selectively encrypt parts of a document. If some fields need stronger access control, put them in a separate document.
 - **Key rotation re-encrypts future updates, not past ones.** When a user is removed and the document key is rotated, the removed user retains access to the document state they already decrypted. Schema design cannot prevent this — it is a fundamental property of CRDTs where state is a function of all past operations.

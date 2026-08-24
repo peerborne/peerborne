@@ -12,13 +12,13 @@ Browser deployments generally need bootstrap/relay infrastructure because browse
 From the repository root:
 
 ```sh
-docker build -t swarmbase-relay relay-server/
+docker build -t peerborne-relay relay-server/
 docker run -d \
-  --name swarmbase-relay \
+  --name peerborne-relay \
   -p 9001:9001 \
   -p 9002:9002 \
   -v relay-data:/shared \
-  swarmbase-relay
+  peerborne-relay
 ```
 
 Port 9001 is WebSocket; port 9002 is plain TCP. The equivalent checked-in Compose command is:
@@ -32,7 +32,7 @@ docker compose -f guides/docker/docker-compose.single.yaml exec relay \
 For the direct `docker run` container, inspect the same file with:
 
 ```sh
-docker exec swarmbase-relay cat /shared/relay-info.json
+docker exec peerborne-relay cat /shared/relay-info.json
 ```
 
 The file contains the generated peer ID and listen multiaddrs. Do not give clients `/ip4/0.0.0.0/...`; construct a dialable address:
@@ -47,7 +47,7 @@ The repository examples read `VITE_RELAY_MULTIADDR`:
 
 ```sh
 VITE_RELAY_MULTIADDR='/dns4/relay.example.com/tcp/9001/ws/p2p/<peer-id>' \
-  yarn workspace @swarmbase/browser-test start
+  yarn workspace @peerborne/browser-test start
 ```
 
 Application code passes it to the bootstrap list:

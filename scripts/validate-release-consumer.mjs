@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 if (args.length !== 2) throw new Error('Usage: node scripts/validate-release-consumer.mjs <artifact-directory> <temporary-root>');
 const artifactsDirectory = resolve(args[0]);
 const temporaryRoot = resolve(args[1]);
-const consumer = resolve(temporaryRoot, 'swarmbase-release-consumer');
+const consumer = resolve(temporaryRoot, 'peerborne-release-consumer');
 await rm(consumer, { recursive: true, force: true });
 await mkdir(resolve(consumer, 'src'), { recursive: true });
 
@@ -22,19 +22,19 @@ try {
     throw new Error('Release artifacts do not match the allowlist');
   }
   const tarballs = release.artifacts.map(({ filename }) => resolve(artifactsDirectory, filename));
-  await writeFile(resolve(consumer, 'package.json'), `${JSON.stringify({ name: 'swarmbase-release-consumer', private: true, type: 'module' }, null, 2)}\n`);
+  await writeFile(resolve(consumer, 'package.json'), `${JSON.stringify({ name: 'peerborne-release-consumer', private: true, type: 'module' }, null, 2)}\n`);
   run('npm', ['install', '--no-audit', '--no-fund', ...tarballs, 'typescript@5.9.3', 'vite@6.4.3', '@types/react@19.2.3', 'vite-plugin-wasm@3.6.0'], consumer);
 
   const imports = [
-    "import '@swarmbase/collabswarm';",
-    "import '@swarmbase/collabswarm/node';",
-    "import '@swarmbase/collabswarm/browser-primitives';",
-    "import '@swarmbase/collabswarm-automerge';",
-    "import '@swarmbase/collabswarm-yjs';",
-    "import '@swarmbase/collabswarm-react';",
-    "import '@swarmbase/collabswarm-redux';",
-    "import '@swarmbase/collabswarm-index';",
-    "import '@swarmbase/collabswarm-index/react';",
+    "import '@peerborne/core';",
+    "import '@peerborne/core/node';",
+    "import '@peerborne/core/browser-primitives';",
+    "import '@peerborne/automerge';",
+    "import '@peerborne/yjs';",
+    "import '@peerborne/react';",
+    "import '@peerborne/redux';",
+    "import '@peerborne/index';",
+    "import '@peerborne/index/react';",
   ].join('\n');
   await writeFile(resolve(consumer, 'imports.mjs'), `${imports}\n`);
   run('node', ['imports.mjs'], consumer);

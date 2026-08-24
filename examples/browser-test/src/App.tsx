@@ -6,22 +6,22 @@ import {
   closeDocumentAsync,
   changeDocumentAsync,
   initializeAsync,
-} from '@swarmbase/collabswarm-redux';
+} from '@peerborne/redux';
 import { connect } from 'react-redux';
 import { ThunkDispatch } from 'redux-thunk';
 import { JsonEditor } from 'jsoneditor-react';
 import * as jsondiffpatch from 'jsondiffpatch';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
 import {
-  Collabswarm,
-  CollabswarmConfig,
-  CollabswarmDocument,
+  Peerborne,
+  PeerborneConfig,
+  PeerborneDocument,
   defaultConfig,
   defaultBootstrapConfig,
-} from '@swarmbase/collabswarm';
+} from '@peerborne/core';
 import { Doc, Change } from '@automerge/automerge';
 
-export type AutomergeSwarm<T = any> = Collabswarm<
+export type AutomergeSwarm<T = any> = Peerborne<
   Doc<T>,
   Change[],
   (doc: T) => void,
@@ -29,7 +29,7 @@ export type AutomergeSwarm<T = any> = Collabswarm<
   CryptoKey,
   CryptoKey
 >;
-export type AutomergeSwarmDocument<T = any> = CollabswarmDocument<
+export type AutomergeSwarmDocument<T = any> = PeerborneDocument<
   Doc<T>,
   Change[],
   (doc: T) => void,
@@ -42,7 +42,7 @@ const jdp = jsondiffpatch.create();
 
 interface AppProps {
   state: AutomergeSwarmState;
-  onInitialize: (config: CollabswarmConfig) => Promise<AutomergeSwarm>;
+  onInitialize: (config: PeerborneConfig) => Promise<AutomergeSwarm>;
   onConnect: (addresses: string[]) => any;
   onDocumentOpen: (documentId: string) => any;
   onDocumentClose: (documentId: string) => any;
@@ -336,7 +336,7 @@ function mapDispatchToProps(
   >,
 ) {
   return {
-    onInitialize: (config: CollabswarmConfig) =>
+    onInitialize: (config: PeerborneConfig) =>
       dispatch(
         initializeAsync<
           Doc<any>,

@@ -2,7 +2,7 @@
 
 ## Project
 
-Swarmbase provides encrypted, local-first CRDT documents synchronized over peer-to-peer networks. The six `@swarmbase/*` library packages are source workspaces and are not published to npm.
+Peerborne is alpha software for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. It is not production-ready. The six `@peerborne/*` library packages are source workspaces and are not published to npm.
 
 Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architecture, evidence, security, and limitation details. Do not turn isolated primitive tests into end-to-end capability claims.
 
@@ -23,7 +23,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `relay-server/`: separate relay project and lockfile
 - `e2e/test-app/`: separate integration-test project and lockfile
 - `e2e/integration/`: integration and transport NAT specs
-- `e2e/swarmbase-nat.spec.ts`: real Swarmbase cross-NAT spec
+- `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
 The root has ten workspaces: six libraries, three examples, and the site.
@@ -35,7 +35,7 @@ yarn build
 yarn build:examples
 yarn test
 yarn test:relay
-yarn workspace @swarmbase/site build
+yarn workspace @peerborne/site build
 yarn test:e2e
 yarn test:e2e:browser-test
 yarn test:e2e:wiki-swarm
@@ -64,7 +64,7 @@ The Site build generates API Markdown with Starlight TypeDoc under `site/src/con
 ## Completion checklist
 
 - Run `yarn install --immutable` when dependency integrity matters.
-- Run `yarn build`, `yarn test`, `yarn test:relay`, and `yarn workspace @swarmbase/site build` for repository-wide changes.
+- Run `yarn build`, `yarn test`, `yarn test:relay`, and `yarn workspace @peerborne/site build` for repository-wide changes.
 - Run relevant example or Docker-backed suites for affected behavior.
 - Run `git diff --check` and validate changed documentation links.
 - Confirm generated files, lockfiles, and unrelated source are unchanged unless required.

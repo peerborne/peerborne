@@ -1,14 +1,14 @@
-# Contributing to Swarmbase
+# Contributing to Peerborne
 
-Swarmbase is under active development. Contributions should distinguish implemented primitives from behavior verified end to end.
+Peerborne is under active development. Contributions should distinguish implemented primitives from behavior verified end to end.
 
-Read the [full contributing guide](https://swarmbase.github.io/swarmbase/community/contributing/) before starting. It contains the repository map, exact setup commands, Docker readiness sequence, generated-documentation boundaries, and pull request expectations. The repository's [AGENTS.md](AGENTS.md) provides the same operational baseline for coding tools.
+Read the [full contributing guide](https://peerborne.io/community/contributing/) before starting. It contains the repository map, exact setup commands, Docker readiness sequence, generated-documentation boundaries, and pull request expectations. The repository's [AGENTS.md](AGENTS.md) provides the same operational baseline for coding tools.
 
 ## Choose the right channel
 
-- Use [GitHub Discussions](https://github.com/swarmbase/swarmbase/discussions) for questions, use cases, design exploration, and ideas that are not yet actionable work.
-- Use [GitHub Issues](https://github.com/swarmbase/swarmbase/issues) for reproducible bugs and scoped work.
-- Use [private vulnerability reporting](https://github.com/swarmbase/swarmbase/security/advisories/new) for suspected security issues. Never disclose them in public issues or discussions.
+- Use [GitHub Discussions](https://github.com/Peerborne/peerborne/discussions) for questions, use cases, design exploration, and ideas that are not yet actionable work.
+- Use [GitHub Issues](https://github.com/Peerborne/peerborne/issues) for reproducible bugs and scoped work.
+- Use [private vulnerability reporting](https://github.com/Peerborne/peerborne/security/advisories/new) for suspected security issues. Never disclose them in public issues or discussions.
 
 Discuss architecture-changing, compatibility-sensitive, or security-sensitive work before implementation.
 
@@ -22,10 +22,10 @@ yarn install --immutable
 yarn build
 yarn test
 yarn test:relay
-yarn workspace @swarmbase/site build
+yarn workspace @peerborne/site build
 ```
 
-Run the relevant example or Docker-backed suite for affected behavior. Follow the bounded topology setup and teardown sequence in the [contributing guide](https://swarmbase.github.io/swarmbase/community/contributing/#docker-backed-suites); the test command alone does not start the required services.
+Run the relevant example or Docker-backed suite for affected behavior. Follow the bounded topology setup and teardown sequence in the [contributing guide](https://peerborne.io/community/contributing/#docker-backed-suites); the test command alone does not start the required services.
 
 ## Pull requests
 

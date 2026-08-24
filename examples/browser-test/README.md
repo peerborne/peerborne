@@ -1,6 +1,6 @@
-# Swarmbase browser test
+# Peerborne browser test
 
-This Vite and React harness exercises the core Swarmbase package with its
+This Vite and React harness exercises the core Peerborne package with its
 Automerge and Redux integrations. It exposes node addresses, peer connection
 controls, document open/edit controls, and ACL inspection for development and
 testing.
@@ -15,7 +15,7 @@ Use Node.js 22.19.0 and Yarn 4.5.0 through Corepack. From the repository root:
 corepack enable
 yarn install --immutable
 yarn build
-yarn workspace @swarmbase/browser-test start
+yarn workspace @peerborne/browser-test start
 ```
 
 Open the URL printed by Vite. Enter a document path such as `/demo/document` in
@@ -37,6 +37,6 @@ delivery, or production networking. The separate cross-NAT suite uses this
 harness with test-only document-key transfer and has its own narrower evidence
 boundary.
 
-- [Verified quick start](https://swarmbase.github.io/swarmbase/getting-started/quick-start/)
-- [Networking model](https://swarmbase.github.io/swarmbase/concepts/networking/)
-- [Current limitations](https://swarmbase.github.io/swarmbase/concepts/limitations/)
+- [Verified quick start](https://peerborne.io/getting-started/quick-start/)
+- [Networking model](https://peerborne.io/concepts/networking/)
+- [Current limitations](https://peerborne.io/concepts/limitations/)

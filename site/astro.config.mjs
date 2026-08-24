@@ -23,21 +23,23 @@ const removeGeneratedApiLanding = {
 };
 
 const socialCard = {
-  url: 'https://swarmbase.github.io/swarmbase/social-card.png',
-  alt: 'Swarmbase — encrypted, local-first CRDT documents over peer-to-peer networks.',
+  url: 'https://peerborne.io/social-card.png',
+  alt: 'Peerborne — encrypted local-first state, carried by peers.',
 };
 
-// Served as a GitHub Pages project page until a custom domain is set up.
+// Deployed through GitHub Pages at the custom apex domain.
 export default defineConfig({
-  site: 'https://swarmbase.github.io',
-  base: '/swarmbase',
+  site: 'https://peerborne.io',
+  redirects: {
+    '/concepts/why-swarmbase/': '/concepts/why-peerborne/',
+  },
   vite: {
     resolve: {
       alias: [
         {
-          find: /^@swarmbase\/collabswarm$/,
+          find: /^@peerborne\/core$/,
           replacement: fileURLToPath(
-            new URL('./src/lib/collabswarm-shim.ts', import.meta.url),
+            new URL('./src/lib/peerborne-shim.ts', import.meta.url),
           ),
         },
       ],
@@ -48,12 +50,12 @@ export default defineConfig({
       plugins: [
         starlightTypeDoc({
           entryPoints: [
-            '../packages/collabswarm',
-            '../packages/collabswarm-yjs',
-            '../packages/collabswarm-automerge',
-            '../packages/collabswarm-react',
-            '../packages/collabswarm-redux',
-            '../packages/collabswarm-index',
+            '../packages/core',
+            '../packages/yjs',
+            '../packages/automerge',
+            '../packages/react',
+            '../packages/redux',
+            '../packages/index',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },
@@ -66,22 +68,21 @@ export default defineConfig({
           },
         }),
       ],
-      title: 'Swarmbase',
-      description:
-        'Encrypted, local-first CRDT documents synchronized over peer-to-peer networks.',
+      title: 'Peerborne',
+      description: 'Encrypted local-first state, carried by peers.',
       logo: {
         src: './src/assets/logo.svg',
-        alt: 'Swarmbase',
+        alt: 'Peerborne',
       },
       social: [
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/swarmbase/swarmbase',
+          href: 'https://github.com/Peerborne/peerborne',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/swarmbase/swarmbase/edit/main/site/',
+        baseUrl: 'https://github.com/Peerborne/peerborne/edit/main/site/',
       },
       customCss: ['./src/styles/custom.css'],
       head: [
@@ -122,7 +123,7 @@ export default defineConfig({
         {
           label: 'Concepts',
           items: [
-            'concepts/why-swarmbase',
+            'concepts/why-peerborne',
             'concepts/architecture',
             'concepts/local-first',
             'concepts/crdts',

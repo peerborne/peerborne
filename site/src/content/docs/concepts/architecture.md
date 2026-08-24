@@ -1,24 +1,24 @@
 ---
 title: Architecture
-description: How Swarmbase is structured — packages, data flow, networking, and the sync model.
+description: How Peerborne is structured — packages, data flow, networking, and the sync model.
 ---
 
-Swarmbase composes several open-source subsystems into a coherent local-first stack. This page describes how the pieces fit together.
+Peerborne composes several open-source subsystems into a coherent local-first stack. This page describes how the pieces fit together.
 
 ## Package dependency graph
 
 ```
-@swarmbase/collabswarm (core)
+@peerborne/core (core)
 ├── libp2p (peer-to-peer networking)
 ├── Helia (content-addressed storage)
 ├── @chainsafe/js-ipns (naming)
 ├── BeeKEM (key encapsulation for dynamic groups)
 ├── UCAN (authorization capabilities)
-└── @swarmbase/collabswarm-yjs / @swarmbase/collabswarm-automerge (CRDT adapters)
+└── @peerborne/yjs / @peerborne/automerge (CRDT adapters)
 
-@swarmbase/collabswarm-react → @swarmbase/collabswarm
-@swarmbase/collabswarm-redux → @swarmbase/collabswarm
-@swarmbase/collabswarm-index → @swarmbase/collabswarm
+@peerborne/react → @peerborne/core
+@peerborne/redux → @peerborne/core
+@peerborne/index → @peerborne/core
 ```
 
 ## Data flow: writing a change
@@ -34,7 +34,7 @@ CRDT Provider (Yjs / Automerge)
   │  applies mutation to local CRDT replica
   │  serializes the update
   ▼
-CollabswarmDocument
+PeerborneDocument
   │  wraps update in a signed CRDTChangeBlock
   │  encrypts block with document AES-GCM key
   │  addresses block by CID (SHA-256 hash of ciphertext)
@@ -62,7 +62,7 @@ Application
 document.open()
   │
   ▼
-CollabswarmNode
+PeerborneNode
   │  resolves document ID to CID via IPNS or bootstrap
   │  if local: loads frontier from Helia blockstore
   │  if remote: queries Q-of-K peers for frontier agreement
@@ -84,7 +84,7 @@ Document is ready
 
 ## The sync model
 
-Swarmbase uses a **shadow sync graph** rather than a conventional Merkle-DAG:
+Peerborne uses a **shadow sync graph** rather than a conventional Merkle-DAG:
 
 - Each `document.change()` call creates one `CRDTChangeBlock` — an encrypted, signed, CID-addressed node containing a serialized CRDT update.
 - Each block references its parent(s) by CID, forming a DAG.
@@ -100,7 +100,7 @@ This model is **eventually consistent**: local edits apply immediately, remote e
 ┌─────────────────────────────────────┐
 │            Application              │
 ├─────────────────────────────────────┤
-│  CollabswarmNode                    │
+│  PeerborneNode                    │
 │  (document lifecycle, ACL, crypto)  │
 ├─────────────────────────────────────┤
 │  libp2p                             │
@@ -135,7 +135,7 @@ Application provides:
   ├── ECDSA P-384 signing key pair (writer identity)
   └── ECDH P-256 KEM key pair (key encapsulation)
 
-CollabswarmNode manages:
+PeerborneNode manages:
   ├── Document AES-GCM keys (one per document, shared via BeeKEM)
   ├── Signing key → libp2p PeerId mapping (separate keys)
   └── ACL entries (reader/writer lists bound to signing public keys)
@@ -151,7 +151,7 @@ Key material never leaves the device in plaintext. Document keys are shared betw
 
 ## Where infrastructure is needed
 
-Swarmbase documents can sync over peer-to-peer links, but most deployments need supporting infrastructure:
+Peerborne documents can sync over peer-to-peer links, but most deployments need supporting infrastructure:
 
 | Component | Required? | Purpose |
 |---|---|---|
@@ -159,7 +159,7 @@ Swarmbase documents can sync over peer-to-peer links, but most deployments need 
 | **Bootstrap node** | For initial discovery | Provides a well-known entry point for the libp2p network |
 | **STUN/TURN server** | For WebRTC direct connections | Helps peers establish direct browser-to-browser links |
 | **Remote pinning** | Optional (integration incomplete) | Would persist encrypted blocks when all local peers go offline; the listener API exists but the current commit path does not invoke a publisher |
-| **Identity service** | Application responsibility | Swarmbase does not provide user authentication or key management |
+| **Identity service** | Application responsibility | Peerborne does not provide user authentication or key management |
 
 The relay server source is in `relay-server/`. The Docker Compose files in the repository root provide ready-to-run multi-node topologies for testing.
 
@@ -175,7 +175,7 @@ See the [limitations page](../limitations/) for a complete list. Key architectur
 
 ## Next steps
 
-- [Local-first design](../local-first/) — what "local-first" means in Swarmbase
+- [Local-first design](../local-first/) — what "local-first" means in Peerborne
 - [CRDT model](../crdts/) — how Yjs and Automerge integrate
 - [Networking](../networking/) — transports, discovery, and NAT traversal
 - [Security model](../security/) — threat model, encryption, and ACL

@@ -1,7 +1,7 @@
-import { Collabswarm, CollabswarmDocument } from '@swarmbase/collabswarm';
+import { Peerborne, PeerborneDocument } from '@peerborne/core';
 import * as Y from 'yjs';
 
-export type YjsCollabswarm = Collabswarm<
+export type YjsPeerborne = Peerborne<
   Y.Doc,
   Uint8Array,
   (doc: Y.Doc) => void,
@@ -9,7 +9,7 @@ export type YjsCollabswarm = Collabswarm<
   CryptoKey,
   CryptoKey
 >;
-export type YjsCollabswarmDocument = CollabswarmDocument<
+export type YjsPeerborneDocument = PeerborneDocument<
   Y.Doc,
   Uint8Array,
   (doc: Y.Doc) => void,

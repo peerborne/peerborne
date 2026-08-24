@@ -14,7 +14,7 @@ import { gossipsub } from '@libp2p/gossipsub'
 import { bootstrap } from '@libp2p/bootstrap'
 import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'
 
-const SYNC_TOPIC = '/swarmdb/integration-test/sync'
+const SYNC_TOPIC = '/peerborne/integration-test/sync'
 const DISCOVERY_TOPIC = 'swarmdb._peer-discovery._p2p._pubsub'
 
 // UI elements

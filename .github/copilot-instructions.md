@@ -1,10 +1,10 @@
-# GitHub Copilot instructions for Swarmbase
+# GitHub Copilot instructions for Peerborne
 
 Follow the repository-root `AGENTS.md`; it is the authoritative setup, command, validation, and completion guide.
 
 ## Project status
 
-Swarmbase provides encrypted, local-first CRDT documents over peer-to-peer networks. The six `@swarmbase/*` libraries are source workspaces and are not published to npm.
+Peerborne provides encrypted, local-first CRDT documents over peer-to-peer networks. The six `@peerborne/*` libraries are source workspaces and are not published to npm.
 
 Use `docs/feature-audit.md` and the site concept pages as the evidence baseline. Do not present isolated CRDT, crypto, ACL, BeeKEM, storage, or networking tests as proof of complete multi-peer behavior.
 
@@ -15,7 +15,7 @@ corepack enable
 yarn install --immutable
 yarn build
 yarn test
-yarn workspace @swarmbase/site build
+yarn workspace @peerborne/site build
 ```
 
 Use Node.js 22.19.0 and Yarn 4.5.0. Run `yarn test:relay` and the relevant example or Docker-backed suite when affected. `yarn test:e2e` runs three Vite/Chromium smoke suites without Docker. Integration, NAT, and cross-NAT tests require their matching Compose topologies; follow `.github/workflows/ci.yml`.

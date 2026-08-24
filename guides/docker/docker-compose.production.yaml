@@ -1,4 +1,4 @@
-# SwarmDB Production Multi-Server Deployment
+# Peerborne Production Multi-Server Deployment
 #
 # Runs multiple relay nodes with TLS termination via Caddy reverse proxy.
 # For a real production deployment, run each relay on a separate server.

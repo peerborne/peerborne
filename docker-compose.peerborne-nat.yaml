@@ -1,0 +1,57 @@
+services:
+  relay:
+    build: ./relay-server
+    networks: [nat-a, nat-b]
+    volumes: ["shared-data:/shared"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "const net=require('net');const s=net.createConnection(9001,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app-a: &app
+    image: peerborne-browser-test:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks: [nat-a]
+    volumes: ["shared-data:/shared:ro"]
+    depends_on:
+      relay: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - |
+        PEER_ID=$$(sed -n 's/.*"peerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /shared/relay-info.json)
+        export VITE_RELAY_MULTIADDR="/dns4/relay/tcp/9001/ws/p2p/$$PEER_ID"
+        export VITE_CROSS_NAT_TEST=1
+        exec yarn workspace @peerborne/browser-test start --host 0.0.0.0 --port 3000
+
+  app-b:
+    <<: *app
+    networks: [nat-b]
+
+  browser-a: &browser
+    image: mcr.microsoft.com/playwright:v1.58.2-noble
+    networks: [nat-a]
+    ports: ["3101:3000"]
+    environment:
+      TARGET_HOST: app-a
+    volumes: ["./e2e/localhost-proxy.mjs:/localhost-proxy.mjs:ro"]
+    depends_on: [app-a]
+    command: ["bash", "-lc", "node /localhost-proxy.mjs & exec npx --yes playwright@1.58.2 run-server --port 3000 --host 0.0.0.0"]
+
+  browser-b:
+    <<: *browser
+    networks: [nat-b]
+    ports: ["3102:3000"]
+    environment:
+      TARGET_HOST: app-b
+    depends_on: [app-b]
+
+networks:
+  nat-a: { driver: bridge }
+  nat-b: { driver: bridge }
+
+volumes:
+  shared-data:

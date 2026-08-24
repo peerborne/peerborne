@@ -1,6 +1,6 @@
-# Swarmbase feature and verification audit
+# Peerborne feature and verification audit
 
-This document maps Swarmbase's implemented and advertised features to executable
+This document maps Peerborne's implemented and advertised features to executable
 evidence. A passing unit test proves the named component in isolation; it does
 not by itself prove browser interoperability, multi-peer behavior, persistence,
 or production suitability.
@@ -40,7 +40,7 @@ Status meanings:
 | Circuit Relay v2 fallback | Partial | Relay builds; 57 relay tests; NAT specs | Relay failover while an edit is in flight is not a default gate. |
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
-| Document load across NAT boundaries | Verified | Real Swarmbase cross-NAT Playwright acceptance test passed twice from clean Podman topologies and has a dedicated CI job | Live post-load pubsub convergence and partition/rejoin remain deferred. |
+| Document load across NAT boundaries | Verified | Real Peerborne cross-NAT Playwright acceptance test passed twice from clean Podman topologies and has a dedicated CI job | Live post-load pubsub convergence and partition/rejoin remain deferred. |
 | Initial-load K-of-Q tip verification | Verified | Load-quorum and orchestrator suites | Real peers serving conflicting DAG blocks should be tested end to end. |
 | Network statistics | Verified | Network statistics suite | Reference applications do not expose enough diagnostics for operators. |
 
@@ -88,9 +88,10 @@ Status meanings:
 
 ## Cross-cutting design findings
 
-1. The public identity is fragmented across **Swarmbase**, **SwarmDB**, and
-   **Collabswarm**. Package discovery, documentation, and error messages do not
-   reinforce one product name.
+1. Public packages, APIs, documentation, and error messages now use
+   **Peerborne**. Historical `swarmdb` and `collabswarm` strings remain only
+   where changing protocol, key-derivation, Redux, or persisted-storage
+   identifiers would break compatibility; see `MIGRATING.md`.
 2. The core barrel eagerly imports the complete networking/storage stack. This
    makes simple adapter and serializer consumers pay a large bundle cost and
    increases the chance that environment-specific dependencies leak across the
@@ -107,7 +108,7 @@ Status meanings:
    only that several non-empty HTML bodies rendered. It also attached console
    listeners after navigation and logged errors without failing. The transport
    integration app similarly proves plain libp2p/Gossipsub messaging, not a
-   Swarmbase document, CRDT convergence, encryption, or ACL enforcement.
+   Peerborne document, CRDT convergence, encryption, or ACL enforcement.
 7. `yarn test:e2e` now runs the three strict application-specific Chromium
    suites. Relay-backed database convergence remains deliberately separate
    instead of being represented by a shell-rendering test.

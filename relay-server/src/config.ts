@@ -17,7 +17,7 @@ export const DEFAULT_WS_PORT = '9001'
 /** Default plain-TCP port. */
 export const DEFAULT_TCP_PORT = '9002'
 
-/** Default document publish path (matches collabswarm-config.ts default). */
+/** Default document publish path (matches peerborne-config.ts default). */
 export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/documents'
 
 /**

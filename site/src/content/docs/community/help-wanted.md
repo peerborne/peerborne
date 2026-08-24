@@ -1,11 +1,11 @@
 ---
 title: Help wanted
-description: Concrete evidence, reliability, packaging, documentation, and integration gaps where Swarmbase needs contributors.
+description: Concrete evidence, reliability, packaging, documentation, and integration gaps where Peerborne needs contributors.
 ---
 
-Swarmbase already contains substantial CRDT, storage, networking, encryption, ACL, key-management, framework, and indexing primitives. The highest-priority work is proving and completing the end-to-end paths that compose them. See the [feature and verification audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md) for current evidence and the [contributing guide](../contributing/) before starting.
+Peerborne already contains substantial CRDT, storage, networking, encryption, ACL, key-management, framework, and indexing primitives. The highest-priority work is proving and completing the end-to-end paths that compose them. See the [feature and verification audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for current evidence and the [contributing guide](../contributing/) before starting.
 
-The issue tracker may not have curated beginner tasks. Use [Discussions](https://github.com/swarmbase/swarmbase/discussions) to scope an idea and [Issues](https://github.com/swarmbase/swarmbase/issues) for reproducible bugs or agreed actionable work. Security-sensitive findings must go through private vulnerability reporting from the repository **Security** tab.
+The issue tracker may not have curated beginner tasks. Use [Discussions](https://github.com/Peerborne/peerborne/discussions) to scope an idea and [Issues](https://github.com/Peerborne/peerborne/issues) for reproducible bugs or agreed actionable work. Security-sensitive findings must go through private vulnerability reporting from the repository **Security** tab.
 
 ## Priority end-to-end gaps
 
@@ -33,11 +33,11 @@ The relay has unit coverage and NAT acceptance paths. Needed work includes durab
 
 ### External package publication
 
-The six `@swarmbase/*` workspaces build, but they are unpublished. Prepare publication only with clean tarball inspection, external-consumer ESM and declaration tests on Node 22.19.0 and browsers, dependency/export verification, and reviewed release automation.
+The six `@peerborne/*` workspaces build, but they are unpublished. Prepare publication only with clean tarball inspection, external-consumer ESM and declaration tests on Node 22.19.0 and browsers, dependency/export verification, and reviewed release automation.
 
 ### Documentation and snippet tests
 
-The Site workflow generates TypeDoc Markdown from source during `yarn workspace @swarmbase/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. There is no legacy TypeDoc workflow.
+The Site workflow generates TypeDoc Markdown from source during `yarn workspace @peerborne/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. There is no legacy TypeDoc workflow.
 
 ### Benchmark runner and budgets
 

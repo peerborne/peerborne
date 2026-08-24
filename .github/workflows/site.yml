@@ -57,7 +57,7 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
       - name: Build site
-        run: yarn workspace @swarmbase/site build
+        run: yarn workspace @peerborne/site build
       - name: Test site tooling
         run: node --test site/scripts/check-links.test.mjs site/scripts/generate-llms-full.test.mjs
       - name: Check site and agent index links

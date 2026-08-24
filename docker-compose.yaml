@@ -18,16 +18,16 @@ services:
     build:
       context: ./
       dockerfile: ./Dockerfile
-    image: collabswarm-automerge:latest
+    image: peerborne-automerge:latest
       # If rebuild-on-save is not working, try uncommenting the following (may increase CPU usage of system and prevent sleeping):
       # - "CHOKIDAR_USEPOLLING=true"
     ports:
       - 3001:3000
     volumes:
-      - ./packages/collabswarm/src:/app/packages/collabswarm/src
-      - ./packages/collabswarm-automerge/bin:/app/packages/collabswarm-automerge/bin
-      - ./packages/collabswarm-automerge/src:/app/packages/collabswarm-automerge/src
-      - ./packages/collabswarm-redux/src:/app/packages/collabswarm-redux/src
+      - ./packages/core/src:/app/packages/core/src
+      - ./packages/automerge/bin:/app/packages/automerge/bin
+      - ./packages/automerge/src:/app/packages/automerge/src
+      - ./packages/redux/src:/app/packages/redux/src
       - ./examples/browser-test/public:/app/examples/browser-test/public
       - ./examples/browser-test/src:/app/examples/browser-test/src
       - shared-data:/shared:ro
@@ -45,22 +45,22 @@ services:
         VITE_RELAY_MULTIADDR=$$(cat /shared/relay-info.json | sed -n 's/.*"wsMultiaddr"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
         export VITE_RELAY_MULTIADDR
         echo "Relay multiaddr: $$VITE_RELAY_MULTIADDR"
-        exec yarn workspace @swarmbase/browser-test start --host 0.0.0.0 --port 3000
+        exec yarn workspace @peerborne/browser-test start --host 0.0.0.0 --port 3000
 
   wiki-swarm:
     build:
       context: ./
       dockerfile: ./Dockerfile
-    image: collabswarm-automerge:latest
+    image: peerborne-automerge:latest
       # If rebuild-on-save is not working, try uncommenting the following (may increase CPU usage of system and prevent sleeping):
       # - "CHOKIDAR_USEPOLLING=true"
     ports:
       - 3000:3000
     volumes:
-      - ./packages/collabswarm/src:/app/packages/collabswarm/src
-      - ./packages/collabswarm-automerge/bin:/app/packages/collabswarm-automerge/bin
-      - ./packages/collabswarm-automerge/src:/app/packages/collabswarm-automerge/src
-      - ./packages/collabswarm-redux/src:/app/packages/collabswarm-redux/src
+      - ./packages/core/src:/app/packages/core/src
+      - ./packages/automerge/bin:/app/packages/automerge/bin
+      - ./packages/automerge/src:/app/packages/automerge/src
+      - ./packages/redux/src:/app/packages/redux/src
       - ./examples/wiki-swarm/public:/app/examples/wiki-swarm/public
       - ./examples/wiki-swarm/src:/app/examples/wiki-swarm/src
       - shared-data:/shared:ro
@@ -75,13 +75,13 @@ services:
         VITE_RELAY_MULTIADDR=$$(cat /shared/relay-info.json | sed -n 's/.*"wsMultiaddr"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
         export VITE_RELAY_MULTIADDR
         echo "Relay multiaddr: $$VITE_RELAY_MULTIADDR"
-        exec yarn workspace @swarmbase/wiki-swarm start --host 0.0.0.0 --port 3000
+        exec yarn workspace @peerborne/wiki-swarm start --host 0.0.0.0 --port 3000
 
   node:
     build:
       context: ./
       dockerfile: ./Dockerfile
-    image: collabswarm-automerge:latest
+    image: peerborne-automerge:latest
     environment:
       - 'CLIENT_CONFIG_FILE=/app/client-config.env'
       # If rebuild-on-save is not working, try uncommenting the following (may increase CPU usage of system and prevent sleeping):
@@ -91,9 +91,9 @@ services:
       - 4002:4002
       - 4003:4003
     volumes:
-      - ./packages/collabswarm/src:/app/packages/collabswarm/src
-      - ./packages/collabswarm-automerge/bin:/app/packages/collabswarm-automerge/bin
-      - ./packages/collabswarm-automerge/src:/app/packages/collabswarm-automerge/src
+      - ./packages/core/src:/app/packages/core/src
+      - ./packages/automerge/bin:/app/packages/automerge/bin
+      - ./packages/automerge/src:/app/packages/automerge/src
     depends_on:
       relay:
         condition: service_healthy

@@ -1,7 +1,7 @@
-# Deferred Swarmbase verification tasks
+# Deferred Peerborne verification tasks
 
 The required cross-NAT acceptance proof is tracked by
-`e2e/swarmbase-nat.spec.ts`. The following work is intentionally deferred and
+`e2e/peerborne-nat.spec.ts`. The following work is intentionally deferred and
 should be selected as explicit future tasks rather than being mistaken for
 current coverage.
 

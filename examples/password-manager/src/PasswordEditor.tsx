@@ -1,25 +1,25 @@
-import { useCollabswarmDocumentState } from '@swarmbase/collabswarm-react';
+import { usePeerborneDocumentState } from '@peerborne/react';
 import { Form } from 'react-bootstrap';
 import { PermissionsTable } from './PermissionsTable';
-import { YjsCollabswarm } from './utils';
+import { YjsPeerborne } from './utils';
 import Delta from 'quill-delta';
 import * as Y from 'yjs';
 
 export function PasswordEditor({
   userId,
   passwordId,
-  collabswarm,
+  peerborne,
 }: {
   userId: string;
   passwordId?: string;
-  collabswarm: YjsCollabswarm;
+  peerborne: YjsPeerborne;
 }) {
-  const [, changePasswords] = useCollabswarmDocumentState(
-    collabswarm,
+  const [, changePasswords] = usePeerborneDocumentState(
+    peerborne,
     `/${userId}/passwords-index`,
   );
-  const [doc, changeDoc] = useCollabswarmDocumentState(
-    collabswarm,
+  const [doc, changeDoc] = usePeerborneDocumentState(
+    peerborne,
     `/passwords/${passwordId}`,
   );
 
@@ -99,7 +99,7 @@ export function PasswordEditor({
       </Form.Group>
       {/* Sharing Controls */}
       <Form.Label column="sm">Permissions</Form.Label>
-      <PermissionsTable passwordId={passwordId} collabswarm={collabswarm} />
+      <PermissionsTable passwordId={passwordId} peerborne={peerborne} />
     </Form>
   );
 }

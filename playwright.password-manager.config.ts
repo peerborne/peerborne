@@ -15,7 +15,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'yarn workspace @swarmbase/password-manager vite preview --host 127.0.0.1 --port 4173',
+    command: 'yarn workspace @peerborne/password-manager vite preview --host 127.0.0.1 --port 4173',
     port: 4173,
     timeout: 30_000,
     reuseExistingServer: false,

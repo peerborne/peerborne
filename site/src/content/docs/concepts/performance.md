@@ -3,7 +3,7 @@ title: Performance
 description: Performance characteristics, benchmarks, tuning guidance, and current limitations.
 ---
 
-Swarmbase makes several deliberate performance tradeoffs to balance security, consistency, and resource use. This page documents the design decisions, benchmark suites, and tuning guidance.
+Peerborne makes several deliberate performance tradeoffs to balance security, consistency, and resource use. This page documents the design decisions, benchmark suites, and tuning guidance.
 
 ## Design decisions
 
@@ -11,7 +11,7 @@ Swarmbase makes several deliberate performance tradeoffs to balance security, co
 
 Document loading fetches blocks via libp2p bitswap. Without a bound, every requested CID would fetch in parallel, exhausting per-connection stream quotas and pressuring memory. The loader caps concurrent inflight fetches at 8, chosen to overlap WAN-latency-bound bitswap requests while bounding peak resource use.
 
-Source: [`collabswarm-document.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/collabswarm-document.ts) — `LOAD_PREFETCH_MAX_CONCURRENCY` and the bounded worker pool for blockstore fetches.
+Source: [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts) — `LOAD_PREFETCH_MAX_CONCURRENCY` and the bounded worker pool for blockstore fetches.
 
 ### Load quorum defaults
 
@@ -22,48 +22,48 @@ Document open verifies the tip state against K peers to defend against a dishone
 | `loadQuorumK` | 3 | Majority of 3 defends against a single dishonest peer without noticeably impacting open latency |
 | `loadQuorumTimeoutMs` | 5000 | Larger than typical WAN RTT + protocol negotiation, but bounds stall to ~5 seconds for partitioned peers |
 
-Source: [`collabswarm-config.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/collabswarm-config.ts) — `loadQuorumK` and `loadQuorumTimeoutMs` documentation. Verified by [`load-quorum.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/load-quorum.test.ts) (pure decision logic) and [`load-quorum-orchestrator.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/load-quorum-orchestrator.test.ts) (integration: all-agree, majority-with-dissenter, insufficient responses, single-peer fallback).
+Source: [`peerborne-config.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-config.ts) — `loadQuorumK` and `loadQuorumTimeoutMs` documentation. Verified by [`load-quorum.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum.test.ts) (pure decision logic) and [`load-quorum-orchestrator.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum-orchestrator.test.ts) (integration: all-agree, majority-with-dissenter, insufficient responses, single-peer fallback).
 
 ### Parallel deserialization
 
 Both CRDT adapters use parallel deserialization for cold-cache performance to reduce time-to-interactive when opening large documents:
 
-- [`collabswarm-automerge.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-automerge/src/collabswarm-automerge.ts)
-- [`collabswarm-yjs.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-yjs/src/collabswarm-yjs.ts)
+- [`peerborne-automerge.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/automerge/src/peerborne-automerge.ts)
+- [`peerborne-yjs.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/yjs/src/peerborne-yjs.ts)
 
 ### Revocation latency
 
-The BeeKEM ratchet-tree key rotation closes the revocation-latency gap of earlier "encrypt new key under old key" schemes. A removed reader cannot derive the new key even if connected at the moment of revocation. Source: [`collabswarm-document.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/collabswarm-document.ts) and [`wire-protocols.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/wire-protocols.ts).
+The BeeKEM ratchet-tree key rotation closes the revocation-latency gap of earlier "encrypt new key under old key" schemes. A removed reader cannot derive the new key even if connected at the moment of revocation. Source: [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts) and [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).
 
 ### GC and bounded caches
 
-- **LRU cache**: Used for document change blocks and key material. Limits unbounded memory growth. Verified by [`lru-cache.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/lru-cache.test.ts).
-- **Compaction**: Prunes in-memory CRDT nodes and removes unreferenced blocks. Verified by [`compaction.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/compaction.test.ts) and [`blockstore-gc.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/blockstore-gc.test.ts).
-- **React hook caches**: Module-level task and subscriber-count caches with ref-counting eviction. Verified by [`hooks-cache.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-react/src/hooks-lifecycle.test.ts).
+- **LRU cache**: Used for document change blocks and key material. Limits unbounded memory growth. Verified by [`lru-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/lru-cache.test.ts).
+- **Compaction**: Prunes in-memory CRDT nodes and removes unreferenced blocks. Verified by [`compaction.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/compaction.test.ts) and [`blockstore-gc.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/blockstore-gc.test.ts).
+- **React hook caches**: Module-level task and subscriber-count caches with ref-counting eviction. Verified by [`hooks-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-lifecycle.test.ts).
 
 ## Benchmark suites
 
-Swarmbase includes six benchmark suites across two packages. Each suite uses a statistical runner that reports min, max, mean, median, p99, and standard deviation with warmup iterations and optional memory-delta tracking.
+Peerborne includes six benchmark suites across two packages. Each suite uses a statistical runner that reports min, max, mean, median, p99, and standard deviation with warmup iterations and optional memory-delta tracking.
 
 ### Core benchmarks
 
-Source: [`packages/collabswarm/src/__benchmarks__/`](https://github.com/swarmbase/swarmbase/tree/main/packages/collabswarm/src/__benchmarks__)
+Source: [`packages/core/src/__benchmarks__/`](https://github.com/Peerborne/peerborne/tree/main/packages/core/src/__benchmarks__)
 
 | Suite | File | What it measures |
 |-------|------|-----------------|
-| **CRDT Sync Latency** | [`crdt-sync-latency.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/__benchmarks__/crdt-sync-latency.ts) | Per-operation latency of the change pipeline at payload sizes 1 KB to 1 MB: ECDSA P-384 sign/verify, AES-GCM encrypt/decrypt, combined sign+encrypt and decrypt+verify pipelines, JSON serialize/deserialize |
-| **Crypto Overhead** | [`crypto-overhead.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/__benchmarks__/crypto-overhead.ts) | Key generation cost (ECDSA P-384, AES-GCM-256), key rotation at 10 KB, plaintext vs encrypted change propagation across sizes, isolated crypto operation overhead |
-| **Convergence Simulation** | [`convergence-simulation.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/__benchmarks__/convergence-simulation.ts) | Simulated multi-peer convergence: 2–32 peers making concurrent edits through the full sign-encrypt-broadcast-decrypt-verify pipeline, measures time-to-convergence, message count, and bandwidth |
+| **CRDT Sync Latency** | [`crdt-sync-latency.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/crdt-sync-latency.ts) | Per-operation latency of the change pipeline at payload sizes 1 KB to 1 MB: ECDSA P-384 sign/verify, AES-GCM encrypt/decrypt, combined sign+encrypt and decrypt+verify pipelines, JSON serialize/deserialize |
+| **Crypto Overhead** | [`crypto-overhead.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/crypto-overhead.ts) | Key generation cost (ECDSA P-384, AES-GCM-256), key rotation at 10 KB, plaintext vs encrypted change propagation across sizes, isolated crypto operation overhead |
+| **Convergence Simulation** | [`convergence-simulation.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/convergence-simulation.ts) | Simulated multi-peer convergence: 2–32 peers making concurrent edits through the full sign-encrypt-broadcast-decrypt-verify pipeline, measures time-to-convergence, message count, and bandwidth |
 
 ### Index benchmarks
 
-Source: [`packages/collabswarm-index/src/__benchmarks__/`](https://github.com/swarmbase/swarmbase/tree/main/packages/collabswarm-index/src/__benchmarks__)
+Source: [`packages/index/src/__benchmarks__/`](https://github.com/Peerborne/peerborne/tree/main/packages/index/src/__benchmarks__)
 
 | Suite | File | What it measures |
 |-------|------|-----------------|
-| **Index Query Scaling** | [`index-query-scaling.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-index/src/__benchmarks__/index-query-scaling.ts) | Query latency vs index size: 100–100K documents. Exact-match, range, prefix, compound, and sorted queries against MemoryIndexStorage, plus single-document update cost and full-scan baseline |
-| **Bloom Filter Scaling** | [`bloom-filter-scaling.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-index/src/__benchmarks__/bloom-filter-scaling.ts) | Insert throughput at filter sizes 1K–1M bits, positive/negative query time, false-positive rate at fill counts 100–10K, serialization/deserialization time, CRDT merge (join) time, memory footprint |
-| **Blind Index Performance** | [`blind-index-perf.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-index/src/__benchmarks__/blind-index-perf.ts) | Encrypted search operations: field-key derivation (HKDF), single/compound token generation, token match/mismatch comparison, field-count scaling (1–16 fields), batch throughput (100 tokens) |
+| **Index Query Scaling** | [`index-query-scaling.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/index-query-scaling.ts) | Query latency vs index size: 100–100K documents. Exact-match, range, prefix, compound, and sorted queries against MemoryIndexStorage, plus single-document update cost and full-scan baseline |
+| **Bloom Filter Scaling** | [`bloom-filter-scaling.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/bloom-filter-scaling.ts) | Insert throughput at filter sizes 1K–1M bits, positive/negative query time, false-positive rate at fill counts 100–10K, serialization/deserialization time, CRDT merge (join) time, memory footprint |
+| **Blind Index Performance** | [`blind-index-perf.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/blind-index-perf.ts) | Encrypted search operations: field-key derivation (HKDF), single/compound token generation, token match/mismatch comparison, field-count scaling (1–16 fields), batch throughput (100 tokens) |
 
 ## Performance-aware tests
 
@@ -71,14 +71,14 @@ Several test suites exercise performance-critical paths:
 
 | Test suite | Path | What it covers |
 |-----------|------|----------------|
-| Load quorum | [`load-quorum.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/load-quorum.test.ts) | Quorum decision logic, hash-binding comparison, config validation |
-| Load quorum orchestrator | [`load-quorum-orchestrator.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/load-quorum-orchestrator.test.ts) | Multi-peer quorum scenarios including timeout and insufficient-response paths |
-| LRU cache | [`lru-cache.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/lru-cache.test.ts) | Eviction correctness, capacity bounds, size tracking |
-| Blockstore GC | [`blockstore-gc.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/blockstore-gc.test.ts) | CID collection, deletable-filtering, tree-shape coverage |
-| Compaction | [`compaction.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/compaction.test.ts) | Config defaults, GC decision logic, prune+GC integration |
-| Network statistics | [`network-stats.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/network-stats.test.ts) | Message/byte counters, connection tracking, snapshot isolation |
-| React hook caches | [`hooks-cache.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm-react/src/hooks-lifecycle.test.ts) | Cache population, ref-counted eviction, per-document isolation |
-| Cross-NAT throughput | [`nat-resilience.spec.ts`](https://github.com/swarmbase/swarmbase/blob/main/e2e/integration/nat-resilience.spec.ts) | 10-message bidirectional burst across NAT boundaries with delivery threshold |
+| Load quorum | [`load-quorum.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum.test.ts) | Quorum decision logic, hash-binding comparison, config validation |
+| Load quorum orchestrator | [`load-quorum-orchestrator.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum-orchestrator.test.ts) | Multi-peer quorum scenarios including timeout and insufficient-response paths |
+| LRU cache | [`lru-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/lru-cache.test.ts) | Eviction correctness, capacity bounds, size tracking |
+| Blockstore GC | [`blockstore-gc.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/blockstore-gc.test.ts) | CID collection, deletable-filtering, tree-shape coverage |
+| Compaction | [`compaction.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/compaction.test.ts) | Config defaults, GC decision logic, prune+GC integration |
+| Network statistics | [`network-stats.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/network-stats.test.ts) | Message/byte counters, connection tracking, snapshot isolation |
+| React hook caches | [`hooks-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-lifecycle.test.ts) | Cache population, ref-counted eviction, per-document isolation |
+| Cross-NAT throughput | [`nat-resilience.spec.ts`](https://github.com/Peerborne/peerborne/blob/main/e2e/integration/nat-resilience.spec.ts) | 10-message bidirectional burst across NAT boundaries with delivery threshold |
 
 ## Document size guidance
 
@@ -103,14 +103,14 @@ When operating a Circuit Relay server under load:
 - Increase `ulimit -n` for many concurrent connections.
 - Set `NODE_OPTIONS=--max-old-space-size=4096` for memory headroom.
 - Monitor event loop lag.
-- For large deployments, tune GossipSub parameters (`D`, `Dlo`, `Dhi`, `heartbeatInterval`) in [`relay-server/src/index.ts`](https://github.com/swarmbase/swarmbase/blob/main/relay-server/src/index.ts).
+- For large deployments, tune GossipSub parameters (`D`, `Dlo`, `Dhi`, `heartbeatInterval`) in [`relay-server/src/index.ts`](https://github.com/Peerborne/peerborne/blob/main/relay-server/src/index.ts).
 - Client-side: `circuitRelayTransport({ reservationConcurrency: 1 })` — increase for redundancy at the cost of additional relay connections.
 
 See the [running a relay cookbook](../../cookbook/running-a-relay/) for setup instructions.
 
 ## Network statistics
 
-`NetworkStats` provides counters for messages/bytes sent and received, document open/close lifecycle events, and connection tracking. Applications can use `snapshot()` to inspect current state. Verified by [`network-stats.test.ts`](https://github.com/swarmbase/swarmbase/blob/main/packages/collabswarm/src/network-stats.test.ts).
+`NetworkStats` provides counters for messages/bytes sent and received, document open/close lifecycle events, and connection tracking. Applications can use `snapshot()` to inspect current state. Verified by [`network-stats.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/network-stats.test.ts).
 
 ## Current limitations
 
@@ -123,10 +123,10 @@ See the [running a relay cookbook](../../cookbook/running-a-relay/) for setup in
 
 ```sh
 # Core benchmarks (currently broken — see limitations above)
-yarn workspace @swarmbase/collabswarm benchmark --iterations 100
+yarn workspace @peerborne/core benchmark --iterations 100
 
 # Index benchmarks (currently broken — see limitations above)
-yarn workspace @swarmbase/collabswarm-index benchmark --iterations 100
+yarn workspace @peerborne/index benchmark --iterations 100
 ```
 
 Both suites output Markdown tables with statistical summaries. The `--iterations` flag controls the sample count (default 100).

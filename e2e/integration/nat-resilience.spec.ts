@@ -1,7 +1,7 @@
 /**
  * NAT Traversal Resilience Tests (issue #184)
  *
- * Exercises failure-recovery scenarios for SwarmDB peers communicating across
+ * Exercises failure-recovery scenarios for Peerborne peers communicating across
  * isolated NAT-simulated Docker networks. Builds on the topology established
  * by `docker-compose.nat-test.yaml`:
  *

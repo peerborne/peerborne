@@ -8,19 +8,19 @@ import { Provider } from 'react-redux';
 import { createStore, applyMiddleware, Middleware } from 'redux';
 import {
   changeDocumentAsync,
-  collabswarmReducer,
+  peerborneReducer,
   connectAsync,
   openDocument,
   openDocumentAsync,
   syncDocument,
-} from '@swarmbase/collabswarm-redux';
+} from '@peerborne/redux';
 import {
   AutomergeACLProvider,
   AutomergeJSONSerializer,
   AutomergeKeychainProvider,
   AutomergeProvider,
-} from '@swarmbase/collabswarm-automerge';
-import { SubtleCrypto } from '@swarmbase/collabswarm';
+} from '@peerborne/automerge';
+import { SubtleCrypto } from '@peerborne/core';
 import { thunk } from 'redux-thunk';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
 
@@ -33,8 +33,8 @@ const logger: Middleware = store => next => action => {
 
 declare global {
   interface Window {
-    __SWARMBASE_TEST_IDENTITY__?: { privateKey: JsonWebKey; publicKey: JsonWebKey };
-    __SWARMBASE_TEST__?: {
+    __PEERBORNE_TEST_IDENTITY__?: { privateKey: JsonWebKey; publicKey: JsonWebKey };
+    __PEERBORNE_TEST__?: {
       open: (path: string) => Promise<unknown>;
       openWithDocumentKey: (
         path: string,
@@ -52,7 +52,7 @@ declare global {
 
 const crossNatTest = import.meta.env.VITE_CROSS_NAT_TEST === '1';
 const injectedIdentity = crossNatTest
-  ? window.__SWARMBASE_TEST_IDENTITY__
+  ? window.__PEERBORNE_TEST_IDENTITY__
   : undefined;
 const userKeyPair = injectedIdentity
   ? {
@@ -73,7 +73,7 @@ const userKeyPair = injectedIdentity
 const serializer = new AutomergeJSONSerializer();
 
 const store = createStore(
-  collabswarmReducer(
+  peerborneReducer(
     userKeyPair.privateKey,
     userKeyPair.publicKey,
     new AutomergeProvider(),
@@ -88,15 +88,15 @@ const store = createStore(
 );
 
 // Deliberately test-only: Playwright uses this narrow bridge to exercise the
-// real Redux -> Swarmbase -> Automerge path without coupling assertions to
+// real Redux -> Peerborne -> Automerge path without coupling assertions to
 // jsoneditor's implementation details.
 if (crossNatTest && injectedIdentity) {
-  window.__SWARMBASE_TEST__ = {
+  window.__PEERBORNE_TEST__ = {
     open: (path) => store.dispatch<any>(openDocumentAsync(path)),
     openWithDocumentKey: async (path, saved) => {
       const node = store.getState().node;
       const documentRef = node?.doc(path);
-      if (!documentRef) throw new Error('Swarmbase node is not ready');
+      if (!documentRef) throw new Error('Peerborne node is not ready');
       const key = await crypto.subtle.importKey(
         'jwk', saved.key, { name: 'AES-GCM', length: 256 }, true,
         ['encrypt', 'decrypt'],
@@ -142,7 +142,7 @@ if (crossNatTest && injectedIdentity) {
           (address: { toString(): string }) => address.toString(),
         ) ?? [];
       } catch (error) {
-        console.warn('Unable to read Swarmbase peer addresses', error);
+        console.warn('Unable to read Peerborne peer addresses', error);
         return [];
       }
     },
@@ -154,7 +154,7 @@ if (crossNatTest && injectedIdentity) {
           ? `${relay}/p2p-circuit/p2p/${peerId}`
           : undefined;
       } catch (error) {
-        console.warn('Unable to construct the Swarmbase circuit address', error);
+        console.warn('Unable to construct the Peerborne circuit address', error);
         return undefined;
       }
     },

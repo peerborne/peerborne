@@ -97,8 +97,8 @@ describe('loadConfig', () => {
     })
 
     it('splits multiple comma-separated values', () => {
-      expect(loadConfig({ TOPIC_ALLOWLIST: '/document/,/documents,/swarmdb/' }).topicAllowlist)
-        .toEqual(['/document/', '/documents', '/swarmdb/'])
+      expect(loadConfig({ TOPIC_ALLOWLIST: '/document/,/documents,/peerborne/' }).topicAllowlist)
+        .toEqual(['/document/', '/documents', '/peerborne/'])
     })
 
     it('trims surrounding whitespace from each segment', () => {

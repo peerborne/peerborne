@@ -15,7 +15,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'yarn workspace @swarmbase/browser-test vite preview --host 127.0.0.1 --port 4175',
+    command: 'yarn workspace @peerborne/browser-test vite preview --host 127.0.0.1 --port 4175',
     port: 4175,
     timeout: 30_000,
     reuseExistingServer: false,

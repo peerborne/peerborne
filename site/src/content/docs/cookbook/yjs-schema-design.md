@@ -1,6 +1,6 @@
 ---
 title: Designing Yjs schemas
-description: Choose Yjs shared types and migration patterns for Swarmbase documents.
+description: Choose Yjs shared types and migration patterns for Peerborne documents.
 ---
 
 **Status: Illustrative schema patterns, not a complete application.** Yjs adapter behavior has focused tests, but these patterns do not prove multi-peer application convergence, persistence, or migration safety. See [CRDTs](../../concepts/crdts/) and [Limitations](../../concepts/limitations/).
@@ -18,9 +18,9 @@ description: Choose Yjs shared types and migration patterns for Swarmbase docume
 
 Do not treat plain objects stored inside shared types as recursively collaborative. Use nested shared types when fields require independent mutation.
 
-## Mutate through Swarmbase
+## Mutate through Peerborne
 
-All mutations, initialization, and migrations must run inside and await `swarmDoc.change`. A bare `Y.Doc` mutation is not automatically authorized, encrypted, stored, or published by Swarmbase.
+All mutations, initialization, and migrations must run inside and await `swarmDoc.change`. A bare `Y.Doc` mutation is not automatically authorized, encrypted, stored, or published by Peerborne.
 
 ```ts
 await swarmDoc.change((doc: Y.Doc) => {
@@ -44,7 +44,7 @@ await swarmDoc.change((doc: Y.Doc) => {
 });
 ```
 
-A Yjs transaction does not make network publication transactional, does not span Swarmbase documents, and does not roll back an in-place Yjs mutation if later asynchronous storage/publication fails.
+A Yjs transaction does not make network publication transactional, does not span Peerborne documents, and does not roll back an in-place Yjs mutation if later asynchronous storage/publication fails.
 
 ## IDs, lists, and counters
 
@@ -84,8 +84,8 @@ Guards such as `has()` make repeated execution locally idempotent for that opera
 ## Heuristics, not limits
 
 - Split documents at access-control, lazy-loading, ownership, and recovery boundaries.
-- Document size targets such as 1 MB and nesting guidance such as two or three levels are application heuristics, not Swarmbase or Yjs limits.
+- Document size targets such as 1 MB and nesting guidance such as two or three levels are application heuristics, not Peerborne or Yjs limits.
 - Deep structures, large histories, and high update rates require measurement with realistic peers and storage.
-- One Swarmbase document has one ACL/key domain; separately shared data belongs in separate documents.
+- One Peerborne document has one ACL/key domain; separately shared data belongs in separate documents.
 
-Yjs garbage collection can remove some deleted structs when safe in the local state, but GC changes history/update assumptions and does not mean every document or encoded history only shrinks. Retained updates, snapshots, peers with older state vectors, repeated writes, and Swarmbase's own change/block history all affect storage. Do not promise that tombstones are always permanent or that GC provides application-level deletion. See [Storage](../../concepts/storage/).
+Yjs garbage collection can remove some deleted structs when safe in the local state, but GC changes history/update assumptions and does not mean every document or encoded history only shrinks. Retained updates, snapshots, peers with older state vectors, repeated writes, and Peerborne's own change/block history all affect storage. Do not promise that tombstones are always permanent or that GC provides application-level deletion. See [Storage](../../concepts/storage/).

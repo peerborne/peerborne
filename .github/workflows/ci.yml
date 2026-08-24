@@ -29,12 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - collabswarm
-          - collabswarm-yjs
-          - collabswarm-react
-          - collabswarm-automerge
-          - collabswarm-redux
-          - collabswarm-index
+          - core
+          - yjs
+          - react
+          - automerge
+          - redux
+          - index
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion
@@ -47,7 +47,7 @@ jobs:
       - run: yarn install
       - name: Build workspace packages
         run: yarn build
-      - run: yarn workspace @swarmbase/${{ matrix.package }} test
+      - run: yarn workspace @peerborne/${{ matrix.package }} test
 
   integration:
     runs-on: ubuntu-latest
@@ -140,7 +140,7 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.nat-test.yaml down -v
 
-  swarmbase-cross-nat:
+  peerborne-cross-nat:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -157,25 +157,25 @@ jobs:
           node-version: ${{ steps.nodeversion.outputs.version }}
           cache: 'yarn'
       - run: yarn install
-      - name: Start two NAT-isolated browsers and real Swarmbase apps
-        run: docker compose -f docker-compose.swarmbase-nat.yaml up -d --build
+      - name: Start two NAT-isolated browsers and real Peerborne apps
+        run: docker compose -f docker-compose.peerborne-nat.yaml up -d --build
       - name: Wait for remote Playwright endpoints
         run: |
           timeout 120 bash -c 'until echo > /dev/tcp/127.0.0.1/3101; do sleep 2; done'
           timeout 120 bash -c 'until echo > /dev/tcp/127.0.0.1/3102; do sleep 2; done'
       - name: Prove encrypted document retrieval across NAT boundary
-        run: yarn test:swarmbase-nat
+        run: yarn test:peerborne-nat
         env:
           CI: true
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: swarmbase-cross-nat-report
+          name: peerborne-cross-nat-report
           path: playwright-report/
           retention-days: 30
       - name: Show service logs
         if: failure()
-        run: docker compose -f docker-compose.swarmbase-nat.yaml logs
+        run: docker compose -f docker-compose.peerborne-nat.yaml logs
       - name: Stop services
         if: always()
-        run: docker compose -f docker-compose.swarmbase-nat.yaml down -v
+        run: docker compose -f docker-compose.peerborne-nat.yaml down -v

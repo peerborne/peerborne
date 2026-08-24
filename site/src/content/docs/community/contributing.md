@@ -1,41 +1,41 @@
 ---
-title: Contributing to Swarmbase
-description: Set up the repository, run the correct validation, and prepare a focused Swarmbase contribution.
+title: Contributing to Peerborne
+description: Set up the repository, run the correct validation, and prepare a focused Peerborne contribution.
 ---
 
-Discuss non-trivial, architecture-changing, or security-sensitive work before implementation. Questions and early ideas belong in [Discussions](https://github.com/swarmbase/swarmbase/discussions); reproducible bugs and actionable proposals belong in [Issues](https://github.com/swarmbase/swarmbase/issues). Suspected vulnerabilities must use private vulnerability reporting from the repository **Security** tab, never a public issue or discussion.
+Discuss non-trivial, architecture-changing, or security-sensitive work before implementation. Questions and early ideas belong in [Discussions](https://github.com/Peerborne/peerborne/discussions); reproducible bugs and actionable proposals belong in [Issues](https://github.com/Peerborne/peerborne/issues). Suspected vulnerabilities must use private vulnerability reporting from the repository **Security** tab, never a public issue or discussion.
 
 ## Setup
 
 Use Node.js **22.19.0** and Yarn **4.5.0**, as pinned by `.tool-versions` and `package.json`.
 
 ```sh
-git clone https://github.com/swarmbase/swarmbase.git
-cd swarmbase
+git clone https://github.com/Peerborne/peerborne.git
+cd peerborne
 corepack enable
 yarn install --immutable
 ```
 
 The ten root workspaces are six libraries under `packages/`, three Vite examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
 
-Current workspace package names use `@swarmbase/*`. They are not published to npm, so develop and test against repository workspaces only.
+Current workspace package names use `@peerborne/*`. They are not published to npm, so develop and test against repository workspaces only.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `packages/collabswarm/` | Core documents, storage, networking, crypto, ACL, UCAN, epoch, and BeeKEM primitives |
-| `packages/collabswarm-{automerge,yjs}/` | CRDT adapters; both contain headless daemon binaries |
-| `packages/collabswarm-{react,redux,index}/` | Framework bindings and distributed-index primitives |
+| `packages/core/` | Core documents, storage, networking, crypto, ACL, UCAN, epoch, and BeeKEM primitives |
+| `packages/{automerge,yjs}/` | CRDT adapters; both contain headless daemon binaries |
+| `packages/{react,redux,index}/` | Framework bindings and distributed-index primitives |
 | `examples/{browser-test,wiki-swarm,password-manager}/` | Vite applications used by the three smoke suites |
 | `site/` | Astro Starlight documentation and TypeDoc integration |
 | `relay-server/` | Separate relay project and unit suite |
 | `e2e/integration/` | Playwright transport integration and NAT specs using `e2e/test-app/` |
 | `e2e/test-app/` | Separate minimal browser project for integration topologies |
-| `e2e/swarmbase-nat.spec.ts` | Real Swarmbase cross-NAT acceptance spec |
+| `e2e/peerborne-nat.spec.ts` | Real Peerborne cross-NAT acceptance spec |
 | `docker-compose.integration.yaml` | Integration service topology |
 | `docker-compose.nat-test.yaml` | isolated transport NAT topology |
-| `docker-compose.swarmbase-nat.yaml` | Two isolated browsers and real Swarmbase apps |
+| `docker-compose.peerborne-nat.yaml` | Two isolated browsers and real Peerborne apps |
 | `docs/feature-audit.md` | Capability-to-evidence audit and known end-to-end gaps |
 
 There is no `multi-user.spec.ts`; the current example suites are smoke tests, not complete multi-user showcases.
@@ -47,7 +47,7 @@ yarn build                         # six library workspaces
 yarn build:examples                # libraries, then all three Vite examples
 yarn test                          # six library Jest suites
 yarn test:relay                    # separate relay-server Jest suite
-yarn workspace @swarmbase/site build
+yarn workspace @peerborne/site build
 yarn exec playwright install chromium
 yarn test:e2e                     # three Vite example smoke suites; no Docker
 ```
@@ -95,19 +95,19 @@ for port in 3001 3002 3003; do wait_http "http://127.0.0.1:$port"; done
 CI=true yarn test:nat
 docker compose -f docker-compose.nat-test.yaml down -v
 
-docker compose -f docker-compose.swarmbase-nat.yaml up -d --build
+docker compose -f docker-compose.peerborne-nat.yaml up -d --build
 for port in 3101 3102; do wait_tcp "$port"; done
-CI=true yarn test:swarmbase-nat
-docker compose -f docker-compose.swarmbase-nat.yaml down -v
+CI=true yarn test:peerborne-nat
+docker compose -f docker-compose.peerborne-nat.yaml down -v
 ```
 
 These helpers mirror CI's 120-second readiness budget. The workflow remains the canonical sequence, including failure logs and unconditional cleanup.
 
-Integration checks transport discovery, bidirectional messaging, resilience, and NAT behavior through the test app. Cross-NAT checks encrypted document retrieval between real Swarmbase apps; it does not prove invitation delivery or live post-load convergence.
+Integration checks transport discovery, bidirectional messaging, resilience, and NAT behavior through the test app. Cross-NAT checks encrypted document retrieval between real Peerborne apps; it does not prove invitation delivery or live post-load convergence.
 
 ## Generated API reference
 
-The **Site** workflow runs `yarn workspace @swarmbase/site build`. Starlight TypeDoc generates package API Markdown during that build into `site/src/content/docs/reference/api/`; the directory is ignored. Do not edit generated Markdown. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. There is no legacy TypeDoc workflow.
+The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight TypeDoc generates package API Markdown during that build into `site/src/content/docs/reference/api/`; the directory is ignored. Do not edit generated Markdown. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. There is no legacy TypeDoc workflow.
 
 ## Pull request expectations
 
@@ -118,10 +118,10 @@ The **Site** workflow runs `yarn workspace @swarmbase/site build`. Starlight Typ
 - Address review findings. Repository policy expects Copilot review to return no comments on the latest head and all applicable CI checks to pass.
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless the contributor explicitly requests them.
 
-The CI workflow runs the six-package build and unit-test matrix, Docker integration, NAT traversal, and real Swarmbase cross-NAT jobs. The separate Site workflow builds generated TypeDoc and the site. CI currently does **not** run the three example smoke suites or `test:relay`; run those locally when relevant unless the workflows are changed.
+The CI workflow runs the six-package build and unit-test matrix, Docker integration, NAT traversal, and real Peerborne cross-NAT jobs. The separate Site workflow builds generated TypeDoc and the site. CI currently does **not** run the three example smoke suites or `test:relay`; run those locally when relevant unless the workflows are changed.
 
 Review timing depends on maintainer availability; there is no response or review-time SLA.
 
 ## License
 
-Swarmbase and all six package manifests use the MIT License.
+Peerborne and all six package manifests use the MIT License.

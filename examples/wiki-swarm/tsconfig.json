@@ -27,13 +27,13 @@
   "exclude": ["src/serviceWorker.ts"],
   "references": [
     {
-      "path": "../../packages/collabswarm"
+      "path": "../../packages/core"
     },
     {
-      "path": "../../packages/collabswarm-automerge"
+      "path": "../../packages/automerge"
     },
     {
-      "path": "../../packages/collabswarm-redux"
+      "path": "../../packages/redux"
     }
   ]
 }

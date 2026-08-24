@@ -1,15 +1,15 @@
 ---
 title: Comparisons
-description: How Swarmbase compares to other local-first, CRDT, and realtime collaboration tools.
+description: How Peerborne compares to other local-first, CRDT, and realtime collaboration tools.
 ---
 
-Swarmbase occupies a specific niche: **encrypted, peer-to-peer CRDT document collaboration with open-source libraries**. This page compares it to related projects to help you understand when Swarmbase is the right choice.
+Peerborne occupies a specific niche: **encrypted, peer-to-peer CRDT document collaboration with open-source libraries**. This page compares it to related projects to help you understand when Peerborne is the right choice.
 
-## Swarmbase vs Yjs (standalone)
+## Peerborne vs Yjs (standalone)
 
 [Yjs](https://docs.yjs.dev) is a high-performance CRDT library for shared editing. It provides shared types (`Y.Map`, `Y.Array`, `Y.Text`), network-agnostic sync, and an ecosystem of network and persistence providers. Encryption, authentication, access control, and provider selection remain application choices.
 
-| | Swarmbase | Yjs (standalone) |
+| | Peerborne | Yjs (standalone) |
 |---|---|---|
 | **CRDT** | Adapts Yjs or Automerge | Built-in CRDT runtime |
 | **Encryption** | AES-GCM by default, BeeKEM key sharing | Application responsibility |
@@ -19,13 +19,13 @@ Swarmbase occupies a specific niche: **encrypted, peer-to-peer CRDT document col
 | **Networking** | libp2p (WebSocket, WebRTC, WebTransport, GossipSub) | y-websocket, y-webrtc providers |
 | **Peer discovery** | Bootstrap, Kademlia DHT, AutoNAT | Application responsibility |
 
-Swarmbase is a good choice when you need encryption, signing, and access control out of the box. Use Yjs standalone when you already have your own auth, transport, and encryption layers.
+Peerborne is a good choice when you need encryption, signing, and access control out of the box. Use Yjs standalone when you already have your own auth, transport, and encryption layers.
 
-## Swarmbase vs Automerge (standalone)
+## Peerborne vs Automerge (standalone)
 
 [Automerge](https://automerge.org) is a CRDT library with a JSON-like document model and transport-agnostic sync protocol. Automerge Repo adds storage and networking through configurable adapters; encryption and access control remain application concerns.
 
-| | Swarmbase | Automerge (standalone) |
+| | Peerborne | Automerge (standalone) |
 |---|---|---|
 | **Data model** | Adapts Automerge or Yjs | JSON-like CRDT documents |
 | **Sync transport** | libp2p + GossipSub | Automerge-repo (WebSocket, HTTP) |
@@ -33,13 +33,13 @@ Swarmbase is a good choice when you need encryption, signing, and access control
 | **Key exchange** | BeeKEM for dynamic groups | Application responsibility |
 | **Rich text** | Via Yjs adapter | Via Automerge Text type |
 
-Swarmbase wraps Automerge documents with encryption and access control. If you only need the CRDT merge semantics, use Automerge directly.
+Peerborne wraps Automerge documents with encryption and access control. If you only need the CRDT merge semantics, use Automerge directly.
 
-## Swarmbase vs Liveblocks
+## Peerborne vs Liveblocks
 
 [Liveblocks](https://liveblocks.io) is a managed realtime collaboration platform. It provides presence, comments, notifications, and CRDT-based storage as a hosted service.
 
-| | Swarmbase | Liveblocks |
+| | Peerborne | Liveblocks |
 |---|---|---|
 | **Architecture** | Peer-to-peer with relay infrastructure | Client-server (Liveblocks backend) |
 | **Deployment** | Self-hosted (you run relays) | Managed service (Liveblocks cloud) |
@@ -50,13 +50,13 @@ Swarmbase wraps Automerge documents with encryption and access control. If you o
 | **Project status** | Alpha; not production-ready | Established managed service |
 | **AI collaboration features** | Not included | AI comments, AI copilots |
 
-Use Liveblocks for production collaborative UIs with presence, comments, and rich-text when you are comfortable with a managed service. Use Swarmbase when you need end-to-end encryption and data sovereignty, or when you want to own your infrastructure.
+Use Liveblocks for production collaborative UIs with presence, comments, and rich-text when you are comfortable with a managed service. Use Peerborne when you need end-to-end encryption and data sovereignty, or when you want to own your infrastructure.
 
-## Swarmbase vs RxDB
+## Peerborne vs RxDB
 
 [RxDB](https://rxdb.info) is a local-first NoSQL database for JavaScript. It stores JSON documents locally, provides reactive queries (RxJS observables), and syncs with backend servers via replication plugins.
 
-| | Swarmbase | RxDB |
+| | Peerborne | RxDB |
 |---|---|---|
 | **Data model** | CRDT documents (Yjs/Automerge) | JSON documents with schemas |
 | **Query language** | IndexManager (full-text + blind indexes) | Mango/MongoDB query syntax |
@@ -67,13 +67,13 @@ Use Liveblocks for production collaborative UIs with presence, comments, and ric
 | **Framework support** | React, Redux | React, Angular, Vue, Svelte, Node.js, Expo |
 | **Project status** | Alpha; not production-ready | Established project |
 
-RxDB is an established local-first database with broad backend support. Swarmbase is focused on encrypted peer-to-peer CRDT collaboration without a central database. They solve different problems.
+RxDB is an established local-first database with broad backend support. Peerborne is focused on encrypted peer-to-peer CRDT collaboration without a central database. They solve different problems.
 
-## Swarmbase vs Jazz
+## Peerborne vs Jazz
 
 [Jazz](https://jazz.tools) is a local-first relational database with row-level permissions and real-time sync. Jazz v2 is a public alpha with hosted and self-hosted database-server options.
 
-| | Swarmbase | Jazz |
+| | Peerborne | Jazz |
 |---|---|---|
 | **Data model** | CRDT documents | Relational tables with schemas |
 | **Sync model** | Peer-to-peer (libp2p) | Client-server (Jazz Cloud or self-hosted) |
@@ -83,13 +83,13 @@ RxDB is an established local-first database with broad backend support. Swarmbas
 | **Framework support** | React, Redux | React, Vue, Svelte, Solid, Expo |
 | **Project status** | Alpha; not production-ready | Public alpha (Jazz v2) |
 
-Jazz v2 provides a relational model and managed or self-hosted sync infrastructure. Swarmbase focuses on encrypted CRDT documents and user-operated peer-to-peer networking. Both are early-stage projects that require careful evaluation.
+Jazz v2 provides a relational model and managed or self-hosted sync infrastructure. Peerborne focuses on encrypted CRDT documents and user-operated peer-to-peer networking. Both are early-stage projects that require careful evaluation.
 
-## Swarmbase vs Electric Sync
+## Peerborne vs Electric Sync
 
 [Electric Sync](https://electric-sql.com) is a read-path sync engine that streams selected Postgres data to local clients over HTTP.
 
-| | Swarmbase | Electric Sync |
+| | Peerborne | Electric Sync |
 |---|---|---|
 | **Sync direction** | Bidirectional (peers read and write) | Primarily read-path sync (writes go through your API) |
 | **Source of truth** | CRDT merge (no central authority) | Postgres (server is authoritative) |
@@ -99,11 +99,11 @@ Jazz v2 provides a relational model and managed or self-hosted sync infrastructu
 | **Offline** | IndexedDB-backed Helia/IPFS storage; partition/rejoin recovery is not yet verified end to end | Depends on the client stack, such as PGlite or TanStack DB |
 | **Deployment** | Self-hosted peer, relay, and bootstrap infrastructure | Electric Cloud or self-hosted sync service |
 
-Electric Sync fits applications that already use Postgres and need a read-path sync engine. Swarmbase is designed for peer-to-peer document collaboration without a central database.
+Electric Sync fits applications that already use Postgres and need a read-path sync engine. Peerborne is designed for peer-to-peer document collaboration without a central database.
 
-## When to choose Swarmbase
+## When to choose Peerborne
 
-Swarmbase stands out when you need:
+Peerborne stands out when you need:
 
 1. **End-to-end encrypted peer-to-peer documents** — relay and bootstrap infrastructure does not see document plaintext, though connection and traffic metadata remain visible
 2. **No central database server** — your application has no backend database at all
@@ -111,4 +111,4 @@ Swarmbase stands out when you need:
 4. **Composable libraries** — use only the packages you need, not a monolithic platform
 5. **Open-source transparency** — every layer is inspectable and modifiable
 
-If any of the projects above matches your requirements more closely, use it — most are more mature and have larger communities. Swarmbase is exploring a specific design point: encrypted CRDT documents that sync between peers without a trusted central database, while self-hosted relay infrastructure may remain in the data path.
+If any of the projects above matches your requirements more closely, use it — most are more mature and have larger communities. Peerborne is exploring a specific design point: encrypted CRDT documents that sync between peers without a trusted central database, while self-hosted relay infrastructure may remain in the data path.

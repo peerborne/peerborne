@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions, use cases, and design ideas
-    url: https://github.com/swarmbase/swarmbase/discussions
+    url: https://github.com/Peerborne/peerborne/discussions
     about: Start a discussion before turning an exploratory idea into actionable work.
   - name: Security reports
-    url: https://github.com/swarmbase/swarmbase/security/advisories/new
+    url: https://github.com/Peerborne/peerborne/security/advisories/new
     about: Report suspected vulnerabilities privately. Do not disclose them in a public issue.

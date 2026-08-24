@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Table, Row, Container } from 'react-bootstrap';
-import { YjsCollabswarm } from './utils';
-import { serializeKey } from '@swarmbase/collabswarm-yjs';
+import { YjsPeerborne } from './utils';
+import { serializeKey } from '@peerborne/yjs';
 
 function KeyCell({children}: {children?: React.ReactNode}) {
   return <td>
@@ -31,10 +31,10 @@ function ActionCell({value}: {value: string}) {
 }
 
 export function Settings({
-  collabswarm,
+  peerborne,
   publicKey,
 }: {
-  collabswarm: YjsCollabswarm;
+  peerborne: YjsPeerborne;
   publicKey?: CryptoKey;
 }) {
   const [serializedKey, setSerializedKey] = useState<string | undefined>();
@@ -59,7 +59,7 @@ export function Settings({
             </tr>
           </thead>
           <tbody>
-            {collabswarm.libp2p.getMultiaddrs().map((addr, i) => <tr key={addr.toString()}>
+            {peerborne.libp2p.getMultiaddrs().map((addr, i) => <tr key={addr.toString()}>
               <KeyCell>Address {i+1}</KeyCell>
               <ValueCell>{addr.toString()}</ValueCell>
               <ActionCell value={addr.toString()}></ActionCell>
@@ -70,7 +70,7 @@ export function Settings({
               <ActionCell value={serializedKey}></ActionCell>
             </tr>}
 
-            {!serializedKey && (collabswarm.libp2p.getMultiaddrs().length === 0) && (
+            {!serializedKey && (peerborne.libp2p.getMultiaddrs().length === 0) && (
               <tr>
                 <td colSpan={3}>No settings found!</td>
               </tr>

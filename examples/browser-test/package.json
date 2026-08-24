@@ -1,11 +1,11 @@
 {
-  "name": "@swarmbase/browser-test",
+  "name": "@peerborne/browser-test",
   "private": true,
   "dependencies": {
     "@automerge/automerge": "^3.2.6",
-    "@swarmbase/collabswarm": "workspace:packages/collabswarm",
-    "@swarmbase/collabswarm-automerge": "workspace:packages/collabswarm-automerge",
-    "@swarmbase/collabswarm-redux": "workspace:packages/collabswarm-redux",
+    "@peerborne/automerge": "workspace:packages/automerge",
+    "@peerborne/core": "workspace:packages/core",
+    "@peerborne/redux": "workspace:packages/redux",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

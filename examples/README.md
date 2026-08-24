@@ -1,6 +1,6 @@
-# Swarmbase examples
+# Peerborne examples
 
-These Vite and React workspaces show the current Swarmbase integrations from a
+These Vite and React workspaces show the current Peerborne integrations from a
 source checkout. Use the smallest example that matches what you want to inspect:
 
 | Example                                   | Stack               | Best starting point for                                               | Automated evidence                                        |
@@ -26,13 +26,13 @@ yarn build
 Then start one workspace:
 
 ```sh
-yarn workspace @swarmbase/browser-test start
-yarn workspace @swarmbase/wiki-swarm start
-yarn workspace @swarmbase/password-manager start
+yarn workspace @peerborne/browser-test start
+yarn workspace @peerborne/wiki-swarm start
+yarn workspace @peerborne/password-manager start
 ```
 
 Run one of those three commands at a time and open the URL printed by Vite. The
-[verified quick start](https://swarmbase.github.io/swarmbase/getting-started/quick-start/)
+[verified quick start](https://peerborne.io/getting-started/quick-start/)
 walks through the browser-test controls and their evidence boundary.
 
 ## Verify the examples
@@ -60,7 +60,7 @@ For one example at a time, use its focused guide and test command:
 
 - [`browser-test` guide](./browser-test/README.md)
 - [`wiki-swarm` guide](./wiki-swarm/README.md) and
-  [collaborative wiki cookbook](https://swarmbase.github.io/swarmbase/cookbook/collaborative-wiki/)
+  [collaborative wiki cookbook](https://peerborne.io/cookbook/collaborative-wiki/)
 - [`password-manager` guide](./password-manager/README.md) and
-  [shared-secrets cookbook](https://swarmbase.github.io/swarmbase/cookbook/password-manager/)
-- [Current limitations](https://swarmbase.github.io/swarmbase/concepts/limitations/)
+  [shared-secrets cookbook](https://peerborne.io/cookbook/password-manager/)
+- [Current limitations](https://peerborne.io/concepts/limitations/)

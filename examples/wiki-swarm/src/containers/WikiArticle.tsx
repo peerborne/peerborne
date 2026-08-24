@@ -2,17 +2,17 @@ import React from 'react';
 import { connect } from 'react-redux';
 import { ThunkDispatch } from 'redux-thunk';
 import { Doc } from '@automerge/automerge';
-import type { CollabswarmConfig } from '@swarmbase/collabswarm';
+import type { PeerborneConfig } from '@peerborne/core';
 import {
   defaultConfig,
   defaultBootstrapConfig,
-} from '@swarmbase/collabswarm';
+} from '@peerborne/core';
 import {
   changeDocumentAsync,
   openDocumentAsync,
   closeDocumentAsync,
   initializeAsync,
-} from '@swarmbase/collabswarm-redux';
+} from '@peerborne/redux';
 import { WikiSwarmArticle } from '../models';
 import { RootState, selectAutomergeSwarmState } from '../reducers';
 import dayjs from 'dayjs';
@@ -49,7 +49,7 @@ interface WikiArticleProps extends RouteComponentProps<MatchParams> {
   document: WikiSwarmArticle | null;
   documentRef: AutomergeSwarmDocument<WikiSwarmArticle> | null;
 
-  onInitialize: (config: CollabswarmConfig) => Promise<AutomergeSwarm>;
+  onInitialize: (config: PeerborneConfig) => Promise<AutomergeSwarm>;
   onDocumentOpen: (
     documentPath: string,
   ) => Promise<AutomergeSwarmDocument<WikiSwarmArticle> | null>;
@@ -249,7 +249,7 @@ function mapDispatchToProps(
   >,
 ) {
   return {
-    onInitialize: (config: CollabswarmConfig) =>
+    onInitialize: (config: PeerborneConfig) =>
       dispatch(initializeAsync(config, selectAutomergeSwarmState)),
     onDocumentOpen: (documentId: string) =>
       dispatch(openDocumentAsync(documentId, selectAutomergeSwarmState)),

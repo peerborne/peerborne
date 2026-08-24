@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.integration.yaml"
 
-echo "=== SwarmDB Integration Test ==="
+echo "=== Peerborne Integration Test ==="
 echo "Project directory: $PROJECT_DIR"
 echo ""
 

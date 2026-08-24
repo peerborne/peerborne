@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible defect in Swarmbase or its development tooling.
+description: Report a reproducible defect in Peerborne or its development tooling.
 title: "[Bug]: "
 labels:
   - bug
@@ -7,9 +7,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Swarmbase is under active development. For questions and design exploration, use [GitHub Discussions](https://github.com/swarmbase/swarmbase/discussions).
+        Peerborne is under active development. For questions and design exploration, use [GitHub Discussions](https://github.com/Peerborne/peerborne/discussions).
 
-        Report suspected vulnerabilities through [private vulnerability reporting](https://github.com/swarmbase/swarmbase/security/advisories/new), not this form. Never include credentials, signing keys, KEM keys, document keys, private payloads, or sensitive user data.
+        Report suspected vulnerabilities through [private vulnerability reporting](https://github.com/Peerborne/peerborne/security/advisories/new), not this form. Never include credentials, signing keys, KEM keys, document keys, private payloads, or sensitive user data.
   - type: input
     id: revision
     attributes:

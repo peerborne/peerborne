@@ -2,14 +2,14 @@ import { combineReducers } from 'redux';
 import { WikiSwarmArticle } from './models';
 import { WikiSwarmActions, SEARCH } from './actions';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
-import { collabswarmReducer } from '@swarmbase/collabswarm-redux';
+import { peerborneReducer } from '@peerborne/redux';
 import {
   AutomergeACLProvider,
   AutomergeJSONSerializer,
   AutomergeKeychainProvider,
   AutomergeProvider,
-} from '@swarmbase/collabswarm-automerge';
-import { SubtleCrypto } from '@swarmbase/collabswarm';
+} from '@peerborne/automerge';
+import { SubtleCrypto } from '@peerborne/core';
 
 export interface WikiAppState {}
 
@@ -45,8 +45,8 @@ export const createRootReducer = (
   state: RootState | undefined,
   action: WikiSwarmActions,
 ) => RootState => combineReducers({
-  // automergeSwarm: collabswarmReducer(new AutomergeProvider<WikiSwarmArticle>()),
-  automergeSwarm: collabswarmReducer(
+  // automergeSwarm: peerborneReducer(new AutomergeProvider<WikiSwarmArticle>()),
+  automergeSwarm: peerborneReducer(
     privateKey,
     publicKey,
     new AutomergeProvider(),

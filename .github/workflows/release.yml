@@ -60,15 +60,15 @@ jobs:
       - run: yarn build
       - run: yarn test
       - name: Pack and inspect release artifacts
-        run: yarn release:prepare "$RUNNER_TEMP/swarmbase-release"
+        run: yarn release:prepare "$RUNNER_TEMP/peerborne-release"
       - name: Validate clean external consumer
-        run: yarn release:validate-consumer "$RUNNER_TEMP/swarmbase-release" "$RUNNER_TEMP"
+        run: yarn release:validate-consumer "$RUNNER_TEMP/peerborne-release" "$RUNNER_TEMP"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-release-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/swarmbase-release/*.tgz
-            ${{ runner.temp }}/swarmbase-release/release-manifest.json
+            ${{ runner.temp }}/peerborne-release/*.tgz
+            ${{ runner.temp }}/peerborne-release/release-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: npm-release-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/swarmbase-release
+          path: ${{ runner.temp }}/peerborne-release
       - name: Authenticate bootstrap publisher
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -105,11 +105,11 @@ jobs:
       - name: Stage, verify, and promote packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          STAGING_TAG: swarmbase-stage-${{ github.run_id }}-${{ github.run_attempt }}
+          STAGING_TAG: peerborne-stage-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           VERSION="$(node scripts/release-version.mjs)"
           BASE_VERSION="${VERSION%%+*}"
           TARGET_TAG=latest
           case "$BASE_VERSION" in *-*) TARGET_TAG=next ;; esac
-          node scripts/publish-release.mjs "$RUNNER_TEMP/swarmbase-release" "$STAGING_TAG" "$TARGET_TAG"
+          node scripts/publish-release.mjs "$RUNNER_TEMP/peerborne-release" "$STAGING_TAG" "$TARGET_TAG"

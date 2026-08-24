@@ -12,7 +12,7 @@ test('browser-test loads Automerge and initializes without runtime errors', asyn
   });
 
   await page.goto('/');
-  await expect(page).toHaveTitle('Swarmbase Browser Test');
+  await expect(page).toHaveTitle('Peerborne Browser Test');
   await page.waitForTimeout(2_000);
   await expect(page.getByText('Node Addresses:', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Connect' })).toBeVisible();

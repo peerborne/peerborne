@@ -7,7 +7,7 @@
   <circle cx="740" cy="280" r="24" fill="#2dd4bf"/>
   <circle cx="600" cy="160" r="24" fill="#2dd4bf"/>
   <circle cx="600" cy="320" r="24" fill="#2dd4bf"/>
-  <text x="600" y="420" text-anchor="middle" fill="#c7d2fe" font-family="system-ui, sans-serif" font-size="52" font-weight="700">Swarmbase</text>
+  <text x="600" y="420" text-anchor="middle" fill="#c7d2fe" font-family="system-ui, sans-serif" font-size="52" font-weight="700">Peerborne</text>
   <text x="600" y="480" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="28">Encrypted, local-first CRDT documents</text>
   <text x="600" y="520" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="24">that sync peer to peer</text>
 </svg>

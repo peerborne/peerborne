@@ -1,3 +1,3 @@
 User-agent: *
 Allow: /
-Sitemap: https://swarmbase.github.io/swarmbase/sitemap-index.xml
+Sitemap: https://peerborne.io/sitemap-index.xml

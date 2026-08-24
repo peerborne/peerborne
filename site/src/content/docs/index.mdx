@@ -1,6 +1,6 @@
 ---
-title: Encrypted local-first CRDT toolkit
-description: Swarmbase is a toolkit for encrypted, local-first CRDT documents synchronized over peer-to-peer networks.
+title: Encrypted local-first state, carried by peers
+description: Peerborne is a toolkit for encrypted, local-first CRDT documents synchronized over peer-to-peer networks.
 head:
   - tag: meta
     attrs:
@@ -8,11 +8,10 @@ head:
       content: website
 template: splash
 hero:
-  title: Local-first documents that sync peer to peer
+  title: Encrypted local-first state, carried by peers
   tagline: >-
-    Swarmbase is an open-source TypeScript toolkit for encrypted CRDT documents.
-    Build collaborative browser applications without operating an application
-    database server. Composable libraries — use only what you need.
+    A TypeScript toolkit for encrypted CRDT documents that live on user devices
+    and synchronize without a trusted plaintext database.
   image:
     file: ../../assets/logo.svg
   actions:
@@ -20,11 +19,11 @@ hero:
       link: ./getting-started/quick-start/
       icon: rocket
     - text: View on GitHub
-      link: https://github.com/swarmbase/swarmbase
+      link: https://github.com/Peerborne/peerborne
       icon: star
       variant: secondary
-    - text: Why Swarmbase?
-      link: concepts/why-swarmbase/
+    - text: Why Peerborne?
+      link: concepts/why-peerborne/
       icon: right-arrow
       variant: minimal
 ---
@@ -34,9 +33,11 @@ import SyncDemo from '../../components/SyncDemo.astro';
 
 
 
-## What is Swarmbase?
+## What is Peerborne?
 
-Swarmbase is a set of **composable TypeScript libraries** that let you build applications where documents live on user devices and sync directly between peers — encrypted, signed, and content-addressed. There is no application database server. Relays carry ciphertext without seeing plaintext.
+Peerborne is a set of **composable TypeScript libraries** that let you build applications where documents live on user devices and sync directly between peers — encrypted, signed, and content-addressed. There is no application database server. Relays carry ciphertext without seeing plaintext.
+
+A centralized database is simpler and should be the default for most applications. Peerborne is for cases where central custody of plaintext—or dependence on one always-reachable application server—is the downside you need to remove.
 
 <CardGrid>
   <Card title="Encrypted by default" icon="seti:lock">
@@ -44,31 +45,32 @@ Swarmbase is a set of **composable TypeScript libraries** that let you build app
     before it leaves the device. Relays and remote stores see only opaque ciphertext.
     (Signing can be configured via `enableSigning`.)
   </Card>
-  <Card title="No application database server" icon="setting">
-    Helia and libp2p provide storage and peer-to-peer transport. You run relay
-    nodes for NAT traversal — no Postgres, no Redis, no application backend.
+  <Card title="No trusted plaintext custodian" icon="setting">
+    Helia and libp2p provide local storage and peer-to-peer transport. Relays
+    help peers connect, but carry encrypted document payloads rather than acting
+    as the authoritative application database.
   </Card>
   <Card title="CRDT adapters" icon="puzzle">
     Use Yjs or Automerge documents. Replicas converge after valid updates are
     delivered, without a central consensus service. Battle-tested merge semantics
-    with Swarmbase's security model.
+    with Peerborne's security model.
   </Card>
   <Card title="Composable, not monolithic" icon="grid">
-    Six libraries — use only what you need. Core (collabswarm), CRDT adapters
+    Six libraries — use only what you need. Core, CRDT adapters
     (Yjs, Automerge), UI bindings (React, Redux), and client-side indexing.
   </Card>
 </CardGrid>
 
 ## A Yjs document in a few lines
 
-Once a Swarmbase node is configured with the Yjs adapter, documents feel like
+Once a Peerborne node is configured with the Yjs adapter, documents feel like
 familiar CRDT shared types wrapped in encryption and access control:
 
 ```ts
-import { Collabswarm, SubtleCrypto, defaultConfig,
-  defaultBootstrapConfig } from '@swarmbase/collabswarm';
+import { Peerborne, SubtleCrypto, defaultConfig,
+  defaultBootstrapConfig } from '@peerborne/core';
 import { YjsProvider, YjsACLProvider,
-  YjsKeychainProvider, YjsJSONSerializer } from '@swarmbase/collabswarm-yjs';
+  YjsKeychainProvider, YjsJSONSerializer } from '@peerborne/yjs';
 
 // The application must supply an ECDSA P-384 key pair:
 const userKeyPair = await crypto.subtle.generateKey(
@@ -77,7 +79,7 @@ const userKeyPair = await crypto.subtle.generateKey(
   ['sign', 'verify'],
 ) as CryptoKeyPair;
 
-const swarm = new Collabswarm(
+const swarm = new Peerborne(
   userKeyPair.privateKey,
   userKeyPair.publicKey,
   new YjsProvider(),
@@ -112,7 +114,7 @@ to run them locally.
 ## Illustrative encrypted Yjs sync
 
 Try edits on either in-page replica, disconnect them, and reconnect to merge the
-queued Yjs updates. The simulation boundary and omitted Swarmbase subsystems are
+queued Yjs updates. The simulation boundary and omitted Peerborne subsystems are
 listed directly below the demo.
 
 <SyncDemo />
@@ -121,14 +123,14 @@ listed directly below the demo.
 
 1. **Edit locally.** A provider applies each change to the local CRDT replica.
    The application sees changes immediately — no network round-trip.
-2. **Sign, encrypt, publish.** Swarmbase signs the sync message with the writer's
+2. **Sign, encrypt, publish.** Peerborne signs the sync message with the writer's
    ECDSA P-384 key, encrypts the serialized envelope with the document's AES-GCM
    key, and publishes the CID to connected peers via GossipSub.
 3. **Verify and merge.** Recipients fetch the encrypted block, verify the
    signature, decrypt the payload, and apply the CRDT update. The Yjs or
    Automerge layer reconciles concurrent edits without conflicts.
 
-Swarmbase currently verifies encrypted document retrieval across a Circuit Relay
+Peerborne currently verifies encrypted document retrieval across a Circuit Relay
 boundary in CI. Broader partition/rejoin, persistence, and production deployment
 coverage remains active work.
 
@@ -139,7 +141,7 @@ coverage remains active work.
 | **End-to-end encryption** | Document plaintext never touches a server. AES-GCM content encryption, ECDSA P-384 signing. |
 | **Content-addressed storage** | Every block is addressed by its SHA-256 hash (CID). Blocks are immutable — no overwrites, no conflicts. |
 | **Shadow sync graph** | Changes form a DAG, not a linear history. Concurrent edits coexist; the CRDT layer resolves them. |
-| **CRDT-agnostic core** | Swarmbase wraps Yjs and Automerge without coupling to either. Swap CRDT implementations without changing your application. |
+| **CRDT-agnostic core** | Peerborne wraps Yjs and Automerge without coupling to either. Swap CRDT implementations without changing your application. |
 | **libp2p networking** | Battle-tested peer-to-peer stack: WebSockets, WebRTC, WebTransport, Circuit Relay v2, GossipSub. |
 | **K-of-Q quorum loading** | Before trusting a document state, verify it with K-of-Q bootstrap peers. Prevents loading a fork. |
 | **BeeKEM key sharing** | Dynamic group key encapsulation. Add and remove readers without re-encrypting the document. |
@@ -147,11 +149,11 @@ coverage remains active work.
 See the [architecture page](concepts/architecture/) for detailed diagrams of the
 data flow, networking stack, and encryption model.
 
-## How Swarmbase compares
+## How Peerborne compares
 
 | Tool | Use case | Server role |
 |---|---|---|
-| **Swarmbase** | Encrypted peer-to-peer CRDT documents | Self-hosted relay/bootstrap; document payloads end-to-end encrypted |
+| **Peerborne** | Encrypted peer-to-peer CRDT documents | Self-hosted relay/bootstrap; document payloads end-to-end encrypted |
 | **Yjs** | High-performance CRDT runtime | Bring or configure a sync provider |
 | **Automerge** | JSON-like CRDT documents | Configure Repo storage/network adapters |
 | **Liveblocks** | Real-time presence + collaboration | Managed backend service |
@@ -159,7 +161,7 @@ data flow, networking stack, and encryption model.
 | **Jazz** | Local-first relational database | Managed or self-hosted sync server |
 | **Electric Sync** | Sync Postgres data to clients | Postgres read-path sync engine |
 
-Swarmbase is designed for **end-to-end encrypted documents** that sync through
+Peerborne is designed for **end-to-end encrypted documents** that sync through
 **self-hosted relay infrastructure without exposing document plaintext**. Relays
 can still observe connection and traffic metadata. See the
 [full comparisons](reference/comparisons/) for detailed trade-offs against each
@@ -167,13 +169,13 @@ project.
 
 ## Built in the open
 
-Swarmbase is young enough that careful bug reports, API feedback, documentation,
+Peerborne is young enough that careful bug reports, API feedback, documentation,
 and unusual network tests can materially shape the project.
 
 <CardGrid>
   <Card title="Run the examples" icon="rocket">
     Start with the
-    [browser applications](https://github.com/swarmbase/swarmbase/tree/main/examples)
+    [browser applications](https://github.com/Peerborne/peerborne/tree/main/examples)
     and inspect the matching Playwright acceptance tests.
   </Card>
   <Card title="Read the docs" icon="book">
@@ -182,8 +184,8 @@ and unusual network tests can materially shape the project.
     [cookbook](cookbook/collaborative-wiki/) recipes.
   </Card>
   <Card title="Join the conversation" icon="chat">
-    Browse [open issues](https://github.com/swarmbase/swarmbase/issues) or ask a
-    question in [GitHub Discussions](https://github.com/swarmbase/swarmbase/discussions).
+    Browse [open issues](https://github.com/Peerborne/peerborne/issues) or ask a
+    question in [GitHub Discussions](https://github.com/Peerborne/peerborne/discussions).
   </Card>
   <Card title="Contribute" icon="pencil">
     Check the [roadmap](community/roadmap/), the [help wanted](community/help-wanted/)
@@ -198,11 +200,11 @@ href="./getting-started/quick-start/"
   Quick start
 </LinkButton>{' '}
 <LinkButton
-  href="concepts/why-swarmbase/"
+  href="concepts/why-peerborne/"
   icon="right-arrow"
   variant="secondary"
 >
-  Why Swarmbase?
+  Why Peerborne?
 </LinkButton>{' '}
 <LinkButton
   href="concepts/architecture/"

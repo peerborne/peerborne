@@ -9,7 +9,7 @@ The packages are unpublished. Build and consume the repository workspaces as sho
 
 ```sh
 yarn build
-yarn workspace @swarmbase/password-manager build
+yarn workspace @peerborne/password-manager build
 yarn test:e2e:password-manager
 ```
 
@@ -17,7 +17,7 @@ This evidence covers startup, not sharing or cross-browser convergence.
 
 ## Provide the current context shape
 
-`useCollabswarmDocumentState` requires four caches and four setters backed by React state:
+`usePeerborneDocumentState` requires four caches and four setters backed by React state:
 
 ```tsx
 function SwarmDocumentProvider({ children }: { children: React.ReactNode }) {
@@ -27,7 +27,7 @@ function SwarmDocumentProvider({ children }: { children: React.ReactNode }) {
   const [docWritersCache, setDocWritersCache] = React.useState<Record<string, any[]>>({});
 
   return (
-    <CollabswarmContext.Provider value={{
+    <PeerborneContext.Provider value={{
       docCache,
       docDataCache,
       docReadersCache,
@@ -38,7 +38,7 @@ function SwarmDocumentProvider({ children }: { children: React.ReactNode }) {
       setDocWritersCache,
     }}>
       {children}
-    </CollabswarmContext.Provider>
+    </PeerborneContext.Provider>
   );
 }
 ```
@@ -56,7 +56,7 @@ const auth = new SubtleCrypto();
 const acl = new YjsACLProvider();
 const keychain = new YjsKeychainProvider();
 
-const swarm = useCollabswarm(
+const swarm = usePeerborne(
   privateKey,
   publicKey,
   crdt,
@@ -74,15 +74,15 @@ const swarm = useCollabswarm(
 );
 ```
 
-The application must persist and restore the signing keys. New keys mean a new ACL identity. `useCollabswarm` re-runs when key object identity changes, but it has no effect cleanup that stops the previous swarm; do not rotate or reconstruct keys during normal rendering.
+The application must persist and restore the signing keys. New keys mean a new ACL identity. `usePeerborne` re-runs when key object identity changes, but it has no effect cleanup that stops the previous swarm; do not rotate or reconstruct keys during normal rendering.
 
 ## Open and change one document
 
 ```tsx
-import type { Collabswarm } from '@swarmbase/collabswarm';
+import type { Peerborne } from '@peerborne/core';
 import type * as Y from 'yjs';
 
-type YjsSwarm = Collabswarm<
+type YjsSwarm = Peerborne<
   Y.Doc,
   Uint8Array,
   (doc: Y.Doc) => void,
@@ -92,7 +92,7 @@ type YjsSwarm = Collabswarm<
 >;
 
 function Note({ swarm }: { swarm: YjsSwarm }) {
-  const [doc, changeDoc, acl] = useCollabswarmDocumentState(
+  const [doc, changeDoc, acl] = usePeerborneDocumentState(
     swarm,
     '/notes/hello',
   );

@@ -1,11 +1,11 @@
 ---
 title: CRDTs
-description: How Swarmbase integrates Yjs and Automerge CRDT libraries — the sync model, convergence, snapshots, and quorum loading.
+description: How Peerborne integrates Yjs and Automerge CRDT libraries — the sync model, convergence, snapshots, and quorum loading.
 ---
 
 ## Design intent
 
-Swarmbase does not implement its own CRDT. It adapts existing, well-tested CRDT libraries — Yjs and Automerge — wrapping them with encryption, signing, access control, and peer-to-peer transport. The application interacts with Yjs shared types or Automerge documents directly. Swarmbase handles everything else.
+Peerborne does not implement its own CRDT. It adapts existing, well-tested CRDT libraries — Yjs and Automerge — wrapping them with encryption, signing, access control, and peer-to-peer transport. The application interacts with Yjs shared types or Automerge documents directly. Peerborne handles everything else.
 
 The goal: merge edits from multiple peers without a central consensus service, a lock manager, or a leader election protocol. No server assigns a global write order. Two peers editing concurrently produce a deterministic merged result.
 
@@ -49,7 +49,7 @@ CID published to GossipSub (document topic)
 
 ### The shadow sync graph
 
-Swarmbase does not use a conventional Merkle-DAG. Instead, each `CRDTChangeBlock` references its parent by CID, forming a **shadow sync graph**:
+Peerborne does not use a conventional Merkle-DAG. Instead, each `CRDTChangeBlock` references its parent by CID, forming a **shadow sync graph**:
 
 ```
 Tip (latest) ─── Block C ─── Block B ─── Block A (genesis)
@@ -70,7 +70,7 @@ This means:
 
 ### `CRDTProvider` interface
 
-The `CRDTProvider` interface abstracts the CRDT library from Swarmbase's core:
+The `CRDTProvider` interface abstracts the CRDT library from Peerborne's core:
 
 ```ts
 interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
@@ -132,7 +132,7 @@ state.content = new Automerge.Text('Hello');
 
 ## Convergence boundaries
 
-Swarmbase does **not** provide:
+Peerborne does **not** provide:
 
 - **Agreement-right-now.** Two peers editing concurrently will see different states until they exchange updates. There is no real-time synchronization lock.
 - **Conflict-free in the database sense.** CRDTs resolve structural conflicts (concurrent edits to the same field), but application-level conflicts (e.g., two peers setting a title to different values) are handled by the CRDT's merge rule, not by application logic.
@@ -161,7 +161,7 @@ Compaction is **off by default** and uses a preference rule based on compacted-c
 
 ## Quorum loading
 
-Before trusting a document's state, Swarmbase can require Q-of-K bootstrap peers to agree on the current frontier hashes. Quorum is configured via `CollabswarmConfig` fields `loadQuorumK` and `loadQuorumQ`, then runs automatically during `document.open()`. This prevents loading a fork or a stale version when multiple peers have written to the document. The quorum check is **not** Sybil-resistant — a peer that controls multiple identities can subvert it.
+Before trusting a document's state, Peerborne can require Q-of-K bootstrap peers to agree on the current frontier hashes. Quorum is configured via `PeerborneConfig` fields `loadQuorumK` and `loadQuorumQ`, then runs automatically during `document.open()`. This prevents loading a fork or a stale version when multiple peers have written to the document. The quorum check is **not** Sybil-resistant — a peer that controls multiple identities can subvert it.
 
 ## CI-backed evidence
 

@@ -4,27 +4,27 @@ import {
   Switch,
   Route,
   Redirect,
+  Link,
 } from 'react-router-dom';
 import { Container, Nav } from 'react-bootstrap';
-import { LinkContainer } from 'react-router-bootstrap';
 import './App.css';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import {
-  CollabswarmDocument,
+  PeerborneDocument,
   defaultConfig,
   defaultBootstrapConfig,
   SubtleCrypto,
-} from '@swarmbase/collabswarm';
+} from '@peerborne/core';
 import {
-  CollabswarmContext,
-  useCollabswarm,
-} from '@swarmbase/collabswarm-react';
+  PeerborneContext,
+  usePeerborne,
+} from '@peerborne/react';
 import {
   YjsProvider,
   YjsJSONSerializer,
   YjsKeychainProvider,
   YjsACLProvider,
-} from '@swarmbase/collabswarm-yjs';
+} from '@peerborne/yjs';
 import { Login } from './Login';
 import { PasswordList } from './PasswordList';
 import { Settings } from './Settings';
@@ -43,7 +43,7 @@ function App() {
     string[] | undefined
   >();
   const [docCache, setDocCache] = React.useState<{
-    [docPath: string]: CollabswarmDocument<any, any, any, any, any, any>;
+    [docPath: string]: PeerborneDocument<any, any, any, any, any, any>;
   }>({});
   const [docDataCache, setDocDataCache] = React.useState<{
     [docPath: string]: any;
@@ -60,7 +60,7 @@ function App() {
   const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
   const relayPeers = relayAddr ? [relayAddr] : [];
   const config = defaultConfig(defaultBootstrapConfig(relayPeers));
-  const collabswarm = useCollabswarm(
+  const peerborne = usePeerborne(
     privateKey,
     publicKey,
     crdt,
@@ -74,18 +74,18 @@ function App() {
   );
   // Calls connect whenever bootstrap peers changes.
   useEffect(() => {
-    if (collabswarm && bootstrapPeers) {
+    if (peerborne && bootstrapPeers) {
       console.log(`Connecting to peers: ${bootstrapPeers}`);
-      collabswarm.connect(bootstrapPeers);
+      peerborne.connect(bootstrapPeers);
     } else {
-      console.warn(`Skipping collabswarm.connect(${bootstrapPeers})`);
+      console.warn(`Skipping peerborne.connect(${bootstrapPeers})`);
     }
-  }, [bootstrapPeers, collabswarm]);
+  }, [bootstrapPeers, peerborne]);
 
   const loggedIn = (privateKey && publicKey) !== undefined;
 
   return (
-    <CollabswarmContext.Provider
+    <PeerborneContext.Provider
       value={{
         docCache,
         docDataCache,
@@ -101,19 +101,19 @@ function App() {
         <Container>
           <Nav variant="tabs" defaultActiveKey="/login">
             <Nav.Item>
-              <LinkContainer to="/login">
-                <Nav.Link>Login</Nav.Link>
-              </LinkContainer>
+              <Nav.Link as={Link} to="/login">
+                Login
+              </Nav.Link>
             </Nav.Item>
             <Nav.Item>
-              <LinkContainer to="/secrets">
-                <Nav.Link>Secrets</Nav.Link>
-              </LinkContainer>
+              <Nav.Link as={Link} to="/secrets">
+                Secrets
+              </Nav.Link>
             </Nav.Item>
             <Nav.Item>
-              <LinkContainer to="/settings">
-                <Nav.Link>Settings</Nav.Link>
-              </LinkContainer>
+              <Nav.Link as={Link} to="/settings">
+                Settings
+              </Nav.Link>
             </Nav.Item>
           </Nav>
 
@@ -132,10 +132,10 @@ function App() {
             </Route>
             <Route path="/secrets">
               {loggedIn ? (
-                collabswarm && userId ? (
-                  <PasswordList userId={userId} collabswarm={collabswarm} />
+                peerborne && userId ? (
+                  <PasswordList userId={userId} peerborne={peerborne} />
                 ) : (
-                  <i>Loading collabswarm...</i>
+                  <i>Loading peerborne...</i>
                 )
               ) : (
                 <Redirect to="/login" />
@@ -143,13 +143,13 @@ function App() {
             </Route>
             <Route path="/settings">
               {loggedIn ? (
-                collabswarm ? (
+                peerborne ? (
                   <Settings
-                    collabswarm={collabswarm}
+                    peerborne={peerborne}
                     publicKey={publicKey}
                   />
                 ) : (
-                  <i>Loading collabswarm...</i>
+                  <i>Loading peerborne...</i>
                 )
               ) : (
                 <Redirect to="/login" />
@@ -161,7 +161,7 @@ function App() {
           </Switch>
         </Container>
       </Router>
-    </CollabswarmContext.Provider>
+    </PeerborneContext.Provider>
   );
 }
 

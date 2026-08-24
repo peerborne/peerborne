@@ -4,12 +4,12 @@ import { assertStrictSemver, packages } from './release-packages.mjs';
 
 test('release package allowlist is exact and ordered', () => {
   assert.deepEqual(packages.map(({ name }) => name), [
-    '@swarmbase/collabswarm',
-    '@swarmbase/collabswarm-automerge',
-    '@swarmbase/collabswarm-yjs',
-    '@swarmbase/collabswarm-react',
-    '@swarmbase/collabswarm-redux',
-    '@swarmbase/collabswarm-index',
+    '@peerborne/core',
+    '@peerborne/automerge',
+    '@peerborne/yjs',
+    '@peerborne/react',
+    '@peerborne/redux',
+    '@peerborne/index',
   ]);
 });
 

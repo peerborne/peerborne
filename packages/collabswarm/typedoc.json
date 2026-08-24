@@ -1,8 +1,0 @@
-{
-  "entryPoints": [
-    "src/index.ts",
-    "src/collabswarm-node.ts",
-    "src/browser-primitives.ts"
-  ],
-  "readme": "none"
-}

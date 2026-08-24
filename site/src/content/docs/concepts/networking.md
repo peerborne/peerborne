@@ -1,15 +1,15 @@
 ---
 title: Networking
-description: Peer discovery, transport protocols, NAT traversal, and the relay trust model in Swarmbase.
+description: Peer discovery, transport protocols, NAT traversal, and the relay trust model in Peerborne.
 ---
 
 ## Overview
 
-Swarmbase uses **libp2p** for all peer-to-peer networking. libp2p is a modular networking stack that handles transport, stream multiplexing, connection encryption, peer discovery, NAT traversal, and pubsub messaging — all in one framework.
+Peerborne uses **libp2p** for all peer-to-peer networking. libp2p is a modular networking stack that handles transport, stream multiplexing, connection encryption, peer discovery, NAT traversal, and pubsub messaging — all in one framework.
 
 ## Transport protocols
 
-Swarmbase supports these transport protocols. The actual set used depends on the runtime (browser vs. Node.js) and network topology:
+Peerborne supports these transport protocols. The actual set used depends on the runtime (browser vs. Node.js) and network topology:
 
 | Transport | Runtime | Purpose |
 |---|---|---|
@@ -22,14 +22,14 @@ Swarmbase supports these transport protocols. The actual set used depends on the
 ### Transport selection
 
 ```ts
-import { defaultConfig, defaultBootstrapConfig } from '@swarmbase/collabswarm';
+import { defaultConfig, defaultBootstrapConfig } from '@peerborne/core';
 
 const bootstrapPeers = [
   '/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW...',
 ];
 const config = defaultConfig(defaultBootstrapConfig(bootstrapPeers));
 
-// Pass config to Collabswarm.initialize()
+// Pass config to Peerborne.initialize()
 await swarm.initialize(config);
 ```
 
@@ -40,7 +40,7 @@ In practice, browser peers typically use WebSocket to reach a relay, and may upg
 Document updates are announced and delivered via **GossipSub** — a pubsub protocol built on libp2p. Each document has a corresponding pubsub topic derived from its document ID:
 
 ```ts
-// Document /todo-list → topic: swarmbase-doc-<hash>
+// Document /todo-list → topic: /document/todo-list
 // Changes published to this topic reach all subscribed peers.
 ```
 
@@ -53,7 +53,7 @@ GossipSub is **best-effort**:
 
 ## Peer discovery
 
-Swarmbase peers find each other through several mechanisms:
+Peerborne peers find each other through several mechanisms:
 
 ### Bootstrap nodes
 
@@ -61,7 +61,7 @@ A static list of well-known peers that new nodes connect to first:
 
 ```ts
 bootstrap: [
-  '/dns4/bootstrap.swarmbase.dev/tcp/443/wss/p2p/12D3KooW...',
+  '/dns4/bootstrap.peerborne.dev/tcp/443/wss/p2p/12D3KooW...',
   '/ip4/192.168.1.100/tcp/4002/p2p/12D3KooW...',
 ]
 ```
@@ -78,7 +78,7 @@ AutoNAT determines whether a peer is reachable from the public internet. If a pe
 
 ## NAT traversal
 
-Browsers and most home/office networks are behind NAT, which prevents direct incoming connections. Swarmbase uses several mechanisms to work around this:
+Browsers and most home/office networks are behind NAT, which prevents direct incoming connections. Peerborne uses several mechanisms to work around this:
 
 ### Circuit Relay v2
 
@@ -102,7 +102,7 @@ After an initial relayed connection, peers attempt to establish a direct WebRTC 
 
 ## Relay trust model
 
-Relays are the most important infrastructure component in a Swarmbase deployment, and their trust properties matter:
+Relays are the most important infrastructure component in a Peerborne deployment, and their trust properties matter:
 
 **What relays can see:**
 - Peer IDs and multiaddrs of connecting peers
@@ -144,7 +144,7 @@ A relay that restarts with a new peer ID breaks connections from clients that pi
 Verified in CI:
 
 - WebSocket transport through Circuit Relay in Docker-backed NAT tests
-- Cross-NAT encrypted document retrieval (real Swarmbase nodes behind NAT)
+- Cross-NAT encrypted document retrieval (real Peerborne nodes behind NAT)
 - Basic peer discovery (bootstrap connection) in integration tests
 - GossipSub message delivery in NAT topology
 

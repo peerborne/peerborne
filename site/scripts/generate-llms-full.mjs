@@ -14,8 +14,8 @@ const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), '..', '..');
 const docsRoot = resolve(root, 'site/src/content/docs');
 const outputPath = resolve(root, 'site/dist/llms-full.txt');
-const siteRoot = new URL('https://swarmbase.github.io/swarmbase/');
-const repositoryRoot = new URL('https://github.com/swarmbase/swarmbase/');
+const siteRoot = new URL('https://peerborne.io/');
+const repositoryRoot = new URL('https://github.com/Peerborne/peerborne/');
 
 function repositoryPath(path) {
   return relative(root, path).split(sep).join('/');
@@ -100,7 +100,7 @@ function protectFences(markdown, sourceName) {
         continue;
       }
 
-      const token = `\0SWARMBASE_FENCE_${fences.length}\0`;
+      const token = `\0PEERBORNE_FENCE_${fences.length}\0`;
       if (markdown.includes(token)) {
         throw new Error(`${sourceName}: fence placeholder collision`);
       }
@@ -163,7 +163,7 @@ function restoreFences(markdown, fences, sourceName) {
     }
   }
 
-  if (restored.includes('\0SWARMBASE_FENCE_')) {
+  if (restored.includes('\0PEERBORNE_FENCE_')) {
     throw new Error(`${sourceName}: unrestored fenced code placeholder`);
   }
   return restored;
@@ -439,10 +439,10 @@ export function generateLlmsFull() {
   });
 
   const output = [
-    '# Swarmbase documentation site — full handwritten corpus',
+    '# Peerborne documentation site — full handwritten corpus',
     '',
     '> Concatenated hand-authored documentation pages plus the feature audit. Generated API detail and repository/package READMEs are indexed separately in llms.txt.',
-    '> Swarmbase is under active development. Check capability claims against the feature audit and documented limitations.',
+    '> Peerborne is under active development. Check capability claims against the feature audit and documented limitations.',
     '',
     ...sections.flatMap((section) => [section, '', '---', '']),
   ].join('\n');

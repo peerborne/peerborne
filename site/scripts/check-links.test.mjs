@@ -25,13 +25,13 @@ after(() => {
 
 function createFixture({
   indexBody = '',
-  llms = '[Home](https://swarmbase.github.io/swarmbase/)',
-  llmsFull = '[Home](https://swarmbase.github.io/swarmbase/)',
+  llms = '[Home](https://peerborne.io/)',
+  llmsFull = '[Home](https://peerborne.io/)',
   pages = {},
   repositoryDirectories = [],
   repositoryFiles = {},
 } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'swarmbase-site-links-'));
+  const root = mkdtempSync(join(tmpdir(), 'peerborne-site-links-'));
   const directory = join(root, 'dist');
   const repositoryDirectory = join(root, 'repository');
   fixtureDirectories.push(root);
@@ -39,7 +39,7 @@ function createFixture({
   mkdirSync(repositoryDirectory);
   writeFileSync(
     join(directory, 'index.html'),
-    '<!doctype html><link rel="canonical" href="https://swarmbase.github.io/swarmbase/">' +
+    '<!doctype html><link rel="canonical" href="https://peerborne.io/">' +
       indexBody,
   );
 
@@ -82,10 +82,10 @@ test('accepts valid site and repository links from llms.txt', () => {
     indexBody: '<a href="./guide/#topic">Guide</a>',
     llms: [
       '[Guide][guide]',
-      '[guide]: https://swarmbase.github.io/swarmbase/guide/#topic',
-      '[Audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md)',
-      '[Examples](https://github.com/swarmbase/swarmbase/tree/main/examples)',
-      '[Issue](https://github.com/swarmbase/swarmbase/issues/1)',
+      '[guide]: https://peerborne.io/guide/#topic',
+      '[Audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md)',
+      '[Examples](https://github.com/Peerborne/peerborne/tree/main/examples)',
+      '[Issue](https://github.com/Peerborne/peerborne/issues/1)',
       '[Node.js](https://nodejs.org/)',
     ].join('\n'),
     pages: {
@@ -118,7 +118,7 @@ test('keeps validating links from generated HTML', () => {
 test('rejects a missing site target from llms.txt', () => {
   const result = check(
     createFixture({
-      llms: '[Missing](https://swarmbase.github.io/swarmbase/missing/)',
+      llms: '[Missing](https://peerborne.io/missing/)',
     }),
   );
 
@@ -129,7 +129,7 @@ test('rejects a missing site target from llms.txt', () => {
 test('rejects a missing site anchor from llms.txt', () => {
   const result = check(
     createFixture({
-      llms: '[Guide](https://swarmbase.github.io/swarmbase/guide/#missing)',
+      llms: '[Guide](https://peerborne.io/guide/#missing)',
       pages: { 'guide/index.html': '<h2 id="topic">Topic</h2>' },
     }),
   );
@@ -138,15 +138,14 @@ test('rejects a missing site anchor from llms.txt', () => {
   assert.match(outputFor(result), /llms\.txt:.*missing anchor "missing"/);
 });
 
-test('rejects a site link outside the configured base path', () => {
+test('treats a link to another origin as external', () => {
   const result = check(
     createFixture({
-      llms: '[Outside](https://swarmbase.github.io/outside/)',
+      llms: '[Outside](https://example.com/outside/)',
     }),
   );
 
-  assert.equal(result.status, 1, outputFor(result));
-  assert.match(outputFor(result), /llms\.txt:.*escapes base path/);
+  assert.equal(result.status, 0, outputFor(result));
 });
 
 test('rejects a malformed URL from llms.txt', () => {
@@ -163,8 +162,8 @@ test('rejects an inline Markdown link without a closing delimiter', () => {
   const result = check(
     createFixture({
       llms: [
-        '[Home](https://swarmbase.github.io/swarmbase/)',
-        '[Guide](https://swarmbase.github.io/swarmbase/guide/',
+        '[Home](https://peerborne.io/)',
+        '[Guide](https://peerborne.io/guide/',
       ].join('\n'),
     }),
   );
@@ -180,9 +179,9 @@ test('rejects an undefined Markdown link reference', () => {
   const result = check(
     createFixture({
       llms: [
-        '[Home](https://swarmbase.github.io/swarmbase/)',
+        '[Home](https://peerborne.io/)',
         '[Guide][missing]',
-        '[guide]: https://swarmbase.github.io/swarmbase/guide/',
+        '[guide]: https://peerborne.io/guide/',
       ].join('\n'),
     }),
   );
@@ -194,7 +193,7 @@ test('rejects an undefined Markdown link reference', () => {
 test('rejects a missing repository target from llms.txt', () => {
   const result = check(
     createFixture({
-      llms: '[Missing](https://github.com/swarmbase/swarmbase/blob/main/docs/not-here.md)',
+      llms: '[Missing](https://github.com/Peerborne/peerborne/blob/main/docs/not-here.md)',
     }),
   );
 
@@ -209,10 +208,10 @@ test('rejects unsupported same-repository source routes', () => {
   const result = check(
     createFixture({
       llms: [
-        '[Branch](https://github.com/swarmbase/swarmbase/blob/dev/docs/file.md)',
-        '[Route](https://github.com/swarmbase/swarmbase/blbo/main/docs/file.md)',
-        '[Short route](https://github.com/swarmbase/swarmbase/blbo/main)',
-        '[Other branch](https://github.com/swarmbase/swarmbase/blbo/dev/docs/file.md)',
+        '[Branch](https://github.com/Peerborne/peerborne/blob/dev/docs/file.md)',
+        '[Route](https://github.com/Peerborne/peerborne/blbo/main/docs/file.md)',
+        '[Short route](https://github.com/Peerborne/peerborne/blbo/main)',
+        '[Other branch](https://github.com/Peerborne/peerborne/blbo/dev/docs/file.md)',
       ].join('\n'),
     }),
   );
@@ -226,7 +225,7 @@ test('rejects unsupported same-repository source routes', () => {
 test('rejects repository paths containing encoded backslashes', () => {
   const result = check(
     createFixture({
-      llms: '[Escape](https://github.com/swarmbase/swarmbase/blob/main/docs/..%5Coutside.md)',
+      llms: '[Escape](https://github.com/Peerborne/peerborne/blob/main/docs/..%5Coutside.md)',
     }),
   );
 
@@ -236,7 +235,7 @@ test('rejects repository paths containing encoded backslashes', () => {
 
 test('rejects repository targets that symlink outside the checkout', () => {
   const fixture = createFixture({
-    llms: '[Escape](https://github.com/swarmbase/swarmbase/blob/main/docs/link.md)',
+    llms: '[Escape](https://github.com/Peerborne/peerborne/blob/main/docs/link.md)',
     repositoryDirectories: ['docs'],
   });
   writeFileSync(join(fixture.root, 'outside.md'), 'outside');
@@ -255,7 +254,7 @@ test('rejects repository targets that symlink outside the checkout', () => {
 
 test('accepts repository targets that symlink within the checkout', () => {
   const fixture = createFixture({
-    llms: '[Link](https://github.com/swarmbase/swarmbase/blob/main/docs/link.md)',
+    llms: '[Link](https://github.com/Peerborne/peerborne/blob/main/docs/link.md)',
     repositoryFiles: { 'docs/target.md': 'target' },
   });
   symlinkSync('target.md', join(fixture.repositoryDirectory, 'docs/link.md'));
@@ -282,11 +281,11 @@ test('resumes llms-full.txt validation after fenced examples', () => {
   const result = check(
     createFixture({
       llmsFull: [
-        '[Guide](https://swarmbase.github.io/swarmbase/guide/#topic)',
+        '[Guide](https://peerborne.io/guide/#topic)',
         '```md',
-        '[Example only](https://swarmbase.github.io/swarmbase/ignored/)',
+        '[Example only](https://peerborne.io/ignored/)',
         '```',
-        '[Missing](https://swarmbase.github.io/swarmbase/missing/)',
+        '[Missing](https://peerborne.io/missing/)',
       ].join('\n'),
       pages: { 'guide/index.html': '<h2 id="topic">Topic</h2>' },
     }),
@@ -300,9 +299,9 @@ test('rejects an unclosed fence in llms-full.txt', () => {
   const result = check(
     createFixture({
       llmsFull: [
-        '[Home](https://swarmbase.github.io/swarmbase/)',
+        '[Home](https://peerborne.io/)',
         '```md',
-        '[Masked](https://swarmbase.github.io/swarmbase/missing/)',
+        '[Masked](https://peerborne.io/missing/)',
       ].join('\n'),
     }),
   );

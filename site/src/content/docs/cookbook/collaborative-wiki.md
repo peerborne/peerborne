@@ -5,7 +5,7 @@ description: Run and assess the repository's Vite, Redux, and Automerge wiki exa
 
 **Status: Runnable from source (single-browser startup smoke only).**
 
-The current wiki is [`examples/wiki-swarm`](https://github.com/swarmbase/swarmbase/tree/main/examples/wiki-swarm): a Vite application using Redux and Automerge. Its production build and strict Chromium startup smoke test pass. This evidence does **not** prove article mutation, two-browser synchronization, convergence, restart recovery, or a multi-user Yjs application. See [Limitations](../../concepts/limitations/).
+The current wiki is [`examples/wiki-swarm`](https://github.com/Peerborne/peerborne/tree/main/examples/wiki-swarm): a Vite application using Redux and Automerge. Its production build and strict Chromium startup smoke test pass. This evidence does **not** prove article mutation, two-browser synchronization, convergence, restart recovery, or a multi-user Yjs application. See [Limitations](../../concepts/limitations/).
 
 The workspace packages are unpublished. Work from a repository checkout with Node.js 22.19.0 and the locked dependencies installed as described in the [quick start](../../getting-started/quick-start/).
 
@@ -15,13 +15,13 @@ From the repository root:
 
 ```sh
 yarn build
-yarn workspace @swarmbase/wiki-swarm start
+yarn workspace @peerborne/wiki-swarm start
 ```
 
 Vite prints the local URL. To build without starting a server:
 
 ```sh
-yarn workspace @swarmbase/wiki-swarm build
+yarn workspace @peerborne/wiki-swarm build
 ```
 
 To run the exact application smoke path:
@@ -39,7 +39,7 @@ The example reads a browser-safe Vite variable:
 
 ```sh
 VITE_RELAY_MULTIADDR='/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW...' \
-  yarn workspace @swarmbase/wiki-swarm start
+  yarn workspace @peerborne/wiki-swarm start
 ```
 
 Use the public, dialable multiaddr from [Run your own relay](../running-a-relay/), not a `0.0.0.0` listen address. A relay helps browser peers discover and reach one another; it does not store wiki data durably.
@@ -61,6 +61,6 @@ Do not describe full-string or editor-state replacement as a production-safe col
 
 ## Application design cautions
 
-A wiki commonly uses one article document plus a separate article-index document. Updating both is a dual write: Swarmbase does not provide a transaction spanning documents, so one update can succeed while the other rejects. Make index repair and reconciliation explicit.
+A wiki commonly uses one article document plus a separate article-index document. Updating both is a dual write: Peerborne does not provide a transaction spanning documents, so one update can succeed while the other rejects. Make index repair and reconciliation explicit.
 
 Do not infer durability from content-addressed blocks or recommend pinning as an available fix. The current pinning path is incomplete; retained blocks alone also omit identity, keys, graph state, and recovery metadata. See [Storage](../../concepts/storage/) and [Keeping data alive](../pinning/).

@@ -1,4 +1,4 @@
-# Caddy reverse proxy for SwarmDB relay servers
+# Caddy reverse proxy for Peerborne relay servers
 #
 # Terminates TLS and proxies WebSocket connections to the relay.
 # Caddy automatically obtains and renews Let's Encrypt certificates.

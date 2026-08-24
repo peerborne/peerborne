@@ -5,11 +5,11 @@ description: Design and validate a pinning integration without treating the curr
 
 **Status: Deferred/incomplete integration.**
 
-Swarmbase does not currently provide a runnable, end-to-end pinning daemon or durability guarantee. Do not rely on this recipe to preserve important data. See [Storage](../../concepts/storage/) and [Limitations](../../concepts/limitations/).
+Peerborne does not currently provide a runnable, end-to-end pinning daemon or durability guarantee. Do not rely on this recipe to preserve important data. See [Storage](../../concepts/storage/) and [Limitations](../../concepts/limitations/).
 
 ## What exists
 
-The Node-only `CollabswarmNode` contains a listener for `pubsubDocumentPublishPath` (default `/documents`). Given an announcement, it can open that document, observe its change graph, and call Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
+The Node-only `PeerborneNode` contains a listener for `pubsubDocumentPublishPath` (default `/documents`). Given an announcement, it can open that document, observe its change graph, and call Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
 
 That listener is only one side of a protocol. The normal core document commit path does **not** publish document announcements to it, so ordinary application changes do not activate automatic pinning. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
@@ -26,7 +26,7 @@ Pinning ciphertext CIDs preserves bytes, not a recoverable application. Recovery
 - compatible CRDT, ACL, serializer, quorum, and network configuration;
 - reachable providers able to serve the retained blocks.
 
-A generic pinning service can retain CIDs explicitly sent to it, but Swarmbase has no generic client that discovers and exports every required block or restores the associated metadata.
+A generic pinning service can retain CIDs explicitly sent to it, but Peerborne has no generic client that discovers and exports every required block or restores the associated metadata.
 
 ## Integration checklist
 

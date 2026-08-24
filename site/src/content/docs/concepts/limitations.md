@@ -1,32 +1,32 @@
 ---
 title: Limitations
-description: Current limitations — what is not yet implemented or verified in Swarmbase.
+description: Current limitations — what is not yet implemented or verified in Peerborne.
 ---
 
-Swarmbase is under active development. This page catalogs the known gaps between the current implementation and a production-ready system. Every limitation listed here is either not yet implemented or not yet verified in CI.
+Peerborne is under active development. This page catalogs the known gaps between the current implementation and a production-ready system. Every limitation listed here is either not yet implemented or not yet verified in CI.
 
-See the [feature audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md) for the evidence backing each claim, and the [roadmap](../../community/roadmap/) for current development priorities.
+See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for the evidence backing each claim, and the [roadmap](../../community/roadmap/) for current development priorities.
 
 ## Distribution and operations
 
-- **Packages are unpublished.** The `@swarmbase/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
+- **Packages are unpublished.** The `@peerborne/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
 - **No deployment automation.** There is no CI/CD pipeline for deploying relays, bootstrap nodes, or pinning services.
 - **No upgrade or migration path.** API changes between commits may break your application without warning. There is no changelog, no semver, and no deprecation period.
 
 ## Offline and durability
 
-- **Offline editing requires an already-loaded replica.** A document must be opened and loaded before it can be edited offline. Fresh documents cannot be created offline — `Collabswarm.initialize()` starts local Helia/libp2p services which can run without network access, but onboarding a new document (resolving its ID to a CID, loading its blocks, establishing quorum agreement) requires network connectivity.
+- **Offline editing requires an already-loaded replica.** A document must be opened and loaded before it can be edited offline. Fresh documents cannot be created offline — `Peerborne.initialize()` starts local Helia/libp2p services which can run without network access, but onboarding a new document (resolving its ID to a CID, loading its blocks, establishing quorum agreement) requires network connectivity.
 - **No durable outbox.** Changes are published to GossipSub and stored locally, but there is no queue with retry for unreachable peers. If a peer is offline when a change is published, it may never receive it.
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers local operations only.
-- **No automatic reconnection.** If the libp2p connection drops, Swarmbase does not reconnect. The application must detect and handle reconnection.
+- **No automatic reconnection.** If the libp2p connection drops, Peerborne does not reconnect. The application must detect and handle reconnection.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
 - **Browser restart recovery not verified.** IndexedDB persists blocks locally, but complete browser restart → reopen → verify document state is not proven in CI.
-- **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Swarmbase has no key backup, recovery, or rotation.
+- **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no key backup, recovery, or rotation.
 
 ## Storage and persistence
 
-- **No replication factor guarantee.** Swarmbase does not ensure blocks are stored on at least N peers. The last online peer is the last surviving copy.
-- **Pinning is incomplete.** A `CollabswarmNode` listener exists but the core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
+- **No replication factor guarantee.** Peerborne does not ensure blocks are stored on at least N peers. The last online peer is the last surviving copy.
+- **Pinning is incomplete.** A `PeerborneNode` listener exists but the core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
 - **Compaction is off by default.** Snapshots are not automatic. Compaction can prune blocks needed for recovery.
 - **Bootstrap can fail after pruning.** If all pruned blocks are needed to reconstruct a document, and they are not available from any peer, the document cannot be loaded.
 - **No garbage collection policy.** GC is manual and destructive. There is no LRU, TTL, or size-limit-based automatic cleanup.
@@ -64,7 +64,7 @@ See the [feature audit](https://github.com/swarmbase/swarmbase/blob/main/docs/fe
 
 - **Examples are startup smoke only.** The three example applications (browser-test, wiki-swarm, password-manager) verify single-browser startup. None demonstrate multi-peer collaboration end-to-end.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
-- **No migration guide.** There is no guide for upgrading from one Swarmbase commit to another.
+- **No migration guide.** There is no guide for upgrading from one Peerborne commit to another.
 - **No changelog.** Release notes and version history are not published.
 
 ## What is verified
@@ -85,5 +85,5 @@ Every claim on this site should be understood against this evidence baseline. A 
 
 - [Roadmap](../../community/roadmap/) — current development priorities
 - [Help wanted](../../community/help-wanted/) — specific contribution opportunities
-- [Feature audit](https://github.com/swarmbase/swarmbase/blob/main/docs/feature-audit.md) — capability-to-evidence map
+- [Feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) — capability-to-evidence map
 - [FAQ](../../community/faq/) — answers to common questions
