@@ -40,6 +40,7 @@ class ControlledLifecycleStorage extends MemoryIndexStorage {
   readonly operations: string[] = [];
   private _nextPutGate?: OperationGate;
   private _nextClearGate?: OperationGate;
+  private _nextQueryGate?: OperationGate;
 
   blockNextPut(): OperationGate {
     const gate = createOperationGate();
@@ -50,6 +51,12 @@ class ControlledLifecycleStorage extends MemoryIndexStorage {
   blockNextClear(): OperationGate {
     const gate = createOperationGate();
     this._nextClearGate = gate;
+    return gate;
+  }
+
+  blockNextQuery(): OperationGate {
+    const gate = createOperationGate();
+    this._nextQueryGate = gate;
     return gate;
   }
 
@@ -72,6 +79,20 @@ class ControlledLifecycleStorage extends MemoryIndexStorage {
     this.operations.push('clear');
     await gate?.promise;
     await super.clear(indexName);
+  }
+
+  override async query(
+    ...args: Parameters<MemoryIndexStorage['query']>
+  ): ReturnType<MemoryIndexStorage['query']> {
+    const gate = this._nextQueryGate;
+    this._nextQueryGate = undefined;
+    const result = await super.query(...args);
+    if (gate) {
+      this.operations.push('query:read');
+      await gate.promise;
+      this.operations.push('query:finish');
+    }
+    return result;
   }
 }
 
@@ -357,6 +378,71 @@ describe('IndexManager', () => {
 
       expect(result.documents).toHaveLength(0);
       expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeUndefined();
+    });
+
+    test('should discard an in-flight query after removing its generation', async () => {
+      const controlledStorage = new ControlledLifecycleStorage();
+      const controlledManager = new IndexManager(
+        controlledStorage,
+        (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
+      );
+      await controlledManager.defineIndex(articleIndex);
+      await controlledManager.updateIndex('/articles/1', {
+        title: 'Old generation',
+        content: '',
+        author: 'Alice',
+        createdOn: '2024-01-01',
+        tags: [],
+      });
+      controlledStorage.operations.length = 0;
+      const queryGate = controlledStorage.blockNextQuery();
+
+      const query = controlledManager.query({
+        indexName: articleIndex.name,
+        filters: [],
+      });
+      await waitFor(async () => controlledStorage.operations.includes('query:read'));
+
+      await controlledManager.removeIndex(articleIndex.name);
+      queryGate.resolve();
+
+      await expect(query).resolves.toEqual({ documents: [], totalCount: 0 });
+    });
+
+    test('should discard an in-flight query after redefining its generation', async () => {
+      const controlledStorage = new ControlledLifecycleStorage();
+      const controlledManager = new IndexManager(
+        controlledStorage,
+        (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
+      );
+      await controlledManager.defineIndex(articleIndex);
+      await controlledManager.updateIndex('/articles/1', {
+        title: 'Old generation',
+        content: '',
+        author: 'Alice',
+        createdOn: '2024-01-01',
+        tags: [],
+      });
+      controlledStorage.operations.length = 0;
+      const queryGate = controlledStorage.blockNextQuery();
+      const replacement: IndexDefinition = {
+        ...articleIndex,
+        fields: [{ path: 'author', type: 'string' }],
+      };
+
+      const query = controlledManager.query({
+        indexName: articleIndex.name,
+        filters: [],
+      });
+      await waitFor(async () => controlledStorage.operations.includes('query:read'));
+
+      const removal = controlledManager.removeIndex(articleIndex.name);
+      const redefinition = controlledManager.defineIndex(replacement);
+      await Promise.all([removal, redefinition]);
+      queryGate.resolve();
+
+      await expect(query).resolves.toEqual({ documents: [], totalCount: 0 });
+      expect(controlledManager.getDefinitions()).toEqual([replacement]);
     });
 
     test('should reject a replacement and hide orphan rows when clear fails', async () => {
@@ -695,6 +781,138 @@ describe('IndexManager', () => {
       expect(results).toContain(0);
       expect(results).toContain(1);
 
+      unsub();
+    });
+
+    test('should not deliver a superseded query after a replacement result', async () => {
+      const controlledStorage = new ControlledLifecycleStorage();
+      const controlledManager = new IndexManager(
+        controlledStorage,
+        (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
+      );
+      await controlledManager.defineIndex(articleIndex);
+      await controlledManager.updateIndex('/articles/1', {
+        title: 'Old generation',
+        content: '',
+        author: 'Alice',
+        createdOn: '2024-01-01',
+        tags: [],
+      });
+      controlledStorage.operations.length = 0;
+      const queryGate = controlledStorage.blockNextQuery();
+      const deliveries: string[] = [];
+      const unsub = controlledManager.subscribe(
+        { indexName: articleIndex.name, filters: [] },
+        (result) => {
+          deliveries.push(String(result.documents[0]?.snapshot.author ?? 'empty'));
+        },
+      );
+      await waitFor(async () => controlledStorage.operations.includes('query:read'));
+
+      const replacement: IndexDefinition = {
+        ...articleIndex,
+        fields: [{ path: 'author', type: 'string' }],
+      };
+      const removal = controlledManager.removeIndex(articleIndex.name);
+      const redefinition = controlledManager.defineIndex(replacement);
+      await Promise.all([removal, redefinition]);
+      await controlledManager.updateIndex('/articles/2', {
+        title: 'New generation',
+        content: '',
+        author: 'Bob',
+        createdOn: '2024-02-01',
+        tags: [],
+      });
+      await waitFor(async () => deliveries.includes('Bob'));
+      const deliveriesBeforeOldQuery = [...deliveries];
+
+      queryGate.resolve();
+      await waitFor(async () => controlledStorage.operations.includes('query:finish'));
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(deliveries).toEqual(deliveriesBeforeOldQuery);
+      expect(deliveries.at(-1)).toBe('Bob');
+      unsub();
+    });
+
+    test('should publish logical removal before storage is cleared', async () => {
+      const controlledStorage = new ControlledLifecycleStorage();
+      const controlledManager = new IndexManager(
+        controlledStorage,
+        (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
+      );
+      await controlledManager.defineIndex(articleIndex);
+      await controlledManager.updateIndex('/articles/1', {
+        title: 'Existing',
+        content: '',
+        author: 'Alice',
+        createdOn: '2024-01-01',
+        tags: [],
+      });
+      const results: number[] = [];
+      const unsub = controlledManager.subscribe(
+        { indexName: articleIndex.name, filters: [] },
+        (result) => { results.push(result.totalCount); },
+      );
+      await waitFor(async () => results.includes(1));
+      results.length = 0;
+      controlledStorage.operations.length = 0;
+      const clearGate = controlledStorage.blockNextClear();
+      let removalResolved = false;
+
+      const removal = controlledManager.removeIndex(articleIndex.name).then(() => {
+        removalResolved = true;
+      });
+      await waitFor(async () => (
+        results.includes(0) && controlledStorage.operations.includes('clear')
+      ));
+
+      expect(removalResolved).toBe(false);
+      expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeDefined();
+
+      clearGate.resolve();
+      await removal;
+      expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeUndefined();
+      unsub();
+    });
+
+    test('should publish logical removal when storage clearing fails', async () => {
+      const controlledStorage = new ControlledLifecycleStorage();
+      const controlledManager = new IndexManager(
+        controlledStorage,
+        (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
+      );
+      await controlledManager.defineIndex(articleIndex);
+      await controlledManager.updateIndex('/articles/1', {
+        title: 'Existing',
+        content: '',
+        author: 'Alice',
+        createdOn: '2024-01-01',
+        tags: [],
+      });
+      const results: number[] = [];
+      const unsub = controlledManager.subscribe(
+        { indexName: articleIndex.name, filters: [] },
+        (result) => { results.push(result.totalCount); },
+      );
+      await waitFor(async () => results.includes(1));
+      results.length = 0;
+      controlledStorage.operations.length = 0;
+      const clearGate = controlledStorage.blockNextClear();
+
+      const removal = controlledManager.removeIndex(articleIndex.name);
+      const removalFailure = expect(removal).rejects.toThrow('clear failed');
+      await waitFor(async () => (
+        results.includes(0) && controlledStorage.operations.includes('clear')
+      ));
+
+      expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeDefined();
+
+      clearGate.reject(new Error('clear failed'));
+      await removalFailure;
+      expect(results).toContain(0);
+      expect(controlledManager.getDefinitions()).toHaveLength(0);
+      expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeDefined();
       unsub();
     });
 

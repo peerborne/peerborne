@@ -12,6 +12,12 @@ interface IndexGeneration {
   operations: Set<Promise<void>>;
 }
 
+interface IndexSubscription {
+  options: QueryOptions;
+  callback: (result: QueryResult<Record<string, unknown>>) => void;
+  queryRevision: number;
+}
+
 /**
  * Manages index definitions, incremental updates, and queries over a local materialized index.
  *
@@ -27,10 +33,7 @@ export class IndexManager<DocType> {
   private _definitions: Map<string, IndexDefinition> = new Map();
   private _indexGenerations: Map<string, IndexGeneration> = new Map();
   private _indexLifecycleOperations: Map<string, Promise<void>> = new Map();
-  private _subscriptions: Map<
-    number,
-    { options: QueryOptions; callback: (result: QueryResult<Record<string, unknown>>) => void }
-  > = new Map();
+  private _subscriptions: Map<number, IndexSubscription> = new Map();
   private _documentOperations: Map<string, Promise<void>> = new Map();
   private _nextSubscriptionId = 1;
 
@@ -89,8 +92,11 @@ export class IndexManager<DocType> {
    */
   async removeIndex(indexName: string): Promise<void> {
     const generation = this._indexGenerations.get(indexName);
-    this._definitions.delete(indexName);
-    this._indexGenerations.delete(indexName);
+    const removedDefinition = this._definitions.delete(indexName);
+    const removedGeneration = this._indexGenerations.delete(indexName);
+    if (removedDefinition || removedGeneration) {
+      this._notifySubscribers();
+    }
     await this._enqueueIndexLifecycleOperation(
       indexName,
       async () => {
@@ -223,6 +229,9 @@ export class IndexManager<DocType> {
     ]);
     const totalCount = allEntries.length;
     const resultEntries = paginatedEntries ?? allEntries;
+    if (this._indexGenerations.get(indexName) !== generation) {
+      return { documents: [], totalCount: 0 };
+    }
 
     return {
       documents: resultEntries.map(entry => ({
@@ -242,16 +251,13 @@ export class IndexManager<DocType> {
     callback: (result: QueryResult<Record<string, unknown>>) => void,
   ): () => void {
     const id = this._nextSubscriptionId++;
-    this._subscriptions.set(id, { options, callback });
-
-    // Fire initial query -- guard against delivery after unsubscribe
-    this.query(options).then((result) => {
-      if (this._subscriptions.has(id)) {
-        callback(result);
-      }
-    }).catch((err) => {
-      console.warn('IndexManager: initial subscription query failed', err);
-    });
+    const subscription: IndexSubscription = { options, callback, queryRevision: 0 };
+    this._subscriptions.set(id, subscription);
+    this._scheduleSubscriptionQuery(
+      id,
+      subscription,
+      'IndexManager: initial subscription query failed',
+    );
 
     return () => {
       this._subscriptions.delete(id);
@@ -435,15 +441,35 @@ export class IndexManager<DocType> {
   }
 
   private _notifySubscribers(): void {
-    for (const [id, sub] of this._subscriptions) {
-      this.query(sub.options).then((result) => {
-        // Guard: subscription may have been removed while query was in flight
-        if (this._subscriptions.has(id)) {
-          sub.callback(result);
-        }
-      }).catch((err) => {
-        console.warn('IndexManager: subscription notification query failed', err);
-      });
+    for (const [id, subscription] of this._subscriptions) {
+      this._scheduleSubscriptionQuery(
+        id,
+        subscription,
+        'IndexManager: subscription notification query failed',
+      );
     }
+  }
+
+  private _scheduleSubscriptionQuery(
+    id: number,
+    subscription: IndexSubscription,
+    errorMessage: string,
+  ): void {
+    const revision = ++subscription.queryRevision;
+    this.query(subscription.options).then((result) => {
+      if (
+        this._subscriptions.get(id) === subscription &&
+        subscription.queryRevision === revision
+      ) {
+        subscription.callback(result);
+      }
+    }).catch((err) => {
+      if (
+        this._subscriptions.get(id) === subscription &&
+        subscription.queryRevision === revision
+      ) {
+        console.warn(errorMessage, err);
+      }
+    });
   }
 }
