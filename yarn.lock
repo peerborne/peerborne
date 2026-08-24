@@ -4018,15 +4018,15 @@ __metadata:
     "@types/jsoneditor": "npm:^9.9.6"
     "@types/node": "npm:^22.7.5"
     "@types/react": "npm:^19.2.3"
-    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-dom": "npm:^19.2.4"
     "@types/react-redux": "npm:^7.1.34"
     "@vitejs/plugin-react": "npm:^4.3.4"
     jsondiffpatch: "npm:^0.7.2"
     jsoneditor: "npm:^10"
     jsoneditor-react: "npm:^3.1.2"
     libp2p: "npm:^3.3.8"
-    react: "npm:^19.2.6"
-    react-dom: "npm:^19.2.6"
+    react: "npm:^19.2.8"
+    react-dom: "npm:^19.2.8"
     react-redux: "npm:^9.2.0"
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
@@ -4131,15 +4131,15 @@ __metadata:
     "@types/node": "npm:^22.7.5"
     "@types/react": "npm:^19.2.3"
     "@types/react-bootstrap": "npm:^1.1.0"
-    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-dom": "npm:^19.2.4"
     "@types/react-router-dom": "npm:^5.3.3"
     "@types/uuid": "npm:^11.0.0"
     "@vitejs/plugin-react": "npm:^4.3.4"
     bootstrap: "npm:^5.3.8"
     quill-delta: "npm:^5.1.0"
-    react: "npm:^19.2.6"
+    react: "npm:^19.2.8"
     react-bootstrap: "npm:^2.10.10"
-    react-dom: "npm:^19.2.6"
+    react-dom: "npm:^19.2.8"
     react-router-dom: "npm:^5.3.4"
     typescript: "npm:^5.9.3"
     uuid: "npm:^14.0.2"
@@ -4161,8 +4161,8 @@ __metadata:
     eslint: "npm:^10.4.1"
     jest: "npm:^29.2.5"
     jest-environment-jsdom: "npm:^30.3.0"
-    react: "npm:^19.2.6"
-    react-dom: "npm:^19.2.6"
+    react: "npm:^19.2.8"
+    react-dom: "npm:^19.2.8"
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
     ts-jest: "npm:^29.2.5"
@@ -4223,17 +4223,17 @@ __metadata:
     "@types/node": "npm:^22.7.5"
     "@types/react": "npm:^19.2.3"
     "@types/react-bootstrap": "npm:^1.1.0"
-    "@types/react-dom": "npm:^19.2.3"
+    "@types/react-dom": "npm:^19.2.4"
     "@types/react-redux": "npm:^7.1.34"
     "@types/react-router-dom": "npm:^5.3.3"
     "@types/slate": "npm:^0.47.16"
     "@vitejs/plugin-react": "npm:^4.3.4"
     bootstrap: "npm:^5.3.8"
     dayjs: "npm:^1.11.13"
-    react: "npm:^19.2.6"
+    react: "npm:^19.2.8"
     react-bootstrap: "npm:^2.10.10"
     react-bootstrap-icons: "npm:^1.11.6"
-    react-dom: "npm:^19.2.6"
+    react-dom: "npm:^19.2.8"
     react-redux: "npm:^9.2.0"
     react-router-dom: "npm:^5.3.4"
     redux: "npm:^5.0.1"
@@ -5391,12 +5391,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/react-dom@npm:^19.2.3":
-  version: 19.2.3
-  resolution: "@types/react-dom@npm:19.2.3"
+"@types/react-dom@npm:^19.2.4":
+  version: 19.2.4
+  resolution: "@types/react-dom@npm:19.2.4"
   peerDependencies:
     "@types/react": ^19.2.0
-  checksum: 10/616c4a8aee250ea05fb1e7b98e7e00475dd3a6c1c30d7be18b4b93caba832f4203106b3a496a6b147e5acc2da14575eca47bce234c633bca1f8430ef8ffb234a
+  checksum: 10/e055ef08805768b2e6abc39955b1ac25a8bfd0f8034e6dc62846d007982e40fb69400c3b9440e35335bf4175d1789bf71dacf6007d2ba57385ed8433d16286fc
   languageName: node
   linkType: hard
 
@@ -13049,14 +13049,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-dom@npm:^19.2.6":
-  version: 19.2.6
-  resolution: "react-dom@npm:19.2.6"
+"react-dom@npm:^19.2.8":
+  version: 19.2.8
+  resolution: "react-dom@npm:19.2.8"
   dependencies:
     scheduler: "npm:^0.27.0"
   peerDependencies:
-    react: ^19.2.6
-  checksum: 10/695122e37dec3460311231ff1f9a96368d74457d4ccf60010eaebc08c3e1c47b054c9267b40d98c689ae99d0c29a340acacfd405016a954a4f11613146191e68
+    react: ^19.2.8
+  checksum: 10/fb45d500a8615a36d71a821213a3d4bfe32a70aa1d04ce17d8791dd10c4ef0281e7fdd46694e1112f0f2dcf58df89d12043a13228be9788458aa82f4885a9cdc
   languageName: node
   linkType: hard
 
@@ -13178,10 +13178,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react@npm:^19.2.6":
-  version: 19.2.6
-  resolution: "react@npm:19.2.6"
-  checksum: 10/205f0db93bd6c6485f94471d1c3437ae1d410f322297c76186fe4f658f88a6786bb0805e3cf8f330f24d1daa923b6b610ec63960d2461e9201bca64ca8361db9
+"react@npm:^19.2.8":
+  version: 19.2.8
+  resolution: "react@npm:19.2.8"
+  checksum: 10/a3c697798035e295ca9e51591d3a8700824535cb8c070fac1f8abbe69717ceb99108cbc4ba7b31a606806f336b1eba705705f63b9d39ace198fe51e8990ac843
   languageName: node
   linkType: hard
 
