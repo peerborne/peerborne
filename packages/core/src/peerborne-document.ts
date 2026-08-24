@@ -163,7 +163,6 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
  * ```ts
  * // Open a document (Automerge-based peerborne instance).
  * const doc1 = peerborne.doc("/my-doc1-path");
- * if (!doc1) throw new Error("Failed to create document reference");
  * await doc1.open();
  *
  * await doc1.change(doc => {
@@ -175,7 +174,6 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
  * ```ts
  * // Open a document (Yjs-based peerborne instance).
  * const doc2 = peerborneYjs.doc("/my-doc2-path");
- * if (!doc2) throw new Error("Failed to create document reference");
  * await doc2.open();
  *
  * await doc2.change(doc => {

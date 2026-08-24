@@ -120,7 +120,6 @@ export type PeerbornePeersHandler = (
  *
  * // Open a document.
  * const doc = peerborne.doc('/my-doc-path');
- * if (!doc) throw new Error('Failed to create document');
  * await doc.open();
  * @typeParam DocType The CRDT document type
  * @typeParam ChangesType A block of CRDT change(s)
@@ -740,7 +739,7 @@ export class Peerborne<
     PrivateKey,
     PublicKey,
     DocumentKey
-  > | null {
+  > {
     // Return new document reference.
     return new PeerborneDocument(
       this,
