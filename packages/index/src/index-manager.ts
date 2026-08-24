@@ -7,6 +7,11 @@ import {
 import { IndexStorage } from './index-storage.js';
 import { extractField } from './field-extractor.js';
 
+interface IndexGeneration {
+  ready: Promise<void>;
+  operations: Set<Promise<void>>;
+}
+
 /**
  * Manages index definitions, incremental updates, and queries over a local materialized index.
  *
@@ -20,6 +25,8 @@ export class IndexManager<DocType> {
   private _storage: IndexStorage;
   private _extractor: DocumentSnapshotExtractor<DocType>;
   private _definitions: Map<string, IndexDefinition> = new Map();
+  private _indexGenerations: Map<string, IndexGeneration> = new Map();
+  private _indexLifecycleOperations: Map<string, Promise<void>> = new Map();
   private _subscriptions: Map<
     number,
     { options: QueryOptions; callback: (result: QueryResult<Record<string, unknown>>) => void }
@@ -42,6 +49,7 @@ export class IndexManager<DocType> {
     if (existing) {
       // Allow idempotent re-definition with same config
       if (JSON.stringify(existing) === JSON.stringify(definition)) {
+        await this._indexGenerations.get(definition.name)?.ready;
         return;
       }
       throw new Error(
@@ -49,16 +57,53 @@ export class IndexManager<DocType> {
         `Call removeIndex() first to redefine it.`,
       );
     }
+    const generation: IndexGeneration = {
+      ready: Promise.resolve(),
+      operations: new Set(),
+    };
     this._definitions.set(definition.name, definition);
-    await this._storage.initialize(definition.name, definition.fields);
+    this._indexGenerations.set(definition.name, generation);
+    generation.ready = this._enqueueIndexLifecycleOperation(
+      definition.name,
+      async () => {
+        await this._storage.initialize(definition.name, definition.fields);
+      },
+      {
+        runAfterPreviousFailure: false,
+        cleanupAfterStartedFailure: true,
+      },
+    );
+    try {
+      await generation.ready;
+    } catch (err) {
+      if (this._indexGenerations.get(definition.name) === generation) {
+        this._indexGenerations.delete(definition.name);
+        this._definitions.delete(definition.name);
+      }
+      throw err;
+    }
   }
 
   /**
    * Remove an index definition and clear its stored data.
    */
   async removeIndex(indexName: string): Promise<void> {
+    const generation = this._indexGenerations.get(indexName);
     this._definitions.delete(indexName);
-    await this._storage.clear(indexName);
+    this._indexGenerations.delete(indexName);
+    await this._enqueueIndexLifecycleOperation(
+      indexName,
+      async () => {
+        if (generation) {
+          await Promise.allSettled(Array.from(generation.operations));
+        }
+        await this._storage.clear(indexName);
+      },
+      {
+        runAfterPreviousFailure: true,
+        cleanupAfterStartedFailure: false,
+      },
+    );
   }
 
   /**
@@ -76,10 +121,18 @@ export class IndexManager<DocType> {
    */
   async updateIndex(documentPath: string, document: DocType): Promise<void> {
     const snapshot = this._extractor(document);
-    const entries: Array<{ indexName: string; fields: Record<string, unknown> }> = [];
+    const entries: Array<{
+      indexName: string;
+      generation: IndexGeneration;
+      fields: Record<string, unknown>;
+    }> = [];
 
     for (const [indexName, definition] of this._definitions) {
       if (!documentPath.startsWith(definition.collectionPrefix)) {
+        continue;
+      }
+      const generation = this._indexGenerations.get(indexName);
+      if (!generation) {
         continue;
       }
 
@@ -88,21 +141,27 @@ export class IndexManager<DocType> {
         this._setNestedField(fields, fieldDef.path, extractField(snapshot, fieldDef.path));
       }
 
-      entries.push({ indexName, fields });
+      entries.push({ indexName, generation, fields });
     }
 
     await this._enqueueDocumentOperation(documentPath, async () => {
       let changed = false;
 
-      for (const { indexName, fields } of entries) {
-        // Diff against previous entry -- skip write if unchanged
-        const existing = await this._storage.get(indexName, documentPath);
-        if (existing && this._fieldsEqual(existing, fields)) {
+      for (const { indexName, generation, fields } of entries) {
+        if (this._indexGenerations.get(indexName) !== generation) {
           continue;
         }
 
-        await this._storage.put(indexName, documentPath, fields);
-        changed = true;
+        await this._runIndexOperation(indexName, generation, async () => {
+          // Diff against previous entry -- skip write if unchanged
+          const existing = await this._storage.get(indexName, documentPath);
+          if (existing && this._fieldsEqual(existing, fields)) {
+            return;
+          }
+
+          await this._storage.put(indexName, documentPath, fields);
+          changed = true;
+        });
       }
 
       if (changed) {
@@ -115,9 +174,19 @@ export class IndexManager<DocType> {
    * Remove a document from all indexes.
    */
   async removeFromIndex(documentPath: string): Promise<void> {
+    const indexes = Array.from(this._definitions.keys()).flatMap((indexName) => {
+      const generation = this._indexGenerations.get(indexName);
+      return generation ? [{ indexName, generation }] : [];
+    });
+
     await this._enqueueDocumentOperation(documentPath, async () => {
-      for (const indexName of this._definitions.keys()) {
-        await this._storage.delete(indexName, documentPath);
+      for (const { indexName, generation } of indexes) {
+        if (this._indexGenerations.get(indexName) !== generation) {
+          continue;
+        }
+        await this._runIndexOperation(indexName, generation, async () => {
+          await this._storage.delete(indexName, documentPath);
+        });
       }
       this._notifySubscribers();
     });
@@ -129,6 +198,18 @@ export class IndexManager<DocType> {
   async query(options: QueryOptions): Promise<QueryResult<Record<string, unknown>>> {
     const indexName = this._resolveIndexName(options);
     if (!indexName) {
+      return { documents: [], totalCount: 0 };
+    }
+    const generation = this._indexGenerations.get(indexName);
+    if (!generation) {
+      return { documents: [], totalCount: 0 };
+    }
+    try {
+      await generation.ready;
+    } catch {
+      return { documents: [], totalCount: 0 };
+    }
+    if (this._indexGenerations.get(indexName) !== generation) {
       return { documents: [], totalCount: 0 };
     }
 
@@ -182,25 +263,31 @@ export class IndexManager<DocType> {
    */
   async rebuildIndex(indexName: string, documents: Map<string, DocType>): Promise<void> {
     const definition = this._definitions.get(indexName);
-    if (!definition) return;
+    const generation = this._indexGenerations.get(indexName);
+    if (!definition || !generation) return;
 
-    await this._storage.clear(indexName);
+    await this._runIndexOperation(indexName, generation, async () => {
+      await this._storage.clear(indexName);
 
-    for (const [documentPath, document] of documents) {
-      if (!documentPath.startsWith(definition.collectionPrefix)) {
-        continue;
+      for (const [documentPath, document] of documents) {
+        if (this._indexGenerations.get(indexName) !== generation) {
+          return;
+        }
+        if (!documentPath.startsWith(definition.collectionPrefix)) {
+          continue;
+        }
+
+        const snapshot = this._extractor(document);
+        const fields: Record<string, unknown> = {};
+        for (const fieldDef of definition.fields) {
+          this._setNestedField(fields, fieldDef.path, extractField(snapshot, fieldDef.path));
+        }
+
+        await this._storage.put(indexName, documentPath, fields);
       }
 
-      const snapshot = this._extractor(document);
-      const fields: Record<string, unknown> = {};
-      for (const fieldDef of definition.fields) {
-        this._setNestedField(fields, fieldDef.path, extractField(snapshot, fieldDef.path));
-      }
-
-      await this._storage.put(indexName, documentPath, fields);
-    }
-
-    this._notifySubscribers();
+      this._notifySubscribers();
+    });
   }
 
   /**
@@ -267,6 +354,65 @@ export class IndexManager<DocType> {
       }
     };
     void current.then(cleanup, cleanup);
+
+    return current;
+  }
+
+  private _runIndexOperation(
+    indexName: string,
+    generation: IndexGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (this._indexGenerations.get(indexName) !== generation) {
+      return Promise.resolve();
+    }
+
+    const current = generation.ready.then(async () => {
+      if (this._indexGenerations.get(indexName) === generation) {
+        await operation();
+      }
+    });
+    generation.operations.add(current);
+
+    const cleanup = (): void => {
+      generation.operations.delete(current);
+    };
+    void current.then(cleanup, cleanup);
+
+    return current;
+  }
+
+  private _enqueueIndexLifecycleOperation(
+    indexName: string,
+    operation: () => Promise<void>,
+    options: {
+      runAfterPreviousFailure: boolean;
+      cleanupAfterStartedFailure: boolean;
+    },
+  ): Promise<void> {
+    const previous = this._indexLifecycleOperations.get(indexName);
+    let operationStarted = false;
+    const trackedOperation = async (): Promise<void> => {
+      operationStarted = true;
+      await operation();
+    };
+    const current = previous
+      ? options.runAfterPreviousFailure
+        ? previous.then(trackedOperation, trackedOperation)
+        : previous.then(trackedOperation)
+      : Promise.resolve().then(trackedOperation);
+    this._indexLifecycleOperations.set(indexName, current);
+
+    const cleanup = (): void => {
+      if (this._indexLifecycleOperations.get(indexName) === current) {
+        this._indexLifecycleOperations.delete(indexName);
+      }
+    };
+    void current.then(cleanup, () => {
+      if (operationStarted && options.cleanupAfterStartedFailure) {
+        cleanup();
+      }
+    });
 
     return current;
   }
