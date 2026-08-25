@@ -1699,12 +1699,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/bitswap@npm:^4.0.11":
-  version: 4.0.11
-  resolution: "@helia/bitswap@npm:4.0.11"
+"@helia/bitswap@npm:^4.0.11, @helia/bitswap@npm:^4.0.14":
+  version: 4.0.14
+  resolution: "@helia/bitswap@npm:4.0.14"
   dependencies:
     "@helia/interface": "npm:^7.1.1"
-    "@helia/libp2p": "npm:^2.1.0"
+    "@helia/libp2p": "npm:^2.1.3"
     "@helia/utils": "npm:^3.0.5"
     "@libp2p/interface": "npm:^3.2.3"
     "@libp2p/logger": "npm:^6.2.8"
@@ -1729,7 +1729,7 @@ __metadata:
     uint8-varint: "npm:^3.0.0"
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/d9674963e51a60d03d90fb94dfe4f7626e06e0f0ffc72d85159ba62df857a8dae700f4630aa17fb94ae304256922f12e852bc5f744c2155d754521c6d60dd7bd
+  checksum: 10/b44949f1110b07ad126df448b8ecb2dc237136f5e07e48f3d26425b6b4a4f173841edf1b4b7d26fb10c6e5bd2b2c0dc4c48b6d2204e22a4a091fba0f397543d2
   languageName: node
   linkType: hard
 
@@ -1872,9 +1872,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/libp2p@npm:^2.1.0":
-  version: 2.1.0
-  resolution: "@helia/libp2p@npm:2.1.0"
+"@helia/libp2p@npm:^2.1.0, @helia/libp2p@npm:^2.1.3":
+  version: 2.1.3
+  resolution: "@helia/libp2p@npm:2.1.3"
   dependencies:
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
@@ -1901,14 +1901,13 @@ __metadata:
     "@libp2p/upnp-nat": "npm:^4.0.21"
     "@libp2p/webrtc": "npm:^6.0.24"
     "@libp2p/websockets": "npm:^10.1.14"
-    "@multiformats/dns": "npm:^1.0.13"
     "@multiformats/multiaddr": "npm:^13.0.3"
     it-foreach: "npm:^2.1.7"
     it-map: "npm:^3.1.6"
     libp2p: "npm:^3.3.3"
     multiformats: "npm:^14.0.0"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/ebc4bdeb88917432155da57cb42025061eb0b3e03d228a229234881f4468d274b6ea2131ff46e5d5d5fe124364cbf33b3dd51af5c957f040cd6cc35abae292a8
+  checksum: 10/4fdcbff6507c87d19eb581a078e85f93bf7789db4ba9249e277f797e5d7486aa29e41c1ce90204a4850949671a5d6eb403b6f9b4d3d7da20d95828934d38c01d
   languageName: node
   linkType: hard
 
@@ -4045,8 +4044,8 @@ __metadata:
   dependencies:
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
-    "@helia/bitswap": "npm:^4.0.11"
-    "@helia/libp2p": "npm:^2.1.0"
+    "@helia/bitswap": "npm:^4.0.14"
+    "@helia/libp2p": "npm:^2.1.3"
     "@helia/unixfs": "npm:^8.0.5"
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
