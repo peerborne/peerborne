@@ -10,9 +10,9 @@ import {
   parseBoundedJson,
   validateBoundedText,
 } from './distributed-codec.js';
+import { MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES } from './distributed-limits.js';
 import { VerifiedDistributedIndexManifest } from './distributed-manifest.js';
 
-const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REQUEST_LIFETIME_MS = 30_000;
 
@@ -122,7 +122,10 @@ export async function verifyDistributedSearchRequest(
   now = Date.now(),
 ): Promise<VerifiedDistributedSearchRequest> {
   try {
-    const parsed = parseBoundedJson(input, Math.min(MAX_REQUEST_BYTES, manifest.manifest.limits.maxRequestBytes));
+    const parsed = parseBoundedJson(
+      input,
+      Math.min(MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES, manifest.manifest.limits.maxRequestBytes),
+    );
     if (!isRecord(parsed)) throw new SearchWireError('invalid', 'request envelope must be an object');
     assertExactKeys(parsed, ['request', 'signerApplicationId', 'signature']);
     validateApplicationId(parsed.signerApplicationId);
@@ -199,7 +202,9 @@ export async function verifyDistributedSearchResponse(
 
 export function encodeDistributedSearchRequest(value: SignedDistributedSearchRequestV1): Uint8Array {
   const encoded = encodeJson(value);
-  if (encoded.byteLength > MAX_REQUEST_BYTES) throw new SearchWireError('invalid', 'request is too large');
+  if (encoded.byteLength > MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES) {
+    throw new SearchWireError('invalid', 'request is too large');
+  }
   return encoded;
 }
 

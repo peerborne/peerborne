@@ -12,6 +12,7 @@ import {
   hashIndexDefinition,
   InvalidIndexSchemaError,
   InvalidQueryError,
+  validateIndexDefinition,
   validateQueryAst,
 } from './query-ast.js';
 import { parseQueryCursor } from './query-cursor.js';
@@ -250,6 +251,58 @@ describe('v2 local indexing and query contract', () => {
       ],
       indexes: [{ name: 'author', fields: ['author'] }],
     })).rejects.toThrow('field paths must not overlap');
+  });
+
+  test('rejects sparse and inherited array elements before validation', () => {
+    expect(() => validateIndexDefinition({
+      ...definition,
+      name: 'sparse-fields',
+      fields: Array(1),
+    })).toThrow('dense array');
+    expect(() => validateIndexDefinition({
+      ...definition,
+      name: 'sparse-indexes',
+      indexes: Array(1),
+    })).toThrow('dense array');
+    expect(() => validateIndexDefinition({
+      ...definition,
+      name: 'sparse-index-fields',
+      indexes: [{ name: 'sparse', fields: Array(1) }],
+    })).toThrow('dense array');
+
+    expect(() => validateQueryAst({
+      version: 2,
+      indexName: definition.name,
+      orderBy: Array(1),
+    }, definition)).toThrow('dense array');
+    expect(() => validateQueryAst({
+      version: 2,
+      indexName: definition.name,
+      select: Array(1),
+    }, definition)).toThrow('dense array');
+    expect(() => validateQueryAst({
+      version: 2,
+      indexName: definition.name,
+      where: { kind: 'and', expressions: Array(1) },
+    }, definition)).toThrow('dense array');
+    expect(() => validateQueryAst({
+      version: 2,
+      indexName: definition.name,
+      where: { kind: 'field', path: 'status', operator: 'in', value: Array(1) },
+    }, definition)).toThrow('dense array');
+
+    const inheritedFields = Array<IndexDefinition['fields'][number]>(1);
+    const inheritedArrayPrototype = Object.create(Array.prototype) as Record<string, unknown>;
+    Object.defineProperty(inheritedArrayPrototype, '0', {
+      configurable: true,
+      value: { path: 'inherited', type: 'string', required: true },
+    });
+    Object.setPrototypeOf(inheritedFields, inheritedArrayPrototype);
+    expect(() => validateIndexDefinition({
+      ...definition,
+      name: 'inherited-field-element',
+      fields: inheritedFields,
+    })).toThrow('dense array');
   });
 
   test('discards an in-flight legacy query against a removed v2 generation', async () => {

@@ -72,6 +72,7 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
   if (!Array.isArray(definition.fields) || definition.fields.length === 0 || definition.fields.length > 64) {
     throw new InvalidIndexSchemaError('fields must contain 1-64 definitions');
   }
+  requireDenseOwnArray(definition.fields, 'fields', InvalidIndexSchemaError);
 
   const fieldPaths = new Set<string>();
   const fields = definition.fields.map((field) => {
@@ -118,6 +119,7 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
     if (!Array.isArray(definition.indexes) || definition.indexes.length === 0 || definition.indexes.length > 64) {
       throw new InvalidIndexSchemaError('indexes must contain 1-64 definitions');
     }
+    requireDenseOwnArray(definition.indexes, 'indexes', InvalidIndexSchemaError);
     const names = new Set<string>();
     indexes = definition.indexes.map((index) => {
       if (!isPlainRecord(index)) {
@@ -131,6 +133,11 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
       if (!Array.isArray(index.fields) || index.fields.length === 0 || index.fields.length > 8) {
         throw new InvalidIndexSchemaError(`physical index ${index.name} must contain 1-8 fields`);
       }
+      requireDenseOwnArray(
+        index.fields,
+        `physical index ${index.name} fields`,
+        InvalidIndexSchemaError,
+      );
       const seen = new Set<string>();
       for (const path of index.fields) {
         validateFieldPath(path, 'physical index field', InvalidIndexSchemaError);
@@ -185,18 +192,24 @@ export function validateQueryAst(query: QueryAst, definition: IndexDefinition): 
   const fields = new Map(definition.fields.map((field) => [field.path, field]));
   const counter = { value: 0 };
   const where = query.where === undefined ? undefined : validateExpression(query.where, fields, 1, counter);
-  const orderBy = query.orderBy?.map((clause) => {
-    if (!isPlainRecord(clause)) throw new InvalidQueryError('sort clauses must be plain objects');
-    requireOwnKeys(clause, ['path', 'direction'], 'sort clause', InvalidQueryError);
-    rejectUnknownKeys(clause, new Set(['path', 'direction']), 'sort clause');
-    validateFieldPath(clause.path, 'sort path', InvalidQueryError);
-    if (!fields.has(clause.path)) throw new InvalidQueryError(`sort field is not indexed: ${clause.path}`);
-    if (clause.direction !== 'asc' && clause.direction !== 'desc') {
-      throw new InvalidQueryError('sort direction must be asc or desc');
+  let orderBy: QueryAst['orderBy'];
+  if (query.orderBy !== undefined) {
+    if (!Array.isArray(query.orderBy) || query.orderBy.length > MAX_SORT_FIELDS) {
+      throw new InvalidQueryError(`orderBy must contain at most ${MAX_SORT_FIELDS} sort fields`);
     }
-    return { path: clause.path, direction: clause.direction };
-  });
-  if (orderBy && orderBy.length > MAX_SORT_FIELDS) throw new InvalidQueryError('too many sort fields');
+    requireDenseOwnArray(query.orderBy, 'orderBy', InvalidQueryError);
+    orderBy = query.orderBy.map((clause) => {
+      if (!isPlainRecord(clause)) throw new InvalidQueryError('sort clauses must be plain objects');
+      requireOwnKeys(clause, ['path', 'direction'], 'sort clause', InvalidQueryError);
+      rejectUnknownKeys(clause, new Set(['path', 'direction']), 'sort clause');
+      validateFieldPath(clause.path, 'sort path', InvalidQueryError);
+      if (!fields.has(clause.path)) throw new InvalidQueryError(`sort field is not indexed: ${clause.path}`);
+      if (clause.direction !== 'asc' && clause.direction !== 'desc') {
+        throw new InvalidQueryError('sort direction must be asc or desc');
+      }
+      return { path: clause.path, direction: clause.direction };
+    });
+  }
   if (query.first !== undefined &&
       (!Number.isSafeInteger(query.first) || query.first < 0 || query.first > MAX_FIRST)) {
     throw new InvalidQueryError(`first must be an integer from 0-${MAX_FIRST}`);
@@ -210,6 +223,7 @@ export function validateQueryAst(query: QueryAst, definition: IndexDefinition): 
     if (!Array.isArray(query.select) || query.select.length > MAX_SELECT_FIELDS) {
       throw new InvalidQueryError('select must contain at most 64 fields');
     }
+    requireDenseOwnArray(query.select, 'select', InvalidQueryError);
     const seen = new Set<string>();
     select = query.select.map((path) => {
       validateFieldPath(path, 'select path', InvalidQueryError);
@@ -431,6 +445,11 @@ function validateExpression(
     if (!Array.isArray(expression.expressions) || expression.expressions.length === 0) {
       throw new InvalidQueryError(`${expression.kind} expressions cannot be empty`);
     }
+    requireDenseOwnArray(
+      expression.expressions,
+      `${expression.kind} expressions`,
+      InvalidQueryError,
+    );
     return {
       kind: expression.kind,
       expressions: expression.expressions.map((child) => validateExpression(child, fields, depth + 1, counter)),
@@ -457,6 +476,7 @@ function validateExpression(
         expression.value.length > MAX_IN_VALUES) {
       throw new InvalidQueryError(`in requires 1-${MAX_IN_VALUES} values`);
     }
+    requireDenseOwnArray(expression.value, 'in values', InvalidQueryError);
     for (const value of expression.value) validateFilterValue(value, field);
   } else {
     validateFilterValue(expression.value, field);
@@ -506,6 +526,18 @@ function validateFieldPath(
       /[\u0000-\u001f]/.test(value) ||
       value.split('.').some((segment) => !segment || FORBIDDEN_PATH_SEGMENTS.has(segment))) {
     throw new ErrorType(`${label} is invalid`);
+  }
+}
+
+function requireDenseOwnArray(
+  value: readonly unknown[],
+  label: string,
+  ErrorType: typeof InvalidIndexSchemaError | typeof InvalidQueryError,
+): void {
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) {
+      throw new ErrorType(`${label} must be a dense array of own elements`);
+    }
   }
 }
 

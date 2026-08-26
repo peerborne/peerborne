@@ -152,11 +152,10 @@ export class FederatedSearchCoordinator<DocType> {
           this._sourceTimeoutMs,
           () => abortController.abort(),
         );
-        if (!Array.isArray(result.candidates) || result.candidates.length > this._maxCandidatesPerSource ||
-            typeof result.exhausted !== 'boolean') throw new TypeError('invalid candidate result');
+        const snapshot = snapshotCandidateResult(result, this._maxCandidatesPerSource);
         sourceExecutions[index].status = 'complete';
-        sourceExecutions[index].candidatesReceived = result.candidates.length;
-        return result;
+        sourceExecutions[index].candidatesReceived = snapshot.candidates.length;
+        return snapshot;
       } catch (error) {
         sourceExecutions[index].status = error instanceof SourceTimeoutError ? 'timeout' : 'error';
         return undefined;
@@ -166,16 +165,18 @@ export class FederatedSearchCoordinator<DocType> {
     const interleaved: Array<{ sourceIndex: number; candidate: QueryCandidateReference }> = [];
     let offset = 0;
     while (interleaved.length < this._maxTotalCandidates) {
-      let added = false;
+      let sourceHasPosition = false;
       for (let sourceIndex = 0; sourceIndex < sourceResults.length; sourceIndex++) {
-        const candidate = sourceResults[sourceIndex]?.candidates[offset];
+        const sourceResult = sourceResults[sourceIndex];
+        if (!sourceResult || offset >= sourceResult.candidates.length) continue;
+        sourceHasPosition = true;
+        const candidate = sourceResult.candidates[offset];
         if (candidate) {
           interleaved.push({ sourceIndex, candidate });
-          added = true;
           if (interleaved.length === this._maxTotalCandidates) break;
         }
       }
-      if (!added) break;
+      if (!sourceHasPosition) break;
       offset++;
     }
 
@@ -200,7 +201,7 @@ export class FederatedSearchCoordinator<DocType> {
           return;
         }
         const { candidate, sourceIndex } = item;
-        if (!validCandidate(candidate) || !candidate.documentPath.startsWith(definition.collectionPrefix) ||
+        if (!candidate.documentPath.startsWith(definition.collectionPrefix) ||
             verified.has(candidate.documentPath)) continue;
         const referenceKey = candidateReferenceKey(candidate);
         if (claimedReferences.has(referenceKey)) continue;
@@ -264,11 +265,11 @@ export class FederatedSearchCoordinator<DocType> {
     if (sourceExecutions.some((execution) => execution.status === 'timeout')) reasons.add('source-timeout');
     if (sourceExecutions.some((execution) => execution.status === 'error')) reasons.add('source-error');
     if (sourceResults.some((result) => result && !result.exhausted)) reasons.add('source-truncated');
-    const candidatesReceived = sourceResults.reduce(
-      (total, result) => total + (result?.candidates.length ?? 0),
+    const candidatesAvailable = sourceResults.reduce(
+      (total, result) => total + (result?.candidateCount ?? 0),
       0,
     );
-    if (candidatesReceived > interleaved.length) {
+    if (candidatesAvailable > interleaved.length) {
       reasons.add('candidate-budget-exhausted');
     }
     if (resolutionTimeout) reasons.add('candidate-resolution-timeout');
@@ -308,6 +309,78 @@ export class FederatedSearchCoordinator<DocType> {
       sources: sourceExecutions,
     };
   }
+}
+
+interface SnapshottedCandidateResult {
+  candidates: Array<QueryCandidateReference | undefined>;
+  candidateCount: number;
+  exhausted: boolean;
+}
+
+function snapshotCandidateResult(
+  result: unknown,
+  maxCandidates: number,
+): SnapshottedCandidateResult {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+    throw new TypeError('invalid candidate result');
+  }
+  const rawCandidates = requireOwnDataProperty(result, 'candidates');
+  const exhausted = requireOwnDataProperty(result, 'exhausted');
+  if (!Array.isArray(rawCandidates) || typeof exhausted !== 'boolean') {
+    throw new TypeError('invalid candidate result');
+  }
+  const candidateLength = requireOwnDataProperty(rawCandidates, 'length');
+  if (typeof candidateLength !== 'number' || !Number.isSafeInteger(candidateLength) ||
+      candidateLength < 0 || candidateLength > maxCandidates) {
+    throw new TypeError('invalid candidate result');
+  }
+  const candidates = Array.from(
+    { length: candidateLength },
+    (_, index) => snapshotCandidateAt(rawCandidates, index),
+  );
+  return {
+    candidates,
+    candidateCount: candidates.reduce((count, candidate) => count + (candidate ? 1 : 0), 0),
+    exhausted,
+  };
+}
+
+function snapshotCandidateAt(
+  candidates: unknown[],
+  index: number,
+): QueryCandidateReference | undefined {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(candidates, index);
+    if (!descriptor || !('value' in descriptor)) return undefined;
+    return snapshotCandidate(descriptor.value);
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotCandidate(candidate: unknown): QueryCandidateReference | undefined {
+  try {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+    const documentPathDescriptor = Object.getOwnPropertyDescriptor(candidate, 'documentPath');
+    const revisionDescriptor = Object.getOwnPropertyDescriptor(candidate, 'revision');
+    if (!documentPathDescriptor || !('value' in documentPathDescriptor) ||
+        (revisionDescriptor && !('value' in revisionDescriptor))) return undefined;
+    const documentPath = documentPathDescriptor.value;
+    const revision = revisionDescriptor?.value;
+    if (!validCandidateValues(documentPath, revision)) return undefined;
+    return Object.freeze({
+      documentPath,
+      ...(revision !== undefined ? { revision } : {}),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function requireOwnDataProperty(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !('value' in descriptor)) throw new TypeError('invalid candidate result');
+  return descriptor.value;
 }
 
 function resolveDefinition<DocType>(manager: IndexManager<DocType>, query: QueryAst): IndexDefinition {
@@ -350,13 +423,15 @@ function setNestedField(target: Record<string, unknown>, path: string, value: un
   cursor[segments.at(-1)!] = value;
 }
 
-function validCandidate(candidate: QueryCandidateReference): boolean {
-  return candidate !== null && typeof candidate === 'object' &&
-    typeof candidate.documentPath === 'string' && candidate.documentPath.length > 0 &&
-    candidate.documentPath.length <= 4096 && !/[\u0000-\u001f]/.test(candidate.documentPath) &&
-    (candidate.revision === undefined ||
-      (typeof candidate.revision === 'string' && candidate.revision.length > 0 &&
-       candidate.revision.length <= 512 && !/[\u0000-\u001f]/.test(candidate.revision)));
+function validCandidateValues(
+  documentPath: unknown,
+  revision: unknown,
+): documentPath is string {
+  return typeof documentPath === 'string' && documentPath.length > 0 &&
+    documentPath.length <= 4096 && !/[\u0000-\u001f]/.test(documentPath) &&
+    (revision === undefined ||
+      (typeof revision === 'string' && revision.length > 0 &&
+       revision.length <= 512 && !/[\u0000-\u001f]/.test(revision)));
 }
 
 function candidateReferenceKey(candidate: QueryCandidateReference): string {

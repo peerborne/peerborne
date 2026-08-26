@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   AuthorizedDocumentResolver,
+  CandidateSearchResult,
   CandidateSearchRequest,
   QueryCandidateSource,
 } from './candidate-source.js';
@@ -70,6 +71,98 @@ describe('FederatedSearchCoordinator', () => {
       reasons: ['byzantine-omission-possible'],
     });
     expect(result.sources[0].candidatesAccepted).toBe(1);
+  });
+
+  test('snapshots each untrusted candidate property once before verification', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    let documentPathReads = 0;
+    const candidate = new Proxy<Record<string, unknown>>({}, {
+      getOwnPropertyDescriptor(_target, property) {
+        if (property !== 'documentPath') return undefined;
+        documentPathReads++;
+        return {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: documentPathReads === 1 ? '/articles/good' : '/elsewhere/secret',
+        };
+      },
+    }) as { documentPath: string };
+    const resolvedPaths: string[] = [];
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized(documentPath) {
+        resolvedPaths.push(documentPath);
+        return { documentPath, snapshot: { status: 'published', title: 'Good' } };
+      },
+    });
+
+    const result = await coordinator.search(query(), [
+      new StaticSource('stateful-candidate', [candidate]),
+    ]);
+
+    expect(documentPathReads).toBe(1);
+    expect(resolvedPaths).toEqual(['/articles/good']);
+    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/good']);
+  });
+
+  test('drops accessor-backed candidate properties without invoking them', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    let getterCalls = 0;
+    const candidate = {} as { documentPath: string };
+    Object.defineProperty(candidate, 'documentPath', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        throw new Error('hostile getter');
+      },
+    });
+    const resolvedPaths: string[] = [];
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized(documentPath) {
+        resolvedPaths.push(documentPath);
+        return undefined;
+      },
+    });
+
+    const result = await coordinator.search(query(), [
+      new StaticSource('accessor-candidate', [candidate]),
+    ]);
+
+    expect(getterCalls).toBe(0);
+    expect(resolvedPaths).toEqual([]);
+    expect(result.documents).toEqual([]);
+    expect(result.sources[0]).toMatchObject({ status: 'complete', candidatesReceived: 1 });
+  });
+
+  test('contains accessor-backed source results within the source error boundary', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    let getterCalls = 0;
+    const source: QueryCandidateSource = {
+      id: 'accessor-result',
+      async search() {
+        const result = { exhausted: true };
+        Object.defineProperty(result, 'candidates', {
+          enumerable: true,
+          get() {
+            getterCalls++;
+            throw new Error('hostile result getter');
+          },
+        });
+        return result as CandidateSearchResult;
+      },
+    };
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized() { return undefined; },
+    });
+
+    const result = await coordinator.search(query(), [source]);
+
+    expect(getterCalls).toBe(0);
+    expect(result.sources[0].status).toBe('error');
+    expect(result.coverage.reasons).toContain('source-error');
   });
 
   test('applies stable pagination after deterministic local/remote merge', async () => {

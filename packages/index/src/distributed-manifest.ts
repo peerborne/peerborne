@@ -9,6 +9,7 @@ import {
   validateBoundedText,
   validateUint64,
 } from './distributed-codec.js';
+import { MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES } from './distributed-limits.js';
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_MANIFEST_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -93,7 +94,12 @@ export function validateDistributedIndexManifest(
     if (!isRecord(input.limits)) throw new TypeError('limits must be an object');
     assertExactKeys(input.limits, ['maxCandidates', 'maxRequestBytes', 'advertisementTtlMs']);
     validateInteger(input.limits.maxCandidates, 1, 4096, 'maxCandidates');
-    validateInteger(input.limits.maxRequestBytes, 1024, 2 * 1024 * 1024, 'maxRequestBytes');
+    validateInteger(
+      input.limits.maxRequestBytes,
+      1024,
+      MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES,
+      'maxRequestBytes',
+    );
     validateInteger(input.limits.advertisementTtlMs, 1000, MAX_MANIFEST_LIFETIME_MS, 'advertisementTtlMs');
     return structuredClone(input) as DistributedIndexManifestV1;
   } catch (error) {

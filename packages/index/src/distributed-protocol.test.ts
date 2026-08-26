@@ -7,6 +7,7 @@ import {
   verifyDistributedIndexManifest,
 } from './distributed-manifest.js';
 import { encodeBase64Url } from './distributed-codec.js';
+import { MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES } from './distributed-limits.js';
 import {
   RoutingAdvertisementRegistry,
   RoutingAdvertisementV1,
@@ -55,11 +56,24 @@ function manifest(now: number, sequence = '1'): DistributedIndexManifestV1 {
     issuedAt: now,
     expiresAt: now + 10_000,
     discovery: { mode: 'blind-bloom', bitLength: 1024, hashCount: 4 },
-    limits: { maxCandidates: 32, maxRequestBytes: 64 * 1024, advertisementTtlMs: 5000 },
+    limits: {
+      maxCandidates: 32,
+      maxRequestBytes: MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES,
+      advertisementTtlMs: 5000,
+    },
   };
 }
 
 describe('signed distributed index protocols', () => {
+  test('rejects manifest request limits above the wire codec cap', async () => {
+    const now = 900_000;
+    const oversized = manifest(now);
+    oversized.limits.maxRequestBytes = MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES + 1;
+
+    await expect(signDistributedIndexManifest(oversized, signer, now))
+      .rejects.toThrow('maxRequestBytes');
+  });
+
   test('verifies authorized manifests, rejects tampering, and keeps rollback tombstones', async () => {
     const now = 1_000_000;
     const signed = await signDistributedIndexManifest(manifest(now), signer, now);
