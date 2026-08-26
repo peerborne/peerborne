@@ -175,6 +175,13 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('remove() is a no-op for a blank ACL', async () => {
+    const acl = new AutomergeACL();
+
+    await expect(acl.remove(key1)).resolves.toEqual([]);
+    expect(acl.current()).toEqual([]);
+  });
+
   test('check() returns false for an unknown key', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);

@@ -136,14 +136,13 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
     this._assertComplete('remove an ACL member');
+    if (!this._acl.users) {
+      return [];
+    }
     const hash = await serializeKey(publicKey);
     const aclNew = change(this._acl, (doc) => {
-      if (!doc.users) {
-        doc.users = {};
-      } else {
-        if (doc.users[hash] !== undefined) {
-          delete doc.users[hash];
-        }
+      if (doc.users?.[hash] !== undefined) {
+        delete doc.users[hash];
       }
     });
     const aclChanges = getChanges(this._acl, aclNew);
