@@ -143,13 +143,17 @@ Peerborne does **not** provide:
 
 ### Snapshots
 
-Snapshots are **off by default**. A writer can create a signed, full-state snapshot:
+Automatic snapshots are **off by default**. A writer can create a full-state
+snapshot, signed when signing is enabled (the signature field is empty otherwise):
 
 ```ts
-await document.compact();
+await document.snapshot();
 ```
 
-A snapshot contains the complete CRDT state at that point, signed and encrypted like any other block. Peers loading the document can start from the snapshot instead of replaying the entire change history.
+A snapshot contains the complete CRDT state at that point plus boundary
+metadata. It is carried inside an encrypted load or snapshot-load response
+rather than stored as a CID-addressed Helia block. A peer that can authenticate
+and apply it can avoid replaying the entire change history.
 
 ### Compaction
 
