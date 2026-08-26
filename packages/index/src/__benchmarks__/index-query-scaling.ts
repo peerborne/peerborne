@@ -30,7 +30,7 @@ export async function runIndexQueryScalingBenchmarks(
   const runner = new PaperBenchmarkRunner('index-query-scaling');
 
   const scales = SCALES.filter((count) => count <= maxDocuments);
-  if (scales.length === 0) scales.push(maxDocuments);
+  if (!scales.includes(maxDocuments)) scales.push(maxDocuments);
   for (const count of scales) {
     console.log(`  Setting up ${count} documents...`);
     const storage = new MemoryIndexStorage();
