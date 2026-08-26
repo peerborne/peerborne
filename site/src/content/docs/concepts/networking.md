@@ -84,10 +84,9 @@ Browsers and most home/office networks are behind NAT, which prevents direct inc
 
 A relay node bridges traffic between two peers behind NAT:
 
-```
-Peer A (browser, NAT) ──WebSocket── Relay ──WebSocket── Peer B (browser, NAT)
-                    encrypted traffic only          encrypted traffic only
-```
+![Two NAT-isolated Chromium peers loading encrypted document history through Circuit Relay after the test gives peer B peer A's relayed circuit address; an optional direct path is shown as unverified.](../../../assets/diagrams/browser-relay-path.svg)
+
+**Evidence boundary:** The solid relay path represents the narrow CI-backed result: one user identity runs in two NAT-isolated Chromium processes, the document key is restored to the second device out of band, and that device loads existing encrypted document history through Circuit Relay. The test reads peer A's `/p2p-circuit/` address and has peer B dial it explicitly; it does not establish a separate bootstrap-discovery proof edge. The topology has app servers and a relay but no application database service. It does not demonstrate live post-load synchronization, invitation delivery, direct WebRTC/DCUtR, relay failover, or production deployment behavior.
 
 The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data volume) but cannot decrypt document content.
 
