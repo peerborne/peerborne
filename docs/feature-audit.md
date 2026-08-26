@@ -40,7 +40,7 @@ Status meanings:
 | Circuit Relay v2 fallback | Partial | Relay builds; 57 relay tests; NAT specs | Relay failover while an edit is in flight is not a default gate. |
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
-| Document load across NAT boundaries | Verified | Real Peerborne cross-NAT Playwright acceptance test passed twice from clean Podman topologies and has a dedicated CI job | Live post-load pubsub convergence and partition/rejoin remain deferred. |
+| Document load and live bidirectional sync across NAT boundaries | Verified | A dedicated real Peerborne Playwright job forces two isolated Chromium processes through a Circuit Relay, restores one user's document key on a second device, verifies the initial encrypted load, then asserts fresh A-to-B and B-to-A mutations | Distinct-identity invitation, partition/rejoin, automatic reconnect, and relay failover remain unverified. |
 | Initial-load K-of-Q tip verification | Verified | Load-quorum and orchestrator suites | Real peers serving conflicting DAG blocks should be tested end to end. |
 | Network statistics | Verified | Network statistics suite | Reference applications do not expose enough diagnostics for operators. |
 
@@ -81,7 +81,7 @@ Status meanings:
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
 | Password-manager reference app | Partial | Vite production build and strict Chromium startup smoke test pass | No two-browser synchronization test; bundle is about 2.0 MB minified. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
-| Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only cross-NAT document load pass | Live post-load cross-browser mutation is not yet asserted. |
+| Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only cross-NAT document load plus live bidirectional mutation pass | Distinct-identity invitation and restart recovery are not yet asserted. |
 | Relay server | Verified | TypeScript build and 57 tests | Deployment smoke test and live health/readiness behavior remain unverified. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |

@@ -115,10 +115,10 @@ The repository also contains heavier acceptance suites:
   Compose services are running.
 - `yarn test:nat` exercises NAT traversal after its Docker Compose topology is
   running.
-- `yarn test:peerborne-nat` verifies encrypted Automerge document retrieval
-  across two NAT-isolated Chromium processes. The test restores the document key
-  through a test-only bridge; it does not prove end-user invitation or live
-  post-load convergence.
+- `yarn test:peerborne-nat` verifies encrypted Automerge document retrieval and
+  live bidirectional mutations across two NAT-isolated Chromium processes. The
+  test restores one identity and its document key through a test-only bridge;
+  it does not prove distinct-identity invitation.
 
 The Docker-backed suites are started and cleaned up by their corresponding CI
 jobs in [the repository workflow](https://github.com/Peerborne/peerborne/blob/main/.github/workflows/ci.yml).

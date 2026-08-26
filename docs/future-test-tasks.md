@@ -10,9 +10,6 @@ current coverage.
 - Partition/rejoin: make concurrent document edits while both browser network
   namespaces are disconnected from the relay, restore it, and assert exact
   Automerge convergence.
-- Live post-load sync: after a restored peer loads an existing document,
-  publish another signed change and assert it is accepted. The cross-NAT audit
-  exposed an invalid-signature/replicated-writer-ACL failure on this path.
 - Persistence: restart one persistent Chromium profile offline and recover the
   document from IndexedDB before reconnecting.
 - Transport matrix: force WebSocket relay, WebRTC/DCUtR, TURN, and WebTransport

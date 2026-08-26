@@ -16,7 +16,7 @@ async function waitForDocument(page: Page, path: string, key: string, value: unk
   ).toEqual(value);
 }
 
-test('real Peerborne document loads across two NAT-isolated Chromium processes', async () => {
+test('real Peerborne document converges bidirectionally across two NAT-isolated Chromium processes', async () => {
   const pair = await webcrypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
   ) as CryptoKeyPair;
@@ -104,6 +104,21 @@ test('real Peerborne document loads across two NAT-isolated Chromium processes',
         [path, documentKey] as const,
       );
       await waitForDocument(pages[1], path, 'fromA', 'alice');
+
+      // Initial retrieval alone does not prove the live GossipSub path. Make
+      // fresh changes after both replicas are open and require convergence in
+      // each direction over the existing relay-only connection.
+      await pages[0].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.change(p, 'liveFromA', 'alice-live'),
+        path,
+      );
+      await waitForDocument(pages[1], path, 'liveFromA', 'alice-live');
+
+      await pages[1].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.change(p, 'liveFromB', 'bob-live'),
+        path,
+      );
+      await waitForDocument(pages[0], path, 'liveFromB', 'bob-live');
     } catch (error) {
       throw new Error(`Document convergence failed:\n${diagnostics.map(
         (messages, index) => `browser ${index + 1}:\n${messages.join('\n')}`,

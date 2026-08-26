@@ -93,7 +93,7 @@ What needs to happen:
 
 ### 10. Examples as complete showcases
 
-**Status: Startup smoke only.** The three examples (browser-test, wiki-swarm, password-manager) verify single-browser startup but do not demonstrate multi-peer collaboration, sharing, or recovery.
+**Status: Partial.** The three examples (browser-test, wiki-swarm, password-manager) verify single-browser startup. A dedicated NAT-isolated acceptance job proves an encrypted load and live bidirectional mutations for one identity restored onto two devices, but the applications do not yet demonstrate distinct-identity invitation, sharing, or restart recovery.
 
 What needs to happen:
 - Multi-browser CI tests for each example
