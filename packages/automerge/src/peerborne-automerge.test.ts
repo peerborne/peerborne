@@ -1,5 +1,11 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import {
+  change as automergeChange,
+  from as automergeFrom,
+  getAllChanges as getAllAutomergeChanges,
+  getChanges as getAutomergeChanges,
+} from '@automerge/automerge';
+import {
   AutomergeProvider,
   AutomergeACL,
   AutomergeACLProvider,
@@ -238,11 +244,62 @@ describe('AutomergeACL', () => {
     ).toBe(true);
   });
 
-  test('fresh ACLs share the same seed history', () => {
+  test('fresh ACLs start from the same blank history', () => {
     const first = new AutomergeACL();
     const second = new AutomergeACL();
 
+    expect(first.current()).toEqual([]);
     expect(second.current()).toEqual(first.current());
+  });
+
+  test('loads a complete ACL history from the legacy random-seed format', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.users()).toHaveLength(1);
+  });
+
+  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies.*complete ACL history/i,
+    );
+    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+  });
+
+  test('allows valid child-before-parent delivery once dependencies arrive', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const collaboratorChanges = await sender.add(key2);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(collaboratorChanges);
+    await expect(receiver.users()).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+
+    receiver.merge(founderChanges);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
   });
 });
 
