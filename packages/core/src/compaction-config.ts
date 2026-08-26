@@ -48,3 +48,16 @@ export const defaultCompactionConfig: CompactionConfig = {
   gcAfterPrune: false,
   keepRecentNodes: 50,
 };
+
+export function mergeCompactionConfig(
+  overrides?: Partial<CompactionConfig> | null,
+): CompactionConfig {
+  const definedOverrides = Object.entries(overrides ?? {}).filter(
+    ([, value]) => value != null,
+  );
+
+  return {
+    ...defaultCompactionConfig,
+    ...Object.fromEntries(definedOverrides),
+  };
+}

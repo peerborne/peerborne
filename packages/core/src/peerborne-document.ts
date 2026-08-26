@@ -79,7 +79,8 @@ import {
 } from './load-quorum.js';
 import { runLoadQuorum } from './load-quorum-orchestrator.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
-import { CompactionConfig, defaultCompactionConfig } from './compaction-config.js';
+import type { CompactionConfig } from './compaction-config.js';
+import { mergeCompactionConfig } from './compaction-config.js';
 import {
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
@@ -733,10 +734,9 @@ export class PeerborneDocument<
     this._readers = this._aclProvider.initialize();
     this._writers = this._aclProvider.initialize();
     this._keychain = this._keychainProvider.initialize();
-    this._compactionConfig = {
-      ...defaultCompactionConfig,
-      ...(this.swarm.config?.compaction ?? {}),
-    };
+    this._compactionConfig = mergeCompactionConfig(
+      this.swarm.config?.compaction,
+    );
 
     // Provide a valid default topic so that _makeChange() works even before
     // open() is called (e.g. when load() triggers a change). open() will
