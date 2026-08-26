@@ -121,7 +121,10 @@ import {
 import { documentTopic, DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
-import { defaultCompactionConfig } from './compaction-config.js';
+import {
+  defaultCompactionConfig,
+  mergeCompactionConfig,
+} from './compaction-config.js';
 
 export * from './beekem/index.js';
 
@@ -224,6 +227,7 @@ export {
   validateLoadQuorumConfig,
   // Compaction
   defaultCompactionConfig,
+  mergeCompactionConfig,
   // Network statistics
   NetworkStats,
   // Utilities

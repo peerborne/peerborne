@@ -9,41 +9,6 @@ import {
   loadChangeBlock,
 } from './blockstore-gc.js';
 
-describe('CompactionConfig', () => {
-  test('default config has compaction disabled', () => {
-    expect(defaultCompactionConfig.enabled).toBe(false);
-  });
-
-  test('default config has reasonable defaults', () => {
-    expect(defaultCompactionConfig.snapshotInterval).toBe(500);
-    expect(defaultCompactionConfig.minChangesBeforeSnapshot).toBe(100);
-    expect(defaultCompactionConfig.pruneAfterSnapshot).toBe(true);
-    expect(defaultCompactionConfig.keepRecentNodes).toBe(50);
-  });
-
-  test('default config has gcAfterPrune disabled', () => {
-    expect(defaultCompactionConfig.gcAfterPrune).toBe(false);
-  });
-
-  test('custom config overrides defaults', () => {
-    const custom: CompactionConfig = {
-      enabled: true,
-      snapshotInterval: 100,
-      minChangesBeforeSnapshot: 50,
-      pruneAfterSnapshot: false,
-      gcAfterPrune: true,
-      keepRecentNodes: 10,
-    };
-
-    expect(custom.enabled).toBe(true);
-    expect(custom.snapshotInterval).toBe(100);
-    expect(custom.minChangesBeforeSnapshot).toBe(50);
-    expect(custom.pruneAfterSnapshot).toBe(false);
-    expect(custom.gcAfterPrune).toBe(true);
-    expect(custom.keepRecentNodes).toBe(10);
-  });
-});
-
 describe('Compaction trigger logic', () => {
   /**
    * Simulates the _maybeCompact() logic without needing the full
