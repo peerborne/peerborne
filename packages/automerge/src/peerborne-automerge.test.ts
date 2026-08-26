@@ -451,6 +451,35 @@ describe('AutomergeKeychainProvider', () => {
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
 
+  test('preserves nested sync-message signing bytes across the wire', () => {
+    const unsignedMessage = {
+      documentId: 'signed-doc',
+      changeId: 'root-cid',
+      changes: {
+        kind: 'document' as const,
+        change: [new Uint8Array([1, 2, 3])],
+        children: {
+          'parent-cid': {
+            kind: 'writer' as const,
+            change: [new Uint8Array([4, 5, 6])],
+          },
+        },
+      },
+    };
+    const senderSigningBytes = serializer.serializeSyncMessage(unsignedMessage);
+    const wire = serializer.serializeSyncMessage({
+      ...unsignedMessage,
+      signature: 'test-signature',
+    });
+    const received = serializer.deserializeSyncMessage(wire);
+    const { signature: _signature, ...receivedUnsignedMessage } = received;
+    const receiverVerificationBytes = serializer.serializeSyncMessage(
+      receivedUnsignedMessage,
+    );
+
+    expect(receiverVerificationBytes).toEqual(senderSigningBytes);
+  });
+
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
     const provider = new AutomergeProvider<{ title: string }>();
     const doc = provider.newDocument();

@@ -115,6 +115,46 @@ export function serializeChangeNodeForJSON<TIn, TOut>(
 }
 
 /**
+ * Rebuild a validated node while retaining the sender's recognized field
+ * order. JSON signatures cover the serialized Merkle tree, and JSON.parse
+ * preserves string-key insertion order. Reordering `change` and `children`
+ * here would make a receiver verify different bytes from those the sender
+ * signed. Unknown fields remain excluded from the result.
+ */
+function rebuildNodeInWireOrder<TIn, TOut>(
+  node: CRDTChangeNodeWire<TIn>,
+  change: TOut | undefined,
+  children:
+    | { [hash: string]: CRDTChangeNode<TOut> }
+    | CRDTChangeNodeDeferred
+    | undefined,
+): CRDTChangeNode<TOut> {
+  const result = {} as CRDTChangeNode<TOut>;
+  for (const field of Object.keys(node)) {
+    switch (field) {
+      case 'kind':
+        result.kind = node.kind;
+        break;
+      case 'keyID':
+        if (node.keyID !== undefined) result.keyID = node.keyID;
+        break;
+      case 'change':
+        result.change = change;
+        break;
+      case 'children':
+        result.children = children;
+        break;
+    }
+  }
+  // JSON wire objects always have an own `kind` field. Retain the prior
+  // programmatic-call behavior for an object that inherits a valid `kind`.
+  if (!Object.prototype.hasOwnProperty.call(result, 'kind')) {
+    result.kind = node.kind;
+  }
+  return result;
+}
+
+/**
  * Inverse of {@link serializeChangeNodeForJSON}: recursively reconstruct a
  * `CRDTChangeNode` tree from its JSON-friendly wire form, decoding each
  * node's `change` payload via the provided decoder.
@@ -220,32 +260,10 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
         decodeLeaf,
       );
     }
-    // Construct the output node explicitly rather than spreading `...node`.
-    // The wire input is untrusted, so spreading would silently propagate any
-    // extra peer-supplied properties into our typed `CRDTChangeNode<TOut>`,
-    // including under field names we may add in the future. Listing each
-    // field by name keeps the in-memory shape tight to the documented type.
-    const result: CRDTChangeNode<TOut> = { kind: node.kind, children };
-    if (node.keyID !== undefined) {
-      result.keyID = node.keyID;
-    }
-    if (change !== undefined) {
-      result.change = change;
-    }
-    return result;
+    return rebuildNodeInWireOrder(node, change, children);
   }
   // Same explicit-construction rationale as above; here `children` is either
   // `undefined` or the `crdtChangeNodeDeferred` sentinel, both of which are
   // preserved verbatim.
-  const result: CRDTChangeNode<TOut> = { kind: node.kind };
-  if (node.keyID !== undefined) {
-    result.keyID = node.keyID;
-  }
-  if (change !== undefined) {
-    result.change = change;
-  }
-  if (node.children !== undefined) {
-    result.children = node.children;
-  }
-  return result;
+  return rebuildNodeInWireOrder(node, change, node.children);
 }

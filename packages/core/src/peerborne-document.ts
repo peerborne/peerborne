@@ -3980,8 +3980,6 @@ export class PeerborneDocument<
       if (!(await this._verifyWriterSignature(raw, signature!))) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
-          signature,
-          messageWithoutSignature,
         );
         return false;
       }
@@ -3991,15 +3989,10 @@ export class PeerborneDocument<
     if (message.keychainChanges) {
       try {
         this._keychain.merge(message.keychainChanges);
-        console.log(
-          `Updated keychain in ${this.documentPath}: `,
-          this._keychain,
-        );
+        console.log(`Updated keychain in ${this.documentPath}`);
       } catch (e) {
         console.error(
-          'Failed to merge in keychain changes',
-          this._keychain,
-          message,
+          `Failed to merge keychain changes in ${this.documentPath}`,
           e,
         );
         throw e;

@@ -5,7 +5,7 @@ import 'jsoneditor-react/es/editor.css';
 import './index.css';
 import App from './App';
 import { Provider } from 'react-redux';
-import { createStore, applyMiddleware, Middleware } from 'redux';
+import { createStore, applyMiddleware } from 'redux';
 import {
   changeDocumentAsync,
   peerborneReducer,
@@ -23,13 +23,6 @@ import {
 import { SubtleCrypto } from '@peerborne/core';
 import { thunk } from 'redux-thunk';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
-
-const logger: Middleware = store => next => action => {
-  console.log('dispatching', action);
-  let result = next(action);
-  console.log('next state', store.getState());
-  return result;
-}
 
 declare global {
   interface Window {
@@ -84,7 +77,7 @@ const store = createStore(
     new AutomergeACLProvider(),
     new AutomergeKeychainProvider(),
   ),
-  applyMiddleware(thunk, logger),
+  applyMiddleware(thunk),
 );
 
 // Deliberately test-only: Playwright uses this narrow bridge to exercise the
