@@ -3,6 +3,10 @@ title: Searching encrypted documents
 description: Build versioned local indexes and understand the trust boundary for distributed candidate search.
 ---
 
+![Two-lane Peerborne search architecture: verified local queries run over authorized, decrypted documents, while distributed peers return untrusted candidate references that must pass the requester's normal secure document load and complete local predicate recheck.](../../../assets/diagrams/search-architecture.svg)
+
+**Evidence boundary.** The local lane is implemented over documents already loaded, decrypted, and authorized locally by the requesting peer. The distributed lane represents protocol and orchestration foundations, not an end-to-end network feature: production libp2p handlers, membership and key distribution, and an `AuthorizedDocumentResolver` are not integrated into that path; multi-peer acceptance is not tested, and no global completeness or exact-count guarantee is claimed.
+
 ## Local materialized indexes
 
 **Status: Runnable from source.** V2 local schemas, planners, memory/IndexedDB physical keys, cursor pagination, malformed-value handling, and lifecycle integration have focused tests. React bindings continue to use the legacy query API. These APIs index decrypted documents already available to the local application; they are not a network crawler.

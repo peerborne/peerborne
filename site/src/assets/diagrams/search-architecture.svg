@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title description">
+  <title id="title">Peerborne local and distributed search architecture</title>
+  <desc id="description">Two separate lanes show verified local indexing over authorized decrypted documents and distributed candidate-search foundations. Remote peers return untrusted document references, which become results only after the requester uses the normal signature, ACL, history, and decryption path and rechecks the complete predicate locally. Production networking and membership integrations remain incomplete.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f172a" />
+      <stop offset="1" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="localPanel" x1="38" y1="130" x2="1162" y2="335" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f2f35" />
+      <stop offset="1" stop-color="#10233a" />
+    </linearGradient>
+    <linearGradient id="distributedPanel" x1="38" y1="355" x2="1162" y2="605" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172554" />
+      <stop offset="1" stop-color="#1e1b4b" />
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity="0.045" />
+    </pattern>
+    <marker id="tealArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf" />
+    </marker>
+    <marker id="indigoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8" />
+    </marker>
+    <style>
+      .system { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .lane-number { font-size: 36px; font-weight: 800; }
+      .lane-title { font-size: 21px; font-weight: 760; letter-spacing: 0.5px; }
+      .lane-note { font-size: 15px; font-weight: 500; }
+      .card-label { font-size: 13px; font-weight: 750; letter-spacing: 1.4px; }
+      .card-title { font-size: 19px; font-weight: 730; fill: #f8fafc; }
+      .card-note { font-size: 15px; font-weight: 500; fill: #cbd5e1; }
+      .footer-label { font-size: 14px; font-weight: 750; letter-spacing: 1.2px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" rx="28" fill="url(#background)" />
+  <rect width="1200" height="720" rx="28" fill="url(#grid)" />
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf" />
+
+  <g class="system">
+    <text x="48" y="77" font-size="34" font-weight="770" fill="#f8fafc">Search has two separate trust lanes</text>
+    <text x="48" y="108" font-size="18" font-weight="500" fill="#94a3b8">Local results are verified here. Remote search can nominate candidates, never establish truth.</text>
+
+    <rect x="38" y="130" width="1124" height="205" rx="24" fill="url(#localPanel)" stroke="#2dd4bf" stroke-width="2" />
+    <text class="lane-number" x="64" y="184" fill="#5eead4">1</text>
+    <text class="lane-title" x="105" y="174" fill="#f0fdfa">VERIFIED LOCAL INDEX</text>
+    <text class="lane-note" x="105" y="198" fill="#99f6e4">Encrypted CRDT history remains source data.</text>
+
+    <g transform="translate(250 214)">
+      <rect width="226" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
+      <text class="card-label" x="18" y="25" fill="#5eead4">AUTHORIZED INPUT</text>
+      <text class="card-title" x="18" y="52">Decrypted documents</text>
+      <text class="card-note" x="18" y="75">held by this peer</text>
+    </g>
+    <line x1="476" y1="260" x2="501" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+
+    <g transform="translate(508 214)">
+      <rect width="226" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
+      <text class="card-label" x="18" y="25" fill="#5eead4">REBUILDABLE PROJECTION</text>
+      <text class="card-title" x="18" y="52">Memory or IDB index</text>
+      <text class="card-note" x="18" y="75">memory default · IDB opt-in</text>
+    </g>
+    <line x1="734" y1="260" x2="759" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+
+    <g transform="translate(766 214)">
+      <rect width="200" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
+      <text class="card-label" x="18" y="25" fill="#5eead4">QUERY EXECUTION</text>
+      <text class="card-title" x="18" y="52" style="font-size: 17px">Local planner + query</text>
+      <text class="card-note" x="18" y="75">full predicate recheck</text>
+    </g>
+    <line x1="966" y1="260" x2="991" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+
+    <g transform="translate(998 214)">
+      <rect width="132" height="92" rx="18" fill="#0f3b3d" stroke="#5eead4" stroke-width="2" />
+      <circle cx="66" cy="28" r="9" fill="#2dd4bf" />
+      <path d="M61 28L65 32L72 23" fill="none" stroke="#0f172a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+      <text x="66" y="57" text-anchor="middle" font-size="16" font-weight="760" fill="#f0fdfa">VERIFIED</text>
+      <text x="66" y="77" text-anchor="middle" font-size="15" font-weight="650" fill="#99f6e4">local result</text>
+    </g>
+
+    <rect x="38" y="355" width="1124" height="250" rx="24" fill="url(#distributedPanel)" stroke="#818cf8" stroke-width="2" />
+    <text class="lane-number" x="64" y="409" fill="#a5b4fc">2</text>
+    <text class="lane-title" x="105" y="399" fill="#eef2ff">DISTRIBUTED CANDIDATE SEARCH</text>
+    <text class="lane-note" x="105" y="423" fill="#c7d2fe">Implemented protocol and orchestration foundations.</text>
+
+    <g transform="translate(235 443)">
+      <rect width="210" height="104" rx="18" fill="#202454" stroke="#818cf8" />
+      <text class="card-label" x="16" y="23" fill="#a5b4fc">SIGNED CONTROL PLANE</text>
+      <text class="card-title" x="16" y="50">Versioned manifest</text>
+      <line x1="16" y1="61" x2="194" y2="61" stroke="#6366f1" stroke-opacity="0.62" />
+      <text class="card-note" x="16" y="83">Expiring routing ads</text>
+    </g>
+    <line x1="445" y1="495" x2="468" y2="495" stroke="#818cf8" stroke-width="3" marker-end="url(#indigoArrow)" />
+
+    <g transform="translate(475 443)">
+      <rect width="190" height="104" rx="18" fill="#202454" stroke="#818cf8" />
+      <text class="card-label" x="16" y="23" fill="#a5b4fc">BOUNDED + DIRECT</text>
+      <text class="card-title" x="16" y="52">Candidate query</text>
+      <text class="card-note" x="16" y="77">plain AST or blind</text>
+    </g>
+    <line x1="665" y1="495" x2="688" y2="495" stroke="#818cf8" stroke-width="3" marker-end="url(#indigoArrow)" />
+
+    <g transform="translate(695 443)">
+      <rect width="195" height="104" rx="18" fill="#24213f" stroke="#a5b4fc" stroke-dasharray="6 5" />
+      <text class="card-label" x="16" y="23" fill="#c4b5fd">REMOTE RESPONSE</text>
+      <text class="card-title" x="16" y="52" style="font-size: 17px">Document references</text>
+      <rect x="16" y="68" width="105" height="24" rx="12" fill="#312e81" />
+      <text x="68.5" y="85" text-anchor="middle" font-size="13" font-weight="780" letter-spacing="1.1" fill="#e0e7ff">UNTRUSTED</text>
+    </g>
+    <line x1="890" y1="495" x2="913" y2="495" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+
+    <g transform="translate(920 433)">
+      <rect width="210" height="124" rx="18" fill="#10323a" stroke="#2dd4bf" stroke-width="2" />
+      <text class="card-label" x="16" y="23" fill="#5eead4">REQUESTER VERIFIES</text>
+      <text class="card-title" x="16" y="50">Normal secure load</text>
+      <text class="card-note" x="16" y="74" style="font-size: 14px">signature · ACL · history</text>
+      <text class="card-note" x="16" y="94" style="font-size: 14px">decrypt · predicate recheck</text>
+      <text x="16" y="115" font-size="11.5" font-weight="700" fill="#99f6e4">ONLY THEN: VERIFIED RESULT</text>
+    </g>
+
+    <g transform="translate(235 565)">
+      <rect width="405" height="26" rx="13" fill="#251f4b" stroke="#6366f1" />
+      <text x="202.5" y="18" text-anchor="middle" font-size="14" font-weight="650" fill="#c7d2fe">Blind equality still leaks equality/frequency to key holders</text>
+    </g>
+    <g transform="translate(655 565)">
+      <rect width="475" height="26" rx="13" fill="#251f4b" stroke="#6366f1" />
+      <text x="237.5" y="18" text-anchor="middle" font-size="14" font-weight="650" fill="#c7d2fe">Partial coverage · no global completeness or exact-count claim</text>
+    </g>
+
+    <rect x="38" y="625" width="1124" height="68" rx="20" fill="#131b2c" stroke="#475569" stroke-width="2" stroke-dasharray="7 6" />
+    <text class="footer-label" x="64" y="653" fill="#94a3b8" style="font-size: 12px; letter-spacing: 0.8px">NOT INTEGRATED END TO END</text>
+    <g font-size="14" font-weight="650" fill="#cbd5e1">
+      <rect x="294" y="641" width="180" height="35" rx="17.5" fill="#1e293b" />
+      <text x="384" y="663" text-anchor="middle">production libp2p handlers</text>
+      <rect x="486" y="641" width="207" height="35" rx="17.5" fill="#1e293b" />
+      <text x="589.5" y="663" text-anchor="middle">membership + key distribution</text>
+      <rect x="705" y="641" width="215" height="35" rx="17.5" fill="#1e293b" />
+      <text x="812.5" y="663" text-anchor="middle">authorized document resolver</text>
+      <rect x="932" y="641" width="202" height="35" rx="17.5" fill="#1e293b" />
+      <text x="1033" y="663" text-anchor="middle">multi-peer acceptance</text>
+    </g>
+  </g>
+</svg>
