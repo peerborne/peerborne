@@ -262,10 +262,22 @@ function matchesLegacyFilters(fields: Record<string, unknown>, filters: FieldFil
     switch (filter.operator) {
       case 'eq': return value === filter.value;
       case 'neq': return value !== filter.value;
-      case 'gt': return comparable(value) > comparable(filter.value);
-      case 'gte': return comparable(value) >= comparable(filter.value);
-      case 'lt': return comparable(value) < comparable(filter.value);
-      case 'lte': return comparable(value) <= comparable(filter.value);
+      case 'gt': {
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left > right;
+      }
+      case 'gte': {
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left >= right;
+      }
+      case 'lt': {
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left < right;
+      }
+      case 'lte': {
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left <= right;
+      }
       case 'prefix': return typeof value === 'string' && typeof filter.value === 'string' && value.startsWith(filter.value);
       case 'in': return Array.isArray(filter.value) && filter.value.includes(value);
       case 'contains': return typeof value === 'string' && typeof filter.value === 'string' && value.includes(filter.value);

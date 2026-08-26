@@ -112,6 +112,18 @@ describe('MemoryIndexStorage', () => {
       expect(results).toHaveLength(3);
     });
 
+    test('range filters do not coerce null or undefined operands', async () => {
+      await storage.put(indexName, '/doc/null', { title: 'Null', count: null });
+      await storage.put(indexName, '/doc/missing', { title: 'Missing' });
+      for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
+        await expect(storage.query(indexName, [{ path: 'count', operator, value: null }]))
+          .resolves.toEqual([]);
+        const numeric = await storage.query(indexName, [{ path: 'count', operator, value: 0 }]);
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/null');
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/missing');
+      }
+    });
+
     test('prefix: string prefix match', async () => {
       const results = await storage.query(indexName, [{ path: 'title', operator: 'prefix', value: 'Alpha' }]);
       expect(results).toHaveLength(2);
