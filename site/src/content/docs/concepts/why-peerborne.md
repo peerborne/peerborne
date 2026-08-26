@@ -19,7 +19,14 @@ Peerborne removes the plaintext application database from the document path. It 
 
 ### Encryption is the default, not an add-on
 
-Stored change payloads and wire sync envelopes are encrypted with AES-GCM. By default (`enableSigning: true`), the complete outgoing sync message is also signed with the writer's identity before it is encrypted. The stored CID-addressed block is a separate encrypted artifact and does not carry its own writer signature or ACL decision. Relays, bootstrap nodes, and remote storage handle ciphertext rather than document plaintext. Encryption remains on whether signing is enabled or not; Peerborne does not intentionally transmit unencrypted document content.
+Stored change payloads and wire sync envelopes are encrypted with the document
+key (AES-GCM by default). By default (`enableSigning: true`), the complete
+outgoing sync message is also signed with the writer's identity before it is
+encrypted. The stored CID-addressed block is a separate encrypted artifact and
+does not carry its own writer signature or ACL decision. Relays, bootstrap
+nodes, and remote storage handle ciphertext rather than document plaintext.
+Encryption remains on whether signing is enabled or not; Peerborne does not
+intentionally transmit unencrypted document content.
 
 ### Composable, not monolithic
 

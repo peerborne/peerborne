@@ -132,27 +132,29 @@ Application provides:
   └── ECDH P-256 KEM key pair (key encapsulation)
 
 PeerborneNode manages:
-  ├── Document AES-GCM keys (one per document, shared via BeeKEM)
+  ├── Document encryption keys (AES-GCM by default)
   ├── Signing key → libp2p PeerId mapping (separate keys)
   └── ACL entries (reader/writer lists bound to signing public keys)
 
 Per document change:
   ├── Stored artifact
-  │   ├── Serialized change payload is AES-GCM encrypted and stored by CID
+  │   ├── Serialized change is encrypted with the document key and stored by CID
   │   └── The stored block has no separate writer signature or ACL check
   ├── GossipSub artifact
   │   ├── CRDTSyncMessage is signed with P-384 when signing is enabled
-  │   └── The complete message is serialized and AES-GCM encrypted
+  │   └── The complete message is serialized and encrypted with the document key
   └── Receiver
       ├── Decrypts the envelope before conditional known-writer authorization
       └── CID-validates, decrypts, and deserializes only fetched change blocks
 ```
 
 Peerborne does not transmit private signing or KEM keys. Public identity keys
-are exchanged as protocol inputs. When reader KEM enrollment is configured,
-the BeeKEM Welcome flow delivers recipient-bound encrypted keychain material;
-applications still own identity enrollment, private-key storage, backup, and
-recovery.
+are exchanged as protocol inputs. When reader KEM enrollment is configured, a
+writer sends a writer-signed Welcome whose recipient-bound ECIES-sealed payload
+contains a visibility-filtered keychain delta and BeeKEM bootstrap data. Later
+BeeKEM PathUpdates let surviving readers derive a new root, from which
+Peerborne derives the next document epoch key. Applications still own identity
+enrollment, private-key storage, backup, and recovery.
 
 ## Where infrastructure is needed
 
@@ -173,7 +175,7 @@ The relay server source is in `relay-server/`. The Docker Compose files in the r
 See the [limitations page](../limitations/) for a complete list. Key architectural limitations to be aware of:
 
 - **No durable outbox**: local blocks are stored in IndexedDB, but an unreachable peer may not receive the update; there is no delivery retry queue
-- **No automatic reconnect**: the application must detect disconnection and re-establish transport
+- **No durable reconnect-and-replay guarantee**: libp2p may redial and explicit loads or later sync history may catch a peer up, but connection restoration and replay of every missed update are not guaranteed
 - **No pass/fail performance budgets**: benchmarks exist but have no thresholds
 - **Pinning is incomplete**: the listener exists but the publisher does not
 - **Browser restart recovery is unverified**: IndexedDB persistence works in tests but full close/reopen cycles are not proven in CI

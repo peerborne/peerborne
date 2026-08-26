@@ -110,7 +110,7 @@ Relays are the most important infrastructure component in a Peerborne deployment
 - PubSub topic IDs (derived from document IDs)
 
 **What relays cannot see:**
-- Document content (encrypted with AES-GCM)
+- Document content (encrypted with the document key; AES-GCM by default)
 - Signing keys or document keys
 - ACL entries or identity information (embedded in encrypted blocks)
 

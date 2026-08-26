@@ -29,7 +29,7 @@ Peerborne is a good choice when you need encryption, signing, and access control
 |---|---|---|
 | **Data model** | Adapts Automerge or Yjs | JSON-like CRDT documents |
 | **Sync transport** | libp2p + GossipSub | Automerge-repo (WebSocket, HTTP) |
-| **Encryption at rest** | AES-GCM per document | Application responsibility |
+| **Encryption at rest** | AES-GCM per document by default | Application responsibility |
 | **Key exchange** | BeeKEM for dynamic groups | Application responsibility |
 | **Rich text** | Via Yjs adapter | Via Automerge Text type |
 
@@ -62,7 +62,7 @@ Use Liveblocks for production collaborative UIs with presence, comments, and ric
 | **Query language** | IndexManager (full-text + blind indexes) | Mango/MongoDB query syntax |
 | **Sync model** | Peer-to-peer (libp2p) | Client-server replication |
 | **Backend** | Relay nodes (stateless) | RxServer, CouchDB, GraphQL, Firebase, Supabase, etc. |
-| **Encryption** | End-to-end (AES-GCM per document) | Field-level encryption plugin |
+| **Encryption** | End-to-end (AES-GCM per document by default) | Field-level encryption plugin |
 | **Convergence** | CRDT (Yjs/Automerge) | CRDT plugin + conflict handlers |
 | **Framework support** | React, Redux | React, Angular, Vue, Svelte, Node.js, Expo |
 | **Project status** | Alpha; not production-ready | Established project |

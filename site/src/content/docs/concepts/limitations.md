@@ -15,27 +15,27 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Offline and durability
 
-- **Offline editing requires an already-loaded replica.** A document must be opened and loaded before it can be edited offline. Fresh documents cannot be created offline — `Peerborne.initialize()` starts local Helia/libp2p services which can run without network access, but onboarding a new document (resolving its ID to a CID, loading its blocks, establishing quorum agreement) requires network connectivity.
+- **Offline editing requires local document state.** An already-open replica can be edited without a peer connection, and a new local document can be created when no connected peer serves it. Loading an existing remote document or sharing the new one still requires reachable peers and the needed key material.
 - **No durable outbox.** Changes are published to GossipSub and stored locally, but there is no queue with retry for unreachable peers. If a peer is offline when a change is published, it may never receive it.
-- **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers local operations only.
-- **No automatic reconnection.** If the libp2p connection drops, Peerborne does not reconnect. The application must detect and handle reconnection.
+- **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation/storage pipeline and the GossipSub publish call, not remote receipt.
+- **No durable reconnect-and-replay guarantee.** Libp2p may redial keep-alive peers, and an explicit load or later sync history may catch a peer up, but Peerborne does not durably guarantee connection restoration or replay of every missed update.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
 - **Browser restart recovery not verified.** IndexedDB persists blocks locally, but complete browser restart → reopen → verify document state is not proven in CI.
-- **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no key backup, recovery, or rotation.
+- **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no application-facing key backup or recovery service.
 
 ## Storage and persistence
 
-- **No replication factor guarantee.** Peerborne does not ensure blocks are stored on at least N peers. The last online peer is the last surviving copy.
-- **Pinning is incomplete.** A `PeerborneNode` listener exists but the core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
-- **Compaction is off by default.** Snapshots are not automatic. Compaction can prune blocks needed for recovery.
-- **Bootstrap can fail after pruning.** If all pruned blocks are needed to reconstruct a document, and they are not available from any peer, the document cannot be loaded.
-- **No garbage collection policy.** GC is manual and destructive. There is no LRU, TTL, or size-limit-based automatic cleanup.
+- **No replication factor guarantee.** Peerborne does not ensure encrypted payloads are stored on at least N origins. No peer can serve a local copy while every holder is offline, and data is lost if every copy is cleared or otherwise unrecoverable.
+- **Pinning is incomplete.** A `PeerborneNode` listener API exists but the normal core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
+- **Automatic compaction is off by default.** When enabled, snapshots can prune the in-memory shadow tree; stored blocks are deleted only with opt-in `gcAfterPrune`.
+- **Snapshot-only first load can fail.** A quorum-bound first load has no prior writer set for snapshot authentication and rejects a response that contains only a snapshot.
+- **No size-based garbage collection policy.** Opt-in post-prune GC is destructive for the local copy. There is no TTL, quota, or size-limit-based automatic cleanup.
 
 ## Networking and availability
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
-- **Many transports are untested in CI.** WebRTC, WebTransport, and DCUtR are configuration claims without transport-specific sync tests. Only WebSocket has verified end-to-end sync.
+- **Many transports lack document-path evidence in CI.** The current cross-NAT proof verifies an initial document-history load through Circuit Relay. Live post-load convergence and transport-specific Peerborne assertions for direct WebRTC, WebTransport, and DCUtR remain unverified.
 - **DHT and AutoNAT have no standalone CI tests.** They are included in the Docker-backed NAT topology but not stress-tested.
 - **Relays can censor or drop traffic.** There is no protection against relay-level denial of service. A malicious relay can blackhole all traffic for a peer or topic.
 - **Relay identity is not stable across restarts.** The relay generates a new libp2p peer ID on each start.
@@ -44,9 +44,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Authorization and revocation
 
-- **Signing is currently optional.** A change without a valid writer signature may be accepted depending on configuration.
+- **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync/load signature gates are disabled for peers holding the needed document key; BeeKEM membership-control messages remain writer-signed.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
-- **Quorum is not Sybil-resistant.** K-of-Q loading can be subverted by a peer controlling multiple bootstrap identities.
+- **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
 - **PathUpdate is best-effort.** There is no guarantee that ACL change notifications reach all peers.
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
@@ -77,17 +77,15 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## What is verified
 
-Despite these limitations, several critical paths are verified end-to-end in CI:
+CI evidence exists at different scopes:
 
-- Encrypted document creation, mutation, and retrieval (single browser)
-- Cross-NAT document retrieval through Circuit Relay (Docker-backed)
-- Document signing and signature verification
-- AES-GCM encryption and decryption
-- Reader/writer ACL enforcement
-- Libp2p peer discovery (bootstrap connection)
-- GossipSub message delivery (NAT topology)
+- **Peerborne cross-NAT acceptance:** one Chromium process creates and mutates a real document; a second NAT-isolated Chromium process uses the same restored signing identity and an out-of-band exported document key, explicitly dials a `/p2p-circuit/` address, and verifies that existing history loads. This proves relay-backed history retrieval, not separate-user onboarding or live post-load convergence.
+- **Browser smoke:** browser-test opens a document in one Chromium process; the wiki and password-manager suites assert startup and rendering.
+- **Focused component suites:** cover individual protocol, authorization, encryption, and transport behaviors.
+- **Transport integration:** exercises NAT and relay topologies independently of complete Peerborne document convergence.
 
-Every claim on this site should be understood against this evidence baseline. A positive unit test does not establish complete multi-peer behavior.
+See the feature audit for the per-capability level. A positive component or
+transport test does not establish complete multi-peer document behavior.
 
 ## Next steps
 

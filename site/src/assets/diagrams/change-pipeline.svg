@@ -56,7 +56,7 @@
 
     <rect x="604" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
     <circle cx="627" cy="225" r="15" fill="#a5b4fc"/><text x="627" y="226" class="number">3</text>
-    <text x="650" y="230" class="step">AES-GCM encrypt</text>
+    <text x="650" y="230" class="step">Encrypt payload</text>
     <text x="624" y="263" class="detail">with the document key</text>
 
     <rect x="872" y="202" width="260" height="98" rx="16" fill="#1e293b" stroke="#818cf8"/>
@@ -86,8 +86,8 @@
     <rect x="660" y="398" width="214" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
     <circle cx="683" cy="421" r="15" fill="#5eead4"/><text x="683" y="422" class="number">7</text>
     <text x="706" y="426" class="step">Serialize + encrypt</text>
-    <text x="680" y="455" class="detail">AES-GCM envelope with</text>
-    <text x="680" y="477" class="detail">the document key</text>
+    <text x="680" y="455" class="detail">document-key envelope</text>
+    <text x="680" y="477" class="detail">AES-GCM by default</text>
 
     <rect x="917" y="398" width="215" height="104" rx="16" fill="#15343b" stroke="#5eead4"/>
     <circle cx="940" cy="421" r="15" fill="#5eead4"/><text x="940" y="422" class="number">8</text>

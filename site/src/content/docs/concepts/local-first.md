@@ -86,13 +86,26 @@ If part of the `change()` pipeline fails (e.g., storage quota exceeded), the CRD
 
 ## The infrastructure boundary
 
-"Local-first" does not mean "infrastructure-free." Browser peers cannot listen for incoming connections and cannot participate in a DHT without a bootstrap node. Most Peerborne deployments need:
+"Local-first" does not mean "infrastructure-free." Browser nodes do not bind
+ordinary inbound TCP sockets. Peerborne's browser default nevertheless
+advertises circuit-relay, WebRTC, and WebSocket listen addresses and enables
+WebRTC, WebRTC Direct, WebTransport, and relay transports. Bootstrap discovery
+is optional: without a configured bootstrap peer or an explicit `connect()`
+address, the default node remains a swarm of one. The current cross-NAT
+Peerborne acceptance test explicitly dials a Circuit Relay address; direct
+WebRTC/WebTransport document sync and DHT behavior remain unverified.
+
+Depending on the deployment topology, supporting infrastructure can include:
 
 - **Relay nodes** to bridge NAT for browser peers
 - **Bootstrap nodes** as well-known entry points for the libp2p network
 - **STUN/TURN servers** for WebRTC hole-punching (optional, for direct peer connections)
 
-These infrastructure components carry **encrypted traffic only** — they never see document plaintext. But they are necessary for peers to discover and reach each other.
+A relay that does not hold the document key forwards ciphertext; bootstrap and
+STUN provide discovery or address metadata rather than document plaintext.
+Infrastructure components can still observe network metadata, and any
+component that is also enrolled as an authorized document peer can decrypt
+according to its keys.
 
 See [running a relay](../../cookbook/running-a-relay/) for the development relay setup.
 

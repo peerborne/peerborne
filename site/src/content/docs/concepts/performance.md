@@ -9,20 +9,36 @@ Peerborne makes several deliberate performance tradeoffs to balance security, co
 
 ### Load concurrency cap
 
-Document loading fetches blocks via libp2p bitswap. Without a bound, every requested CID would fetch in parallel, exhausting per-connection stream quotas and pressuring memory. The loader caps concurrent inflight fetches at 8, chosen to overlap WAN-latency-bound bitswap requests while bounding peak resource use.
+On a quorum-bound full load, Peerborne strips inline changes, enumerates the
+served change-tree CIDs, and drains at most eight concurrent Helia
+`blockstore.get()` calls before invoking `sync()`. Successful gets may populate
+the local blockstore; the gate precedes CRDT/ACL mutation, not every local
+storage write. The limit applies only to this quorum prefetch, not legacy loads
+or ordinary missing/deferred-block sync.
 
 Source: [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts) — `LOAD_PREFETCH_MAX_CONCURRENCY` and the bounded worker pool for blockstore fetches.
 
 ### Load quorum defaults
 
-Document open verifies the tip state against K peers to defend against a dishonest or stale peer:
+When enabled (the default), document open probes at most `loadQuorumK` distinct
+currently connected peer IDs. Effective K is
+`min(loadQuorumK, deduplicatedConnectedPeerCount)`. With K ≥ 2, the default Q
+is `floor(K / 2) + 1`; an explicit Q is clamped to `[1, K]`. Effective K = 1 is
+rejected unless `loadQuorumAllowSinglePeer` is explicitly enabled.
+
+Q peers must agree on an advertised served-frontier hash. Peerborne then
+attempts a full load only from that agreeing cohort and structurally binds the
+selected response's served frontier to the agreed hash. This is not
+Sybil-resistant and does not prove complete interior history:
 
 | Parameter | Default | Rationale |
 |-----------|---------|-----------|
-| `loadQuorumK` | 3 | Majority of 3 defends against a single dishonest peer without noticeably impacting open latency |
-| `loadQuorumTimeoutMs` | 5000 | Larger than typical WAN RTT + protocol negotiation, but bounds stall to ~5 seconds for partitioned peers |
+| `loadQuorumK` | 3 | Caps the connected peers probed; fewer connected peers reduce effective K |
+| `loadQuorumQ` | Majority of effective K | `floor(K / 2) + 1`; an explicit value is clamped to `[1, K]` |
+| `loadQuorumTimeoutMs` | 5000 | Per-peer timeout; peer probes run in parallel |
+| `loadQuorumAllowSinglePeer` | `false` | Requires an explicit opt-in before effective K = 1 can pass |
 
-Source: [`peerborne-config.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-config.ts) — `loadQuorumK` and `loadQuorumTimeoutMs` documentation. Verified by [`load-quorum.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum.test.ts) (pure decision logic) and [`load-quorum-orchestrator.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/load-quorum-orchestrator.test.ts) (integration: all-agree, majority-with-dissenter, insufficient responses, single-peer fallback).
+Source: [`peerborne-config.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-config.ts). Focused tests cover pure decisions and orchestration with mocked probes; they are not a hostile real-network quorum test.
 
 ### Parallel deserialization
 
@@ -38,7 +54,7 @@ The BeeKEM ratchet-tree key rotation closes the revocation-latency gap of earlie
 ### GC and bounded caches
 
 - **LRU cache**: Used for document change blocks and key material. Limits unbounded memory growth. Verified by [`lru-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/lru-cache.test.ts).
-- **Compaction**: Prunes in-memory CRDT nodes and removes unreferenced blocks. Verified by [`compaction.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/compaction.test.ts) and [`blockstore-gc.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/blockstore-gc.test.ts).
+- **Compaction**: Automatic snapshot triggering is disabled by default. A writer can still call `snapshot()` manually when the CRDT provider supports snapshots. With `pruneAfterSnapshot`, snapshot creation prunes the in-memory served sync tree while retaining recent document nodes and preserving ACL nodes. Helia block deletion remains off by default (`gcAfterPrune: false`); when enabled, eligible pruned-block deletion is scheduled asynchronously. Focused tests cover configuration and pruning/GC helper decisions; long-running concurrent multi-peer compaction is not exercised.
 - **React hook caches**: Module-level task and subscriber-count caches with ref-counting eviction. Verified by [`hooks-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-lifecycle.test.ts).
 
 ### Local index execution
@@ -95,10 +111,13 @@ See the [Yjs schema design cookbook](../../cookbook/yjs-schema-design/) for deta
 
 ## Network latency
 
-- GossipSub delivers updates with sub-second latency in typical deployments.
-- Local writes apply with zero network latency — changes are visible immediately on the local replica.
-- WebTransport provides a QUIC-based transport with reduced head-of-line blocking compared to TCP-based WebSockets.
-- DCUtR establishes direct WebRTC connections between peers behind NATs, reducing relay load and latency.
+- Local CRDT mutations become visible before the outbound storage/publication
+  pipeline completes, so the local UI does not wait for a network round trip.
+- No end-to-end update-latency budget is enforced, and relay-backed live
+  post-load browser propagation is not yet an acceptance test.
+- WebTransport and direct DCUtR/WebRTC paths are configured but do not yet have
+  transport-specific Peerborne synchronization evidence in CI; the current
+  cross-NAT document proof uses Circuit Relay for initial history load.
 
 ## Relay tuning
 
