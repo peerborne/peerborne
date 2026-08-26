@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { searchQueryV1 } from '@peerborne/core';
+import { searchQueryV1 } from '@peerborne/core/wire-protocols';
 import { DistributedSearchAuthorizer, DistributedSearchSigner } from './distributed-auth.js';
 import {
   BlindEqualityRequestEncoder,
@@ -82,6 +82,7 @@ describe('DistributedPeerCandidateSource', () => {
       },
       candidateLimit: 10,
       deadline: Date.now() + 5000,
+      signal: new AbortController().signal,
     });
     expect(result).toEqual({
       candidates: [{ documentPath: '/articles/one', revision: 'r1' }],
@@ -134,6 +135,7 @@ describe('DistributedPeerCandidateSource', () => {
       },
       candidateLimit: 10,
       deadline: Date.now() + 5000,
+      signal: new AbortController().signal,
     });
     expect(wire).not.toContain('secret-title');
     expect(wire).toContain('blind-equality');
@@ -181,6 +183,17 @@ describe('DistributedPeerCandidateSource', () => {
       query: { version: 2, where: undefined },
       candidateLimit: 64,
       deadline: Date.now() + 5000,
+      signal: new AbortController().signal,
+    });
+  });
+
+  test('blind encoding requests at least one candidate for a zero-sized global page', async () => {
+    const encoder = new BlindEqualityRequestEncoder(async () => [
+      encodeBase64Url(new Uint8Array(32).fill(5)),
+    ]);
+    await expect(encoder.encode({ version: 2, first: 0 }, 10)).resolves.toMatchObject({
+      mode: 'blind-equality',
+      first: 1,
     });
   });
 });

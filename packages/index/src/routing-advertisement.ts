@@ -152,9 +152,10 @@ export class RoutingAdvertisementRegistry {
           advertisement.issuedAt - previousIssuedAt < this._minUpdateIntervalMs) {
         return { accepted: false, reason: 'rate-limited' };
       }
-      if (!this._lastSequences.has(key) && this._lastSequences.size >= this._maxPeers) {
+      if (!this._states.has(key) && this._states.size >= this._maxPeers) {
         return { accepted: false, reason: 'capacity' };
       }
+      this._makeTombstoneRoom(key);
       this._lastSequences.set(key, sequence);
       this._lastIssuedAt.set(key, advertisement.issuedAt);
       this._states.set(key, {
@@ -187,6 +188,17 @@ export class RoutingAdvertisementRegistry {
   private _prune(now: number): void {
     for (const [key, state] of this._states) {
       if (state.advertisement.expiresAt <= now) this._states.delete(key);
+    }
+  }
+
+  private _makeTombstoneRoom(key: string): void {
+    if (this._lastSequences.has(key) || this._lastSequences.size < this._maxPeers) return;
+    for (const retainedKey of this._lastSequences.keys()) {
+      if (!this._states.has(retainedKey)) {
+        this._lastSequences.delete(retainedKey);
+        this._lastIssuedAt.delete(retainedKey);
+        return;
+      }
     }
   }
 }

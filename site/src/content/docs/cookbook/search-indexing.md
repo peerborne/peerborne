@@ -59,7 +59,7 @@ V2 rejects unindexed scans by default. Set `allowScan: true` only when a full lo
 
 Every field in a physical key must be `required`. Optional fields remain materialized and can be projected or tested during an explicitly allowed full scan, but are not auto-indexed. This prevents a compound index from silently omitting documents whose trailing key field is absent.
 
-V2 defaults to memory storage. To use `IDBIndexStorage`, set `storageMode: 'cleartext-local'` explicitly: field values and ordering keys are readable at rest even though the source CRDT history is encrypted. Changing the canonical schema or generation clears incompatible persisted rows and rebuilds/backfills them. Malformed documents default to exclusion with bounded diagnostics that never include the offending value.
+V2 defaults to memory storage. To use `IDBIndexStorage`, set `storageMode: 'cleartext-local'` explicitly: field values and ordering keys are readable at rest even though the source CRDT history is encrypted. Changing the canonical schema or generation clears incompatible persisted rows, but `defineIndex()` cannot repopulate them because it does not own the source documents. Re-track the collection or call `rebuildIndex()` with its current documents before querying. A same-name upgrade from a legacy store backfills valid rows under the declared collection prefix; malformed and wrong-prefix rows are removed. Malformed documents default to exclusion with bounded diagnostics that never include the offending value.
 
 ### Gate React queries after definition readiness
 

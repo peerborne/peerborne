@@ -19,6 +19,7 @@ export interface IndexEntry {
 export interface StorageSchemaIdentity {
   schemaHash: string;
   generation: string;
+  collectionPrefix: string;
   invalidValuePolicy: 'skip-document' | 'reject';
 }
 

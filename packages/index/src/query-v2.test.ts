@@ -214,6 +214,43 @@ describe('v2 local indexing and query contract', () => {
       fields: [{ path: 'title', type: 'string', required: true }],
     }) as IndexDefinition;
     await expect(manager.defineIndex(inheritedVersion)).rejects.toThrow('missing index definition');
+
+    await expect(manager.defineIndex({
+      ...definition,
+      name: 'overlapping-paths',
+      fields: [
+        { path: 'author', type: 'string', required: true },
+        { path: 'author.name', type: 'string', required: true },
+      ],
+      indexes: [{ name: 'author', fields: ['author'] }],
+    })).rejects.toThrow('field paths must not overlap');
+  });
+
+  test('discards an in-flight legacy query against a removed v2 generation', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const queryStarted = new Promise<void>((resolve) => { started = resolve; });
+    class QueryGatedStorage extends MemoryIndexStorage {
+      override async execute(
+        request: Parameters<MemoryIndexStorage['execute']>[0],
+      ): ReturnType<MemoryIndexStorage['execute']> {
+        const result = await super.execute(request);
+        started();
+        await gate;
+        return result;
+      }
+    }
+    const manager = new IndexManager<Article>(new QueryGatedStorage(), (article) => ({ ...article }));
+    await manager.defineIndex(definition);
+    await manager.updateIndex('/articles/one', {
+      status: 'published', title: 'Old', created: 1,
+    });
+    const queryResult = manager.query({ indexName: definition.name, filters: [] });
+    await queryStarted;
+    await manager.removeIndex(definition.name);
+    release();
+    await expect(queryResult).resolves.toEqual({ documents: [], totalCount: 0 });
   });
 
   test('retains the legacy API\'s unbounded limit semantics on v2 indexes', async () => {

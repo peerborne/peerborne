@@ -102,6 +102,59 @@ describe('IndexedDB v2 physical indexes and migration', () => {
     expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/one']);
   });
 
+  test('removes wrong-prefix rows during legacy backfill', async () => {
+    const dbName = `idb-prefix-backfill-${Date.now()}-${Math.random()}`;
+    const legacy = new IDBIndexStorage(dbName);
+    openStorages.push(legacy);
+    await legacy.initialize('articles', schema().fields);
+    await legacy.put('articles', '/other/wrong', { status: 'published', created: 1 });
+    await legacy.put('articles', '/articles/right', { status: 'published', created: 2 });
+    await legacy.close();
+
+    const upgraded = manager(dbName);
+    await upgraded.ready;
+    const result = await upgraded.manager.query({
+      version: 2,
+      indexName: 'articles',
+      where: { kind: 'field', path: 'status', operator: 'eq', value: 'published' },
+    });
+    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/right']);
+    await expect(upgraded.storage.get('articles', '/other/wrong')).resolves.toBeUndefined();
+  });
+
+  test('uses encoded physical keys for paths that are not valid raw IDB key paths', async () => {
+    const dbName = `idb-unusual-paths-${Date.now()}-${Math.random()}`;
+    const unusual: IndexDefinition = {
+      version: 2,
+      name: 'unusual',
+      collectionPrefix: '/unusual/',
+      storageMode: 'cleartext-local',
+      fields: [
+        { path: 'display-name', type: 'string', required: true },
+        { path: 'items.0', type: 'string', required: true },
+      ],
+      indexes: [{ name: 'display_item', fields: ['display-name', 'items.0'] }],
+    };
+    const instance = manager(dbName, unusual);
+    await instance.ready;
+    await instance.manager.updateIndex('/unusual/one', {
+      'display-name': 'Alice',
+      items: ['first'],
+    });
+    const result = await instance.manager.query({
+      version: 2,
+      indexName: 'unusual',
+      where: {
+        kind: 'and',
+        expressions: [
+          { kind: 'field', path: 'display-name', operator: 'eq', value: 'Alice' },
+          { kind: 'field', path: 'items.0', operator: 'eq', value: 'first' },
+        ],
+      },
+    });
+    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/unusual/one']);
+  });
+
   test('drops a corrupt persisted row before rebuilding physical keys', async () => {
     const dbName = `idb-corrupt-${Date.now()}-${Math.random()}`;
     const first = manager(dbName);
@@ -185,5 +238,19 @@ describe('IndexedDB v2 physical indexes and migration', () => {
     });
     await Promise.all([defineAuthors, updateArticle]);
     await expect(storage.get('articles', '/articles/during-upgrade')).resolves.toBeDefined();
+  });
+
+  test('fails a schema upgrade promptly when an unmanaged connection blocks it', async () => {
+    const dbName = `idb-blocked-schema-${Date.now()}-${Math.random()}`;
+    const instance = manager(dbName);
+    await instance.ready;
+    const unmanaged = await openDB(dbName);
+    const upgrade = instance.manager.defineIndex({
+      ...schema(),
+      name: 'authors',
+      collectionPrefix: '/authors/',
+    });
+    await expect(upgrade).rejects.toThrow('schema upgrade blocked');
+    unmanaged.close();
   });
 });

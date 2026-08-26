@@ -1,4 +1,4 @@
-import { openDB, IDBPDatabase } from 'idb';
+import { openDB, type IDBPDatabase, type OpenDBCallbacks } from 'idb';
 import {
   IndexDefinition,
   IndexFieldDefinition,
@@ -148,6 +148,7 @@ function compareEncoded(left: IDBValidKey | undefined, right: EncodedScalar): nu
 
 function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity): boolean {
   return left.schemaHash === right.schemaHash && left.generation === right.generation &&
+    left.collectionPrefix === right.collectionPrefix &&
     left.invalidValuePolicy === right.invalidValuePolicy;
 }
 
@@ -189,6 +190,7 @@ export class IDBIndexStorage implements IndexStorage {
     identity?: StorageSchemaIdentity,
   ): Promise<void> {
     const requestedPhysical = identity ? physicalIndexes : [];
+    const requestedLegacyFields = identity ? [] : fields;
     if (this._db) {
       this._db.close();
       this._db = null;
@@ -196,7 +198,7 @@ export class IDBIndexStorage implements IndexStorage {
 
     const maxAttempts = 4;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const existing = await openDB(this._dbName);
+      const existing = await this._openDatabase();
       const currentVersion = existing.version;
       const storeExists = existing.objectStoreNames.contains(indexName);
       const metadataExists = existing.objectStoreNames.contains(METADATA_STORE);
@@ -214,8 +216,8 @@ export class IDBIndexStorage implements IndexStorage {
       existing.close();
 
       const missingFields = storeExists
-        ? fields.filter((field) => !existingIndexes.includes(field.path))
-        : fields;
+        ? requestedLegacyFields.filter((field) => !existingIndexes.includes(field.path))
+        : requestedLegacyFields;
       const missingPhysical = requestedPhysical.filter((index) =>
         !existingIndexes.includes(physicalIndexName(index.name)));
       const requestedPhysicalNames = new Set(requestedPhysical.map((index) =>
@@ -226,31 +228,34 @@ export class IDBIndexStorage implements IndexStorage {
         missingFields.length > 0 || missingPhysical.length > 0 || obsoletePhysical.length > 0;
       try {
         this._db = needsUpgrade
-          ? await openDB(this._dbName, currentVersion + 1, {
-            upgrade(db, _oldVersion, _newVersion, tx) {
-              if (needsMetadata && !db.objectStoreNames.contains(METADATA_STORE)) {
-                db.createObjectStore(METADATA_STORE, { keyPath: 'indexName' });
+          ? await this._openDatabase(currentVersion + 1, (
+            db,
+            _oldVersion,
+            _newVersion,
+            tx,
+          ) => {
+            if (needsMetadata && !db.objectStoreNames.contains(METADATA_STORE)) {
+              db.createObjectStore(METADATA_STORE, { keyPath: 'indexName' });
+            }
+            const store = db.objectStoreNames.contains(indexName)
+              ? tx.objectStore(indexName)
+              : db.createObjectStore(indexName, { keyPath: 'documentPath' });
+            for (const name of obsoletePhysical) {
+              if (store.indexNames.contains(name)) store.deleteIndex(name);
+            }
+            for (const field of missingFields) {
+              if (!store.indexNames.contains(field.path)) {
+                store.createIndex(field.path, `fields.${field.path}`, { unique: false });
               }
-              const store = db.objectStoreNames.contains(indexName)
-                ? tx.objectStore(indexName)
-                : db.createObjectStore(indexName, { keyPath: 'documentPath' });
-              for (const name of obsoletePhysical) {
-                if (store.indexNames.contains(name)) store.deleteIndex(name);
+            }
+            for (const index of missingPhysical) {
+              const name = physicalIndexName(index.name);
+              if (!store.indexNames.contains(name)) {
+                store.createIndex(name, `physical.${physicalProperty(index.name)}`, { unique: false });
               }
-              for (const field of missingFields) {
-                if (!store.indexNames.contains(field.path)) {
-                  store.createIndex(field.path, `fields.${field.path}`, { unique: false });
-                }
-              }
-              for (const index of missingPhysical) {
-                const name = physicalIndexName(index.name);
-                if (!store.indexNames.contains(name)) {
-                  store.createIndex(name, `physical.${physicalProperty(index.name)}`, { unique: false });
-                }
-              }
-            },
+            }
           })
-          : await openDB(this._dbName, currentVersion);
+          : await this._openDatabase(currentVersion);
         break;
       } catch (error) {
         const retryable = typeof DOMException !== 'undefined' &&
@@ -266,7 +271,10 @@ export class IDBIndexStorage implements IndexStorage {
       name: index.name,
       fields: [...index.fields],
     })));
-    this._indexedFields.set(indexName, new Set(fields.map((field) => field.path)));
+    this._indexedFields.set(
+      indexName,
+      new Set(requestedLegacyFields.map((field) => field.path)),
+    );
     this._initializedStores.add(indexName);
 
     if (identity) await this._initializeV2Rows(indexName, fields, requestedPhysical, identity);
@@ -467,6 +475,11 @@ export class IDBIndexStorage implements IndexStorage {
         cursor = await cursor.continue();
         continue;
       }
+      if (!record.documentPath.startsWith(identity.collectionPrefix)) {
+        await cursor.delete();
+        cursor = await cursor.continue();
+        continue;
+      }
       let invalid: { path: string; reason: string } | undefined;
       for (const field of fields) {
         const reason = invalidIndexedValueReason(extractField(record.fields, field.path), field);
@@ -515,6 +528,49 @@ export class IDBIndexStorage implements IndexStorage {
       throw new Error('IDBIndexStorage: database not initialized. Call initialize() first.');
     }
     return this._db;
+  }
+
+  private _openDatabase(
+    version?: number,
+    upgrade?: OpenDBCallbacks<unknown>['upgrade'],
+  ): Promise<IDBPDatabase> {
+    return new Promise((resolve, reject) => {
+      let connection: IDBPDatabase | undefined;
+      let settled = false;
+      const opening = openDB(this._dbName, version, {
+        ...(upgrade ? { upgrade } : {}),
+        blocked: () => {
+          if (!settled) {
+            settled = true;
+            reject(new Error(`IDBIndexStorage: schema upgrade blocked for ${this._dbName}`));
+          }
+        },
+        blocking: () => {
+          connection?.close();
+          if (this._db === connection) this._db = null;
+        },
+        terminated: () => {
+          if (this._db === connection) this._db = null;
+        },
+      });
+      opening.then(
+        (db) => {
+          connection = db;
+          if (settled) {
+            db.close();
+            return;
+          }
+          settled = true;
+          resolve(db);
+        },
+        (error) => {
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        },
+      );
+    });
   }
 
   /**

@@ -302,7 +302,7 @@ function validatePayload(input: unknown): void {
 function validateWireQuery(input: unknown): void {
   if (!isRecord(input) || input.version !== 2) throw new TypeError('wire query version must be 2');
   assertExactKeys(input, ['version'], [
-    'indexName', 'collectionPrefix', 'where', 'orderBy', 'first', 'after', 'select',
+    'indexName', 'collectionPrefix', 'where', 'orderBy', 'first',
     'count', 'allowScan', 'consistency',
   ]);
   if (input.indexName !== undefined) validateBoundedText(input.indexName, 'query indexName', 128);
@@ -327,18 +327,6 @@ function validateWireQuery(input: unknown): void {
       }
     }
   }
-  if (input.after !== undefined) validateBoundedText(input.after, 'query cursor', 32_768);
-  if (input.select !== undefined) {
-    if (!Array.isArray(input.select) || input.select.length > 64) {
-      throw new TypeError('wire query select is invalid');
-    }
-    const selected = new Set<string>();
-    for (const path of input.select) {
-      validateWirePath(path);
-      if (selected.has(path)) throw new TypeError('wire query select contains duplicates');
-      selected.add(path);
-    }
-  }
   if (input.count !== undefined && input.count !== 'exact' && input.count !== 'none') {
     throw new TypeError('wire query count is invalid');
   }
@@ -347,8 +335,7 @@ function validateWireQuery(input: unknown): void {
   }
   if (input.allowScan === true) throw new TypeError('distributed queries cannot opt in to full scans');
   if (input.count === 'exact') throw new TypeError('distributed candidate queries cannot request exact counts');
-  if (input.consistency !== undefined &&
-      input.consistency !== 'eventual' && input.consistency !== 'indexed') {
+  if (input.consistency !== undefined && input.consistency !== 'eventual') {
     throw new TypeError('wire query consistency is invalid');
   }
 }

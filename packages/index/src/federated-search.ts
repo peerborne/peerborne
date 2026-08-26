@@ -141,11 +141,17 @@ export class FederatedSearchCoordinator<DocType> {
     }));
     const sourceResults = await Promise.all(sources.map(async (source, index) => {
       try {
-        const result = await withTimeout(source.search({
-          query,
-          candidateLimit: this._maxCandidatesPerSource,
-          deadline,
-        }), this._sourceTimeoutMs);
+        const abortController = new AbortController();
+        const result = await withTimeout(
+          source.search({
+            query,
+            candidateLimit: this._maxCandidatesPerSource,
+            deadline,
+            signal: abortController.signal,
+          }),
+          this._sourceTimeoutMs,
+          () => abortController.abort(),
+        );
         if (!Array.isArray(result.candidates) || result.candidates.length > this._maxCandidatesPerSource ||
             typeof result.exhausted !== 'boolean') throw new TypeError('invalid candidate result');
         sourceExecutions[index].status = 'complete';
@@ -174,7 +180,7 @@ export class FederatedSearchCoordinator<DocType> {
     }
 
     const verified = new Map<string, { documentPath: string; fields: Record<string, unknown> }>();
-    const claimed = new Set<string>();
+    const claimedReferences = new Set<string>();
     let resolutionError = false;
     let resolutionTimeout = false;
     let resolutionBudgetExhausted = false;
@@ -195,8 +201,10 @@ export class FederatedSearchCoordinator<DocType> {
         }
         const { candidate, sourceIndex } = item;
         if (!validCandidate(candidate) || !candidate.documentPath.startsWith(definition.collectionPrefix) ||
-            verified.has(candidate.documentPath) || claimed.has(candidate.documentPath)) continue;
-        claimed.add(candidate.documentPath);
+            verified.has(candidate.documentPath)) continue;
+        const referenceKey = candidateReferenceKey(candidate);
+        if (claimedReferences.has(referenceKey)) continue;
+        claimedReferences.add(referenceKey);
         try {
           const abortController = new AbortController();
           const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
@@ -213,6 +221,7 @@ export class FederatedSearchCoordinator<DocType> {
               (candidate.revision !== undefined && resolved.revision !== candidate.revision)) continue;
           const fields = materializeIndexedFields(resolved.snapshot, definition);
           if (!fields || !evaluateQueryExpression(fields, query.where, definition)) continue;
+          if (verified.has(candidate.documentPath)) continue;
           verified.set(candidate.documentPath, { documentPath: candidate.documentPath, fields });
           sourceExecutions[sourceIndex].candidatesAccepted++;
         } catch (error) {
@@ -348,6 +357,10 @@ function validCandidate(candidate: QueryCandidateReference): boolean {
     (candidate.revision === undefined ||
       (typeof candidate.revision === 'string' && candidate.revision.length > 0 &&
        candidate.revision.length <= 512 && !/[\u0000-\u001f]/.test(candidate.revision)));
+}
+
+function candidateReferenceKey(candidate: QueryCandidateReference): string {
+  return `${candidate.documentPath}\u0000${candidate.revision ?? ''}`;
 }
 
 function validateSourceId(value: string): void {

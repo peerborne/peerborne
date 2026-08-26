@@ -256,9 +256,10 @@ alone are a CPU denial-of-service surface.
 ### Federation and result trust
 
 `FederatedSearchCoordinator` contacts a bounded number of candidate sources,
-interleaves their references so one fast peer cannot monopolize the global
-budget, and resolves candidates with bounded concurrency, per-document
-deadlines, a total resolution budget, and abort signals. The
+gives each source request a deadline and abort signal, interleaves their
+references so one fast peer cannot monopolize the global budget, and resolves
+candidates with bounded concurrency, per-document deadlines, a total
+resolution budget, and separate abort signals. The
 `AuthorizedDocumentResolver` contract requires the normal Peerborne load path.
 The coordinator then extracts the declared fields, rejects malformed values,
 rechecks the full AST, applies its own cursor, deduplicates, sorts, and projects.

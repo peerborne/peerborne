@@ -6,6 +6,12 @@
     "outDir": "dist/cjs",
     "declaration": false,
     "composite": false,
+    "baseUrl": ".",
+    "paths": {
+      "@peerborne/core/wire-protocols": [
+        "../core/dist/esm/src/wire-protocols"
+      ]
+    },
     "rootDir": "."
   },
   "references": []

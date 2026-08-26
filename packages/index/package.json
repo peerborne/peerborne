@@ -108,6 +108,7 @@
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1",
       "^@peerborne/core$": "<rootDir>/../core/src/index.ts",
+      "^@peerborne/core/wire-protocols$": "<rootDir>/../core/src/wire-protocols.ts",
       "^@chainsafe/libp2p-noise$": "<rootDir>/src/__mocks__/empty-module.cjs",
       "^@chainsafe/libp2p-yamux$": "<rootDir>/src/__mocks__/empty-module.cjs",
       "^@libp2p/gossipsub$": "<rootDir>/src/__mocks__/empty-module.cjs",

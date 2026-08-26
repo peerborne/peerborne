@@ -131,19 +131,17 @@ describe('signed distributed index protocols', () => {
     const bounded = new RoutingAdvertisementRegistry({ maxPeers: 1, minUpdateIntervalMs: 0 });
     expect(await bounded.accept(signed, 'peer-one', verified, authorizer, now))
       .toEqual({ accepted: true });
-    const otherPeer = await signRoutingAdvertisement({
+    const activeOtherPeer = await signRoutingAdvertisement({
+      ...routingAdvertisement(verified.manifestHash, now + 1, '1', replacementFilter),
+      sourcePeerId: 'peer-two',
+    }, verified, signer, now + 1);
+    expect(await bounded.accept(activeOtherPeer, 'peer-two', verified, authorizer, now + 1))
+      .toEqual({ accepted: false, reason: 'capacity' });
+    const expiredReplacement = await signRoutingAdvertisement({
       ...routingAdvertisement(verified.manifestHash, now + 1001, '1', replacementFilter),
       sourcePeerId: 'peer-two',
     }, verified, signer, now + 1001);
-    expect(await bounded.accept(otherPeer, 'peer-two', verified, authorizer, now + 1001))
-      .toEqual({ accepted: false, reason: 'capacity' });
-    const knownPeer = await signRoutingAdvertisement(
-      routingAdvertisement(verified.manifestHash, now + 1001, '2', replacementFilter),
-      verified,
-      signer,
-      now + 1001,
-    );
-    expect(await bounded.accept(knownPeer, 'peer-one', verified, authorizer, now + 1001))
+    expect(await bounded.accept(expiredReplacement, 'peer-two', verified, authorizer, now + 1001))
       .toEqual({ accepted: true });
   });
 
@@ -285,6 +283,23 @@ describe('signed distributed index protocols', () => {
     };
     await expect(signDistributedSearchRequest(oversizedBlind, verified, signer, now))
       .rejects.toThrow('blind first');
+  });
+
+  test('rejects global cursors, projections, and indexed waits on candidate requests', async () => {
+    const now = 7_000_000;
+    const verified = await verifyDistributedIndexManifest(
+      await signDistributedIndexManifest(manifest(now), signer, now), authorizer, now,
+    );
+    for (const forbidden of [
+      { after: 'global-cursor' },
+      { select: ['title'] },
+      { consistency: 'indexed' as const },
+    ]) {
+      const request = requestFor(verified.manifestHash, now);
+      if (request.payload.mode !== 'query') throw new Error('unexpected fixture shape');
+      Object.assign(request.payload.query, forbidden);
+      await expect(signDistributedSearchRequest(request, verified, signer, now)).rejects.toThrow();
+    }
   });
 });
 

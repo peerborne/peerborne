@@ -88,6 +88,15 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
     }
     return { ...field };
   });
+  for (const path of fieldPaths) {
+    for (const otherPath of fieldPaths) {
+      if (otherPath.startsWith(`${path}.`)) {
+        throw new InvalidIndexSchemaError(
+          `field paths must not overlap: ${path} and ${otherPath}`,
+        );
+      }
+    }
+  }
 
   let indexes: IndexKeyDefinition[] | undefined;
   if (definition.indexes !== undefined) {

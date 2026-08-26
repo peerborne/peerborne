@@ -41,6 +41,12 @@
       "import": "./dist/esm/src/browser-primitives.js",
       "require": "./dist/cjs/src/browser-primitives.js",
       "default": "./dist/esm/src/browser-primitives.js"
+    },
+    "./wire-protocols": {
+      "types": "./dist/esm/src/wire-protocols.d.ts",
+      "import": "./dist/esm/src/wire-protocols.js",
+      "require": "./dist/cjs/src/wire-protocols.js",
+      "default": "./dist/esm/src/wire-protocols.js"
     }
   },
   "files": [

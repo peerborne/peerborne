@@ -167,6 +167,7 @@ export class IndexManager<DocType> {
             {
               schemaHash: generation.schemaHash,
               generation: resolvedGeneration(normalized),
+              collectionPrefix: normalized.collectionPrefix,
               invalidValuePolicy: resolvedInvalidValuePolicy(normalized),
             },
           );
@@ -383,6 +384,9 @@ export class IndexManager<DocType> {
         query,
         plan: planQuery(definition, query),
       });
+      if (this._indexGenerations.get(indexName) !== generation) {
+        return { documents: [], totalCount: 0 };
+      }
       const offset = options.offset ?? 0;
       const entries = options.limit === undefined
         ? executed.entries.slice(offset)
@@ -443,6 +447,9 @@ export class IndexManager<DocType> {
       throw new Error(`index generation changed while querying ${indexName}`);
     }
     const queryHash = await hashQuery(query);
+    if (this._indexGenerations.get(indexName) !== generation) {
+      throw new Error(`index generation changed while querying ${indexName}`);
+    }
     const orderBy = query.orderBy ?? [];
     const cursor = query.after
       ? parseQueryCursor(

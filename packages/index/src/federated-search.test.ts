@@ -100,14 +100,19 @@ describe('FederatedSearchCoordinator', () => {
     const resolver: AuthorizedDocumentResolver = {
       async resolveAuthorized() { return undefined; },
     };
+    let aborted = false;
     const hanging: QueryCandidateSource = {
       id: 'hanging',
-      async search() { return new Promise(() => undefined); },
+      async search(request) {
+        request.signal.addEventListener('abort', () => { aborted = true; });
+        return new Promise(() => undefined);
+      },
     };
     const coordinator = new FederatedSearchCoordinator(manager, resolver, { sourceTimeoutMs: 5 });
     const result = await coordinator.search(query(), [hanging]);
     expect(result.sources[0].status).toBe('timeout');
     expect(result.coverage.reasons).toContain('source-timeout');
+    expect(aborted).toBe(true);
   });
 
   test('rejects duplicate source identities before network work', async () => {
@@ -165,6 +170,29 @@ describe('FederatedSearchCoordinator', () => {
     expect(resolutions).toBe(1);
     expect(result.sources[0].candidatesAccepted).toBe(1);
     expect(result.coverage.reasons).not.toContain('candidate-budget-exhausted');
+  });
+
+  test('tries a distinct revision after a stale revision cannot be resolved', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    const revisions: Array<string | undefined> = [];
+    const coordinator = new FederatedSearchCoordinator(manager, {
+      async resolveAuthorized(documentPath, revision) {
+        revisions.push(revision);
+        if (revision === 'stale') return undefined;
+        return {
+          documentPath,
+          revision,
+          snapshot: { status: 'published', title: 'Current' },
+        };
+      },
+    }, { resolveConcurrency: 1 });
+    const result = await coordinator.search(query(), [new StaticSource('revisions', [
+      { documentPath: '/articles/remote', revision: 'stale' },
+      { documentPath: '/articles/remote', revision: 'current' },
+    ])]);
+    expect(revisions).toEqual(['stale', 'current']);
+    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/remote']);
   });
 
   test('bounds authorized resolution and exposes an abort signal', async () => {

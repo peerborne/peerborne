@@ -37,10 +37,7 @@ export class MemoryIndexStorage implements IndexStorage {
   async initialize(
     indexName: string,
     fields: IndexFieldDefinition[],
-    physicalIndexes: IndexKeyDefinition[] = fields.map((field) => ({
-      name: `by_${field.path}`,
-      fields: [field.path],
-    })),
+    physicalIndexes: IndexKeyDefinition[] = [],
     identity?: StorageSchemaIdentity,
   ): Promise<void> {
     let store = this._stores.get(indexName);
@@ -246,6 +243,7 @@ function compareKeyPrefix(left: IndexScalar[], right: IndexScalar[]): number {
 
 function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity): boolean {
   return left.schemaHash === right.schemaHash && left.generation === right.generation &&
+    left.collectionPrefix === right.collectionPrefix &&
     left.invalidValuePolicy === right.invalidValuePolicy;
 }
 
@@ -279,11 +277,20 @@ function compareLegacyEntries(left: IndexEntry, right: IndexEntry, sort: SortCla
   for (const clause of sort) {
     const a = comparable(extractField(left.fields, clause.path));
     const b = comparable(extractField(right.fields, clause.path));
-    const compared = a === b ? 0 : a === undefined || a === null ? -1 :
-      b === undefined || b === null ? 1 : String(a).localeCompare(String(b), undefined, { numeric: true });
+    const compared = compareLegacyValues(a, b);
     if (compared) return clause.direction === 'desc' ? -compared : compared;
   }
   return 0;
+}
+
+function compareLegacyValues(a: unknown, b: unknown): number {
+  if (a === b) return 0;
+  if (a === undefined || a === null) return -1;
+  if (b === undefined || b === null) return 1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
+  if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
+  return String(a).localeCompare(String(b));
 }
 
 function comparable(value: unknown): any {

@@ -10,6 +10,7 @@ export interface CandidateSearchRequest {
   query: QueryAst;
   candidateLimit: number;
   deadline: number;
+  signal: AbortSignal;
 }
 
 export interface CandidateSearchResult {

@@ -162,6 +162,15 @@ describe('MemoryIndexStorage', () => {
       expect(results.map(r => r.fields.title)).toEqual(['Alpha', 'Beta', 'Charlie']);
     });
 
+    test('preserves plain lexical ordering for numeric-looking strings', async () => {
+      await storage.put(indexName, '/doc/4', { title: '10', count: 40 });
+      await storage.put(indexName, '/doc/5', { title: '2', count: 50 });
+      const results = await storage.query(indexName, [], [{ path: 'title', direction: 'asc' }]);
+      expect(results.map(r => r.fields.title)).toEqual(
+        ['Charlie', 'Alpha', 'Beta', '10', '2'].sort((left, right) => left.localeCompare(right)),
+      );
+    });
+
     test('sort descending by number', async () => {
       const results = await storage.query(indexName, [], [{ path: 'count', direction: 'desc' }]);
       expect(results.map(r => r.fields.count)).toEqual([30, 20, 10]);

@@ -1,4 +1,4 @@
-import { searchQueryV1 } from '@peerborne/core';
+import { searchQueryV1 } from '@peerborne/core/wire-protocols';
 import {
   CandidateSearchRequest,
   CandidateSearchResult,
@@ -21,7 +21,7 @@ export interface DistributedSearchTransport {
     peerId: string,
     protocol: string,
     payload: Uint8Array,
-    options: { deadline: number },
+    options: { deadline: number; signal: AbortSignal },
   ): Promise<Uint8Array>;
 }
 
@@ -55,7 +55,7 @@ export class BlindEqualityRequestEncoder implements DistributedSearchRequestEnco
     return {
       mode: 'blind-equality',
       blindTerms: await this._encodeTerms(query),
-      first: Math.min(query.first ?? candidateLimit, candidateLimit),
+      first: Math.max(1, Math.min(query.first ?? candidateLimit, candidateLimit)),
     };
   }
 }
@@ -85,6 +85,7 @@ export class DistributedPeerCandidateSource implements QueryCandidateSource {
   }
 
   async search(request: CandidateSearchRequest): Promise<CandidateSearchResult> {
+    if (request.signal.aborted) throw new Error('distributed search request was aborted');
     const { manifest, localPeerId, remotePeerId } = this._options;
     const issuedAt = Date.now();
     const deadline = Math.min(request.deadline, issuedAt + 30_000);
@@ -93,6 +94,7 @@ export class DistributedPeerCandidateSource implements QueryCandidateSource {
       manifest.manifest.limits.maxCandidates,
     );
     const encodedPayload = await this._options.encoder.encode(request.query, candidateLimit);
+    if (request.signal.aborted) throw new Error('distributed search request was aborted');
     const payload: DistributedSearchRequestPayload = encodedPayload.mode === 'query'
       ? {
         mode: 'query',
@@ -127,7 +129,7 @@ export class DistributedPeerCandidateSource implements QueryCandidateSource {
       remotePeerId,
       searchQueryV1,
       requestBytes,
-      { deadline },
+      { deadline, signal: request.signal },
     );
     const verified = await verifyDistributedSearchResponse(
       responseBytes,
