@@ -41,9 +41,12 @@ A centralized database is simpler and should be the default for most application
 
 <CardGrid>
   <Card title="Encrypted by default" icon="seti:lock">
-    By default, every change is signed with ECDSA P-384 and encrypted with AES-GCM
-    before it leaves the device. Relays and remote stores see only opaque ciphertext.
-    (Signing can be configured via `enableSigning`.)
+    Stored change payloads, ordinary GossipSub sync envelopes, and load
+    responses are encrypted with the document key (AES-GCM by default). Each
+    complete outgoing ordinary sync message is also signed with ECDSA P-384 by
+    default before encryption. BeeKEM membership-control formats protect their
+    key material with separate recipient- or node-specific encryption.
+    (Ordinary document signing can be configured via `enableSigning`.)
   </Card>
   <Card title="No trusted plaintext custodian" icon="setting">
     Helia and libp2p provide local storage and peer-to-peer transport. Relays
@@ -123,12 +126,14 @@ listed directly below the demo.
 
 1. **Edit locally.** A provider applies each change to the local CRDT replica.
    The application sees changes immediately — no network round-trip.
-2. **Sign, encrypt, publish.** Peerborne signs the sync message with the writer's
-   ECDSA P-384 key, encrypts the serialized envelope with the document's AES-GCM
-   key, and publishes the CID to connected peers via GossipSub.
-3. **Verify and merge.** Recipients fetch the encrypted block, verify the
-   signature, decrypt the payload, and apply the CRDT update. The Yjs or
-   Automerge layer reconciles concurrent edits without conflicts.
+2. **Store, sign, encrypt, publish.** Peerborne encrypts and stores the change
+   payload under a CID, then signs the complete sync message when enabled,
+   encrypts its serialized envelope, and publishes that full envelope through
+   GossipSub.
+3. **Authenticate and merge.** Recipients decrypt the envelope, verify its
+   outer signature against known writers when enabled, apply inline history,
+   and fetch only missing or deferred CID payloads. The Yjs or Automerge layer
+   reconciles delivered concurrent edits.
 
 Peerborne currently verifies encrypted document retrieval across a Circuit Relay
 boundary in CI. Broader partition/rejoin, persistence, and production deployment
@@ -138,12 +143,12 @@ coverage remains active work.
 
 | Choice | Rationale |
 |---|---|
-| **End-to-end encryption** | Document plaintext never touches a server. AES-GCM content encryption, ECDSA P-384 signing. |
-| **Content-addressed storage** | Every block is addressed by its SHA-256 hash (CID). Blocks are immutable — no overwrites, no conflicts. |
-| **Shadow sync graph** | Changes form a DAG, not a linear history. Concurrent edits coexist; the CRDT layer resolves them. |
+| **End-to-end encryption** | Infrastructure that lacks the document key carries document-key ciphertext (AES-GCM by default); ECDSA P-384 authenticates sync-envelope signers when enabled. |
+| **Content-addressed storage** | Encrypted serialized change payloads are immutable under their CIDs. |
+| **Shadow sync graph** | Encrypted sync messages carry CID-keyed change trees rather than embedding graph links in stored payloads. Concurrent edits coexist; the CRDT layer resolves delivered changes. |
 | **CRDT-agnostic core** | Peerborne wraps Yjs and Automerge without coupling to either. Swap CRDT implementations without changing your application. |
 | **libp2p networking** | Battle-tested peer-to-peer stack: WebSockets, WebRTC, WebTransport, Circuit Relay v2, GossipSub. |
-| **K-of-Q quorum loading** | Before trusting a document state, verify it with K-of-Q bootstrap peers. Prevents loading a fork. |
+| **Q-of-K quorum loading** | Require matching served-frontier hashes from distinct connected peers before binding a selected response. This reduces single-peer risk but does not prove complete interior history. |
 | **BeeKEM key sharing** | Dynamic group key encapsulation. Add and remove readers without re-encrypting the document. |
 
 See the [architecture page](concepts/architecture/) for detailed diagrams of the

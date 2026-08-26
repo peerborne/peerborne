@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title description">
   <title id="title">Peerborne key roles</title>
-  <desc id="description">Four cards distinguish the application-supplied ECDSA signing identity, the application-supplied ECDH KEM identity, the per-document AES-GCM content key, and the libp2p peer ID, whose transport key uses an upstream-generated default unless configured. Ordinary document sync signing is configurable, BeeKEM membership-control messages remain writer-signed, content encryption is always on, and one signing identity can be used across multiple peer nodes.</desc>
+  <desc id="description">Four cards distinguish the application-supplied ECDSA signing identity, the application-supplied ECDH KEM identity used for recipient-sealed Welcome onboarding, the per-document content key using AES-GCM by default, and the libp2p peer ID, whose transport key uses an upstream-generated default unless configured. Ordinary document sync signing is configurable, BeeKEM membership-control messages remain writer-signed, content encryption is always on, and one signing identity can be used across multiple peer nodes.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
       <stop stop-color="#0f172a" />
@@ -84,7 +84,7 @@
       <text class="eyebrow" x="26" y="34" fill="#5eead4">KEY SHARING</text>
       <text class="card-title" x="26" y="72">KEM identity</text>
       <text class="algorithm" x="26" y="101" fill="#99f6e4">ECDH P-256</text>
-      <text class="purpose" x="26" y="132">Wraps the document key for readers via BeeKEM</text>
+      <text class="purpose" x="26" y="132">Opens recipient-sealed Welcome onboarding payloads</text>
       <text class="owner" x="504" y="34" text-anchor="end">APPLICATION-SUPPLIED</text>
     </g>
 
@@ -92,7 +92,7 @@
       <rect width="530" height="166" rx="22" fill="url(#cryptoCard)" stroke="#2dd4bf" stroke-width="2" />
       <text class="eyebrow" x="26" y="34" fill="#5eead4">CONTENT ENCRYPTION</text>
       <text class="card-title" x="26" y="72">Document key</text>
-      <text class="algorithm" x="26" y="101" fill="#99f6e4">AES-GCM · 256-bit</text>
+      <text class="algorithm" x="26" y="101" fill="#99f6e4">AES-GCM · 256-bit default</text>
       <text class="purpose" x="26" y="132">Encrypts and decrypts one document’s content</text>
       <text class="owner" x="504" y="34" text-anchor="end">PER DOCUMENT</text>
     </g>

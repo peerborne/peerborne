@@ -20,7 +20,7 @@ What needs to happen:
 
 ### 2. Invitations, key exchange, and revocation
 
-**Status: Partially implemented.** The BeeKEM key encapsulation mechanism and reader/writer ACL exist, but the full invitation flow (discover peer, exchange keys, onboard to document) has no end-to-end CI proof. BeeKEM rekey state is memory-only.
+**Status: Partially implemented.** BeeKEM group-key management and reader/writer ACLs exist, but the full invitation flow (discover peer, exchange keys, onboard to document) has no end-to-end CI proof. BeeKEM rekey state is memory-only.
 
 What needs to happen:
 - End-to-end test of two distinct identities exchanging keys and accessing a shared document
