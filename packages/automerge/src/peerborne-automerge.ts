@@ -10,7 +10,6 @@ import {
   save,
   load,
   merge,
-  from,
 } from '@automerge/automerge';
 
 import {
@@ -103,10 +102,27 @@ export type AutomergeACLDoc = Doc<{
   users: { [hash: string]: true };
 }>;
 
+/**
+ * Deterministic Automerge actor used only for the seed change that creates
+ * the empty ACL map. Every replica must share this exact seed; otherwise an
+ * incremental `add()` change depends on a different random root assignment
+ * and merging it into a fresh ACL can leave the recipient with no writers.
+ */
+const ACL_SEED_ACTOR = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';
+
+function newACLDoc(): AutomergeACLDoc {
+  const seeded = change(
+    init<{ users: { [hash: string]: true } }>(ACL_SEED_ACTOR),
+    { time: 0 },
+    (doc) => {
+      doc.users = {};
+    },
+  );
+  return clone(seeded);
+}
+
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  private _acl: AutomergeACLDoc = from({
-    users: {},
-  });
+  private _acl: AutomergeACLDoc = newACLDoc();
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
 
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {

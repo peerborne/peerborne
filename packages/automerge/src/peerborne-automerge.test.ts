@@ -204,6 +204,46 @@ describe('AutomergeACL', () => {
     expect(await acl1.check(key1)).toBe(true);
     expect(await acl1.check(key2)).toBe(true);
   });
+
+  test('founder changes authorize its signing key in a fresh ACL', async () => {
+    const signingPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const founder = new AutomergeACL();
+    const founderChanges = await founder.add(signingPair.publicKey);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(founderChanges);
+
+    expect(await receiver.check(signingPair.publicKey)).toBe(true);
+    const writerKeys = await receiver.users();
+    expect(writerKeys).toHaveLength(1);
+    const [verifyingKey] = writerKeys;
+    const payload = new Uint8Array([9, 8, 7, 6]);
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-384' },
+      signingPair.privateKey,
+      payload,
+    );
+
+    expect(
+      await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-384' },
+        verifyingKey,
+        signature,
+        payload,
+      ),
+    ).toBe(true);
+  });
+
+  test('fresh ACLs share the same seed history', () => {
+    const first = new AutomergeACL();
+    const second = new AutomergeACL();
+
+    expect(second.current()).toEqual(first.current());
+  });
 });
 
 describe('AutomergeACLProvider', () => {
