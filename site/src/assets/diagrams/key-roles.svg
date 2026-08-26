@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title description">
+  <title id="title">Peerborne key roles</title>
+  <desc id="description">Four cards distinguish the application-supplied ECDSA signing identity, the application-supplied ECDH KEM identity, the per-document AES-GCM content key, and the libp2p peer ID, whose transport key uses an upstream-generated default unless configured. Ordinary document sync signing is configurable, BeeKEM membership-control messages remain writer-signed, content encryption is always on, and one signing identity can be used across multiple peer nodes.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f172a" />
+      <stop offset="1" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="identityCard" x1="0" y1="0" x2="530" y2="172" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172554" />
+      <stop offset="1" stop-color="#1e1b4b" />
+    </linearGradient>
+    <linearGradient id="cryptoCard" x1="0" y1="0" x2="530" y2="172" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f2f35" />
+      <stop offset="1" stop-color="#102a43" />
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity="0.045" />
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf" />
+    </marker>
+    <style>
+      .system { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 2.2px; }
+      .card-title { font-size: 27px; font-weight: 750; fill: #f8fafc; }
+      .algorithm { font-size: 18px; font-weight: 650; fill: #c7d2fe; }
+      .purpose { font-size: 19px; font-weight: 500; fill: #cbd5e1; }
+      .owner { font-size: 16px; font-weight: 650; fill: #94a3b8; }
+      .chip { font-size: 15px; font-weight: 750; letter-spacing: 1.2px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" rx="28" fill="url(#background)" />
+  <rect width="1200" height="720" rx="28" fill="url(#grid)" />
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf" />
+
+  <g class="system">
+    <text x="52" y="78" font-size="34" font-weight="760" fill="#f8fafc">Four keys, four distinct jobs</text>
+    <text x="52" y="109" font-size="18" font-weight="500" fill="#94a3b8">Document cryptography stays separate from transport identity.</text>
+
+    <g transform="translate(52 132)">
+      <rect width="282" height="42" rx="21" fill="#0f3b3d" stroke="#2dd4bf" stroke-opacity="0.72" />
+      <circle cx="22" cy="21" r="6" fill="#2dd4bf" />
+      <text class="chip" x="40" y="27" fill="#99f6e4">ENCRYPTION · ALWAYS ON</text>
+    </g>
+    <g transform="translate(354 132)">
+      <rect width="420" height="42" rx="21" fill="#25245c" stroke="#818cf8" stroke-opacity="0.72" />
+      <circle cx="22" cy="21" r="6" fill="#818cf8" />
+      <text class="chip" x="40" y="27" fill="#e0e7ff">DOCUMENT SIGNING · CONFIGURABLE</text>
+    </g>
+    <g transform="translate(794 132)">
+      <rect width="354" height="42" rx="21" fill="#3b2613" stroke="#fbbf24" stroke-opacity="0.72" />
+      <circle cx="22" cy="21" r="6" fill="#fbbf24" />
+      <text x="40" y="27" fill="#fde68a" font-size="13" font-weight="750" letter-spacing="0.8px">BEEKEM CONTROL · WRITER-SIGNED</text>
+    </g>
+
+    <g transform="translate(52 198)">
+      <rect width="530" height="166" rx="22" fill="url(#identityCard)" stroke="#6366f1" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#a5b4fc">SIGNER AUTHENTICATION</text>
+      <text class="card-title" x="26" y="72">Signing identity</text>
+      <text class="algorithm" x="26" y="101">ECDSA P-384</text>
+      <text class="purpose" x="26" y="132">Authenticates an authorized document-message signer</text>
+      <text class="owner" x="504" y="34" text-anchor="end">APPLICATION-SUPPLIED</text>
+    </g>
+
+    <g transform="translate(618 198)">
+      <rect width="530" height="166" rx="22" fill="#172033" stroke="#64748b" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#94a3b8">TRANSPORT IDENTITY</text>
+      <text class="card-title" x="26" y="72">libp2p peer ID</text>
+      <text class="algorithm" x="26" y="101" fill="#99f6e4">Upstream default</text>
+      <text class="purpose" x="26" y="132">Identifies a node on the libp2p network</text>
+      <text class="owner" x="504" y="34" text-anchor="end">DEFAULT-GENERATED</text>
+    </g>
+
+    <g transform="translate(600 281)">
+      <circle r="25" fill="#0f172a" stroke="#818cf8" stroke-width="2" />
+      <text x="0" y="9" text-anchor="middle" font-size="31" font-weight="800" fill="#e0e7ff">≠</text>
+    </g>
+    <text x="600" y="382" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.4" fill="#a5b4fc">SEPARATE IDENTITIES</text>
+
+    <g transform="translate(52 402)">
+      <rect width="530" height="166" rx="22" fill="url(#cryptoCard)" stroke="#2dd4bf" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#5eead4">KEY SHARING</text>
+      <text class="card-title" x="26" y="72">KEM identity</text>
+      <text class="algorithm" x="26" y="101" fill="#99f6e4">ECDH P-256</text>
+      <text class="purpose" x="26" y="132">Wraps the document key for readers via BeeKEM</text>
+      <text class="owner" x="504" y="34" text-anchor="end">APPLICATION-SUPPLIED</text>
+    </g>
+
+    <g transform="translate(618 402)">
+      <rect width="530" height="166" rx="22" fill="url(#cryptoCard)" stroke="#2dd4bf" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#5eead4">CONTENT ENCRYPTION</text>
+      <text class="card-title" x="26" y="72">Document key</text>
+      <text class="algorithm" x="26" y="101" fill="#99f6e4">AES-GCM · 256-bit</text>
+      <text class="purpose" x="26" y="132">Encrypts and decrypts one document’s content</text>
+      <text class="owner" x="504" y="34" text-anchor="end">PER DOCUMENT</text>
+    </g>
+    <line x1="582" y1="485" x2="614" y2="485" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrow)" />
+
+    <g transform="translate(52 596)">
+      <rect width="1096" height="86" rx="20" fill="#111c30" stroke="#334155" stroke-width="2" />
+      <rect x="24" y="21" width="240" height="44" rx="22" fill="#312e81" stroke="#818cf8" />
+      <text x="144" y="49" text-anchor="middle" font-size="17" font-weight="700" fill="#e0e7ff">ECDSA signing identity</text>
+      <path d="M264 43H326M326 43V27H382M326 43V59H382" fill="none" stroke="#818cf8" stroke-width="2.5" />
+      <rect x="382" y="10" width="116" height="34" rx="17" fill="#172033" stroke="#64748b" />
+      <rect x="382" y="48" width="116" height="34" rx="17" fill="#172033" stroke="#64748b" />
+      <text x="440" y="33" text-anchor="middle" font-size="16" font-weight="700" fill="#cbd5e1">Peer node A</text>
+      <text x="440" y="71" text-anchor="middle" font-size="16" font-weight="700" fill="#cbd5e1">Peer node B</text>
+      <text x="540" y="38" font-size="20" font-weight="700" fill="#f8fafc">One signing identity may span nodes</text>
+      <text x="540" y="62" font-size="16" font-weight="500" fill="#94a3b8">Each node still has its own libp2p transport identity.</text>
+    </g>
+  </g>
+</svg>
