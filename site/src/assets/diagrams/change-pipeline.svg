@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">A Peerborne change creates separate storage and wire artifacts</title>
+  <desc id="desc">A local mutation is serialized and encrypted into a CID-addressed stored change payload. Its CID, inline history, and deferred CID references are assembled into a separate CRDT sync message, signed when enabled, encrypted, and published as a full GossipSub envelope. A receiver decrypts that envelope before known-writer authorization, applies inline history, and fetches only missing or deferred CID blocks for CID integrity validation and decryption.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="storagePanel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="wirePanel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0f3f46"/>
+      <stop offset="1" stop-color="#164e63"/>
+    </linearGradient>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a5b4fc"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 1.6px; }
+      .heading { fill: #f8fafc; font-size: 31px; font-weight: 750; }
+      .subheading { fill: #cbd5e1; font-size: 17px; }
+      .step { fill: #f8fafc; font-size: 18px; font-weight: 700; }
+      .detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .footer { fill: #cbd5e1; font-size: 15px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="760" rx="28" fill="url(#background)"/>
+  <text x="54" y="58" class="eyebrow" fill="#818cf8">PEERBORNE CHANGE PIPELINE</text>
+  <text x="54" y="98" class="heading">One change, two related artifacts</text>
+  <text x="54" y="128" class="subheading">The stored block and the GossipSub envelope have different integrity and authorization checks.</text>
+
+  <rect x="44" y="154" width="1112" height="174" rx="22" fill="url(#storagePanel)" stroke="#6366f1" stroke-width="2"/>
+  <text x="68" y="183" class="eyebrow" fill="#a5b4fc">A · ENCRYPTED, CID-ADDRESSED STORAGE ARTIFACT</text>
+
+  <g filter="url(#shadow)">
+    <rect x="68" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
+    <circle cx="91" cy="225" r="15" fill="#a5b4fc"/><text x="91" y="226" class="number">1</text>
+    <text x="114" y="230" class="step">Local CRDT mutation</text>
+    <text x="88" y="263" class="detail">produces change bytes</text>
+
+    <rect x="336" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
+    <circle cx="359" cy="225" r="15" fill="#a5b4fc"/><text x="359" y="226" class="number">2</text>
+    <text x="382" y="230" class="step">Serialize payload</text>
+    <text x="356" y="263" class="detail">change data, not sync envelope</text>
+
+    <rect x="604" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
+    <circle cx="627" cy="225" r="15" fill="#a5b4fc"/><text x="627" y="226" class="number">3</text>
+    <text x="650" y="230" class="step">AES-GCM encrypt</text>
+    <text x="624" y="263" class="detail">with the document key</text>
+
+    <rect x="872" y="202" width="260" height="98" rx="16" fill="#1e293b" stroke="#818cf8"/>
+    <circle cx="895" cy="225" r="15" fill="#a5b4fc"/><text x="895" y="226" class="number">4</text>
+    <text x="918" y="230" class="step">Store ciphertext</text>
+    <text x="892" y="259" class="detail">Helia returns its content ID (CID)</text>
+    <text x="892" y="280" class="detail">for later references and retrieval</text>
+  </g>
+  <path d="M 294 251 H 330 M 562 251 H 598 M 830 251 H 866" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+  <rect x="44" y="350" width="1112" height="180" rx="22" fill="url(#wirePanel)" stroke="#14b8a6" stroke-width="2"/>
+  <text x="68" y="379" class="eyebrow" fill="#5eead4">B · SEPARATE GOSSIPSUB WIRE ARTIFACT</text>
+
+  <g filter="url(#shadow)">
+    <rect x="68" y="398" width="294" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
+    <circle cx="91" cy="421" r="15" fill="#5eead4"/><text x="91" y="422" class="number">5</text>
+    <text x="114" y="426" class="step">Build CRDTSyncMessage</text>
+    <text x="88" y="455" class="detail">new CID + inline change tree</text>
+    <text x="88" y="477" class="detail">+ deferred CID references</text>
+
+    <rect x="405" y="398" width="212" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
+    <circle cx="428" cy="421" r="15" fill="#5eead4"/><text x="428" y="422" class="number">6</text>
+    <text x="451" y="426" class="step">Sign if enabled</text>
+    <text x="425" y="455" class="detail">signature covers the</text>
+    <text x="425" y="477" class="detail">entire sync message</text>
+
+    <rect x="660" y="398" width="214" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
+    <circle cx="683" cy="421" r="15" fill="#5eead4"/><text x="683" y="422" class="number">7</text>
+    <text x="706" y="426" class="step">Serialize + encrypt</text>
+    <text x="680" y="455" class="detail">AES-GCM envelope with</text>
+    <text x="680" y="477" class="detail">the document key</text>
+
+    <rect x="917" y="398" width="215" height="104" rx="16" fill="#15343b" stroke="#5eead4"/>
+    <circle cx="940" cy="421" r="15" fill="#5eead4"/><text x="940" y="422" class="number">8</text>
+    <text x="963" y="426" class="step">Publish envelope</text>
+    <text x="937" y="455" class="detail">full encrypted message</text>
+    <text x="937" y="477" class="detail">over GossipSub—not CID-only</text>
+  </g>
+  <path d="M 362 450 H 399 M 617 450 H 654 M 874 450 H 911" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+
+  <rect x="44" y="552" width="1112" height="140" rx="22" fill="#111f34" stroke="#475569" stroke-width="2"/>
+  <text x="68" y="581" class="eyebrow" fill="#93c5fd">REMOTE DEVICE · ORDERED CHECKS</text>
+  <g>
+    <circle cx="92" cy="620" r="16" fill="#93c5fd"/><text x="92" y="621" class="number">9</text>
+    <text x="119" y="616" class="step">Decrypt envelope first</text>
+    <text x="119" y="640" class="detail">then deserialize the sync message</text>
+
+    <circle cx="430" cy="620" r="16" fill="#93c5fd"/><text x="430" y="621" class="number">10</text>
+    <text x="457" y="610" class="step">Authorize known writer</text>
+    <text x="457" y="634" class="detail">verify outer signature + writer ACL</text>
+    <text x="457" y="655" class="detail">when signing is enabled and writers are known</text>
+
+    <circle cx="814" cy="620" r="16" fill="#93c5fd"/><text x="814" y="621" class="number">11</text>
+    <text x="841" y="610" class="step">Apply inline history</text>
+    <text x="841" y="634" class="detail">Fetch only missing or deferred CIDs.</text>
+    <text x="841" y="655" class="detail">CID check → decrypt → deserialize and apply.</text>
+  </g>
+  <path d="M 374 620 H 404 M 758 620 H 788" fill="none" stroke="#93c5fd" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+  <rect x="44" y="710" width="1112" height="30" rx="15" fill="#332742"/>
+  <text x="600" y="731" class="footer" text-anchor="middle">Failure boundary: a local mutation can remain visible if later storage or publish fails; there is no rollback, durable outbox, or delivery receipt.</text>
+</svg>

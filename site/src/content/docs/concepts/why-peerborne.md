@@ -11,11 +11,15 @@ Peerborne is an **encrypted, peer-to-peer CRDT document toolkit** for TypeScript
 
 ### When centralization is the downside
 
-Peerborne removes the plaintext application database from the document path. Documents are encrypted, signed, and content-addressed before peers exchange them through relay infrastructure. Relays do not receive document plaintext, but they still observe connection and traffic metadata and can drop, delay, or censor traffic. Peerborne changes the trust boundary; it does not eliminate infrastructure.
+Peerborne removes the plaintext application database from the document path. It stores encrypted change payloads by CID and exchanges separate encrypted sync messages, signed when enabled, through network infrastructure. Relays do not receive document plaintext without the document key, but they still observe connection and traffic metadata and can drop, delay, or censor traffic. Peerborne changes the trust boundary; it does not eliminate infrastructure.
+
+![Centralized collaboration sends plaintext through a trusted application database; Peerborne devices exchange signed-when-enabled encrypted sync envelopes and separately encrypted CID-addressed blocks through infrastructure that sees metadata and can disrupt delivery but lacks document plaintext without the document key.](../../../assets/diagrams/trust-boundary.svg)
+
+**Evidence boundary:** This compares trust models, not availability or production readiness. Applications still own identity, key backup, and recovery; infrastructure may observe metadata or disrupt delivery, and durable restart recovery remains unproven.
 
 ### Encryption is the default, not an add-on
 
-By default (`enableSigning: true`), every document change is signed with the writer's identity and encrypted with AES-GCM before it leaves the device. Relays, bootstrap nodes, and remote storage see only opaque ciphertext. Encryption is always on, whether signing is enabled or not. Key material stays on devices — Peerborne never transmits unencrypted document content.
+Stored change payloads and wire sync envelopes are encrypted with AES-GCM. By default (`enableSigning: true`), the complete outgoing sync message is also signed with the writer's identity before it is encrypted. The stored CID-addressed block is a separate encrypted artifact and does not carry its own writer signature or ACL decision. Relays, bootstrap nodes, and remote storage handle ciphertext rather than document plaintext. Encryption remains on whether signing is enabled or not; Peerborne does not intentionally transmit unencrypted document content.
 
 ### Composable, not monolithic
 

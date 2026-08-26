@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
+  <title id="title">Peerborne remote initial document load</title>
+  <desc id="desc">A quorum-enabled remote document load requires Q-of-K peers to agree on a frontier hash before Peerborne binds a selected response, strips inline changes, and fetches the CIDs enumerated by its served changes tree before mutation. A quorum-bound first load has no prior writer set for outer-signature authentication, so it drops an unverifiable snapshot and requires an available changes tree. With quorum disabled, the legacy path skips peer advertisements, frontier binding, stripping, and prefetch. CID validation covers fetched ciphertext bytes, not responder-supplied node kinds or interior topology, writer identity, or history completeness.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .eyebrow { font-size: 15px; font-weight: 750; letter-spacing: 1.4px; }
+      .heading { fill: #f8fafc; font-size: 31px; font-weight: 750; }
+      .subheading { fill: #cbd5e1; font-size: 17px; }
+      .step { fill: #f8fafc; font-size: 18px; font-weight: 700; }
+      .detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .result { font-size: 17px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="840" rx="28" fill="url(#background)"/>
+  <text x="54" y="58" class="eyebrow" fill="#818cf8">REMOTE EXISTING DOCUMENT</text>
+  <text x="54" y="98" class="heading">Quorum-bound load checks before mutation</text>
+  <text x="54" y="128" class="subheading">When enabled, agreement, response binding, and changes-tree prefetch finish before replica mutation.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="46" y="158" width="220" height="112" rx="18" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
+    <circle cx="71" cy="185" r="15" fill="#5eead4"/><text x="71" y="186" class="number">1</text>
+    <text x="96" y="191" class="step">document.open()</text>
+    <text x="68" y="218" class="detail">Attempts a remote</text>
+    <text x="68" y="239" class="detail">load from currently</text>
+    <text x="68" y="260" class="detail">connected peers.</text>
+
+    <rect x="318" y="158" width="250" height="112" rx="18" fill="#172033" stroke="#64748b" stroke-width="2"/>
+    <circle cx="343" cy="185" r="15" fill="#cbd5e1"/><text x="343" y="186" class="number">2</text>
+    <text x="368" y="191" class="step">If enabled: probe peers</text>
+    <text x="340" y="226" class="detail">Up to effective K distinct peers</text>
+    <text x="340" y="249" class="detail">advertise served-frontier hashes.</text>
+
+    <rect x="620" y="146" width="534" height="136" rx="18" fill="#1e1b4b" stroke="#818cf8" stroke-width="2"/>
+    <circle cx="647" cy="175" r="15" fill="#a5b4fc"/><text x="647" y="176" class="number">3</text>
+    <text x="674" y="181" class="step">Configured remote-load mode</text>
+    <text x="646" y="216" class="detail">Enabled: require Q matching frontier hashes from up to effective K peers.</text>
+    <text x="646" y="242" class="detail">Disabled: skip probes and quorum checks; use the legacy response path.</text>
+    <text x="646" y="265" class="detail">Single-peer fallback applies only when effective K is already 1.</text>
+  </g>
+  <path d="M 266 214 H 312 M 568 214 H 614" fill="none" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="44" y="312" width="1112" height="242" rx="22" fill="#111f34" stroke="#475569" stroke-width="2"/>
+  <text x="68" y="343" class="eyebrow" fill="#93c5fd">QUORUM PATH · ORDER BEFORE STATE MUTATION</text>
+  <g filter="url(#shadow)">
+    <rect x="68" y="365" width="290" height="114" rx="16" fill="#172033" stroke="#64748b"/>
+    <circle cx="93" cy="392" r="15" fill="#93c5fd"/><text x="93" y="393" class="number">4</text>
+    <text x="118" y="398" class="step">Decrypt response first</text>
+    <text x="90" y="425" class="detail">Select held/restored key,</text>
+    <text x="90" y="446" class="detail">decrypt, then deserialize</text>
+    <text x="90" y="467" class="detail">the sync message.</text>
+
+    <rect x="399" y="365" width="344" height="114" rx="16" fill="#172033" stroke="#64748b"/>
+    <circle cx="424" cy="392" r="15" fill="#93c5fd"/><text x="424" y="393" class="number">5</text>
+    <text x="449" y="398" class="step">Conditional outer authentication</text>
+    <text x="421" y="433" class="detail">Subsequent load + signing enabled</text>
+    <text x="421" y="456" class="detail">+ prior writers: verify the outer signature.</text>
+
+    <rect x="784" y="365" width="348" height="114" rx="16" fill="#172033" stroke="#818cf8"/>
+    <circle cx="809" cy="392" r="15" fill="#a5b4fc"/><text x="809" y="393" class="number">6</text>
+    <text x="834" y="398" class="step">Bind the served frontier</text>
+    <text x="806" y="433" class="detail">Derive the response frontier and</text>
+    <text x="806" y="456" class="detail">match the agreed hash and required tips.</text>
+  </g>
+  <path d="M 358 422 H 393 M 743 422 H 778" fill="none" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect x="68" y="498" width="1064" height="38" rx="19" fill="#31243b" stroke="#fb7185" stroke-opacity="0.65"/>
+  <text x="600" y="523" fill="#fecdd3" font-size="15" text-anchor="middle">Quorum-bound first load: no prior writer set authenticates the outer signature; drop its snapshot and require an available changes tree.</text>
+
+  <rect x="44" y="578" width="1112" height="160" rx="22" fill="#0f3539" stroke="#2dd4bf" stroke-width="2"/>
+  <text x="68" y="609" class="eyebrow" fill="#5eead4">QUORUM-BOUND HISTORY FETCH + MATERIALIZATION</text>
+  <g>
+    <circle cx="92" cy="652" r="16" fill="#5eead4"/><text x="92" y="653" class="number">7</text>
+    <text x="119" y="646" class="step">Prefetch changes-tree CIDs</text>
+    <text x="119" y="672" class="detail">Strip inline changes, then fetch each CID</text>
+    <text x="119" y="694" class="detail">enumerated by the served changes tree.</text>
+
+    <circle cx="455" cy="652" r="16" fill="#5eead4"/><text x="455" y="653" class="number">8</text>
+    <text x="482" y="646" class="step">CID-validate fetched bytes</text>
+    <text x="482" y="672" class="detail">Helia validates ciphertext during prefetch;</text>
+    <text x="482" y="694" class="detail">decryption happens later inside sync.</text>
+
+    <circle cx="850" cy="652" r="16" fill="#5eead4"/><text x="850" y="653" class="number">9</text>
+    <text x="877" y="646" class="step">Decrypt + apply history</text>
+    <text x="877" y="672" class="detail">sync builds from cached blocks;</text>
+    <text x="877" y="694" class="detail">a later failure has no rollback.</text>
+  </g>
+  <path d="M 395 652 H 429 M 790 652 H 824" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+  <text x="600" y="723" fill="#99f6e4" font-size="13" text-anchor="middle">CID validation covers fetched ciphertext bytes—not responder-supplied node kinds/interior topology, writer identity, or history completeness.</text>
+
+  <rect x="44" y="762" width="420" height="54" rx="27" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
+  <text x="254" y="796" class="result" fill="#99f6e4" text-anchor="middle">Ready · local mutations may begin</text>
+  <rect x="488" y="762" width="668" height="54" rx="27" fill="#301821" stroke="#fb7185" stroke-width="2"/>
+  <text x="822" y="786" class="result" fill="#fda4af" text-anchor="middle">Fail · gate, key, signature, frontier, or history error</text>
+  <text x="822" y="806" fill="#fecdd3" font-size="14" text-anchor="middle">missing CID stops pre-sync; later block failure may leave partial state</text>
+</svg>

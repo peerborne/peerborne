@@ -39,6 +39,75 @@ pre.astro-code {
   border-radius: 0.5rem;
 }
 
+/* Keep system diagrams at their designed type size and scroll within the page frame. */
+.sl-markdown-content > p:has(> img[src*='.svg']:only-child) {
+  --diagram-frame-width: 100%;
+
+  width: var(--diagram-frame-width);
+  max-width: none;
+  margin-inline: 0;
+  padding-block-end: 0.5rem;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.sl-markdown-content > p:has(> img[src*='.svg']:only-child) > img {
+  display: block;
+  width: 75rem;
+  min-width: 75rem;
+  max-width: none;
+  height: auto;
+}
+
+@media (min-width: 50rem) and (max-width: 71.999rem) {
+  html[data-has-sidebar]
+    .sl-markdown-content
+    > p:has(> img[src*='.svg']:only-child) {
+    --diagram-frame-width: min(
+      75rem,
+      calc(100vw - var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x))
+    );
+  }
+}
+
+@media (min-width: 72rem) {
+  html[data-has-sidebar][data-has-toc]
+    .sl-markdown-content
+    > p:has(> img[src*='.svg']:only-child) {
+    --diagram-frame-width: min(
+      75rem,
+      calc(100vw - 2 * var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x)),
+      calc(50vw + 1.75rem)
+    );
+    margin-inline-start: calc(100% - var(--diagram-frame-width));
+  }
+
+  html[data-has-sidebar][data-has-toc]
+    .sl-markdown-content
+    > p:has(> img[src*='.svg']:only-child)
+    > img {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media print {
+  .sl-markdown-content > p:has(> img[src*='.svg']:only-child) {
+    --diagram-frame-width: 100%;
+
+    margin-inline: 0;
+    padding-block-end: 0;
+    overflow: visible;
+  }
+
+  .sl-markdown-content > p:has(> img[src*='.svg']:only-child) > img {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
 :is(h2, h3, h4) code {
   font-weight: inherit;
 }
