@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=960, initial-scale=1" />
+    <title>Peerborne browser relay path</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+          BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #07101d;
+        color: #f8fafc;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 960px;
+        height: 540px;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 50% 38%, #312e8130 0, transparent 38%),
+          radial-gradient(circle at 10% 85%, #0f766e18 0, transparent 28%),
+          #07101d;
+      }
+
+      .stage {
+        position: relative;
+        width: 960px;
+        height: 540px;
+        isolation: isolate;
+      }
+
+      .grid {
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        opacity: 0.18;
+        background-image:
+          linear-gradient(#c7d2fe14 1px, transparent 1px),
+          linear-gradient(90deg, #c7d2fe14 1px, transparent 1px);
+        background-size: 32px 32px;
+      }
+
+      .header {
+        position: absolute;
+        top: 20px;
+        left: 28px;
+        right: 28px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #99f6e4;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 2.4px;
+      }
+
+      .brand-mark {
+        position: relative;
+        width: 24px;
+        height: 24px;
+        border: 2px solid #2dd4bf;
+        border-radius: 8px;
+        transform: rotate(45deg);
+        box-shadow: 0 0 18px #2dd4bf55;
+      }
+
+      .brand-mark::after {
+        position: absolute;
+        inset: 6px;
+        border-radius: 3px;
+        background: #818cf8;
+        content: "";
+      }
+
+      h1 {
+        margin: 7px 0 0;
+        color: #f8fafc;
+        font-size: 25px;
+        font-weight: 760;
+        letter-spacing: -0.5px;
+      }
+
+      .scope-pill {
+        margin-top: 5px;
+        padding: 8px 13px;
+        border: 1px solid #6366f1;
+        border-radius: 999px;
+        background: #172554cc;
+        color: #c7d2fe;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1.1px;
+      }
+
+      .cycle {
+        position: absolute;
+        inset: 0;
+      }
+
+      .nat-zone {
+        position: absolute;
+        top: 107px;
+        width: 267px;
+        height: 270px;
+        border: 1.5px dashed #475569;
+        border-radius: 25px;
+        background: #0b1727b8;
+      }
+
+      .nat-zone.a {
+        left: 26px;
+      }
+
+      .nat-zone.b {
+        right: 26px;
+      }
+
+      .nat-zone.b .document {
+        animation: remote-document 8s ease-in-out infinite both;
+      }
+
+      .nat-label {
+        position: absolute;
+        top: 11px;
+        left: 15px;
+        padding: 5px 13px;
+        border: 1px solid #2dd4bf80;
+        border-radius: 999px;
+        background: #0f302f;
+        color: #99f6e4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 1px;
+      }
+
+      .peer-card {
+        position: absolute;
+        top: 40px;
+        left: 15px;
+        right: 15px;
+        bottom: 14px;
+        overflow: hidden;
+        border: 1.5px solid #2dd4bf;
+        border-radius: 20px;
+        background: linear-gradient(150deg, #132238, #0d192a);
+        box-shadow: 0 16px 35px #02061788;
+      }
+
+      .peer-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 18px 17px 12px;
+      }
+
+      .browser-icon {
+        position: relative;
+        width: 43px;
+        height: 32px;
+        flex: 0 0 auto;
+        border: 2px solid #5eead4;
+        border-radius: 6px;
+      }
+
+      .browser-icon::before {
+        position: absolute;
+        right: 4px;
+        bottom: 6px;
+        left: 4px;
+        height: 2px;
+        background: #5eead4;
+        content: "";
+      }
+
+      .browser-icon::after {
+        position: absolute;
+        bottom: -7px;
+        left: 14px;
+        width: 13px;
+        height: 6px;
+        border-bottom: 2px solid #5eead4;
+        content: "";
+      }
+
+      .peer-name {
+        font-size: 17px;
+        font-weight: 760;
+      }
+
+      .peer-kind {
+        margin-top: 2px;
+        color: #94a3b8;
+        font-size: 11px;
+      }
+
+      .document {
+        margin: 7px 15px 0;
+        padding: 12px;
+        border: 1px solid #334155;
+        border-radius: 13px;
+        background: #07111f;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          monospace;
+      }
+
+      .document-title {
+        color: #a5b4fc;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .document-row {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 11px;
+        color: #cbd5e1;
+        font-size: 12px;
+      }
+
+      .document-row strong {
+        color: #5eead4;
+        font-weight: 700;
+      }
+
+      .edit-row {
+        opacity: 0;
+        transform: translateY(7px);
+        animation: edit-appears 8s ease-in-out infinite both;
+      }
+
+      .local-chip {
+        margin: 12px 15px 0;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: #0f302f;
+        color: #5eead4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.7px;
+        text-align: center;
+        opacity: 0;
+        animation: local-chip 8s ease-in-out infinite both;
+      }
+
+      .waiting,
+      .loaded {
+        position: absolute;
+        right: 15px;
+        bottom: 19px;
+        left: 15px;
+        font-size: 11px;
+      }
+
+      .waiting {
+        color: #64748b;
+        animation: waiting 8s linear infinite both;
+      }
+
+      .loaded {
+        bottom: 7px;
+        color: #99f6e4;
+        opacity: 0;
+        animation: loaded 8s ease-in-out infinite both;
+      }
+
+      .loaded div {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 5px;
+      }
+
+      .check {
+        display: inline-grid;
+        width: 15px;
+        height: 15px;
+        place-items: center;
+        border-radius: 50%;
+        background: #0f766e;
+        color: #ecfeff;
+        font-size: 10px;
+        font-weight: 900;
+      }
+
+      .relay {
+        position: absolute;
+        top: 151px;
+        left: 354px;
+        width: 252px;
+        height: 178px;
+        border: 1.5px solid #818cf8;
+        border-radius: 24px;
+        background: linear-gradient(145deg, #211d50, #111e32);
+        box-shadow: 0 18px 44px #02061799;
+        text-align: center;
+        animation: relay-pulse 8s ease-in-out infinite both;
+      }
+
+      .relay-icon {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        margin: 17px auto 8px;
+        border: 2px solid #a5b4fc;
+        border-radius: 16px;
+        transform: rotate(45deg);
+      }
+
+      .relay-icon::after {
+        position: absolute;
+        inset: 13px;
+        border-radius: 50%;
+        background: #818cf8;
+        box-shadow: 0 0 18px #818cf888;
+        content: "";
+      }
+
+      .relay h2 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 780;
+      }
+
+      .relay p {
+        margin: 7px 0 0;
+        color: #c7d2fe;
+        font-size: 11px;
+      }
+
+      .relay .metadata {
+        color: #94a3b8;
+      }
+
+      .relay .not-plaintext {
+        color: #5eead4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+      }
+
+      .flow-line {
+        position: absolute;
+        top: 242px;
+        width: 62px;
+        height: 5px;
+        overflow: visible;
+        border-radius: 999px;
+        background: #1e4f50;
+      }
+
+      .flow-line::after {
+        position: absolute;
+        top: -5px;
+        right: -2px;
+        border-top: 8px solid transparent;
+        border-bottom: 8px solid transparent;
+        border-left: 12px solid #2dd4bf;
+        content: "";
+      }
+
+      .flow-line.left {
+        left: 292px;
+      }
+
+      .flow-line.right {
+        left: 606px;
+      }
+
+      .flow-line .active {
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: #2dd4bf;
+        box-shadow: 0 0 16px #2dd4bfaa;
+        transform: scaleX(0);
+        transform-origin: left;
+        animation: path-activates 8s ease-in-out infinite both;
+      }
+
+      .security-strip {
+        position: absolute;
+        top: 104px;
+        left: 300px;
+        width: 360px;
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        opacity: 0;
+        animation: security-strip 8s ease-in-out infinite both;
+      }
+
+      .security-strip span {
+        padding: 6px 7px;
+        border: 1px solid #2dd4bf88;
+        border-radius: 999px;
+        background: #0c2a2c;
+        color: #99f6e4;
+        font-size: 8.5px;
+        font-weight: 850;
+        letter-spacing: 0.4px;
+      }
+
+      .packet {
+        position: absolute;
+        top: 226px;
+        left: 298px;
+        z-index: 5;
+        width: 31px;
+        height: 31px;
+        display: grid;
+        place-items: center;
+        border: 1.5px solid #99f6e4;
+        border-radius: 9px;
+        background: #0f766e;
+        box-shadow: 0 0 22px #2dd4bfaa;
+        color: #ecfeff;
+        font-size: 15px;
+        opacity: 0;
+        animation: packet-travel 8s ease-in-out infinite both;
+      }
+
+      .key-note {
+        position: absolute;
+        top: 337px;
+        left: 327px;
+        width: 306px;
+        padding: 8px 11px;
+        border: 1px solid #6366f1;
+        border-radius: 12px;
+        background: #171b35;
+        color: #c7d2fe;
+        font-size: 10px;
+        text-align: center;
+        opacity: 0;
+        transform: translateY(5px);
+        animation: key-note 8s ease-in-out infinite both;
+      }
+
+      .key-note strong {
+        color: #e0e7ff;
+        letter-spacing: 0.6px;
+      }
+
+      .index-zone {
+        position: absolute;
+        top: 393px;
+        width: 267px;
+        height: 66px;
+        padding: 10px 13px;
+        border: 1px solid #334155;
+        border-radius: 15px;
+        background: #0b1728e8;
+        opacity: 0;
+        transform: translateY(8px);
+      }
+
+      .index-zone.a {
+        left: 26px;
+        animation: index-a 8s ease-in-out infinite both;
+      }
+
+      .index-zone.b {
+        right: 26px;
+        animation: index-b 8s ease-in-out infinite both;
+      }
+
+      .index-head {
+        color: #99f6e4;
+        font-size: 9px;
+        font-weight: 850;
+        letter-spacing: 0.8px;
+      }
+
+      .index-result {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        color: #cbd5e1;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          monospace;
+        font-size: 11px;
+      }
+
+      .index-result strong {
+        color: #5eead4;
+      }
+
+      .no-server {
+        position: absolute;
+        top: 393px;
+        left: 316px;
+        width: 328px;
+        height: 66px;
+        display: grid;
+        place-content: center;
+        border: 1px solid #475569;
+        border-radius: 15px;
+        background: #10192b;
+        text-align: center;
+        opacity: 0;
+        animation: no-server 8s ease-in-out infinite both;
+      }
+
+      .no-server strong {
+        color: #f8fafc;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+      }
+
+      .no-server span {
+        margin-top: 4px;
+        color: #94a3b8;
+        font-size: 10px;
+      }
+
+      .search-gap {
+        position: absolute;
+        top: 460px;
+        left: 316px;
+        width: 328px;
+        height: 22px;
+        border: 1px dashed #f59e0b99;
+        border-radius: 999px;
+        background: #3b271288;
+        color: #fcd34d;
+        font-size: 9px;
+        font-weight: 850;
+        line-height: 20px;
+        letter-spacing: 0.55px;
+        text-align: center;
+        opacity: 0;
+        animation: search-gap 8s ease-in-out infinite both;
+      }
+
+      .evidence {
+        position: absolute;
+        right: 20px;
+        bottom: 13px;
+        left: 20px;
+        height: 43px;
+        padding: 7px 14px;
+        border: 1px solid #334155;
+        border-radius: 13px;
+        background: #0b1524f2;
+        color: #94a3b8;
+        font-size: 10.5px;
+        line-height: 14px;
+        text-align: center;
+      }
+
+      .evidence strong {
+        color: #5eead4;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+      }
+
+      @keyframes relay-pulse {
+        0%, 30%, 72%, 100% { border-color: #818cf8; box-shadow: 0 18px 44px #02061799; }
+        43%, 61% { border-color: #2dd4bf; box-shadow: 0 18px 44px #02061799, 0 0 27px #2dd4bf35; }
+      }
+
+      @keyframes edit-appears {
+        0%, 14% { opacity: 0; transform: translateY(7px); }
+        22%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(7px); }
+      }
+
+      @keyframes local-chip {
+        0%, 17% { opacity: 0; transform: scale(0.96); }
+        25%, 93% { opacity: 1; transform: scale(1); }
+        100% { opacity: 0; transform: scale(0.96); }
+      }
+
+      @keyframes security-strip {
+        0%, 20% { opacity: 0; transform: translateY(-5px); }
+        29%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(-5px); }
+      }
+
+      @keyframes path-activates {
+        0%, 28% { transform: scaleX(0); }
+        43%, 93% { transform: scaleX(1); }
+        100% { transform: scaleX(0); }
+      }
+
+      @keyframes packet-travel {
+        0%, 29% { opacity: 0; transform: translateX(0) rotate(0); }
+        34% { opacity: 1; }
+        49% { opacity: 1; transform: translateX(168px) rotate(8deg); }
+        58% { opacity: 1; transform: translateX(168px) rotate(-8deg); }
+        71% { opacity: 1; transform: translateX(350px) rotate(0); }
+        76%, 100% { opacity: 0; transform: translateX(350px) rotate(0); }
+      }
+
+      @keyframes key-note {
+        0%, 43% { opacity: 0; transform: translateY(5px); }
+        51%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(5px); }
+      }
+
+      @keyframes waiting {
+        0%, 53% { opacity: 1; }
+        61%, 93% { opacity: 0; }
+        100% { opacity: 1; }
+      }
+
+      @keyframes loaded {
+        0%, 54% { opacity: 0; transform: translateY(5px); }
+        64%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(5px); }
+      }
+
+      @keyframes remote-document {
+        0%, 54% { opacity: 0.28; }
+        64%, 93% { opacity: 1; }
+        100% { opacity: 0.28; }
+      }
+
+      @keyframes index-a {
+        0%, 60% { opacity: 0; transform: translateY(8px); }
+        68%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(8px); }
+      }
+
+      @keyframes index-b {
+        0%, 64% { opacity: 0; transform: translateY(8px); }
+        72%, 93% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(8px); }
+      }
+
+      @keyframes no-server {
+        0%, 68% { opacity: 0; transform: scale(0.97); }
+        76%, 93% { opacity: 1; transform: scale(1); }
+        100% { opacity: 0; transform: scale(0.97); }
+      }
+
+      @keyframes search-gap {
+        0%, 72% { opacity: 0; }
+        80%, 93% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stage" aria-label="Peerborne browser relay animation">
+      <div class="grid"></div>
+      <header class="header">
+        <div>
+          <div class="brand"><span class="brand-mark" aria-hidden="true"></span>PEERBORNE</div>
+          <h1>Local edit → encrypted load → local indexes</h1>
+        </div>
+        <div class="scope-pill">BROWSER-TO-BROWSER · VIA RELAY</div>
+      </header>
+
+      <div class="cycle">
+        <section class="nat-zone a">
+          <div class="nat-label">NAT A</div>
+          <div class="peer-card">
+            <div class="peer-head">
+              <span class="browser-icon" aria-hidden="true"></span>
+              <div>
+                <div class="peer-name">Browser A</div>
+                <div class="peer-kind">NAT-isolated Chromium peer</div>
+              </div>
+            </div>
+            <div class="document">
+              <div class="document-title">/nat-proof</div>
+              <div class="document-row edit-row"><span>fromA</span><strong>alice</strong></div>
+            </div>
+            <div class="local-chip">LOCAL EDIT APPLIED</div>
+          </div>
+        </section>
+
+        <section class="nat-zone b">
+          <div class="nat-label">NAT B</div>
+          <div class="peer-card">
+            <div class="peer-head">
+              <span class="browser-icon" aria-hidden="true"></span>
+              <div>
+                <div class="peer-name">Browser B</div>
+                <div class="peer-kind">Separate Chromium process</div>
+              </div>
+            </div>
+            <div class="document">
+              <div class="document-title">/nat-proof</div>
+              <div class="document-row edit-row"><span>fromA</span><strong>alice</strong></div>
+            </div>
+            <div class="waiting">Waiting for existing document history…</div>
+            <div class="loaded">
+              <div><span class="check">✓</span>decrypt load response</div>
+              <div><span class="check">✓</span>apply existing history</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="relay">
+          <div class="relay-icon"></div>
+          <h2>Circuit Relay</h2>
+          <p>forwards encrypted document traffic</p>
+          <p class="metadata">sees peer IDs, timing, and volume</p>
+          <p class="not-plaintext">NOT DOCUMENT PLAINTEXT</p>
+        </section>
+
+        <div class="security-strip">
+          <span>SYNC ENVELOPE SIGNED BY DEFAULT</span>
+          <span>LOAD RESPONSE ENCRYPTED</span>
+        </div>
+        <div class="flow-line left"><span class="active"></span></div>
+        <div class="flow-line right"><span class="active"></span></div>
+        <div class="packet" aria-label="Encrypted load response">▣</div>
+        <div class="key-note">
+          <strong>SAME IDENTITY</strong> · document key restored out of band
+        </div>
+
+        <section class="index-zone a">
+          <div class="index-head">CLIENT-SIDE INDEX A · TESTED PRIMITIVES</div>
+          <div class="index-result"><span>/nat-proof</span><strong>1 local result</strong></div>
+        </section>
+        <section class="no-server">
+          <strong>NO APPLICATION DATABASE</strong>
+          <span>no central search server</span>
+        </section>
+        <section class="index-zone b">
+          <div class="index-head">CLIENT-SIDE INDEX B · TESTED PRIMITIVES</div>
+          <div class="index-result"><span>/nat-proof</span><strong>1 local result</strong></div>
+        </section>
+        <div class="search-gap">DISTRIBUTED SEARCH · INCOMPLETE / NOT DEMONSTRATED</div>
+      </div>
+
+      <footer class="evidence">
+        <div><strong>CI-BACKED BOUNDARY</strong> · initial document load between two NAT-isolated Chromium processes · same identity · document key restored out of band</div>
+        <div>Not live post-load sync · browser-to-browser via relay, not direct · local index panels show separately tested primitives</div>
+      </footer>
+    </main>
+  </body>
+</html>
