@@ -208,12 +208,38 @@ describe('v2 local indexing and query contract', () => {
       first: 10_001,
     }, definition)).toThrow(InvalidQueryError);
 
+    const inheritedWhere = Object.assign(Object.create({
+      where: { kind: 'field', path: 'status', operator: 'eq', value: 'published' },
+    }), {
+      version: 2,
+      indexName: definition.name,
+    }) as QueryAst;
+    expect(() => validateQueryAst(inheritedWhere, definition)).toThrow('plain version 2 object');
+
+    const previousAllowScan = Object.getOwnPropertyDescriptor(Object.prototype, 'allowScan');
+    Object.defineProperty(Object.prototype, 'allowScan', {
+      configurable: true,
+      value: true,
+    });
+    try {
+      expect(() => validateQueryAst({
+        version: 2,
+        indexName: definition.name,
+      }, definition)).toThrow('inherited query property: allowScan');
+    } finally {
+      if (previousAllowScan) {
+        Object.defineProperty(Object.prototype, 'allowScan', previousAllowScan);
+      } else {
+        delete (Object.prototype as Record<string, unknown>).allowScan;
+      }
+    }
+
     const inheritedVersion = Object.assign(Object.create({ version: 2 }), {
       name: 'inherited-version',
       collectionPrefix: '/hostile/',
       fields: [{ path: 'title', type: 'string', required: true }],
     }) as IndexDefinition;
-    await expect(manager.defineIndex(inheritedVersion)).rejects.toThrow('missing index definition');
+    await expect(manager.defineIndex(inheritedVersion)).rejects.toThrow('plain object');
 
     await expect(manager.defineIndex({
       ...definition,

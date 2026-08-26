@@ -44,16 +44,26 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
   const version = definition.version ?? 1;
   if (version !== 1 && version !== 2) throw new InvalidIndexSchemaError('index version must be 1 or 2');
   if (version === 1) return structuredClone(definition);
+  if (!isPlainRecord(definition)) {
+    throw new InvalidIndexSchemaError('version 2 index definition must be a plain object');
+  }
   requireOwnKeys(
     definition,
     ['version', 'name', 'collectionPrefix', 'fields'],
     'index definition',
     InvalidIndexSchemaError,
   );
-  rejectUnknownSchemaKeys(definition, new Set([
+  const definitionKeys = new Set([
     'version', 'name', 'collectionPrefix', 'fields', 'indexes', 'generation',
     'storageMode', 'invalidValuePolicy',
-  ]), 'index definition');
+  ]);
+  rejectUnknownSchemaKeys(definition, definitionKeys, 'index definition');
+  rejectInheritedKeys(
+    definition,
+    definitionKeys,
+    'index definition',
+    InvalidIndexSchemaError,
+  );
   validateName(definition.name, 'index name');
   if (definition.name.startsWith('__peerborne_internal_')) {
     throw new InvalidIndexSchemaError('index name uses a reserved prefix');
@@ -65,12 +75,17 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
 
   const fieldPaths = new Set<string>();
   const fields = definition.fields.map((field) => {
-    if (!isRecord(field)) throw new InvalidIndexSchemaError('field definitions must be objects');
+    if (!isPlainRecord(field)) {
+      throw new InvalidIndexSchemaError('field definitions must be plain objects');
+    }
     requireOwnKeys(field, ['path', 'type'], 'field definition', InvalidIndexSchemaError);
-    rejectUnknownSchemaKeys(
+    const fieldKeys = new Set(['path', 'type', 'required', 'maxStringLength']);
+    rejectUnknownSchemaKeys(field, fieldKeys, 'field definition');
+    rejectInheritedKeys(
       field,
-      new Set(['path', 'type', 'required', 'maxStringLength']),
+      fieldKeys,
       'field definition',
+      InvalidIndexSchemaError,
     );
     validateFieldPath(field.path, 'field path', InvalidIndexSchemaError);
     if (fieldPaths.has(field.path)) throw new InvalidIndexSchemaError(`duplicate field path: ${field.path}`);
@@ -105,7 +120,9 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
     }
     const names = new Set<string>();
     indexes = definition.indexes.map((index) => {
-      if (!isRecord(index)) throw new InvalidIndexSchemaError('physical index definitions must be objects');
+      if (!isPlainRecord(index)) {
+        throw new InvalidIndexSchemaError('physical index definitions must be plain objects');
+      }
       requireOwnKeys(index, ['name', 'fields'], 'physical index definition', InvalidIndexSchemaError);
       rejectUnknownSchemaKeys(index, new Set(['name', 'fields']), 'physical index definition');
       validateName(index.name, 'physical index name');
@@ -149,13 +166,16 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
 }
 
 export function validateQueryAst(query: QueryAst, definition: IndexDefinition): QueryAst {
-  if (!isRecord(query) || query.version !== 2) throw new InvalidQueryError('query version must be 2');
+  if (!isPlainRecord(query) || query.version !== 2) {
+    throw new InvalidQueryError('query must be a plain version 2 object');
+  }
   requireOwnKeys(query, ['version'], 'query', InvalidQueryError);
   const allowed = new Set([
     'version', 'indexName', 'collectionPrefix', 'where', 'orderBy', 'first', 'after',
     'select', 'count', 'allowScan', 'consistency',
   ]);
   rejectUnknownKeys(query, allowed, 'query');
+  rejectInheritedKeys(query, allowed, 'query', InvalidQueryError);
   if (query.indexName !== undefined && query.indexName !== definition.name) {
     throw new InvalidQueryError(`query targets unknown index: ${query.indexName}`);
   }
@@ -166,7 +186,7 @@ export function validateQueryAst(query: QueryAst, definition: IndexDefinition): 
   const counter = { value: 0 };
   const where = query.where === undefined ? undefined : validateExpression(query.where, fields, 1, counter);
   const orderBy = query.orderBy?.map((clause) => {
-    if (!isRecord(clause)) throw new InvalidQueryError('sort clauses must be objects');
+    if (!isPlainRecord(clause)) throw new InvalidQueryError('sort clauses must be plain objects');
     requireOwnKeys(clause, ['path', 'direction'], 'sort clause', InvalidQueryError);
     rejectUnknownKeys(clause, new Set(['path', 'direction']), 'sort clause');
     validateFieldPath(clause.path, 'sort path', InvalidQueryError);
@@ -394,7 +414,9 @@ function validateExpression(
   depth: number,
   counter: { value: number },
 ): QueryExpression {
-  if (!isRecord(expression)) throw new InvalidQueryError('query expressions must be objects');
+  if (!isPlainRecord(expression)) {
+    throw new InvalidQueryError('query expressions must be plain objects');
+  }
   if (depth > MAX_QUERY_DEPTH || ++counter.value > MAX_QUERY_NODES) {
     throw new InvalidQueryError('query expression exceeds complexity limits');
   }
@@ -499,6 +521,19 @@ function rejectUnknownSchemaKeys(value: object, allowed: Set<string>, label: str
   }
 }
 
+function rejectInheritedKeys(
+  value: object,
+  allowed: Set<string>,
+  label: string,
+  ErrorType: typeof InvalidIndexSchemaError | typeof InvalidQueryError,
+): void {
+  for (const key of allowed) {
+    if (key in value && !Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new ErrorType(`inherited ${label} property: ${key}`);
+    }
+  }
+}
+
 function requireOwnKeys(
   value: object,
   required: string[],
@@ -544,6 +579,12 @@ function canonicalize(value: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 async function sha256(value: string): Promise<string> {
