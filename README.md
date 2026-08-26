@@ -20,6 +20,10 @@ server—is itself the problem.
 
 **Status:** alpha software for experiments and prototypes; not production-ready.
 
+[![Animated Peerborne architecture: Browser A makes a local edit, an encrypted load response travels through Circuit Relay, Browser B decrypts and loads the existing history using a restored document key, and each peer builds a client-side index.](.github/assets/peerborne-hook.gif)](.github/assets/peerborne-hook.gif)
+
+The network path shown above is the CI-backed initial-load case: two NAT-isolated Chromium processes use the same identity, Browser B restores the document key out of band, and then loads existing encrypted history through Circuit Relay. It is not live post-load synchronization. The index panels represent separately tested client-side primitives over documents each peer holds—without an application database or search server. Distributed candidate search remains incomplete and is not demonstrated.
+
 ## Quick start from source
 
 Requires Node.js 22.19.0 and Yarn 4.5.0 through Corepack.
