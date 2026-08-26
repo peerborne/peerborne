@@ -53,7 +53,7 @@ const result = await manager.query({
 });
 ```
 
-`PeerborneIndexIntegration.trackDocument(docRef)` now returns the initial indexing promise; await it before the first query. `untrackDocument()` returns the removal promise, and `dispose()` waits for queued index work. Untrack or dispose subscriptions during teardown.
+`PeerborneIndexIntegration.trackDocument(docRef)` returns a readiness promise; the first call waits for initial indexing, and a repeated call for the same path waits for work already queued for that document. Await it before the first query. `untrackDocument()` returns the removal promise, and `dispose()` waits for queued index work. Untrack or dispose subscriptions during teardown.
 
 V2 rejects unindexed scans by default. Set `allowScan: true` only when a full local projection scan is an intentional cost. Results include chosen physical keys, scan and sort strategy, rows visited, schema generation, storage mode, cursor state, and explicit count semantics. The legacy `QueryOptions` interface remains available, but it does not provide nested `and`/`or`, cursor binding, projections, scan control, indexed-consistency waiting, or execution metadata.
 

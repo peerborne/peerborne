@@ -44,7 +44,7 @@ export class PeerborneIndexIntegration<DocType> {
    */
   trackDocument(doc: SubscribableDocument<DocType>): Promise<void> {
     if (this._trackedDocuments.has(doc.documentPath)) {
-      return Promise.resolve();
+      return this._manager.flush(doc.documentPath);
     }
 
     const registration = { document: doc };
