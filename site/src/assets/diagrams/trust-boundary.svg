@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title description">
+  <title id="title">How Peerborne changes the document trust boundary</title>
+  <desc id="description">A centralized application routes plaintext through a trusted application server and database. Peerborne keeps plaintext and keys on authorized devices while infrastructure forwards bidirectional encrypted document traffic. Sync envelopes are signed when enabled and encrypted; separately fetched change blocks are encrypted and CID-addressed. Infrastructure can observe metadata and disrupt delivery but lacks document plaintext without the document key.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#090d1a" />
+      <stop offset="0.55" stop-color="#111936" />
+      <stop offset="1" stop-color="#172554" />
+    </linearGradient>
+    <linearGradient id="peerPanel" x1="620" y1="128" x2="1150" y2="594" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1e1b4b" stop-opacity="0.62" />
+      <stop offset="1" stop-color="#0f2f35" stop-opacity="0.58" />
+    </linearGradient>
+    <marker id="arrowSlate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M1 1L9 5L1 9Z" fill="#94a3b8" />
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M1 1L9 5L1 9Z" fill="#2dd4bf" />
+    </marker>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.045" />
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="720" rx="24" fill="url(#background)" />
+  <rect width="1200" height="720" rx="24" fill="url(#grid)" />
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="60" y="64" fill="#f8fafc" font-size="34" font-weight="750">Where document plaintext lives</text>
+    <text x="60" y="98" fill="#94a3b8" font-size="19">The collaboration goal is similar. The trust boundary is not.</text>
+
+    <rect x="50" y="128" width="520" height="466" rx="22" fill="#111827" fill-opacity="0.86" stroke="#475569" />
+    <rect x="630" y="128" width="520" height="466" rx="22" fill="url(#peerPanel)" stroke="#6366f1" stroke-opacity="0.82" />
+
+    <circle cx="82" cy="169" r="8" fill="#94a3b8" />
+    <text x="102" y="178" fill="#e2e8f0" font-size="25" font-weight="700">Centralized application</text>
+    <text x="80" y="211" fill="#94a3b8" font-size="17">One custodian sits on the document path</text>
+
+    <circle cx="662" cy="169" r="8" fill="#2dd4bf" />
+    <text x="682" y="178" fill="#f8fafc" font-size="25" font-weight="700">Peerborne</text>
+    <text x="660" y="211" fill="#99f6e4" font-size="17">Plaintext stays at authorized endpoints</text>
+
+    <rect x="82" y="248" width="184" height="82" rx="14" fill="#1e293b" stroke="#64748b" />
+    <text x="174" y="280" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Participant A</text>
+    <text x="174" y="307" fill="#cbd5e1" font-size="16" text-anchor="middle">reads and writes</text>
+
+    <rect x="354" y="248" width="184" height="82" rx="14" fill="#1e293b" stroke="#64748b" />
+    <text x="446" y="280" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Participant B</text>
+    <text x="446" y="307" fill="#cbd5e1" font-size="16" text-anchor="middle">reads and writes</text>
+
+    <path d="M174 338V386" fill="none" stroke="#94a3b8" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
+    <path d="M446 338V386" fill="none" stroke="#94a3b8" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
+    <text x="310" y="365" fill="#cbd5e1" font-size="16" text-anchor="middle">plaintext reads and writes</text>
+
+    <rect x="130" y="395" width="360" height="116" rx="16" fill="#31243b" stroke="#fb7185" stroke-opacity="0.72" />
+    <text x="310" y="431" fill="#fecdd3" font-size="21" font-weight="700" text-anchor="middle">Application server + database</text>
+    <text x="310" y="463" fill="#f8fafc" font-size="18" text-anchor="middle">stores document plaintext</text>
+    <text x="310" y="490" fill="#cbd5e1" font-size="15" text-anchor="middle">trusted for content and availability</text>
+
+    <rect x="80" y="535" width="460" height="38" rx="19" fill="#1e293b" />
+    <text x="310" y="560" fill="#cbd5e1" font-size="15" text-anchor="middle">Central service can read and govern access to content</text>
+
+    <rect x="662" y="247" width="205" height="96" rx="16" fill="#172554" stroke="#818cf8" />
+    <text x="764.5" y="279" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Authorized device A</text>
+    <text x="764.5" y="307" fill="#c7d2fe" font-size="16" text-anchor="middle">plaintext + local keys</text>
+    <text x="764.5" y="329" fill="#94a3b8" font-size="13" text-anchor="middle">local CRDT replica</text>
+
+    <rect x="913" y="247" width="205" height="96" rx="16" fill="#0f3638" stroke="#2dd4bf" />
+    <text x="1015.5" y="279" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Authorized device B</text>
+    <text x="1015.5" y="307" fill="#99f6e4" font-size="16" text-anchor="middle">plaintext + local keys</text>
+    <text x="1015.5" y="329" fill="#94a3b8" font-size="13" text-anchor="middle">local CRDT replica</text>
+
+    <path d="M765 352C765 374 813 382 835 395" fill="none" stroke="#2dd4bf" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
+    <path d="M1016 352C1016 374 968 382 946 395" fill="none" stroke="#2dd4bf" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
+    <rect x="706" y="401" width="388" height="125" rx="16" fill="#172033" stroke="#6366f1" />
+    <text x="900" y="427" fill="#e0e7ff" font-size="19" font-weight="700" text-anchor="middle">Relay / network infrastructure</text>
+    <text x="900" y="451" fill="#99f6e4" font-size="15" text-anchor="middle">forwards bidirectional encrypted traffic</text>
+    <text x="900" y="475" fill="#c7d2fe" font-size="14" text-anchor="middle">Sync envelope: signed if enabled + encrypted</text>
+    <text x="900" y="498" fill="#c7d2fe" font-size="14" text-anchor="middle">Fetched change block: encrypted + CID-addressed</text>
+    <text x="900" y="518" fill="#cbd5e1" font-size="13" text-anchor="middle">sees peer IDs, topics, timing, and volume</text>
+
+    <rect x="660" y="535" width="458" height="38" rx="19" fill="#0f2f35" stroke="#2dd4bf" stroke-opacity="0.45" />
+    <text x="889" y="560" fill="#99f6e4" font-size="15" text-anchor="middle">Cannot read document plaintext without its key</text>
+
+    <rect x="50" y="620" width="1100" height="64" rx="18" fill="#111827" stroke="#475569" />
+    <circle cx="82" cy="652" r="7" fill="#818cf8" />
+    <text x="102" y="646" fill="#e2e8f0" font-size="17" font-weight="700">Application responsibility</text>
+    <text x="102" y="670" fill="#94a3b8" font-size="15">Identity, key backup, and recovery remain app-owned.</text>
+    <circle cx="641" cy="652" r="7" fill="#2dd4bf" />
+    <text x="661" y="646" fill="#e2e8f0" font-size="17" font-weight="700">Availability still matters</text>
+    <text x="661" y="670" fill="#94a3b8" font-size="15">Peers and infrastructure may be unavailable or disrupt delivery.</text>
+  </g>
+</svg>
