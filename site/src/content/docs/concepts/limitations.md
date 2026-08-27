@@ -70,7 +70,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Examples and documentation
 
-- **Examples are startup smoke only.** The three example applications (browser-test, wiki-swarm, password-manager) verify single-browser startup. None demonstrate multi-peer collaboration end-to-end.
+- **Reference applications are not invitation demos.** The three example applications (browser-test, wiki-swarm, password-manager) verify single-browser startup. A separate NAT-isolated acceptance job proves an encrypted load plus live bidirectional mutations for one identity restored onto two devices; distinct-identity invitation and collaboration remain unverified.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
 - **No migration guide.** There is no guide for upgrading from one Peerborne commit to another.
 - **No changelog.** Release notes and version history are not published.

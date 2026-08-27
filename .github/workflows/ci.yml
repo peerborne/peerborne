@@ -163,7 +163,7 @@ jobs:
         run: |
           timeout 120 bash -c 'until echo > /dev/tcp/127.0.0.1/3101; do sleep 2; done'
           timeout 120 bash -c 'until echo > /dev/tcp/127.0.0.1/3102; do sleep 2; done'
-      - name: Prove encrypted document retrieval across NAT boundary
+      - name: Prove bidirectional encrypted convergence across NAT boundary
         run: yarn test:peerborne-nat
         env:
           CI: true

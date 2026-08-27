@@ -5,12 +5,12 @@ import {
   clone,
   getChanges,
   applyChanges,
+  getMissingDeps,
   Change as BinaryChange,
   getAllChanges,
   save,
   load,
   merge,
-  from,
 } from '@automerge/automerge';
 
 import {
@@ -100,16 +100,29 @@ export function deserializeKey(
 
 
 export type AutomergeACLDoc = Doc<{
-  users: { [hash: string]: true };
+  users?: { [hash: string]: true };
 }>;
 
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  private _acl: AutomergeACLDoc = from({
-    users: {},
-  });
+  // Start without a local `users` root. The first add creates the map and its
+  // membership in one self-contained Automerge change, while complete ACL
+  // histories produced by older random-seed releases apply without a
+  // competing root assignment.
+  private _acl: AutomergeACLDoc = init();
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
 
+  private _assertComplete(operation: string): void {
+    if (getMissingDeps(this._acl, []).length > 0) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL has unresolved change ` +
+          'dependencies. Replay the complete ACL history; legacy incremental ' +
+          'ACL changes that omitted their random seed cannot be migrated safely.',
+      );
+    }
+  }
+
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
+    this._assertComplete('add an ACL member');
     const hash = await serializeKey(publicKey);
     const aclNew = change(this._acl, (doc) => {
       if (!doc.users) {
@@ -122,14 +135,14 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return aclChanges;
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
+    this._assertComplete('remove an ACL member');
+    if (!this._acl.users) {
+      return [];
+    }
     const hash = await serializeKey(publicKey);
     const aclNew = change(this._acl, (doc) => {
-      if (!doc.users) {
-        doc.users = {};
-      } else {
-        if (doc.users[hash] !== undefined) {
-          delete doc.users[hash];
-        }
+      if (doc.users?.[hash] !== undefined) {
+        delete doc.users[hash];
       }
     });
     const aclChanges = getChanges(this._acl, aclNew);
@@ -137,6 +150,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return aclChanges;
   }
   current(): BinaryChange[] {
+    this._assertComplete('read the current ACL history');
     return getAllChanges(this._acl);
   }
   merge(change: BinaryChange[]): void {
@@ -147,19 +161,21 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // The capability parameter is accepted for interface compatibility but ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
+    this._assertComplete('check ACL membership');
     const hash = await serializeKey(publicKey);
-    return this._acl.users && this._acl.users[hash] !== undefined;
+    return this._acl.users?.[hash] !== undefined;
   }
   // The capability parameter is accepted for interface compatibility but ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async users(capability?: string): Promise<CryptoKey[]> {
+    this._assertComplete('list ACL members');
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
       ['verify'],
     );
-    const entries = Object.keys(this._acl.users);
+    const entries = Object.keys(this._acl.users ?? {});
     return Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);

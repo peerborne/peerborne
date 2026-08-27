@@ -191,6 +191,44 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     expect(children.h3.children).toBeUndefined();
   });
 
+  test('preserves sender signing bytes across a nested-tree round-trip', () => {
+    const original: CRDTChangeNode<Uint8Array> = {
+      kind: 'document',
+      change: new Uint8Array([0xaa]),
+      children: {
+        parent: {
+          kind: 'writer',
+          keyID: 'epoch-1',
+          change: new Uint8Array([0xbb]),
+        },
+      },
+    };
+
+    const firstWire = serializeChangeNodeForJSON(original, encodeBytes);
+    const restored = deserializeChangeNodeFromJSON(firstWire, decodeBytes);
+    const secondWire = serializeChangeNodeForJSON(restored, encodeBytes);
+
+    // Sync-message signatures cover the serialized tree. A receiver must
+    // reconstruct exactly the bytes the sender signed, including nested
+    // object field order.
+    expect(JSON.stringify(secondWire)).toBe(JSON.stringify(firstWire));
+  });
+
+  test('preserves the recognized field order of existing wire messages', () => {
+    // Earlier receivers reconstructed a node with `children` before `change`.
+    // Retaining that valid order lets a newer peer verify an update produced
+    // by a peer whose in-memory history came from that earlier decoder.
+    const firstWire = JSON.parse(
+      '{"kind":"document","children":{"parent":{"kind":"writer",' +
+        '"change":"bb"}},"change":"aa"}',
+    ) as CRDTChangeNodeWire<string>;
+
+    const restored = deserializeChangeNodeFromJSON(firstWire, decodeBytes);
+    const secondWire = serializeChangeNodeForJSON(restored, encodeBytes);
+
+    expect(JSON.stringify(secondWire)).toBe(JSON.stringify(firstWire));
+  });
+
   test('round-trips a multi-level tree with Uint8Array[] leaves (mirrors automerge)', () => {
     const original: CRDTChangeNode<Uint8Array[]> = {
       kind: 'document',

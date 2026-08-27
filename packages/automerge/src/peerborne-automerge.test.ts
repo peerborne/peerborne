@@ -1,5 +1,11 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import {
+  change as automergeChange,
+  from as automergeFrom,
+  getAllChanges as getAllAutomergeChanges,
+  getChanges as getAutomergeChanges,
+} from '@automerge/automerge';
+import {
   AutomergeProvider,
   AutomergeACL,
   AutomergeACLProvider,
@@ -169,6 +175,13 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('remove() is a no-op for a blank ACL', async () => {
+    const acl = new AutomergeACL();
+
+    await expect(acl.remove(key1)).resolves.toEqual([]);
+    expect(acl.current()).toEqual([]);
+  });
+
   test('check() returns false for an unknown key', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -203,6 +216,97 @@ describe('AutomergeACL', () => {
     acl1.merge(exported);
     expect(await acl1.check(key1)).toBe(true);
     expect(await acl1.check(key2)).toBe(true);
+  });
+
+  test('founder changes authorize its signing key in a fresh ACL', async () => {
+    const signingPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const founder = new AutomergeACL();
+    const founderChanges = await founder.add(signingPair.publicKey);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(founderChanges);
+
+    expect(await receiver.check(signingPair.publicKey)).toBe(true);
+    const writerKeys = await receiver.users();
+    expect(writerKeys).toHaveLength(1);
+    const [verifyingKey] = writerKeys;
+    const payload = new Uint8Array([9, 8, 7, 6]);
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-384' },
+      signingPair.privateKey,
+      payload,
+    );
+
+    expect(
+      await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-384' },
+        verifyingKey,
+        signature,
+        payload,
+      ),
+    ).toBe(true);
+  });
+
+  test('fresh ACLs start from the same blank history', () => {
+    const first = new AutomergeACL();
+    const second = new AutomergeACL();
+
+    expect(first.current()).toEqual([]);
+    expect(second.current()).toEqual(first.current());
+  });
+
+  test('loads a complete ACL history from the legacy random-seed format', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.users()).toHaveLength(1);
+  });
+
+  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies.*complete ACL history/i,
+    );
+    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+  });
+
+  test('allows valid child-before-parent delivery once dependencies arrive', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const collaboratorChanges = await sender.add(key2);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(collaboratorChanges);
+    await expect(receiver.users()).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+
+    receiver.merge(founderChanges);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
   });
 });
 
@@ -450,6 +554,35 @@ describe('AutomergeKeychainProvider', () => {
 
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
+
+  test('preserves nested sync-message signing bytes across the wire', () => {
+    const unsignedMessage = {
+      documentId: 'signed-doc',
+      changeId: 'root-cid',
+      changes: {
+        kind: 'document' as const,
+        change: [new Uint8Array([1, 2, 3])],
+        children: {
+          'parent-cid': {
+            kind: 'writer' as const,
+            change: [new Uint8Array([4, 5, 6])],
+          },
+        },
+      },
+    };
+    const senderSigningBytes = serializer.serializeSyncMessage(unsignedMessage);
+    const wire = serializer.serializeSyncMessage({
+      ...unsignedMessage,
+      signature: 'test-signature',
+    });
+    const received = serializer.deserializeSyncMessage(wire);
+    const { signature: _signature, ...receivedUnsignedMessage } = received;
+    const receiverVerificationBytes = serializer.serializeSyncMessage(
+      receivedUnsignedMessage,
+    );
+
+    expect(receiverVerificationBytes).toEqual(senderSigningBytes);
+  });
 
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
     const provider = new AutomergeProvider<{ title: string }>();
