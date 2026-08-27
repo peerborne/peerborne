@@ -62,7 +62,7 @@ jobs:
           node-version: ${{ steps.nodeversion.outputs.version }}
       - run: yarn --cwd relay-server install --immutable
       - run: yarn --cwd relay-server build
-      - run: yarn test:relay
+      - run: yarn --cwd relay-server test
 
   examples:
     runs-on: ubuntu-latest
