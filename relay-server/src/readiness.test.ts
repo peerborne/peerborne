@@ -39,4 +39,15 @@ describe('readiness server', () => {
       await readiness.close()
     }
   })
+
+  it('rejects deterministically when the readiness port cannot bind', async () => {
+    const occupied = await startReadinessServer(0, '127.0.0.1')
+    try {
+      await expect(
+        startReadinessServer(occupied.port, '127.0.0.1'),
+      ).rejects.toMatchObject({ code: 'EADDRINUSE' })
+    } finally {
+      await occupied.close()
+    }
+  })
 })
