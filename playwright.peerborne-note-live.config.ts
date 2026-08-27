@@ -10,6 +10,9 @@ if (!baseURL || !/^https:\/\/[^/]+\/$/u.test(baseURL)) {
 export default defineConfig({
   testDir: './e2e',
   testMatch: 'peerborne-note-live.spec.ts',
+  forbidOnly: Boolean(process.env.CI),
+  fullyParallel: false,
+  workers: 1,
   reporter: 'line',
   timeout: 180_000,
   expect: { timeout: 60_000 },
