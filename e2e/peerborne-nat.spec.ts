@@ -16,14 +16,17 @@ async function waitForDocument(page: Page, path: string, key: string, value: unk
   ).toEqual(value);
 }
 
-test('real Peerborne document converges bidirectionally across two NAT-isolated Chromium processes', async () => {
-  const pair = await webcrypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
-  ) as CryptoKeyPair;
-  const identity = {
-    privateKey: await webcrypto.subtle.exportKey('jwk', pair.privateKey),
-    publicKey: await webcrypto.subtle.exportKey('jwk', pair.publicKey),
-  };
+test('distinct identities accept an invitation and converge bidirectionally across NAT', async () => {
+  const identities = await Promise.all([0, 1].map(async () => {
+    const pair = await webcrypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
+    ) as CryptoKeyPair;
+    return {
+      privateKey: await webcrypto.subtle.exportKey('jwk', pair.privateKey),
+      publicKey: await webcrypto.subtle.exportKey('jwk', pair.publicKey),
+    };
+  }));
+  expect(identities[0].publicKey.x).not.toBe(identities[1].publicKey.x);
 
   const browsers: Browser[] = [];
   try {
@@ -36,9 +39,9 @@ test('real Peerborne document converges bidirectionally across two NAT-isolated 
       page.on('console', (message) => diagnostics[index].push(`console:${message.type()}: ${message.text()}`));
       page.on('pageerror', (error) => diagnostics[index].push(`pageerror: ${error.message}`));
     });
-    await Promise.all(pages.map((page) => page.addInitScript(
+    await Promise.all(pages.map((page, index) => page.addInitScript(
       (injected) => { (window as any).__PEERBORNE_TEST_IDENTITY__ = injected; },
-      identity,
+      identities[index],
     )));
     await Promise.all(pages.map((page) => page.goto('http://localhost:8080')));
     try {
@@ -67,41 +70,20 @@ test('real Peerborne document converges bidirectionally across two NAT-isolated 
     await pages[0].evaluate((p) => (window as any).__PEERBORNE_TEST__.open(p), path);
     await pages[0].evaluate((p) => (window as any).__PEERBORNE_TEST__.change(p, 'fromA', 'alice'), path);
 
-    // Dial A's circuit-relay address explicitly. Besides removing peer
-    // discovery timing from the database assertion, requiring p2p-circuit in
-    // the selected address proves this connection cannot be a direct LAN path.
-    await expect.poll(
-      () => pages[0].evaluate(() =>
-        (window as any).__PEERBORNE_TEST__.circuitAddress(),
-      ),
-      { timeout: 90_000, intervals: [500, 1_000] },
-    ).not.toBeUndefined();
-    const address = await pages[0].evaluate(() =>
-      (window as any).__PEERBORNE_TEST__.circuitAddress(),
-    );
-    expect(address).toContain('/p2p-circuit/');
-    await expect.poll(
-      () => pages[1].evaluate(async (target) => {
-        try {
-          await (window as any).__PEERBORNE_TEST__.connect([target]);
-          return true;
-        } catch {
-          return false;
-        }
-      }, address),
-      { timeout: 90_000, intervals: [1_000, 2_000] },
-    ).toBe(true);
-
     try {
-      // This is one user on two computers. Restore the user's document
-      // keychain out of band, as a real device restore/key-sync mechanism
-      // must do; the document history itself is still fetched over the relay.
-      const documentKey = await pages[0].evaluate(
-        (p) => (window as any).__PEERBORNE_TEST__.exportDocumentKey(p), path,
+      // No pre-connect: acceptInvitation() must dial the founder from the
+      // signed circuit rendezvous address carried by the offer.
+      const encodedOffer = await pages[0].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.createInvitation(p),
+        path,
       );
+      const offerText = Buffer.from(encodedOffer).toString('utf8');
+      expect(offerText).toContain('peerborne.invitation.offer');
+      expect(offerText).not.toMatch(/privateKey|documentKey|sealedWelcome/i);
+
       await pages[1].evaluate(
-        ([p, saved]) => (window as any).__PEERBORNE_TEST__.openWithDocumentKey(p, saved),
-        [path, documentKey] as const,
+        (offer) => (window as any).__PEERBORNE_TEST__.acceptInvitation(offer),
+        encodedOffer,
       );
       await waitForDocument(pages[1], path, 'fromA', 'alice');
 
@@ -119,6 +101,58 @@ test('real Peerborne document converges bidirectionally across two NAT-isolated 
         path,
       );
       await waitForDocument(pages[0], path, 'liveFromB', 'bob-live');
+
+      // Exercise the other public role on a separate document. The recipient
+      // must decrypt/read the bootstrap while remaining absent from the writer
+      // ACL, and a real document mutation must reject locally.
+      const readerPath = `/nat-reader-proof-${Date.now()}`;
+      await pages[0].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.open(p),
+        readerPath,
+      );
+      await pages[0].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.change(
+          p,
+          'founderOnly',
+          'readable',
+        ),
+        readerPath,
+      );
+      const readerOffer = await pages[0].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.createInvitation(p, 'reader'),
+        readerPath,
+      );
+      await pages[1].evaluate(
+        (offer) => (window as any).__PEERBORNE_TEST__.acceptInvitation(offer),
+        readerOffer,
+      );
+      await waitForDocument(
+        pages[1],
+        readerPath,
+        'founderOnly',
+        'readable',
+      );
+      expect(await pages[1].evaluate(
+        (p) => (window as any).__PEERBORNE_TEST__.writerCount(p),
+        readerPath,
+      )).toBe(1);
+      const readerWrite = await pages[1].evaluate(async (p) => {
+        try {
+          await (window as any).__PEERBORNE_TEST__.change(
+            p,
+            'forbidden',
+            true,
+          );
+          return { accepted: true, message: '' };
+        } catch (error) {
+          return {
+            accepted: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }, readerPath);
+      expect(readerWrite.accepted).toBe(false);
+      expect(readerWrite.message).toMatch(/does not have write permissions/);
     } catch (error) {
       throw new Error(`Document convergence failed:\n${diagnostics.map(
         (messages, index) => `browser ${index + 1}:\n${messages.join('\n')}`,

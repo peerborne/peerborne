@@ -15,6 +15,19 @@ import {
   serializeKey,
   deserializeKey,
 } from './peerborne-automerge.js';
+import {
+  INITIAL_INVITATION_CAPACITY_PROFILE,
+  INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
+  INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+  BeeKEM,
+  SubtleCrypto,
+  eciesSeal,
+  encodeWelcomeSealedPayload,
+  type CRDTChangeNode,
+  type CRDTSyncMessage,
+} from '@peerborne/core';
 
 // ECDSA P-384 JWK test keys (public only - ACL uses raw export which requires public keys)
 const publicKeyData1 = {
@@ -1119,5 +1132,185 @@ describe('AutomergeJSONSerializer', () => {
     expect(deserialized.signature).toBeUndefined();
     expect(deserialized.keychainChanges).toBeUndefined();
     expect(deserialized.snapshot).toBeUndefined();
+  });
+});
+
+describe('bounded initial invitation profile', () => {
+  test('all bundled Automerge components declare the same profile', () => {
+    expect(new AutomergeProvider().initialInvitationCapacityProfile).toBe(
+      INITIAL_INVITATION_CAPACITY_PROFILE,
+    );
+    expect(new AutomergeACLProvider().initialInvitationCapacityProfile).toBe(
+      INITIAL_INVITATION_CAPACITY_PROFILE,
+    );
+    expect(
+      new AutomergeKeychainProvider().initialInvitationCapacityProfile,
+    ).toBe(INITIAL_INVITATION_CAPACITY_PROFILE);
+    expect(
+      new AutomergeJSONSerializer().initialInvitationCapacityProfile,
+    ).toBe(INITIAL_INVITATION_CAPACITY_PROFILE);
+  });
+
+  test('founder-plus-editor ACL publication stays within the serialized growth bound', async () => {
+    const founderPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const recipientPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const readers = new AutomergeACL();
+    const writers = new AutomergeACL();
+    const founderChanges = await writers.add(founderPair.publicKey);
+    const membershipChanges: Array<
+      readonly ['reader' | 'writer', Uint8Array[]]
+    > = [
+      ['reader', await readers.add(recipientPair.publicKey)],
+      ['writer', await writers.add(recipientPair.publicKey)],
+      ['reader', readers.current()],
+      ['writer', writers.current()],
+    ];
+    const serializer = new AutomergeJSONSerializer();
+    const cid = (label: string) => `bafy${label.repeat(55).slice(0, 55)}`;
+    const founderCid = cid('f');
+    const signature = 'A'.repeat(128);
+    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+      documentId: '/capacity-growth',
+      changeId: founderCid,
+      changes: { kind: 'writer', change: founderChanges },
+      tips: [founderCid],
+      signature,
+    };
+    const baselineBytes =
+      serializer.serializeSyncMessage(baseline).byteLength;
+    let previousCid = founderCid;
+    let previousNode = baseline.changes!;
+    const deferredTips: string[] = [];
+
+    for (let index = 0; index < membershipChanges.length; index++) {
+      const [kind, change] = membershipChanges[index]!;
+      const nextCid = cid(String(index));
+      const children: Record<string, CRDTChangeNode<Uint8Array[]>> = {
+        [previousCid]: previousNode,
+      };
+      const nextNode: CRDTChangeNode<Uint8Array[]> = {
+        kind,
+        change,
+        children,
+      };
+      for (let crossLink = 0; crossLink < 3; crossLink++) {
+        const crossLinkCid = cid(`${index}${crossLink}`);
+        children[crossLinkCid] = { kind: 'document' };
+        deferredTips.push(crossLinkCid);
+      }
+      previousCid = nextCid;
+      previousNode = nextNode;
+    }
+
+    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+      documentId: baseline.documentId,
+      changeId: previousCid,
+      changes: previousNode,
+      tips: [previousCid, ...deferredTips],
+      signature,
+    };
+    const membershipGrowth =
+      serializer.serializeSyncMessage(afterMembership).byteLength -
+      baselineBytes;
+
+    expect(membershipGrowth).toBeGreaterThan(0);
+    expect(membershipGrowth).toBeLessThanOrEqual(4 * 1024);
+    expect(membershipGrowth).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+    );
+  });
+
+  test('real bundled signature, encryption, and sealed Welcome overheads stay bounded', async () => {
+    const signingPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const serializer = new AutomergeJSONSerializer();
+    const crdt = new AutomergeProvider<{ value: string }>();
+    const [document, changes] = crdt.localChange(
+      crdt.newDocument(),
+      'capacity payload',
+      (draft) => {
+        draft.value = 'founder plus one';
+      },
+    );
+    expect(document.value).toBe('founder plus one');
+    const plaintext = serializer.serializeSyncMessage({
+      documentId: '/real-overheads',
+      changes: { kind: 'document', change: changes },
+    });
+    const signature = await new SubtleCrypto().sign(
+      plaintext,
+      signingPair.privateKey,
+    );
+    expect(signature.byteLength).toBe(96);
+    expect(signature.byteLength).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+    );
+
+    const auth = new SubtleCrypto();
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const measuredOverheads: number[] = [];
+    for (const sample of [plaintext, new Uint8Array(16)]) {
+      const encrypted = await auth.encrypt(sample, key);
+      const framedBytes =
+        32 + encrypted.nonce.byteLength + encrypted.data.byteLength;
+      measuredOverheads.push(framedBytes - sample.byteLength);
+    }
+    expect(Math.max(...measuredOverheads)).toBe(60);
+    expect(Math.max(...measuredOverheads)).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
+    );
+
+    const founderKemPair = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const recipientKemPair = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const beekem = new BeeKEM();
+    await beekem.initialize(
+      founderKemPair.privateKey,
+      founderKemPair.publicKey,
+    );
+    const { welcome } = await beekem.addMember(recipientKemPair.publicKey);
+    const keychain = new AutomergeKeychain();
+    await keychain.add();
+    const keychainBytes = serializer.serializeChanges(keychain.history());
+    const withoutBeeKEM = encodeWelcomeSealedPayload({
+      keychainChanges: keychainBytes,
+      beekemWelcome: null,
+    });
+    const sealedWelcome = await eciesSeal(
+      encodeWelcomeSealedPayload({
+        keychainChanges: keychainBytes,
+        beekemWelcome: welcome,
+      }),
+      recipientKemPair.publicKey,
+    );
+
+    const sealedWelcomeGrowth =
+      sealedWelcome.byteLength - withoutBeeKEM.byteLength;
+    expect(sealedWelcomeGrowth).toBe(845);
+    expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
+    );
   });
 });

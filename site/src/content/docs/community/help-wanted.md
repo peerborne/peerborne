@@ -11,7 +11,10 @@ The issue tracker may not have curated beginner tasks. Use [Discussions](https:/
 
 ### Invitations, revocation, and key state
 
-BeeKEM, encrypted welcome messages, ACLs, epochs, path updates, and revocation primitives have focused tests. What is missing is application-level invitation acceptance for a distinct identity, persisted KEM/BeeKEM state, offline/replayed invitation behavior, and multi-peer proof that a revoked member cannot read or write subsequent content.
+The initial founder-plus-one flow has a distinct-identity, cross-NAT acceptance
+test. What remains is persisted KEM/BeeKEM and replay state, offline/delayed
+acceptance, larger-group add-side updates, and multi-peer proof that a revoked
+member cannot read or write subsequent content.
 
 Useful work includes deterministic acceptance tests, state migration design, adversarial cases, and safe UX that never logs keys or private payloads.
 
@@ -21,7 +24,11 @@ Content-addressed blocks and IndexedDB-backed components exist, but document and
 
 ### Partition and live convergence
 
-CRDT adapters and isolated sync components are tested; current example tests are startup smoke suites. Add deterministic multi-peer mutation, partition, concurrent edit, rejoin, and convergence assertions. Extend the cross-NAT path from initial encrypted retrieval to live post-load synchronization without representing transport-only messaging as database convergence.
+CRDT adapters and isolated sync components are tested, and the dedicated
+cross-NAT invitation job asserts live post-join mutation in both directions.
+Add deterministic partition, concurrent edit, rejoin, and exact convergence
+assertions without representing transport-only messaging as database
+convergence.
 
 ### Pinning publisher and restore
 

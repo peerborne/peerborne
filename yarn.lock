@@ -4081,6 +4081,7 @@ __metadata:
     helia: "npm:^7.1.7"
     helia-v6: "npm:helia@6.1.4"
     ipns: "npm:^11.0.1"
+    it-pipe: "npm:^3.0.1"
     jest: "npm:^29.2.5"
     js-base64: "npm:^3.7.8"
     libp2p: "npm:^3.3.8"

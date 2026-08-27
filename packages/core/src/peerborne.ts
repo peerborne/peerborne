@@ -11,7 +11,11 @@
  */
 
 import { pipe } from 'it-pipe';
-import { AuthProvider } from './auth-provider.js';
+import {
+  AuthProvider,
+  requireDeserializePublicKey,
+  requireSerializePublicKey,
+} from './auth-provider.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
   PeerborneConfig,
@@ -19,6 +23,19 @@ import {
   defaultBootstrapConfig,
 } from './peerborne-config.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import {
+  assertInvitationOfferLifetime,
+  assertInitialInvitationHistoryVisibility,
+  firstSuccessfulInvitationRendezvous,
+  InMemoryInvitationAcceptanceCoordinator,
+  invitationAcceptanceExpiresAt,
+  assertInvitationProcessingWindow,
+} from './invitation-policy.js';
+import { withInvitationProtocolStream } from './invitation-catch-up.js';
+import {
+  encodeInvitationProtocolFrame,
+  readInvitationProtocolMessage,
+} from './invitation-framing.js';
 import { NetworkStats } from './network-stats.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
@@ -31,6 +48,7 @@ import {
   beekemWelcomeV1,
   documentLoadV3,
   documentKeyUpdateV2,
+  invitationJoinV1,
   snapshotLoadV3,
   tipAdvertiseV1,
 } from './wire-protocols.js';
@@ -51,12 +69,71 @@ import type { GossipSub } from '@libp2p/gossipsub';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Uint8ArrayList } from 'uint8arraylist';
+import { importEciesPublicKey } from './ecies.js';
+import { snapshotKemKeyPair } from './kem-key-pair.js';
+import {
+  INVITATION_ID_LENGTH,
+  MAX_INVITATION_JOIN_REQUEST_BYTES,
+  MAX_INVITATION_MESSAGE_BYTES,
+  InvitationAcceptanceV1,
+  InvitationJoinRequestV1,
+  InvitationOfferV1,
+  InvitationRole,
+  InvitationSignatureProvider,
+  UnsignedInvitationAcceptanceV1,
+  UnsignedInvitationJoinRequestV1,
+  UnsignedInvitationOfferV1,
+  assertInvitationAcceptanceMatches,
+  assertInvitationAcceptanceUsable,
+  assertInvitationJoinMatchesOffer,
+  assertInvitationOfferUsable,
+  decodeInvitationAcceptance,
+  decodeInvitationJoinRequest,
+  decodeInvitationOffer,
+  digestInvitationJoinRequest,
+  digestInvitationOffer,
+  encodeInvitationAcceptance,
+  encodeInvitationJoinRequest,
+  encodeInvitationOffer,
+  signInvitationAcceptance,
+  signInvitationJoinRequest,
+  signInvitationOffer,
+  verifyInvitationAcceptance,
+  verifyInvitationJoinRequest,
+  verifyInvitationOffer,
+} from './invitation-wire.js';
+import {
+  InMemoryInvitationReplayGuard,
+} from './invitation-replay-guard.js';
 
 /** Maximum allowed document path length in key-update V2 wire format. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
 /** Maximum allowed request size for shared protocol handlers (10 MB). */
 const MAX_REQUEST_SIZE = 10 * 1024 * 1024;
+
+/** Default lifetime for a user-facing invitation offer. */
+export const DEFAULT_INVITATION_TTL_MS = 15 * 60 * 1000;
+
+/** Bound in-memory offer and retry state instead of accepting unbounded links. */
+const MAX_ACTIVE_INVITATION_OFFERS = 128;
+
+export interface CreateInvitationOptions {
+  /** Least-privilege role granted to the first valid claimant. */
+  role: InvitationRole;
+  /** One to eight observed addresses that end at the founder peer. */
+  rendezvous: readonly string[];
+  /** Offer lifetime: 60 seconds to seven days; defaults to 15 minutes. */
+  expiresInMs?: number;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let result = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    result += bytes[i].toString(16).padStart(2, '0');
+  }
+  return result;
+}
 
 /** Minimal stream shape used by shared protocol handlers. */
 interface ProtocolStream {
@@ -156,6 +233,23 @@ export class Peerborne<
     >,
   ) {}
 
+  private _invitationSignatureProvider(): InvitationSignatureProvider<
+    PrivateKey,
+    PublicKey
+  > {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'Public invitations',
+    );
+    return {
+      sign: (data, privateKey) =>
+        this._authProvider.sign(data, privateKey),
+      verify: (data, publicKey, signature) =>
+        this._authProvider.verify(data, publicKey, signature),
+      serializePublicKey,
+    };
+  }
+
   // configs for the swarm, thus passing its config to all documents opened in a swarm
   protected _config: PeerborneConfig | null = null;
   private _heliaNode: PeerborneHeliaNode | undefined;
@@ -171,11 +265,49 @@ export class Peerborne<
 
   private _sharedHandlersRegistration: Promise<void> | undefined;
   private _openedLegacyStores: OpenableStore[] = [];
+  private _initializationInFlight = false;
 
   // Registry of open documents keyed by document path. Shared protocol
   // handlers use this to route incoming stream requests to the correct
   // PeerborneDocument instance.
   private _documentRegistry = new Map<
+    string,
+    PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>
+  >();
+
+  // Online invitation offers are intentionally in-memory for the initial
+  // founder-plus-one flow. A durable store is required before invitations can
+  // survive an inviter restart; until then, restart invalidates outstanding
+  // links instead of risking replay after replay memory was lost.
+  private _invitationRegistry = new Map<
+    string,
+    {
+      offer: InvitationOfferV1;
+      document: PeerborneDocument<
+        DocType,
+        ChangesType,
+        ChangeFnType,
+        PrivateKey,
+        PublicKey,
+        DocumentKey
+      >;
+      replayGuard: InMemoryInvitationReplayGuard;
+      acceptanceCoordinator:
+        InMemoryInvitationAcceptanceCoordinator<InvitationAcceptanceV1>;
+    }
+  >();
+  private _recipientInvitationReplayGuard =
+    new InMemoryInvitationReplayGuard();
+  // Keep the exact signed request for an offer so an application retry after
+  // a lost response presents the same request digest and can receive the
+  // inviter's cached acceptance. This state is intentionally process-local.
+  private _outboundInvitationRequests = new Map<
+    string,
+    { request: InvitationJoinRequestV1; expiresAtMs: number }
+  >();
+  // Reserve a document path from offer decode through post-subscribe catch-up.
+  // The exact instance is allowed to register; any competing open is rejected.
+  private _pendingInvitationDocuments = new Map<
     string,
     PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>
   >();
@@ -245,12 +377,36 @@ export class Peerborne<
    * @param config General settings for peerborne.
    */
   public async initialize(config?: PeerborneConfig) {
-    if (this._documentRegistry.size > 0) {
+    if (this._initializationInFlight) {
+      throw new Error('Cannot initialize while initialization is already active');
+    }
+    if (
+      this._documentRegistry.size > 0 ||
+      this._pendingInvitationDocuments.size > 0
+    ) {
       throw new Error(
-        'Cannot reinitialize while documents are open. ' +
-        'Close all documents before calling initialize() again.',
+        'Cannot reinitialize while documents are open or invitation ' +
+        'acceptance is active. Close all documents and wait for invitation ' +
+        'acceptance to finish before calling initialize() again.',
       );
     }
+
+    this._initializationInFlight = true;
+    try {
+      await this._initializeUnlocked(config);
+    } finally {
+      this._initializationInFlight = false;
+    }
+  }
+
+  private async _initializeUnlocked(config?: PeerborneConfig) {
+    // Outstanding online invitations are bound to the current libp2p
+    // endpoint and in-memory replay state. Reinitialization invalidates them.
+    this._invitationRegistry.clear();
+    this._recipientInvitationReplayGuard =
+      new InMemoryInvitationReplayGuard();
+    this._outboundInvitationRequests.clear();
+    this._pendingInvitationDocuments.clear();
 
     // Tear down the previous Helia/libp2p instance if reinitializing,
     // preventing leaked background resources (connections, timers, etc.).
@@ -339,6 +495,13 @@ export class Peerborne<
     documentPath: string,
     document: PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>,
   ): void {
+    const pendingInvitation =
+      this._pendingInvitationDocuments.get(documentPath);
+    if (pendingInvitation && pendingInvitation !== document) {
+      throw new Error(
+        `Document "${documentPath}" is reserved by an invitation acceptance`,
+      );
+    }
     if (this._documentRegistry.has(documentPath)) {
       throw new Error(
         `A document is already registered for "${documentPath}". ` +
@@ -365,7 +528,155 @@ export class Peerborne<
   ): void {
     if (this._documentRegistry.get(documentPath) === document) {
       this._documentRegistry.delete(documentPath);
+      for (const [offerKey, registration] of this._invitationRegistry) {
+        if (registration.document === document) {
+          this._invitationRegistry.delete(offerKey);
+        }
+      }
     }
+  }
+
+  private _pruneExpiredInvitationState(now = Date.now()): void {
+    for (const [offerKey, registration] of this._invitationRegistry) {
+      if (
+        registration.offer.expiresAtMs <= now ||
+        this._documentRegistry.get(registration.document.documentPath) !==
+          registration.document
+      ) {
+        this._invitationRegistry.delete(offerKey);
+      }
+    }
+    for (const [offerKey, cached] of this._outboundInvitationRequests) {
+      if (cached.expiresAtMs <= now) {
+        this._outboundInvitationRequests.delete(offerKey);
+      }
+    }
+  }
+
+  private async _processInvitationJoin(
+    request: InvitationJoinRequestV1,
+    signal?: AbortSignal,
+  ): Promise<InvitationAcceptanceV1> {
+    const offerKey = bytesToHex(request.offerDigest);
+    const registration = this._invitationRegistry.get(offerKey);
+    if (!registration) {
+      throw new Error('Invitation offer is unavailable');
+    }
+
+    const { offer } = registration;
+    const assertRegistrationAvailable = (): void => {
+      if (
+        this._invitationRegistry.get(offerKey) !== registration ||
+        this._documentRegistry.get(registration.document.documentPath) !==
+          registration.document
+      ) {
+        if (this._invitationRegistry.get(offerKey) === registration) {
+          this._invitationRegistry.delete(offerKey);
+        }
+        throw new Error('Invitation offer is unavailable');
+      }
+    };
+    assertRegistrationAvailable();
+    assertInvitationOfferUsable(offer);
+    await assertInvitationJoinMatchesOffer(request, offer);
+
+    const deserializePublicKey = requireDeserializePublicKey(
+      this._authProvider,
+      'Public invitations',
+    );
+    const signatureProvider = this._invitationSignatureProvider();
+    const recipientPublicKey = await deserializePublicKey(request.recipient);
+    if (
+      !(await verifyInvitationJoinRequest(
+        request,
+        recipientPublicKey,
+        signatureProvider,
+      ))
+    ) {
+      throw new Error('Invitation join signature is invalid');
+    }
+    if (request.recipient === offer.issuer) {
+      throw new Error('Invitation recipient must use a distinct identity');
+    }
+
+    const requestDigest = await digestInvitationJoinRequest(request);
+    const requestKey = bytesToHex(requestDigest);
+
+    // Validate the SEC1 point before recording the one-time offer claim. A
+    // malformed-but-correctly-signed KEM key must not burn a bearer link.
+    await importEciesPublicKey(request.recipientKemPublicKey);
+    return registration.acceptanceCoordinator.run(
+      requestKey,
+      offer.expiresAtMs,
+      signal,
+      async () => {
+        assertRegistrationAvailable();
+        assertInvitationOfferUsable(offer);
+        await registration.replayGuard.observeJoin(offer, request);
+      },
+      () => {
+        // The claim awaits cryptographic checks, so close()/stop() can run in
+        // between. Re-check synchronously at the mutation boundary.
+        assertRegistrationAvailable();
+        assertInvitationOfferUsable(offer);
+      },
+      async () => {
+        const assertCanMutate = (): void => {
+          assertRegistrationAvailable();
+          assertInvitationOfferUsable(offer);
+          assertInvitationProcessingWindow(offer.expiresAtMs);
+          if (signal?.aborted) {
+            throw signal.reason instanceof Error
+              ? signal.reason
+              : new Error('Invitation stream closed before onboarding started');
+          }
+        };
+        const bootstrap =
+          await registration.document.buildInvitationBootstrap(
+            recipientPublicKey,
+            request.recipientKemPublicKey,
+            offer.role,
+            assertCanMutate,
+          );
+        const now = Date.now();
+        const expiresAtMs = invitationAcceptanceExpiresAt(
+          offer.expiresAtMs,
+          now,
+        );
+        const unsignedAcceptance: UnsignedInvitationAcceptanceV1 = {
+          version: 1,
+          acceptanceId: crypto.getRandomValues(
+            new Uint8Array(INVITATION_ID_LENGTH),
+          ),
+          offerDigest: request.offerDigest,
+          requestDigest,
+          documentId: offer.documentId,
+          issuer: offer.issuer,
+          recipient: request.recipient,
+          recipientKemPublicKey: new Uint8Array(
+            request.recipientKemPublicKey,
+          ),
+          role: offer.role,
+          welcomeEpochId: bootstrap.welcomeEpochId,
+          sealedWelcome: bootstrap.sealedWelcome,
+          encryptedBootstrap: bootstrap.encryptedBootstrap,
+          issuedAtMs: now,
+          expiresAtMs,
+        };
+        const acceptance = await signInvitationAcceptance(
+          unsignedAcceptance,
+          this._userKey,
+          this._userPublicKey,
+          signatureProvider,
+        );
+        await registration.replayGuard.observeAcceptance(
+          offer,
+          request,
+          acceptance,
+        );
+        return acceptance;
+      },
+    );
   }
 
   /**
@@ -673,6 +984,39 @@ export class Peerborne<
       });
     };
 
+    // Public invitation join handler. Unlike document protocols, routing is
+    // by the signed offer digest, so a recipient can join before it has a
+    // local document instance or document key. One bounded canonical request
+    // receives one bounded, recipient-encrypted acceptance.
+    const invitationJoinHandler = async (rawStream: Stream) => {
+      try {
+        await withInvitationProtocolStream(
+          async () => rawStream,
+          async (openedStream, signal) => {
+            const stream: ProtocolStream = wrapStream(openedStream);
+            const request = await readInvitationProtocolMessage(
+              stream.source,
+              decodeInvitationJoinRequest,
+              MAX_INVITATION_JOIN_REQUEST_BYTES,
+            );
+            const acceptance = await this._processInvitationJoin(
+              request,
+              signal,
+            );
+            await stream.sink([
+              encodeInvitationProtocolFrame(
+                encodeInvitationAcceptance(acceptance),
+                MAX_INVITATION_MESSAGE_BYTES,
+              ),
+            ] as Iterable<Uint8Array>);
+          },
+        );
+      } catch {
+        // Unknown, expired, malformed, unauthorized, replayed, failed, and
+        // timed-out requests all receive the same connection-level decline.
+      }
+    };
+
     // Register shared protocol handlers. Each protocol ID uses a single
     // handler for all documents; the document path is extracted from the
     // stream payload for routing.
@@ -684,6 +1028,7 @@ export class Peerborne<
       this.libp2p.handle(beekemWelcomeV1, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV1, beekemPathUpdateHandler, relayProtocolOptions),
       this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
+      this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;
 
@@ -722,6 +1067,342 @@ export class Peerborne<
       );
     }
     await Promise.all(connectionPromises);
+  }
+
+  /**
+   * Create and register a signed, expiring invitation for an open document.
+   * The returned offer is public and may be placed in a link fragment or QR
+   * code; it contains no document key or private identity material.
+   *
+   * @internal Prefer `PeerborneDocument.createInvitation()`.
+   */
+  public async createInvitationForDocument(
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
+    options: CreateInvitationOptions,
+  ): Promise<InvitationOfferV1> {
+    if (this._documentRegistry.get(document.documentPath) !== document) {
+      throw new Error('Invitations can only be created for an open document');
+    }
+    if (this.config?.enableSigning === false) {
+      throw new Error(
+        'Initial-release invitations require application-level signing',
+      );
+    }
+    assertInitialInvitationHistoryVisibility(document.historyVisibility);
+    await document.assertCanCreateInitialInvitation();
+    this._pruneExpiredInvitationState();
+    if (this._invitationRegistry.size >= MAX_ACTIVE_INVITATION_OFFERS) {
+      throw new Error(
+        `Cannot create more than ${MAX_ACTIVE_INVITATION_OFFERS} active invitations`,
+      );
+    }
+    if (!document.getKemPublicKeyRaw()) {
+      throw new Error(
+        'Invitation creation requires a founder KEM key pair installed via setKemKeyPair',
+      );
+    }
+    if (!Array.isArray(options.rendezvous) || options.rendezvous.length === 0) {
+      throw new Error('Invitation creation requires at least one rendezvous address');
+    }
+    const expiresInMs = options.expiresInMs ?? DEFAULT_INVITATION_TTL_MS;
+    assertInvitationOfferLifetime(expiresInMs);
+    if (options.role !== 'reader' && options.role !== 'editor') {
+      throw new Error('Invitation role must be "reader" or "editor"');
+    }
+
+    const signatureProvider = this._invitationSignatureProvider();
+    const serializePublicKey = signatureProvider.serializePublicKey;
+    const now = Date.now();
+    const unsigned: UnsignedInvitationOfferV1 = {
+      version: 1,
+      invitationId: crypto.getRandomValues(
+        new Uint8Array(INVITATION_ID_LENGTH),
+      ),
+      documentId: document.documentPath,
+      issuer: await serializePublicKey(this._userPublicKey),
+      role: options.role,
+      issuedAtMs: now,
+      expiresAtMs: now + expiresInMs,
+      rendezvous: Array.from(options.rendezvous),
+    };
+    const offer = await signInvitationOffer(
+      unsigned,
+      this._userKey,
+      this._userPublicKey,
+      signatureProvider,
+    );
+    const encodedOffer = encodeInvitationOffer(offer);
+    const registeredOffer = decodeInvitationOffer(encodedOffer);
+    const offerKey = bytesToHex(await digestInvitationOffer(registeredOffer));
+    this._pruneExpiredInvitationState();
+    if (this._documentRegistry.get(document.documentPath) !== document) {
+      throw new Error('Invitation document closed before offer registration');
+    }
+    if (this._invitationRegistry.size >= MAX_ACTIVE_INVITATION_OFFERS) {
+      throw new Error(
+        `Cannot create more than ${MAX_ACTIVE_INVITATION_OFFERS} active invitations`,
+      );
+    }
+    this._invitationRegistry.set(offerKey, {
+      offer: registeredOffer,
+      document,
+      replayGuard: new InMemoryInvitationReplayGuard(),
+      acceptanceCoordinator:
+        new InMemoryInvitationAcceptanceCoordinator(),
+    });
+    return decodeInvitationOffer(encodedOffer);
+  }
+
+  /**
+   * Join an existing document from a signed public invitation. This path never
+   * falls back to document creation: any verification, transport, bootstrap,
+   * or ACL failure rejects and leaves the returned document unavailable.
+   * Each of at most eight signed rendezvous attempts and the final founder
+   * catch-up stream has a 30-second deadline with stream teardown. The initial
+   * release does not expose caller-driven cancellation, so attempts are tried
+   * sequentially until one succeeds or all reject. Application-level signing
+   * must be enabled on both founder and recipient.
+   */
+  public async acceptInvitation(
+    encodedOrDecodedOffer: Uint8Array | InvitationOfferV1,
+    kemKeyPair: CryptoKeyPair,
+  ): Promise<
+    PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >
+  > {
+    if (this._initializationInFlight) {
+      throw new Error(
+        'Cannot accept an invitation while initialization is active',
+      );
+    }
+    if (this.config?.enableSigning === false) {
+      throw new Error(
+        'Initial-release invitations require application-level signing',
+      );
+    }
+    const frozenKemKeyPair = snapshotKemKeyPair(kemKeyPair);
+    const offer = decodeInvitationOffer(
+      encodedOrDecodedOffer instanceof Uint8Array
+        ? encodedOrDecodedOffer
+        : encodeInvitationOffer(encodedOrDecodedOffer),
+    );
+    const documentId = offer.documentId;
+    assertInvitationOfferUsable(offer);
+    if (
+      this._documentRegistry.has(documentId) ||
+      this._pendingInvitationDocuments.has(documentId)
+    ) {
+      throw new Error(
+        `Cannot accept an invitation for active document "${documentId}"`,
+      );
+    }
+
+    // Reserve synchronously before the first await. This makes request
+    // creation single-flight for a document and prevents a competing open()
+    // from taking the path between preflight and bootstrap activation.
+    const document = this.doc(documentId);
+    this._pendingInvitationDocuments.set(documentId, document);
+    try {
+      return await this._acceptInvitationOffer(
+        offer,
+        frozenKemKeyPair,
+        document,
+      );
+    } finally {
+      if (
+        this._pendingInvitationDocuments.get(documentId) === document
+      ) {
+        this._pendingInvitationDocuments.delete(documentId);
+      }
+    }
+  }
+
+  private async _acceptInvitationOffer(
+    offer: InvitationOfferV1,
+    kemKeyPair: CryptoKeyPair,
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
+  ): Promise<
+    PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >
+  > {
+    const deserializePublicKey = requireDeserializePublicKey(
+      this._authProvider,
+      'Public invitations',
+    );
+    const signatureProvider = this._invitationSignatureProvider();
+    const issuerPublicKey = await deserializePublicKey(offer.issuer);
+    if (
+      !(await verifyInvitationOffer(
+        offer,
+        issuerPublicKey,
+        signatureProvider,
+      ))
+    ) {
+      throw new Error('Invitation offer signature is invalid');
+    }
+    if (offer.rendezvous.length === 0) {
+      throw new Error('Invitation offer has no rendezvous address');
+    }
+
+    // Validate and snapshot the recipient KEM binding before any network I/O.
+    await document.setKemKeyPair(kemKeyPair);
+    const recipientKemPublicKey = document.getKemPublicKeyRaw();
+    if (!recipientKemPublicKey) {
+      throw new Error('Invitation recipient KEM public key is unavailable');
+    }
+    const serializePublicKey = signatureProvider.serializePublicKey;
+    const offerDigest = await digestInvitationOffer(offer);
+    const offerKey = bytesToHex(offerDigest);
+    const recipient = await serializePublicKey(this._userPublicKey);
+    if (recipient === offer.issuer) {
+      throw new Error('Invitation recipient must use a distinct identity');
+    }
+    this._pruneExpiredInvitationState();
+    const cachedRequest = this._outboundInvitationRequests.get(offerKey);
+    let request: InvitationJoinRequestV1;
+    if (cachedRequest) {
+      if (
+        cachedRequest.request.documentId !== offer.documentId ||
+        cachedRequest.request.role !== offer.role ||
+        cachedRequest.request.recipient !== recipient ||
+        bytesToHex(cachedRequest.request.recipientKemPublicKey) !==
+          bytesToHex(recipientKemPublicKey)
+      ) {
+        throw new Error(
+          'Invitation retry must use the same recipient identity and KEM key pair',
+        );
+      }
+      request = cachedRequest.request;
+    } else {
+      if (
+        this._outboundInvitationRequests.size >=
+        MAX_ACTIVE_INVITATION_OFFERS
+      ) {
+        throw new Error(
+          `Cannot track more than ${MAX_ACTIVE_INVITATION_OFFERS} invitation retries`,
+        );
+      }
+      const unsignedRequest: UnsignedInvitationJoinRequestV1 = {
+        version: 1,
+        offerDigest,
+        requestId: crypto.getRandomValues(
+          new Uint8Array(INVITATION_ID_LENGTH),
+        ),
+        documentId: offer.documentId,
+        role: offer.role,
+        recipient,
+        recipientKemPublicKey,
+      };
+      request = await signInvitationJoinRequest(
+        unsignedRequest,
+        this._userKey,
+        this._userPublicKey,
+        signatureProvider,
+      );
+      this._pruneExpiredInvitationState();
+      if (
+        this._outboundInvitationRequests.size >=
+        MAX_ACTIVE_INVITATION_OFFERS
+      ) {
+        throw new Error(
+          `Cannot track more than ${MAX_ACTIVE_INVITATION_OFFERS} invitation retries`,
+        );
+      }
+      this._outboundInvitationRequests.set(offerKey, {
+        request,
+        expiresAtMs: offer.expiresAtMs,
+      });
+    }
+    const encodedRequest = encodeInvitationProtocolFrame(
+      encodeInvitationJoinRequest(request),
+      MAX_INVITATION_JOIN_REQUEST_BYTES,
+    );
+
+    const { address: acceptedRendezvous, value: accepted } =
+      await firstSuccessfulInvitationRendezvous(
+        offer.rendezvous,
+        (address) =>
+          withInvitationProtocolStream(
+            (signal) =>
+              this.libp2p.dialProtocol(
+                multiaddr(address) as any,
+                [invitationJoinV1],
+                {
+                  runOnLimitedConnection: true,
+                  signal,
+                },
+              ),
+            async (rawStream) => {
+              const stream = wrapStream(rawStream);
+              await pipe([encodedRequest], stream.sink);
+              const acceptance = await readInvitationProtocolMessage(
+                stream.source,
+                decodeInvitationAcceptance,
+                MAX_INVITATION_MESSAGE_BYTES,
+              );
+              assertInvitationAcceptanceUsable(acceptance);
+              await assertInvitationAcceptanceMatches(
+                acceptance,
+                offer,
+                request,
+              );
+              if (
+                !(await verifyInvitationAcceptance(
+                  acceptance,
+                  issuerPublicKey,
+                  signatureProvider,
+                ))
+              ) {
+                throw new Error(
+                  'invitation acceptance signature is invalid',
+                );
+              }
+              await this._recipientInvitationReplayGuard.observeAcceptance(
+                offer,
+                request,
+                acceptance,
+              );
+              return acceptance;
+            },
+          ),
+      );
+    await document.acceptInvitationBootstrap(
+      {
+        welcomeEpochId: accepted.welcomeEpochId,
+        sealedWelcome: accepted.sealedWelcome,
+        encryptedBootstrap: accepted.encryptedBootstrap,
+      },
+      issuerPublicKey,
+      offer.role,
+      acceptedRendezvous,
+    );
+    return document;
   }
 
   /**

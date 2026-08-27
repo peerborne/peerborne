@@ -1,4 +1,8 @@
-import { Peerborne, PeerbornePeersHandler } from './peerborne.js';
+import {
+  DEFAULT_INVITATION_TTL_MS,
+  Peerborne,
+  PeerbornePeersHandler,
+} from './peerborne.js';
 import {
   PeerborneConfig,
   DEFAULT_WEBRTC_ICE_SERVERS,
@@ -27,7 +31,10 @@ import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { ACL } from './acl.js';
 import { Keychain, keychainHistorySinceOrFull } from './keychain.js';
-import { requireSerializePublicKey } from './auth-provider.js';
+import {
+  requireDeserializePublicKey,
+  requireSerializePublicKey,
+} from './auth-provider.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
 import {
@@ -97,6 +104,7 @@ import {
   bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
+  invitationJoinV1,
   tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
@@ -124,6 +132,11 @@ import type { CompactionConfig } from './compaction-config.js';
 import { defaultCompactionConfig } from './compaction-config.js';
 
 export * from './beekem/index.js';
+export * from './invitation-capacity.js';
+export * from './invitation-wire.js';
+export * from './invitation-replay-guard.js';
+export * from './ecies.js';
+export * from './welcome-sealed-payload.js';
 
 export {
   ACL,
@@ -131,6 +144,7 @@ export {
   SubtleCrypto,
   Peerborne,
   PeerbornePeersHandler,
+  DEFAULT_INVITATION_TTL_MS,
   PeerborneConfig,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
@@ -166,6 +180,7 @@ export {
   Keychain,
   keychainHistorySinceOrFull,
   KeychainProvider,
+  requireDeserializePublicKey,
   requireSerializePublicKey,
   SyncMessageSerializer,
   LoadMessageSerializer,
@@ -205,6 +220,7 @@ export {
   beekemPathUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
+  invitationJoinV1,
   tipAdvertiseV1,
   // BeeKEM document-key derivation
   DOC_KEY_INFO,
@@ -233,6 +249,8 @@ export {
 };
 
 export type { NetworkStatsSnapshot } from './network-stats.js';
+export type { CreateInvitationOptions } from './peerborne.js';
+export type { InvitationBootstrapBundle } from './peerborne-document.js';
 export type {
   PeerTipAdvertisement,
   LoadQuorumDecision,

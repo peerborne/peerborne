@@ -20,12 +20,16 @@ What needs to happen:
 
 ### 2. Invitations, key exchange, and revocation
 
-**Status: Partially implemented.** BeeKEM group-key management and reader/writer ACLs exist, but the full invitation flow (discover peer, exchange keys, onboard to document) has no end-to-end CI proof. BeeKEM rekey state is memory-only.
+**Status: Initial online path verified.** A signed, expiring invitation onboards
+one distinct collaborator through Circuit Relay and is exercised by a
+two-browser CI job. Offers, retry state, KEM state, and BeeKEM state remain
+in-memory, and larger groups are not supported.
 
 What needs to happen:
-- End-to-end test of two distinct identities exchanging keys and accessing a shared document
 - Durable BeeKEM state (survives restart)
 - PathUpdate revocation tested with live peers
+- Offline/delayed acceptance and durable replay protection
+- Add-side BeeKEM updates for more than founder plus one collaborator
 
 ### 3. Partition and live convergence
 
@@ -93,7 +97,11 @@ What needs to happen:
 
 ### 10. Examples as complete showcases
 
-**Status: Partial.** The three examples (browser-test, wiki-swarm, password-manager) verify single-browser startup. A dedicated NAT-isolated acceptance job proves an encrypted load and live bidirectional mutations for one identity restored onto two devices, but the applications do not yet demonstrate distinct-identity invitation, sharing, or restart recovery.
+**Status: Partial.** The three examples (browser-test, wiki-swarm,
+password-manager) verify single-browser startup. The browser-test harness also
+drives the dedicated NAT-isolated distinct-identity invitation and live
+bidirectional convergence job, but the applications do not yet offer polished
+sharing, identity verification, or restart recovery.
 
 What needs to happen:
 - Multi-browser CI tests for each example
@@ -116,7 +124,7 @@ What needs to happen:
 
 - Rebrand the public packages and APIs as Peerborne while retaining legacy wire, key-derivation, Redux, and IndexedDB identifiers for compatibility
 - Documentation site with Starlight (concepts, cookbook, API reference, community)
-- Cross-NAT encrypted document retrieval verified in CI
+- Cross-NAT distinct-identity invitation and live bidirectional convergence verified in CI
 - Release workflow with secretless validation and gated publishing
 - Community contributor guide with Docker readiness helpers
 
