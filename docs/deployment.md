@@ -37,6 +37,11 @@ docker run -d \
 Port 9001 serves WebSocket connections (browsers). Port 9002 serves TCP
 connections (Node.js peers and inter-relay communication).
 
+The named `/shared` volume also stores `relay-identity.key`. Keep that volume
+across container replacement: the relay derives the same public peer ID from
+that private key on every start. The key is created with mode `0600`; do not
+print it, copy it into logs, or share one identity between running relays.
+
 After startup the relay writes `/shared/relay-info.json` containing its peer ID
 and multiaddresses. Retrieve it with:
 
@@ -98,10 +103,23 @@ All configuration is done through environment variables on the relay process.
 | `ENABLE_IPV6` | (unset) | Set to `1` to add IPv6 listeners |
 | `WS_LISTEN_V6` | `/ip6/::/tcp/$WS_PORT/ws` | IPv6 WebSocket multiaddr |
 | `TCP_LISTEN_V6` | `/ip6/::/tcp/$TCP_PORT` | IPv6 TCP multiaddr |
+| `READINESS_PORT` | `9000` | Internal HTTP port for `/livez` and `/readyz` |
+| `RELAY_IDENTITY_KEY_PATH` | `./relay-identity.key` | App-managed protobuf libp2p private-key file. The standard image sets `/shared/relay-identity.key` |
 | `DOCUMENT_PUBLISH_PATH` | `/documents` | Topic for document publish notifications |
 | `EXTRA_TOPICS` | (unset) | Comma-separated additional topics to subscribe |
-| `TOPIC_ALLOWLIST` | (unset) | Comma-separated topic prefixes for auto-subscribe. Unset = open mode. Example: `/document/,/documents` |
+| `TOPIC_ALLOWLIST` | `/document/,/documents` | Comma-separated topic prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
+| `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
+| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer |
+| `MAX_CONNECTIONS` | `256` | Global ceiling for established libp2p transport connections |
+| `RELAY_MAX_RESERVATIONS` | `128` | Maximum active Circuit Relay v2 reservations |
+| `RELAY_RESERVATION_TTL_MS` | `600000` | Reservation lifetime before renewal, in milliseconds |
+| `RELAY_MAX_CIRCUIT_DURATION_MS` | `1800000` | Per-circuit duration limit, in milliseconds |
+| `RELAY_MAX_CIRCUIT_BYTES` | `16777216` | Per-circuit data limit, in bytes |
+| `RELAY_HOP_TIMEOUT_MS` | `30000` | HOP negotiation timeout, in milliseconds |
+| `RELAY_MAX_INBOUND_HOP_STREAMS` | `8` | Maximum simultaneous inbound HOP streams per connection |
+| `RELAY_MAX_OUTBOUND_HOP_STREAMS` | `8` | Maximum simultaneous outbound HOP streams per connection |
+| `RELAY_MAX_OUTBOUND_STOP_STREAMS` | `8` | Maximum simultaneous outbound STOP streams per connection |
 
 ### IPv6 Notes
 
@@ -114,10 +132,68 @@ IPv6 socket is **not** dual-stack, or when using separate ports.
 The relay automatically subscribes to document topics as peers join them. This
 means the relay can forward messages between browser peers that have not yet
 established a direct WebRTC connection. When all peers leave a topic the relay
-automatically unsubscribes.
+automatically unsubscribes. The relay tracks subscriptions by peer, cleans them
+on disconnect, and periodically reconciles its bounded dynamic-topic set with
+GossipSub as a backstop for missed unsubscribe events.
 
-For production, set `TOPIC_ALLOWLIST` to restrict which topic prefixes are
-accepted, and keep `MAX_AUTO_TOPICS` at a reasonable limit for your deployment.
+The safe default accepts the current `/document/` and `/documents` namespaces.
+Keep both `MAX_AUTO_TOPICS` and `MAX_AUTO_TOPICS_PER_PEER` at reasonable limits
+for your deployment. The global cap bounds total dynamic state; the per-peer cap
+prevents one connected peer from consuming that allowance. The GossipSub byte
+budget rejects oversized or excessive remote subscription metadata before it
+reaches the relay registry. `*` is an
+intentional opt-out of topic filtering, not a recommended public-relay default.
+This policy controls only the topics to which the relay node itself subscribes
+for GossipSub forwarding. It does not inspect or restrict opaque, Noise-encrypted
+Circuit Relay streams, and it is not document authorization.
+
+## Fly.io: persistent identity and WSS
+
+The checked-in `relay-server/fly.toml` exposes the internal WebSocket listener
+through Fly TLS termination on public port 443. Browser clients therefore dial:
+
+```text
+/dns4/<APP_NAME>.fly.dev/tcp/443/wss/p2p/<peerId>
+```
+
+Create the volume named by `fly.toml` before the first deploy. Its region must
+match `primary_region`:
+
+```bash
+cd relay-server
+fly launch --no-deploy
+fly volumes create peerborne_relay_data --region iad --size 1
+fly deploy
+fly checks list
+```
+
+`RELAY_IDENTITY_KEY_PATH=/data/relay-identity.key` is already set in
+`fly.toml`; no identity secret needs to be generated or passed to Fly. Back up
+the volume if preserving the peer ID matters. Losing the file creates a new
+identity and invalidates multiaddrs pinned to the previous `/p2p/<peerId>`.
+
+For `relay.peerborne.io`, add the hostname to the Fly app, follow Fly's emitted
+DNS targets, and wait for certificate validation before publishing the client
+multiaddr:
+
+```bash
+fly certs add relay.peerborne.io
+fly certs check relay.peerborne.io
+```
+
+Then use `/dns4/relay.peerborne.io/tcp/443/wss/p2p/<peerId>`. This browser-only
+Fly configuration deliberately does not publish raw TCP port 9002: Fly's
+shared IPv4 addresses do not provide that dedicated TCP service here.
+
+The readiness check stays private on port 9000. `/readyz` becomes successful only after the
+stable identity is loaded, libp2p is listening, topic subscriptions are
+installed, and `relay-info.json` has been written. Fly monitors that check for
+deployment health, but the public WSS service uses a TCP routing check; `/readyz`
+does not gate Fly request routing.
+
+Keep this volume-backed configuration at one Fly Machine. Higher availability
+requires a separate volume, key, peer ID, and hostname per relay; never mount
+or copy one private identity into concurrently running processes.
 
 ## Production Multi-Server Deployment
 
@@ -177,21 +253,15 @@ proxy.
 > **Important:** A single load-balanced hostname does **not** work as a libp2p
 > multiaddr because each relay generates a unique peer ID. A connection to
 > `/dns4/relay.example.com/tcp/443/wss/p2p/<peerId-of-relay-1>` will fail if the
-> load balancer routes the TCP connection to relay-2 instead. You have two
-> options:
+> load balancer routes the TCP connection to relay-2 instead. Use:
 >
 > 1. **One multiaddr per relay.** Give each relay its own DNS name (e.g.
 >    `relay-1.example.com`, `relay-2.example.com`) and configure clients with
 >    all of them.
-> 2. **Stable peer IDs (requires relay changes).** In principle, you can
->    pre-generate a libp2p key for each relay and inject it at startup so the
->    peer ID is deterministic, then use sticky sessions (e.g. Caddy
->    `lb_policy ip_hash`) so a client always reaches the relay whose peer ID
->    it dialed. The current `relay-server/` implementation does **not** expose
->    a configuration option for a deterministic peer identity -- every start
->    generates a fresh peer ID. Using this approach requires modifying the
->    relay code/image to load a persisted key. Option 1 above is the supported
->    path today.
+
+There is no supported single-hostname load-balancing alternative. Source-IP
+hashing does not pin a libp2p peer ID and can still route the same multiaddr to
+the wrong relay. Use one hostname/SNI route per durable relay identity.
 
 The multiaddr format for each relay is:
 
@@ -210,11 +280,9 @@ the Caddyfile's `reverse_proxy` upstream list:
 # Caddyfile
 {$RELAY_DOMAIN} {
     reverse_proxy relay-1:9001 relay-2:9001 relay-3:9001 {
-        # NOTE: `round_robin` only works with option 1 above (one DNS name per
-        # relay, clients configured with multiple multiaddrs). If you are using
-        # a single load-balanced hostname, switch to `lb_policy ip_hash` and
-        # use stable, pre-generated peer IDs so a client is always routed back
-        # to the relay whose peer ID it dialed.
+        # This single-hostname block is illustrative only and cannot preserve
+        # libp2p peer-ID routing. Production needs one hostname/SNI route per
+        # relay identity, with clients configured with all relay multiaddrs.
         lb_policy round_robin
         header_up Connection {>Connection}
         header_up Upgrade {>Upgrade}
@@ -229,12 +297,18 @@ Caddy (or your own load balancer) at their IP addresses.
 
 - Set `TOPIC_ALLOWLIST` to restrict auto-subscribed topics.
 - Set `MAX_AUTO_TOPICS` to cap memory usage from topic subscriptions.
+- Set `MAX_AUTO_TOPICS_PER_PEER` so one peer cannot consume the global dynamic-topic allowance.
+- Keep `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` bounded at the protocol ingestion layer.
+- Tune the global transport-connection cap, reservation cap/TTL, per-connection
+  HOP/STOP stream limits, and per-circuit duration/data limits for measured
+  capacity. The pinned relay dependency may retain a disconnected reservation
+  until its TTL, so the browser launch uses a 10-minute TTL and a 128-reservation
+  cap to bound stale capacity. These are resource controls, not a scale guarantee.
 - Run the relay as a non-root user (the Dockerfiles already do this).
 - Use `restart: unless-stopped` in Compose (already set in the production file).
 - Monitor container health via Docker's built-in `HEALTHCHECK` -- the relay
-  image's health check verifies port 9001 is accepting TCP connections
-  (`docker inspect --format='{{.State.Health.Status}}' peerborne-relay`). There
-  is no HTTP health endpoint.
+  image checks `http://127.0.0.1:9000/readyz`
+  (`docker inspect --format='{{.State.Health.Status}}' peerborne-relay`).
 
 ## Docker Images
 
@@ -247,8 +321,9 @@ The repository provides four relay-related Dockerfiles:
 | `guides/docker/Dockerfile.relay` | Standalone relay with extended comments | `docker build -f guides/docker/Dockerfile.relay -t peerborne-relay relay-server/` |
 | `guides/docker/Dockerfile.bootstrap` | Relay with pubsub peer discovery (same code) | `docker build -f guides/docker/Dockerfile.bootstrap -t peerborne-bootstrap relay-server/` |
 
-All images are based on `node:22-alpine`, run as a non-root `app` user, and
-include a built-in health check (TCP connect on port 9001).
+The standard `relay-server/Dockerfile` is based on `node:22-alpine`, runs as a
+non-root `app` user, persists its identity under `/shared`, and uses the HTTP
+readiness check. Wrapper images should be audited separately before deployment.
 
 > **Note:** `Dockerfile.relay` (repo root) does **not** create or chown the
 > `/shared` directory. If you mount a volume at `/shared`, the non-root `app`
@@ -273,8 +348,8 @@ Peerborne relay servers are straightforward to run on Kubernetes, but they are
 identity. That identity matters because clients dial relays using multiaddrs
 such as `/dns4/relay.example.com/tcp/9001/wss/p2p/<peerId>`. If a load
 balancer sends that connection to a different pod than the one that owns
-`<peerId>`, the dial can fail. If pod identities are regenerated on restart,
-previously advertised addresses can also break.
+`<peerId>`, the dial can fail. If a pod loses its persisted identity,
+previously advertised addresses also break.
 
 ### Key Considerations
 
@@ -288,18 +363,17 @@ previously advertised addresses can also break.
   Service that gives each pod stable DNS (for example,
   `peerborne-relay-0.peerborne-relay-headless.default.svc.cluster.local`). Publish
   each pod's own address with its own peer ID, and let clients dial the
-  specific replica they intend to reach. The current `relay-server/` code does
-  not expose a configuration option for a deterministic peer identity -- every
-  start generates a fresh peer ID -- so using this pattern requires modifying
-  the relay image to load a persisted key.
+  specific replica they intend to reach. Set `RELAY_IDENTITY_KEY_PATH` to that
+  replica's persistent volume path. Never share one identity file between
+  concurrently running pods.
 - **Avoid one shared address for many peer IDs**: Do not put multiple relay
   pods behind a single Service/Ingress address and then advertise
   `/.../p2p/<peerId>` for those pods unless you also make peer IDs
   deterministic/persistent and can guarantee sticky routing to the pod that
   owns the advertised peer ID. Otherwise `/.../p2p/<peerId>` may resolve to the
   wrong backend or break after pod restarts.
-- **Health checks**: Use the built-in TCP check on port 9001 for both liveness
-  and readiness probes.
+- **Health checks**: Use HTTP `/livez` for liveness and `/readyz` for readiness
+  on internal port 9000.
 - **Scaling and pubsub topology**: Multiple relay pods are also multiple pubsub
   nodes. Each relay maintains its own independent pubsub mesh. Peers connected
   to different relay pods will not see each other's messages unless the relays
@@ -336,6 +410,8 @@ spec:
         - name: relay
           image: peerborne-relay:latest
           ports:
+            - containerPort: 9000
+              name: health
             - containerPort: 9001
               name: ws
             - containerPort: 9002
@@ -345,14 +421,20 @@ spec:
               value: "/document/,/documents"
             - name: MAX_AUTO_TOPICS
               value: "5000"
+            - name: MAX_AUTO_TOPICS_PER_PEER
+              value: "32"
+            - name: GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER
+              value: "65536"
           livenessProbe:
-            tcpSocket:
-              port: 9001
+            httpGet:
+              path: /livez
+              port: health
             initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
-            tcpSocket:
-              port: 9001
+            httpGet:
+              path: /readyz
+              port: health
             initialDelaySeconds: 5
             periodSeconds: 5
           resources:
@@ -416,10 +498,12 @@ The relay server logs the following events to stdout:
 
 - Peer connections and disconnections
 - Topic auto-subscribe and auto-unsubscribe events
-- Auto-subscribe cap warnings (when `MAX_AUTO_TOPICS` is reached)
+- Aggregate auto-subscribe limit warnings (global or per-peer)
 
 Use standard container log aggregation (e.g., `docker logs`, Loki, CloudWatch)
-to monitor relay health.
+to monitor relay health. Dynamic topic names and connected peer IDs are omitted
+from routine subscription logs. The readiness body contains only status and the
+public peer ID; private identity bytes and relayed payloads are never logged.
 
 ## Troubleshooting
 
@@ -434,7 +518,8 @@ to monitor relay health.
 
 **Messages not relaying between peers**
 - The relay must be subscribed to the same topics as the peers. Verify
-  auto-subscribe is working by checking relay logs for `Auto-subscribed to topic`.
+  auto-subscribe is working by checking relay logs for
+  `Auto-subscribed to a dynamic topic`.
 - If `TOPIC_ALLOWLIST` is set, confirm the document topics match one of the
   allowed prefixes.
 

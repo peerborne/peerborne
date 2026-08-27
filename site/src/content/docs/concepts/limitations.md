@@ -41,9 +41,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   assertions for direct WebRTC, WebTransport, and DCUtR remain unverified.
 - **DHT and AutoNAT have no standalone CI tests.** They are included in the Docker-backed NAT topology but not stress-tested.
 - **Relays can censor or drop traffic.** There is no protection against relay-level denial of service. A malicious relay can blackhole all traffic for a peer or topic.
-- **Relay identity is not stable across restarts.** The relay generates a new libp2p peer ID on each start.
+- **Relay identity depends on durable storage.** The standard image persists its libp2p identity under `/shared`; losing the file configured by `RELAY_IDENTITY_KEY_PATH` changes the peer ID and invalidates pinned multiaddrs.
 - **No relay meshing or failover.** Each relay operates independently. If your relay goes down, peers cannot reach each other (unless they have a direct connection).
-- **No HTTP health endpoint on relay.** Load balancers and monitoring systems cannot probe relay health.
+- **Relay readiness is local-only evidence.** `/readyz` proves local startup and seed-topic subscription, not a remote reservation or end-to-end convergence.
 
 ## Authorization and revocation
 

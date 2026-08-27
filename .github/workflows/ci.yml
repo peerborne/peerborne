@@ -50,6 +50,20 @@ jobs:
         run: yarn build
       - run: yarn workspace @peerborne/${{ matrix.package }} test
 
+  relay-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> $GITHUB_OUTPUT
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+      - run: yarn --cwd relay-server install --immutable
+      - run: yarn --cwd relay-server build
+      - run: yarn test:relay
+
   integration:
     runs-on: ubuntu-latest
     permissions:

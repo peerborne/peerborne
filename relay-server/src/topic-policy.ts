@@ -55,6 +55,7 @@ export type AutoSubscribeSkipReason =
   | 'SystemTopic'
   | 'NotInAllowlist'
   | 'CapReached'
+  | 'PeerCapReached'
 
 /**
  * Decide whether the relay should auto-subscribe to `topic`.

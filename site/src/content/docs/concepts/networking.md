@@ -128,14 +128,14 @@ Relays are the most important infrastructure component in a Peerborne deployment
 
 ### Identity pinning risk
 
-A relay that restarts with a new peer ID breaks connections from clients that pinned to the old identity. Mitigation options include using a persistent relay key so the peer ID stays stable across restarts, or using authenticated discovery to learn a trusted new peer ID after the relay restarts. DNS (`/dns4/...`) changes address resolution but `/p2p/<peerID>` still pins the relay identity.
+A relay that loses its identity file restarts with a new peer ID and breaks clients pinned to the old identity. The standard relay image persists an app-managed key on its `/shared` volume; hosted deployments must likewise mount durable storage at `RELAY_IDENTITY_KEY_PATH`. DNS (`/dns4/...`) changes address resolution but `/p2p/<peerID>` still pins the relay identity. Never share one private identity between concurrently running relays.
 
 ## Operational limits
 
-- **Relay restart changes peer ID.** The current relay implementation generates a new libp2p identity on each restart. Clients must rediscover the new peer ID.
+- **Relay identity requires durable storage.** Restart preserves the peer ID only while the configured identity file survives. Losing it requires clients to learn a new peer ID.
 - **No relay meshing.** Each relay operates independently. There is no relay-to-relay routing.
-- **Topic allowlists are not authentication.** The relay's `TOPIC_ALLOWLIST` controls which topics it will forward, but does not authenticate publishers.
-- **No HTTP health endpoint.** The relay exposes no health-check endpoint for load balancers or monitoring.
+- **Topic allowlists are not Circuit Relay policy.** `TOPIC_ALLOWLIST` controls only which GossipSub topics the relay node auto-subscribes to. It does not inspect or restrict opaque, Noise-encrypted Circuit Relay streams, authenticate publishers, or authorize documents.
+- **Readiness is local evidence.** `/readyz` confirms local startup and seed subscriptions, not a remote reservation or end-to-end convergence.
 - **No durable storage on relay.** The relay does not store messages. If a subscriber is offline, it misses messages.
 
 ## CI-backed evidence

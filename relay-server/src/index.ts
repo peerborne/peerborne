@@ -11,8 +11,15 @@ import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { listenAddresses, loadConfig } from './config.js'
-import { shouldAutoSubscribe } from './topic-policy.js'
+import { AutoTopicRegistry } from './auto-topic-registry.js'
+import {
+  circuitRelayServerOptions,
+  listenAddresses,
+  loadConfig,
+} from './config.js'
+import { loadOrCreateRelayIdentity } from './identity.js'
+import { IntervalGate } from './interval-gate.js'
+import { startReadinessServer } from './readiness.js'
 
 async function main() {
   const config = loadConfig()
@@ -21,165 +28,207 @@ async function main() {
     documentPublishPath,
     topicAllowlist,
     maxAutoTopics,
+    maxAutoTopicsPerPeer,
+    gossipsubMaxTopicBytesPerPeer,
     extraTopics,
+    maxConnections,
+    relayLimits,
   } = config
+  const readiness = await startReadinessServer(config.readinessPort)
 
-  const libp2p = await createLibp2p({
-    addresses: {
-      listen: listenAddresses(config),
-    },
-    transports: [
-      webSockets(),
-      tcp(),
-    ],
-    connectionEncrypters: [noise()],
-    streamMuxers: [yamux()],
-    connectionGater: {
-      denyDialMultiaddr: async () => false,
-    },
-    services: {
-      identify: identify(),
-      autoNat: autoNAT(),
-      relay: circuitRelayServer(),
-      pubsub: gossipsub({
-        allowPublishToZeroTopicPeers: true,
-        canRelayMessage: true,
-        floodPublish: true,
-      }),
-      pubsubPeerDiscovery: pubsubPeerDiscovery({
-        topics: [peerDiscoveryTopic],
-      }),
-    },
-  })
+  try {
+    const privateKey = await loadOrCreateRelayIdentity(config.identityKeyPath)
+    const libp2p = await createLibp2p({
+      privateKey,
+      addresses: {
+        listen: listenAddresses(config),
+      },
+      transports: [
+        webSockets(),
+        tcp(),
+      ],
+      connectionEncrypters: [noise()],
+      streamMuxers: [yamux()],
+      connectionGater: {
+        denyDialMultiaddr: async () => false,
+      },
+      connectionManager: {
+        maxConnections,
+      },
+      services: {
+        identify: identify(),
+        autoNat: autoNAT(),
+        relay: circuitRelayServer(circuitRelayServerOptions(config)),
+        pubsub: gossipsub({
+          allowPublishToZeroTopicPeers: true,
+          canRelayMessage: true,
+          floodPublish: true,
+          maxTopicBytesPerPeer: gossipsubMaxTopicBytesPerPeer,
+        }),
+        pubsubPeerDiscovery: pubsubPeerDiscovery({
+          topics: [peerDiscoveryTopic],
+        }),
+      },
+    })
 
-  // Subscribe to peer discovery and document publish topics.
-  // The relay must be subscribed to these topics to forward messages between
-  // browser peers that are connected to the relay but not yet to each other.
-  libp2p.services.pubsub.subscribe(peerDiscoveryTopic)
-  libp2p.services.pubsub.subscribe(documentPublishPath)
-
-  // Auto-subscribe to document topics as peers join them.
-  // When a browser peer subscribes to a document topic (e.g. /document/my-doc),
-  // the relay also subscribes so it can relay messages between peers that
-  // haven't formed a direct WebRTC connection yet. This makes the relay
-  // self-sufficient — no manual topic configuration is needed.
-  //
-  // Hardening controls (configured via environment variables):
-  //   TOPIC_ALLOWLIST — comma-separated prefixes; only matching topics are
-  //     auto-subscribed. Unset = open mode (all non-system topics allowed).
-  //     Example: TOPIC_ALLOWLIST="/document/,/documents"
-  //   MAX_AUTO_TOPICS — hard cap on auto-subscribed topics (default 1000).
-  //     Once reached, new subscriptions are skipped and a warning is logged
-  //     for each rejected topic (see CapReached handling below).
-  // The actual policy decision lives in `topic-policy.ts` as a pure function
-  // so it can be unit-tested without a libp2p stack.
-  //
-  // All topics the relay is subscribed to (seed + extra + auto).
-  const trackedTopics = new Set<string>([
-    peerDiscoveryTopic,
-    documentPublishPath,
-  ])
-  // Topics that were auto-subscribed (not seed or EXTRA_TOPICS).
-  // Only these are eligible for auto-unsubscribe and counted toward the cap.
-  const autoTopics = new Set<string>()
-
-  libp2p.services.pubsub.addEventListener('subscription-change', (event: any) => {
-    const { peerId, subscriptions } = event.detail
-    for (const sub of subscriptions) {
-      if (!sub.subscribe) {
-        continue
+    // Seed and operator-configured topics are permanent subscriptions.
+    // The relay must be subscribed to these topics to forward messages between
+    // browser peers that are connected to the relay but not yet to each other.
+    libp2p.services.pubsub.subscribe(peerDiscoveryTopic)
+    libp2p.services.pubsub.subscribe(documentPublishPath)
+    for (const topic of extraTopics) {
+      if (topic !== peerDiscoveryTopic && topic !== documentPublishPath) {
+        libp2p.services.pubsub.subscribe(topic)
       }
-      const decision = shouldAutoSubscribe(sub.topic, {
-        allowlist: topicAllowlist,
-        maxAutoTopics,
+    }
+
+    // Auto-subscribe to document topics as peers join them. The safe default
+    // allows only /document/ and /documents. Set TOPIC_ALLOWLIST=* explicitly
+    // to allow every non-system topic.
+    const permanentTopics = new Set<string>([
+      peerDiscoveryTopic,
+      documentPublishPath,
+      ...extraTopics,
+    ])
+    const autoTopics = new AutoTopicRegistry({
+      permanentTopics,
+      allowlist: topicAllowlist,
+      maxAutoTopics,
+      maxAutoTopicsPerPeer,
+    })
+    const autoTopicLimitWarning = new IntervalGate(60_000)
+
+    const unsubscribeDynamicTopic = (topic: string): void => {
+      libp2p.services.pubsub.unsubscribe(topic)
+      console.log('Auto-unsubscribed from an inactive dynamic topic', {
         autoTopicCount: autoTopics.size,
-        isTracked: (t) => trackedTopics.has(t),
       })
-      if (decision.action === 'skip') {
-        if (decision.reason === 'CapReached') {
-          console.warn(`Auto-subscribe cap reached (${maxAutoTopics}), ignoring topic: ${sub.topic}`)
+    }
+
+    const reconcileDynamicTopic = (topic: string): void => {
+      const subscribers = libp2p.services.pubsub.getSubscribers(topic)
+      const action = autoTopics.reconcileTopic(
+        topic,
+        subscribers.map((peerId) => peerId.toString()),
+      )
+      if (action.action === 'unsubscribe') {
+        unsubscribeDynamicTopic(topic)
+      }
+    }
+
+    libp2p.services.pubsub.addEventListener(
+      'subscription-change',
+      (event: any) => {
+        const { peerId, subscriptions } = event.detail
+        for (const sub of subscriptions) {
+          const action = autoTopics.subscriptionChanged(
+            peerId.toString(),
+            sub.topic,
+            sub.subscribe,
+          )
+          if (action.action === 'skip') {
+            if (
+              action.reason === 'CapReached' ||
+              action.reason === 'PeerCapReached'
+            ) {
+              if (autoTopicLimitWarning.open()) {
+                console.warn('Auto-subscribe limit reached; requests ignored', {
+                  reason: action.reason,
+                  autoTopicCount: autoTopics.size,
+                  maxAutoTopics,
+                  maxAutoTopicsPerPeer,
+                })
+              }
+            }
+            continue
+          }
+          if (action.action === 'subscribe') {
+            libp2p.services.pubsub.subscribe(sub.topic)
+            console.log('Auto-subscribed to a dynamic topic', {
+              autoTopicCount: autoTopics.size,
+              maxAutoTopics,
+            })
+          } else if (action.action === 'unsubscribe') {
+            unsubscribeDynamicTopic(sub.topic)
+          }
         }
-        continue
+      },
+    )
+
+    // Reconcile against GossipSub as a bounded backstop for missed
+    // subscription-change events. autoTopics can contain at most
+    // MAX_AUTO_TOPICS entries.
+    const topicReconciliation = setInterval(() => {
+      for (const topic of [...autoTopics.topics()]) {
+        reconcileDynamicTopic(topic)
       }
-      trackedTopics.add(sub.topic)
-      autoTopics.add(sub.topic)
-      libp2p.services.pubsub.subscribe(sub.topic)
-      console.log(`Auto-subscribed to topic: ${sub.topic} (triggered by peer ${peerId}, ${autoTopics.size}/${maxAutoTopics})`)
-    }
-  })
+    }, 30_000)
+    topicReconciliation.unref()
 
-  // Clean up auto-subscribed topics when all peers leave them.
-  // Only auto-subscribed topics are eligible — seed and EXTRA_TOPICS are permanent.
-  libp2p.services.pubsub.addEventListener('subscription-change', (event: any) => {
-    const { subscriptions } = event.detail
-    for (const sub of subscriptions) {
-      if (sub.subscribe || !autoTopics.has(sub.topic)) {
-        continue
+    console.log('Subscribed to configured relay topics', {
+      seedTopicCount: 2,
+      extraTopicCount: extraTopics.length,
+    })
+
+    const peerId = libp2p.peerId.toString()
+    const multiaddrs = libp2p.getMultiaddrs().map((ma) => ma.toString())
+    const wsMultiaddr = multiaddrs.find((ma) => ma.includes('/ws/')) ?? multiaddrs[0]
+
+    console.log('PeerId:', peerId)
+    console.log('Multiaddrs:', multiaddrs)
+    console.log('Circuit Relay limits:', {
+      ...relayLimits,
+      maxCircuitDataBytes: relayLimits.maxCircuitDataBytes.toString(),
+    })
+
+    const relayInfo = {
+      peerId,
+      multiaddrs,
+      wsMultiaddr,
+    }
+
+    const sharedDir = '/shared'
+    const outputPath = fs.existsSync(sharedDir)
+      ? path.join(sharedDir, 'relay-info.json')
+      : path.join(process.cwd(), 'relay-info.json')
+
+    fs.writeFileSync(outputPath, JSON.stringify(relayInfo, null, 2))
+    console.log('Relay info written to:', outputPath)
+    readiness.markReady(peerId)
+
+    // Peer IDs and connection timing are metadata; never log payloads or keys.
+    libp2p.addEventListener('peer:connect', () => {
+      console.log('Peer connected')
+    })
+    libp2p.addEventListener('peer:disconnect', (event) => {
+      const peerId = event.detail.toString()
+      console.log('Peer disconnected')
+      for (const action of autoTopics.peerDisconnected(peerId)) {
+        if (action.action === 'unsubscribe') {
+          unsubscribeDynamicTopic(action.topic)
+        }
       }
-      // Check if any peers are still subscribed via GossipSub.
-      const subscribers = (libp2p.services.pubsub as any).getSubscribers?.(sub.topic)
-      if (subscribers && subscribers.length === 0) {
-        trackedTopics.delete(sub.topic)
-        autoTopics.delete(sub.topic)
-        libp2p.services.pubsub.unsubscribe(sub.topic)
-        console.log(`Auto-unsubscribed from topic: ${sub.topic} (no remaining subscribers)`)
-      }
+    })
+
+    let stopping = false
+    const shutdown = async () => {
+      if (stopping) return
+      stopping = true
+      clearInterval(topicReconciliation)
+      readiness.markNotReady()
+      console.log('Shutting down relay server...')
+      await libp2p.stop()
+      await readiness.close()
+      process.exit(0)
     }
-  })
 
-  console.log(
-    'Subscribed to topics:',
-    peerDiscoveryTopic,
-    documentPublishPath,
-  )
-
-  // Subscribe to additional topics from environment (comma-separated).
-  // Useful for integration tests or pre-configured deployments.
-  for (const topic of extraTopics) {
-    if (!trackedTopics.has(topic)) {
-      trackedTopics.add(topic)
-      libp2p.services.pubsub.subscribe(topic)
-      console.log(`Subscribed to extra topic: ${topic}`)
-    }
+    process.once('SIGTERM', shutdown)
+    process.once('SIGINT', shutdown)
+  } catch (error) {
+    readiness.markNotReady()
+    await readiness.close()
+    throw error
   }
-
-  const peerId = libp2p.peerId.toString()
-  const multiaddrs = libp2p.getMultiaddrs().map((ma) => ma.toString())
-  const wsMultiaddr = multiaddrs.find((ma) => ma.includes('/ws/')) ?? multiaddrs[0]
-
-  console.log('PeerId:', peerId)
-  console.log('Multiaddrs:', multiaddrs)
-
-  const relayInfo = {
-    peerId,
-    multiaddrs,
-    wsMultiaddr,
-  }
-
-  const sharedDir = '/shared'
-  const outputPath = fs.existsSync(sharedDir)
-    ? path.join(sharedDir, 'relay-info.json')
-    : path.join(process.cwd(), 'relay-info.json')
-
-  fs.writeFileSync(outputPath, JSON.stringify(relayInfo, null, 2))
-  console.log('Relay info written to:', outputPath)
-
-  // Log peer connections for debugging.
-  libp2p.addEventListener('peer:connect', (event) => {
-    console.log('Peer connected:', event.detail.toString())
-  })
-  libp2p.addEventListener('peer:disconnect', (event) => {
-    console.log('Peer disconnected:', event.detail.toString())
-  })
-
-  const shutdown = async () => {
-    console.log('Shutting down relay server...')
-    await libp2p.stop()
-    process.exit(0)
-  }
-
-  process.on('SIGTERM', shutdown)
-  process.on('SIGINT', shutdown)
 }
 
 main().catch((err) => {

@@ -3,6 +3,7 @@
 # Usage:
 #   cd relay-server
 #   fly launch --no-deploy   # imports this file; set your app name when prompted
+#   fly volumes create peerborne_relay_data --region iad --size 1
 #   fly deploy
 #
 # Change the app name and primary_region below before deploying.
@@ -16,61 +17,61 @@ primary_region = "iad"           # US East (Virginia); change to your nearest re
   dockerfile = "Dockerfile"      # relay-server/Dockerfile (build context = relay-server/)
 
 [deploy]
-  strategy = "rolling"           # safe for a single-instance relay
+  strategy = "rolling"
 
-# Fly.io injects PORT for the Fly proxy, but the relay uses its own fixed
-# ports for libp2p. We expose them directly via [services] below instead
-# of going through the HTTP proxy.
+[mounts]
+  source = "peerborne_relay_data"
+  destination = "/data"
 
-# WebSocket port — browser peers connect here (libp2p WebSocket transport).
-#
-# NOTE: `handlers = []` means Fly forwards raw TCP without terminating TLS,
-# so this exposes plain `ws://` (not `wss://`). Production deployments must
-# serve WebSocket clients over `wss://` because browsers block `ws://`
-# connections from HTTPS-served pages under the mixed-content policy.
-# Connections from HTTP origins or `localhost` may use `ws://`, but production
-# multiaddrs should use `wss://`. For production browser deployments you must
-# either add the `"tls"` handler here (Fly terminates TLS and serves `wss://`)
-# or front the relay with another TLS terminator. See
-# `guides/coordination-servers.md` §5.3 for the recommended configuration.
+# Browser peers dial WSS on 443. Fly terminates TLS, then forwards the intact
+# WebSocket HTTP Upgrade to the relay's plain WebSocket listener on port 9001.
 [[services]]
   protocol = "tcp"
   internal_port = 9001
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
 
   [[services.ports]]
-    port = 9001
-    handlers = []                # plain TCP/WS — see note above for browser (WSS) setup
+    port = 443
+    handlers = ["tls"]
 
   [services.concurrency]
     type = "connections"
-    hard_limit = 500
-    soft_limit = 400
+    hard_limit = 256
+    soft_limit = 220
 
   [[services.tcp_checks]]
     interval = "10s"
     timeout  = "5s"
     grace_period = "30s"
 
-# TCP port — node-to-node connections (optional for browser-only deployments).
-[[services]]
-  protocol = "tcp"
-  internal_port = 9002
-
-  [[services.ports]]
-    port = 9002
-    handlers = []
-
-  [[services.tcp_checks]]
+[checks]
+  [checks.relay_ready]
+    type = "http"
+    port = 9000
+    method = "get"
+    path = "/readyz"
     interval = "10s"
-    timeout  = "5s"
+    timeout = "3s"
     grace_period = "30s"
 
 [env]
-  # Override the defaults set in relay-server/src/index.ts if needed.
-  # WS_PORT  = "9001"
-  # TCP_PORT = "9002"
-  # TOPIC_ALLOWLIST = "/document/,/documents"
-  # MAX_AUTO_TOPICS = "1000"
+  RELAY_IDENTITY_KEY_PATH = "/data/relay-identity.key"
+  READINESS_PORT = "9000"
+  TOPIC_ALLOWLIST = "/document/,/documents"
+  MAX_AUTO_TOPICS = "1000"
+  MAX_AUTO_TOPICS_PER_PEER = "32"
+  GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"
+  MAX_CONNECTIONS = "256"
+  RELAY_MAX_RESERVATIONS = "128"
+  RELAY_RESERVATION_TTL_MS = "600000"
+  RELAY_MAX_CIRCUIT_DURATION_MS = "1800000"
+  RELAY_MAX_CIRCUIT_BYTES = "16777216"
+  RELAY_HOP_TIMEOUT_MS = "30000"
+  RELAY_MAX_INBOUND_HOP_STREAMS = "8"
+  RELAY_MAX_OUTBOUND_HOP_STREAMS = "8"
+  RELAY_MAX_OUTBOUND_STOP_STREAMS = "8"
 
 [[vm]]
   size   = "shared-cpu-1x"
