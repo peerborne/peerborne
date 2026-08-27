@@ -20,6 +20,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@libp2p/peer-id": "^6.0.14",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.7.5",
     "@types/react": "^19.2.3",

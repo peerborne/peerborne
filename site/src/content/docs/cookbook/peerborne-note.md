@@ -101,10 +101,14 @@ VITE_PEERBORNE_RELAY_MULTIADDR='/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW
   yarn workspace @peerborne/peerborne-note build:deployment
 ```
 
-An HTTPS page requires a `wss` relay. The source smoke tests cover bounded
-application behavior without treating a public deployment as verified. A live
-deployment check must separately exercise two browser identities, the published
-WSS multiaddr, explicit acceptance, and fresh edits in both directions.
+An HTTPS page requires a `wss` relay. The deployment build renders the emitted
+`_headers` CSP to allow only the WebSocket origin from that validated relay
+multiaddr.
+
+The source smoke tests cover bounded application behavior without treating a
+public deployment as verified. A live deployment check must separately exercise
+two browser identities, the published WSS multiaddr, explicit acceptance, and
+fresh edits in both directions.
 
 Read the [invitation protocol boundaries](../invitations/),
 [security model](../../concepts/security/), [networking model](../../concepts/networking/),

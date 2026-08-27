@@ -4154,6 +4154,7 @@ __metadata:
   resolution: "@peerborne/peerborne-note@workspace:examples/peerborne-note"
   dependencies:
     "@automerge/automerge": "npm:^3.2.6"
+    "@libp2p/peer-id": "npm:^6.0.14"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
     "@types/jest": "npm:^29.5.14"

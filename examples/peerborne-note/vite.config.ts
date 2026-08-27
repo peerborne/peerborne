@@ -1,12 +1,17 @@
+import { peerIdFromString } from '@libp2p/peer-id';
 import react from '@vitejs/plugin-react';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import wasm from 'vite-plugin-wasm';
+import {
+  relayConnectSourceFromMultiaddr,
+  renderPagesHeaders,
+} from './src/deployment-config.js';
 
-function pagesRootHeaders(): Record<string, string> {
-  const lines = readFileSync(new URL('./public/_headers', import.meta.url), 'utf8')
-    .split(/\r?\n/u);
+function pagesRootHeaders(source: string): Record<string, string> {
+  const lines = source.split(/\r?\n/u);
   const headers: Record<string, string> = {};
   let inRootRule = false;
   for (const line of lines) {
@@ -30,25 +35,48 @@ function pagesRootHeaders(): Record<string, string> {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  if (mode === 'deployment') {
-    const relay = env.VITE_PEERBORNE_RELAY_MULTIADDR?.trim() ?? '';
-    if (
-      relay.length > 1024 ||
-      !/^\/dns4\/[^/\s]+\/tcp\/443\/wss\/p2p\/[^/\s]+$/u.test(relay)
-    ) {
-      throw new Error(
-        'Deployment requires a complete DNS, TCP 443, WSS, peer-ID-qualified VITE_PEERBORNE_RELAY_MULTIADDR',
-      );
-    }
-  }
+  const relayConnectSource = relayConnectSourceFromMultiaddr(
+    env.VITE_PEERBORNE_RELAY_MULTIADDR,
+    mode === 'deployment',
+    (peerId) => {
+      try {
+        peerIdFromString(peerId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
+  const renderedPagesHeaders = renderPagesHeaders(
+    readFileSync(new URL('./public/_headers', import.meta.url), 'utf8'),
+    relayConnectSource,
+  );
   return {
-    plugins: [react(), wasm(), topLevelAwait()],
+    plugins: [
+      react(),
+      wasm(),
+      topLevelAwait(),
+      {
+        name: 'peerborne-note-pages-headers',
+        apply: 'build',
+        writeBundle(options) {
+          if (!options.dir) {
+            throw new Error('Peerborne Note build has no output directory');
+          }
+          writeFileSync(
+            resolve(options.dir, '_headers'),
+            renderedPagesHeaders,
+            'utf8',
+          );
+        },
+      },
+    ],
     build: {
       sourcemap: false,
       target: 'es2022',
     },
     preview: {
-      headers: pagesRootHeaders(),
+      headers: pagesRootHeaders(renderedPagesHeaders),
     },
   };
 });

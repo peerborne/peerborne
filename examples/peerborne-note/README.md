@@ -45,7 +45,8 @@ PEERBORNE_NOTE_LIVE_URL=https://try.peerborne.io/ \
 ```
 
 Hosted builds must fail closed when the relay configuration is absent or not a
-complete DNS/TCP 443/WSS/peer-ID multiaddr:
+complete DNS/TCP 443/WSS/peer-ID multiaddr. The deployment build also renders
+the emitted `_headers` CSP with only that relay WebSocket origin:
 
 ```sh
 VITE_PEERBORNE_RELAY_MULTIADDR=/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW... \

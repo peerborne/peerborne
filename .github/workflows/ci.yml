@@ -81,7 +81,7 @@ jobs:
       - run: yarn build
       - run: yarn workspace @peerborne/peerborne-note build:deployment
         env:
-          VITE_PEERBORNE_RELAY_MULTIADDR: /dns4/relay.example.invalid/tcp/443/wss/p2p/12D3KooWExampleRelay
+          VITE_PEERBORNE_RELAY_MULTIADDR: /dns4/relay.example.invalid/tcp/443/wss/p2p/12D3KooWRqEojevLXwbPxiAvDaK4HbCUXip6rSzrhWurUBdgwFGT
       - run: yarn test:peerborne-note
       - run: yarn test:e2e
       - uses: actions/upload-artifact@v7

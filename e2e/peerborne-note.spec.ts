@@ -65,7 +65,7 @@ test('creates a local note and restores a non-extractable signing identity', asy
   expect(response).not.toBeNull();
   const headers = response!.headers();
   expect(headers['content-security-policy']).toContain(
-    "connect-src 'self' https://relay.peerborne.io wss://relay.peerborne.io",
+    "connect-src 'self' wss://relay.peerborne.io",
   );
   expect(headers['referrer-policy']).toBe('no-referrer');
   expect(headers['x-content-type-options']).toBe('nosniff');

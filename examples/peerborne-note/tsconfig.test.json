@@ -7,6 +7,8 @@
     "isolatedModules": false
   },
   "include": [
+    "src/deployment-config.ts",
+    "src/deployment-config.test.ts",
     "src/identity-store.ts",
     "src/identity-store.test.ts",
     "src/invitation-link.ts",
