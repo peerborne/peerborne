@@ -25,22 +25,33 @@ const SCALES = [100, 1_000, 10_000, 100_000];
  */
 export async function runIndexQueryScalingBenchmarks(
   iterations: number = 100,
+  maxDocuments: number = 100_000,
 ): Promise<BenchmarkSuiteResult> {
   const runner = new PaperBenchmarkRunner('index-query-scaling');
 
-  for (const count of SCALES) {
+  const scales = SCALES.filter((count) => count <= maxDocuments);
+  if (!scales.includes(maxDocuments)) scales.push(maxDocuments);
+  for (const count of scales) {
     console.log(`  Setting up ${count} documents...`);
     const storage = new MemoryIndexStorage();
     const manager = new IndexManager<Record<string, unknown>>(storage, (doc) => doc);
     await manager.defineIndex({
+      version: 2,
       name: 'articles',
       collectionPrefix: '/articles/',
       fields: [
-        { path: 'title', type: 'string' },
-        { path: 'author', type: 'string' },
-        { path: 'category', type: 'string' },
-        { path: 'createdOn', type: 'date' },
-        { path: 'viewCount', type: 'number' },
+        { path: 'title', type: 'string', required: true },
+        { path: 'author', type: 'string', required: true },
+        { path: 'category', type: 'string', required: true },
+        { path: 'createdOn', type: 'date', required: true },
+        { path: 'viewCount', type: 'number', required: true },
+      ],
+      indexes: [
+        { name: 'by_author', fields: ['author'] },
+        { name: 'by_view_count', fields: ['viewCount'] },
+        { name: 'by_created_on', fields: ['createdOn'] },
+        { name: 'by_title', fields: ['title'] },
+        { name: 'by_author_category', fields: ['author', 'category'] },
       ],
     });
 
@@ -49,58 +60,67 @@ export async function runIndexQueryScalingBenchmarks(
       await manager.updateIndex(path, doc);
     }
 
-    const iterCount = count >= 100_000 ? Math.max(10, Math.floor(iterations / 10)) : iterations;
+    const iterCount = count >= 100_000 ? Math.max(1, Math.floor(iterations / 10)) : iterations;
 
     // Exact match query
     await runner.run(`exact-match-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [{ path: 'author', operator: 'eq', value: 'Alice' }],
+        where: { kind: 'field', path: 'author', operator: 'eq', value: 'Alice' },
       });
     }, iterCount);
 
     // Range query (numeric)
     await runner.run(`range-gte-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [{ path: 'viewCount', operator: 'gte', value: 500 }],
+        where: { kind: 'field', path: 'viewCount', operator: 'gte', value: 500 },
       });
     }, iterCount);
 
     // Range query (date)
     await runner.run(`range-date-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [{ path: 'createdOn', operator: 'gte', value: '2024-06-01' }],
+        where: { kind: 'field', path: 'createdOn', operator: 'gte', value: '2024-06-01' },
       });
     }, iterCount);
 
     // Prefix query
     await runner.run(`prefix-query-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [{ path: 'title', operator: 'prefix', value: 'Article 1' }],
+        where: { kind: 'field', path: 'title', operator: 'prefix', value: 'Article 1' },
       });
     }, iterCount);
 
     // Compound query (two filters)
     await runner.run(`compound-query-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [
-          { path: 'author', operator: 'eq', value: 'Alice' },
-          { path: 'category', operator: 'eq', value: 'Technology' },
-        ],
+        where: {
+          kind: 'and',
+          expressions: [
+            { kind: 'field', path: 'author', operator: 'eq', value: 'Alice' },
+            { kind: 'field', path: 'category', operator: 'eq', value: 'Technology' },
+          ],
+        },
       });
     }, iterCount);
 
     // Sorted query with limit
     await runner.run(`sorted-limit-query-${count}`, async () => {
       await manager.query({
+        version: 2,
         indexName: 'articles',
-        filters: [],
-        sort: [{ path: 'createdOn', direction: 'desc' }],
-        limit: 20,
+        orderBy: [{ path: 'createdOn', direction: 'asc' }],
+        first: 20,
+        allowScan: true,
       });
     }, iterCount);
 

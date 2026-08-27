@@ -16,7 +16,7 @@
     "prepublishOnly": "yarn tsc",
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
-    "benchmark": "tsc -b tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node dist-bench/__benchmarks__/run.js"
+    "benchmark": "tsc -p tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json', JSON.stringify({type:'module'}))\" && node dist-bench/__benchmarks__/run.js"
   },
   "main": "dist/cjs/src/index.js",
   "types": "dist/esm/src/index.d.ts",
@@ -108,6 +108,7 @@
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1",
       "^@peerborne/core$": "<rootDir>/../core/src/index.ts",
+      "^@peerborne/core/wire-protocols$": "<rootDir>/../core/src/wire-protocols.ts",
       "^@chainsafe/libp2p-noise$": "<rootDir>/src/__mocks__/empty-module.cjs",
       "^@chainsafe/libp2p-yamux$": "<rootDir>/src/__mocks__/empty-module.cjs",
       "^@libp2p/gossipsub$": "<rootDir>/src/__mocks__/empty-module.cjs",

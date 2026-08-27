@@ -1,44 +1,78 @@
-import { IndexFieldDefinition, FieldFilter, SortClause } from './types.js';
-import { IndexStorage, IndexEntry } from './index-storage.js';
+import {
+  FieldFilter,
+  IndexFieldDefinition,
+  IndexKeyDefinition,
+  IndexScalar,
+  SortClause,
+} from './types.js';
+import {
+  IndexEntry,
+  IndexStorage,
+  StorageQueryRequest,
+  StorageQueryResult,
+  StorageSchemaIdentity,
+} from './index-storage.js';
+import { compareCodeUnits, compareIndexScalars, normalizeIndexScalar } from './query-ast.js';
+import { extractField } from './field-extractor.js';
+import { PhysicalQueryPlan, QueryIndexLookup } from './query-planner.js';
+import { finalizeQueryCandidates } from './query-execution.js';
 
-/**
- * In-memory implementation of IndexStorage backed by nested Maps.
- * Suitable for tests and Node.js environments where IndexedDB is unavailable.
- */
+interface PhysicalRow {
+  key: IndexScalar[];
+  documentPath: string;
+}
+
+interface MemoryStore {
+  entries: Map<string, Record<string, unknown>>;
+  fields: IndexFieldDefinition[];
+  physical: Map<string, { definition: IndexKeyDefinition; rows: PhysicalRow[] }>;
+  identity?: StorageSchemaIdentity;
+}
+
+/** In-memory materialized storage with sorted compound secondary indexes. */
 export class MemoryIndexStorage implements IndexStorage {
-  /** indexName → (documentPath → fields) */
-  private _stores: Map<string, Map<string, Record<string, unknown>>> = new Map();
+  readonly persistent = false;
+  private _stores = new Map<string, MemoryStore>();
 
-  /** Initialize storage for the given index. Creates an empty map if one does not exist. */
-  async initialize(_indexName: string, _fields: IndexFieldDefinition[]): Promise<void> {
-    if (!this._stores.has(_indexName)) {
-      this._stores.set(_indexName, new Map());
+  async initialize(
+    indexName: string,
+    fields: IndexFieldDefinition[],
+    physicalIndexes: IndexKeyDefinition[] = [],
+    identity?: StorageSchemaIdentity,
+  ): Promise<void> {
+    let store = this._stores.get(indexName);
+    if (!store) {
+      store = { entries: new Map(), fields: [...fields], physical: new Map(), identity };
+      this._stores.set(indexName, store);
+    } else if (identity && (!store.identity || !sameIdentity(store.identity, identity))) {
+      store.entries.clear();
+      store.identity = identity;
+    }
+    store.fields = [...fields];
+    store.physical.clear();
+    for (const definition of physicalIndexes) {
+      store.physical.set(definition.name, { definition: { ...definition, fields: [...definition.fields] }, rows: [] });
+    }
+    for (const [documentPath, entryFields] of store.entries) {
+      this._insertPhysicalRows(store, documentPath, entryFields);
     }
   }
 
-  /** Insert or update an index entry for a document in the named index. */
   async put(indexName: string, documentPath: string, fields: Record<string, unknown>): Promise<void> {
     const store = this._getStore(indexName);
-    store.set(documentPath, { ...fields });
+    this._removePhysicalRows(store, documentPath);
+    const copy = structuredClone(fields);
+    store.entries.set(documentPath, copy);
+    this._insertPhysicalRows(store, documentPath, copy);
   }
 
-  /** Remove an index entry for the given document path. No-op if the entry does not exist. */
   async delete(indexName: string, documentPath: string): Promise<void> {
     const store = this._stores.get(indexName);
-    if (store) {
-      store.delete(documentPath);
-    }
+    if (!store) return;
+    store.entries.delete(documentPath);
+    this._removePhysicalRows(store, documentPath);
   }
 
-  /**
-   * Query the index, applying filters, sorting, and pagination.
-   * @param indexName The index to query.
-   * @param filters Array of field filters to apply.
-   * @param sort Optional sort clauses applied in order.
-   * @param limit Maximum number of results to return.
-   * @param offset Number of results to skip before returning.
-   * @throws {RangeError} If offset or limit is negative.
-   */
   async query(
     indexName: string,
     filters: FieldFilter[],
@@ -46,164 +80,236 @@ export class MemoryIndexStorage implements IndexStorage {
     limit?: number,
     offset?: number,
   ): Promise<IndexEntry[]> {
+    validatePagination(limit, offset);
     const store = this._stores.get(indexName);
     if (!store) return [];
+    let results = Array.from(store.entries, ([documentPath, fields]) => ({ documentPath, fields }))
+      .filter((entry) => matchesLegacyFilters(entry.fields, filters));
+    if (sort?.length) results.sort((a, b) => compareLegacyEntries(a, b, sort));
+    const start = offset ?? 0;
+    results = limit === undefined ? results.slice(start) : results.slice(start, start + limit);
+    return results.map((entry) => ({ ...entry, fields: structuredClone(entry.fields) }));
+  }
 
-    if (offset !== undefined && offset < 0) {
-      throw new RangeError(`offset must be non-negative, got ${offset}`);
+  async execute(request: StorageQueryRequest): Promise<StorageQueryResult> {
+    const store = this._stores.get(request.definition.name);
+    if (!store) return finalizeQueryCandidates(request, [], 0, false);
+    if (request.plan.kind === 'full') {
+      const candidates = Array.from(store.entries, ([documentPath, fields]) => ({ documentPath, fields }));
+      return finalizeQueryCandidates(request, candidates, candidates.length, false);
     }
-    if (limit !== undefined && limit < 0) {
-      throw new RangeError(`limit must be non-negative, got ${limit}`);
-    }
-
-    let results: IndexEntry[] = [];
-
-    for (const [documentPath, fields] of store) {
-      if (this._matchesFilters(fields, filters)) {
-        results.push({ documentPath, fields: { ...fields } });
+    const plans = request.plan.kind === 'union' ? request.plan.plans : [request.plan];
+    const candidates: IndexEntry[] = [];
+    let rowsVisited = 0;
+    for (const plan of plans) {
+      const physical = store.physical.get(plan.indexName);
+      if (!physical) continue;
+      for (const lookup of plan.lookups) {
+        const start = lowerBound(physical.rows, lookupStart(lookup));
+        for (let i = start; i < physical.rows.length; i++) {
+          const row = physical.rows[i];
+          rowsVisited++;
+          const decision = matchesLookup(row.key, lookup);
+          if (decision === 'past') break;
+          if (decision === 'match') {
+            const fields = store.entries.get(row.documentPath);
+            if (fields) candidates.push({ documentPath: row.documentPath, fields });
+          }
+        }
       }
     }
-
-    if (sort && sort.length > 0) {
-      results.sort((a, b) => this._compareEntries(a.fields, b.fields, sort));
-    }
-
-    const start = offset ?? 0;
-    if (limit !== undefined) {
-      results = results.slice(start, start + limit);
-    } else if (start > 0) {
-      results = results.slice(start);
-    }
-
-    return results;
+    const indexOrderPreserved = request.plan.kind === 'physical' &&
+      request.plan.sortCovered && request.plan.lookups.length === 1;
+    return finalizeQueryCandidates(request, candidates, rowsVisited, indexOrderPreserved);
   }
 
-  /** Get a single entry by document path. Returns undefined if not found. */
   async get(indexName: string, documentPath: string): Promise<Record<string, unknown> | undefined> {
-    const store = this._stores.get(indexName);
-    if (!store) return undefined;
-    const fields = store.get(documentPath);
-    return fields ? { ...fields } : undefined;
+    const fields = this._stores.get(indexName)?.entries.get(documentPath);
+    return fields ? structuredClone(fields) : undefined;
   }
 
-  /** Remove all entries from the named index. */
   async clear(indexName: string): Promise<void> {
     const store = this._stores.get(indexName);
-    if (store) {
-      store.clear();
-    }
+    if (!store) return;
+    store.entries.clear();
+    for (const index of store.physical.values()) index.rows.length = 0;
   }
 
-  /** Close the storage backend, releasing all in-memory data. */
   async close(): Promise<void> {
     this._stores.clear();
   }
 
-  private _getStore(indexName: string): Map<string, Record<string, unknown>> {
-    let store = this._stores.get(indexName);
-    if (!store) {
-      store = new Map();
-      this._stores.set(indexName, store);
-    }
+  private _getStore(indexName: string): MemoryStore {
+    const store = this._stores.get(indexName);
+    if (!store) throw new Error(`MemoryIndexStorage: index ${indexName} is not initialized`);
     return store;
   }
 
-  private _matchesFilters(fields: Record<string, unknown>, filters: FieldFilter[]): boolean {
-    return filters.every(filter => this._matchesFilter(fields, filter));
+  private _insertPhysicalRows(
+    store: MemoryStore,
+    documentPath: string,
+    fields: Record<string, unknown>,
+  ): void {
+    const fieldMap = new Map(store.fields.map((field) => [field.path, field]));
+    for (const physical of store.physical.values()) {
+      const key: IndexScalar[] = [];
+      let valid = true;
+      for (const path of physical.definition.fields) {
+        const value = normalizeIndexScalar(extractField(fields, path), fieldMap.get(path)!);
+        if (value === undefined) {
+          valid = false;
+          break;
+        }
+        key.push(value);
+      }
+      if (!valid) continue;
+      const row = { key, documentPath };
+      physical.rows.splice(lowerBoundRow(physical.rows, row), 0, row);
+    }
   }
 
-  private _matchesFilter(fields: Record<string, unknown>, filter: FieldFilter): boolean {
-    const value = this._resolveFieldPath(fields, filter.path);
+  private _removePhysicalRows(store: MemoryStore, documentPath: string): void {
+    for (const physical of store.physical.values()) {
+      physical.rows = physical.rows.filter((row) => row.documentPath !== documentPath);
+    }
+  }
+}
 
+function lookupStart(lookup: QueryIndexLookup): IndexScalar[] {
+  if (lookup.range?.lower !== undefined) return [...lookup.equals, lookup.range.lower];
+  if (lookup.range?.prefix !== undefined) return [...lookup.equals, lookup.range.prefix];
+  return lookup.equals;
+}
+
+function matchesLookup(key: IndexScalar[], lookup: QueryIndexLookup): 'before' | 'match' | 'past' {
+  for (let i = 0; i < lookup.equals.length; i++) {
+    const compared = compareIndexScalars(key[i], lookup.equals[i]);
+    if (compared < 0) return 'before';
+    if (compared > 0) return 'past';
+  }
+  const range = lookup.range;
+  if (!range) return 'match';
+  const value = key[range.position];
+  if (range.prefix !== undefined) {
+    if (typeof value !== 'string') return 'past';
+    if (value.startsWith(range.prefix)) return 'match';
+    return compareCodeUnits(value, range.prefix) < 0 ? 'before' : 'past';
+  }
+  if (range.lower !== undefined) {
+    const compared = compareIndexScalars(value, range.lower);
+    if (compared < 0 || (compared === 0 && !range.lowerInclusive)) return 'before';
+  }
+  if (range.upper !== undefined) {
+    const compared = compareIndexScalars(value, range.upper);
+    if (compared > 0 || (compared === 0 && !range.upperInclusive)) return 'past';
+  }
+  return 'match';
+}
+
+function lowerBound(rows: PhysicalRow[], target: IndexScalar[]): number {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (compareKeyPrefix(rows[mid].key, target) < 0) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function lowerBoundRow(rows: PhysicalRow[], target: PhysicalRow): number {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (compareRows(rows[mid], target) < 0) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function compareRows(left: PhysicalRow, right: PhysicalRow): number {
+  const compared = compareKeyPrefix(left.key, right.key);
+  return compared || compareCodeUnits(left.documentPath, right.documentPath);
+}
+
+function compareKeyPrefix(left: IndexScalar[], right: IndexScalar[]): number {
+  for (let i = 0; i < right.length; i++) {
+    const compared = compareIndexScalars(left[i], right[i]);
+    if (compared !== 0) return compared;
+  }
+  return 0;
+}
+
+function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity): boolean {
+  return left.schemaHash === right.schemaHash && left.generation === right.generation &&
+    left.collectionPrefix === right.collectionPrefix &&
+    left.invalidValuePolicy === right.invalidValuePolicy;
+}
+
+function validatePagination(limit?: number, offset?: number): void {
+  if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) {
+    throw new RangeError(`offset must be a non-negative safe integer, got ${offset}`);
+  }
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+    throw new RangeError(`limit must be a non-negative safe integer, got ${limit}`);
+  }
+}
+
+function matchesLegacyFilters(fields: Record<string, unknown>, filters: FieldFilter[]): boolean {
+  return filters.every((filter) => {
+    const value = extractField(fields, filter.path);
     switch (filter.operator) {
-      case 'eq':
-        return value === filter.value;
-
-      case 'neq':
-        return value !== filter.value;
-
+      case 'eq': return value === filter.value;
+      case 'neq': return value !== filter.value;
       case 'gt': {
-        const [nv, nfv] = [this._normalizeForComparison(value), this._normalizeForComparison(filter.value)];
-        return nv !== undefined && nv !== null && nfv !== undefined && nfv !== null && nv > nfv;
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left > right;
       }
-
       case 'gte': {
-        const [nv, nfv] = [this._normalizeForComparison(value), this._normalizeForComparison(filter.value)];
-        return nv !== undefined && nv !== null && nfv !== undefined && nfv !== null && nv >= nfv;
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left >= right;
       }
-
       case 'lt': {
-        const [nv, nfv] = [this._normalizeForComparison(value), this._normalizeForComparison(filter.value)];
-        return nv !== undefined && nv !== null && nfv !== undefined && nfv !== null && nv < nfv;
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left < right;
       }
-
       case 'lte': {
-        const [nv, nfv] = [this._normalizeForComparison(value), this._normalizeForComparison(filter.value)];
-        return nv !== undefined && nv !== null && nfv !== undefined && nfv !== null && nv <= nfv;
+        const [left, right] = [comparable(value), comparable(filter.value)];
+        return left !== undefined && left !== null && right !== undefined && right !== null && left <= right;
       }
-
-      case 'prefix':
-        return typeof value === 'string' && typeof filter.value === 'string' && value.startsWith(filter.value);
-
-      case 'in':
-        return Array.isArray(filter.value) && filter.value.includes(value);
-
-      case 'contains':
-        return typeof value === 'string' && typeof filter.value === 'string' && value.includes(filter.value);
-
-      default:
-        return false;
+      case 'prefix': return typeof value === 'string' && typeof filter.value === 'string' && value.startsWith(filter.value);
+      case 'in': return Array.isArray(filter.value) && filter.value.includes(value);
+      case 'contains': return typeof value === 'string' && typeof filter.value === 'string' && value.includes(filter.value);
     }
-  }
+  });
+}
 
-  private _resolveFieldPath(obj: Record<string, unknown>, path: string): unknown {
-    const segments = path.split('.');
-    let current: unknown = obj;
-    for (const segment of segments) {
-      if (current === null || current === undefined || typeof current !== 'object') {
-        return undefined;
-      }
-      current = (current as Record<string, unknown>)[segment];
-    }
-    return current;
+function compareLegacyEntries(left: IndexEntry, right: IndexEntry, sort: SortClause[]): number {
+  for (const clause of sort) {
+    const a = comparable(extractField(left.fields, clause.path));
+    const b = comparable(extractField(right.fields, clause.path));
+    const compared = compareLegacyValues(a, b);
+    if (compared) return clause.direction === 'desc' ? -compared : compared;
   }
+  return 0;
+}
 
-  private _compareEntries(
-    a: Record<string, unknown>,
-    b: Record<string, unknown>,
-    sort: SortClause[],
-  ): number {
-    for (const clause of sort) {
-      const va = this._resolveFieldPath(a, clause.path);
-      const vb = this._resolveFieldPath(b, clause.path);
-      const cmp = this._compareValues(va, vb);
-      if (cmp !== 0) {
-        return clause.direction === 'desc' ? -cmp : cmp;
-      }
-    }
-    return 0;
-  }
+function compareLegacyValues(a: unknown, b: unknown): number {
+  if (a === b) return 0;
+  if (a === undefined || a === null) return -1;
+  if (b === undefined || b === null) return 1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
+  if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
+  return String(a).localeCompare(String(b));
+}
 
-  private _normalizeForComparison(value: unknown): number | string | boolean | null | undefined {
-    if (value instanceof Date) return value.getTime();
-    if (typeof value === 'string') {
-      const timestamp = Date.parse(value);
-      if (!isNaN(timestamp) && /^\d{4}-\d{2}-\d{2}/.test(value)) {
-        return timestamp;
-      }
-    }
-    return value as number | string | boolean | null | undefined;
+function comparable(value: unknown): any {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const time = Date.parse(value);
+    if (Number.isFinite(time)) return time;
   }
-
-  private _compareValues(a: unknown, b: unknown): number {
-    const na = this._normalizeForComparison(a);
-    const nb = this._normalizeForComparison(b);
-    if (na === nb) return 0;
-    if (na === undefined || na === null) return -1;
-    if (nb === undefined || nb === null) return 1;
-    if (typeof na === 'number' && typeof nb === 'number') return na - nb;
-    if (typeof na === 'string' && typeof nb === 'string') return na.localeCompare(nb);
-    if (typeof na === 'boolean' && typeof nb === 'boolean') return (na ? 1 : 0) - (nb ? 1 : 0);
-    return String(na).localeCompare(String(nb));
-  }
+  return value;
 }

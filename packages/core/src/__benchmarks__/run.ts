@@ -6,7 +6,8 @@
  *   yarn workspace @peerborne/core benchmark --iterations 500
  */
 import * as fs from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { runCrdtSyncLatencyBenchmarks } from './crdt-sync-latency.js';
 import { runCryptoOverheadBenchmarks } from './crypto-overhead.js';
@@ -43,13 +44,13 @@ async function main() {
 
   // 3. Convergence Simulation
   console.log('=== Convergence Simulation ===');
-  const convergence = await runConvergenceSimulationBenchmarks(Math.max(10, Math.floor(iterations / 5)));
+  const convergence = await runConvergenceSimulationBenchmarks(Math.max(1, Math.floor(iterations / 5)));
   allSuites.push(convergence);
   console.log(PaperBenchmarkRunner.formatTable(convergence.results));
   console.log();
 
   // Write JSON results
-  const outPath = join(__dirname, 'results.json');
+  const outPath = join(dirname(fileURLToPath(import.meta.url)), 'results.json');
   fs.writeFileSync(outPath, JSON.stringify(allSuites, null, 2));
   console.log(`Results written to ${outPath}`);
 }

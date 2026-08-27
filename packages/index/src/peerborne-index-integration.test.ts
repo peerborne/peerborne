@@ -241,6 +241,34 @@ describe('PeerborneIndexIntegration', () => {
       expect(doc.handlerCount).toBe(1);
     });
 
+    test('should wait for queued writes when tracking the same document again', async () => {
+      const controlledStorage = new ControlledIndexStorage();
+      const controlled = await createTestIntegration(controlledStorage);
+      const initialWrite = controlledStorage.blockPut('v1');
+      const newerWrite = controlledStorage.blockPut('v2');
+      const doc = new MockSubscribableDocument('/docs/1', { title: 'v1', author: 'Alice' });
+
+      const initialReady = controlled.integration.trackDocument(doc);
+      await waitFor(async () => controlledStorage.operations.includes('put:v1'));
+      doc.simulateChange({ title: 'v2', author: 'Alice' });
+
+      let duplicateResolved = false;
+      const duplicateReady = controlled.integration.trackDocument(doc).then(() => {
+        duplicateResolved = true;
+      });
+      await Promise.resolve();
+      expect(duplicateResolved).toBe(false);
+
+      initialWrite.resolve();
+      await waitFor(async () => controlledStorage.operations.includes('put:v2'));
+      expect(duplicateResolved).toBe(false);
+
+      newerWrite.resolve();
+      await Promise.all([initialReady, duplicateReady]);
+      expect(duplicateResolved).toBe(true);
+      expect(doc.handlerCount).toBe(1);
+    });
+
     test('should ignore a stale handler after the same document is retracked', async () => {
       const doc = new MockSubscribableDocument('/docs/1', { title: 'v1', author: 'Alice' });
       integration.trackDocument(doc);

@@ -41,6 +41,10 @@ The BeeKEM ratchet-tree key rotation closes the revocation-latency gap of earlie
 - **Compaction**: Prunes in-memory CRDT nodes and removes unreferenced blocks. Verified by [`compaction.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/compaction.test.ts) and [`blockstore-gc.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/blockstore-gc.test.ts).
 - **React hook caches**: Module-level task and subscriber-count caches with ref-counting eviction. Verified by [`hooks-cache.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-cache.test.ts) and [`hooks-lifecycle.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/react/src/hooks-lifecycle.test.ts).
 
+### Local index execution
+
+V2 memory indexes use sorted compound-key arrays with binary-search lookup; incremental insert/delete can still shift `O(N)` entries. IndexedDB uses compound secondary indexes and bounded cursors. Equality/range lookup visits the selected range, but `first` is not yet an early-termination guarantee and `count: 'exact'` exhausts all matches. Execution metadata reports rows visited and whether sorting stayed in index order. See the [indexing design](https://github.com/Peerborne/peerborne/blob/main/docs/indexing-design.md).
+
 ## Benchmark suites
 
 Peerborne includes six benchmark suites across two packages. Each suite uses a statistical runner that reports min, max, mean, median, p99, and standard deviation with warmup iterations and optional memory-delta tracking.
@@ -114,7 +118,6 @@ See the [running a relay cookbook](../../cookbook/running-a-relay/) for setup in
 
 ## Current limitations
 
-- **Benchmark runner is broken.** A module resolution mismatch (ESM output marked as CommonJS) prevents benchmarks from running. Fixing the runner is on the [roadmap](../../community/roadmap/).
 - **No pass/fail performance budgets.** Benchmarks exist but have no thresholds in CI. A regression that doubles latency would not be caught automatically.
 - **Bundle size.** The core barrel eagerly imports the complete networking/storage stack. Example application bundles are approximately 2.0 MB minified.
 - **No automated bottleneck detection.** There is no profiling or flame-graph generation in CI.
@@ -122,11 +125,12 @@ See the [running a relay cookbook](../../cookbook/running-a-relay/) for setup in
 ## Running benchmarks
 
 ```sh
-# Core benchmarks (currently broken — see limitations above)
+# Core benchmarks
 yarn workspace @peerborne/core benchmark --iterations 100
 
-# Index benchmarks (currently broken — see limitations above)
+# Index benchmarks; bound the largest query dataset for a smoke run
 yarn workspace @peerborne/index benchmark --iterations 100
+yarn workspace @peerborne/index benchmark --iterations 1 --max-documents 100
 ```
 
-Both suites output Markdown tables with statistical summaries. The `--iterations` flag controls the sample count (default 100).
+Both suites output Markdown tables with statistical summaries. The `--iterations` flag controls the sample count (default 100); `--max-documents` bounds index-query scaling only.

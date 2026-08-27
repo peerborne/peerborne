@@ -17,7 +17,7 @@
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
     "doc": "typedoc --excludePrivate --excludeProtected --excludeInternal",
-    "benchmark": "tsc -b tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node dist-bench/__benchmarks__/run.js",
+    "benchmark": "tsc -p tsconfig.benchmark.json && node -e \"require('fs').writeFileSync('dist-bench/package.json', JSON.stringify({type:'module'}))\" && node dist-bench/__benchmarks__/run.js",
     "test:coverage": "jest --coverage"
   },
   "main": "dist/cjs/src/index.js",
@@ -41,6 +41,12 @@
       "import": "./dist/esm/src/browser-primitives.js",
       "require": "./dist/cjs/src/browser-primitives.js",
       "default": "./dist/esm/src/browser-primitives.js"
+    },
+    "./wire-protocols": {
+      "types": "./dist/esm/src/wire-protocols.d.ts",
+      "import": "./dist/esm/src/wire-protocols.js",
+      "require": "./dist/cjs/src/wire-protocols.js",
+      "default": "./dist/esm/src/wire-protocols.js"
     }
   },
   "files": [

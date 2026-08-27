@@ -41,11 +41,11 @@ The Site workflow generates TypeDoc Markdown from source during `yarn workspace 
 
 ### Benchmark runner and budgets
 
-Core and index benchmark scenarios exist, but the runner currently has a module mismatch. Fix reproducible execution first, then establish representative datasets, environment reporting, baselines, variance handling, and regression budgets before publishing performance claims.
+Core and index benchmark scenarios now execute reproducibly as ESM. Establish representative datasets, environment reporting, baselines, variance handling, and regression budgets before publishing performance claims.
 
 ### Distributed search integration
 
-Blind indexes, local stores, Bloom-filter CRDT/gossip, query logic, and React bindings have isolated coverage. Build an integration path that indexes changing encrypted documents across peers, propagates query metadata, handles false positives and token rotation, and verifies restart and schema-evolution behavior. No current example demonstrates this end to end.
+The signed manifest, expiring advertisement, direct-query, transport-adapter, and candidate-verification layers have isolated coverage. Build collection search membership and dedicated key distribution, register bounded libp2p handlers, implement the authorized document resolver, publish automatically rotated blind-token snapshots, and verify hostile peers, restart, revocation, partition/rejoin, and schema/key evolution. No current example demonstrates this end to end.
 
 ## Examples and evidence
 

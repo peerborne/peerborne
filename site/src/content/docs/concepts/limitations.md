@@ -57,8 +57,16 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **System-level partition/rejoin is not proven.** Single-document convergence works, but multi-document, multi-peer partition/rejoin cycles have no CI coverage.
 - **No pass/fail performance budgets.** Benchmark suites exist but have no thresholds. A regression that doubles latency would not be caught in CI.
-- **Benchmark runner is broken.** Module resolution errors prevent benchmarks from running. See [roadmap](../../community/roadmap/).
 - **Cross-CRDT convergence is not tested.** A Yjs document and an Automerge document being edited by different peers in the same application has no CI coverage.
+
+## Indexing and distributed search
+
+- **Local indexes are projections, not encrypted source data.** V2 is memory-only by default. Explicit IndexedDB mode stores indexed values and ordering keys in cleartext locally.
+- **Pagination is not snapshot isolation.** Cursors are deterministic for one query and generation, but concurrent changes can move rows between pages.
+- **Range execution is not yet early-terminating.** `first` limits returned rows, while executors may still exhaust a selected key range; exact counts always do.
+- **Distributed search is not wired end to end.** Signed manifests, advertisements, codecs, transport adapters, and candidate federation exist as tested primitives, but production libp2p handlers, collection search-key distribution, automatic advertisement publication, and a secure document-resolver adapter remain unfinished.
+- **Remote index claims are not truth.** The coordinator verifies returned candidates through local authorization and predicate checks, but malicious peers can omit results and Sybil identities can distort coverage. Exact global counts and completeness are not claimed.
+- **Blind search still leaks metadata.** Equality/frequency and confirmation leakage remains for search-key holders; plaintext mode reveals the entire predicate to recipients.
 
 ## Examples and documentation
 

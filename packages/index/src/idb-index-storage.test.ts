@@ -117,6 +117,18 @@ describe('IDBIndexStorage', () => {
       expect(results).toHaveLength(3);
     });
 
+    test('range filters do not coerce null or undefined operands', async () => {
+      await storage.put(indexName, '/doc/null', { title: 'Null', count: null });
+      await storage.put(indexName, '/doc/missing', { title: 'Missing' });
+      for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
+        await expect(storage.query(indexName, [{ path: 'count', operator, value: null }]))
+          .resolves.toEqual([]);
+        const numeric = await storage.query(indexName, [{ path: 'count', operator, value: 0 }]);
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/null');
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/missing');
+      }
+    });
+
     test('lt/lte: matches string-typed values that coerce numerically', async () => {
       // Regression test: the IDB-accelerated path used to apply
       // `IDBKeyRange.upperBound(numericValue)`, which silently dropped any

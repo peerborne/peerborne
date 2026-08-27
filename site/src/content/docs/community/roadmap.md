@@ -72,23 +72,24 @@ What needs to happen:
 - TypeScript snippet extraction and validation pipeline
 - CI check that all code blocks in docs match the current API surface
 
-### 8. Benchmark budgets and runner
+### 8. Benchmark budgets
 
-**Status: Runner broken.** Benchmark suites exist for convergence simulation, CRDT sync latency, crypto overhead, blind-index performance, bloom-filter scaling, and index-query scaling, but the runner has a module mismatch. No pass/fail thresholds exist.
+**Status: Runner fixed; budgets not implemented.** Benchmark suites execute as ESM for convergence simulation, CRDT sync latency, crypto overhead, blind-index performance, bloom-filter scaling, and v2 index-query scaling. No pass/fail thresholds exist.
 
 What needs to happen:
-- Fix benchmark runner module resolution
 - Establish baseline metrics in CI
 - Set pass/fail thresholds for regressions
 
 ### 9. Distributed search integration
 
-**Status: Deferred.** Bloom-filter gossip returns candidate peer IDs but does not execute remote queries or aggregate results.
+**Status: Protocol/orchestration foundation implemented; end-to-end integration deferred.** Signed manifests, expiring advertisements, direct request/response codecs, replay guards, a transport adapter, and candidate verification/merge exist. They are not registered on production libp2p nodes.
 
 What needs to happen:
-- Remote query protocol (send query to candidate peers, collect results)
-- CI test for multi-peer search with bloom pre-filtering
-- Privacy analysis of bloom-filter information leakage
+- Collection search-membership and dedicated key-epoch distribution
+- Production advertisement and direct-query libp2p handlers
+- Authorized document resolver over the normal secure load path
+- Automatic blind-token materialization and replacement advertisement publication
+- Hostile multi-peer CI for omission, lies, replay, rotation, restart, and partition/rejoin
 
 ### 10. Examples as complete showcases
 

@@ -38,6 +38,8 @@ describe('wire protocol constant verification', () => {
       tipAdvertiseV1: 'tip-advertise',
       beekemWelcomeV1: 'beekem-welcome',
       beekemPathUpdateV1: 'beekem-pathupdate',
+      searchIndexAdvertiseV1: 'search-index-advertise',
+      searchQueryV1: 'search-query',
     };
     for (const [name, segment] of Object.entries(expected)) {
       expect(wireProtocols[name as keyof typeof wireProtocols]).toContain(`/${segment}/`);
@@ -53,6 +55,8 @@ describe('wire protocol constant verification', () => {
       tipAdvertiseV1: 1,
       beekemWelcomeV1: 1,
       beekemPathUpdateV1: 1,
+      searchIndexAdvertiseV1: 1,
+      searchQueryV1: 1,
     };
     for (const [name, expectedMajor] of Object.entries(nameToMajor)) {
       const value = wireProtocols[name as keyof typeof wireProtocols];
