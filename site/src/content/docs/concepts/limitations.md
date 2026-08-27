@@ -35,7 +35,10 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
-- **Many transports lack document-path evidence in CI.** The current cross-NAT proof verifies an initial document-history load through Circuit Relay. Live post-load convergence and transport-specific Peerborne assertions for direct WebRTC, WebTransport, and DCUtR remain unverified.
+- **Many transports lack document-path evidence in CI.** The current cross-NAT
+  proof verifies invitation acceptance, initial document-history load, and live
+  post-join convergence through Circuit Relay. Transport-specific Peerborne
+  assertions for direct WebRTC, WebTransport, and DCUtR remain unverified.
 - **DHT and AutoNAT have no standalone CI tests.** They are included in the Docker-backed NAT topology but not stress-tested.
 - **Relays can censor or drop traffic.** There is no protection against relay-level denial of service. A malicious relay can blackhole all traffic for a peer or topic.
 - **Relay identity is not stable across restarts.** The relay generates a new libp2p peer ID on each start.
@@ -44,6 +47,46 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Authorization and revocation
 
+- **Invitations are online, in-memory bearer links.** The founder must remain
+  online with the document open. Restarting either process loses outstanding
+  offer or retry state, and whoever obtains an unclaimed offer can claim its
+  role first. There is no selective cancellation API; a short expiry is the
+  only non-disruptive way to limit an unclaimed link. Closing the founder
+  document or stopping its node makes all of its offers unavailable.
+- **Initial invitations support founder plus one active collaborator.** A
+  second active reader is rejected because add-side BeeKEM PathUpdate delivery
+  for larger groups is not implemented or verified. The bounded invitation
+  path supports the first collaborator and exact retries for that identity,
+  not a replacement invitation after revocation.
+- **Initial invitations are founder-process only.** A replica that loaded the
+  document later cannot issue an offer, even if its signing identity is a
+  writer. Founder and recipient identities must be distinct.
+- **Invitation bootstraps are bounded to one attested provider profile.** The
+  bundled Automerge JSON CRDT, ACL, and keychain adapters with P-384/SHA-384
+  SubtleCrypto declare the profile that Peerborne tests. Other providers reject
+  before membership changes unless they explicitly attest the same size and
+  algorithm bounds; the custom provider then owns that guarantee. The sealed
+  Welcome and encrypted bootstrap are each limited to 1 MiB. Preflight combines
+  the retained sync tree, complete keychain, latest snapshot, served tips,
+  signature, projected founder-plus-one membership growth, encryption framing,
+  and a 128 KiB reserve; exact final payloads are checked again. There is no
+  chunked or streaming bootstrap for larger documents.
+- **Invitation rendezvous attempts are bounded, not durable.** Each signed
+  address gets a 30-second attempt before its stream is fully aborted and the
+  next address is tried. There is no background retry after
+  `acceptInvitation()` returns an error.
+- **Invitation onboarding is not transactional.** A founder starts fresh work
+  only while at least 30 seconds remain, but ACL publication, Welcome sealing,
+  signing, encryption, stream, or expiry failure after mutation begins can
+  leave partial or complete recipient membership without a usable acceptance.
+  An exact same-process retry can repair recoverable partial state; a different
+  request or process restart cannot. Expiry remains strict and there is no
+  automatic rollback.
+- **Initial invitations disclose retained history.** Invitation creation
+  requires the founder to explicitly choose `historyVisibility = 'full_history'`.
+  The other visibility modes filter epoch keys but do not safely redact earlier
+  CRDT operations, including operations for later-deleted values, so they are
+  rejected by the invitation path.
 - **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync/load signature gates are disabled for peers holding the needed document key; BeeKEM membership-control messages remain writer-signed.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
@@ -70,7 +113,10 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Examples and documentation
 
-- **Reference applications are not invitation demos.** The three example applications (browser-test, wiki-swarm, password-manager) verify single-browser startup. A separate NAT-isolated acceptance job proves an encrypted load plus live bidirectional mutations for one identity restored onto two devices; distinct-identity invitation and collaboration remain unverified.
+- **The invitation UI is still a test harness.** The Docker-backed browser-test
+  job proves a distinct-identity invitation and live bidirectional mutation,
+  but the three reference applications do not yet provide a polished sharing,
+  identity-verification, recovery, or revocation experience.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
 - **No migration guide.** There is no guide for upgrading from one Peerborne commit to another.
 - **No changelog.** Release notes and version history are not published.
@@ -79,10 +125,16 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 CI evidence exists at different scopes:
 
-- **Peerborne cross-NAT acceptance:** one Chromium process creates and mutates a real document; a second NAT-isolated Chromium process uses the same restored signing identity and an out-of-band exported document key, explicitly dials a `/p2p-circuit/` address, and verifies that existing history loads. This proves relay-backed history retrieval, not separate-user onboarding or live post-load convergence.
-- **Browser smoke:** browser-test opens a document in one Chromium process; the wiki and password-manager suites assert startup and rendering.
-- **Focused component suites:** cover individual protocol, authorization, encryption, and transport behaviors.
-- **Transport integration:** exercises NAT and relay topologies independently of complete Peerborne document convergence.
+- **Peerborne distinct-identity cross-NAT acceptance:** one Chromium process
+  creates a real document and issues an invitation; a second NAT-isolated
+  Chromium process with a separate signing identity accepts it through Circuit
+  Relay, loads existing history, and exchanges live bidirectional mutations.
+- **Browser smoke:** browser-test opens a document in one Chromium process; the
+  wiki and password-manager suites assert startup and rendering.
+- **Focused component suites:** cover individual invitation, protocol,
+  authorization, encryption, and transport behaviors.
+- **Transport integration:** exercises NAT and relay topologies independently of
+  complete Peerborne document convergence.
 
 See the feature audit for the per-capability level. A positive component or
 transport test does not establish complete multi-peer document behavior.

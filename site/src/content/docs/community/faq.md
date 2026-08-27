@@ -71,18 +71,17 @@ proven capability.
 
 ## How do I share a document with another person?
 
-Document sharing requires application-owned identity enrollment and public-key
-exchange; Peerborne has no document-owner role. The recipient installs its KEM
-key pair with `setKemKeyPair()` and shares its signing and KEM public keys with
-an authorized writer. That writer calls `addReader(reader, readerKemPublicKey)`
-and may separately grant writer access.
+The core API automates one narrow online flow: the founder creates a signed
+`reader` or `editor` offer, and one distinct recipient accepts it with a P-256
+KEM key pair. The signed handshake grants the exact ACL role and transfers
+bootstrap keychain material only inside a recipient-encrypted Welcome. Peerborne
+has no separate document-owner role.
 
-Peerborne then updates the reader ACL, creates a writer-signed Welcome, seals
-its visibility-filtered keychain and BeeKEM bootstrap payload to the recipient,
-and sends it best effort to connected peers. The application still owns peer
-reachability, public-key enrollment, onboarding UX, retry/acknowledgment, and
-recovery. See the [password manager cookbook](../../cookbook/password-manager/)
-for an example.
+Applications still need invitation-link delivery, human identity verification,
+key persistence, recovery, and user interface. The initial release is
+founder-plus-one and online-only; offers and replay state do not survive an
+inviter restart. See [Invite a collaborator](../../cookbook/invitations/) for
+the API and its trust boundary.
 
 ## Can a relay read my documents?
 

@@ -1,6 +1,7 @@
 import { AuthProvider, AesAlgorithmName } from './auth-provider.js';
 import { concatUint8Arrays } from './utils.js';
 import { Base64 } from 'js-base64';
+import { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 
 /** HMAC-SHA256 tag length in bytes. */
 const HMAC_TAG_LENGTH = 32;
@@ -29,6 +30,9 @@ export type SubtleCryptoEncryptionResult = {
 export class SubtleCrypto
   implements AuthProvider<CryptoKey, CryptoKey, CryptoKey>
 {
+  readonly initialInvitationCapacityProfile =
+    INITIAL_INVITATION_CAPACITY_PROFILE;
+
   /** Cache derived HMAC keys to avoid re-deriving per call. */
   private _hmacKeyCache = new WeakMap<CryptoKey, CryptoKey>();
 
@@ -62,6 +66,44 @@ export class SubtleCrypto
      */
     public readonly _encryptionAlgorithmName: AesAlgorithmName = 'AES-GCM',
   ) {}
+
+  /** @internal Confirm the exact bounded identity/crypto invitation profile. */
+  public supportsInitialInvitationCapacity(
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+  ): boolean {
+    const signing =
+      typeof this.signingAlgorithm === 'string'
+        ? { name: this.signingAlgorithm }
+        : (this.signingAlgorithm as unknown as Record<string, unknown>);
+    const hash = signing.hash;
+    const hashName =
+      typeof hash === 'string'
+        ? hash
+        : typeof hash === 'object' && hash !== null
+          ? (hash as Record<string, unknown>).name
+          : undefined;
+    const privateAlgorithm = privateKey.algorithm as EcKeyAlgorithm;
+    const publicAlgorithm = publicKey.algorithm as EcKeyAlgorithm;
+    // The bundled keychain and BeeKEM derivation create AES-GCM CryptoKeys.
+    // CTR/CBC remain available to custom stacks, but are not coherent with
+    // the one bundled invitation profile whose end-to-end bounds we attest.
+    const supportedEncryption = this._encryptionAlgorithmName === 'AES-GCM';
+    return (
+      supportedEncryption &&
+      signing.name === 'ECDSA' &&
+      hashName === 'SHA-384' &&
+      privateKey.type === 'private' &&
+      privateAlgorithm.name === 'ECDSA' &&
+      privateAlgorithm.namedCurve === 'P-384' &&
+      privateKey.usages.includes('sign') &&
+      publicKey.type === 'public' &&
+      publicKey.extractable &&
+      publicAlgorithm.name === 'ECDSA' &&
+      publicAlgorithm.namedCurve === 'P-384' &&
+      publicKey.usages.includes('verify')
+    );
+  }
 
   /**
    * Returns the nonce/IV size **in bytes** for the configured encryption
@@ -256,6 +298,40 @@ export class SubtleCrypto
     }
     const raw = await crypto.subtle.exportKey('raw', publicKey);
     return Base64.fromUint8Array(new Uint8Array(raw));
+  }
+
+  /**
+   * Import a canonical P-384 ECDSA identity encoded by
+   * `serializePublicKey`. Invitation authentication deliberately pins this
+   * exact algorithm and curve; custom identity schemes must provide their own
+   * `AuthProvider.deserializePublicKey` implementation.
+   */
+  public async deserializePublicKey(serialized: string): Promise<CryptoKey> {
+    let raw: Uint8Array;
+    try {
+      raw = Base64.toUint8Array(serialized);
+    } catch {
+      throw new Error('Serialized public key must be canonical base64');
+    }
+    if (Base64.fromUint8Array(raw) !== serialized) {
+      throw new Error('Serialized public key must be canonical base64');
+    }
+    if (raw.byteLength !== 97 || raw[0] !== 0x04) {
+      throw new Error(
+        'Serialized public key must be a 97-byte uncompressed P-384 point',
+      );
+    }
+    try {
+      return await crypto.subtle.importKey(
+        'raw',
+        raw as Uint8Array<ArrayBuffer>,
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        true,
+        ['verify'],
+      );
+    } catch {
+      throw new Error('Serialized public key is not a valid P-384 point');
+    }
   }
 
   /**

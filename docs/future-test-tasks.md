@@ -5,8 +5,10 @@ The required cross-NAT acceptance proof is tracked by
 should be selected as explicit future tasks rather than being mistaken for
 current coverage.
 
-- Two distinct identities: invite a reader/writer, deliver a BeeKEM Welcome,
-  synchronize, revoke the member, and reject post-revocation reads and writes.
+- Revocation after invitation: remove the invited collaborator, deliver the
+  BeeKEM PathUpdate, and reject post-revocation reads and writes.
+- Invitation durability: restart the inviter and recipient around offer
+  creation/acceptance, persist KEM and replay state, and test offline expiry.
 - Partition/rejoin: make concurrent document edits while both browser network
   namespaces are disconnected from the relay, restore it, and assert exact
   Automerge convergence.

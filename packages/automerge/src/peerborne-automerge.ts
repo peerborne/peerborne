@@ -23,6 +23,7 @@ import {
   CRDTSyncMessage,
   describeValue,
   deserializeChangeNodeFromJSON,
+  INITIAL_INVITATION_CAPACITY_PROFILE,
   JSONSerializer,
   Keychain,
   KeychainProvider,
@@ -39,6 +40,9 @@ export type AutomergeDocumentChangeHandler<T = any> =
 export class AutomergeProvider<T = any>
   implements CRDTProvider<Doc<T>, BinaryChange[], (doc: T) => void>
 {
+  readonly initialInvitationCapacityProfile =
+    INITIAL_INVITATION_CAPACITY_PROFILE;
+
   newDocument(): Doc<T> {
     return init();
   }
@@ -192,6 +196,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
 export class AutomergeACLProvider
   implements ACLProvider<BinaryChange[], CryptoKey>
 {
+  readonly initialInvitationCapacityProfile =
+    INITIAL_INVITATION_CAPACITY_PROFILE;
+
   initialize(): AutomergeACL {
     return new AutomergeACL();
   }
@@ -482,6 +489,9 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
 export class AutomergeKeychainProvider
   implements KeychainProvider<BinaryChange[], CryptoKey>
 {
+  readonly initialInvitationCapacityProfile =
+    INITIAL_INVITATION_CAPACITY_PROFILE;
+
   initialize(): AutomergeKeychain {
     return new AutomergeKeychain();
   }
@@ -510,6 +520,9 @@ function deserializeBinaryChanges(changes: string[]): BinaryChange[] {
 }
 
 export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], CryptoKey> {
+  readonly initialInvitationCapacityProfile =
+    INITIAL_INVITATION_CAPACITY_PROFILE;
+
   serializeChanges(changes: BinaryChange[]): Uint8Array {
     return this.encode(this.serialize(serializeBinaryChanges(changes)));
   }

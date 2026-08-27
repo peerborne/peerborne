@@ -72,15 +72,20 @@ Peerborne is **not** a good fit when:
 
 ## Current status
 
-Peerborne is alpha software. It is suitable for experiments, prototypes, and learning about local-first systems, not production deployment.
+Peerborne's initial release is early-stage software. It is suitable for
+experiments, prototypes, and learning about local-first systems, not production
+deployment.
 
 Current evidence includes:
 
-- Real encrypted document retrieval across a Circuit Relay and NAT boundary
+- A signed, distinct-identity founder-plus-one invitation across a Circuit
+  Relay and NAT boundary, followed by fresh edits in both directions
 - Single-browser smoke tests for all three example applications
 - Separate Docker-backed transport tests for discovery, GossipSub delivery, and NAT behavior
 
-That evidence does not yet prove durable restart recovery, invitation delivery, automatic reconnect, or system-level partition/rejoin convergence.
+That evidence does not yet prove durable restart recovery, offline or
+multi-member invitations, automatic reconnect, or system-level
+partition/rejoin convergence.
 
 See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a detailed capability-to-evidence map, and the [limitations](../limitations/) page for a complete list of current gaps.
 
@@ -88,5 +93,5 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - [Quick start](../../getting-started/quick-start/) — build from source and run the examples
 - [Concepts](../local-first/) — understand the architecture and design choices
-- [Cookbook](../../cookbook/collaborative-wiki/) — code patterns for common tasks
+- [Invite a collaborator](../../cookbook/invitations/) — the bounded online invitation flow
 - [Roadmap](../../community/roadmap/) — what is being worked on next

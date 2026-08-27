@@ -103,7 +103,13 @@ docker compose -f docker-compose.peerborne-nat.yaml down -v
 
 These helpers mirror CI's 120-second readiness budget. The workflow remains the canonical sequence, including failure logs and unconditional cleanup.
 
-Integration checks transport discovery, bidirectional messaging, resilience, and NAT behavior through the test app. Cross-NAT checks encrypted document retrieval and live bidirectional mutations between real Peerborne apps for one restored identity; it does not prove distinct-identity invitation delivery.
+Integration checks transport discovery, bidirectional messaging, resilience,
+and NAT behavior through the test app. The real Peerborne cross-NAT job uses
+two signing identities, accepts a signed invitation without exposing a
+plaintext document key or injecting one through the test bridge, and asserts
+fresh document mutations in both directions through Circuit Relay. It does not
+prove restart recovery, offline acceptance,
+revocation, partition/rejoin, or relay failover.
 
 ## Generated API reference
 
