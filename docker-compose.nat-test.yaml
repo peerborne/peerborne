@@ -16,6 +16,8 @@ services:
     build:
       context: ./relay-server
       dockerfile: Dockerfile
+    environment:
+      TOPIC_ALLOWLIST: /peerborne/integration-test/
     networks:
       - relay-net
       - nat-a

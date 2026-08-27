@@ -4,6 +4,8 @@ services:
     build:
       context: ./relay-server
       dockerfile: Dockerfile
+    environment:
+      TOPIC_ALLOWLIST: /peerborne/integration-test/
     ports:
       - "9001:9001"
       - "9002:9002"
