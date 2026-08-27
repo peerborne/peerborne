@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "types": ["jest", "node"],
+    "isolatedModules": false
+  },
+  "include": [
+    "src/identity-store.ts",
+    "src/identity-store.test.ts",
+    "src/invitation-link.ts",
+    "src/invitation-link.test.ts"
+  ],
+  "exclude": [],
+  "references": []
+}

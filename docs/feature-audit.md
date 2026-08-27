@@ -38,7 +38,7 @@ Status meanings:
 | WebRTC browser transport | Partial | Browser configuration tests and NAT Playwright specs | NAT suite is an opt-in Docker environment. |
 | WebSocket transport | Verified | The dedicated cross-NAT job connects both isolated Chromium peers to the Circuit Relay over `/ws` and asserts signed invitation bootstrap plus bidirectional document convergence | TLS-terminated `wss` deployment and relay failover while an edit is in flight remain unverified. |
 | WebTransport transport | Claim only | Configured transport | No WebTransport-specific successful synchronization assertion was located. |
-| Circuit Relay v2 fallback | Partial | Relay builds; 57 relay tests; NAT specs | Relay failover while an edit is in flight is not a default gate. |
+| Circuit Relay v2 fallback | Partial | Relay builds; 108 relay tests; NAT specs | Relay failover while an edit is in flight is not a default gate. |
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
 | Distinct-identity invitation and live bidirectional sync across NAT boundaries | Verified | A dedicated real Peerborne Playwright job forces two isolated Chromium processes with separate signing identities through Circuit Relay, accepts a signed editor invitation without exposing a plaintext document key or injecting one through the test bridge, verifies the recipient-encrypted bootstrap, then asserts fresh A-to-B and B-to-A mutations | The initial release is founder-plus-one and online-only; persistence, partition/rejoin, automatic reconnect, revocation, and relay failover remain unverified. |
@@ -49,7 +49,7 @@ Status meanings:
 
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
-| Public-key user identity and signatures | Verified | SubtleCrypto, ECIES, ACL, and serialization tests | Browser key persistence/export UX is not demonstrated. |
+| Public-key user identity and signatures | Verified | SubtleCrypto, ECIES, ACL, and serialization tests plus Peerborne Note's non-extractable P-384 IndexedDB identity tests | Account recovery, cross-device identity transfer, backup, and authenticated collaborator discovery are not implemented. |
 | AES-GCM document/change confidentiality | Verified | Encryption and tamper-failure tests | Metadata leakage and traffic analysis are not addressed by the product claim. |
 | Reader/writer ACLs | Verified | ACL and both CRDT adapter ACL suites | A revoked online peer attempting subsequent writes needs a full-network test. |
 | ACL chain of trust | Verified | ACL-chain suite | Forked ACL histories across a partition need end-to-end resolution evidence. |
@@ -83,7 +83,8 @@ Status meanings:
 | Password-manager reference app | Partial | Vite production build and strict Chromium startup smoke test pass | No two-browser synchronization test; bundle is about 2.0 MB minified. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
 | Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only distinct-identity invitation plus live bidirectional mutation pass | This is a test harness rather than a polished demo; restart recovery is not asserted. |
-| Relay server | Verified | TypeScript build and 57 tests | Deployment smoke test and live health/readiness behavior remain unverified. |
+| Peerborne Note initial-release demo | Partial | Typechecked Vite production build, focused signing-identity/invitation-link/single-tab tests, and a strict single-browser startup smoke test | The source tests do not establish public WSS availability, two-browser behavior in the deployed app, restart recovery, automatic reconnect, revocation UX, delivery, or durability. |
+| Relay server | Verified | TypeScript build, 108 tests, production container build, and a local two-restart identity/readiness smoke | Hosted restart, public WSS reservation, failover, capacity, and upgrade/rollback remain unverified. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |
 | Performance benchmarks | Partial | Runnable ESM crypto, sync, convergence, Bloom, blind-index, and v2 physical-query benchmarks | Results are informational and lack pass/fail budgets. |
@@ -111,7 +112,7 @@ Status meanings:
    listeners after navigation and logged errors without failing. The transport
    integration app similarly proves plain libp2p/Gossipsub messaging, not a
    Peerborne document, CRDT convergence, encryption, or ACL enforcement.
-7. `yarn test:e2e` now runs the three strict application-specific Chromium
+7. `yarn test:e2e` now runs the four strict application-specific Chromium
    suites. Relay-backed database convergence remains deliberately separate
    instead of being represented by a shell-rendering test.
 8. The real cross-NAT topology places the Chromium processes themselves—not

@@ -16,7 +16,7 @@ corepack enable
 yarn install --immutable
 ```
 
-The ten root workspaces are six libraries under `packages/`, three Vite examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
+The eleven root workspaces are six libraries under `packages/`, four Vite examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
 
 Current workspace package names use `@peerborne/*`. They are not published to npm, so develop and test against repository workspaces only.
 
@@ -27,7 +27,7 @@ Current workspace package names use `@peerborne/*`. They are not published to np
 | `packages/core/` | Core documents, storage, networking, crypto, ACL, UCAN, epoch, and BeeKEM primitives |
 | `packages/{automerge,yjs}/` | CRDT adapters; both contain headless daemon binaries |
 | `packages/{react,redux,index}/` | Framework bindings and distributed-index primitives |
-| `examples/{browser-test,wiki-swarm,password-manager}/` | Vite applications used by the three smoke suites |
+| `examples/{browser-test,wiki-swarm,password-manager,peerborne-note}/` | Vite applications used by the four smoke suites |
 | `site/` | Astro Starlight documentation and TypeDoc integration |
 | `relay-server/` | Separate relay project and unit suite |
 | `e2e/integration/` | Playwright transport integration and NAT specs using `e2e/test-app/` |
@@ -38,18 +38,21 @@ Current workspace package names use `@peerborne/*`. They are not published to np
 | `docker-compose.peerborne-nat.yaml` | Two isolated browsers and real Peerborne apps |
 | `docs/feature-audit.md` | Capability-to-evidence audit and known end-to-end gaps |
 
-There is no `multi-user.spec.ts`; the current example suites are smoke tests, not complete multi-user showcases.
+There is no `multi-user.spec.ts`; the example suites are bounded smoke tests,
+not complete multi-user, recovery, or availability showcases. The separate
+cross-NAT job supplies the current two-browser invitation evidence.
 
 ## Build and test commands
 
 ```sh
 yarn build                         # six library workspaces
-yarn build:examples                # libraries, then all three Vite examples
+yarn build:examples                # libraries, then all four Vite examples
 yarn test                          # six library Jest suites
 yarn test:relay                    # separate relay-server Jest suite
 yarn workspace @peerborne/site build
 yarn exec playwright install chromium
-yarn test:e2e                     # three Vite example smoke suites; no Docker
+yarn test:e2e                     # four Vite example smoke suites; no Docker
+yarn test:e2e:peerborne-note:live # deployed app + public relay; set PEERBORNE_NOTE_LIVE_URL
 ```
 
 Use `yarn exec playwright install chromium --with-deps` when Linux system browser dependencies are also needed.
@@ -124,7 +127,10 @@ The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight Typ
 - Address review findings. Repository policy expects Copilot review to return no comments on the latest head and all applicable CI checks to pass.
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless the contributor explicitly requests them.
 
-The CI workflow runs the six-package build and unit-test matrix, Docker integration, NAT traversal, and real Peerborne cross-NAT jobs. The separate Site workflow builds generated TypeDoc and the site. CI currently does **not** run the three example smoke suites or `test:relay`; run those locally when relevant unless the workflows are changed.
+The CI workflow runs the six-package build and unit-test matrix, relay tests,
+four example smoke suites, Docker integration, NAT traversal, and the real
+Peerborne cross-NAT job. The separate Site workflow builds generated TypeDoc
+and the site.
 
 Review timing depends on maintainer availability; there is no response or review-time SLA.
 

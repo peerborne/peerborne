@@ -15,7 +15,12 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Offline and durability
 
-- **Offline editing requires local document state.** An already-open replica can be edited without a peer connection, and a new local document can be created when no connected peer serves it. Loading an existing remote document or sharing the new one still requires reachable peers and the needed key material.
+- **Offline work has no later-delivery guarantee.** A browser can create a new
+  local document or edit an already-loaded replica without a network
+  connection. Loading a document whose required blocks are not local and
+  onboarding an invited collaborator still require reachable peers. Without a
+  durable outbox or delivery acknowledgment, later connectivity does not prove
+  that changes made offline will reach another replica.
 - **No durable outbox.** Changes are published to GossipSub and stored locally, but there is no queue with retry for unreachable peers. If a peer is offline when a change is published, it may never receive it.
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation/storage pipeline and the GossipSub publish call, not remote receipt.
 - **No durable reconnect-and-replay guarantee.** Libp2p may redial keep-alive peers, and an explicit load or later sync history may catch a peer up, but Peerborne does not durably guarantee connection restoration or replay of every missed update.
@@ -113,10 +118,13 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Examples and documentation
 
-- **The invitation UI is still a test harness.** The Docker-backed browser-test
-  job proves a distinct-identity invitation and live bidirectional mutation,
-  but the three reference applications do not yet provide a polished sharing,
-  identity-verification, recovery, or revocation experience.
+- **Peerborne Note is a bounded demo, not a complete sharing product.** It adds
+  an explicit founder-plus-one invitation UI, non-extractable browser signing
+  identity storage, fragment scrubbing, and reader/editor modes. It does not
+  provide account recovery, authenticated collaborator discovery, offline
+  acceptance, durable invitation/KEM state, automatic reconnect, revocation
+  UX, or a delivery guarantee. Its source smoke test is not proof that the
+  public relay or deployment will remain available.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
 - **No migration guide.** There is no guide for upgrading from one Peerborne commit to another.
 - **No changelog.** Release notes and version history are not published.
@@ -130,7 +138,7 @@ CI evidence exists at different scopes:
   Chromium process with a separate signing identity accepts it through Circuit
   Relay, loads existing history, and exchanges live bidirectional mutations.
 - **Browser smoke:** browser-test opens a document in one Chromium process; the
-  wiki and password-manager suites assert startup and rendering.
+  wiki, password-manager, and Peerborne Note suites assert startup and rendering.
 - **Focused component suites:** cover individual invitation, protocol,
   authorization, encryption, and transport behaviors.
 - **Transport integration:** exercises NAT and relay topologies independently of

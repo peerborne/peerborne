@@ -18,7 +18,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 ## Repository map
 
 - `packages/`: six library workspaces
-- `examples/`: browser-test, wiki-swarm, and password-manager Vite workspaces
+- `examples/`: browser-test, wiki-swarm, password-manager, and peerborne-note Vite workspaces
 - `site/`: Astro Starlight workspace and TypeDoc integration
 - `relay-server/`: separate relay project and lockfile
 - `e2e/test-app/`: separate integration-test project and lockfile
@@ -26,7 +26,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
-The root has ten workspaces: six libraries, three examples, and the site.
+The root has eleven workspaces: six libraries, four examples, and the site.
 
 ## Commands
 
@@ -40,13 +40,15 @@ yarn test:e2e
 yarn test:e2e:browser-test
 yarn test:e2e:wiki-swarm
 yarn test:e2e:password-manager
+yarn test:e2e:peerborne-note
+yarn test:e2e:peerborne-note:live # requires PEERBORNE_NOTE_LIVE_URL
 ```
 
-`yarn test:e2e` runs three Vite/Chromium smoke suites and does not require Docker.
+`yarn test:e2e` runs four Vite/Chromium smoke suites and does not require Docker.
 
 Docker-backed suites require their matching topology and readiness checks. Do not run the test command immediately after `docker compose up -d`; follow the exact bounded wait and teardown sequence in the corresponding `.github/workflows/ci.yml` job. The contributor guide also provides local readiness helpers.
 
-`yarn benchmark:all` is runnable. Results are informational; do not claim a regression gate until repeatable CI budgets exist. Use `--iterations 1 --max-documents 100` for a bounded smoke run.
+Do not describe `yarn benchmark:all` as working until its runner module mismatch is fixed.
 
 ## Documentation
 

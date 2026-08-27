@@ -15,16 +15,16 @@ hero:
   image:
     file: ../../assets/logo.svg
   actions:
+    - text: Try Peerborne Note
+      link: https://try.peerborne.io/
+      icon: rocket
     - text: Quick start
       link: ./getting-started/quick-start/
-      icon: rocket
+      icon: right-arrow
+      variant: secondary
     - text: View on GitHub
       link: https://github.com/Peerborne/peerborne
       icon: star
-      variant: secondary
-    - text: Why Peerborne?
-      link: concepts/why-peerborne/
-      icon: right-arrow
       variant: minimal
 ---
 
@@ -38,6 +38,30 @@ import SyncDemo from '../../components/SyncDemo.astro';
 Peerborne is a set of **composable TypeScript libraries** that let you build applications where documents live on user devices and sync directly between peers — encrypted, signed, and content-addressed. There is no application database server. Relays carry ciphertext without seeing plaintext.
 
 A centralized database is simpler and should be the default for most applications. Peerborne is for cases where central custody of plaintext—or dependence on one always-reachable application server—is the downside you need to remove.
+
+## Try the initial-release demo
+
+[Peerborne Note](https://try.peerborne.io/) is a small, real
+Peerborne-and-Automerge application. Create a note locally, choose read-only or
+editing access, and send one invitation link to a collaborator. Document data
+is encrypted before it crosses the relay; the relay can still observe
+connection and traffic metadata and can drop or delay traffic.
+
+Both browsers must remain open and online while the first recipient claims the
+15-minute invitation. Peerborne Note is early-stage and not production-ready:
+do not use it for sensitive or durable data, and do not rely on identity or
+document recovery, automatic reconnect, revocation UX, or relay failover.
+
+<LinkButton href="https://try.peerborne.io/" icon="rocket">
+  Open Peerborne Note
+</LinkButton>{' '}
+<LinkButton
+  href="cookbook/peerborne-note/"
+  icon="information"
+  variant="secondary"
+>
+  Read the demo boundaries
+</LinkButton>
 
 <CardGrid>
   <Card title="Encrypted by default" icon="seti:lock">
@@ -135,8 +159,9 @@ listed directly below the demo.
    and fetch only missing or deferred CID payloads. The Yjs or Automerge layer
    reconciles delivered concurrent edits.
 
-Peerborne currently verifies encrypted document retrieval across a Circuit Relay
-boundary in CI. Broader partition/rejoin, persistence, and production deployment
+Peerborne currently verifies a signed, distinct-identity invitation and fresh
+Automerge edits in both directions across a Circuit Relay boundary in CI.
+Broader partition/rejoin, persistence, public WSS deployment, and relay-failover
 coverage remains active work.
 
 ## Key design choices
@@ -178,10 +203,9 @@ Peerborne is young enough that careful bug reports, API feedback, documentation,
 and unusual network tests can materially shape the project.
 
 <CardGrid>
-  <Card title="Run the examples" icon="rocket">
-    Start with the
-    [browser applications](https://github.com/Peerborne/peerborne/tree/main/examples)
-    and inspect the matching Playwright acceptance tests.
+  <Card title="Try Peerborne Note" icon="rocket">
+    Open the [initial-release demo](https://try.peerborne.io/), then inspect its
+    [source and browser tests](https://github.com/Peerborne/peerborne/tree/main/examples/peerborne-note).
   </Card>
   <Card title="Read the docs" icon="book">
     Understand the [architecture](concepts/architecture/), learn the
@@ -199,22 +223,22 @@ and unusual network tests can materially shape the project.
 </CardGrid>
 
 <LinkButton
-href="./getting-started/quick-start/"
+  href="https://try.peerborne.io/"
   icon="rocket"
+>
+  Try Peerborne Note
+</LinkButton>{' '}
+<LinkButton
+  href="./getting-started/quick-start/"
+  icon="right-arrow"
+  variant="secondary"
 >
   Quick start
 </LinkButton>{' '}
 <LinkButton
   href="concepts/why-peerborne/"
-  icon="right-arrow"
-  variant="secondary"
->
-  Why Peerborne?
-</LinkButton>{' '}
-<LinkButton
-  href="concepts/architecture/"
   icon="information"
   variant="minimal"
 >
-  Architecture
+  Why Peerborne?
 </LinkButton>

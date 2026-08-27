@@ -51,10 +51,14 @@ What needs to happen:
 
 ### 5. Relay identity, failover, and scale
 
-**Status: Limited.** The relay server is functional for development but restarts change peer IDs, there is no meshing or failover, and abuse resistance is unverified. Multi-relay topologies exist in Docker Compose but have no automated scale or failover tests.
+**Status: Limited.** The relay server now persists an app-managed identity,
+publishes local readiness, and has bounded transport, reservation, topic, and
+stream controls with unit coverage. Hosted restart behavior, relay meshing,
+failover, capacity, abuse resistance, and production scale remain unverified.
 
 What needs to happen:
-- Stable relay identity (persistent peer ID across restarts)
+- Deployment smoke that verifies the same public peer ID after a hosted restart
+- Documented identity backup, restore, and intentional rotation procedure
 - Relay meshing for multi-relay deployments
 - CI test for relay failover (kill one relay, verify peers reconnect through another)
 
@@ -97,17 +101,18 @@ What needs to happen:
 
 ### 10. Examples as complete showcases
 
-**Status: Partial.** The three examples (browser-test, wiki-swarm,
-password-manager) verify single-browser startup. The browser-test harness also
-drives the dedicated NAT-isolated distinct-identity invitation and live
-bidirectional convergence job, but the applications do not yet offer polished
-sharing, identity verification, or restart recovery.
+**Status: Partial.** Four examples verify single-browser startup. Peerborne Note
+adds a deliberately bounded founder-plus-one invitation experience, while the
+browser-test harness drives the dedicated NAT-isolated distinct-identity
+invitation and live bidirectional convergence job. None establishes complete
+identity verification, restart recovery, revocation UX, or availability.
 
 What needs to happen:
 - Multi-browser CI tests for each example
 - Document sharing flow in wiki-swarm
 - Key exchange and permission management in password-manager
 - Offline → online → convergence in browser-test
+- Hosted two-browser acceptance and restart checks for Peerborne Note
 
 ### 11. Transport abstraction and Reticulum adapter
 

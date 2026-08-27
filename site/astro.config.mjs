@@ -143,6 +143,7 @@ export default defineConfig({
         {
           label: 'Cookbook',
           items: [
+            'cookbook/peerborne-note',
             'cookbook/invitations',
             'cookbook/collaborative-wiki',
             'cookbook/password-manager',
