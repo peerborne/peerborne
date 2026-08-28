@@ -2,7 +2,7 @@
   "name": "@peerborne/browser-test",
   "private": true,
   "dependencies": {
-    "@automerge/automerge": "^3.2.6",
+    "@automerge/automerge": "^3.4.1",
     "@peerborne/automerge": "workspace:packages/automerge",
     "@peerborne/core": "workspace:packages/core",
     "@peerborne/redux": "workspace:packages/redux",
