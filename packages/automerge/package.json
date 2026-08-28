@@ -48,7 +48,7 @@
     "node": ">=22.19.0"
   },
   "devDependencies": {
-    "@automerge/automerge": "^3.2.6",
+    "@automerge/automerge": "^3.4.1",
     "@peculiar/webcrypto": "^1.7.1",
     "@types/node": "^22.7.5",
     "eslint": "^10.4.1",
@@ -61,7 +61,7 @@
     "@peerborne/core": "workspace:^"
   },
   "peerDependencies": {
-    "@automerge/automerge": "^3.2.6"
+    "@automerge/automerge": "^3.4.1"
   },
   "publishConfig": {
     "access": "public"
