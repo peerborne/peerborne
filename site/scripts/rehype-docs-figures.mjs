@@ -27,14 +27,7 @@ function svgFigure(node, figureIndex) {
   delete image.properties.title;
   const kind = source.includes('/charts/') ? 'chart' : 'diagram';
   const captionId = `docs-figure-caption-${figureIndex}`;
-  const expandedImage = {
-    ...image,
-    properties: {
-      ...image.properties,
-      alt: '',
-      loading: 'lazy',
-    },
-  };
+  const viewportId = `docs-figure-viewport-${figureIndex}`;
 
   return {
     type: 'element',
@@ -51,7 +44,13 @@ function svgFigure(node, figureIndex) {
           {
             type: 'element',
             tagName: 'div',
-            properties: { className: ['docs-figure__viewport'] },
+            properties: {
+              'aria-labelledby': captionId,
+              className: ['docs-figure__viewport'],
+              id: viewportId,
+              role: 'region',
+              tabIndex: 0,
+            },
             children: [image],
           },
           {
@@ -77,22 +76,25 @@ function svgFigure(node, figureIndex) {
             type: 'element',
             tagName: 'summary',
             properties: {
-              'aria-label': `View ${kind} at full size: ${caption.trim()}`,
+              'aria-controls': viewportId,
+              'aria-describedby': captionId,
             },
             children: [
-              { type: 'text', value: `View ${kind} at full size` },
+              {
+                type: 'element',
+                tagName: 'span',
+                properties: { className: ['docs-figure__expand-label'] },
+                children: [
+                  { type: 'text', value: `View ${kind} at full size` },
+                ],
+              },
+              {
+                type: 'element',
+                tagName: 'span',
+                properties: { className: ['docs-figure__fit-label'] },
+                children: [{ type: 'text', value: `Fit ${kind} to page` }],
+              },
             ],
-          },
-          {
-            type: 'element',
-            tagName: 'div',
-            properties: {
-              'aria-label': `Full-size ${kind}: ${caption.trim()}`,
-              className: ['docs-figure__full-size'],
-              role: 'region',
-              tabIndex: 0,
-            },
-            children: [expandedImage],
           },
         ],
       },
