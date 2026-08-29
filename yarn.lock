@@ -13761,6 +13761,7 @@ __metadata:
   resolution: "root-workspace-0b6124@workspace:."
   dependencies:
     "@playwright/test": "npm:^1.58.2"
+    tsx: "npm:4.23.12"
   languageName: unknown
   linkType: soft
 
