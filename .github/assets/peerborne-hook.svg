@@ -1,20 +1,4 @@
-#!/usr/bin/env node
-
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const scriptPath = fileURLToPath(import.meta.url);
-const root = resolve(dirname(scriptPath), '..');
-const outputPath = resolve(root, '.github/assets/peerborne-hook.svg');
-const maximumBytes = 100 * 1024;
-
-export function normalizeNewlines(value) {
-  return value.replace(/\r\n?/g, '\n');
-}
-
-export function generatePeerborneHookSvg() {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title description">
   <title id="title">Peerborne distinct-identity invitation and live peer sync</title>
   <desc id="description">Browser A creates a signed editor invitation. Browser B accepts with a separate identity, receives a recipient-encrypted Welcome through Circuit Relay, loads retained history, and sends a live mutation back. Each browser builds a local client-side index; distributed candidate search is explicitly marked incomplete.</desc>
   <defs>
@@ -221,38 +205,3 @@ export function generatePeerborneHookSvg() {
     <text x="460" y="29" fill="#94a3b8" font-size="9.7" text-anchor="middle">Encrypted Welcome · live bidirectional relay sync · local index primitives tested separately</text>
   </g>
 </svg>
-`;
-}
-
-function run() {
-  const svg = generatePeerborneHookSvg();
-  const size = Buffer.byteLength(svg);
-  if (size > maximumBytes) {
-    throw new Error(`Generated SVG is ${size} bytes; expected no more than ${maximumBytes}`);
-  }
-
-  if (process.argv.includes('--check')) {
-    let current;
-    try {
-      current = readFileSync(outputPath, 'utf8');
-    } catch {
-      throw new Error(`Missing generated SVG: ${outputPath}`);
-    }
-    if (normalizeNewlines(current) !== svg) {
-      throw new Error(
-        `Generated SVG is stale: run node scripts/render-peerborne-hook.mjs`,
-      );
-    }
-    console.log(`Verified ${outputPath} (${size} bytes)`);
-    return;
-  }
-
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, svg);
-  const writtenSize = statSync(outputPath).size;
-  console.log(`Generated ${outputPath} (960x540, ${writtenSize} bytes)`);
-}
-
-if (resolve(process.argv[1] ?? '') === scriptPath) {
-  run();
-}
