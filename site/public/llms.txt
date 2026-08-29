@@ -7,10 +7,11 @@ Use the feature audit and concept documentation as the authority for capability 
 ## Start
 
 - [Full handwritten documentation corpus](https://peerborne.io/llms-full.txt): Every hand-authored site page plus the feature and verification audit in one generated file.
+- [Try Peerborne Note](https://try.peerborne.io/): Bounded initial-release founder-plus-one Automerge invitation demo; early-stage and not production-ready.
 - [Quick start](https://peerborne.io/getting-started/quick-start/): Build Peerborne from source and exercise the verified browser path.
 - [Why Peerborne](https://peerborne.io/concepts/why-peerborne/): Value proposition, when to use/not use.
 - [Architecture](https://peerborne.io/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
-- [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager).
+- [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager, peerborne-note).
 - [API reference](https://peerborne.io/reference/): Generated package documentation for all six @peerborne/* packages.
 - [Comparisons](https://peerborne.io/reference/comparisons/): Peerborne vs Yjs, Automerge, Liveblocks, RxDB, Jazz, ElectricSQL.
 
@@ -36,13 +37,14 @@ The six libraries are source workspaces and are not yet published to npm. Most a
 
 ## Cookbook
 
+- [Peerborne Note](https://peerborne.io/cookbook/peerborne-note/): Try the initial-release demo and understand its identity, invitation, relay, privacy, and recovery boundaries.
 - [Collaborative wiki](https://peerborne.io/cookbook/collaborative-wiki/): Run the wiki-swarm example (Vite, Redux, Automerge). Startup smoke only.
 - [Password manager](https://peerborne.io/cookbook/password-manager/): Run the password-manager example with key material setup and ACL management.
 - [React integration](https://peerborne.io/cookbook/react/): usePeerborneDocumentState hooks, PeerborneContext provider, document open/change patterns.
 - [Redux integration](https://peerborne.io/cookbook/redux/): Store setup, peerborneReducer, initializeAsync, openDocumentAsync, selector patterns.
 - [Search indexing](https://peerborne.io/cookbook/search-indexing/): IndexManager (materialized indexes), blind-index primitives, bloom-filter gossip (deferred).
 - [Yjs schema design](https://peerborne.io/cookbook/yjs-schema-design/): Y.Map, Y.Array, Y.Text merge behaviors, mutation patterns, ID/counter patterns, migration.
-- [Running a relay](https://peerborne.io/cookbook/running-a-relay/): Docker build/run, Vite client configuration, operational limits (no stable identity, no meshing).
+- [Running a relay](https://peerborne.io/cookbook/running-a-relay/): Docker build/run, persistent app-managed identity, readiness, Vite client configuration, and failover/scale limits.
 - [Pinning](https://peerborne.io/cookbook/pinning/): What exists vs what's missing, 10-step integration checklist.
 
 ## Community

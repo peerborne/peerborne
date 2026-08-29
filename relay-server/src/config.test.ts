@@ -1,9 +1,24 @@
 import {
   DEFAULT_DOCUMENT_PUBLISH_PATH,
+  DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
+  DEFAULT_IDENTITY_KEY_PATH,
+  DEFAULT_MAX_CONNECTIONS,
   DEFAULT_MAX_AUTO_TOPICS,
+  DEFAULT_MAX_AUTO_TOPICS_PER_PEER,
+  DEFAULT_READINESS_PORT,
+  DEFAULT_RELAY_HOP_TIMEOUT_MS,
+  DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+  DEFAULT_RELAY_MAX_CIRCUIT_DURATION_MS,
+  DEFAULT_RELAY_MAX_INBOUND_HOP_STREAMS,
+  DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS,
+  DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS,
+  DEFAULT_RELAY_MAX_RESERVATIONS,
+  DEFAULT_RELAY_RESERVATION_TTL_MS,
   DEFAULT_TCP_PORT,
+  DEFAULT_TOPIC_ALLOWLIST,
   DEFAULT_WS_PORT,
   PUBSUB_PEER_DISCOVERY_TOPIC,
+  circuitRelayServerOptions,
   listenAddresses,
   loadConfig,
 } from './config.js'
@@ -19,9 +34,27 @@ describe('loadConfig', () => {
       expect(cfg.ipv6Enabled).toBe(false)
       expect(cfg.wsListenV6).toBe(`/ip6/::/tcp/${DEFAULT_WS_PORT}/ws`)
       expect(cfg.tcpListenV6).toBe(`/ip6/::/tcp/${DEFAULT_TCP_PORT}`)
-      expect(cfg.topicAllowlist).toBeNull()
+      expect(cfg.readinessPort).toBe(DEFAULT_READINESS_PORT)
+      expect(cfg.identityKeyPath).toBe(DEFAULT_IDENTITY_KEY_PATH)
+      expect(cfg.topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
       expect(cfg.maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
+      expect(cfg.maxAutoTopicsPerPeer).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
+      expect(cfg.gossipsubMaxTopicBytesPerPeer).toBe(
+        DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
+      )
+      expect(cfg.maxConnections).toBe(DEFAULT_MAX_CONNECTIONS)
       expect(cfg.extraTopics).toEqual([])
+      expect(cfg.relayLimits).toEqual({
+        maxReservations: DEFAULT_RELAY_MAX_RESERVATIONS,
+        reservationTtlMs: DEFAULT_RELAY_RESERVATION_TTL_MS,
+        maxCircuitDurationMs: DEFAULT_RELAY_MAX_CIRCUIT_DURATION_MS,
+        maxCircuitDataBytes: DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+        hopTimeoutMs: DEFAULT_RELAY_HOP_TIMEOUT_MS,
+        maxInboundHopStreams: DEFAULT_RELAY_MAX_INBOUND_HOP_STREAMS,
+        maxOutboundHopStreams: DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS,
+        maxOutboundStopStreams: DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS,
+      })
+      expect(cfg.relayLimits.reservationTtlMs).toBe(600_000)
     })
   })
 
@@ -36,9 +69,11 @@ describe('loadConfig', () => {
 
     it('honours explicit WS_LISTEN / TCP_LISTEN overrides', () => {
       const cfg = loadConfig({
+        MAX_CONNECTIONS: '200',
         WS_LISTEN: '/ip4/127.0.0.1/tcp/9999/ws',
         TCP_LISTEN: '/ip4/127.0.0.1/tcp/8888',
       })
+      expect(cfg.maxConnections).toBe(200)
       expect(cfg.wsListen).toBe('/ip4/127.0.0.1/tcp/9999/ws')
       expect(cfg.tcpListen).toBe('/ip4/127.0.0.1/tcp/8888')
     })
@@ -84,12 +119,19 @@ describe('loadConfig', () => {
   })
 
   describe('TOPIC_ALLOWLIST parsing', () => {
-    it('returns null when unset (open mode)', () => {
-      expect(loadConfig({}).topicAllowlist).toBeNull()
+    it('uses the document-only allowlist when unset', () => {
+      expect(loadConfig({}).topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
     })
 
-    it('returns null when empty (open mode)', () => {
-      expect(loadConfig({ TOPIC_ALLOWLIST: '' }).topicAllowlist).toBeNull()
+    it('uses the document-only allowlist when empty', () => {
+      expect(loadConfig({ TOPIC_ALLOWLIST: '' }).topicAllowlist).toEqual(
+        DEFAULT_TOPIC_ALLOWLIST,
+      )
+    })
+
+    it('uses null only for explicit wildcard open mode', () => {
+      expect(loadConfig({ TOPIC_ALLOWLIST: '*' }).topicAllowlist).toBeNull()
+      expect(loadConfig({ TOPIC_ALLOWLIST: ' * ' }).topicAllowlist).toBeNull()
     })
 
     it('splits a single value', () => {
@@ -117,15 +159,15 @@ describe('loadConfig', () => {
     })
 
     it('returns [] (closed mode) when set to "," — operator expressed intent, just no entries', () => {
-      // Distinguishes "unset" (null → open mode) from "set but parses to no
-      // entries" (empty array → closed mode, rejects everything). This
-      // matches the historical inline behaviour and protects a misconfigured
-      // relay from silently flipping open.
+      // A malformed explicit value stays closed instead of silently reverting
+      // to the safe default or explicit wildcard open mode.
       expect(loadConfig({ TOPIC_ALLOWLIST: ',' }).topicAllowlist).toEqual([])
     })
 
-    it('returns [] (closed mode) when set to whitespace-only', () => {
-      expect(loadConfig({ TOPIC_ALLOWLIST: '   ' }).topicAllowlist).toEqual([])
+    it('uses the document-only allowlist when set to whitespace-only', () => {
+      expect(loadConfig({ TOPIC_ALLOWLIST: '   ' }).topicAllowlist).toEqual(
+        DEFAULT_TOPIC_ALLOWLIST,
+      )
     })
 
     it('returns [] (closed mode) when every segment is empty or whitespace', () => {
@@ -158,10 +200,61 @@ describe('loadConfig', () => {
       expect(loadConfig({ MAX_AUTO_TOPICS: '-5' }).maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
     })
 
-    it('parses leading-digit strings via parseInt semantics', () => {
-      // parseInt('100abc', 10) === 100 — match historical inline behaviour.
-      expect(loadConfig({ MAX_AUTO_TOPICS: '100abc' }).maxAutoTopics).toBe(100)
+    it.each(['1.5', '100topics', '9007199254740992'])(
+      'falls back when the value is not a positive safe integer: %s',
+      (value) => {
+        expect(loadConfig({ MAX_AUTO_TOPICS: value }).maxAutoTopics).toBe(
+          DEFAULT_MAX_AUTO_TOPICS,
+        )
+      },
+    )
+  })
+
+  describe('MAX_AUTO_TOPICS_PER_PEER parsing', () => {
+    it('falls back to the default when unset', () => {
+      expect(loadConfig({}).maxAutoTopicsPerPeer).toBe(
+        DEFAULT_MAX_AUTO_TOPICS_PER_PEER,
+      )
     })
+
+    it('honours a positive safe integer', () => {
+      expect(
+        loadConfig({ MAX_AUTO_TOPICS_PER_PEER: '12' }).maxAutoTopicsPerPeer,
+      ).toBe(12)
+    })
+
+    it.each(['', '0', '-1', '1.5', '12topics', '9007199254740992'])(
+      'falls back for invalid value %j',
+      (value) => {
+        expect(
+          loadConfig({ MAX_AUTO_TOPICS_PER_PEER: value })
+            .maxAutoTopicsPerPeer,
+        ).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
+      },
+    )
+  })
+
+  describe('GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER parsing', () => {
+    it('uses a bounded default', () => {
+      expect(loadConfig({}).gossipsubMaxTopicBytesPerPeer).toBe(65_536)
+    })
+
+    it('honours a positive safe-integer override', () => {
+      expect(
+        loadConfig({ GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER: '32768' })
+          .gossipsubMaxTopicBytesPerPeer,
+      ).toBe(32_768)
+    })
+
+    it.each(['', '0', '-1', '1.5', '64kb', '9007199254740992'])(
+      'falls back for invalid value %j',
+      (value) => {
+        expect(
+          loadConfig({ GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER: value })
+            .gossipsubMaxTopicBytesPerPeer,
+        ).toBe(DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER)
+      },
+    )
   })
 
   describe('EXTRA_TOPICS parsing', () => {
@@ -171,6 +264,90 @@ describe('loadConfig', () => {
 
     it('splits, trims and filters empty segments', () => {
       expect(loadConfig({ EXTRA_TOPICS: ' /a/ , ,/b/,' }).extraTopics).toEqual(['/a/', '/b/'])
+    })
+  })
+
+  describe('relay launch configuration', () => {
+    it('honours readiness and identity path overrides', () => {
+      const cfg = loadConfig({
+        READINESS_PORT: '9100',
+        RELAY_IDENTITY_KEY_PATH: '/data/relay.key',
+      })
+      expect(cfg.readinessPort).toBe(9100)
+      expect(cfg.identityKeyPath).toBe('/data/relay.key')
+    })
+
+    it('rejects an out-of-range readiness port', () => {
+      expect(loadConfig({ READINESS_PORT: '65536' }).readinessPort).toBe(
+        DEFAULT_READINESS_PORT,
+      )
+    })
+
+    it('honours explicit Circuit Relay limits', () => {
+      const cfg = loadConfig({
+        RELAY_MAX_RESERVATIONS: '64',
+        RELAY_RESERVATION_TTL_MS: '3600000',
+        RELAY_MAX_CIRCUIT_DURATION_MS: '600000',
+        RELAY_MAX_CIRCUIT_BYTES: '8388608',
+        RELAY_HOP_TIMEOUT_MS: '15000',
+        RELAY_MAX_INBOUND_HOP_STREAMS: '80',
+        RELAY_MAX_OUTBOUND_HOP_STREAMS: '81',
+        RELAY_MAX_OUTBOUND_STOP_STREAMS: '82',
+      })
+      expect(cfg.relayLimits).toEqual({
+        maxReservations: 64,
+        reservationTtlMs: 3_600_000,
+        maxCircuitDurationMs: 600_000,
+        maxCircuitDataBytes: 8_388_608n,
+        hopTimeoutMs: 15_000,
+        maxInboundHopStreams: 80,
+        maxOutboundHopStreams: 81,
+        maxOutboundStopStreams: 82,
+      })
+    })
+
+    it.each([
+      ['0'],
+      ['-1'],
+      ['1.5'],
+      ['12ms'],
+      ['9007199254740992'],
+    ])('rejects unsafe numeric limit %s', (value) => {
+      const cfg = loadConfig({
+        READINESS_PORT: value,
+        MAX_CONNECTIONS: value,
+        RELAY_MAX_RESERVATIONS: value,
+        RELAY_RESERVATION_TTL_MS: value,
+        RELAY_MAX_CIRCUIT_DURATION_MS: value,
+        RELAY_HOP_TIMEOUT_MS: value,
+        RELAY_MAX_INBOUND_HOP_STREAMS: value,
+        RELAY_MAX_OUTBOUND_HOP_STREAMS: value,
+        RELAY_MAX_OUTBOUND_STOP_STREAMS: value,
+      })
+      expect(cfg.readinessPort).toBe(DEFAULT_READINESS_PORT)
+      expect(cfg.maxConnections).toBe(DEFAULT_MAX_CONNECTIONS)
+      expect(cfg.relayLimits.maxReservations).toBe(DEFAULT_RELAY_MAX_RESERVATIONS)
+      expect(cfg.relayLimits.reservationTtlMs).toBe(DEFAULT_RELAY_RESERVATION_TTL_MS)
+      expect(cfg.relayLimits.maxCircuitDurationMs).toBe(
+        DEFAULT_RELAY_MAX_CIRCUIT_DURATION_MS,
+      )
+      expect(cfg.relayLimits.hopTimeoutMs).toBe(DEFAULT_RELAY_HOP_TIMEOUT_MS)
+      expect(cfg.relayLimits.maxInboundHopStreams).toBe(
+        DEFAULT_RELAY_MAX_INBOUND_HOP_STREAMS,
+      )
+      expect(cfg.relayLimits.maxOutboundHopStreams).toBe(
+        DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS,
+      )
+      expect(cfg.relayLimits.maxOutboundStopStreams).toBe(
+        DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS,
+      )
+    })
+
+    it.each(['0', '-1', '1.5', '12MB'])('rejects unsafe byte limit %s', (value) => {
+      expect(
+        loadConfig({ RELAY_MAX_CIRCUIT_BYTES: value }).relayLimits
+          .maxCircuitDataBytes,
+      ).toBe(DEFAULT_RELAY_MAX_CIRCUIT_BYTES)
     })
   })
 })
@@ -224,5 +401,34 @@ describe('listenAddresses', () => {
       TCP_LISTEN_V6: '',
     })
     expect(listenAddresses(cfg)).toEqual([cfg.wsListen, cfg.tcpListen])
+  })
+})
+
+describe('circuitRelayServerOptions', () => {
+  it('maps every configured limit to Circuit Relay v2', () => {
+    const config = loadConfig({
+      RELAY_MAX_RESERVATIONS: '64',
+      RELAY_RESERVATION_TTL_MS: '3600000',
+      RELAY_MAX_CIRCUIT_DURATION_MS: '600000',
+      RELAY_MAX_CIRCUIT_BYTES: '8388608',
+      RELAY_HOP_TIMEOUT_MS: '15000',
+      RELAY_MAX_INBOUND_HOP_STREAMS: '80',
+      RELAY_MAX_OUTBOUND_HOP_STREAMS: '81',
+      RELAY_MAX_OUTBOUND_STOP_STREAMS: '82',
+    })
+
+    expect(circuitRelayServerOptions(config)).toEqual({
+      hopTimeout: 15_000,
+      reservations: {
+        maxReservations: 64,
+        reservationTtl: 3_600_000,
+        applyDefaultLimit: true,
+        defaultDurationLimit: 600_000,
+        defaultDataLimit: 8_388_608n,
+      },
+      maxInboundHopStreams: 80,
+      maxOutboundHopStreams: 81,
+      maxOutboundStopStreams: 82,
+    })
   })
 })

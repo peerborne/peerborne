@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "packageManager": "yarn@4.5.0",
   "scripts": {
     "start": "node dist/index.js",
     "build": "tsc",
-    "test": "jest"
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@libp2p/autonat": "^3.0.26",
     "@libp2p/circuit-relay-v2": "^4.2.11",
+    "@libp2p/crypto": "^5.1.22",
     "@libp2p/gossipsub": "^17.0.0",
     "@libp2p/identify": "^4.1.12",
     "@libp2p/interface": "^3.2.5",
@@ -26,6 +28,7 @@
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
+    "@libp2p/peer-id": "^6.0.14",
     "@types/jest": "^29.5.12",
     "@types/node": "^25.3.0",
     "jest": "^29.2.5",

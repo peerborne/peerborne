@@ -80,7 +80,8 @@ Current evidence includes:
 
 - A signed, distinct-identity founder-plus-one invitation across a Circuit
   Relay and NAT boundary, followed by fresh edits in both directions
-- Single-browser smoke tests for all three example applications
+- Single-browser smoke tests for all four example applications, including the
+  bounded Peerborne Note invitation UX
 - Separate Docker-backed transport tests for discovery, GossipSub delivery, and NAT behavior
 
 That evidence does not yet prove durable restart recovery, offline or
@@ -91,6 +92,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Next steps
 
+- [Try Peerborne Note](../../cookbook/peerborne-note/) — use the initial-release demo within its identity, relay, and recovery boundaries
 - [Quick start](../../getting-started/quick-start/) — build from source and run the examples
 - [Concepts](../local-first/) — understand the architecture and design choices
 - [Invite a collaborator](../../cookbook/invitations/) — the bounded online invitation flow

@@ -13,6 +13,8 @@ that live on user devices and synchronize over peer-to-peer networks.
 
 **Documentation:** https://peerborne.io/
 
+**Try Peerborne Note:** https://try.peerborne.io/
+
 A centralized database is simpler and should be the default for most
 applications. Peerborne is for collaboration where requiring every participant
 to trust one plaintext data custodian—or one always-reachable application
@@ -28,6 +30,12 @@ invitation, and both peers exchange live mutations through Circuit Relay. The
 index panels represent separately tested client-side primitives over documents
 each peer holds—without an application database or search server. Distributed
 candidate search remains incomplete and is not demonstrated.
+
+Peerborne Note is the bounded initial-release demo: create a local Automerge
+note and invite one online collaborator through a relay that carries encrypted
+document data. Do not use the demo for sensitive or durable data; identity and
+document recovery, automatic reconnect, revocation UX, and relay failover are
+not established.
 
 ## Quick start from source
 
@@ -84,8 +92,11 @@ See the [feature and verification audit](docs/feature-audit.md), [concepts](site
 - [`examples/browser-test`](examples/browser-test) — minimal Automerge/Redux document app
 - [`examples/wiki-swarm`](examples/wiki-swarm) — Automerge collaborative editor
 - [`examples/password-manager`](examples/password-manager) — Yjs/React access-control UI
+- [`examples/peerborne-note`](examples/peerborne-note) — bounded Automerge invitation demo at [try.peerborne.io](https://try.peerborne.io/)
 
-`yarn test:e2e` builds and smoke-tests all three Vite examples. They are development examples, not complete end-to-end showcases.
+`yarn test:e2e` builds and smoke-tests all four Vite examples. The first three
+are development examples; Peerborne Note is an initial-release demo with the
+limits above, not a production-ready application.
 
 ## Project links
 

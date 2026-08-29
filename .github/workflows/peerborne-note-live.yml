@@ -1,0 +1,39 @@
+name: Peerborne Note live smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 10 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: peerborne-note-live
+  cancel-in-progress: false
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+          cache: 'yarn'
+      - run: yarn install --immutable
+      - run: yarn exec playwright install chromium --with-deps
+      - run: yarn test:e2e:peerborne-note:live
+        env:
+          CI: true
+          PEERBORNE_NOTE_LIVE_URL: https://try.peerborne.io/
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: peerborne-note-live-results
+          path: test-results/
+          retention-days: 30

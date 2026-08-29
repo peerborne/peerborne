@@ -36,7 +36,11 @@ Storage and pinning concepts are documented, but a complete publisher, durable r
 
 ### Relay identity, failover, and scale
 
-The relay has unit coverage and NAT acceptance paths. Needed work includes durable relay identity, deployment smoke tests, in-flight failover, multiple-relay selection, churn, abuse/resource limits, observability, and scale evidence.
+The relay has an app-managed persistent identity, readiness checks, bounded
+resource controls, unit coverage, and NAT acceptance paths. Needed work includes
+hosted restart and WSS deployment smoke tests, identity backup/rotation,
+in-flight failover, multiple-relay selection, churn, observability, and scale
+evidence.
 
 ### External package publication
 
@@ -56,6 +60,11 @@ The signed manifest, expiring advertisement, direct-query, transport-adapter, an
 
 ## Examples and evidence
 
-`browser-test`, `wiki-swarm`, and `password-manager` build and pass Chromium startup smoke tests through `yarn test:e2e`. They are useful source examples, not complete showcases of invitations, persistence, convergence, pinning, or distributed search. Contributions should state precisely which boundary a new test crosses and avoid production-readiness claims.
+`browser-test`, `wiki-swarm`, `password-manager`, and `peerborne-note` build and
+pass Chromium startup smoke tests through `yarn test:e2e`. Peerborne Note is the
+bounded initial-release demo; it is not proof of durable invitations,
+persistence, reconnect, revocation, relay availability, pinning, or distributed
+search. Contributions should state precisely which boundary a new test crosses
+and avoid production-readiness claims.
 
 Maintainer responses and reviews have no SLA. Small, focused proposals with a reproducible failing case or a clear acceptance criterion are easiest to evaluate.

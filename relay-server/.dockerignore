@@ -3,3 +3,5 @@ node_modules/
 .yarn/cache/
 *.log
 relay-info.json
+relay-identity.key
+relay-identity.key.*.tmp

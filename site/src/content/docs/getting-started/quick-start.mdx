@@ -109,7 +109,7 @@ encryption key.
 
 The repository also contains heavier acceptance suites:
 
-- `yarn test:e2e` builds and smoke-tests all three browser examples.
+- `yarn test:e2e` builds and smoke-tests all four browser examples.
 - `yarn test:integration` exercises the integration topology after its Docker
   Compose services are running.
 - `yarn test:nat` exercises NAT traversal after its Docker Compose topology is
@@ -150,6 +150,10 @@ publication:
 - [`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager)
   demonstrates the React and Yjs integrations, but should not yet be treated as
   proof of distinct-identity invitation.
+- [`examples/peerborne-note`](https://github.com/Peerborne/peerborne/tree/main/examples/peerborne-note)
+  is the bounded initial-release Automerge invitation demo. Read its
+  [identity, relay, and recovery boundaries](../../cookbook/peerborne-note/)
+  before trying it with another browser.
 - [Invite a collaborator](../../cookbook/invitations/) documents the narrow
   online invitation API and its trust/recovery limits.
 
@@ -169,6 +173,7 @@ it covers.
 - [Why Peerborne?](../../concepts/why-peerborne/) — understand the value proposition and when to use it
 - [Architecture](../../concepts/architecture/) — see how the pieces fit together with diagrams
 - [Concepts](../../concepts/local-first/) — dive into local-first design, CRDTs, networking, storage, and security
+- [Peerborne Note](../../cookbook/peerborne-note/) — try the initial-release demo and review its boundaries
 - [Cookbook](../../cookbook/collaborative-wiki/) — try runnable recipes for wikis, password managers, React, Redux, and more
 - [API reference](../../reference/) — explore the generated API documentation for all six packages
 - [FAQ](../../community/faq/) — answers to common questions

@@ -18,12 +18,12 @@ yarn test
 yarn workspace @peerborne/site build
 ```
 
-Use Node.js 22.19.0 and Yarn 4.5.0. Run `yarn test:relay` and the relevant example or Docker-backed suite when affected. `yarn test:e2e` runs three Vite/Chromium smoke suites without Docker. Integration, NAT, and cross-NAT tests require their matching Compose topologies; follow `.github/workflows/ci.yml`.
+Use Node.js 22.19.0 and Yarn 4.5.0. Run `yarn test:relay` and the relevant example or Docker-backed suite when affected. `yarn test:e2e` runs four Vite/Chromium smoke suites without Docker. Integration, NAT, and cross-NAT tests require their matching Compose topologies; follow `.github/workflows/ci.yml`.
 
 ## Repository boundaries
 
 - `packages/`: six root library workspaces
-- `examples/`: three root Vite workspaces
+- `examples/`: four root Vite workspaces
 - `site/`: Starlight and generated TypeDoc
 - `relay-server/`: separate project and lockfile
 - `e2e/test-app/`: separate project and lockfile

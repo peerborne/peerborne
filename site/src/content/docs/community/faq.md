@@ -5,7 +5,7 @@ description: Frequently asked questions about Peerborne.
 
 ## Is Peerborne production-ready?
 
-**Not yet.** Peerborne is under active development. It is suitable for experiments, prototypes, and learning about local-first systems. Several critical paths are not yet verified end-to-end, including browser restart recovery, partition/rejoin convergence, and automatic reconnect. See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a complete capability map.
+**Not yet.** Peerborne is under active development. It is suitable for experiments, prototypes, and learning about local-first systems. Several critical paths are not yet verified end-to-end, including browser restart recovery, partition/rejoin convergence, and automatic reconnect. [Peerborne Note](../../cookbook/peerborne-note/) is an initial-release demo, not evidence of production readiness. See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a complete capability map.
 
 ## Can I use Peerborne with npm/pnpm/yarn install?
 
@@ -77,8 +77,10 @@ KEM key pair. The signed handshake grants the exact ACL role and transfers
 bootstrap keychain material only inside a recipient-encrypted Welcome. Peerborne
 has no separate document-owner role.
 
-Applications still need invitation-link delivery, human identity verification,
-key persistence, recovery, and user interface. The initial release is
+[Peerborne Note](../../cookbook/peerborne-note/) supplies one bounded link and
+explicit-acceptance interface and persists a local browser signing identity.
+Applications still own link delivery, human identity verification, backup,
+recovery, and the rest of the product experience. The initial release is
 founder-plus-one and online-only; offers and replay state do not survive an
 inviter restart. See [Invite a collaborator](../../cookbook/invitations/) for
 the API and its trust boundary.
@@ -108,7 +110,11 @@ CRDT documents grow with every change. Yjs documents of a few megabytes are typi
 
 ## Is there a hosted version of Peerborne?
 
-No. Peerborne is a set of libraries, not a service. There is no cloud offering, no managed relay service, and no hosted storage. You run your own infrastructure.
+There is no managed Peerborne service. [Peerborne Note](https://try.peerborne.io/)
+is a hosted initial-release demo backed by one project-operated relay, not a
+cloud offering or durable hosted store. It has no availability or data-recovery
+guarantee. Applications using the libraries still operate their own relay and
+storage infrastructure.
 
 ## What license is Peerborne?
 

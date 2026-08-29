@@ -8,7 +8,7 @@ services:
     volumes:
       - shared-data:/shared
     healthcheck:
-      test: ["CMD", "node", "-e", "const net = require('net'); const s = net.createConnection(9001, '127.0.0.1', () => { s.end(); process.exit(0); }); s.on('error', () => process.exit(1));"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 3s
       timeout: 3s
       retries: 20

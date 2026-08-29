@@ -1,9 +1,13 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import {
   encodeInvitationProtocolFrame,
   readInvitationProtocolFrame,
   readInvitationProtocolMessage,
 } from './invitation-framing';
+
+async function* chunks(...values: Uint8Array[]): AsyncIterable<Uint8Array> {
+  for (const value of values) yield value;
+}
 
 describe('invitation-framing', () => {
   const maxBytes = 4096;
@@ -144,6 +148,42 @@ describe('invitation-framing', () => {
   });
 
   describe('readInvitationProtocolMessage', () => {
+    test('decodes one-byte chunks exactly once', async () => {
+      const payload = new TextEncoder().encode('one bounded message');
+      const frame = encodeInvitationProtocolFrame(payload, maxBytes);
+      const deserialize = jest.fn((value: Uint8Array) =>
+        new TextDecoder().decode(value),
+      );
+
+      await expect(
+        readInvitationProtocolMessage(
+          chunks(...Array.from(frame, (byte) => new Uint8Array([byte]))),
+          deserialize,
+          maxBytes,
+        ),
+      ).resolves.toBe('one bounded message');
+      expect(deserialize).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects an invalid complete message without awaiting another chunk', async () => {
+      const frame = encodeInvitationProtocolFrame(
+        new Uint8Array([0xff]),
+        maxBytes,
+      );
+      const deserialize = jest.fn(() => {
+        throw new Error('invalid invitation tuple');
+      });
+      const source = (async function* () {
+        yield frame;
+        await new Promise<void>(() => {});
+      })();
+
+      await expect(
+        readInvitationProtocolMessage(source, deserialize, maxBytes),
+      ).rejects.toThrow(/invalid invitation tuple/);
+      expect(deserialize).toHaveBeenCalledTimes(1);
+    });
+
     test('round-trip with custom deserializer', async () => {
       const payload = new TextEncoder().encode('test-data');
       const frame = encodeInvitationProtocolFrame(payload, maxBytes);

@@ -8,10 +8,12 @@ source checkout. Use the smallest example that matches what you want to inspect:
 | [`browser-test`](./browser-test/)         | Automerge and Redux | Core node setup, document controls, peer controls, and ACL inspection | Opens one real encrypted document in one Chromium process |
 | [`wiki-swarm`](./wiki-swarm/)             | Automerge and Redux | A larger editor and routing pattern                                   | Builds and renders the wiki interface in Chromium         |
 | [`password-manager`](./password-manager/) | Yjs and React       | React hooks and item-specific access-control UI                       | Builds and renders the login interface in Chromium        |
+| [`peerborne-note`](./peerborne-note/)     | Automerge and React | Bounded founder-plus-one invitation UX                                | Unit coverage and a strict Chromium startup smoke test    |
 
-These are source examples for evaluation and development, not application
-templates or production showcases. Never enter real credentials into the
-password-manager example.
+These are source examples for evaluation and development. Peerborne Note is the
+initial-release demo, but it is still early-stage and not production-ready.
+Never enter real credentials into the password-manager example or sensitive or
+durable content into Peerborne Note.
 
 ## Run from source
 
@@ -29,15 +31,16 @@ Then start one workspace:
 yarn workspace @peerborne/browser-test start
 yarn workspace @peerborne/wiki-swarm start
 yarn workspace @peerborne/password-manager start
+yarn workspace @peerborne/peerborne-note start
 ```
 
-Run one of those three commands at a time and open the URL printed by Vite. The
+Run one of those four commands at a time and open the URL printed by Vite. The
 [verified quick start](https://peerborne.io/getting-started/quick-start/)
 walks through the browser-test controls and their evidence boundary.
 
 ## Verify the examples
 
-Install Chromium once, then run all three smoke suites:
+Install Chromium once, then run all four smoke suites:
 
 ```sh
 yarn exec playwright install chromium
@@ -63,4 +66,6 @@ For one example at a time, use its focused guide and test command:
   [collaborative wiki cookbook](https://peerborne.io/cookbook/collaborative-wiki/)
 - [`password-manager` guide](./password-manager/README.md) and
   [shared-secrets cookbook](https://peerborne.io/cookbook/password-manager/)
+- [`peerborne-note` guide](./peerborne-note/README.md) and
+  [Peerborne Note cookbook](https://peerborne.io/cookbook/peerborne-note/)
 - [Current limitations](https://peerborne.io/concepts/limitations/)

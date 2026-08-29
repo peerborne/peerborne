@@ -123,7 +123,7 @@ This section describes running everything needed for Peerborne on a single machi
 
 ### 2.1 What You Need
 
-At minimum, you need **one relay/bootstrap server** and access to **public STUN servers**. This is sufficient for development and small deployments (up to ~50 concurrent peers).
+At minimum, you need **one relay/bootstrap server** and access to **public STUN servers**. This topology is suitable for development and limited initial trials; it has not been capacity-tested and carries no concurrent-peer guarantee.
 
 ### 2.2 Architecture
 
@@ -169,7 +169,7 @@ node dist/index.js
 
 The relay server will:
 1. Listen on port 9001 (WebSocket) and 9002 (TCP)
-2. Generate a peer ID on startup
+2. Load or create an app-managed libp2p identity at `RELAY_IDENTITY_KEY_PATH`
 3. Write connection info to `relay-info.json`
 4. Subscribe to peer discovery and document sync topics
 
@@ -253,8 +253,28 @@ The relay server reads the following environment variables:
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
 | `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/documents` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Only topics matching a prefix are auto-subscribed. Unset = open mode (all non-system topics allowed). Example: `/document/,/documents` | *(unset — open mode)* |
+| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/document/,/documents` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
+| `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
+| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
+| `MAX_CONNECTIONS` | Global ceiling for established libp2p transport connections | `256` |
+| `RELAY_IDENTITY_KEY_PATH` | Persistent app-managed libp2p private-key file | `./relay-identity.key` |
+| `READINESS_PORT` | Internal HTTP `/livez` and `/readyz` port | `9000` |
+| `RELAY_MAX_RESERVATIONS` | Active Circuit Relay v2 reservation cap | `128` |
+| `RELAY_RESERVATION_TTL_MS` | Reservation lifetime before renewal | `600000` |
+| `RELAY_MAX_CIRCUIT_DURATION_MS` | Per-circuit duration limit | `1800000` |
+| `RELAY_MAX_CIRCUIT_BYTES` | Per-circuit byte limit | `16777216` |
+
+`TOPIC_ALLOWLIST` applies only to GossipSub topics that the relay node
+auto-subscribes to. It cannot inspect or restrict opaque, Noise-encrypted
+Circuit Relay streams and is not an authorization control. HOP/STOP stream
+limits are per connection; `MAX_CONNECTIONS` is the separate global transport
+connection ceiling. The pinned dependency may retain a disconnected reservation
+until its 10-minute TTL expires. The 128-reservation cap bounds capacity while
+those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions;
+`MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
+`GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
+the relay's application-level registry receives subscription events.
 
 The relay-info.json output path is determined automatically: `/shared/relay-info.json` if the `/shared` directory exists (Docker volume), otherwise `./relay-info.json` in the working directory.
 
@@ -370,20 +390,18 @@ peerDiscovery: [
 - For **multiple relay nodes**, give clients all relay addresses (one
   multiaddr per relay, each with its own peer ID) and let libp2p handle
   connection management. A single shared hostname that load-balances across
-  backends with different peer IDs is **not** supported unless you also
-  pre-generate stable per-relay peer IDs and enforce sticky routing — see
-  [`docs/deployment.md`](../docs/deployment.md) for the caveats. DNS
-  round-robin on a single hostname has the same problem.
+  backends with different peer IDs is **not** supported. Source-IP hashing
+  does not pin a peer ID. Use one hostname/SNI route per durable relay identity;
+  DNS round-robin on a single hostname has the same problem.
 
 ### 3.6 Monitoring and Health Checks
 
-The relay server Dockerfile includes a health check that verifies the WebSocket port is accepting connections:
+The standard relay Dockerfile waits for the internal readiness endpoint:
 
 ```dockerfile
 HEALTHCHECK --interval=3s --timeout=3s --retries=20 --start-period=5s \
-  CMD node -e "const net = require('net'); \
-    const s = net.createConnection(9001, '127.0.0.1', () => { s.end(); process.exit(0); }); \
-    s.on('error', () => process.exit(1));"
+  CMD node -e "fetch('http://127.0.0.1:9000/readyz').then((response) => \
+    process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 ```
 
 **Metrics to monitor:**
@@ -395,6 +413,9 @@ HEALTHCHECK --interval=3s --timeout=3s --retries=20 --start-period=5s \
 
 ### 3.7 Resource Requirements
 
+The following are planning examples, not measured Peerborne capacity tiers.
+Benchmark your traffic pattern before choosing a production size.
+
 | Scale | CPU | RAM | Bandwidth | Storage |
 |-------|-----|-----|-----------|---------|
 | Small (10-50 peers) | 1 vCPU | 512 MB | 10 Mbps | 1 GB |
@@ -405,10 +426,10 @@ Storage is only significant for pinning nodes. Relay-only nodes have minimal sto
 
 ### 3.8 Backup and Recovery
 
-**Relay nodes are stateless.** They generate a new peer ID on each start. This means:
-- No data to back up on relay nodes
-- Clients must be updated with new peer IDs if a relay is recreated
-- For stable peer IDs, persist the libp2p private key and restore it on restart
+**Relay payload forwarding is stateless, but relay identity is not.** Preserve
+the file named by `RELAY_IDENTITY_KEY_PATH` to retain the public peer ID. The
+standard Docker image stores it under `/shared`, alongside `relay-info.json`.
+Losing it changes the peer ID; exposing it compromises the relay identity.
 
 **Pinning nodes are stateful.** Back up:
 - The IDB blockstore/datastore (or underlying storage)
@@ -464,20 +485,23 @@ For persistent data storage without running your own pinning node:
 | TURN | $10-50/month (VPS + bandwidth) | $0.40-1.00 per GB relayed |
 | Pinning | $5-20/month (storage VPS) | Free tier usually sufficient for dev |
 
-**Key takeaway:** The minimum cost for a production Peerborne deployment is roughly **$2-5/month**: a Fly.io `shared-cpu-1x` VM (≈$2/month) running the relay server, plus free public STUN servers. See [Section 5](#5-flyio-deployment) for a step-by-step Fly.io guide.
+**Key takeaway:** The checked-in Fly shape is a low-cost initial-release
+starting point, not a production capacity claim. Compute, volume storage, and
+bandwidth are billed separately; verify current pricing before deployment. See
+[Section 5](#5-flyio-deployment) for the deployment steps.
 
 ---
 
 ## 5. Fly.io Deployment
 
-[Fly.io](https://fly.io/) is a managed container platform with data-centers in 30+ regions. It is a convenient low-cost deployment target for the relay server: the smallest shared-CPU VM costs roughly **$2/month** and can handle dozens of concurrent peers.
+[Fly.io](https://fly.io/) is a managed container platform and a convenient
+deployment target for the relay server. The checked-in `shared-cpu-1x`/256 MB
+shape has not been capacity-tested; measure connection, memory, and bandwidth
+behavior before increasing traffic.
 
-> **Pricing note (verified May 2026):** Fly.io operates on a pay-as-you-go model.
-> There is no permanent free tier for new organizations — all compute is billed
-> when running. The figures quoted here are for a `shared-cpu-1x` VM with 256 MB
-> RAM at the US-East (`iad`) rate. Prices vary slightly by region.
-> Always check [fly.io/docs/about/pricing/](https://fly.io/docs/about/pricing/) for
-> current rates before committing.
+Fly.io pricing and allowances change over time. Check the current
+[Fly.io pricing documentation](https://fly.io/docs/about/pricing/) before
+committing to a deployment.
 
 ### 5.1 Prerequisites
 
@@ -519,6 +543,9 @@ cd relay-server
 # confirm the primary region. Do NOT let fly launch override fly.toml.
 fly launch --no-deploy
 
+# Create the volume required by fly.toml in its primary region.
+fly volumes create peerborne_relay_data --region iad --size 1
+
 # Deploy the image built from relay-server/Dockerfile
 fly deploy
 ```
@@ -554,52 +581,26 @@ Multiaddrs: [ '/ip4/0.0.0.0/tcp/9001/ws/p2p/12D3KooWAbc123...' ]
 The public multiaddr your clients should use is constructed from the Fly hostname:
 
 ```text
-/dns4/<APP_NAME>.fly.dev/tcp/9001/wss/p2p/<PEER_ID>
+/dns4/<APP_NAME>.fly.dev/tcp/443/wss/p2p/<PEER_ID>
 ```
 
-> **TLS:** Fly.io terminates TLS for HTTPS/WSS traffic on port 443 by default,
-> but the relay uses raw TCP ports (9001/9002) configured as `[[services]]` in
-> `fly.toml`. Fly does **not** automatically add TLS to raw TCP services.
-> Production deployments must serve WebSocket clients over `wss://` because
-> browsers block `ws://` connections from HTTPS-served pages under the
-> mixed-content policy. Connections from HTTP origins or `localhost` may use
-> `ws://`, but production multiaddrs should use `wss://`. You have two options:
->
-> **Option A — Fly's built-in TLS termination (recommended):**
-> Add `"tls"` to the port handlers in `fly.toml`:
+> **TLS and WSS:** The checked-in raw TCP service maps external port 443 to
+> internal port 9001 with Fly's `tls` handler:
 > ```toml
 > [[services.ports]]
->   port = 9001
+>   port = 443
 >   handlers = ["tls"]
 > ```
-> Leave ALPN at the Fly defaults so the TLS handshake advertises the standard
-> HTTP values (`http/1.1`, optionally `h2`) that browsers require for the
-> WebSocket upgrade. Do **not** set `tls_options.alpn = ["libp2p"]` — that
-> value is for raw libp2p TLS streams and will prevent browsers from
-> completing the WSS handshake. Redeploy, then clients connect with:
-> ```text
-> /dns4/<APP_NAME>.fly.dev/tcp/9001/wss/p2p/<PEER_ID>
-> ```
->
-> **Option B — Fly proxy on port 443:**
-> Replace the `[[services]]` block with an `[http_service]` block so the Fly
-> proxy terminates TLS on 443 and forwards plain WebSocket frames to the
-> container on port 9001:
-> ```toml
-> [http_service]
->   internal_port = 9001
->   force_https = true
->   auto_stop_machines = "off"
->   auto_start_machines = true
->   processes = ["app"]
-> ```
-> Clients then connect on the HTTPS port:
+> Fly terminates TLS and forwards the WebSocket upgrade to the relay. Do not
+> publish the internal 9001 address to an HTTPS browser. Clients connect with:
 > ```text
 > /dns4/<APP_NAME>.fly.dev/tcp/443/wss/p2p/<PEER_ID>
 > ```
-> See the Fly.io
-> [`http_service` reference](https://fly.io/docs/reference/configuration/#the-http_service-section)
-> for additional options (concurrency, checks, response headers).
+
+Fly monitors the private HTTP `/readyz` check for deployment health, while the
+public WSS service uses a TCP routing check. A successful `/readyz` is local
+startup evidence and does not itself gate Fly routing or prove a remote Circuit
+Relay reservation.
 
 ### 5.4 Client Configuration
 
@@ -616,7 +617,7 @@ import {
 
 const config = defaultConfig(
   defaultBootstrapConfig([
-    '/dns4/myapp-relay.fly.dev/tcp/9001/wss/p2p/12D3KooWAbc123...',
+    '/dns4/myapp-relay.fly.dev/tcp/443/wss/p2p/12D3KooWAbc123...',
   ]),
 );
 ```
@@ -628,7 +629,7 @@ import { defaultNodeConfig } from '@peerborne/core/node';
 
 const config = defaultNodeConfig({
   list: [
-    '/dns4/myapp-relay.fly.dev/tcp/9001/wss/p2p/12D3KooWAbc123...',
+    '/dns4/myapp-relay.fly.dev/tcp/443/wss/p2p/12D3KooWAbc123...',
   ],
 });
 ```
@@ -644,6 +645,9 @@ Override relay defaults by adding entries to `[env]` in `fly.toml`:
 [env]
   TOPIC_ALLOWLIST  = "/document/,/documents"
   MAX_AUTO_TOPICS  = "500"
+  MAX_AUTO_TOPICS_PER_PEER = "32"
+  GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"
+  MAX_CONNECTIONS  = "256"
   EXTRA_TOPICS     = "/documents"
 ```
 
@@ -655,40 +659,38 @@ fly secrets set MY_SECRET=value
 
 ### 5.6 Scaling and Cost Management
 
-The `fly.toml` defaults to one VM. To scale up or down:
+The volume-backed `fly.toml` is a one-Machine deployment. Inspect or restore
+that Machine with:
 
 ```bash
-# Scale to 2 instances (costs double)
-fly scale count 2
-
-# Scale back to 1
+# Ensure one Machine is present
 fly scale count 1
 
 # Check current machine status
 fly status
 ```
 
-**Stopping the VM entirely** to avoid charges:
+**Stopping the VM entirely** to stop compute charges:
 
 ```bash
-fly scale count 0   # stops all machines; app stays registered but costs nothing
+fly scale count 0   # stops all machines; attached volume storage is still billed
 fly scale count 1   # restart when needed
 ```
 
-Each relay has a distinct libp2p peer ID that is **regenerated on every restart**.
-If you scale to 0 and back, clients configured with the old peer ID will fail to
-dial until they are updated. For stable peer IDs across restarts, persist the
-libp2p private key in a Fly volume and restore it at startup.
+The checked-in Fly configuration mounts `/data`, so scaling to zero and back
+preserves the peer ID. Losing or replacing that volume creates a new identity.
+Do not scale one volume-backed identity to concurrent machines; provision a
+distinct volume, hostname, and advertised peer ID for each relay instead.
 
 ### 5.7 Caveats
 
 | Topic | Details |
 |-------|---------|
 | **Cost** | ~$2/month for `shared-cpu-1x 256mb`. Bandwidth is billed above regional thresholds (see [pricing page](https://fly.io/docs/about/pricing/)). |
-| **Scale-to-zero** | Fly.io can suspend machines on inactivity if configured, but this is opt-in (`auto_stop_machines = true` in `fly.toml`). The provided `fly.toml` does not enable it, so the relay runs continuously. |
-| **Single-instance** | The default config runs one VM. A single `shared-cpu-1x` VM handles dozens of concurrent peers comfortably. For higher availability, scale to 2+ VMs in different regions and add all multiaddrs to your client config. |
-| **Peer ID stability** | The relay generates a new peer ID on each container start. Clients must be updated with the new peer ID after redeploys. |
-| **Port 9002 (TCP)** | Fly.io exposes raw TCP ports, so node-to-node connections on port 9002 work. If you only use browser clients, you can remove the `[[services]]` block for port 9002 from `fly.toml`. |
+| **Scale-to-zero** | Fly.io can suspend machines on inactivity if configured, but this is opt-in (`auto_stop_machines = true` in `fly.toml`). The provided `fly.toml` does not enable it, so the relay runs continuously. Stopped compute and attached volume storage have separate billing. |
+| **Single-instance** | Capacity and failover remain unvalidated. For another relay, create a separate app/volume/hostname so clients can pin its distinct peer ID; do not load-balance one hostname across identities. |
+| **Peer ID stability** | `/data/relay-identity.key` on the Fly volume preserves the peer ID. Back up the volume if retaining pinned client multiaddrs matters. |
+| **Browser-only network surface** | The checked-in Fly app publishes WSS on 443 only. It does not publish raw TCP 9002 because this launch configuration does not provision a dedicated IPv4 address for that service. |
 
 ---
 
