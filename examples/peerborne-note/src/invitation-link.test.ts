@@ -68,6 +68,14 @@ describe('invitation Base64url', () => {
     expect(decodeInvitationToken(token)).toEqual(bytes);
   });
 
+  test('round-trips bytes across encoding chunks', () => {
+    const bytes = Uint8Array.from(
+      { length: 0x8001 },
+      (_, index) => index % 256,
+    );
+    expect(decodeInvitationToken(encodeInvitationToken(bytes))).toEqual(bytes);
+  });
+
   test.each([
     '',
     'AQID=',

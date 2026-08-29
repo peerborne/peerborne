@@ -46,13 +46,13 @@ export function consumeInvitationFragment(
 }
 
 export function encodeInvitationToken(bytes: Uint8Array): string {
-  let binary = '';
+  const chunks: string[] = [];
   const chunkSize = 0x8000;
   for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
     const chunk = bytes.subarray(offset, offset + chunkSize);
-    binary += String.fromCharCode(...chunk);
+    chunks.push(String.fromCharCode(...chunk));
   }
-  return btoa(binary)
+  return btoa(chunks.join(''))
     .replace(/\+/gu, '-')
     .replace(/\//gu, '_')
     .replace(/=+$/u, '');
