@@ -62,8 +62,9 @@ export interface Keychain<KeychainChange, DocumentKey> {
 
   /**
    * Gets a block of change(s) describing only the current (most recent) key.
-   * Used for `current_only` history visibility where new members should only
-   * receive the current encryption key, not the full key history.
+   * Used for `current_only` key distribution where new members receive the
+   * current encryption key, not the full key history. This does not itself
+   * redact retained CRDT operations encrypted during that epoch.
    *
    * @return A block of change(s) containing only the current key.
    */
@@ -88,8 +89,8 @@ export interface Keychain<KeychainChange, DocumentKey> {
   /**
    * Gets a block of change(s) describing only the keys at or after the given
    * key ID. Used for the `since_invited` history visibility mode where a new
-   * member should receive every key from the moment they were invited onward,
-   * but no earlier history.
+   * member receives every key from the moment they were invited onward, but
+   * no earlier epoch keys. It does not itself redact retained CRDT operations.
    *
    * If the supplied `keyID` is not present in the keychain, the keychain is
    * not yet aware of that epoch -- the method returns the full history so the

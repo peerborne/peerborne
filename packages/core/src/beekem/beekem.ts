@@ -67,25 +67,37 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
-    // Add new leaf at next position
-    const newLeafPos = this._numLeaves;
-    const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
-    this._numLeaves++;
+    const previousNodes = this._nodes;
+    const previousNumLeaves = this._numLeaves;
+    // All mutation happens on a shallow map copy. Tree nodes are immutable
+    // value objects in these paths, so discarding the copy rolls back a failed
+    // WebCrypto/export/Welcome operation without leaving a phantom leaf.
+    this._nodes = new Map(previousNodes);
+    try {
+      // Add new leaf at next position
+      const newLeafPos = this._numLeaves;
+      const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
+      this._numLeaves++;
 
-    const newLeaf: LeafNode = {
-      type: 'leaf',
-      index: newLeafIndex,
-      publicKey: memberPublicKey,
-    };
-    this._nodes.set(newLeafIndex, newLeaf);
+      const newLeaf: LeafNode = {
+        type: 'leaf',
+        index: newLeafIndex,
+        publicKey: memberPublicKey,
+      };
+      this._nodes.set(newLeafIndex, newLeaf);
 
-    // Generate fresh key material along our path to root
-    const { pathUpdate, rootSecret } = await this._updatePath();
+      // Generate fresh key material along our path to root
+      const { pathUpdate, rootSecret } = await this._updatePath();
 
-    // Build welcome message for the new member
-    const welcome = await this._buildWelcome(newLeafIndex, memberPublicKey);
+      // Build welcome message for the new member
+      const welcome = await this._buildWelcome(newLeafIndex, memberPublicKey);
 
-    return { pathUpdate, welcome, rootSecret };
+      return { pathUpdate, welcome, rootSecret };
+    } catch (error) {
+      this._nodes = previousNodes;
+      this._numLeaves = previousNumLeaves;
+      throw error;
+    }
   }
 
   /**

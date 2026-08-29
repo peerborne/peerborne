@@ -6,6 +6,14 @@
     "outDir": "dist/cjs",
     "declaration": false,
     "composite": false,
+    "baseUrl": ".",
+    "paths": {
+      // The package build emits referenced Core declarations before this CJS pass.
+      // Mapping Core source here would escape this package's rootDir.
+      "@peerborne/core/wire-protocols": [
+        "../core/dist/esm/src/wire-protocols.d.ts"
+      ]
+    },
     "rootDir": "."
   },
   "references": []

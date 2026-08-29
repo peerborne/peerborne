@@ -19,9 +19,9 @@ Status meanings:
 
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
-| Create, open, change, close, and synchronize documents | Partial | Core and adapter suites; browser-test opens a real encrypted Automerge document in Chromium | Cross-browser mutation and convergence still require a relay-backed acceptance test. |
+| Create, open, change, close, and synchronize documents | Verified | Core and adapter suites plus the relay-backed distinct-identity browser acceptance job | Restart recovery and partition/rejoin are separate unverified durability paths. |
 | Strong eventual consistency under concurrent edits | Partial | Automerge/Yjs adapter tests and convergence benchmark source | The benchmark is not an assertion-based CI gate; partition/rejoin convergence needs a deterministic acceptance test. |
-| Automerge adapter | Verified | 77 passing adapter/serializer tests; wiki and browser-test typechecked production builds and Chromium smoke tests | Cross-browser convergence remains a system-level gap. |
+| Automerge adapter | Verified | Adapter/serializer tests, typechecked production builds, Chromium smoke tests, and the cross-NAT bidirectional document job | Partition/rejoin and restart recovery remain system-level gaps. |
 | Yjs adapter | Verified | 92 passing tests; password-manager production build | Multi-browser convergence still depends on the separate Playwright/Docker path. |
 | Merkle-DAG change history and serialization | Verified | Merkle serialization and cross-link suites | Maliciously deep/wide DAG resource-exhaustion limits need dedicated coverage. |
 | Snapshots and history compaction | Verified | Snapshot, compaction, and blockstore-GC suites | Long-running multi-peer compaction during concurrent writes is not exercised. |
@@ -34,13 +34,14 @@ Status meanings:
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
 | libp2p peer lifecycle and discovery | Partial | Core tests, peer-discovery integration spec | Requires Docker/integration services and is excluded from `yarn test`. |
-| Gossipsub document updates | Partial | Core protocol code and integration specs | No default in-process multi-peer acceptance test. |
+| Gossipsub document updates | Verified | The dedicated cross-NAT job asserts fresh document mutations in both directions after two replicas are open | Partition/rejoin, automatic reconnect, and dropped-message recovery remain unverified. |
 | WebRTC browser transport | Partial | Browser configuration tests and NAT Playwright specs | NAT suite is an opt-in Docker environment. |
-| WebSockets and WebTransport | Claim only | Configured transports | No transport-specific successful synchronization assertion was located. |
+| WebSocket transport | Verified | The dedicated cross-NAT job connects both isolated Chromium peers to the Circuit Relay over `/ws` and asserts signed invitation bootstrap plus bidirectional document convergence | TLS-terminated `wss` deployment and relay failover while an edit is in flight remain unverified. |
+| WebTransport transport | Claim only | Configured transport | No WebTransport-specific successful synchronization assertion was located. |
 | Circuit Relay v2 fallback | Partial | Relay builds; 57 relay tests; NAT specs | Relay failover while an edit is in flight is not a default gate. |
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
-| Document load across NAT boundaries | Verified | Real Peerborne cross-NAT Playwright acceptance test passed twice from clean Podman topologies and has a dedicated CI job | Live post-load pubsub convergence and partition/rejoin remain deferred. |
+| Distinct-identity invitation and live bidirectional sync across NAT boundaries | Verified | A dedicated real Peerborne Playwright job forces two isolated Chromium processes with separate signing identities through Circuit Relay, accepts a signed editor invitation without exposing a plaintext document key or injecting one through the test bridge, verifies the recipient-encrypted bootstrap, then asserts fresh A-to-B and B-to-A mutations | The initial release is founder-plus-one and online-only; persistence, partition/rejoin, automatic reconnect, revocation, and relay failover remain unverified. |
 | Initial-load K-of-Q tip verification | Verified | Load-quorum and orchestrator suites | Real peers serving conflicting DAG blocks should be tested end to end. |
 | Network statistics | Verified | Network statistics suite | Reference applications do not expose enough diagnostics for operators. |
 
@@ -56,9 +57,9 @@ Status meanings:
 | UCAN creation, signatures, and delegation chains | Verified | UCAN suite | Expiry/revocation behavior should be demonstrated at the application boundary. |
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |
 | BeeKEM group key agreement | Verified | BeeKEM tree and welcome suites | Large-group churn and out-of-order delivery need performance and convergence gates. |
-| Encrypted welcome messages | Verified | Welcome encryption/wire/handler suites | Offline invite expiry and replay across devices need application-level evidence. |
+| Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, blank/self-contained Automerge ACL initialization, complete legacy-history migration, and incomplete-legacy fail-closed suites plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
 | Member revocation and path updates | Verified | Revocation and path-update suites | Prove that removed peers cannot decrypt any post-removal content in a multi-peer test. |
-| History visibility controls | Partial | Exported API and document implementation | No focused test/example demonstrates all visibility modes to users. |
+| History visibility key filters | Partial | Exported API, document implementation, and focused filter tests | The modes filter distributed epoch keys but do not redact retained CRDT operations or provide historical-content confidentiality; initial invitations therefore require explicit full-history sharing. |
 
 ## Query and framework integration
 
@@ -66,11 +67,12 @@ Status meanings:
 | --- | --- | --- | --- |
 | React hooks and lifecycle management | Verified | 42 passing hook/cache/lifecycle tests; password-manager typechecked build and Chromium smoke | StrictMode and real reconnect behavior should be browser-tested. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
-| Field extraction and local indexes | Verified | Index manager and extractor suites | Schema evolution and heterogeneous documents need coverage. |
-| Memory and IndexedDB index storage | Verified | Storage suites | Migration/versioning behavior is not specified. |
+| Field extraction and local indexes | Verified | V1 manager/extractor suites plus v2 planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
+| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, legacy-backfill, and corrupted-row suites | Persistent migration should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
 | Bloom-filter CRDT and peer gossip | Partial | Bloom CRDT/gossip suites; clean `--detectOpenHandles` run | Malformed/hostile high-volume gossip still needs resource limits. |
 | React query subscription binding | Verified | Index React suite | No reference application demonstrates distributed search. |
+| Signed distributed search protocol | Partial | Manifest, replacement-routing, wire binding/replay, blind-disclosure, transport-adapter, and hostile-candidate federation suites | Production libp2p handlers, membership/key distribution, authorized resolver, and multi-peer acceptance tests are not implemented. |
 
 ## Applications, packaging, and operations
 
@@ -80,11 +82,11 @@ Status meanings:
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
 | Password-manager reference app | Partial | Vite production build and strict Chromium startup smoke test pass | No two-browser synchronization test; bundle is about 2.0 MB minified. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
-| Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only cross-NAT document load pass | Live post-load cross-browser mutation is not yet asserted. |
+| Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only distinct-identity invitation plus live bidirectional mutation pass | This is a test harness rather than a polished demo; restart recovery is not asserted. |
 | Relay server | Verified | TypeScript build and 57 tests | Deployment smoke test and live health/readiness behavior remain unverified. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |
-| Performance benchmarks | Partial | Crypto, sync, convergence, Bloom, and query benchmarks | Results are informational and lack pass/fail budgets. |
+| Performance benchmarks | Partial | Runnable ESM crypto, sync, convergence, Bloom, blind-index, and v2 physical-query benchmarks | Results are informational and lack pass/fail budgets. |
 
 ## Cross-cutting design findings
 
@@ -113,7 +115,8 @@ Status meanings:
    suites. Relay-backed database convergence remains deliberately separate
    instead of being represented by a shell-rendering test.
 8. The real cross-NAT topology places the Chromium processes themselves—not
-   merely their web servers—on isolated Docker networks. Both apps use one
-   persisted identity and must exchange actual encrypted Automerge document
-   mutations through the relay. This isolates the networking proof from the
-   separate multi-identity invitation workflow.
+   merely their web servers—on isolated Docker networks. The apps use distinct
+   signing identities; the recipient dials the signed circuit rendezvous from
+   the offer without a prior founder connection, onboards through a
+   recipient-bound encrypted bootstrap, and exchanges actual Automerge
+   mutations through the relay in both directions.

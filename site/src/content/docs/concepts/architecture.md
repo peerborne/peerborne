@@ -23,73 +23,69 @@ Peerborne composes several open-source subsystems into a coherent local-first st
 
 ## Data flow: writing a change
 
-```
-Application
-  │
-  ▼
-document.change((state) => { state.getArray('items').push(['buy milk']) })
-  │
-  ▼
-CRDT Provider (Yjs / Automerge)
-  │  applies mutation to local CRDT replica
-  │  serializes the update
-  ▼
-PeerborneDocument
-  │  wraps update in a signed CRDTChangeBlock
-  │  encrypts block with document AES-GCM key
-  │  addresses block by CID (SHA-256 hash of ciphertext)
-  ▼
-Helia Blockstore (local IndexedDB)
-  │  stores encrypted block
-  ▼
-libp2p PubSub (GossipSub)
-  │  publishes CID to document topic peers
-  ▼
-Remote Peers
-  │  receive CID announcement
-  │  fetch encrypted block via libp2p bitswap / HTTP
-  │  verify signature, decrypt, apply to local replica
-  ▼
-CRDT converges
-```
+![A local CRDT mutation creates an encrypted CID-addressed stored payload and a separate signed-when-enabled, encrypted GossipSub sync envelope; receivers decrypt and authorize the envelope, apply inline history, and fetch only missing or deferred CID blocks for CID validation and decryption.](../../../assets/diagrams/change-pipeline.svg "Writing a change: separate encrypted storage and signed-when-enabled sync artifacts.")
+
+The local replica changes before either outbound artifact is complete. First,
+Peerborne serializes the change payload, encrypts it with the document key, and
+stores that ciphertext in Helia under its CID. It then builds a separate
+`CRDTSyncMessage` containing the new CID, inline change history, and any deferred
+CID references. The complete sync message is signed when signing is enabled,
+serialized, encrypted, and published through GossipSub; the publication is not
+a CID-only announcement.
+
+A receiving peer decrypts the GossipSub envelope before deserializing it and,
+when signing is enabled, checking the outer signature against known authorized
+writers. It applies inline history directly and fetches only missing or deferred
+CID references. Helia validates fetched ciphertext against the requested CID;
+Peerborne then decrypts and deserializes the stored change payload. Those stored
+blocks do not carry their own writer signature or ACL decision. A storage or
+publication error can reject `change()` after the mutation is already visible
+locally. There is no automatic rollback, durable outbox, or remote delivery
+receipt.
+
+**Evidence boundary:** the component pipeline and its failure semantics are
+implemented and covered by focused tests. Live post-load browser mutation and
+convergence through this complete path are not yet demonstrated in CI.
 
 ## Data flow: loading an existing document
 
-```
-Application
-  │
-  ▼
-document.open()
-  │
-  ▼
-PeerborneNode
-  │  resolves document ID to CID via IPNS or bootstrap
-  │  if local: loads frontier from Helia blockstore
-  │  if remote: queries Q-of-K peers for frontier agreement
-  ▼
-Load Quorum Orchestrator
-  │  requests tips from configured bootstrap peers
-  │  selects candidate with highest epoch
-  │  waits for Q-of-K agreement before proceeding
-  ▼
-Shadow Graph Walk
-  │  walks CRDTChangeNode chain from frontier backward
-  │  fetches missing blocks (bitswap / HTTP)
-  │  verifies signatures, decrypts, applies to CRDT
-  ▼
-Document is ready
-  │  Mutations are now accepted via document.change()
-  │  Reception of remote updates continues via GossipSub
-```
+![A quorum-enabled remote document load obtains Q-of-K frontier agreement, decrypts the selected response before any conditional known-writer signature check, binds its served frontier, and fetches the CIDs enumerated by its served changes tree before mutation; a quorum-bound first load drops an unverifiable snapshot and requires an available changes tree, while the quorum-disabled legacy path skips those gates.](../../../assets/diagrams/initial-load.svg "Initial load: quorum binds the served frontier before history application.")
+
+The configured initial-load gate probes up to an effective K distinct connected
+peers and requires Q matching frontier advertisements before accepting a remote
+history. Peerborne decrypts the selected response first. On a subsequent load,
+when signing is enabled and a prior writer set is already known, it then verifies
+the response's outer signature before mutating document state. If quorum ran,
+Peerborne also derives the served frontier and binds it to the agreed hash and
+required tips.
+
+For a quorum-bound load, inline changes are stripped from the response and every
+CID enumerated by its served changes tree is prefetched before state mutation.
+Helia validates the fetched ciphertext against each CID during that prefetch.
+After the gate passes, `sync()` decrypts, deserializes, and applies the cached
+payloads. A later per-block failure can therefore follow partial local mutation;
+there is no rollback. CID integrity authenticates those ciphertext bytes, not
+the responder-supplied node kind or interior tree topology, a writer identity,
+or a complete-history claim. The fetched blocks have no per-block signature or
+ACL decision.
+
+On a first load there is no prior writer set with which to authenticate the
+outer response. A quorum-bound first load therefore drops an unverifiable
+snapshot and replays an available changes tree; a snapshot-only response is
+refused. When quorum is disabled, the legacy response path skips advertisement
+probes, frontier binding, inline stripping, and the prefetch-before-mutation
+gate. The decision logic and orchestration have focused tests; conflicting real
+peers serving adversarial DAG payloads are not yet exercised end to end.
 
 ## The sync model
 
-Peerborne uses a **shadow sync graph** rather than a conventional Merkle-DAG:
+Peerborne uses a **shadow sync graph** rather than putting its graph links inside
+each stored block:
 
-- Each `document.change()` call creates one `CRDTChangeBlock` — an encrypted, signed, CID-addressed node containing a serialized CRDT update.
-- Each block references its parent(s) by CID, forming a DAG.
-- New blocks are announced to peers via GossipSub (by CID, never by content).
-- Peers fetch missing blocks on demand (bitswap or HTTP fetch).
+- Each `document.change()` call stores an encrypted serialized change payload in Helia; the CID addresses the resulting ciphertext.
+- A separate `CRDTSyncMessage` names the new CID and carries an inline shadow change tree whose child keys reference earlier CIDs; older cross-links may be deferred to CID-only references.
+- The complete sync message is signed when signing is enabled, then serialized, encrypted, and published through GossipSub.
+- Receivers apply inline history and fetch only missing or deferred CID blocks on demand through the configured block-fetch path.
 - The CRDT layer resolves concurrent edits without a consensus leader.
 
 This model is **eventually consistent**: local edits apply immediately, remote edits merge when they arrive. There is no global ordering, no server-assigned sequence number, and no single source of truth.
@@ -136,18 +132,29 @@ Application provides:
   └── ECDH P-256 KEM key pair (key encapsulation)
 
 PeerborneNode manages:
-  ├── Document AES-GCM keys (one per document, shared via BeeKEM)
+  ├── Document encryption keys (AES-GCM by default)
   ├── Signing key → libp2p PeerId mapping (separate keys)
   └── ACL entries (reader/writer lists bound to signing public keys)
 
-Per change:
-  ├── Writer signs the CRDT update with their P-384 key
-  ├── Payload is encrypted with the document's AES-GCM key
-  ├── Signature is verified by receivers before decryption
-  └── Encryption is transparent to the CRDT layer
+Per document change:
+  ├── Stored artifact
+  │   ├── Serialized change is encrypted with the document key and stored by CID
+  │   └── The stored block has no separate writer signature or ACL check
+  ├── GossipSub artifact
+  │   ├── CRDTSyncMessage is signed with P-384 when signing is enabled
+  │   └── The complete message is serialized and encrypted with the document key
+  └── Receiver
+      ├── Decrypts the envelope before conditional known-writer authorization
+      └── CID-validates, decrypts, and deserializes only fetched change blocks
 ```
 
-Key material never leaves the device in plaintext. Document keys are shared between authorized peers using BeeKEM — a key encapsulation mechanism that wraps the document key for each group member.
+Peerborne does not transmit private signing or KEM keys. Public identity keys
+are exchanged as protocol inputs. When reader KEM enrollment is configured, a
+writer sends a writer-signed Welcome whose recipient-bound ECIES-sealed payload
+contains a visibility-filtered keychain delta and BeeKEM bootstrap data. Later
+BeeKEM PathUpdates let surviving readers derive a new root, from which
+Peerborne derives the next document epoch key. Applications still own identity
+enrollment, private-key storage, backup, and recovery.
 
 ## Where infrastructure is needed
 
@@ -168,7 +175,7 @@ The relay server source is in `relay-server/`. The Docker Compose files in the r
 See the [limitations page](../limitations/) for a complete list. Key architectural limitations to be aware of:
 
 - **No durable outbox**: local blocks are stored in IndexedDB, but an unreachable peer may not receive the update; there is no delivery retry queue
-- **No automatic reconnect**: the application must detect disconnection and re-establish transport
+- **No durable reconnect-and-replay guarantee**: libp2p may redial and explicit loads or later sync history may catch a peer up, but connection restoration and replay of every missed update are not guaranteed
 - **No pass/fail performance budgets**: benchmarks exist but have no thresholds
 - **Pinning is incomplete**: the listener exists but the publisher does not
 - **Browser restart recovery is unverified**: IndexedDB persistence works in tests but full close/reopen cycles are not proven in CI

@@ -5,7 +5,7 @@ import 'jsoneditor-react/es/editor.css';
 import './index.css';
 import App from './App';
 import { Provider } from 'react-redux';
-import { createStore, applyMiddleware, Middleware } from 'redux';
+import { createStore, applyMiddleware } from 'redux';
 import {
   changeDocumentAsync,
   peerborneReducer,
@@ -20,31 +20,29 @@ import {
   AutomergeKeychainProvider,
   AutomergeProvider,
 } from '@peerborne/automerge';
-import { SubtleCrypto } from '@peerborne/core';
+import {
+  encodeInvitationOffer,
+  generateEciesKeyPair,
+  SubtleCrypto,
+} from '@peerborne/core';
 import { thunk } from 'redux-thunk';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
-
-const logger: Middleware = store => next => action => {
-  console.log('dispatching', action);
-  let result = next(action);
-  console.log('next state', store.getState());
-  return result;
-}
 
 declare global {
   interface Window {
     __PEERBORNE_TEST_IDENTITY__?: { privateKey: JsonWebKey; publicKey: JsonWebKey };
     __PEERBORNE_TEST__?: {
       open: (path: string) => Promise<unknown>;
-      openWithDocumentKey: (
+      createInvitation: (
         path: string,
-        saved: { id: number[]; key: JsonWebKey },
-      ) => Promise<unknown>;
-      exportDocumentKey: (path: string) => Promise<{ id: number[]; key: JsonWebKey }>;
+        role?: 'reader' | 'editor',
+      ) => Promise<number[]>;
+      acceptInvitation: (encodedOffer: number[]) => Promise<string>;
       connect: (addresses: string[]) => Promise<unknown>;
       addresses: () => string[];
       circuitAddress: () => string | undefined;
       change: (path: string, key: string, value: unknown) => Promise<unknown>;
+      writerCount: (path: string) => Promise<number>;
       state: () => AutomergeSwarmState<any>;
     };
   }
@@ -84,8 +82,29 @@ const store = createStore(
     new AutomergeACLProvider(),
     new AutomergeKeychainProvider(),
   ),
-  applyMiddleware(thunk, logger),
+  applyMiddleware(thunk),
 );
+
+let invitationKemKeyPair: CryptoKeyPair | undefined;
+async function getInvitationKemKeyPair(): Promise<CryptoKeyPair> {
+  if (!invitationKemKeyPair) {
+    invitationKemKeyPair = await generateEciesKeyPair();
+  }
+  return invitationKemKeyPair;
+}
+
+function observedCircuitAddress(): string | undefined {
+  const node = store.getState().node;
+  const peerId = node?.libp2p.peerId.toString();
+  if (!node || !peerId) return undefined;
+  const suffix = `/p2p-circuit/p2p/${peerId}`;
+  return node.libp2p
+    .getMultiaddrs()
+    .map((address: { toString(): string }) => address.toString())
+    .find((address: string) =>
+      address.includes('/p2p-circuit/') && address.endsWith(suffix),
+    );
+}
 
 // Deliberately test-only: Playwright uses this narrow bridge to exercise the
 // real Redux -> Peerborne -> Automerge path without coupling assertions to
@@ -93,47 +112,36 @@ const store = createStore(
 if (crossNatTest && injectedIdentity) {
   window.__PEERBORNE_TEST__ = {
     open: (path) => store.dispatch<any>(openDocumentAsync(path)),
-    openWithDocumentKey: async (path, saved) => {
+    createInvitation: async (path, role = 'editor') => {
+      const documentRef = store.getState().documents[path]?.documentRef;
+      if (!documentRef) throw new Error(`Document is not open: ${path}`);
+      documentRef.historyVisibility = 'full_history';
+      await documentRef.setKemKeyPair(await getInvitationKemKeyPair());
+      const circuitAddress = observedCircuitAddress();
+      if (!circuitAddress) {
+        throw new Error('Observed Circuit Relay reservation is unavailable');
+      }
+      const offer = await documentRef.createInvitation({
+        role,
+        rendezvous: [circuitAddress],
+      });
+      return Array.from(encodeInvitationOffer(offer));
+    },
+    acceptInvitation: async (encodedOffer) => {
       const node = store.getState().node;
-      const documentRef = node?.doc(path);
-      if (!documentRef) throw new Error('Peerborne node is not ready');
-      const key = await crypto.subtle.importKey(
-        'jwk', saved.key, { name: 'AES-GCM', length: 256 }, true,
-        ['encrypt', 'decrypt'],
+      if (!node) throw new Error('Peerborne node is not ready');
+      const documentRef = await node.acceptInvitation(
+        new Uint8Array(encodedOffer),
+        await getInvitationKemKeyPair(),
       );
-      await (documentRef as any)._keychain.addEpochKey(
-        new Uint8Array(saved.id), key,
-      );
+      const path = documentRef.documentPath;
       documentRef.subscribe(
         path,
         (document) => store.dispatch(syncDocument(path, document)),
         'remote',
       );
-      let loaded = false;
-      // Circuit-relay reservations and streams can be renewed while the two
-      // peers connect. Do not let a transient closed stream turn this test
-      // into a false-positive "new document" on the restoring computer.
-      for (let attempt = 0; !loaded && attempt < 10; attempt++) {
-        if (attempt > 0) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-        loaded = await documentRef.load();
-      }
-      if (!loaded) {
-        throw new Error(`No peer served the existing document: ${path}`);
-      }
-      await documentRef.open();
       store.dispatch(openDocument(path, documentRef));
-      return documentRef;
-    },
-    exportDocumentKey: async (path) => {
-      const documentRef = store.getState().documents[path]?.documentRef;
-      if (!documentRef) throw new Error(`Document is not open: ${path}`);
-      const [id, key] = await (documentRef as any)._keychain.current();
-      return {
-        id: Array.from(id as Uint8Array),
-        key: await crypto.subtle.exportKey('jwk', key as CryptoKey),
-      };
+      return path;
     },
     connect: (addresses) => store.dispatch<any>(connectAsync(addresses)),
     addresses: () => {
@@ -148,13 +156,9 @@ if (crossNatTest && injectedIdentity) {
     },
     circuitAddress: () => {
       try {
-        const relay = import.meta.env.VITE_RELAY_MULTIADDR;
-        const peerId = store.getState().node?.libp2p.peerId.toString();
-        return relay && peerId
-          ? `${relay}/p2p-circuit/p2p/${peerId}`
-          : undefined;
+        return observedCircuitAddress();
       } catch (error) {
-        console.warn('Unable to construct the Peerborne circuit address', error);
+        console.warn('Unable to read the Peerborne circuit address', error);
         return undefined;
       }
     },
@@ -164,6 +168,11 @@ if (crossNatTest && injectedIdentity) {
           doc[key] = value;
         }),
       ),
+    writerCount: async (path) => {
+      const documentRef = store.getState().documents[path]?.documentRef;
+      if (!documentRef) throw new Error(`Document is not open: ${path}`);
+      return (await documentRef.getWriters()).length;
+    },
     state: () => store.getState() as AutomergeSwarmState<any>,
   };
 }

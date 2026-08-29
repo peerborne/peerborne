@@ -1,8 +1,8 @@
 /**
  * Sealed-payload envelope for BeeKEM Welcomes.
  *
- * PR #281 introduced an ECIES-sealed plaintext that carried the
- * keychain delta only. To make Welcomes useful for actually
+ * The original ECIES-sealed plaintext carried the keychain delta only.
+ * To make Welcomes useful for actually
  * bootstrapping the joiner's BeeKEM ratchet state (so subsequent
  * `processPathUpdate` calls work in production), this envelope adds
  * the BeeKEM `Welcome` returned by `BeeKEM.addMember` alongside the

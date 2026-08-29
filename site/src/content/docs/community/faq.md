@@ -17,11 +17,20 @@ Peerborne is not a replacement for Yjs or Automerge — it **adapts** them. Use 
 
 ## What happens if I lose my signing key?
 
-Your signing key is your identity in the Peerborne network. If you lose it, you cannot issue new changes or prove you authored past ones. Peerborne does not provide key recovery, rotation, or backup — key management is the application's responsibility. Treat signing keys with the same care as any private key material.
+The application-supplied signing key authenticates document messages. If you
+lose it, you cannot sign new ordinary document messages when signing is enabled
+or produce the always-writer-signed BeeKEM Welcome and PathUpdate messages.
+Existing stored change payloads do not contain a persistent per-block author signature.
+Peerborne does not provide signing-key recovery, rotation, or backup; key
+management is the application's responsibility.
 
 ## What happens if all peers go offline?
 
-Documents are only available while at least one peer with a replica is online — or while encrypted blocks are pinned to remote storage. Peerborne's pinning integration is **incomplete**: a listener exists but the core publishing path does not. Without pinning, the last online peer is the last surviving copy.
+No peer can serve a local copy while every holder is offline. IndexedDB bytes
+may survive offline, but complete close/restart reconstruction is not verified.
+Peerborne's pinning integration is **incomplete**: a listener API exists, but
+the normal core commit path does not publish to it. Data is lost if every local
+copy is cleared or otherwise becomes unrecoverable.
 
 ## Can I use Peerborne in a mobile app?
 
@@ -37,24 +46,42 @@ Peerborne delegates conflict resolution to the underlying CRDT library (Yjs or A
 
 ## How does Peerborne compare to CRDT-based databases?
 
-Most CRDT databases (like RxDB's CRDT plugin) add CRDT merge semantics to a document store. Peerborne adds encryption, signing, access control, and peer-to-peer networking to existing CRDT libraries. The key difference: Peerborne's documents are encrypted and signed before they leave the device, and there is no server that sees plaintext.
+Most CRDT databases add merge semantics to a document store. Peerborne adds
+encrypted stored payloads, signed-by-default encrypted sync messages, access
+control, and peer-to-peer networking to existing CRDT libraries. Network
+infrastructure that is not given the document key handles ciphertext rather
+than document plaintext.
 
 ## Does Peerborne support real-time collaborative editing?
 
-Partial. CRDT updates propagate via GossipSub, which has sub-second latency in typical deployments. However, presence (cursors, selections) is not implemented, and there is no operational transform layer for sub-100ms typing synchronization. For "Google Docs-like" real-time editing with presence, consider Liveblocks or PartyKit with Yjs. Peerborne is designed for document-level collaboration, not character-level real-time editing.
+Partial. The GossipSub update path is implemented, but relay-backed live
+post-load propagation and its latency are not yet verified end to end. Presence
+(cursors and selections) is not implemented. Treat Peerborne as an experimental
+document-replication toolkit, not an evidenced low-latency collaborative editing
+service.
 
 ## Can multiple people edit the same document at the same time?
 
-Yes. Each peer's changes are signed, encrypted, and published independently. The CRDT layer merges concurrent edits when they arrive. There is no lock, no leader election, and no "last write wins" — the merge is deterministic and conflict-free.
+At the CRDT-adapter level, yes: delivered concurrent updates merge without a
+lock or leader. Each peer creates encrypted stored change payloads and can
+independently publish an encrypted sync message, signed when document signing is
+enabled. Relay-backed live post-load multi-peer convergence is not yet verified
+end to end, so applications should not treat that complete runtime path as a
+proven capability.
 
 ## How do I share a document with another person?
 
-Document sharing requires key exchange. The document owner must:
-1. Generate a BeeKEM key encapsulation for the recipient
-2. Add the recipient as a reader (and optionally writer) to the document ACL
-3. Transmit the KEM-wrapped document key and signing public key to the recipient
+The core API automates one narrow online flow: the founder creates a signed
+`reader` or `editor` offer, and one distinct recipient accepts it with a P-256
+KEM key pair. The signed handshake grants the exact ACL role and transfers
+bootstrap keychain material only inside a recipient-encrypted Welcome. Peerborne
+has no separate document-owner role.
 
-This process is not automated — the application must implement the key exchange channel. See the [password manager cookbook](../../cookbook/password-manager/) for an example.
+Applications still need invitation-link delivery, human identity verification,
+key persistence, recovery, and user interface. The initial release is
+founder-plus-one and online-only; offers and replay state do not survive an
+inviter restart. See [Invite a collaborator](../../cookbook/invitations/) for
+the API and its trust boundary.
 
 ## Can a relay read my documents?
 
@@ -62,7 +89,14 @@ This process is not automated — the application must implement the key exchang
 
 ## Can I revoke someone's access to a document?
 
-**Partially.** Revoking a writer prevents them from publishing new changes that other peers will accept. Revoking a reader requires BeeKEM key separation — existing keys must be invalidated and new keys distributed to remaining members. BeeKEM's rekey state is currently **memory-only** (does not survive restart), and the PathUpdate revocation mechanism is best-effort. See the [security page](../../concepts/security/#revocation) for details.
+**Partially.** With document signing enabled, a replica rejects later ordinary
+sync envelopes signed only by a removed writer after that replica applies the
+writer-removal ACL update. There is no simultaneous cutover: stale replicas may
+still evaluate against an older writer set, and signing-disabled replicas skip
+that gate. Reader removal separately attempts BeeKEM key separation for future
+epochs. BeeKEM's rekey state is currently **memory-only** (does not survive
+restart), and PathUpdate delivery is best effort. See the
+[security page](../../concepts/security/#revocation) for details.
 
 ## What browsers are supported?
 

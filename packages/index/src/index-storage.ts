@@ -1,4 +1,12 @@
-import { IndexFieldDefinition, FieldFilter, SortClause } from './types.js';
+import {
+  IndexDefinition,
+  IndexFieldDefinition,
+  IndexKeyDefinition,
+  FieldFilter,
+  QueryAst,
+  SortClause,
+} from './types.js';
+import { QueryPlan } from './query-planner.js';
 
 /**
  * A single stored index entry: document path mapped to its indexed field values.
@@ -8,17 +16,45 @@ export interface IndexEntry {
   fields: Record<string, unknown>;
 }
 
+export interface StorageSchemaIdentity {
+  schemaHash: string;
+  generation: string;
+  collectionPrefix: string;
+  invalidValuePolicy: 'skip-document' | 'reject';
+}
+
+export interface StorageQueryRequest {
+  definition: IndexDefinition;
+  query: QueryAst;
+  plan: QueryPlan;
+}
+
+export interface StorageQueryResult {
+  entries: IndexEntry[];
+  totalCount?: number;
+  rowsVisited: number;
+  rowsMatched: number;
+  sort: 'index' | 'memory' | 'none';
+}
+
 /**
  * Storage backend interface for the indexing system.
  * Implementations back the local materialized index with different storage engines.
  */
 export interface IndexStorage {
+  /** Whether entries survive process/browser lifetime. */
+  readonly persistent?: boolean;
   /**
    * Initialize storage for a named index with the given field definitions.
    * Called once when an index is first defined. Implementations should create
    * any necessary stores, tables, or data structures.
    */
-  initialize(indexName: string, fields: IndexFieldDefinition[]): Promise<void>;
+  initialize(
+    indexName: string,
+    fields: IndexFieldDefinition[],
+    physicalIndexes?: IndexKeyDefinition[],
+    identity?: StorageSchemaIdentity,
+  ): Promise<void>;
 
   /**
    * Insert or update an index entry for a document.
@@ -41,6 +77,9 @@ export interface IndexStorage {
     limit?: number,
     offset?: number,
   ): Promise<IndexEntry[]>;
+
+  /** Execute the v2 plan. Backends implementing v2 should provide this method. */
+  execute?(request: StorageQueryRequest): Promise<StorageQueryResult>;
 
   /**
    * Get a single entry by document path.

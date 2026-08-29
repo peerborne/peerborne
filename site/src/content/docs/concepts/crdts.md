@@ -22,7 +22,8 @@ await todos.change((state) => {
 });
 ```
 
-Each `document.change()` call produces one committed, encrypted, CID-addressed block:
+Each `document.change()` call creates a CID-addressed stored payload and a
+separate wire message:
 
 ```
 Application calls document.change(fn)
@@ -31,42 +32,51 @@ Application calls document.change(fn)
 fn applied to local CRDT replica (Yjs doc.transact / Automerge doc.change)
   │
   ▼
-CRDT update serialized
+CRDT change serialized and encrypted with the document key
+  (AES-GCM by default)
   │
   ▼
-Wrapped in CRDTChangeBlock
-  ├── parent: CID of previous tip
-  ├── epoch: current document epoch
-  ├── signature: ECDSA P-384 over block payload
-  └── payload: encrypted CRDT update (AES-GCM)
+Ciphertext stored in Helia → CID
   │
   ▼
-Block stored in Helia blockstore (local IndexedDB)
+CRDTSyncMessage built
+  ├── new CID
+  ├── inline shadow change tree
+  └── deferred CID references
   │
   ▼
-CID published to GossipSub (document topic)
+Complete message signed when enabled, serialized, and encrypted with the document key
+  (AES-GCM by default)
+  │
+  ▼
+Full encrypted envelope published to GossipSub (document topic)
 ```
 
 ### The shadow sync graph
 
-Peerborne does not use a conventional Merkle-DAG. Instead, each `CRDTChangeBlock` references its parent by CID, forming a **shadow sync graph**:
+Peerborne does not put graph links inside each stored change payload. Instead,
+the separately exchanged `CRDTSyncMessage` carries a **shadow sync graph** whose
+node keys are CIDs:
 
 ```
-Tip (latest) ─── Block C ─── Block B ─── Block A (genesis)
-                            └── Block B' (concurrent edit from another peer)
+CRDTSyncMessage root: CID C (inline change)
+  └── CID B (inline prior change)
+      ├── CID A (inline ancestor)
+      └── CID B' (deferred concurrent cross-link)
 
 The CRDT layer merges B and B' when both arrive.
-The shadow graph preserves the DAG structure for sync,
-but the CRDT layer produces the resolved document state.
+The shadow tree guides discovery; stored payloads contain encrypted
+serialized changes but no parent links.
 ```
 
 This means:
 
-- Blocks reference their immediate parent(s) by CID — forming a DAG across concurrent writers
+- Child-map keys in the wire tree reference prior or concurrent change CIDs
 - The CRDT layer resolves concurrent edits (e.g., Yjs merges Y.Map updates from two peers)
-- Blocks are immutable once stored; the frontier advances as new blocks are added
+- Stored ciphertext is immutable under its CID; later messages can reference it without rewriting it
 - The implementation tracks a tip-set (multiple concurrent heads), computing a combined tip-set hash
-- The shadow graph is used for sync (walk backward to find missing blocks), not for data modeling
+- Receivers apply inline tree content and fetch only missing or deferred stored payloads
+- The shadow graph is used for synchronization, not for application data modeling
 
 ### `CRDTProvider` interface
 
@@ -143,41 +153,59 @@ Peerborne does **not** provide:
 
 ### Snapshots
 
-Snapshots are **off by default**. A writer can create a signed, full-state snapshot:
+Automatic snapshots are **off by default**. A writer can create a full-state
+snapshot, signed when signing is enabled (the signature field is empty otherwise):
 
 ```ts
-await document.compact();
+await document.snapshot();
 ```
 
-A snapshot contains the complete CRDT state at that point, signed and encrypted like any other block. Peers loading the document can start from the snapshot instead of replaying the entire change history.
+A snapshot contains the complete CRDT state at that point plus boundary
+metadata, which is signed when signing is enabled. It is carried inside an
+encrypted load or snapshot-load response rather than stored as a CID-addressed
+Helia change payload. A peer that can authenticate and apply it can avoid
+replaying the entire change history.
 
 ### Compaction
 
-Compaction is **off by default** and uses a preference rule based on compacted-change count. When enabled, it can reduce storage by pruning older blocks. However:
+Automatic compaction is **off by default**. When enabled, configured change-count
+thresholds call `snapshot()` and may prune older nodes from the in-memory shadow
+tree. This does not delete stored block bytes unless opt-in `gcAfterPrune` is
+also enabled. In particular:
 
-- Pruning removes in-memory CRDT nodes — the document cannot be reconstructed if all pruned blocks are lost
-- Snapshot-only bootstrap can fail if snapshots reference pruned blocks
-- Snapshot creation is not automatic — the application must trigger it
+- In-memory pruning can limit the history included in later sync messages
+- Opt-in block GC deletes eligible local copies, so recovery then depends on another provider
+- A quorum-bound first load rejects a snapshot-only response because it lacks a prior writer set for snapshot authentication
+- Applications can call `snapshot()` manually even when automatic compaction is disabled
 
 ## Quorum loading
 
-Before trusting a document's state, Peerborne can require Q-of-K bootstrap peers to agree on the current frontier hashes. Quorum is configured via `PeerborneConfig` fields `loadQuorumK` and `loadQuorumQ`, then runs automatically during `document.open()`. This prevents loading a fork or a stale version when multiple peers have written to the document. The quorum check is **not** Sybil-resistant — a peer that controls multiple identities can subvert it.
+Before accepting a remote document state, Peerborne can require Q-of-K distinct
+currently connected peers to agree on a served-frontier hash. Quorum is
+configured through `PeerborneConfig` and runs automatically during
+`document.open()` when enabled. Agreement and response binding reduce the risk
+of one peer unilaterally selecting a frontier; they do not authenticate the
+interior shadow tree or prove complete history. The check is **not
+Sybil-resistant** — one actor controlling multiple peer identities can subvert
+it.
 
 ## CI-backed evidence
 
-Verified end-to-end in CI:
+Verified in CI:
 
 - Document creation, mutation, and retrieval in a single browser
 - Yjs and Automerge provider initialization
-- Encrypted block storage and retrieval through Circuit Relay
+- Encrypted existing-history retrieval through Circuit Relay
 - Cross-NAT document retrieval with Docker-backed topologies
+- Snapshot, compaction, and blockstore-GC behavior in focused suites
+- Initial-load quorum decisions and orchestration in focused suites
 
 Not verified:
 
 - Multi-peer concurrent editing and convergence under partition
-- Snapshot creation and bootstrap from snapshot
-- Quorum loading with K > 1
-- Compaction and GC with subsequent recovery
+- Snapshot bootstrap across real peers
+- Conflicting real peers serving adversarial shadow trees during quorum loading
+- Long-running multi-peer compaction and GC followed by recovery
 
 ## Next steps
 

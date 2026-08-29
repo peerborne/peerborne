@@ -9,9 +9,9 @@
  * `CRDTSyncMessage`, so we need a base64-encoded shape per
  * `Uint8Array` and the matching encoder/decoder pair.
  *
- * The shape and helpers live here (not in the BeeKEM module
- * itself) so the in-flight PR #281 is free to evolve
- * `beekem/types.ts` without touching this file.
+ * The shape and helpers live here, rather than in the BeeKEM module, so
+ * `beekem/types.ts` can evolve without coupling runtime types to this wire
+ * codec.
  */
 
 import { Base64 } from 'js-base64';

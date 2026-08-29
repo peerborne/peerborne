@@ -46,7 +46,7 @@ yarn test:e2e:password-manager
 
 Docker-backed suites require their matching topology and readiness checks. Do not run the test command immediately after `docker compose up -d`; follow the exact bounded wait and teardown sequence in the corresponding `.github/workflows/ci.yml` job. The contributor guide also provides local readiness helpers.
 
-Do not describe `yarn benchmark:all` as working until its runner module mismatch is fixed.
+`yarn benchmark:all` is runnable. Results are informational; do not claim a regression gate until repeatable CI budgets exist. Use `--iterations 1 --max-documents 100` for a bounded smoke run.
 
 ## Documentation
 

@@ -59,7 +59,7 @@ jobs:
       - name: Build site
         run: yarn workspace @peerborne/site build
       - name: Test site tooling
-        run: node --test site/scripts/check-links.test.mjs site/scripts/generate-llms-full.test.mjs
+        run: node --test site/scripts/check-links.test.mjs site/scripts/generate-benchmark-charts.test.mjs site/scripts/generate-llms-full.test.mjs
       - name: Check site and agent index links
         run: node site/scripts/check-links.mjs
       - uses: actions/configure-pages@v6

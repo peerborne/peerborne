@@ -2,8 +2,10 @@
 import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import starlightTypeDoc, { typeDocSidebarGroup } from 'starlight-typedoc';
+import rehypeDocsFigures from './scripts/rehype-docs-figures.mjs';
 
 const removeGeneratedApiLanding = {
   name: 'remove-generated-api-landing',
@@ -30,6 +32,10 @@ const socialCard = {
 // Deployed through GitHub Pages at the custom apex domain.
 export default defineConfig({
   site: 'https://peerborne.io',
+  markdown: {
+    // Astro 7 deprecates markdown.rehypePlugins in favor of processor plugins.
+    processor: unified({ rehypePlugins: [rehypeDocsFigures] }),
+  },
   redirects: {
     '/concepts/why-swarmbase/': '/concepts/why-peerborne/',
   },
@@ -137,6 +143,7 @@ export default defineConfig({
         {
           label: 'Cookbook',
           items: [
+            'cookbook/invitations',
             'cookbook/collaborative-wiki',
             'cookbook/password-manager',
             'cookbook/react',

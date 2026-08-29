@@ -1,5 +1,11 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import {
+  change as automergeChange,
+  from as automergeFrom,
+  getAllChanges as getAllAutomergeChanges,
+  getChanges as getAutomergeChanges,
+} from '@automerge/automerge';
+import {
   AutomergeProvider,
   AutomergeACL,
   AutomergeACLProvider,
@@ -9,6 +15,19 @@ import {
   serializeKey,
   deserializeKey,
 } from './peerborne-automerge.js';
+import {
+  INITIAL_INVITATION_CAPACITY_PROFILE,
+  INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
+  INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+  BeeKEM,
+  SubtleCrypto,
+  eciesSeal,
+  encodeWelcomeSealedPayload,
+  type CRDTChangeNode,
+  type CRDTSyncMessage,
+} from '@peerborne/core';
 
 // ECDSA P-384 JWK test keys (public only - ACL uses raw export which requires public keys)
 const publicKeyData1 = {
@@ -169,6 +188,13 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('remove() is a no-op for a blank ACL', async () => {
+    const acl = new AutomergeACL();
+
+    await expect(acl.remove(key1)).resolves.toEqual([]);
+    expect(acl.current()).toEqual([]);
+  });
+
   test('check() returns false for an unknown key', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -203,6 +229,97 @@ describe('AutomergeACL', () => {
     acl1.merge(exported);
     expect(await acl1.check(key1)).toBe(true);
     expect(await acl1.check(key2)).toBe(true);
+  });
+
+  test('founder changes authorize its signing key in a fresh ACL', async () => {
+    const signingPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const founder = new AutomergeACL();
+    const founderChanges = await founder.add(signingPair.publicKey);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(founderChanges);
+
+    expect(await receiver.check(signingPair.publicKey)).toBe(true);
+    const writerKeys = await receiver.users();
+    expect(writerKeys).toHaveLength(1);
+    const [verifyingKey] = writerKeys;
+    const payload = new Uint8Array([9, 8, 7, 6]);
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-384' },
+      signingPair.privateKey,
+      payload,
+    );
+
+    expect(
+      await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-384' },
+        verifyingKey,
+        signature,
+        payload,
+      ),
+    ).toBe(true);
+  });
+
+  test('fresh ACLs start from the same blank history', () => {
+    const first = new AutomergeACL();
+    const second = new AutomergeACL();
+
+    expect(first.current()).toEqual([]);
+    expect(second.current()).toEqual(first.current());
+  });
+
+  test('loads a complete ACL history from the legacy random-seed format', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.users()).toHaveLength(1);
+  });
+
+  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+    const serialized = await serializeKey(key1);
+    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+      users: {},
+    });
+    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+      doc.users[serialized] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies.*complete ACL history/i,
+    );
+    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+  });
+
+  test('allows valid child-before-parent delivery once dependencies arrive', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const collaboratorChanges = await sender.add(key2);
+    const receiver = new AutomergeACL();
+
+    receiver.merge(collaboratorChanges);
+    await expect(receiver.users()).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+
+    receiver.merge(founderChanges);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
   });
 });
 
@@ -364,7 +481,7 @@ describe('AutomergeKeychain', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // PR #285 round 6 regression coverage: BeeKEM PathUpdate flow installs
+  // BeeKEM PathUpdate compatibility: the flow installs
   // epoch keys via addEpochKey(...) using the FULL 32-byte HKDF output
   // (no truncation). The keychain MUST store the key under a cache-key
   // form that round-trips with getKey() on the exact same 32 bytes.
@@ -385,7 +502,8 @@ describe('AutomergeKeychain', () => {
     await keychain.addEpochKey(epochId, key);
 
     // The exact 32-byte ID that went in must come back out of getKey.
-    // A failure here surfaces the round-6 cache-key-format mismatch.
+    // A failure here means the epoch ID bytes did not round-trip through
+    // the hexadecimal cache-key encoding.
     const retrieved = keychain.getKey(epochId);
     expect(retrieved).toBe(key);
 
@@ -450,6 +568,35 @@ describe('AutomergeKeychainProvider', () => {
 
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
+
+  test('preserves nested sync-message signing bytes across the wire', () => {
+    const unsignedMessage = {
+      documentId: 'signed-doc',
+      changeId: 'root-cid',
+      changes: {
+        kind: 'document' as const,
+        change: [new Uint8Array([1, 2, 3])],
+        children: {
+          'parent-cid': {
+            kind: 'writer' as const,
+            change: [new Uint8Array([4, 5, 6])],
+          },
+        },
+      },
+    };
+    const senderSigningBytes = serializer.serializeSyncMessage(unsignedMessage);
+    const wire = serializer.serializeSyncMessage({
+      ...unsignedMessage,
+      signature: 'test-signature',
+    });
+    const received = serializer.deserializeSyncMessage(wire);
+    const { signature: _signature, ...receivedUnsignedMessage } = received;
+    const receiverVerificationBytes = serializer.serializeSyncMessage(
+      receivedUnsignedMessage,
+    );
+
+    expect(receiverVerificationBytes).toEqual(senderSigningBytes);
+  });
 
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
     const provider = new AutomergeProvider<{ title: string }>();
@@ -770,7 +917,7 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
-  // PR #284 r24 Copilot review: `tipsHash` is defined as a fixed 32-byte
+  // `tipsHash` is defined as a fixed 32-byte
   // SHA-256 digest; the deserializer previously accepted any base64-decoded
   // length and let downstream quorum logic mis-bucket the value. Reject
   // wrong-length payloads at the wire boundary.
@@ -986,5 +1133,185 @@ describe('AutomergeJSONSerializer', () => {
     expect(deserialized.signature).toBeUndefined();
     expect(deserialized.keychainChanges).toBeUndefined();
     expect(deserialized.snapshot).toBeUndefined();
+  });
+});
+
+describe('bounded initial invitation profile', () => {
+  test('all bundled Automerge components declare the same profile', () => {
+    expect(new AutomergeProvider().initialInvitationCapacityProfile).toBe(
+      INITIAL_INVITATION_CAPACITY_PROFILE,
+    );
+    expect(new AutomergeACLProvider().initialInvitationCapacityProfile).toBe(
+      INITIAL_INVITATION_CAPACITY_PROFILE,
+    );
+    expect(
+      new AutomergeKeychainProvider().initialInvitationCapacityProfile,
+    ).toBe(INITIAL_INVITATION_CAPACITY_PROFILE);
+    expect(
+      new AutomergeJSONSerializer().initialInvitationCapacityProfile,
+    ).toBe(INITIAL_INVITATION_CAPACITY_PROFILE);
+  });
+
+  test('founder-plus-editor ACL publication stays within the serialized growth bound', async () => {
+    const founderPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const recipientPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const readers = new AutomergeACL();
+    const writers = new AutomergeACL();
+    const founderChanges = await writers.add(founderPair.publicKey);
+    const membershipChanges: Array<
+      readonly ['reader' | 'writer', Uint8Array[]]
+    > = [
+      ['reader', await readers.add(recipientPair.publicKey)],
+      ['writer', await writers.add(recipientPair.publicKey)],
+      ['reader', readers.current()],
+      ['writer', writers.current()],
+    ];
+    const serializer = new AutomergeJSONSerializer();
+    const cid = (label: string) => `bafy${label.repeat(55).slice(0, 55)}`;
+    const founderCid = cid('f');
+    const signature = 'A'.repeat(128);
+    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+      documentId: '/capacity-growth',
+      changeId: founderCid,
+      changes: { kind: 'writer', change: founderChanges },
+      tips: [founderCid],
+      signature,
+    };
+    const baselineBytes =
+      serializer.serializeSyncMessage(baseline).byteLength;
+    let previousCid = founderCid;
+    let previousNode = baseline.changes!;
+    const deferredTips: string[] = [];
+
+    for (let index = 0; index < membershipChanges.length; index++) {
+      const [kind, change] = membershipChanges[index]!;
+      const nextCid = cid(String(index));
+      const children: Record<string, CRDTChangeNode<Uint8Array[]>> = {
+        [previousCid]: previousNode,
+      };
+      const nextNode: CRDTChangeNode<Uint8Array[]> = {
+        kind,
+        change,
+        children,
+      };
+      for (let crossLink = 0; crossLink < 3; crossLink++) {
+        const crossLinkCid = cid(`${index}${crossLink}`);
+        children[crossLinkCid] = { kind: 'document' };
+        deferredTips.push(crossLinkCid);
+      }
+      previousCid = nextCid;
+      previousNode = nextNode;
+    }
+
+    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+      documentId: baseline.documentId,
+      changeId: previousCid,
+      changes: previousNode,
+      tips: [previousCid, ...deferredTips],
+      signature,
+    };
+    const membershipGrowth =
+      serializer.serializeSyncMessage(afterMembership).byteLength -
+      baselineBytes;
+
+    expect(membershipGrowth).toBeGreaterThan(0);
+    expect(membershipGrowth).toBeLessThanOrEqual(4 * 1024);
+    expect(membershipGrowth).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+    );
+  });
+
+  test('real bundled signature, encryption, and sealed Welcome overheads stay bounded', async () => {
+    const signingPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const serializer = new AutomergeJSONSerializer();
+    const crdt = new AutomergeProvider<{ value: string }>();
+    const [document, changes] = crdt.localChange(
+      crdt.newDocument(),
+      'capacity payload',
+      (draft) => {
+        draft.value = 'founder plus one';
+      },
+    );
+    expect(document.value).toBe('founder plus one');
+    const plaintext = serializer.serializeSyncMessage({
+      documentId: '/real-overheads',
+      changes: { kind: 'document', change: changes },
+    });
+    const signature = await new SubtleCrypto().sign(
+      plaintext,
+      signingPair.privateKey,
+    );
+    expect(signature.byteLength).toBe(96);
+    expect(signature.byteLength).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+    );
+
+    const auth = new SubtleCrypto();
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const measuredOverheads: number[] = [];
+    for (const sample of [plaintext, new Uint8Array(16)]) {
+      const encrypted = await auth.encrypt(sample, key);
+      const framedBytes =
+        32 + encrypted.nonce.byteLength + encrypted.data.byteLength;
+      measuredOverheads.push(framedBytes - sample.byteLength);
+    }
+    expect(Math.max(...measuredOverheads)).toBe(60);
+    expect(Math.max(...measuredOverheads)).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
+    );
+
+    const founderKemPair = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const recipientKemPair = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const beekem = new BeeKEM();
+    await beekem.initialize(
+      founderKemPair.privateKey,
+      founderKemPair.publicKey,
+    );
+    const { welcome } = await beekem.addMember(recipientKemPair.publicKey);
+    const keychain = new AutomergeKeychain();
+    await keychain.add();
+    const keychainBytes = serializer.serializeChanges(keychain.history());
+    const withoutBeeKEM = encodeWelcomeSealedPayload({
+      keychainChanges: keychainBytes,
+      beekemWelcome: null,
+    });
+    const sealedWelcome = await eciesSeal(
+      encodeWelcomeSealedPayload({
+        keychainChanges: keychainBytes,
+        beekemWelcome: welcome,
+      }),
+      recipientKemPair.publicKey,
+    );
+
+    const sealedWelcomeGrowth =
+      sealedWelcome.byteLength - withoutBeeKEM.byteLength;
+    expect(sealedWelcomeGrowth).toBe(845);
+    expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
+      INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
+    );
   });
 });

@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "benchmarks:snapshot": "node scripts/collect-benchmark-snapshot.mjs",
     "build:dependencies": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc",
     "dev": "yarn run build:dependencies && astro dev",
-    "build": "yarn run build:dependencies && astro build && node scripts/generate-llms-full.mjs",
+    "build": "yarn figures:test && yarn charts:check && yarn run build:dependencies && astro build && node scripts/generate-llms-full.mjs",
+    "charts:generate": "node scripts/generate-benchmark-charts.mjs",
+    "charts:check": "node scripts/generate-benchmark-charts.mjs --check",
+    "charts:test": "node --test scripts/generate-benchmark-charts.test.mjs && yarn charts:check",
+    "figures:test": "node --test scripts/rehype-docs-figures.test.mjs",
     "preview": "astro preview"
   },
   "dependencies": {
@@ -17,6 +22,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@astrojs/markdown-remark": "^7.2.4",
     "starlight-typedoc": "^0.23.0",
     "typedoc": "^0.28.19",
     "typedoc-plugin-markdown": "^4.6.0",

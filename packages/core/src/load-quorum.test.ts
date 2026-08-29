@@ -118,7 +118,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  // PR #284 r12 CodeRabbit review: `decideLoadQuorum` is exported, so a
+  // `decideLoadQuorum` is exported, so a
   // direct caller (or future refactor that bypasses `runLoadQuorum`)
   // passing `q <= 0` or a non-integer would silently disable the quorum
   // gate -- the largest-bucket size is always `>= 0 >= q` and a single
@@ -186,7 +186,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     expect(decision.ok).toBe(true);
   });
 
-  // PR #284 r16: `'unknown-doc'` is a first-class vote alongside tip-hash
+  // `'unknown-doc'` is a first-class vote alongside tip-hash
   // values. A Q-of-K majority of disclaims surfaces a `kind: 'new-doc'`
   // outcome that the orchestrator translates into `{ newDoc: true }` and
   // the loader translates into a `false` return so a fresh `open()` can
@@ -213,7 +213,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test("majority 'unknown-doc' vs minority tip-hash: tip-hash takes PRIORITY (PR #284 r19)", () => {
+  test("majority 'unknown-doc' vs minority tip-hash: tip-hash takes PRIORITY", () => {
     // 2 disclaims, 1 peer reports HASH_A. The probe samples from the
     // WHOLE libp2p mesh, not just peers that hold this document, so
     // peers without the doc (legitimately returning unknown-doc) must
@@ -332,13 +332,13 @@ describe('effectiveK / effectiveQ', () => {
     expect(effectiveQ(2, 0)).toBe(0); // no peers -> no quorum possible
   });
 
-  // PR #284 r9 Copilot review (issue #2): a fractional `configuredK`
+  // A fractional `configuredK`
   // previously slipped through `Math.min(...)` to produce a non-integer
   // value (e.g. 1.5), which `peers.slice(0, 1.5)` collapsed to a 1-peer
   // probe — silent single-peer load. The `k === 1 && !allowSinglePeer`
   // guard did not fire because `1.5 !== 1`. The defensive `Math.floor`
   // in `effectiveK` now collapses fractional K to an integer.
-  describe('effectiveK defensive guards (PR #284 r9)', () => {
+  describe('effectiveK defensive guards', () => {
     test('fractional K is floored to an integer', () => {
       expect(effectiveK(1.5, 3)).toBe(1);
       expect(effectiveK(2.99, 5)).toBe(2);
@@ -361,14 +361,14 @@ describe('effectiveK / effectiveQ', () => {
     });
   });
 
-  // PR #284 r9 Copilot review (issue #3, suppressed): `effectiveQ(NaN, 3)`
+  // `effectiveQ(NaN, 3)`
   // previously returned `NaN` because all comparisons against NaN are
   // false (so `configuredQ < 1` and `configuredQ > k` both fell through
   // to `return configuredQ`). `decideLoadQuorum` then evaluated
   // `bestPeers.length < NaN` as false and quorum passed with a single
   // responding peer. The defensive guard collapses NaN/Infinity to
   // `defaultQuorumQ(k)`.
-  describe('effectiveQ defensive guards (PR #284 r9)', () => {
+  describe('effectiveQ defensive guards', () => {
     test('NaN configuredQ collapses to defaultQuorumQ(k) (was: returned NaN, gate silently passed)', () => {
       expect(effectiveQ(NaN, 3)).toBe(defaultQuorumQ(3)); // 2
       expect(effectiveQ(NaN, 5)).toBe(defaultQuorumQ(5)); // 3
@@ -392,7 +392,7 @@ describe('effectiveK / effectiveQ', () => {
   });
 });
 
-describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () => {
+describe('validateLoadQuorumConfig startup input validation', () => {
   // The validator runs at `Peerborne.initialize()` time so a
   // misconfigured `loadQuorumK`/`loadQuorumQ` surfaces immediately
   // rather than silently degrading every subsequent `load()` call.
@@ -418,7 +418,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     ).not.toThrow();
   });
 
-  test('rejects fractional loadQuorumK with invalid-config error (issue #2)', () => {
+  test('rejects fractional loadQuorumK with invalid-config error', () => {
     // The exact bug: `loadQuorumK: 1.5` slipped through to
     // `peers.slice(0, 1.5)` and silently probed only 1 peer.
     const err = (() => {
@@ -437,8 +437,8 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     expect((err as LoadQuorumFailedError).message).toMatch(/1\.5/);
   });
 
-  test('rejects NaN loadQuorumK with "got NaN" in message (PR #284 r10 issue #1: not "got null")', () => {
-    // PR #284 r10 Copilot review (issue #1): `JSON.stringify(NaN)` is
+  test('rejects NaN loadQuorumK with "got NaN" rather than "got null"', () => {
+    // `JSON.stringify(NaN)` is
     // the literal string `'null'`, so the previous error message read
     // `got null` for a `NaN` input — indistinguishable from explicitly
     // passing `null` and actively misleading. The fix renders non-finite
@@ -462,7 +462,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     );
   });
 
-  test('rejects Infinity loadQuorumK with "got Infinity" in message (PR #284 r10 issue #1)', () => {
+  test('rejects Infinity loadQuorumK with "got Infinity" in message', () => {
     const err = (() => {
       try {
         validateLoadQuorumConfig({ loadQuorumK: Infinity });
@@ -479,7 +479,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     expect((err as LoadQuorumFailedError).message).not.toMatch(/got null/);
   });
 
-  test('rejects -Infinity loadQuorumK with "got -Infinity" in message (PR #284 r10 issue #1)', () => {
+  test('rejects -Infinity loadQuorumK with "got -Infinity" in message', () => {
     const err = (() => {
       try {
         validateLoadQuorumConfig({ loadQuorumK: -Infinity });
@@ -517,7 +517,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     );
   });
 
-  test('rejects fractional loadQuorumQ with invalid-config error (issue #3)', () => {
+  test('rejects fractional loadQuorumQ with invalid-config error', () => {
     const err = (() => {
       try {
         validateLoadQuorumConfig({ loadQuorumQ: 1.5 });
@@ -533,11 +533,11 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     );
   });
 
-  test('rejects NaN loadQuorumQ with "got NaN" in message (was: silent single-peer quorum pass; PR #284 r10 issue #1: not "got null")', () => {
+  test('rejects NaN loadQuorumQ with "got NaN" rather than silently passing or reporting null', () => {
     // The exact bug: `effectiveQ(NaN, k)` returned `NaN`,
     // `decideLoadQuorum` evaluated `bestPeers.length < NaN` as false,
     // and quorum passed with a single responder. Now refused at startup.
-    // PR #284 r10: also verify the rendered value is `NaN`, not the
+    // Also verify the rendered value is `NaN`, not the
     // misleading `null` from `JSON.stringify(NaN)`.
     const err = (() => {
       try {
@@ -555,7 +555,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
     expect((err as LoadQuorumFailedError).message).not.toMatch(/got null/);
   });
 
-  test('rejects Infinity loadQuorumQ with "got Infinity" in message (PR #284 r10 issue #1)', () => {
+  test('rejects Infinity loadQuorumQ with "got Infinity" in message', () => {
     const err = (() => {
       try {
         validateLoadQuorumConfig({ loadQuorumQ: Infinity });
@@ -610,7 +610,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
   });
 
   // ---------------------------------------------------------------------
-  // loadQuorumTimeoutMs validation (PR #284 r15 Copilot review)
+  // loadQuorumTimeoutMs validation
   // ---------------------------------------------------------------------
   // The bug: `loadQuorumTimeoutMs` is passed directly into `setTimeout(...)`
   // inside the tip-advertise probe race in `_raceTipAdvertiseProbe`. Values
@@ -759,7 +759,7 @@ describe('validateLoadQuorumConfig (startup input validation, PR #284 r9)', () =
   });
 });
 
-describe('formatConfigValue (PR #284 r10 issue #1: non-finite numbers render as their literal, not "null")', () => {
+describe('formatConfigValue renders non-finite numbers literally rather than as "null"', () => {
   // The root cause: `JSON.stringify(NaN)`, `JSON.stringify(Infinity)`,
   // and `JSON.stringify(-Infinity)` all return the literal string
   // `'null'` because JSON has no representation for those values. An
@@ -804,9 +804,9 @@ describe('formatConfigValue (PR #284 r10 issue #1: non-finite numbers render as 
     // `JSON.stringify(undefined)` returns `undefined` (NOT a string),
     // which would break the function's declared `string` return type
     // under strict-mode TypeScript and also surface as `got undefined`
-    // through coercion in operator-visible error messages. PR #284 r18
-    // Copilot review tightened the helper to always return a string;
-    // for `undefined` we fall back to `String(undefined)` so callers
+    // through coercion in operator-visible error messages. The helper
+    // always returns a string. For `undefined` we fall back to
+    // `String(undefined)` so callers
     // (and the type system) see a clean string. `validateLoadQuorumConfig`
     // still early-returns on `undefined` before calling the helper, so
     // this fallback is defensive — the helper's behaviour is pinned here.
@@ -843,7 +843,7 @@ describe('formatConfigValue (PR #284 r10 issue #1: non-finite numbers render as 
 });
 
 describe('defaultQuorumQ (strict-majority formula, #189 §5.4.2)', () => {
-  // The PR description and config docstring require strict majority — i.e.
+  // The design note and config docstring require strict majority — i.e.
   // `Math.floor(K/2) + 1`, NOT `Math.ceil(K/2) + 1`. The earlier ceil-based
   // default produced Q=3 at K=3, which made the gate refuse to pass with
   // even one non-vote and silently defeated the BFT intent ("tolerate one
@@ -936,7 +936,7 @@ describe('dedupePeersByPeerId (multi-connection vote inflation, #186)', () => {
   });
 });
 
-describe('founding-case removal (#186, suppressed comment fix)', () => {
+describe('founding-case removal (#186)', () => {
   // Regression coverage for the unsafe `_hashes.size === 0` bypass. Before
   // this fix, the loader skipped the quorum gate whenever its local
   // `_hashes` was empty on the theory that an empty set could not be
@@ -1021,7 +1021,7 @@ describe('LoadQuorumFailedError', () => {
     expect(err.message).toMatch(/quorum failed/i);
   });
 
-  test("invalid-config reason carries operator-visible detail (PR #284 r5)", () => {
+  test('invalid-config reason carries operator-visible detail', () => {
     // The 'invalid-config' variant is surfaced by `runLoadQuorum` when
     // `loadQuorumK <= 0`, where the structured `respondingCount`/
     // `requiredQ` fields are not meaningful (no probes were run). The
@@ -1039,7 +1039,7 @@ describe('LoadQuorumFailedError', () => {
     expect(err.message).toMatch(/loadQuorumK must be >= 1; got 0/);
   });
 
-  test('bind-check-failed-all-agreeing-peers carries per-peer agreeingPeerBindFailures (PR #284 r6)', () => {
+  test('bind-check-failed-all-agreeing-peers carries per-peer agreeingPeerBindFailures', () => {
     // The 'bind-check-failed-all-agreeing-peers' variant is surfaced by
     // `PeerborneDocument.load()` after the agreeing cohort is exhausted
     // and every peer failed the post-load tipsHash bind check. The

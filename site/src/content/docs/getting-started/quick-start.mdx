@@ -99,12 +99,11 @@ This quick start exercises a real Peerborne document in one browser process:
 - Automerge provider, serializers, signing, encryption, ACL, and keychain setup;
 - browser runtime behavior checked by Playwright.
 
-It does **not** claim to demonstrate two-peer live synchronization, persistence
-across browser restarts, or invitation/key delivery to a different identity.
-Those flows require explicit document-key or KEM onboarding and need stronger
-system-level acceptance coverage before they belong in a copy-and-paste guide.
-Sharing an identity signing key between tabs is not sufficient to transfer a
-document encryption key.
+This one-browser quick start does **not** demonstrate persistence across browser
+restarts or collaboration by itself. The separate Docker-backed acceptance job
+below covers a narrow online, founder-plus-one invitation path. Sharing an
+identity signing key between tabs is not sufficient to transfer a document
+encryption key.
 
 ## Additional verified paths
 
@@ -115,10 +114,10 @@ The repository also contains heavier acceptance suites:
   Compose services are running.
 - `yarn test:nat` exercises NAT traversal after its Docker Compose topology is
   running.
-- `yarn test:peerborne-nat` verifies encrypted Automerge document retrieval
-  across two NAT-isolated Chromium processes. The test restores the document key
-  through a test-only bridge; it does not prove end-user invitation or live
-  post-load convergence.
+- `yarn test:peerborne-nat` uses separate signing identities in two NAT-isolated
+  Chromium processes, accepts a signed editor invitation through Circuit
+  Relay without exposing a plaintext document key or injecting one through the
+  test bridge, and verifies fresh Automerge mutations in both directions.
 
 The Docker-backed suites are started and cleaned up by their corresponding CI
 jobs in [the repository workflow](https://github.com/Peerborne/peerborne/blob/main/.github/workflows/ci.yml).
@@ -151,6 +150,8 @@ publication:
 - [`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager)
   demonstrates the React and Yjs integrations, but should not yet be treated as
   proof of distinct-identity invitation.
+- [Invite a collaborator](../../cookbook/invitations/) documents the narrow
+  online invitation API and its trust/recovery limits.
 
 For a change to these packages, the minimum completion commands are:
 

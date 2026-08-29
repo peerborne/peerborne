@@ -301,7 +301,7 @@ describe('BeeKEM reader revocation', () => {
   });
 
   test('surviving reader decrypts the ACL-change broadcast with its pre-revocation key', async () => {
-    // CRITICAL ORDERING INVARIANT (PR #285 Copilot round 3, issue #1):
+    // CRITICAL ORDERING INVARIANT:
     //
     //   The `removeReader` flow broadcasts two messages: a gossipsub
     //   ACL-change message (encrypted under the current keychain key)
@@ -450,7 +450,7 @@ describe('BeeKEM reader revocation', () => {
   });
 
   test('upfront readerKemPublicKey length validation throws before any BeeKEM mutation', async () => {
-    // PR #285 Copilot round 5, issue #1:
+    // READER KEM KEY VALIDATION INVARIANT:
     //
     //   `PeerborneDocument.addReader` accepts an optional
     //   `readerKemPublicKey` (raw SEC1 P-256 = 65 bytes) which is
@@ -506,7 +506,7 @@ describe('BeeKEM reader revocation', () => {
     const ECIES_P256_PUBLIC_KEY_LENGTH = 65;
 
     async function addReaderMirror(readerKemPublicKey: Uint8Array) {
-      // Upfront length gate -- the new round-5 check.
+      // Upfront length gate before any state mutation.
       if (readerKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
         throw new Error(
           `readerKemPublicKey must be ${ECIES_P256_PUBLIC_KEY_LENGTH} bytes, ` +
@@ -551,7 +551,7 @@ describe('BeeKEM reader revocation', () => {
   });
 
   test('removeReader installs new epoch key locally even when a broadcast step fails', async () => {
-    // PR #285 Copilot round 5, issue #2 + suppressed #4:
+    // POST-MUTATION LOCAL KEY INSTALLATION INVARIANT:
     //
     //   `PeerborneDocument.removeReader` runs three steps AFTER the
     //   BeeKEM `removeMember` mutation:
@@ -568,7 +568,7 @@ describe('BeeKEM reader revocation', () => {
     //   traffic would then encrypt under a key that surviving readers
     //   (post-PathUpdate) no longer accept.
     //
-    //   The round-5 fix: wrap (a) and (b) in try/catch + warn + fall
+    //   The fix wraps (a) and (b) in try/catch + warn + fall
     //   through, so (c) always runs and the writer transitions to
     //   the new key. The BeeKEM mutation is the atomicity boundary;
     //   everything after it is best-effort with logged warnings,
@@ -579,7 +579,7 @@ describe('BeeKEM reader revocation', () => {
     // is: even though `_makeChange` threw, BeeKEM advanced AND the
     // writer can still encrypt a fresh message under the
     // post-revocation key (because `addEpochKey` ran via the
-    // round-5 fall-through). The full `PeerborneDocument` call
+    // post-mutation fall-through). The full `PeerborneDocument` call
     // path is omitted -- the sequencing invariant is what the
     // production try/catch guarantees.
     type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
@@ -663,8 +663,8 @@ describe('BeeKEM reader revocation', () => {
 
     // INVARIANT (b): the writer can encrypt a fresh outgoing message
     // under the new key. This is the operational property the
-    // round-5 fix exists to preserve: even though the ACL broadcast
-    // failed, the writer is on the new epoch for outgoing traffic.
+    // local-key installation invariant preserves: even though the ACL
+    // broadcast failed, the writer is on the new epoch for outgoing traffic.
     const outgoing = new TextEncoder().encode('post-revocation writer message');
     const ciphertext = await encryptUnder(
       writerKeychain.current().cryptoKey,
@@ -689,7 +689,7 @@ describe('BeeKEM reader revocation', () => {
   });
 
   test('removeReader installs new epoch key locally even when PathUpdate broadcast fails', async () => {
-    // PR #285 Copilot round 5, suppressed comment #4 (line ~4166):
+    // PATHUPDATE FAILURE VARIANT:
     //
     //   Mirror of the test above, but with the failure injected into
     //   `_distributeBeeKEMPathUpdate` rather than `_makeChange`.
@@ -755,7 +755,7 @@ describe('BeeKEM reader revocation', () => {
   });
 
   test('addReader founder-vs-joined-writer gate refuses to initialize a divergent founder tree', async () => {
-    // PR #285 Copilot round 8, issue #1 (critical correctness bug):
+    // FOUNDER-TREE INITIALIZATION INVARIANT:
     //
     //   The bug shape: when `PeerborneDocument._beekemInitialized` is
     //   false and `addReader` is called, the previous code path

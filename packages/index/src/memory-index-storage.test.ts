@@ -112,6 +112,18 @@ describe('MemoryIndexStorage', () => {
       expect(results).toHaveLength(3);
     });
 
+    test('range filters do not coerce null or undefined operands', async () => {
+      await storage.put(indexName, '/doc/null', { title: 'Null', count: null });
+      await storage.put(indexName, '/doc/missing', { title: 'Missing' });
+      for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
+        await expect(storage.query(indexName, [{ path: 'count', operator, value: null }]))
+          .resolves.toEqual([]);
+        const numeric = await storage.query(indexName, [{ path: 'count', operator, value: 0 }]);
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/null');
+        expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/missing');
+      }
+    });
+
     test('prefix: string prefix match', async () => {
       const results = await storage.query(indexName, [{ path: 'title', operator: 'prefix', value: 'Alpha' }]);
       expect(results).toHaveLength(2);
@@ -160,6 +172,15 @@ describe('MemoryIndexStorage', () => {
     test('sort ascending by string', async () => {
       const results = await storage.query(indexName, [], [{ path: 'title', direction: 'asc' }]);
       expect(results.map(r => r.fields.title)).toEqual(['Alpha', 'Beta', 'Charlie']);
+    });
+
+    test('preserves plain lexical ordering for numeric-looking strings', async () => {
+      await storage.put(indexName, '/doc/4', { title: '10', count: 40 });
+      await storage.put(indexName, '/doc/5', { title: '2', count: 50 });
+      const results = await storage.query(indexName, [], [{ path: 'title', direction: 'asc' }]);
+      expect(results.map(r => r.fields.title)).toEqual(
+        ['Charlie', 'Alpha', 'Beta', '10', '2'].sort((left, right) => left.localeCompare(right)),
+      );
     });
 
     test('sort descending by number', async () => {

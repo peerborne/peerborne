@@ -7,10 +7,13 @@
  */
 import * as fs from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { runCrdtSyncLatencyBenchmarks } from './crdt-sync-latency.js';
 import { runCryptoOverheadBenchmarks } from './crypto-overhead.js';
 import { runConvergenceSimulationBenchmarks } from './convergence-simulation.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function parseIterations(): number {
   const idx = process.argv.indexOf('--iterations');
@@ -43,7 +46,7 @@ async function main() {
 
   // 3. Convergence Simulation
   console.log('=== Convergence Simulation ===');
-  const convergence = await runConvergenceSimulationBenchmarks(Math.max(10, Math.floor(iterations / 5)));
+  const convergence = await runConvergenceSimulationBenchmarks(Math.max(1, Math.floor(iterations / 5)));
   allSuites.push(convergence);
   console.log(PaperBenchmarkRunner.formatTable(convergence.results));
   console.log();

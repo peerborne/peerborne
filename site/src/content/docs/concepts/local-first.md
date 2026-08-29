@@ -10,15 +10,28 @@ A local-first application stores its primary data on the user's device — not o
 Peerborne adopts these local-first principles:
 
 - **Local replica near the user.** The application reads and writes a local CRDT document. There is no server round-trip for reads or writes.
-- **Work offline.** Once a document is loaded, the local replica can be edited without network access. Changes are applied immediately to the CRDT and stored locally in IndexedDB.
+- **Work offline.** Once a replica is open—including a new local document—it can be edited without network access. Changes are applied immediately to the CRDT and stored locally in IndexedDB.
 - **No server-ordained write ordering.** Two peers can edit the same document concurrently. The CRDT layer merges their changes when they eventually exchange updates.
 - **Eventually consistent.** When peers reconnect, they may discover and fetch blocks that were created during the offline period. Delivery is not guaranteed — see limitations below.
 
+![An open local replica accepts and stores an edit while disconnected without requiring prior network connectivity; libp2p may redial, but reconnect-and-replay has no durable guarantee and later peer delivery remains best effort.](../../../assets/diagrams/offline-boundary.svg "Offline boundary: local edits work, while durable reconnect and replay are not guaranteed.")
+
+**Evidence boundary:** open-replica editing and local storage are implemented.
+The complete offline edit → reconnect → remote delivery sequence is not verified
+end to end. Libp2p may redial keep-alive peers, but Peerborne supplies no
+durable outbox, delivery receipt, or guarantee that a connection is restored
+and missed announcements are replayed.
+
 ## What is implemented today
 
-### Offline editing (loaded replicas only)
+### Offline editing (open local replicas)
 
-A Peerborne document that has already been loaded can be edited offline. The `document.change()` call applies the mutation to the local Yjs or Automerge replica immediately and returns a promise that covers signing, encryption, storage to the local Helia blockstore, and publication to connected peers.
+An open Peerborne document with its local state and key material available can
+be edited offline. This includes a new document created locally without a peer
+connection. The `document.change()` call applies the mutation to the local Yjs
+or Automerge replica immediately. Its promise covers storing an encrypted
+change payload, building and optionally signing a separate sync message,
+encrypting that message, and attempting publication through GossipSub.
 
 ```ts
 await todos.change((state) => {
@@ -26,18 +39,21 @@ await todos.change((state) => {
 });
 ```
 
-If no peers are connected, the encrypted block is still stored locally in IndexedDB. When peers reconnect, they will discover and fetch the new blocks.
+The encrypted change payload is stored before publication is attempted, so it
+can remain in local IndexedDB even if publication later fails. Libp2p may
+restore some peer connections, but missed-update replay and delivery are not
+guaranteed.
 
 ### What `change()` covers
 
 The `document.change()` promise resolves when:
 
 1. The CRDT provider has applied the mutation to the local replica
-2. The update has been serialized into a `CRDTChangeBlock`
-3. The block has been signed with the writer's ECDSA P-384 key
-4. The signed block has been encrypted with the document's AES-GCM key
-5. The encrypted block has been stored in the local Helia blockstore
-6. The CID has been published to connected peers via GossipSub
+2. The change payload has been serialized and encrypted with the document key (AES-GCM by default)
+3. The ciphertext has been stored in the local Helia blockstore, producing its CID
+4. A separate `CRDTSyncMessage` has been built with that CID, inline history, and any deferred CID references
+5. The complete sync message has been signed when signing is enabled, then serialized and encrypted with the document key (AES-GCM by default)
+6. Publication of the full encrypted sync envelope through GossipSub has completed
 
 If storage or publication fails (e.g., IndexedDB quota exceeded, network error), the CRDT mutation **may already be applied**. The CRDT state reflects the mutation even if the remote sync path failed. There is no automatic rollback.
 
@@ -51,9 +67,14 @@ If a peer is unreachable when `change()` publishes to GossipSub, the update may 
 
 When a change is published, there is no confirmation that remote peers received, verified, or applied it. The application must implement its own acknowledgment protocol if it needs delivery guarantees.
 
-### No automatic reconnection
+### No durable reconnect-and-replay guarantee
 
-If the libp2p connection drops, Peerborne does not automatically reconnect. The application must detect disconnection and reinitialize the transport. See the [networking page](../networking/) for transport details.
+Libp2p can redial peers tagged for keep-alive, including relay reservation
+paths. Peerborne does not provide a durable reconnection/outbox protocol that
+guarantees connection restoration or replays announcements missed while a peer
+was offline. Applications that require recovery must observe connectivity and
+coordinate their own retry, resynchronization, or acknowledgment flow. See the
+[networking page](../networking/) for transport details.
 
 ### No close/restart recovery verified in CI
 
@@ -65,13 +86,26 @@ If part of the `change()` pipeline fails (e.g., storage quota exceeded), the CRD
 
 ## The infrastructure boundary
 
-"Local-first" does not mean "infrastructure-free." Browser peers cannot listen for incoming connections and cannot participate in a DHT without a bootstrap node. Most Peerborne deployments need:
+"Local-first" does not mean "infrastructure-free." Browser nodes do not bind
+ordinary inbound TCP sockets. Peerborne's browser default nevertheless
+advertises circuit-relay, WebRTC, and WebSocket listen addresses and enables
+WebRTC, WebRTC Direct, WebTransport, and relay transports. Bootstrap discovery
+is optional: without a configured bootstrap peer or an explicit `connect()`
+address, the default node remains a swarm of one. The current cross-NAT
+Peerborne acceptance test explicitly dials a Circuit Relay address; direct
+WebRTC/WebTransport document sync and DHT behavior remain unverified.
+
+Depending on the deployment topology, supporting infrastructure can include:
 
 - **Relay nodes** to bridge NAT for browser peers
 - **Bootstrap nodes** as well-known entry points for the libp2p network
 - **STUN/TURN servers** for WebRTC hole-punching (optional, for direct peer connections)
 
-These infrastructure components carry **encrypted traffic only** — they never see document plaintext. But they are necessary for peers to discover and reach each other.
+A relay that does not hold the document key forwards ciphertext; bootstrap and
+STUN provide discovery or address metadata rather than document plaintext.
+Infrastructure components can still observe network metadata, and any
+component that is also enrolled as an authorized document peer can decrypt
+according to its keys.
 
 See [running a relay](../../cookbook/running-a-relay/) for the development relay setup.
 
@@ -96,7 +130,7 @@ It is not a good fit for:
 These behaviors are verified by CI:
 
 - Document creation, local mutation, and retrieval in a single browser session
-- Encrypted block storage and retrieval through a Circuit Relay
+- Encrypted existing-history retrieval through Circuit Relay
 - Automerge and Yjs provider initialization and basic operation
 - Crypto operations (signing, encryption, key generation)
 
@@ -104,8 +138,8 @@ These behaviors are **not** verified:
 
 - Browser restart and document recovery
 - Multi-session persistence across browser closes
-- Offline editing with later reconnection
-- Automatic reconnection after transport failure
+- Offline editing with later reconnection and delivery
+- Guaranteed transport reconnection and missed-update replay
 
 ## Next steps
 

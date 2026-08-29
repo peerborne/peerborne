@@ -8,6 +8,7 @@
 import { pipe } from 'it-pipe';
 import { Libp2p } from 'libp2p';
 import { Peerborne, MAX_DOCUMENT_PATH_LENGTH } from './peerborne.js';
+import type { CreateInvitationOptions } from './peerborne.js';
 import {
   concatUint8Arrays,
   firstTrue,
@@ -42,7 +43,10 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
-import { validateAndExportKemKeyPair } from './kem-key-pair.js';
+import {
+  snapshotKemKeyPair,
+  validateAndExportKemKeyPair,
+} from './kem-key-pair.js';
 import {
   eciesSeal,
   eciesOpen,
@@ -79,7 +83,8 @@ import {
 } from './load-quorum.js';
 import { runLoadQuorum } from './load-quorum-orchestrator.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
-import { CompactionConfig, defaultCompactionConfig } from './compaction-config.js';
+import type { CompactionConfig } from './compaction-config.js';
+import { mergeCompactionConfig } from './compaction-config.js';
 import {
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
@@ -91,7 +96,6 @@ import { keychainHistorySinceOrFull } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { Base64 } from 'js-base64';
-import BufferList from 'bl';
 import { Uint8ArrayList } from 'uint8arraylist';
 import { CID } from 'multiformats';
 import { UnixFS, unixfs } from '@helia/unixfs';
@@ -101,8 +105,47 @@ import { UnixFS, unixfs } from '@helia/unixfs';
 // `services.pubsub` and exposes the same publish/subscribe/event surface we
 // rely on. `Message` (the pubsub message shape) likewise moved here.
 import { TopicValidatorResult } from '@libp2p/gossipsub';
-import type { GossipSub, Message } from '@libp2p/gossipsub';
+import type {
+  GossipSub,
+  Message,
+  TopicValidatorFn,
+} from '@libp2p/gossipsub';
 import { EventHandler, PeerId } from '@libp2p/interface';
+import { multiaddr } from '@multiformats/multiaddr';
+import {
+  syncInvitationMessageCompletely,
+  withIssuerPinnedInvitationStream,
+} from './invitation-catch-up.js';
+import {
+  MAX_INVITATION_MESSAGE_BYTES,
+  assertInvitationBootstrapEpochBinding,
+  type InvitationOfferV1,
+} from './invitation-wire.js';
+import {
+  assertInitialInvitationBeeKEMCapacity,
+  assertInitialInvitationBeeKEMWelcomeShape,
+  assertInitialInvitationCapacityProfile,
+  assertInvitationOpaquePayloadCapacity,
+  assertProjectedInitialInvitationBootstrapCapacity,
+  assertProjectedInitialInvitationWelcomeCapacity,
+  INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
+  INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
+  INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+  projectInitialInvitationBootstrapCapacity,
+} from './invitation-capacity.js';
+import {
+  assertInitialInvitationHistoryVisibility,
+  type HistoryVisibility,
+} from './invitation-policy.js';
+import {
+  assertAcceptedInvitationMembershipTopology,
+  createInvitationMutationAdmission,
+  InvitationMembershipQueue,
+  prepareInitialInvitationMembership,
+  type InitialInvitationMembershipState,
+} from './invitation-membership.js';
+export type { HistoryVisibility } from './invitation-policy.js';
 
 /**
  * Constant-time byte-array equality. Used by the BeeKEM PathUpdate
@@ -117,17 +160,19 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/**
- * Controls what historical data new members receive when joining a document.
- *
- * - `current_only` (default): New member receives only a CRDT state snapshot.
- *   No historical epoch keys are included. Most private option.
- * - `full_history`: All epoch keys included in Welcome message.
- *   Suitable for audit trails and regulatory compliance.
- * - `since_invited`: Epoch keys from the invitation epoch onward.
- *   Partial history access.
- */
-export type HistoryVisibility = 'current_only' | 'full_history' | 'since_invited';
+/** Opaque, recipient-bound material returned by the invitation join handler. */
+export interface InvitationBootstrapBundle {
+  welcomeEpochId: Uint8Array;
+  sealedWelcome: Uint8Array;
+  encryptedBootstrap: Uint8Array;
+}
+
+interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
+  readonly keychainChanges: ChangesType;
+  readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  readonly serializedBootstrapBaselineBytes: number;
+  readonly welcomeWithoutBeeKEMBytes: number;
+}
 
 /**
  * Handler type for local-change (changes made on the current computer) and remote-change (changes made by a remote peer) events.
@@ -212,7 +257,6 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
  * documents. 6 KiB comfortably covers a maximum-length path plus all of
  * the overheads above while still bounding what a malicious peer can
  * force the loader to buffer before being rejected as a non-vote.
- * See PR #284 r4/r5 Copilot review.
  */
 const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
 
@@ -231,7 +275,7 @@ const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
  * chosen large enough to overlap WAN-latency-bound bitswap fetches and
  * keep the load fast (8 inflight is comfortably more than typical mesh
  * peer counts) but small enough to bound peak resource use on the
- * loader. See PR #284 r24 Copilot review.
+ * loader.
  */
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
 
@@ -243,8 +287,7 @@ const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
  * loop, which records the failure against the responsible peer and
  * proceeds to the NEXT peer in the agreeing cohort.
  *
- * Critical to the DoS fix from PR #284 r6: previously
- * `_sendLoadRequestAndSync` threw `LoadQuorumFailedError` on bind
+ * Previously `_sendLoadRequestAndSync` threw `LoadQuorumFailedError` on bind
  * mismatch and `load()` re-raised it, aborting the entire load. A
  * single malicious peer in the agreeing cohort could vote for the
  * majority hash (passing quorum) and then serve a mismatched full load
@@ -323,7 +366,7 @@ export class PeerborneDocument<
   // Since the document is created from change history, all keys are needed.
   private _keychain;
 
-  // Controls what historical data new members receive when joining.
+  // Controls which document-key epochs peers supply during onboarding/load.
   private _historyVisibility: HistoryVisibility = 'current_only';
 
   // Tracks the epoch at which this node was invited to the document.
@@ -345,7 +388,7 @@ export class PeerborneDocument<
   // (no retry / no ack). Buffering closes the race: when a Welcome is
   // dropped solely because the local user is not yet a reader, we park
   // it here keyed by hex(welcomeEpochId), and re-evaluate buffered
-  // Welcomes after every readers-ACL `merge` (`_drainPendingWelcomes`).
+  // Welcomes after every readers-ACL `merge` (`_drainPendingWelcomesUnlocked`).
   //
   // Bounding:
   //  - `_PENDING_WELCOMES_MAX_ENTRIES` (16): caps memory usage so a
@@ -419,6 +462,15 @@ export class PeerborneDocument<
   public async setKemKeyPair(
     keyPair: CryptoKeyPair | undefined,
   ): Promise<void> {
+    // Snapshot synchronously before queueing. A caller-owned CryptoKeyPair is
+    // an ordinary mutable record even though its CryptoKey handles are not.
+    const snapshot = keyPair && snapshotKemKeyPair(keyPair);
+    return this._mutationQueue.run(() => this._setKemKeyPairUnlocked(snapshot));
+  }
+
+  private async _setKemKeyPairUnlocked(
+    keyPair: CryptoKeyPair | undefined,
+  ): Promise<void> {
     if (keyPair === undefined) {
       this._kemKeyPair = undefined;
       this._kemPublicKeyRaw = undefined;
@@ -454,6 +506,63 @@ export class PeerborneDocument<
     return this._kemPublicKeyRaw && new Uint8Array(this._kemPublicKeyRaw);
   }
 
+  /**
+   * Create a signed public offer for an online, distinct-identity join.
+   * The offer contains only public metadata and is safe to encode in a URL
+   * fragment. The inviter must remain online until the recipient accepts it.
+   */
+  public async createInvitation(
+    options: CreateInvitationOptions,
+  ): Promise<InvitationOfferV1> {
+    return this.swarm.createInvitationForDocument(this, options);
+  }
+
+  /** @internal Validate the deliberately narrow initial membership topology. */
+  public async assertCanCreateInitialInvitation(): Promise<void> {
+    this._assertInitialInvitationCapacityProfile();
+    await this._ensureCurrentUserCanWrite();
+    if (!this._createdLocally) {
+      throw new Error(
+        `Invitation creation for ${this.documentPath} is limited to the ` +
+          'founder process that created the document',
+      );
+    }
+    const [readers, writers] = await Promise.all([
+      this._readers.users(),
+      this._writers.users(),
+    ]);
+    if (writers.length !== 1) {
+      throw new Error(
+        `Invitation creation for ${this.documentPath} requires exactly one ` +
+          'founder writer before onboarding',
+      );
+    }
+    if (readers.length > 0) {
+      throw new Error(
+        `Invitation creation for ${this.documentPath} requires an empty ` +
+          'reader slot; the initial release supports one active collaborator',
+      );
+    }
+    assertInitialInvitationBeeKEMCapacity(
+      this._beekem?.memberCount,
+      false,
+      this.documentPath,
+    );
+  }
+
+  private _assertInitialInvitationCapacityProfile(): void {
+    assertInitialInvitationCapacityProfile({
+      crdtProvider: this._crdtProvider,
+      aclProvider: this._aclProvider,
+      keychainProvider: this._keychainProvider,
+      changesSerializer: this._changesSerializer,
+      syncMessageSerializer: this._syncMessageSerializer,
+      authProvider: this._authProvider,
+      privateKey: this._userKey,
+      publicKey: this._userPublicKey,
+    });
+  }
+
   // BeeKEM ratchet-tree state for cryptographic reader revocation.
   //
   // `removeReader` blanks the removed reader's BeeKEM leaf, re-keys the
@@ -486,6 +595,13 @@ export class PeerborneDocument<
   // future fresh document-load can recover keychain state.
   private _beekem: BeeKEM | null = null;
   private _beekemInitPromise: Promise<BeeKEM> | null = null;
+  // Local membership changes, ACL-bearing remote sync, and invitation
+  // bootstrap construction share one queue. This keeps the ACL topology,
+  // BeeKEM tree, keychain, and signed bootstrap attestation coherent.
+  // One FIFO freezes every state writer while an invitation sizes and builds
+  // its bootstrap. Internal helpers called from an admitted operation remain
+  // unlocked to avoid reentrant waits on the same queue.
+  private _mutationQueue = new InvitationMembershipQueue();
   // `true` iff `_beekem` was set via `_initializeBeeKEMAsFounder` or
   // `processWelcome`. Distinguishes a legitimate local BeeKEM state
   // from "we have never received a Welcome and we are not the
@@ -510,8 +626,8 @@ export class PeerborneDocument<
   // `addReader`). Used by `removeReader` as the lookup key when the
   // `_readerLeafIndices` fast-path cache misses: we know the
   // identity but need the KEM key to query the BeeKEM tree via
-  // `BeeKEM.findLeafByPublicKey`. Persistence is out of scope for
-  // this PR -- on a restart this map is empty and `removeReader`
+  // `BeeKEM.findLeafByPublicKey`. Persistence is not implemented, so
+  // on restart this map is empty and `removeReader`
   // surfaces the gap with a clear error.
   private _readerKemPublicKeys = new Map<string, Uint8Array>();
 
@@ -535,7 +651,8 @@ export class PeerborneDocument<
 
   /**
    * Set the history visibility for this document.
-   * Controls what data new members receive when they join.
+   * This filters distributed epoch keys; it does not redact retained CRDT
+   * operations or provide a historical-content confidentiality boundary.
    */
   public set historyVisibility(value: HistoryVisibility) {
     this._historyVisibility = value;
@@ -626,6 +743,20 @@ export class PeerborneDocument<
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
   // which would break other instances listening on the same topic.
   private _subscribed = false;
+
+  // Exact validator installed by this instance. Cleanup compares by identity
+  // so a stale/failed document cannot delete another instance's validator.
+  private _topicValidator: TopicValidatorFn | undefined;
+
+  // Set only after a signed invitation bootstrap has been fully verified and
+  // applied. The following open() activates handlers without falling through
+  // the ambiguous network-load/new-document branch.
+  private _invitationBootstrapReady = false;
+
+  // Explicit creation provenance for BeeKEM founder initialization. Change
+  // count is not a valid proxy because open() replicates the founder-writer
+  // ACL before the first invitation is created.
+  private _createdLocally = false;
 
   // Cached pubsub topic string. Initialized in constructor via _computeTopic()
   // so that callers that invoke _makeChange() before open() (e.g. via load())
@@ -733,10 +864,9 @@ export class PeerborneDocument<
     this._readers = this._aclProvider.initialize();
     this._writers = this._aclProvider.initialize();
     this._keychain = this._keychainProvider.initialize();
-    this._compactionConfig = {
-      ...defaultCompactionConfig,
-      ...(this.swarm.config?.compaction ?? {}),
-    };
+    this._compactionConfig = mergeCompactionConfig(
+      this.swarm.config?.compaction,
+    );
 
     // Provide a valid default topic so that _makeChange() works even before
     // open() is called (e.g. when load() triggers a change). open() will
@@ -783,9 +913,7 @@ export class PeerborneDocument<
         return this._authProvider.decrypt(data, key, nonce);
       } else {
         console.warn(
-          `Failed to find document key!`,
-          this._hexEncode(blockKeyID),
-          this._keychain,
+          `Failed to find a document key for ${this.documentPath}`,
         );
       }
     } catch (e) {
@@ -959,8 +1087,8 @@ export class PeerborneDocument<
    * `_lastSyncMessage` is refreshed by `_makeChange()` (its tree is
    * rooted at *this peer's* last locally-produced change) AND by
    * `_syncDocumentChanges()` (when an incoming remote tree subsumes the
-   * cached root -- the round-14 fix for relay peers that never make
-   * local changes; see `_refreshLastSyncMessageFromSync()`). When the
+   * cached root, including on relay peers that never make local changes;
+   * see `_refreshLastSyncMessageFromSync()`). When the
    * incoming root is concurrent with the cached root, the cache is left
    * alone so served-frontier coverage cannot shrink; the next local
    * change re-bundles concurrent heads via cross-links from
@@ -970,11 +1098,11 @@ export class PeerborneDocument<
    * change H1 plus remotely-applied changes H2, H3 that aren't yet
    * cross-linked from any local change), `_currentFrontier()` returns
    * `{H1, H2, H3}` but the load response only contains H1's subtree.
-   * Round 8 of the PR #284 Copilot review caught the resulting
-   * inconsistency: the tip-advertise probe would hash `{H1, H2, H3}` and
-   * win the quorum vote, but the served payload's structural frontier
-   * (`computeServedFrontier(...)` on the loader side) hashes only `{H1}`,
-   * causing the loader's bind check to reject the honest peer.
+   * That creates an inconsistency: the tip-advertise probe would hash
+   * `{H1, H2, H3}` and win the quorum vote, but the served payload's
+   * structural frontier (`computeServedFrontier(...)` on the loader side)
+   * hashes only `{H1}`, causing the loader's bind check to reject the
+   * honest peer.
    *
    * # What this returns
    *
@@ -1001,7 +1129,7 @@ export class PeerborneDocument<
    * ever ships what `_lastSyncMessage` covers anyway) and is reconciled
    * by post-load GossipSub sync; the alternative (Option B in the design
    * notes) would require the load response itself to carry every head's
-   * subtree, a larger protocol change. See PR #284 r8 review.
+   * subtree, a larger protocol change.
    *
    * @internal
    */
@@ -1197,8 +1325,7 @@ export class PeerborneDocument<
     // making the peer advertise `tipsHash([])` in the initial-load quorum
     // probe AND ship an empty load response. Two such relay peers would
     // agree on the empty-set hash, satisfying quorum, and an honest newcomer
-    // would accept an empty document while the mesh actually had data
-    // (#284 r14 Copilot review).
+    // would accept an empty document while the mesh actually had data.
     //
     // We update only when the incoming tree subsumes our prior root --
     // i.e., `_lastSyncMessage.changeId` appears as a CID somewhere in the
@@ -1223,8 +1350,8 @@ export class PeerborneDocument<
    * tree *subsumes* the prior cached root, so the served frontier the
    * loader binds against can only grow, never shrink:
    *   - `_lastSyncMessage` is `undefined` (relay peer, no local change
-   *     yet): adopt the incoming directly. This is the round-14 bug case
-   *     -- prior to the fix the relay peer's served frontier was empty.
+   *     yet): adopt the incoming directly so the relay peer does not serve
+   *     an empty frontier.
    *   - prior `changeId` appears anywhere in the incoming tree (root or
    *     descendant): the incoming tree includes the prior root's coverage
    *     by construction, so it is safe to replace.
@@ -1261,9 +1388,9 @@ export class PeerborneDocument<
 
     const priorChangeId = this._lastSyncMessage?.changeId;
 
-    // Case 1: no prior cached message -- adopt the incoming. This is the
-    // round-14 fix path: a relay peer with no local changes was previously
-    // serving an empty payload because `_lastSyncMessage` was `undefined`.
+    // Case 1: no prior cached message -- adopt the incoming. A relay peer
+    // with no local changes otherwise serves an empty payload because
+    // `_lastSyncMessage` is `undefined`.
     if (!priorChangeId) {
       this._lastSyncMessage = {
         ...(this._lastSyncMessage || { documentId: this.documentPath }),
@@ -1336,23 +1463,26 @@ export class PeerborneDocument<
    * eviction) and re-introducing the readers-ACL / Welcome reordering
    * wedge that this buffering / drain pair is designed to close.
    *
-   * Drain is fire-and-forget because it must not block the synchronous
-   * ACL-merge call sites (`_syncDocumentChanges`, `_applyACLFromTree`)
-   * on async keychain/signature work. Errors during drain are caught
-   * and logged so a bug in one buffered Welcome cannot starve the
-   * receive path.
+   * Drain is scheduled through the mutation queue because accepting a
+   * buffered Welcome mutates keychain and BeeKEM state. It remains
+   * fire-and-forget so synchronous ACL-merge call sites do not await a
+   * reentrant queue slot while their enclosing `sync()` still owns the
+   * current one. Errors are caught and logged so a malformed buffered
+   * Welcome cannot starve the receive path.
    *
    * @internal
    */
   private _mergeReaders(changes: ChangesType): void {
     this._readers.merge(changes);
     if (this._pendingWelcomes.size > 0) {
-      void this._drainPendingWelcomes().catch((err) => {
-        console.error(
-          `Failed to drain pending BeeKEM Welcomes for ${this.documentPath}:`,
-          err,
-        );
-      });
+      void this._mutationQueue
+        .run(() => this._drainPendingWelcomesUnlocked())
+        .catch((err) => {
+          console.error(
+            `Failed to drain pending BeeKEM Welcomes for ${this.documentPath}:`,
+            err,
+          );
+        });
     }
   }
 
@@ -1731,13 +1861,13 @@ export class PeerborneDocument<
   private async _keychainChangesForVisibility(): Promise<ChangesType> {
     switch (this._historyVisibility) {
       case 'full_history':
-        // Send ALL epoch keys -- for audit trails and regulatory compliance.
+        // Send all retained epoch keys.
         return this._keychain.history();
       case 'since_invited':
         if (this._invitationEpoch === undefined) {
           // No recorded invitation epoch (founding member, or a node
           // that joined before Welcome wiring landed). Default to the
-          // most-private interpretation -- the current key only -- so a
+          // narrowest key-distribution interpretation -- the current key only -- so a
           // missing boundary cannot silently widen the disclosure
           // window. Future rotations propagate via key-update.
           return await this._keychain.currentKeyChange();
@@ -1751,7 +1881,7 @@ export class PeerborneDocument<
         );
       case 'current_only':
       default:
-        // Only send the current key -- most private option.
+        // Only send the current key. This does not redact retained CRDT history.
         return await this._keychain.currentKeyChange();
     }
   }
@@ -1764,7 +1894,7 @@ export class PeerborneDocument<
    * perspective, not the inviter's:
    *
    * - `current_only`: send only the current key. Identical to the load
-   *   response path.
+   *   response path; this does not redact retained CRDT history.
    * - `since_invited`: send only the current key. From the recipient's
    *   perspective, "since I was invited" is the current epoch
    *   (`welcomeEpochId`) onward, so the Welcome itself should carry
@@ -1816,7 +1946,7 @@ export class PeerborneDocument<
     }
     this._compactionInProgress = true;
     try {
-      await this.snapshot();
+      await this._snapshotUnlocked();
     } finally {
       this._compactionInProgress = false;
     }
@@ -1991,11 +2121,6 @@ export class PeerborneDocument<
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
   ): Promise<void> {
     try {
-      console.log(
-        `received doc-load request for ${this.documentPath}:`,
-        message,
-      );
-
       if (message.documentId !== this.documentPath) {
         console.warn(
           `Received a load request for the wrong document (${message.documentId} !== ${this.documentPath})`,
@@ -2059,8 +2184,8 @@ export class PeerborneDocument<
       // a defense-in-depth consistency check against this responder's
       // self-attested served frontier (issue #186 / #189 §5.4.2).
       //
-      // NOTE: as of PR #284 r7, the loader's PRIMARY binding is derived
-      // STRUCTURALLY from the served `changes`/`snapshot` payload via
+      // The loader's PRIMARY binding is derived STRUCTURALLY from the
+      // served `changes`/`snapshot` payload via
       // `computeServedFrontier`; the responder's `tips` array is NOT
       // trusted as the source of truth (a Byzantine peer can populate
       // it with the agreed CIDs while serving a divergent payload).
@@ -2070,7 +2195,7 @@ export class PeerborneDocument<
       // a peer whose `tips` contradicts their own served payload is
       // caught at the secondary check.
       //
-      // PR #284 r8: `tips` is now the *served* frontier
+      // `tips` is the *served* frontier
       // (`_servedFrontier()`) -- i.e. the heads of the change tree this
       // load response actually carries -- NOT the full local DAG
       // frontier (`_currentFrontier()`). The two differ when this peer
@@ -2132,11 +2257,6 @@ export class PeerborneDocument<
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
   ): Promise<void> {
     try {
-      console.log(
-        `received snapshot-load request for ${this.documentPath}:`,
-        message,
-      );
-
       if (message.documentId !== this.documentPath) {
         console.warn(
           `Received a snapshot load request for the wrong document (${message.documentId} !== ${this.documentPath})`,
@@ -2205,7 +2325,7 @@ export class PeerborneDocument<
       // (see the doc-load handler above and the in-line check in
       // `_sendLoadRequestAndSync` for the rationale).
       //
-      // PR #284 r8: this is the *served* frontier (`_servedFrontier()`)
+      // This is the *served* frontier (`_servedFrontier()`)
       // -- the heads of the served payload (`_lastSyncMessage.changes`
       // tree plus the snapshot boundary) -- NOT the full local DAG
       // frontier (`_currentFrontier()`). When this peer holds concurrent
@@ -2285,7 +2405,7 @@ export class PeerborneDocument<
       // Drop the unconditional log entirely; the only field the handler
       // would have logged is attacker-controlled (`message`), and the
       // mismatch/unauthorized branches below already emit targeted
-      // warnings when they fail. See PR #284 r27 Copilot review.
+      // warnings when they fail.
 
       if (message.documentId !== this.documentPath) {
         console.warn(
@@ -2343,7 +2463,7 @@ export class PeerborneDocument<
       // `handleLoadRequestData` / `handleSnapshotLoadRequestData` populate
       // into the load response).
       //
-      // PR #284 r8: this used to hash `_currentFrontier()` -- the full
+      // This used to hash `_currentFrontier()` -- the full
       // local DAG frontier (`_hashes \ _referencedAncestors`). That
       // produces a hash an honest peer cannot bind against if it holds
       // multiple concurrent heads: `_currentFrontier()` returns every
@@ -2502,12 +2622,15 @@ export class PeerborneDocument<
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> },
     serializedRequest: Uint8Array,
     expectedTipsHashHex: string | null = null,
+    requiredResponseSigner?: PublicKey,
+    maxResponseBytes?: number,
+    requireCompleteCids = false,
   ): Promise<boolean> {
     await pipe([serializedRequest], stream.sink);
     return await pipe(
       stream.source,
       async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-        const assembled = await readUint8Iterable(source);
+        const assembled = await readUint8Iterable(source, maxResponseBytes);
 
         // Empty response means the peer couldn't serve this request.
         if (assembled.length === 0) {
@@ -2563,9 +2686,15 @@ export class PeerborneDocument<
         // On first load (_writers is empty / bootstrapping), we cannot
         // verify -- trust relies on the encrypted channel (only peers
         // with the document key can decrypt the response).
-        if (this._isSigningEnabled()) {
-          const preLoadWriters = await this._getWriterKeys();
-          if (preLoadWriters.length > 0) {
+        if (requiredResponseSigner !== undefined || this._isSigningEnabled()) {
+          const preLoadWriters =
+            requiredResponseSigner === undefined
+              ? await this._getWriterKeys()
+              : [];
+          if (
+            requiredResponseSigner !== undefined ||
+            preLoadWriters.length > 0
+          ) {
             if (!message.signature) {
               console.warn(
                 `Load response for ${this.documentPath}: missing signature, skipping peer`,
@@ -2591,10 +2720,19 @@ export class PeerborneDocument<
               );
               return false;
             }
-            const verifyTasks = preLoadWriters.map((writerKey) =>
-              this._authProvider.verify(raw, writerKey, signatureBytes),
-            );
-            if (!(await firstTrue(verifyTasks))) {
+            const verified =
+              requiredResponseSigner === undefined
+                ? await firstTrue(
+                    preLoadWriters.map((writerKey) =>
+                      this._authProvider.verify(raw, writerKey, signatureBytes),
+                    ),
+                  )
+                : await this._authProvider.verify(
+                    raw,
+                    requiredResponseSigner,
+                    signatureBytes,
+                  );
+            if (!verified) {
               console.warn(
                 `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
               );
@@ -2602,7 +2740,6 @@ export class PeerborneDocument<
             }
           }
         }
-
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
         // structurally describe the same tip set the responder voted
@@ -2612,14 +2749,13 @@ export class PeerborneDocument<
         //
         // CRITICAL: the bind decision is derived from the ACTUAL served
         // payload, NOT from the responder-supplied `message.tips`.
-        // Trusting `message.tips` -- as previous rounds did -- was a
-        // hole: a Byzantine peer could vote hash X, put the matching
+        // Trusting `message.tips` creates a hole: a Byzantine peer could
+        // vote hash X, put the matching
         // tip CIDs in `message.tips`, and then serve a `changes` /
         // `snapshot` payload describing a completely different state.
         // The advertised-vs-claimed check would pass even though the
-        // application would receive divergent content. PR #284 r7
-        // Copilot review caught this; the fix delegates frontier
-        // computation to the pure helper `computeServedFrontier`, which
+        // application would receive divergent content. Frontier
+        // computation therefore delegates to `computeServedFrontier`, which
         // walks the served `changes` tree (plus the snapshot boundary
         // CID) and returns the set of payload CIDs that no other node
         // in the same payload references as a parent -- i.e. the heads
@@ -2627,7 +2763,7 @@ export class PeerborneDocument<
         // compare to `winningHashHex`.
         //
         // We additionally REQUIRE `message.tips` on every v3 quorum-
-        // enabled load response (PR #284 r9 Copilot review, issue #1).
+        // enabled load response.
         // The v3 load-response contract mandates the responder commit
         // to an explicit frontier attestation; a responder that omits
         // `tips` is recorded as a per-peer bind failure so the loader
@@ -2648,9 +2784,9 @@ export class PeerborneDocument<
         // letting a single malicious peer in the agreeing cohort vote
         // for the majority hash, serve a mismatched full load, and
         // unilaterally DoS the entire load by aborting before the
-        // honest agreeing peers could be tried. See PR #284 r6 Copilot
-        // review. `load()` only escalates to a structured
-        // `LoadQuorumFailedError(bind-check-failed-all-agreeing-peers)`
+        // honest agreeing peers could be tried. `load()` only escalates to
+        // a structured `LoadQuorumFailedError` with reason
+        // `bind-check-failed-all-agreeing-peers`
         // when EVERY narrowed peer fails the bind step.
         if (expectedTipsHashHex !== null) {
           // Derive the served frontier STRUCTURALLY from the payload
@@ -2690,7 +2826,7 @@ export class PeerborneDocument<
           // protocol contract — and a defense-in-depth check that
           // catches contradictions between `tips` and the served payload
           // would never run because the `Array.isArray` branch would
-          // simply skip. See PR #284 r9 Copilot review (issue #1).
+          // simply skip.
           if (!Array.isArray(message.tips)) {
             console.warn(
               `[${this.documentPath}] Quorum frontier binding FAILED: ` +
@@ -2726,7 +2862,7 @@ export class PeerborneDocument<
             );
           }
 
-          // Content-address verification (PR #284 r17 Copilot review).
+          // Content-address verification.
           //
           // The structural bind above proves Q peers agree on the
           // FRONTIER CIDs and that those CIDs appear as keys in the
@@ -2774,8 +2910,7 @@ export class PeerborneDocument<
           // and `load()` report success. After `sync()` we re-check that
           // every captured CID is now in `_hashes`; any missing CID is
           // surfaced as a per-peer bind failure so the loader can retry
-          // the next peer in the agreeing cohort. See PR #284 r18
-          // Copilot review.
+          // the next peer in the agreeing cohort.
           const expectedCids = collectAllCidsInTree(
             message.changeId,
             message.changes,
@@ -2803,8 +2938,7 @@ export class PeerborneDocument<
           // success — `load()` then returns `true` with neither state
           // applied nor an opportunity to retry. Treat as a per-peer
           // bind failure so the agreeing-cohort load loop tries the
-          // next peer (which may serve a real changes tree). See
-          // PR #284 r18 Copilot review.
+          // next peer (which may serve a real changes tree).
           if (
             message.changes === undefined &&
             message.snapshot === undefined
@@ -2823,9 +2957,9 @@ export class PeerborneDocument<
             );
           }
 
-          // PRE-FETCH gate (PR #284 r20 Copilot review).
+          // PRE-FETCH gate.
           //
-          // Round 19 added a POST-sync `_hashes`-coverage check, but
+          // A POST-sync `_hashes`-coverage check alone is insufficient because
           // `sync()` mutates the document as each fetched block lands
           // -- so a missing CID would still leave the document
           // partially mutated by the time the post-check threw a bind
@@ -2855,7 +2989,7 @@ export class PeerborneDocument<
           // bitswap fetches, small enough to bound peak resource use on
           // the loader. Block bytes are cached locally on success; the
           // subsequent `sync()` call only does local lookups for those
-          // CIDs and applies them. See PR #284 r24 Copilot review.
+          // CIDs and applies them.
           if (expectedCids.length > 0) {
             const missingCids: string[] = [];
             let nextIndex = 0;
@@ -2919,7 +3053,7 @@ export class PeerborneDocument<
             return false;
           }
 
-          // Post-sync verification (PR #284 r18 Copilot review): every
+          // Post-sync verification: every
           // CID we expected from the (stripped) served tree must have
           // landed in `_hashes` via either inline application (for the
           // non-stripped path this branch never reaches) or via the
@@ -2953,7 +3087,24 @@ export class PeerborneDocument<
           return true;
         }
 
-        const syncResult = await this.sync(message, false);
+        const snapshotBoundaryBeforeSync =
+          this._latestSnapshot?.lastChangeNodeCID;
+        const syncResult = requireCompleteCids
+          ? await syncInvitationMessageCompletely(
+              message,
+              this._hashes,
+              () => this.sync(message, false),
+              'catch-up',
+              {
+                provenSnapshotBoundariesBeforeSync:
+                  snapshotBoundaryBeforeSync === undefined
+                    ? undefined
+                    : new Set([snapshotBoundaryBeforeSync]),
+                isSnapshotApplied: () =>
+                  this._latestSnapshot === message.snapshot,
+              },
+            )
+          : await this.sync(message, false);
         if (!syncResult) {
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
@@ -2982,7 +3133,7 @@ export class PeerborneDocument<
    *     previous design returned `null` for the unknown-doc case, which
    *     was indistinguishable from a partition / timeout and made
    *     new-document creation in an existing mesh fail with
-   *     `LoadQuorumFailedError`. See PR #284 r16 Copilot review.
+   *     `LoadQuorumFailedError`.
    *   - `null` -- any other non-vote outcome: empty response, decryption
    *     failure with an unknown key (peer has a different keychain),
    *     missing/invalid signature, deserialization failure, document-id
@@ -3007,8 +3158,7 @@ export class PeerborneDocument<
     // down). Without this, a probe that loses the Promise.race to the
     // timeout would leak its stream until the libp2p connection itself
     // closed -- on partitioned/slow peers, each `load()` could leak K
-    // streams, exhausting per-connection stream quotas. See PR #284 r2
-    // CodeRabbit comment on this method.
+    // streams, exhausting per-connection stream quotas.
     let rawStream: import('@libp2p/interface').Stream;
     let stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> };
     try {
@@ -3063,7 +3213,6 @@ export class PeerborneDocument<
       // `readUint8Iterable` throws a `RangeError` that is caught by the
       // surrounding `try { ... } catch { return null; }` — surfacing as a
       // non-vote (same outcome as a timeout), NOT a quorum disagreement.
-      // See PR #284 r4/r5 Copilot review.
       const assembled = await readUint8Iterable(
         stream.source,
         MAX_TIP_ADVERTISE_RESPONSE_SIZE,
@@ -3081,8 +3230,7 @@ export class PeerborneDocument<
       // The orchestrator counts these toward a separate "unknown-doc"
       // tally so a Q-of-K majority of disclaims becomes a clean
       // new-doc-creation signal rather than a `LoadQuorumFailedError`.
-      // See `_probeTipAdvertise`'s docstring and PR #284 r16 Copilot
-      // review for the rationale.
+      // See `_probeTipAdvertise`'s docstring for the rationale.
       if (assembled.length === 1 && assembled[0] === 0xff) {
         return 'unknown-doc';
       }
@@ -3181,7 +3329,7 @@ export class PeerborneDocument<
    * pending probe doesn't keep the resource alive in the background. Prior
    * to this fix, every timed-out probe leaked one libp2p stream per
    * `load()` call; under partitions or slow peers, K such leaks per load
-   * could exhaust per-connection stream quotas. See PR #284 r2 review.
+   * could exhaust per-connection stream quotas.
    *
    * @internal
    */
@@ -3229,6 +3377,44 @@ export class PeerborneDocument<
 
   // API Methods --------------------------------------------------------------
 
+  /**
+   * Close the subscription race after a verified invitation bootstrap by
+   * loading directly from the exact endpoint named by the signed offer. This
+   * deliberately bypasses the ordinary initial-load quorum only for this
+   * issuer-pinned response; normal `load()` behavior is unchanged.
+   */
+  private async _loadInvitationCatchUp(
+    founderAddress: string,
+    issuerPublicKey: PublicKey,
+  ): Promise<boolean> {
+    const signatureBytes = await this._authProvider.sign(
+      this._encoder.encode(this.documentPath),
+      this._userKey,
+    );
+    const serializedRequest =
+      this._loadMessageSerializer.serializeLoadRequest({
+        documentId: this.documentPath,
+        signature: this._serializeSignature(signatureBytes),
+      });
+    return withIssuerPinnedInvitationStream(
+      founderAddress,
+      (address, signal) =>
+        this.libp2p.dialProtocol(multiaddr(address) as any, [documentLoadV3], {
+          runOnLimitedConnection: true,
+          signal,
+        }),
+      (rawStream) =>
+        this._sendLoadRequestAndSync(
+          wrapStream(rawStream),
+          serializedRequest,
+          null,
+          issuerPublicKey,
+          MAX_INVITATION_MESSAGE_BYTES,
+          true,
+        ),
+    );
+  }
+
   // https://gist.github.com/alanshaw/591dc7dd54e4f99338a347ef568d6ee9#duplex-it
   /**
    * Load sends a new load request to any connected peer (each peer is tried one at a time). The expected
@@ -3264,22 +3450,21 @@ export class PeerborneDocument<
    * open connections cannot cast multiple votes. The legacy load loop
    * (when `loadQuorumEnabled: false`) keeps the ORIGINAL un-deduped
    * peer list so it can retry across multiple multiaddrs for the same
-   * peer id (e.g. a direct connection + a relay-circuit fallback). See
-   * PR #284 r7 Copilot review for the dedup-scope rationale.
+   * peer id (e.g. a direct connection + a relay-circuit fallback).
    *
    * After quorum passes, the served full state is bound to the agreed
    * hash STRUCTURALLY -- the loader derives the responder's served
    * frontier from the actual `changes`/`snapshot` payload via
    * `computeServedFrontier`, hashes that, and verifies it equals
    * `winningHashHex` BEFORE applying the response. The
-   * responder-supplied `message.tips` array is NO LONGER trusted as the
-   * source of truth (previous rounds did, which let a Byzantine peer
-   * vote hash X, put X's tips in `message.tips`, and serve a divergent
-   * payload). When present, `message.tips` is additionally checked to
+   * responder-supplied `message.tips` array must not be trusted as the
+   * source of truth: doing so lets a Byzantine peer vote hash X, put X's
+   * tips in `message.tips`, and serve a divergent payload. When present,
+   * `message.tips` is additionally checked to
    * hash to the same value as the structurally-derived served
    * frontier; this catches the responder-internal-equivocation case
    * where the served `changes` and the advertised `tips` were
-   * assembled inconsistently. See PR #284 r7 Copilot review. An
+   * assembled inconsistently. An
    * agreeing peer whose served payload's structural frontier hashes to
    * something other than `winningHashHex` is treated as a PER-PEER bind
    * failure: the loader records the offending peer in
@@ -3292,8 +3477,7 @@ export class PeerborneDocument<
    * failed-all-agreeing-peers')`, with `agreeingPeerBindFailures`
    * recording per-peer what each Byzantine peer served instead.
    * Closes the gap tracked under issue #189 §5.4 item 2 (and bulleted
-   * in #186). See PR #284 r6 Copilot review for the DoS rationale on
-   * the per-peer retry.
+   * in #186).
    *
    * @returns `true` if the document was successfully loaded from a peer.
    *   `false` if no peer could provide the document -- this is ambiguous: it
@@ -3386,8 +3570,7 @@ export class PeerborneDocument<
     // ORIGINAL `orderedPeers` so it can retry across multiple multiaddrs
     // for the same peer id -- e.g. a direct connection + a relay-circuit
     // fallback. Collapsing those to one entry pre-quorum would silently
-    // break the legacy fallback even when the quorum gate is off. See PR
-    // #284 r7 Copilot review.
+    // break the legacy fallback even when the quorum gate is off.
     const quorumPeers = dedupePeersByPeerId(
       orderedPeers,
       (p) => this._peerIdOf(p),
@@ -3412,7 +3595,7 @@ export class PeerborneDocument<
     // next agreeing peer without ever mutating in-memory state. The
     // pre-apply ordering is the load-bearing property -- a Byzantine peer
     // cannot poison the in-memory document because the bind decision
-    // happens before `sync()` runs. See PR #284 r7 Copilot review.
+    // happens before `sync()` runs.
     // NOTE: previously this block bypassed the gate when `_hashes.size === 0`
     // on the assumption it identified a "founding-member" brand-new document.
     // That bypass was unsafe: `_hashes` is ALSO empty on the first `open()`
@@ -3427,16 +3610,14 @@ export class PeerborneDocument<
     // `open()` proceeds to create the doc fresh. True founders (no peers in
     // the mesh) are still handled by the `peers.length === 0` short-circuit
     // at the top of `load()` plus the `k === 0` branch inside `runLoadQuorum`
-    // (which returns `{ skipped: true }`). See PR #284 r16 Copilot review.
+    // (which returns `{ skipped: true }`).
     //
     // The K-of-Q decision logic itself lives in `runLoadQuorum`
     // (`load-quorum-orchestrator.ts`) so the orchestration can be unit-tested
     // without standing up a libp2p/Helia stack. The orchestrator is given a
     // probe-fn closure that captures this document's `_raceTipAdvertiseProbe`
     // (the only network-touching call); narrowing, agreement counting, and
-    // single-peer fallback all happen in pure code with the same control
-    // flow as before the extraction. See PR #284 r4 Copilot review for the
-    // test-coverage rationale.
+    // single-peer fallback all happen in pure code.
     const timeoutMs = this.swarm.config?.loadQuorumTimeoutMs ?? 5000;
     const quorumResult = await runLoadQuorum({
       peers: quorumPeers,
@@ -3472,8 +3653,7 @@ export class PeerborneDocument<
       // Note: a misconfigured `loadQuorumK <= 0` no longer reaches this
       // branch — `runLoadQuorum` throws `LoadQuorumFailedError(invalid-
       // config)` for that case so the misconfiguration is loud at
-      // `open()` time instead of silently forking the document. See PR
-      // #284 r5 Copilot review.
+      // `open()` time instead of silently forking the document.
       const quorumWasEnabled = this.swarm.config?.loadQuorumEnabled ?? true;
       if (quorumWasEnabled && quorumPeers.length === 0) {
         return false;
@@ -3487,7 +3667,7 @@ export class PeerborneDocument<
       // swarm. Without this branch, the previous design conflated
       // unknown-doc with partition / timeout and surfaced
       // `LoadQuorumFailedError` -- preventing new-document creation in
-      // any swarm with online peers. See PR #284 r16 Copilot review.
+      // any swarm with online peers.
       return false;
     } else {
       winningHashHex = quorumResult.winningHashHex;
@@ -3508,7 +3688,7 @@ export class PeerborneDocument<
     // `bind-check-failed-all-agreeing-peers` whenever ANY bind failure was
     // recorded, which contradicted the reason's public name and could
     // make callers treat a mixed transient retrieval failure as
-    // coordinated Byzantine behaviour. See PR #284 r17 Copilot review.
+    // coordinated Byzantine behaviour.
     // For the legacy non-quorum path (`winningHashHex === null`), this
     // value is unused -- the failure block guards on `winningHashHex`.
     const narrowedCohortSize = orderedPeers.length;
@@ -3525,10 +3705,10 @@ export class PeerborneDocument<
     // that voted for one tip set and serves a different one never gets
     // to mutate in-memory document state. The responder-supplied
     // `message.tips` is checked as a defense-in-depth consistency
-    // requirement but is NOT the source of truth -- previous rounds
+    // requirement but is NOT the source of truth -- previous implementations
     // trusted it as such, which let a Byzantine peer game the binding
     // by populating `tips` with the agreed CIDs while serving a
-    // divergent `changes` payload. See PR #284 r7 Copilot review.
+    // divergent `changes` payload.
     //
     // Per-peer bind failures (`_QuorumBindCheckFailedError`) are NOT
     // fatal to the whole load -- they only disqualify the offending
@@ -3538,7 +3718,6 @@ export class PeerborneDocument<
     // load cannot DoS the entire load. Only after every peer in the
     // narrowed cohort has bind-failed does `load()` escalate to
     // `LoadQuorumFailedError(bind-check-failed-all-agreeing-peers)`.
-    // See PR #284 r6 Copilot review.
     //
     // The `agreeingPeerBindFailures` map records, per peer, the hex
     // hash the served payload's structural frontier actually hashed to
@@ -3654,7 +3833,6 @@ export class PeerborneDocument<
     //      coordinated Byzantine behaviour. The `agreeingPeerBindFailures`
     //      map is still threaded through for diagnostics so operators
     //      can see which peers in the cohort did bind-fail.
-    //      See PR #284 r17 Copilot review.
     //
     //   c) `agreeingPeerBindFailures.size === 0` -- every agreeing
     //      peer failed for a transport/protocol reason; we surface
@@ -3692,7 +3870,7 @@ export class PeerborneDocument<
     }
 
     // No peer could provide the document -- assume new document.
-    console.log('Failed to open document on any nodes.', this);
+    console.log(`No connected peer served ${this.documentPath}`);
     return false;
   }
 
@@ -3741,8 +3919,16 @@ export class PeerborneDocument<
     // the same string, even if config.pubsubDocumentPrefix changes later.
     this._topic = this._computeTopic();
 
-    // Load initial document from peers via direct dial (no subscription needed).
-    const loadedFromPeer = await this.load();
+    // A verified invitation bootstrap already supplied and authenticated the
+    // complete state. Skip the normal load in that one-shot case: a failed
+    // network load must never make an invited joiner create a divergent new
+    // document. The flag is consumed before any await so it cannot leak into a
+    // retry after a later failure.
+    const bootstrappedFromInvitation = this._invitationBootstrapReady;
+    this._invitationBootstrapReady = false;
+    const loadedFromPeer = bootstrappedFromInvitation
+      ? true
+      : await this.load();
     const isExisting = loadedFromPeer || this._hashes.size > 0;
 
     // Validate document path BEFORE subscribing to pubsub or registering
@@ -3827,9 +4013,7 @@ export class PeerborneDocument<
       // Skip entirely when signing is disabled to avoid unnecessary per-message decryption.
       if (this.swarm.config?.enableTopicValidators && this._isSigningEnabled()) {
         if (typeof pubsub.topicValidators?.set === 'function') {
-          pubsub.topicValidators.set(
-            this._topic,
-            async (
+          const topicValidator: TopicValidatorFn = async (
               _peerId: PeerId,
               message: Message,
             ): Promise<TopicValidatorResult> => {
@@ -3879,12 +4063,14 @@ export class PeerborneDocument<
                 console.warn(`[${this.documentPath}] Topic validator: unexpected error, ignoring message`);
                 return TopicValidatorResult.Ignore;
               }
-            },
-          );
+            };
+          this._topicValidator = topicValidator;
+          pubsub.topicValidators.set(this._topic, topicValidator);
         }
       }
 
       if (!isExisting) {
+        this._createdLocally = true;
         // Add current user as a writer.
         const founderWriterChanges = await this._addWriter(this._userPublicKey);
 
@@ -3912,10 +4098,9 @@ export class PeerborneDocument<
    * Disconnects from this peerborne document. Running this method disconnects from the
    * document pubsub topic.
    *
-   * **Limitation:** Multiple `PeerborneDocument` instances sharing the same
-   * `documentPath` are not supported. Calling `close()` on one instance will
-   * remove the GossipSub topic validator and unsubscribe from the pubsub topic,
-   * breaking any other instance using the same path.
+   * Multiple open `PeerborneDocument` instances sharing the same
+   * `documentPath` are not supported. Cleanup is instance-safe, so a failed or
+   * stale instance does not unregister a newer live document.
    */
   public async close() {
     // Use the cached topic for cleanup; it is initialized in the constructor.
@@ -3936,10 +4121,13 @@ export class PeerborneDocument<
       // Cast required: see addEventListener comment above
       pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
 
-      // Always attempt to remove the GossipSub topic validator. This is safe
-      // even if none was registered (Map.delete is a no-op for missing keys),
-      // and ensures cleanup regardless of config changes between open() and close().
-      pubsub.topicValidators?.delete(topic);
+      if (
+        this._topicValidator &&
+        pubsub.topicValidators?.get(topic) === this._topicValidator
+      ) {
+        pubsub.topicValidators.delete(topic);
+      }
+      this._topicValidator = undefined;
     }
 
     // Unregister this document from the shared V2 protocol handler registry.
@@ -3965,6 +4153,16 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature = true,
   ): Promise<boolean> {
+    return this._mutationQueue.run(() =>
+      this._syncUnlocked(message, verifySignature),
+    );
+  }
+
+  /** Apply a sync message after any required membership-queue admission. */
+  private async _syncUnlocked(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    verifySignature: boolean,
+  ): Promise<boolean> {
     const { signature, ...messageWithoutSignature } = message;
     const signingEnabled = this._isSigningEnabled();
     if (signingEnabled && !signature) {
@@ -3980,8 +4178,6 @@ export class PeerborneDocument<
       if (!(await this._verifyWriterSignature(raw, signature!))) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
-          signature,
-          messageWithoutSignature,
         );
         return false;
       }
@@ -3991,15 +4187,10 @@ export class PeerborneDocument<
     if (message.keychainChanges) {
       try {
         this._keychain.merge(message.keychainChanges);
-        console.log(
-          `Updated keychain in ${this.documentPath}: `,
-          this._keychain,
-        );
+        console.log(`Updated keychain in ${this.documentPath}`);
       } catch (e) {
         console.error(
-          'Failed to merge in keychain changes',
-          this._keychain,
-          message,
+          `Failed to merge keychain changes in ${this.documentPath}`,
           e,
         );
         throw e;
@@ -4241,6 +4432,10 @@ export class PeerborneDocument<
    * @throws {Error} If any step in the commit pipeline fails.
    */
   public async endChange(message?: string) {
+    return this._mutationQueue.run(() => this._endChangeUnlocked(message));
+  }
+
+  private async _endChangeUnlocked(message?: string) {
     if (!this._inTransaction) {
       throw new Error('No transaction in progress. Call startChange() first.');
     }
@@ -4361,6 +4556,12 @@ export class PeerborneDocument<
    * @param message An optional change message/description to include.
    */
   public async change(changeFn: ChangeFnType, message?: string) {
+    return this._mutationQueue.run(() =>
+      this._changeUnlocked(changeFn, message),
+    );
+  }
+
+  private async _changeUnlocked(changeFn: ChangeFnType, message?: string) {
     if (this._inTransaction) {
       throw new Error('Cannot call change() during an active transaction. Use addChange() instead.');
     }
@@ -4456,6 +4657,10 @@ export class PeerborneDocument<
    *   Only writers are authorized to create snapshots.
    */
   public async snapshot(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+    return this._mutationQueue.run(() => this._snapshotUnlocked());
+  }
+
+  private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
     await this._ensureCurrentUserCanWrite();
 
     if (!this._crdtProvider.getSnapshot) {
@@ -4554,6 +4759,13 @@ export class PeerborneDocument<
    * @param writer User's public key
    */
   public async addWriter(writer: PublicKey) {
+    return this._mutationQueue.run(() => this._addWriterUnlocked(writer));
+  }
+
+  private async _addWriterUnlocked(
+    writer: PublicKey,
+    beginMutation?: () => void,
+  ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
     // Check that the writer is not already a writer.
@@ -4562,6 +4774,7 @@ export class PeerborneDocument<
     }
 
     // Construct a new writer ACL change.
+    beginMutation?.();
     const changes = await this._addWriter(writer);
 
     await this._makeChange(changes, crdtWriterChangeNode);
@@ -4573,6 +4786,10 @@ export class PeerborneDocument<
    * @param writer User's public key
    */
   public async removeWriter(writer: PublicKey) {
+    return this._mutationQueue.run(() => this._removeWriterUnlocked(writer));
+  }
+
+  private async _removeWriterUnlocked(writer: PublicKey): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
     // Check that the writer is already a writer.
@@ -4647,11 +4864,24 @@ export class PeerborneDocument<
    *   via a fresh document load against an authorized peer. (The
    *   library refuses to broadcast an un-sealed Welcome to all peers
    *   because that would leak document key material in plaintext.)
+   * @returns The BeeKEM Welcome used for this reader, or `null` when no
+   *   recipient KEM key was supplied or recoverable.
    */
   public async addReader(
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
-  ) {
+  ): Promise<BeeKEMWelcome | null> {
+    return this._mutationQueue.run(() =>
+      this._addReaderUnlocked(reader, readerKemPublicKey),
+    );
+  }
+
+  private async _addReaderUnlocked(
+    reader: PublicKey,
+    readerKemPublicKey?: Uint8Array,
+    broadcastWelcome = true,
+    beginMutation?: () => void,
+  ): Promise<BeeKEMWelcome | null> {
     await this._ensureCurrentUserCanWrite();
 
     // Validate prerequisites BEFORE mutating any ACL state. The founder
@@ -4672,31 +4902,31 @@ export class PeerborneDocument<
       );
     }
 
-    // Mirror the length check that `_registerBeeKEMReader` enforces, but
-    // up here BEFORE the ACL change is committed. `_registerBeeKEMReader`
-    // is invoked AFTER `_makeChange`, so without this upfront gate a
-    // malformed `readerKemPublicKey` would surface as a registration
-    // error AFTER the ACL row was already broadcast -- leaving the ACL
-    // with a reader whose BeeKEM leaf could not be seeded and no Welcome
-    // delivered. The downstream check still runs in
-    // `_registerBeeKEMReader` (defense in depth for any future caller),
-    // but the SAME bytes are validated here so the upfront precondition
-    // is what determines whether the call will succeed.
+    // Snapshot and validate the complete P-256 point before committing an ACL
+    // row. Length alone is insufficient: WebCrypto also rejects off-curve
+    // points, and discovering that after `_makeChange` would permanently
+    // occupy the founder-plus-one slot without a usable BeeKEM leaf.
+    const validatedReaderKemPublicKey = readerKemPublicKey === undefined
+      ? undefined
+      : new Uint8Array(readerKemPublicKey);
     if (
-      readerKemPublicKey !== undefined &&
-      readerKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
+      validatedReaderKemPublicKey !== undefined &&
+      validatedReaderKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
     ) {
       throw new Error(
         `[${this.documentPath}] addReader: readerKemPublicKey must be ` +
           `${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed P-256), ` +
-          `got ${readerKemPublicKey.byteLength}`,
+          `got ${validatedReaderKemPublicKey.byteLength}`,
       );
+    }
+    if (validatedReaderKemPublicKey) {
+      await importEciesPublicKey(validatedReaderKemPublicKey);
     }
 
     // Founder-vs-joined-writer gate. The BeeKEM tree is rooted in
     // exactly one of two ways (see the long comment on `_beekem`):
-    //   - **Founder**: a writer who CREATED the document. They have
-    //     no prior document state (`_hashes.size === 0`) and seed
+    //   - **Founder**: a writer who CREATED the document. `open()` records
+    //     that provenance explicitly in `_createdLocally` before seeding
     //     leaf 0 with their local KEM key pair via
     //     `_initializeBeeKEMAsFounder`.
     //   - **Joined writer**: a writer who was added to an existing
@@ -4713,20 +4943,15 @@ export class PeerborneDocument<
     // writer would never converge with anyone else's view -- a silent
     // correctness bug that this gate closes.
     //
-    // The probe is `_hashes.size > 0`: any entry in `_hashes` means we
-    // have applied at least one change (local or remote), so we are
-    // not on the fresh-creation path. A founder reaching this point
-    // for the first time has `_hashes.size === 0` (the readers-ACL
-    // change is appended by `_makeChange` BELOW this gate). The check
-    // also fires when a joined writer has received zero changes after
-    // a Welcome is dropped, which is the recovery message we want.
-    if (!this._beekemInitialized && this._hashes.size > 0) {
+    // Change count cannot identify founders: normal `open()` has already
+    // replicated the founder-writer ACL before the first addReader call.
+    // Use the explicit creation provenance instead.
+    if (!this._beekemInitialized && !this._createdLocally) {
       throw new Error(
         `[${this.documentPath}] addReader: cannot register a reader -- ` +
           `this writer has document state but no BeeKEM tree bootstrapped ` +
-          `from a Welcome. A joined writer must complete a fresh document ` +
-          `load against a BeeKEM-bootstrapped peer (which seeds the local ` +
-          `tree via a Welcome) before they can add or remove readers ` +
+          `from a Welcome. A joined writer must complete the signed ` +
+          `invitation bootstrap before they can add or remove readers ` +
           `cryptographically. Initializing a fresh founder tree here would ` +
           `silently diverge from every other peer's tree state.`,
       );
@@ -4739,8 +4964,18 @@ export class PeerborneDocument<
     // material. Without this branch the warning emitted below on the
     // first call would point at a recovery path that is itself a no-op.
     const alreadyReader = await this._readers.check(reader);
+    if (!alreadyReader && (await this._readers.users()).length > 0) {
+      throw new Error(
+        `[${this.documentPath}] addReader: the initial release supports ` +
+          `one active collaborator per document (founder plus one reader). ` +
+          `Adding another reader would require an add-side BeeKEM PathUpdate ` +
+          `that is not implemented yet. Remove the current reader before ` +
+          `inviting a replacement.`,
+      );
+    }
     if (!alreadyReader) {
       // Send change over network.
+      beginMutation?.();
       const changes = await this._readers.add(reader);
       await this._makeChange(changes, crdtReaderChangeNode);
     }
@@ -4780,17 +5015,18 @@ export class PeerborneDocument<
     // `addReader` with the same KEM public key, or by recovering
     // BeeKEM state via `setKemKeyPair` + a fresh document load).
     let beekemWelcomeForJoiner: BeeKEMWelcome | null = null;
-    if (readerKemPublicKey) {
+    if (validatedReaderKemPublicKey) {
       beekemWelcomeForJoiner = await this._registerBeeKEMReader(
         reader,
-        readerKemPublicKey,
+        validatedReaderKemPublicKey,
+        beginMutation,
       );
     }
 
     // Without the recipient's KEM public key we cannot seal the
     // Welcome payload, and we will NEVER send an un-sealed Welcome --
     // that would broadcast `keychainChanges` to every connected peer.
-    if (!readerKemPublicKey) {
+    if (!validatedReaderKemPublicKey) {
       if (!alreadyReader) {
         console.warn(
           `[${this.documentPath}] addReader: BeeKEM Welcome skipped because ` +
@@ -4803,19 +5039,27 @@ export class PeerborneDocument<
             `keychain state.`,
         );
       }
-      return;
+      return null;
     }
 
-    // Send a BeeKEM Welcome with the document key + BeeKEM bootstrap
-    // payload so the new reader can decrypt subsequent (and, per
-    // visibility, prior) messages and apply future PathUpdates.
+    // The signed invitation acceptance carries this same recipient-bound
+    // Welcome directly. Skip the legacy fan-out in that path: awaiting every
+    // connected peer would let an unrelated non-draining stream stall the
+    // membership lock and the invitation response.
+    if (!broadcastWelcome) {
+      return beekemWelcomeForJoiner;
+    }
+
+    // Send a BeeKEM Welcome with the visibility-filtered epoch keys + BeeKEM
+    // bootstrap so the new reader can decrypt eligible epochs and apply future
+    // PathUpdates. This does not redact retained operations within an epoch.
     // Failures are logged but do not abort -- the ACL change has
     // already been broadcast and the reader can also recover via a
     // fresh document load.
     try {
       await this._sendBeeKEMWelcome(
         reader,
-        readerKemPublicKey,
+        validatedReaderKemPublicKey,
         beekemWelcomeForJoiner,
       );
     } catch (err) {
@@ -4823,6 +5067,529 @@ export class PeerborneDocument<
         `Failed to send BeeKEM Welcome for ${this.documentPath}:`,
         err,
       );
+    }
+    return beekemWelcomeForJoiner;
+  }
+
+  /**
+   * Grant an invitation recipient access and construct the encrypted material
+   * returned by the invitation join protocol. The caller is responsible for
+   * signing the outer acceptance and enforcing single-use offer semantics.
+   * Membership work is not transactional: an error after mutation begins can
+   * leave partial or complete recipient membership without a returned bundle.
+   * Only an exact, same-process retry is eligible to repair and attest that
+   * state.
+   *
+   * @internal
+   */
+  public async buildInvitationBootstrap(
+    reader: PublicKey,
+    readerKemPublicKey: Uint8Array,
+    role: 'reader' | 'editor',
+    assertCanMutate?: () => void,
+  ): Promise<InvitationBootstrapBundle> {
+    return this._mutationQueue.run(() =>
+      this._buildInvitationBootstrapUnlocked(
+        reader,
+        readerKemPublicKey,
+        role,
+        assertCanMutate,
+      ),
+    );
+  }
+
+  private async _initialInvitationMembershipState(
+    recipient: PublicKey,
+  ): Promise<InitialInvitationMembershipState> {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'Public invitations',
+    );
+    const [founder, serializedRecipient, readers, writers] = await Promise.all([
+      serializePublicKey(this._userPublicKey),
+      serializePublicKey(recipient),
+      this._readers.users(),
+      this._writers.users(),
+    ]);
+    const [serializedReaders, serializedWriters] = await Promise.all([
+      Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
+      Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
+    ]);
+    return {
+      createdLocally: this._createdLocally,
+      founder,
+      recipient: serializedRecipient,
+      readers: serializedReaders,
+      writers: serializedWriters,
+    };
+  }
+
+  private async _buildInvitationBootstrapUnlocked(
+    reader: PublicKey,
+    readerKemPublicKey: Uint8Array,
+    role: 'reader' | 'editor',
+    assertCanMutate?: () => void,
+  ): Promise<InvitationBootstrapBundle> {
+    assertCanMutate?.();
+    assertInitialInvitationHistoryVisibility(this._historyVisibility);
+    if (role !== 'reader' && role !== 'editor') {
+      throw new Error(`Unsupported invitation role: ${String(role)}`);
+    }
+
+    const capacityPlan = await this._prepareInvitationBootstrapCapacity(reader);
+
+    const beginMutation = createInvitationMutationAdmission(assertCanMutate);
+
+    const kemPublicKey = new Uint8Array(readerKemPublicKey);
+    const beekemWelcome = await prepareInitialInvitationMembership({
+      role,
+      getState: () => this._initialInvitationMembershipState(reader),
+      // The public wrappers use this same queue, so internal composition must
+      // call the unlocked helpers to avoid a reentrant wait on our own slot.
+      addReader: async () => {
+        // Recheck after asynchronous capacity and topology preflight. The
+        // one-shot guard passed below checks again immediately before the
+        // first ACL or BeeKEM state writer, then admits the rest of that commit.
+        assertCanMutate?.();
+        const welcome = await this._addReaderUnlocked(
+          reader,
+          kemPublicKey,
+          false,
+          beginMutation,
+        );
+        if (!welcome) {
+          throw new Error(
+            `Cannot build invitation bootstrap for ${this.documentPath}: ` +
+              'no BeeKEM Welcome is available for the recipient',
+          );
+        }
+        return welcome;
+      },
+      addWriter: () => this._addWriterUnlocked(reader, beginMutation),
+      repairReaders: () => {
+        beginMutation();
+        return this._makeChange(
+          this._readers.current(),
+          crdtReaderChangeNode,
+        );
+      },
+      repairWriters: () => {
+        beginMutation();
+        return this._makeChange(
+          this._writers.current(),
+          crdtWriterChangeNode,
+        );
+      },
+    });
+
+    const [welcomeEpochId, documentKey] = await this._keychain.current();
+    const keychainChanges = capacityPlan.keychainChanges;
+    const sealedPayload = encodeWelcomeSealedPayload({
+      keychainChanges:
+        this._changesSerializer.serializeChanges(keychainChanges),
+      beekemWelcome,
+    });
+    const sealedWelcome = await eciesSeal(
+      sealedPayload,
+      await importEciesPublicKey(kemPublicKey),
+    );
+    if (
+      sealedWelcome.byteLength - capacityPlan.welcomeWithoutBeeKEMBytes >
+      INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES
+    ) {
+      throw new Error(
+        `Invitation Welcome for ${this.documentPath} exceeded the declared attested-profile growth bound`,
+      );
+    }
+    assertInvitationOpaquePayloadCapacity(
+      sealedWelcome,
+      'Welcome',
+      this.documentPath,
+    );
+
+    const bootstrapMessage = this._createSyncMessage();
+    bootstrapMessage.keychainChanges = keychainChanges;
+    if (capacityPlan.snapshot) {
+      bootstrapMessage.snapshot = capacityPlan.snapshot;
+    }
+    bootstrapMessage.tips = computeServedFrontier(
+      bootstrapMessage.changeId,
+      bootstrapMessage.changes,
+      capacityPlan.snapshot?.lastChangeNodeCID,
+    );
+    bootstrapMessage.signature =
+      await this._signAsWriterUnconditional(bootstrapMessage);
+    if (
+      Base64.toUint8Array(bootstrapMessage.signature).byteLength >
+      INITIAL_INVITATION_MAX_SIGNATURE_BYTES
+    ) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} exceeded the declared signature bound`,
+      );
+    }
+    const bootstrapPlaintext =
+      this._syncMessageSerializer.serializeSyncMessage(bootstrapMessage);
+    if (
+      bootstrapPlaintext.byteLength -
+        capacityPlan.serializedBootstrapBaselineBytes >
+      INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES
+    ) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} exceeded the declared attested-profile membership-growth bound`,
+      );
+    }
+    const encrypted = await this._authProvider.encrypt(
+      bootstrapPlaintext,
+      documentKey,
+    );
+    if (!encrypted.nonce) {
+      throw new Error(
+        `Cannot build invitation bootstrap for ${this.documentPath}: ` +
+          'encryption returned no nonce',
+      );
+    }
+
+    const encryptedBootstrap = concatUint8Arrays(
+      welcomeEpochId,
+      encrypted.nonce,
+      encrypted.data,
+    );
+    if (
+      encryptedBootstrap.byteLength - bootstrapPlaintext.byteLength >
+      INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES
+    ) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} exceeded the declared encryption bound`,
+      );
+    }
+    assertInvitationOpaquePayloadCapacity(
+      encryptedBootstrap,
+      'bootstrap',
+      this.documentPath,
+    );
+
+    return {
+      welcomeEpochId: new Uint8Array(welcomeEpochId),
+      sealedWelcome,
+      encryptedBootstrap,
+    };
+  }
+
+  /** Freeze and size the complete bootstrap before changing ACL/BeeKEM state. */
+  private async _prepareInvitationBootstrapCapacity(
+    reader: PublicKey,
+  ): Promise<
+    InvitationBootstrapCapacityPlan<ChangesType, PublicKey>
+  > {
+    this._assertInitialInvitationCapacityProfile();
+
+    // Detach provider-owned and caller-supplied aliases synchronously before
+    // the first await. The queue excludes Peerborne API writers; these round
+    // trips also keep a previously supplied sync tree or returned snapshot
+    // reference from changing the bytes underneath the capacity projection.
+    const frozenCurrentMessage =
+      this._syncMessageSerializer.deserializeSyncMessage(
+        this._syncMessageSerializer.serializeSyncMessage(
+          this._createSyncMessage(),
+        ),
+      );
+    this._lastSyncMessage = frozenCurrentMessage;
+    const snapshot = this._latestSnapshot
+      ? {
+          ...this._latestSnapshot,
+          state: this._changesSerializer.deserializeChanges(
+            this._changesSerializer.serializeChanges(
+              this._latestSnapshot.state,
+            ),
+          ),
+          signature: new Uint8Array(this._latestSnapshot.signature),
+        }
+      : undefined;
+    const frozenTips = computeServedFrontier(
+      frozenCurrentMessage.changeId,
+      frozenCurrentMessage.changes,
+      snapshot?.lastChangeNodeCID,
+    );
+
+    const readerAlreadyPresent = await this._readers.check(reader);
+    let hasRetryLeaf = false;
+    let hasRetryWelcome = false;
+    if (this._beekem?.memberCount === 2 && readerAlreadyPresent) {
+      const serializePublicKey = requireSerializePublicKey(
+        this._authProvider,
+        'Invitation BeeKEM retry validation',
+      );
+      const serializedReader = await serializePublicKey(reader);
+      const leafIndex = this._readerLeafIndices.get(serializedReader);
+      hasRetryLeaf = leafIndex !== undefined;
+      hasRetryWelcome =
+        leafIndex !== undefined && this._beekemWelcomeByLeaf.has(leafIndex);
+    }
+    assertInitialInvitationBeeKEMCapacity(
+      this._beekem?.memberCount,
+      readerAlreadyPresent,
+      this.documentPath,
+      hasRetryLeaf,
+      hasRetryWelcome,
+    );
+    assertInitialInvitationHistoryVisibility(this._historyVisibility);
+
+    const [rawKeychainChanges, rawFullKeychainChanges] = await Promise.all([
+      this._keychainChangesForWelcome(),
+      this._keychain.history(),
+    ]);
+    const keychainChanges = this._changesSerializer.deserializeChanges(
+      this._changesSerializer.serializeChanges(rawKeychainChanges),
+    );
+    const fullKeychainChanges = this._changesSerializer.deserializeChanges(
+      this._changesSerializer.serializeChanges(rawFullKeychainChanges),
+    );
+    const projection = projectInitialInvitationBootstrapCapacity({
+      currentMessage: frozenCurrentMessage,
+      keychainChanges: fullKeychainChanges,
+      snapshot,
+      tips: frozenTips,
+      serializer: this._syncMessageSerializer,
+    });
+    assertProjectedInitialInvitationBootstrapCapacity(
+      projection,
+      this.documentPath,
+    );
+
+    const welcomeWithoutBeeKEM = encodeWelcomeSealedPayload({
+      keychainChanges:
+        this._changesSerializer.serializeChanges(keychainChanges),
+      beekemWelcome: null,
+    });
+    assertProjectedInitialInvitationWelcomeCapacity(
+      welcomeWithoutBeeKEM.byteLength,
+      this.documentPath,
+    );
+    return {
+      keychainChanges,
+      snapshot,
+      serializedBootstrapBaselineBytes: projection.serializedBaselineBytes,
+      welcomeWithoutBeeKEMBytes: welcomeWithoutBeeKEM.byteLength,
+    };
+  }
+
+  private async _assertAcceptedInvitationMembership(
+    issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+  ): Promise<void> {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'Public invitations',
+    );
+    const [issuer, recipient, readers, writers] = await Promise.all([
+      serializePublicKey(issuerPublicKey),
+      serializePublicKey(this._userPublicKey),
+      this._readers.users(),
+      this._writers.users(),
+    ]);
+    const [serializedReaders, serializedWriters] = await Promise.all([
+      Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
+      Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
+    ]);
+    assertAcceptedInvitationMembershipTopology(
+      {
+        issuer,
+        recipient,
+        readers: serializedReaders,
+        writers: serializedWriters,
+      },
+      role,
+    );
+  }
+
+  /**
+   * Apply a recipient-bound invitation bootstrap and activate the document
+   * without invoking normal first-load/new-document detection.
+   *
+   * The outer invitation acceptance must be verified against
+   * `issuerPublicKey` before this method is called. This method independently
+   * verifies the enclosed bootstrap signature against that exact key.
+   *
+   * @internal
+   */
+  public async acceptInvitationBootstrap(
+    bundle: InvitationBootstrapBundle,
+    issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+    founderAddress: string,
+  ): Promise<void> {
+    if (role !== 'reader' && role !== 'editor') {
+      throw new Error(`Unsupported invitation role: ${String(role)}`);
+    }
+    if (this._hashes.size > 0 || this._subscribed) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a fresh document instance`,
+      );
+    }
+    if (!this._kemKeyPair || !this._kemPublicKeyRaw) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a KEM key pair ` +
+          'installed via setKemKeyPair',
+      );
+    }
+    if (bundle.welcomeEpochId.byteLength !== this._keychainProvider.keyIDLength) {
+      throw new Error(
+        `Invitation welcome epoch must be ${this._keychainProvider.keyIDLength} bytes`,
+      );
+    }
+
+    let welcomeEnvelope;
+    try {
+      welcomeEnvelope = decodeWelcomeSealedPayload(
+        await eciesOpen(
+          bundle.sealedWelcome,
+          this._kemKeyPair.privateKey,
+        ),
+      );
+    } catch {
+      throw new Error('Invitation sealed Welcome could not be opened');
+    }
+    if (!welcomeEnvelope.beekemWelcome) {
+      throw new Error('Invitation sealed Welcome is missing BeeKEM bootstrap state');
+    }
+
+    assertInitialInvitationBeeKEMWelcomeShape(
+      welcomeEnvelope.beekemWelcome,
+    );
+
+    const beekem = new BeeKEM();
+    try {
+      await beekem.processWelcome(
+        welcomeEnvelope.beekemWelcome,
+        this._kemKeyPair.privateKey,
+        this._kemKeyPair.publicKey,
+      );
+    } catch {
+      throw new Error('Invitation BeeKEM bootstrap could not be processed');
+    }
+    if (beekem.memberCount !== 2 || beekem.myLeafIndex !== 2) {
+      throw new Error(
+        'Invitation BeeKEM bootstrap did not produce the founder-plus-one recipient state',
+      );
+    }
+
+    const keychainChanges = this._changesSerializer.deserializeChanges(
+      welcomeEnvelope.keychainChanges,
+    );
+    this._keychain.merge(keychainChanges);
+    const hydratedKeys = await this._keychain.keys();
+    const epochPresent = hydratedKeys.some(([keyId]) =>
+      constantTimeEqual(keyId, bundle.welcomeEpochId),
+    );
+    if (!epochPresent || !this._keychain.getKey(bundle.welcomeEpochId)) {
+      throw new Error('Invitation Welcome did not install its advertised epoch key');
+    }
+
+    this._beekem = beekem;
+    this._beekemInitialized = true;
+
+    const headerLength =
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+    if (bundle.encryptedBootstrap.byteLength <= headerLength) {
+      throw new Error('Invitation encrypted bootstrap is truncated');
+    }
+    const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
+      0,
+      this._keychainProvider.keyIDLength,
+    );
+    assertInvitationBootstrapEpochBinding(
+      bundle.welcomeEpochId,
+      bootstrapKeyId,
+    );
+    const bootstrapKey = this._keychain.getKey(bootstrapKeyId);
+    if (!bootstrapKey) {
+      throw new Error('Invitation encrypted bootstrap uses an unknown key');
+    }
+    const nonce = bundle.encryptedBootstrap.subarray(
+      this._keychainProvider.keyIDLength,
+      headerLength,
+    );
+    const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
+    let bootstrapPlaintext: Uint8Array;
+    try {
+      bootstrapPlaintext = await this._authProvider.decrypt(
+        ciphertext,
+        bootstrapKey,
+        nonce,
+      );
+    } catch {
+      throw new Error('Invitation encrypted bootstrap could not be decrypted');
+    }
+
+    const bootstrapMessage =
+      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext);
+    if (bootstrapMessage.documentId !== this.documentPath) {
+      throw new Error('Invitation bootstrap document binding does not match');
+    }
+    if (!bootstrapMessage.signature) {
+      throw new Error('Invitation bootstrap is missing its issuer signature');
+    }
+    const { signature, ...unsignedBootstrap } = bootstrapMessage;
+    let signatureBytes: Uint8Array;
+    try {
+      signatureBytes = this._deserializeSignature(signature);
+    } catch {
+      throw new Error('Invitation bootstrap signature is malformed');
+    }
+    const signedBytes =
+      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
+    if (
+      !(await this._authProvider.verify(
+        signedBytes,
+        issuerPublicKey,
+        signatureBytes,
+      ))
+    ) {
+      throw new Error('Invitation bootstrap signature does not match the offer issuer');
+    }
+
+    if (
+      !(await syncInvitationMessageCompletely(
+        bootstrapMessage,
+        this._hashes,
+        () => this.sync(bootstrapMessage, false),
+        'bootstrap',
+        {
+          provenSnapshotBoundariesBeforeSync:
+            this._latestSnapshot?.lastChangeNodeCID === undefined
+              ? undefined
+              : new Set([
+                  this._latestSnapshot.lastChangeNodeCID,
+                ]),
+          isSnapshotApplied: () =>
+            this._latestSnapshot === bootstrapMessage.snapshot,
+        },
+      ))
+    ) {
+      throw new Error('Invitation bootstrap state was rejected');
+    }
+    await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+
+    this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
+    this._invitationBootstrapReady = true;
+    try {
+      const existing = await this.open();
+      if (!existing) {
+        throw new Error('Invitation bootstrap attempted to create a new document');
+      }
+      if (
+        !(await this._loadInvitationCatchUp(
+          founderAddress,
+          issuerPublicKey,
+        ))
+      ) {
+        throw new Error('Invitation bootstrap catch-up load failed');
+      }
+      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+    } catch (error) {
+      this._invitationBootstrapReady = false;
+      await this.close().catch(() => {});
+      throw error;
     }
   }
 
@@ -4920,8 +5687,9 @@ export class PeerborneDocument<
     welcomeMessage.welcomeRecipient = await serializePublicKey(reader);
     welcomeMessage.welcomeRecipientKemPublicKey = kemPub;
 
-    // Visibility-filtered keychain so the new reader can decrypt the
-    // appropriate window of document history. Note: this uses
+    // Visibility-filtered keychain so the new reader receives the selected
+    // epoch-key window. This does not redact retained CRDT operations. Note:
+    // this uses
     // `_keychainChangesForWelcome()` (recipient's perspective), NOT
     // `_keychainChangesForVisibility()` (sender's perspective) -- the
     // latter would, in `since_invited` mode, leak the inviter's
@@ -5042,6 +5810,14 @@ export class PeerborneDocument<
   public async handleBeeKEMWelcomeRequestData(
     payload: Uint8Array,
   ): Promise<void> {
+    return this._mutationQueue.run(() =>
+      this._handleBeeKEMWelcomeRequestDataUnlocked(payload),
+    );
+  }
+
+  private async _handleBeeKEMWelcomeRequestDataUnlocked(
+    payload: Uint8Array,
+  ): Promise<void> {
     try {
       const message = this._syncMessageSerializer.deserializeSyncMessage(payload);
       await this._evaluateAndApplyBeeKEMWelcome(message, {
@@ -5058,7 +5834,7 @@ export class PeerborneDocument<
   /**
    * Shared receive-path body for both freshly-arrived Welcomes (called
    * from `handleBeeKEMWelcomeRequestData`) and Welcomes replayed from the
-   * pending-welcomes buffer (called from `_drainPendingWelcomes` after a
+   * pending-welcomes buffer (called from `_drainPendingWelcomesUnlocked` after a
    * readers-ACL update unblocks a previously-dropped Welcome).
    *
    * @param message The deserialized sync message.
@@ -5349,7 +6125,7 @@ export class PeerborneDocument<
    * `hex(welcomeEpochId)` so duplicate Welcomes for the same epoch
    * coalesce automatically. Bounded by
    * `_PENDING_WELCOMES_MAX_ENTRIES` (oldest evicted in insertion
-   * order); replayed by `_drainPendingWelcomes()` after the next
+   * order); replayed by `_drainPendingWelcomesUnlocked()` after the next
    * readers-ACL merge.
    *
    * Idempotent and safe to call repeatedly with the same epoch ID --
@@ -5392,7 +6168,7 @@ export class PeerborneDocument<
     });
     console.log(
       `Buffered BeeKEM Welcome for ${this.documentPath} pending readers-ACL update ` +
-        `(epoch=${key.slice(0, 16)}..., buffer size=${this._pendingWelcomes.size})`,
+        `(buffer size=${this._pendingWelcomes.size})`,
     );
   }
 
@@ -5411,7 +6187,7 @@ export class PeerborneDocument<
    *
    * @internal
    */
-  private async _drainPendingWelcomes(): Promise<void> {
+  private async _drainPendingWelcomesUnlocked(): Promise<void> {
     if (this._pendingWelcomes.size === 0) return;
     const now = this._now();
     // Iterate over a snapshot of entries because we mutate the Map
@@ -5422,7 +6198,7 @@ export class PeerborneDocument<
         this._pendingWelcomes.delete(key);
         console.warn(
           `Discarding stale buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `(epoch=${key.slice(0, 16)}..., age=${now - entry.bufferedAtMs}ms ` +
+            `(age=${now - entry.bufferedAtMs}ms ` +
             `exceeds TTL=${PeerborneDocument._PENDING_WELCOMES_TTL_MS}ms)`,
         );
         continue;
@@ -5434,7 +6210,7 @@ export class PeerborneDocument<
         this._pendingWelcomes.delete(key);
         console.log(
           `Replayed buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `after readers-ACL update (epoch=${key.slice(0, 16)}...)`,
+            `after readers-ACL update`,
         );
       }
     }
@@ -5670,6 +6446,12 @@ export class PeerborneDocument<
    *   failures in steps 4-5 do NOT throw (they log warnings).
    */
   public async removeReader(reader: PublicKey) {
+    return this._mutationQueue.run(() =>
+      this._removeReaderUnlocked(reader),
+    );
+  }
+
+  private async _removeReaderUnlocked(reader: PublicKey) {
     // ---------------------------------------------------------------
     // Pre-validation: every check that can fail synchronously and
     // does not mutate state runs BEFORE the BeeKEM `removeMember`
@@ -5714,10 +6496,9 @@ export class PeerborneDocument<
     // `_readerLeafIndices` for testing, or a hypothetical sibling
     // replica with the BeeKEM tree but without the cache).
     //
-    // Both lookups are in-memory only: BeeKEM tree state is itself
-    // not persisted across writer restarts (tracked separately --
-    // see PR body for the known-limitation note). A fully restarted
-    // writer that loses both BeeKEM state and `_readerKemPublicKeys`
+    // Both lookups are in-memory only: BeeKEM tree state is not persisted
+    // across writer restarts. A fully restarted writer that loses both
+    // BeeKEM state and `_readerKemPublicKeys`
     // hits the "BeeKEM tree not initialized" error above OR the
     // "no leaf found" error below, both with actionable messaging.
     let leafIndex = this._readerLeafIndices.get(serializedReader);
@@ -6000,19 +6781,16 @@ export class PeerborneDocument<
    * back to the existing "no BeeKEM bootstrap available, recipient
    * must recover via a fresh document load" path.
    *
-   * The path update produced by `BeeKEM.addMember` is intentionally
-   * not broadcast here: that broadcast would only help joiners that
-   * are already in the tree, but new joiners come up via Welcome and
-   * existing peers don't need the add-side state for their own
-   * future PathUpdate applications. (Existing peers' BeeKEM state
-   * may diverge from the inviter's tree shape after each add;
-   * `removeReader` reseals against the updated tree, so the wire
-   * path on revoke re-syncs everyone via the sender's
-   * `PathUpdate.senderLeafIndex` + intersection logic.)
+   * The path update produced by `BeeKEM.addMember` is not broadcast here.
+   * Existing members therefore cannot safely track a second active joiner.
+   * `addReader` enforces the initial-release founder-plus-one limit before
+   * mutating the ACL; lifting that limit requires a verified add-side
+   * PathUpdate delivery and convergence path.
    */
   private async _registerBeeKEMReader(
     reader: PublicKey,
     readerKemPublicKey: Uint8Array,
+    beginMutation?: () => void,
   ): Promise<BeeKEMWelcome | null> {
     // Validate the recipient KEM public key length BEFORE any state
     // mutation. Without this gate a malformed buffer would still be
@@ -6035,16 +6813,17 @@ export class PeerborneDocument<
     );
     const serializedReader = await serializePublicKey(reader);
 
-    // Record the KEM public key bytes alongside the identity so
-    // `removeReader` can recover the leaf assignment from BeeKEM
-    // tree state when the `_readerLeafIndices` fast-path cache
-    // misses (e.g. cache wipe, different writer replica). Defensive
-    // copy: the caller may reuse the buffer after `addReader`
-    // returns; we want our snapshot to be immutable.
-    this._readerKemPublicKeys.set(
-      serializedReader,
-      new Uint8Array(readerKemPublicKey),
-    );
+    const previousKemPublicKey =
+      this._readerKemPublicKeys.get(serializedReader);
+    if (
+      previousKemPublicKey &&
+      !constantTimeEqual(previousKemPublicKey, readerKemPublicKey)
+    ) {
+      throw new Error(
+        `[${this.documentPath}] _registerBeeKEMReader: this reader is ` +
+          `already bound to a different KEM public key`,
+      );
+    }
 
     // Idempotency: if a leaf is already recorded (e.g. addReader was
     // re-invoked because the initial Welcome was dropped), we do NOT
@@ -6057,6 +6836,12 @@ export class PeerborneDocument<
     // existing recovery messaging.
     const existingLeaf = this._readerLeafIndices.get(serializedReader);
     if (existingLeaf !== undefined) {
+      if (!previousKemPublicKey) {
+        throw new Error(
+          `[${this.documentPath}] _registerBeeKEMReader: the existing reader ` +
+            'leaf has no recoverable KEM binding',
+        );
+      }
       return this._beekemWelcomeByLeaf.get(existingLeaf) ?? null;
     }
 
@@ -6067,29 +6852,26 @@ export class PeerborneDocument<
     // bootstrapped via a Welcome before they can call `addReader`).
     //
     // Defense-in-depth gate: the caller path through `addReader`
-    // already rejects "joined writer with existing document state"
-    // BEFORE running `_makeChange`, so by the time we reach here we
-    // have either (a) a genuine founder with empty `_hashes`, or
-    // (b) a founder mid-first-addReader whose just-emitted ACL
-    // change is sitting in `_hashes` (size === 1). Anything else
-    // (e.g. a future caller that invokes `_registerBeeKEMReader`
-    // outside `addReader`, or a `_hashes` that has been advanced by
-    // pubsub before the founder's first `addReader`) would silently
+    // already rejects a joined writer before running `_makeChange`, so by
+    // the time we reach here `_createdLocally` must identify the genuine
+    // founder. A future caller that invokes `_registerBeeKEMReader`
+    // outside `addReader` without that provenance would silently
     // create a divergent founder tree on a peer that already has
     // shared state. Throw rather than spawn the rogue tree; the
     // upstream `addReader` gate's recovery message points at the
     // right path.
     if (!this._beekemInitialized) {
-      if (this._hashes.size > 1) {
+      if (!this._createdLocally) {
         throw new Error(
           `[${this.documentPath}] _registerBeeKEMReader: cannot ` +
             `initialize a fresh founder BeeKEM tree because the local ` +
-            `replica already has ${this._hashes.size} merged changes. A ` +
-            `joined writer must bootstrap via a BeeKEM Welcome (delivered ` +
-            `over the initial document load) before they can register ` +
+            `replica did not create this document locally. A ` +
+            `joined writer must bootstrap via a signed invitation acceptance ` +
+            `before they can register ` +
             `readers cryptographically.`,
         );
       }
+      beginMutation?.();
       await this._initializeBeeKEMAsFounder();
     }
     const beekem = this._beekem;
@@ -6097,6 +6879,12 @@ export class PeerborneDocument<
       throw new Error(
         `[${this.documentPath}] BeeKEM tree is not initialized; ` +
           `cannot register a new reader.`,
+      );
+    }
+    if (beekem.memberCount >= 2) {
+      throw new Error(
+        `[${this.documentPath}] _registerBeeKEMReader: cannot add another ` +
+          'leaf when the exact existing reader Welcome is unavailable',
       );
     }
 
@@ -6120,7 +6908,14 @@ export class PeerborneDocument<
       true, // extractable
       [],
     );
+    beginMutation?.();
     const result = await beekem.addMember(memberPublicKey);
+    // Commit all identity-indexed caches only after the transactional BeeKEM
+    // addition and Welcome construction succeed.
+    this._readerKemPublicKeys.set(
+      serializedReader,
+      new Uint8Array(readerKemPublicKey),
+    );
     // `BeeKEMWelcome.leafIndex` is the node index of the new leaf
     // (even-numbered slot in the tree-math layout), which is exactly
     // what `removeMember` consumes.
@@ -6241,6 +7036,14 @@ export class PeerborneDocument<
    * @internal Invoked by the shared protocol handler in `peerborne.ts`.
    */
   public async handleBeeKEMPathUpdateRequestData(
+    payload: Uint8Array,
+  ): Promise<void> {
+    return this._mutationQueue.run(() =>
+      this._handleBeeKEMPathUpdateRequestDataUnlocked(payload),
+    );
+  }
+
+  private async _handleBeeKEMPathUpdateRequestDataUnlocked(
     payload: Uint8Array,
   ): Promise<void> {
     try {
@@ -6504,6 +7307,14 @@ export class PeerborneDocument<
    *   path header that was already stripped by the shared handler).
    */
   public async handleKeyUpdateRequestData(
+    payload: Uint8Array,
+  ): Promise<void> {
+    return this._mutationQueue.run(() =>
+      this._handleKeyUpdateRequestDataUnlocked(payload),
+    );
+  }
+
+  private async _handleKeyUpdateRequestDataUnlocked(
     payload: Uint8Array,
   ): Promise<void> {
     try {

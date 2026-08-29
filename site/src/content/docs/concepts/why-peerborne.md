@@ -11,11 +11,22 @@ Peerborne is an **encrypted, peer-to-peer CRDT document toolkit** for TypeScript
 
 ### When centralization is the downside
 
-Peerborne removes the plaintext application database from the document path. Documents are encrypted, signed, and content-addressed before peers exchange them through relay infrastructure. Relays do not receive document plaintext, but they still observe connection and traffic metadata and can drop, delay, or censor traffic. Peerborne changes the trust boundary; it does not eliminate infrastructure.
+Peerborne removes the plaintext application database from the document path. It stores encrypted change payloads by CID and exchanges separate encrypted sync messages, signed when enabled, through network infrastructure. Relays do not receive document plaintext without the document key, but they still observe connection and traffic metadata and can drop, delay, or censor traffic. Peerborne changes the trust boundary; it does not eliminate infrastructure.
+
+![Centralized collaboration sends plaintext through a trusted application database; Peerborne devices exchange signed-when-enabled encrypted sync envelopes and separately encrypted CID-addressed blocks through infrastructure that sees metadata and can disrupt delivery but lacks document plaintext without the document key.](../../../assets/diagrams/trust-boundary.svg "Centralized plaintext custody and Peerborne's encrypted peer path have different trust boundaries.")
+
+**Evidence boundary:** This compares trust models, not availability or production readiness. Applications still own identity, key backup, and recovery; infrastructure may observe metadata or disrupt delivery, and durable restart recovery remains unproven.
 
 ### Encryption is the default, not an add-on
 
-By default (`enableSigning: true`), every document change is signed with the writer's identity and encrypted with AES-GCM before it leaves the device. Relays, bootstrap nodes, and remote storage see only opaque ciphertext. Encryption is always on, whether signing is enabled or not. Key material stays on devices — Peerborne never transmits unencrypted document content.
+Stored change payloads and wire sync envelopes are encrypted with the document
+key (AES-GCM by default). By default (`enableSigning: true`), the complete
+outgoing sync message is also signed with the writer's identity before it is
+encrypted. The stored CID-addressed block is a separate encrypted artifact and
+does not carry its own writer signature or ACL decision. Relays, bootstrap
+nodes, and remote storage handle ciphertext rather than document plaintext.
+Encryption remains on whether signing is enabled or not; Peerborne does not
+intentionally transmit unencrypted document content.
 
 ### Composable, not monolithic
 
@@ -61,15 +72,20 @@ Peerborne is **not** a good fit when:
 
 ## Current status
 
-Peerborne is alpha software. It is suitable for experiments, prototypes, and learning about local-first systems, not production deployment.
+Peerborne's initial release is early-stage software. It is suitable for
+experiments, prototypes, and learning about local-first systems, not production
+deployment.
 
 Current evidence includes:
 
-- Real encrypted document retrieval across a Circuit Relay and NAT boundary
+- A signed, distinct-identity founder-plus-one invitation across a Circuit
+  Relay and NAT boundary, followed by fresh edits in both directions
 - Single-browser smoke tests for all three example applications
 - Separate Docker-backed transport tests for discovery, GossipSub delivery, and NAT behavior
 
-That evidence does not yet prove durable restart recovery, invitation delivery, automatic reconnect, or system-level partition/rejoin convergence.
+That evidence does not yet prove durable restart recovery, offline or
+multi-member invitations, automatic reconnect, or system-level
+partition/rejoin convergence.
 
 See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a detailed capability-to-evidence map, and the [limitations](../limitations/) page for a complete list of current gaps.
 
@@ -77,5 +93,5 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - [Quick start](../../getting-started/quick-start/) — build from source and run the examples
 - [Concepts](../local-first/) — understand the architecture and design choices
-- [Cookbook](../../cookbook/collaborative-wiki/) — code patterns for common tasks
+- [Invite a collaborator](../../cookbook/invitations/) — the bounded online invitation flow
 - [Roadmap](../../community/roadmap/) — what is being worked on next

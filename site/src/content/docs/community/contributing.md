@@ -54,7 +54,7 @@ yarn test:e2e                     # three Vite example smoke suites; no Docker
 
 Use `yarn exec playwright install chromium --with-deps` when Linux system browser dependencies are also needed.
 
-The benchmark sources currently have a runner module mismatch. Do not present `yarn benchmark:all` as working until that is fixed; benchmark work should also define repeatable budgets.
+`yarn benchmark:all` executes both benchmark packages. Results are informational; benchmark work should define repeatable environments and budgets before making regression claims. Use `--iterations 1 --max-documents 100` for a bounded smoke run.
 
 ## Docker-backed suites
 
@@ -103,7 +103,13 @@ docker compose -f docker-compose.peerborne-nat.yaml down -v
 
 These helpers mirror CI's 120-second readiness budget. The workflow remains the canonical sequence, including failure logs and unconditional cleanup.
 
-Integration checks transport discovery, bidirectional messaging, resilience, and NAT behavior through the test app. Cross-NAT checks encrypted document retrieval between real Peerborne apps; it does not prove invitation delivery or live post-load convergence.
+Integration checks transport discovery, bidirectional messaging, resilience,
+and NAT behavior through the test app. The real Peerborne cross-NAT job uses
+two signing identities, accepts a signed invitation without exposing a
+plaintext document key or injecting one through the test bridge, and asserts
+fresh document mutations in both directions through Circuit Relay. It does not
+prove restart recovery, offline acceptance,
+revocation, partition/rejoin, or relay failover.
 
 ## Generated API reference
 
