@@ -1,7 +1,7 @@
 FROM node:22.19.0-alpine
 RUN corepack enable \
     && for attempt in 1 2 3; do \
-      corepack install --global yarn@4.5.0 && break; \
+      corepack prepare yarn@4.5.0 --activate && break; \
       if [ "$attempt" = 3 ]; then exit 1; fi; \
       sleep $((attempt * 2)); \
     done
