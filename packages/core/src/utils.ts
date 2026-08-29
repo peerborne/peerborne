@@ -1,6 +1,12 @@
-import BufferList from 'bl';
 import type { Uint8ArrayList } from 'uint8arraylist';
 import type { AesAlgorithmName } from './auth-provider.js';
+
+const BUFFER_LIST_SYMBOL = Symbol.for('BufferList');
+
+export interface BufferListLike {
+  readonly length: number;
+  slice(start?: number, end?: number): Uint8Array;
+}
 
 /**
  * Outcome of parsing a path-prefixed protocol header off an inbound
@@ -60,7 +66,7 @@ export type PathPrefixedHeaderDropReason =
  *   count. The path is byte-sliced out of `assembled` using this value.
  */
 export async function readPathPrefixedProtocolHeader<TDocument>(
-  source: AsyncIterable<Uint8Array | Uint8ArrayList | BufferList>,
+  source: AsyncIterable<Uint8Array | Uint8ArrayList | BufferListLike>,
   registry: { get(key: string): TDocument | undefined },
   protocolName: string,
   maxRequestSize: number,
@@ -149,18 +155,31 @@ export function concatUint8Arrays(...arrs: Uint8Array[]): Uint8Array {
   return newArr;
 }
 
-export function isBufferList(input: Uint8Array | Uint8ArrayList | BufferList): input is BufferList {
-  return input instanceof BufferList;
+export function isBufferList(input: unknown): input is BufferListLike {
+  const candidate = input as Record<PropertyKey, unknown>;
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    candidate[BUFFER_LIST_SYMBOL] === true &&
+    typeof candidate.length === 'number' &&
+    Number.isSafeInteger(candidate.length) &&
+    candidate.length >= 0 &&
+    typeof candidate.slice === 'function'
+  );
+}
+
+function asBufferList(input: unknown): BufferListLike | undefined {
+  return isBufferList(input) ? input : undefined;
 }
 
 export async function readUint8Iterable(
   iterable:
-    | AsyncIterable<Uint8Array | Uint8ArrayList | BufferList>
-    | Iterable<Uint8Array | Uint8ArrayList | BufferList>,
+    | AsyncIterable<Uint8Array | Uint8ArrayList | BufferListLike>
+    | Iterable<Uint8Array | Uint8ArrayList | BufferListLike>,
   maxSize?: number,
 ): Promise<Uint8Array> {
   let length = 0;
-  const chunks = [] as (Uint8Array | Uint8ArrayList | BufferList)[];
+  const chunks = [] as (Uint8Array | Uint8ArrayList | BufferListLike)[];
   for await (const chunk of iterable) {
     if (chunk) {
       chunks.push(chunk);
@@ -176,11 +195,9 @@ export async function readUint8Iterable(
   let index = 0;
   const assembled = new Uint8Array(length);
   for (const chunk of chunks) {
-    if (isBufferList(chunk)) {
-      const bufferList = chunk as BufferList;
-      for (let i = 0; i < bufferList.length; i++) {
-        assembled.set([bufferList.readUInt8(i)], index + i);
-      }
+    const bufferList = asBufferList(chunk);
+    if (bufferList) {
+      assembled.set(bufferList.slice(), index);
     } else if (chunk instanceof Uint8Array) {
       assembled.set(chunk, index);
     } else {
@@ -204,7 +221,7 @@ export async function readUint8Iterable(
  * oversized input still fails once the source ends or crosses `maxSize`.
  */
 export async function readFirstDeserializable<T>(
-  iterable: AsyncIterable<Uint8Array | Uint8ArrayList | BufferList>,
+  iterable: AsyncIterable<Uint8Array | Uint8ArrayList | BufferListLike>,
   deserialize: (data: Uint8Array) => T,
   maxSize?: number,
 ): Promise<T> {
@@ -219,11 +236,12 @@ export async function readFirstDeserializable<T>(
         `Stream exceeded maximum allowed size of ${maxSize} bytes`,
       );
     }
-    const bytes = isBufferList(chunk)
-      ? new Uint8Array(chunk.slice())
+    const bufferList = asBufferList(chunk);
+    const bytes = bufferList
+      ? new Uint8Array(bufferList.slice())
       : chunk instanceof Uint8Array
         ? chunk
-        : chunk.subarray();
+        : (chunk as Uint8ArrayList).subarray();
     const nextLength = length + bytes.length;
 
     if (maxSize !== undefined && nextLength > maxSize) {
