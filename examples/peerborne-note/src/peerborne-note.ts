@@ -24,6 +24,7 @@ import {
 import {
   assertTrustedRendezvous,
   invitationUrl,
+  rendezvousForCircuitReservation,
 } from './invitation-link.js';
 
 export const MAX_NOTE_CHARACTERS = 20_000;
@@ -97,15 +98,17 @@ async function waitForCircuitAddress(
   peerborne: NotePeerborne,
   relayMultiaddr: string,
 ): Promise<string> {
-  const expected =
-    `${relayMultiaddr}/p2p-circuit/p2p/${peerborne.peerId.toString()}`;
+  const peerId = peerborne.peerId.toString();
   const deadline = Date.now() + RESERVATION_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const observed = peerborne.libp2p
-      .getMultiaddrs()
-      .map((address) => address.toString())
-      .find((address) => address === expected);
-    if (observed) return observed;
+    const rendezvous = rendezvousForCircuitReservation(
+      peerborne.libp2p
+        .getMultiaddrs()
+        .map((address) => address.toString()),
+      relayMultiaddr,
+      peerId,
+    );
+    if (rendezvous) return rendezvous;
     await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
   }
   throw new Error('The relay reservation was not observed in time');

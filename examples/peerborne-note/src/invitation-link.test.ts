@@ -6,6 +6,7 @@ import {
   encodeInvitationToken,
   invitationUrl,
   MAX_INVITATION_TOKEN_CHARACTERS,
+  rendezvousForCircuitReservation,
 } from './invitation-link.js';
 
 describe('invitation fragments', () => {
@@ -102,6 +103,29 @@ describe('relay boundaries', () => {
 
   test('accepts only founder addresses beneath the exact configured relay', () => {
     expect(() => assertTrustedRendezvous([founder], relay)).not.toThrow();
+  });
+
+  test.each([
+    founder,
+    '/ip4/203.0.113.7/tcp/443/wss/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWFounder',
+  ])('recognizes an exact or resolved relay reservation', (observed) => {
+    expect(rendezvousForCircuitReservation(
+      [observed],
+      relay,
+      '12D3KooWFounder',
+    )).toBe(founder);
+  });
+
+  test('ignores reservations for another relay or local peer', () => {
+    expect(rendezvousForCircuitReservation(
+      [
+        '/ip4/203.0.113.7/tcp/443/wss/p2p/12D3KooWOther/p2p-circuit/p2p/12D3KooWFounder',
+        '/ip4/203.0.113.7/tcp/443/wss/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWOther',
+        '/ip4/203.0.113.7/tcp/443/wss/p2p/12D3KooWFounder',
+      ],
+      relay,
+      '12D3KooWFounder',
+    )).toBeUndefined();
   });
 
   test.each([

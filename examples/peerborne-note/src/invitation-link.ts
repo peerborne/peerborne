@@ -88,6 +88,23 @@ export function invitationUrl(bytes: Uint8Array, currentHref: string): string {
   return url.toString();
 }
 
+export function rendezvousForCircuitReservation(
+  observedAddresses: readonly string[],
+  relayMultiaddr: string,
+  peerId: string,
+): string | undefined {
+  const relayPeerComponent = relayMultiaddr.slice(
+    relayMultiaddr.lastIndexOf('/p2p/'),
+  );
+  const reservationSuffix = `${relayPeerComponent}/p2p-circuit/p2p/${peerId}`;
+  const reservationObserved = observedAddresses.some((address) =>
+    address.endsWith(reservationSuffix),
+  );
+  return reservationObserved
+    ? `${relayMultiaddr}/p2p-circuit/p2p/${peerId}`
+    : undefined;
+}
+
 export function assertTrustedRendezvous(
   rendezvous: readonly string[],
   relayMultiaddr: string,
