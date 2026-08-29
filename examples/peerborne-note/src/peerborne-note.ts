@@ -64,7 +64,7 @@ function snapshot(document: Doc<NoteData>): NoteSnapshot {
 
 function applyTextEdit(document: NoteData, next: string): void {
   const previous = typeof document.body === 'string' ? document.body : '';
-  if (document.body === undefined) {
+  if (typeof document.body !== 'string') {
     document.body = next;
     return;
   }
