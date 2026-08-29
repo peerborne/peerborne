@@ -1,5 +1,4 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import BufferList from 'bl';
 import {
   shuffleArray,
   firstTrue,
@@ -34,6 +33,20 @@ class MockUint8ArrayList {
   }
   subarray(): Uint8Array {
     return this._data;
+  }
+}
+
+class MockBufferList {
+  readonly [Symbol.for('BufferList')] = true;
+
+  constructor(private readonly _data = new Uint8Array()) {}
+
+  get length() {
+    return this._data.length;
+  }
+
+  slice(start?: number, end?: number): Uint8Array {
+    return this._data.slice(start, end);
   }
 }
 
@@ -118,12 +131,12 @@ describe('concatUint8Arrays', () => {
 
 describe('isBufferList', () => {
   test('returns true for BufferList instances', () => {
-    const bl = new BufferList();
+    const bl = new MockBufferList();
     expect(isBufferList(bl)).toBe(true);
   });
 
   test('returns true for BufferList with data', () => {
-    const bl = new BufferList(Buffer.from([1, 2, 3]));
+    const bl = new MockBufferList(new Uint8Array([1, 2, 3]));
     expect(isBufferList(bl)).toBe(true);
   });
 
@@ -135,6 +148,17 @@ describe('isBufferList', () => {
   test('returns false for Uint8ArrayList-like object', () => {
     const list = new MockUint8ArrayList(new Uint8Array([1, 2, 3]));
     expect(isBufferList(list as any)).toBe(false);
+  });
+
+  test('returns false when the marker lacks the BufferList structure', () => {
+    expect(isBufferList({ [Symbol.for('BufferList')]: true })).toBe(false);
+    expect(
+      isBufferList({
+        [Symbol.for('BufferList')]: true,
+        length: 1,
+        slice: null,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -156,10 +180,14 @@ describe('readUint8Iterable', () => {
   });
 
   test('correctly reads a stream with BufferList chunks', async () => {
-    const bl1 = new BufferList(Buffer.from([10, 20, 30]));
-    const bl2 = new BufferList(Buffer.from([40, 50]));
+    const bl1 = new MockBufferList(new Uint8Array([10, 20, 30]));
+    const bl2 = new MockBufferList(new Uint8Array([40, 50]));
+    const slice1 = jest.spyOn(bl1, 'slice');
+    const slice2 = jest.spyOn(bl2, 'slice');
     const result = await readUint8Iterable(toAsyncIterable([bl1, bl2]));
     expect(result).toEqual(new Uint8Array([10, 20, 30, 40, 50]));
+    expect(slice1).toHaveBeenCalledTimes(1);
+    expect(slice2).toHaveBeenCalledTimes(1);
   });
 
   test('correctly reads a stream with Uint8ArrayList chunks', async () => {
@@ -172,7 +200,7 @@ describe('readUint8Iterable', () => {
   test('handles mixed chunk types', async () => {
     const chunks = [
       new Uint8Array([1, 2]),
-      new BufferList(Buffer.from([3, 4])),
+      new MockBufferList(new Uint8Array([3, 4])),
       new MockUint8ArrayList(new Uint8Array([5, 6])),
     ];
     const result = await readUint8Iterable(toAsyncIterable(chunks) as any);
@@ -261,7 +289,7 @@ describe('readFirstDeserializable', () => {
   });
 
   test('rejects an oversized BufferList before copying it', async () => {
-    const chunk = new BufferList(Buffer.alloc(1024));
+    const chunk = new MockBufferList(new Uint8Array(1024));
     const slice = jest.spyOn(chunk, 'slice');
 
     async function* oversizedSource() {
