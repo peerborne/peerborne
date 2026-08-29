@@ -14,7 +14,7 @@ Peerborne adopts these local-first principles:
 - **No server-ordained write ordering.** Two peers can edit the same document concurrently. The CRDT layer merges their changes when they eventually exchange updates.
 - **Eventually consistent.** When peers reconnect, they may discover and fetch blocks that were created during the offline period. Delivery is not guaranteed — see limitations below.
 
-![An open local replica accepts and stores an edit while disconnected without requiring prior network connectivity; libp2p may redial, but reconnect-and-replay has no durable guarantee and later peer delivery remains best effort.](../../../assets/diagrams/offline-boundary.svg)
+![An open local replica accepts and stores an edit while disconnected without requiring prior network connectivity; libp2p may redial, but reconnect-and-replay has no durable guarantee and later peer delivery remains best effort.](../../../assets/diagrams/offline-boundary.svg "Offline boundary: local edits work, while durable reconnect and replay are not guaranteed.")
 
 **Evidence boundary:** open-replica editing and local storage are implemented.
 The complete offline edit → reconnect → remote delivery sequence is not verified

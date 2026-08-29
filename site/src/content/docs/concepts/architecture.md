@@ -23,7 +23,7 @@ Peerborne composes several open-source subsystems into a coherent local-first st
 
 ## Data flow: writing a change
 
-![A local CRDT mutation creates an encrypted CID-addressed stored payload and a separate signed-when-enabled, encrypted GossipSub sync envelope; receivers decrypt and authorize the envelope, apply inline history, and fetch only missing or deferred CID blocks for CID validation and decryption.](../../../assets/diagrams/change-pipeline.svg)
+![A local CRDT mutation creates an encrypted CID-addressed stored payload and a separate signed-when-enabled, encrypted GossipSub sync envelope; receivers decrypt and authorize the envelope, apply inline history, and fetch only missing or deferred CID blocks for CID validation and decryption.](../../../assets/diagrams/change-pipeline.svg "Writing a change: separate encrypted storage and signed-when-enabled sync artifacts.")
 
 The local replica changes before either outbound artifact is complete. First,
 Peerborne serializes the change payload, encrypts it with the document key, and
@@ -49,7 +49,7 @@ convergence through this complete path are not yet demonstrated in CI.
 
 ## Data flow: loading an existing document
 
-![A quorum-enabled remote document load obtains Q-of-K frontier agreement, decrypts the selected response before any conditional known-writer signature check, binds its served frontier, and fetches the CIDs enumerated by its served changes tree before mutation; a quorum-bound first load drops an unverifiable snapshot and requires an available changes tree, while the quorum-disabled legacy path skips those gates.](../../../assets/diagrams/initial-load.svg)
+![A quorum-enabled remote document load obtains Q-of-K frontier agreement, decrypts the selected response before any conditional known-writer signature check, binds its served frontier, and fetches the CIDs enumerated by its served changes tree before mutation; a quorum-bound first load drops an unverifiable snapshot and requires an available changes tree, while the quorum-disabled legacy path skips those gates.](../../../assets/diagrams/initial-load.svg "Initial load: quorum binds the served frontier before history application.")
 
 The configured initial-load gate probes up to an effective K distinct connected
 peers and requires Q matching frontier advertisements before accepting a remote

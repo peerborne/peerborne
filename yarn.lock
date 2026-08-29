@@ -196,7 +196,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@astrojs/markdown-remark@npm:7.2.4":
+"@astrojs/markdown-remark@npm:7.2.4, @astrojs/markdown-remark@npm:^7.2.4":
   version: 7.2.4
   resolution: "@astrojs/markdown-remark@npm:7.2.4"
   dependencies:
@@ -4194,6 +4194,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/site@workspace:site"
   dependencies:
+    "@astrojs/markdown-remark": "npm:^7.2.4"
     "@astrojs/starlight": "npm:^0.41.3"
     "@peerborne/core": "workspace:*"
     "@peerborne/yjs": "workspace:*"

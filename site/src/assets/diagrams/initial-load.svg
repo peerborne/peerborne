@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="840" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
   <title id="title">Peerborne remote initial document load</title>
   <desc id="desc">A quorum-enabled remote document load requires Q-of-K peers to agree on a frontier hash before Peerborne binds a selected response, strips inline changes, and fetches the CIDs enumerated by its served changes tree before mutation. A quorum-bound first load has no prior writer set for outer-signature authentication, so it drops an unverifiable snapshot and requires an available changes tree. With quorum disabled, the legacy path skips peer advertisements, frontier binding, stripping, and prefetch. CID validation covers fetched ciphertext bytes, not responder-supplied node kinds or interior topology, writer identity, or history completeness.</desc>
   <defs>

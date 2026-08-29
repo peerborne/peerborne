@@ -39,72 +39,93 @@ pre.astro-code {
   border-radius: 0.5rem;
 }
 
-/* Keep system diagrams at their designed type size and scroll within the page frame. */
-.sl-markdown-content > p:has(> img[src*='.svg']:only-child) {
-  --diagram-frame-width: 100%;
-
-  width: var(--diagram-frame-width);
-  max-width: none;
+/* Documentation figures are captioned by the Markdown figure transform. */
+.sl-markdown-content > .docs-figure {
+  width: 100%;
+  margin-block: 1.75rem 2rem;
   margin-inline: 0;
-  padding-block-end: 0.5rem;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
+}
+
+.docs-figure__body {
+  margin: 0;
+}
+
+.docs-figure__viewport {
+  overflow: hidden;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.85rem;
+  background: #0f172a;
+  box-shadow: 0 0.75rem 2rem rgb(2 6 23 / 12%);
+  line-height: 0;
+}
+
+.docs-figure__viewport > img {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+}
+
+.docs-figure__caption {
+  margin-block-start: 0.65rem;
+  padding-inline: 0.15rem;
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-sm);
+  line-height: 1.5;
+}
+
+.docs-figure__details {
+  margin-block-start: 0.35rem;
+  padding-inline: 0.15rem;
+  font-size: var(--sl-text-sm);
+}
+
+.docs-figure__details > summary {
+  width: max-content;
+  color: var(--sl-color-accent-high);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.docs-figure__details[open] > summary {
+  margin-block-end: 0.65rem;
+}
+
+.docs-figure__full-size {
+  max-width: 100%;
+  max-height: min(80vh, 50rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.65rem;
+  background: #0f172a;
   scrollbar-width: thin;
 }
 
-.sl-markdown-content > p:has(> img[src*='.svg']:only-child) > img {
+.docs-figure__full-size > img {
   display: block;
-  width: 75rem;
-  min-width: 75rem;
+  width: auto;
+  min-width: max-content;
   max-width: none;
   height: auto;
+  margin: 0;
 }
 
-@media (min-width: 50rem) and (max-width: 71.999rem) {
-  html[data-has-sidebar]
-    .sl-markdown-content
-    > p:has(> img[src*='.svg']:only-child) {
-    --diagram-frame-width: min(
-      75rem,
-      calc(100vw - var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x))
-    );
-  }
-}
-
-@media (min-width: 72rem) {
-  html[data-has-sidebar][data-has-toc]
-    .sl-markdown-content
-    > p:has(> img[src*='.svg']:only-child) {
-    --diagram-frame-width: min(
-      75rem,
-      calc(100vw - 2 * var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x)),
-      calc(50vw + 1.75rem)
-    );
-    margin-inline-start: calc(100% - var(--diagram-frame-width));
-  }
-
-  html[data-has-sidebar][data-has-toc]
-    .sl-markdown-content
-    > p:has(> img[src*='.svg']:only-child)
-    > img {
-    width: 100%;
-    min-width: 0;
-  }
+.docs-figure__full-size:focus-visible {
+  outline: 2px solid var(--sl-color-accent-high);
+  outline-offset: 2px;
 }
 
 @media print {
-  .sl-markdown-content > p:has(> img[src*='.svg']:only-child) {
-    --diagram-frame-width: 100%;
-
-    margin-inline: 0;
-    padding-block-end: 0;
-    overflow: visible;
+  .docs-figure__viewport {
+    border-color: #94a3b8;
+    box-shadow: none;
   }
 
-  .sl-markdown-content > p:has(> img[src*='.svg']:only-child) > img {
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
+  .docs-figure__details {
+    display: none;
   }
 }
 
