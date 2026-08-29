@@ -4,8 +4,22 @@
     "outDir": "dist-bench",
     "composite": false,
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "types": ["node"],
+    "typeRoots": ["node_modules/@types", "../../node_modules/@types"],
+    "paths": {
+      "@peerborne/core": ["../core/dist/esm/src/index.d.ts"],
+      "@peerborne/core/*": ["../core/dist/esm/src/*"]
+    }
   },
   "include": ["src"],
+  "exclude": [
+    "node_modules",
+    "src/**/*.test.ts",
+    "src/**/__mocks__/**",
+    "src/bloom-filter-gossip.ts",
+    "src/distributed-peer-source.ts",
+    "src/index.ts"
+  ],
   "references": []
 }

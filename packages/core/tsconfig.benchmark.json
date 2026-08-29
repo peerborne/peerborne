@@ -4,8 +4,15 @@
     "outDir": "dist-bench",
     "composite": false,
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "types": ["node"],
+    "typeRoots": ["node_modules/@types", "../../node_modules/@types"]
   },
   "include": ["src"],
+  "exclude": [
+    "node_modules",
+    "src/**/*.test.ts",
+    "src/**/__mocks__/**"
+  ],
   "references": []
 }

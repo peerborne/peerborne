@@ -7,6 +7,7 @@
  */
 import * as fs from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { runCrdtSyncLatencyBenchmarks } from './crdt-sync-latency.js';
 import { runCryptoOverheadBenchmarks } from './crypto-overhead.js';
@@ -49,7 +50,8 @@ async function main() {
   console.log();
 
   // Write JSON results
-  const outPath = join(__dirname, 'results.json');
+  const outDir = fileURLToPath(new URL('.', import.meta.url));
+  const outPath = join(outDir, 'results.json');
   fs.writeFileSync(outPath, JSON.stringify(allSuites, null, 2));
   console.log(`Results written to ${outPath}`);
 }

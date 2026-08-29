@@ -7,12 +7,15 @@
  */
 import * as fs from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import { Crypto } from '@peculiar/webcrypto';
 
 // Install WebCrypto polyfill for Node.js
 if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
   (globalThis as any).crypto = new Crypto();
 }
+
+const outDir = fileURLToPath(new URL('.', import.meta.url));
 
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './paper-benchmark-runner.js';
 import { runIndexQueryScalingBenchmarks } from './index-query-scaling.js';
@@ -56,7 +59,8 @@ async function main() {
   console.log();
 
   // Write JSON results (paper-quality format)
-  const outPath = join(__dirname, 'results.json');
+  const outDir = fileURLToPath(new URL('.', import.meta.url));
+  const outPath = join(outDir, 'results.json');
   fs.writeFileSync(outPath, JSON.stringify(allSuites, null, 2));
   console.log(`Results written to ${outPath}`);
 }
