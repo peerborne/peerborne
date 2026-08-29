@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "benchmarks:snapshot": "node scripts/collect-benchmark-snapshot.mjs",
     "build:dependencies": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc",
     "dev": "yarn run build:dependencies && astro dev",
-    "build": "yarn run build:dependencies && astro build && node scripts/generate-llms-full.mjs",
+    "build": "yarn charts:check && yarn run build:dependencies && astro build && node scripts/generate-llms-full.mjs",
+    "charts:generate": "node scripts/generate-benchmark-charts.mjs",
+    "charts:check": "node scripts/generate-benchmark-charts.mjs --check",
+    "charts:test": "node --test scripts/generate-benchmark-charts.test.mjs && yarn charts:check",
     "preview": "astro preview"
   },
   "dependencies": {

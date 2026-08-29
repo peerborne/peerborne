@@ -65,6 +65,18 @@ V2 memory indexes use sorted compound-key arrays with binary-search lookup; incr
 
 Peerborne includes six benchmark suites across two packages. Each suite uses a statistical runner that reports min, max, mean, median, p99, and standard deviation with warmup iterations and optional memory-delta tracking.
 
+The charts below are generated from the committed
+[`benchmark-snapshot.json`](https://github.com/Peerborne/peerborne/blob/main/site/src/data/benchmark-snapshot.json)
+snapshot. It was collected on Apple M5 hardware with 32 GB RAM, Node.js
+22.19.0, and macOS arm64. Most points use 20 timed iterations; the convergence
+suite uses four and the blind-index field series uses ten because those suites
+intentionally reduce the requested count for their more expensive cases.
+
+Treat the values as a directional, single-machine snapshot—not a performance
+guarantee or a comparison with other systems. The convergence chart is a local
+simulation, not a browser, relay, or wide-area network measurement. Dots show
+means and capped whiskers show p99. No chart establishes a pass/fail budget.
+
 ### Core benchmarks
 
 Source: [`packages/core/src/__benchmarks__/`](https://github.com/Peerborne/peerborne/tree/main/packages/core/src/__benchmarks__)
@@ -75,6 +87,12 @@ Source: [`packages/core/src/__benchmarks__/`](https://github.com/Peerborne/peerb
 | **Crypto Overhead** | [`crypto-overhead.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/crypto-overhead.ts) | Key generation cost (ECDSA P-384, AES-GCM-256), key rotation at 10 KB, plaintext vs encrypted change propagation across sizes, isolated crypto operation overhead |
 | **Convergence Simulation** | [`convergence-simulation.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/convergence-simulation.ts) | Simulated multi-peer convergence: 2–32 peers making concurrent edits through the full sign-encrypt-broadcast-decrypt-verify pipeline, measures time-to-convergence, message count, and bandwidth |
 
+![Line chart of mean sign-and-encrypt and decrypt-and-verify latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crdt-pipeline-latency.svg)
+
+![Line chart comparing mean plaintext and encrypted synthetic pipeline latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crypto-pipeline-overhead.svg)
+
+![Line chart of local simulated convergence latency from two to 32 peers on a logarithmic latency axis, with p99 whiskers.](../../../assets/charts/convergence-scaling.svg)
+
 ### Index benchmarks
 
 Source: [`packages/index/src/__benchmarks__/`](https://github.com/Peerborne/peerborne/tree/main/packages/index/src/__benchmarks__)
@@ -84,6 +102,12 @@ Source: [`packages/index/src/__benchmarks__/`](https://github.com/Peerborne/peer
 | **Index Query Scaling** | [`index-query-scaling.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/index-query-scaling.ts) | Query latency vs index size: 100–100K documents. Exact-match, range, prefix, compound, and sorted queries against MemoryIndexStorage, plus single-document update cost and full-scan baseline |
 | **Bloom Filter Scaling** | [`bloom-filter-scaling.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/bloom-filter-scaling.ts) | Insert throughput at filter sizes 1K–1M bits, positive/negative query time, false-positive rate at fill counts 100–10K, serialization/deserialization time, CRDT merge (join) time, memory footprint |
 | **Blind Index Performance** | [`blind-index-perf.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/blind-index-perf.ts) | Encrypted search operations: field-key derivation (HKDF), single/compound token generation, token match/mismatch comparison, field-count scaling (1–16 fields), batch throughput (100 tokens) |
+
+![Line chart comparing mean exact-match, prefix, and compound local index query latency from 100 to 10,000 documents, with p99 whiskers.](../../../assets/charts/index-query-scaling.svg)
+
+![Line chart comparing the mean cost to insert 1,000 items and merge filters across Bloom filter sizes from 1 Kb to 1 Mb, with p99 whiskers.](../../../assets/charts/bloom-filter-scaling.svg)
+
+![Line chart of mean blind-index key derivation and tokenization latency from one to 16 fields, with p99 whiskers.](../../../assets/charts/blind-index-scaling.svg)
 
 ## Performance-aware tests
 
@@ -153,3 +177,18 @@ yarn workspace @peerborne/index benchmark --iterations 1 --max-documents 100
 ```
 
 Both suites output Markdown tables with statistical summaries. The `--iterations` flag controls the sample count (default 100); `--max-documents` bounds index-query scaling only.
+
+To replace the committed measurement snapshot and regenerate its SVG charts,
+run both suites with the recorded parameters, then collect and render:
+
+```sh
+yarn workspace @peerborne/core benchmark --iterations 20
+yarn workspace @peerborne/index benchmark --iterations 20 --max-documents 10000
+yarn workspace @peerborne/site benchmarks:snapshot --core-iterations 20 --index-iterations 20 --max-documents 10000
+yarn workspace @peerborne/site charts:generate
+yarn workspace @peerborne/site charts:test
+```
+
+Benchmark collection is intentionally separate from SVG rendering. Rerunning a
+benchmark produces new measurements; rendering the same committed JSON snapshot
+must produce byte-identical charts, which the site build checks.
