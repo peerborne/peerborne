@@ -37,7 +37,14 @@ test('wraps a captioned standalone SVG in a semantic figure', () => {
   ]);
   const semanticFigure = figure.children[0];
   assert.equal(semanticFigure.tagName, 'figure');
-  assert.equal(semanticFigure.children[0].tagName, 'div');
+  const viewport = semanticFigure.children[0];
+  assert.equal(viewport.tagName, 'div');
+  assert.equal(viewport.properties.role, 'region');
+  assert.equal(viewport.properties.tabIndex, 0);
+  assert.equal(
+    viewport.properties['aria-labelledby'],
+    semanticFigure.children.at(-1).properties.id,
+  );
   assert.equal(
     semanticFigure.children[0].children[0].properties.title,
     undefined,
@@ -54,25 +61,32 @@ test('wraps a captioned standalone SVG in a semantic figure', () => {
   const details = figure.children[1];
   assert.equal(details.tagName, 'details');
   assert.equal(
-    details.children[0].children[0].value,
+    details.children[0].children[0].children[0].value,
     'View chart at full size',
   );
   assert.equal(
-    details.children[0].properties['aria-label'],
-    'View chart at full size: Local latency snapshot.',
+    details.children[0].children[1].children[0].value,
+    'Fit chart to page',
   );
   assert.equal(
     details.properties['aria-describedby'],
     semanticFigure.children.at(-1).properties.id,
   );
-  const fullSize = details.children[1];
-  assert.equal(fullSize.properties.role, 'region');
-  assert.equal(fullSize.properties.tabIndex, 0);
   assert.equal(
-    fullSize.properties['aria-label'],
-    'Full-size chart: Local latency snapshot.',
+    details.children[0].properties['aria-controls'],
+    viewport.properties.id,
   );
-  assert.equal(fullSize.children[0].properties.alt, '');
+  assert.equal(
+    details.children[0].properties['aria-describedby'],
+    semanticFigure.children.at(-1).properties.id,
+  );
+  assert.equal(
+    figure.children
+      .flatMap((child) => child.children ?? [])
+      .flatMap((child) => child.children ?? [])
+      .filter((child) => child.tagName === 'img').length,
+    1,
+  );
 });
 
 test('leaves non-SVG and non-standalone images unchanged', () => {
