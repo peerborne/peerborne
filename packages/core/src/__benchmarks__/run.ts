@@ -6,12 +6,14 @@
  *   yarn workspace @peerborne/core benchmark --iterations 500
  */
 import * as fs from 'fs';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { runCrdtSyncLatencyBenchmarks } from './crdt-sync-latency.js';
 import { runCryptoOverheadBenchmarks } from './crypto-overhead.js';
 import { runConvergenceSimulationBenchmarks } from './convergence-simulation.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function parseIterations(): number {
   const idx = process.argv.indexOf('--iterations');
@@ -50,7 +52,7 @@ async function main() {
   console.log();
 
   // Write JSON results
-  const outPath = join(dirname(fileURLToPath(import.meta.url)), 'results.json');
+  const outPath = join(__dirname, 'results.json');
   fs.writeFileSync(outPath, JSON.stringify(allSuites, null, 2));
   console.log(`Results written to ${outPath}`);
 }

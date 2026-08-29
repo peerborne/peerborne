@@ -6,9 +6,11 @@
  *   yarn workspace @peerborne/index benchmark --iterations 500
  */
 import * as fs from 'fs';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { Crypto } from '@peculiar/webcrypto';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 // Install WebCrypto polyfill for Node.js
 if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
@@ -67,7 +69,7 @@ async function main() {
   console.log();
 
   // Write JSON results (paper-quality format)
-  const outPath = join(dirname(fileURLToPath(import.meta.url)), 'results.json');
+  const outPath = join(__dirname, 'results.json');
   fs.writeFileSync(outPath, JSON.stringify(allSuites, null, 2));
   console.log(`Results written to ${outPath}`);
 }
