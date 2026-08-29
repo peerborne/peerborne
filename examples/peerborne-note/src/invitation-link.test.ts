@@ -14,6 +14,7 @@ describe('invitation fragments', () => {
     const replaceState = jest.fn();
     expect(consumeInvitationFragment(
       {
+        origin: 'https://try.peerborne.io',
         hash: '#invite=AQID',
         pathname: '/note',
         search: '?from=test',
@@ -23,14 +24,19 @@ describe('invitation fragments', () => {
     expect(replaceState).toHaveBeenCalledWith(
       { preserved: true },
       '',
-      '/note?from=test',
+      'https://try.peerborne.io/note?from=test',
     );
   });
 
   test('scrubs and rejects a non-canonical invitation token', () => {
     const replaceState = jest.fn();
     expect(consumeInvitationFragment(
-      { hash: '#invite=AQID=', pathname: '/', search: '' },
+      {
+        origin: 'https://try.peerborne.io',
+        hash: '#invite=AQID=',
+        pathname: '/',
+        search: '',
+      },
       { state: null, replaceState },
     )).toEqual({ kind: 'invalid' });
     expect(replaceState).toHaveBeenCalledTimes(1);
@@ -44,7 +50,12 @@ describe('invitation fragments', () => {
     ]) {
       const replaceState = jest.fn();
       expect(consumeInvitationFragment(
-        { hash, pathname: '/', search: '' },
+        {
+          origin: 'https://try.peerborne.io',
+          hash,
+          pathname: '/',
+          search: '',
+        },
         { state: null, replaceState },
       )).toEqual({ kind: 'invalid' });
       expect(replaceState).toHaveBeenCalledTimes(1);
@@ -54,10 +65,33 @@ describe('invitation fragments', () => {
   test('leaves a URL without a fragment untouched', () => {
     const replaceState = jest.fn();
     expect(consumeInvitationFragment(
-      { hash: '', pathname: '/', search: '' },
+      {
+        origin: 'https://try.peerborne.io',
+        hash: '',
+        pathname: '/',
+        search: '',
+      },
       { state: null, replaceState },
     )).toEqual({ kind: 'none' });
     expect(replaceState).not.toHaveBeenCalled();
+  });
+
+  test('scrubs a fragment from a double-slash path on the same origin', () => {
+    const replaceState = jest.fn();
+    expect(consumeInvitationFragment(
+      {
+        origin: 'https://try.peerborne.io',
+        hash: '#invite=AQID',
+        pathname: '//evil.example/note',
+        search: '',
+      },
+      { state: null, replaceState },
+    )).toEqual({ kind: 'invite', bytes: Uint8Array.from([1, 2, 3]) });
+    expect(replaceState).toHaveBeenCalledWith(
+      null,
+      '',
+      'https://try.peerborne.io//evil.example/note',
+    );
   });
 });
 

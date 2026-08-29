@@ -3,6 +3,7 @@ const INVITATION_FRAGMENT_PREFIX = '#invite=';
 export const MAX_INVITATION_TOKEN_CHARACTERS = 128 * 1024;
 
 export interface FragmentLocation {
+  readonly origin: string;
   readonly hash: string;
   readonly pathname: string;
   readonly search: string;
@@ -27,7 +28,7 @@ export function consumeInvitationFragment(
     history.replaceState(
       history.state,
       '',
-      `${location.pathname}${location.search}`,
+      `${location.origin}${location.pathname}${location.search}`,
     );
   }
   if (hash.length === 0) return { kind: 'none' };
