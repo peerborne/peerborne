@@ -31,6 +31,7 @@ export async function startReadinessServer(
   const server: Server = createServer((request, response) => {
     const includeBody = request.method !== 'HEAD'
     if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.setHeader('allow', 'GET, HEAD')
       sendJson(response, 405, { status: 'method-not-allowed' }, includeBody)
       return
     }

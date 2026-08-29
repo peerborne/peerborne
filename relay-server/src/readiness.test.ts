@@ -40,6 +40,23 @@ describe('readiness server', () => {
     }
   })
 
+  it('advertises the supported methods when rejecting a request', async () => {
+    const readiness = await startReadinessServer(0, '127.0.0.1')
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${readiness.port}/readyz`,
+        { method: 'POST' },
+      )
+      expect(response.status).toBe(405)
+      expect(response.headers.get('allow')).toBe('GET, HEAD')
+      await expect(response.json()).resolves.toEqual({
+        status: 'method-not-allowed',
+      })
+    } finally {
+      await readiness.close()
+    }
+  })
+
   it('rejects deterministically when the readiness port cannot bind', async () => {
     const occupied = await startReadinessServer(0, '127.0.0.1')
     try {
