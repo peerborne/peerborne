@@ -4153,7 +4153,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/peerborne-note@workspace:examples/peerborne-note"
   dependencies:
-    "@automerge/automerge": "npm:^3.2.6"
+    "@automerge/automerge": "npm:^3.4.1"
     "@libp2p/peer-id": "npm:^6.0.14"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
