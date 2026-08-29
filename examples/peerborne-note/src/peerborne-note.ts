@@ -12,6 +12,7 @@ import {
 import {
   defaultBootstrapConfig,
   defaultConfig,
+  decodeInvitationOffer,
   encodeInvitationOffer,
   generateEciesKeyPair,
   Peerborne,
@@ -223,19 +224,17 @@ export class PeerborneNoteSession {
     };
   }
 
-  async acceptInvitation(
-    encodedOffer: Uint8Array,
-    role: InvitationRole,
-  ): Promise<NoteSnapshot> {
+  async acceptInvitation(encodedOffer: Uint8Array): Promise<NoteSnapshot> {
     if (this.document) throw new Error('A note is already open');
     if (!this.recipientKemKeyPair) {
       this.recipientKemKeyPair = await generateEciesKeyPair();
     }
+    const offer = decodeInvitationOffer(encodedOffer);
     const document = await this.peerborne.acceptInvitation(
-      encodedOffer,
+      offer,
       this.recipientKemKeyPair,
     );
-    this.activateDocument(document, role, false);
+    this.activateDocument(document, offer.role, false);
     return snapshot(document.document);
   }
 

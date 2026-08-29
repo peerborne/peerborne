@@ -354,10 +354,7 @@ export default function App({ initialFragment }: AppProps) {
     setBusy(true);
     setErrorMessage(undefined);
     try {
-      const note = await session.acceptInvitation(
-        pendingInvitation.bytes,
-        pendingInvitation.offer.role,
-      );
+      const note = await session.acceptInvitation(pendingInvitation.bytes);
       pendingInvitation.bytes.fill(0);
       pendingBytesRef.current = undefined;
       setPendingInvitation(undefined);
