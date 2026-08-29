@@ -1,0 +1,495 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "414d4bf7cc6efd761cff81e41f39573578f40dea",
+  "collectedAt": "2026-08-29T00:15:53.149Z",
+  "system": {
+    "node": "v22.19.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M5",
+    "memoryBytes": 34359738368
+  },
+  "commands": [
+    "yarn workspace @peerborne/core benchmark --iterations 20",
+    "yarn workspace @peerborne/index benchmark --iterations 20 --max-documents 10000"
+  ],
+  "parameters": {
+    "coreIterations": 20,
+    "convergenceIterations": 4,
+    "indexIterations": 20,
+    "maxDocuments": 10000
+  },
+  "suites": [
+    {
+      "benchmark": "crdt-sync-latency",
+      "timestamp": "2026-08-29T00:15:29.158Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "sign-encrypt-1kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.38974369999999825,
+            "p99": 0.4067090000000064
+          }
+        },
+        {
+          "name": "sign-encrypt-10kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.47411250000000393,
+            "p99": 1.7199999999999989
+          }
+        },
+        {
+          "name": "sign-encrypt-100kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.4674790499999972,
+            "p99": 0.4960829999999987
+          }
+        },
+        {
+          "name": "sign-encrypt-1mb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 1.135191600000013,
+            "p99": 1.1802090000000476
+          }
+        },
+        {
+          "name": "decrypt-verify-1kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.3346123999999989,
+            "p99": 0.3626250000000084
+          }
+        },
+        {
+          "name": "decrypt-verify-10kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.33596249999999656,
+            "p99": 0.35249999999999204
+          }
+        },
+        {
+          "name": "decrypt-verify-100kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.42148749999999924,
+            "p99": 0.4415830000000369
+          }
+        },
+        {
+          "name": "decrypt-verify-1mb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 1.1987229000000041,
+            "p99": 3.0831249999999955
+          }
+        }
+      ]
+    },
+    {
+      "benchmark": "crypto-overhead",
+      "timestamp": "2026-08-29T00:15:29.493Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "plaintext-pipeline-1kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.002966550000004986,
+            "p99": 0.0040840000000343935
+          }
+        },
+        {
+          "name": "plaintext-pipeline-10kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.023656200000010584,
+            "p99": 0.02612500000009277
+          }
+        },
+        {
+          "name": "plaintext-pipeline-100kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.2297708,
+            "p99": 0.24712499999998272
+          }
+        },
+        {
+          "name": "plaintext-pipeline-1mb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 2.4262188999999976,
+            "p99": 2.7761669999999867
+          }
+        },
+        {
+          "name": "encrypted-pipeline-1kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.7101417000000196,
+            "p99": 0.7472080000000005
+          }
+        },
+        {
+          "name": "encrypted-pipeline-10kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.7403290999999967,
+            "p99": 0.7592910000000757
+          }
+        },
+        {
+          "name": "encrypted-pipeline-100kb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 1.1145062999999993,
+            "p99": 1.1535420000000158
+          }
+        },
+        {
+          "name": "encrypted-pipeline-1mb",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 4.598689549999994,
+            "p99": 4.882375000000025
+          }
+        }
+      ]
+    },
+    {
+      "benchmark": "convergence-simulation",
+      "timestamp": "2026-08-29T00:15:53.149Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "convergence-2-peers",
+          "iterations": 4,
+          "unit": "ms",
+          "stats": {
+            "mean": 14.327301749999975,
+            "p99": 14.6875
+          }
+        },
+        {
+          "name": "convergence-4-peers",
+          "iterations": 4,
+          "unit": "ms",
+          "stats": {
+            "mean": 55.076739249999974,
+            "p99": 57.126249999999914
+          }
+        },
+        {
+          "name": "convergence-8-peers",
+          "iterations": 4,
+          "unit": "ms",
+          "stats": {
+            "mean": 219.33636474999986,
+            "p99": 224.99312499999996
+          }
+        },
+        {
+          "name": "convergence-16-peers",
+          "iterations": 4,
+          "unit": "ms",
+          "stats": {
+            "mean": 858.1773750000001,
+            "p99": 910.1468750000004
+          }
+        },
+        {
+          "name": "convergence-32-peers",
+          "iterations": 4,
+          "unit": "ms",
+          "stats": {
+            "mean": 3586.584552000001,
+            "p99": 3890.380583000002
+          }
+        }
+      ]
+    },
+    {
+      "benchmark": "index-query-scaling",
+      "timestamp": "2026-08-29T00:15:32.599Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "exact-match-100",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.09343760000000145,
+            "p99": 0.23433400000000404
+          }
+        },
+        {
+          "name": "exact-match-1000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.24841035000000175,
+            "p99": 0.3611659999999972
+          }
+        },
+        {
+          "name": "exact-match-10000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 1.956004199999984,
+            "p99": 3.7001249999998436
+          }
+        },
+        {
+          "name": "prefix-query-100",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.05192694999999929,
+            "p99": 0.12329099999999471
+          }
+        },
+        {
+          "name": "prefix-query-1000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.20451044999999937,
+            "p99": 0.3099579999999946
+          }
+        },
+        {
+          "name": "prefix-query-10000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 1.567002050000042,
+            "p99": 1.7439159999998992
+          }
+        },
+        {
+          "name": "compound-query-100",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.04230610000000183,
+            "p99": 0.056250000000005684
+          }
+        },
+        {
+          "name": "compound-query-1000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.06555635000000706,
+            "p99": 0.07408300000000168
+          }
+        },
+        {
+          "name": "compound-query-10000",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.3720249500000136,
+            "p99": 0.48658400000022084
+          }
+        }
+      ]
+    },
+    {
+      "benchmark": "bloom-filter-scaling",
+      "timestamp": "2026-08-29T00:15:32.710Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "insert-1000-into-1k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.23427514999993945,
+            "p99": 0.4271670000002814
+          }
+        },
+        {
+          "name": "insert-1000-into-8k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.19219370000005256,
+            "p99": 0.21166700000003402
+          }
+        },
+        {
+          "name": "insert-1000-into-64k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.1777979500000356,
+            "p99": 0.5779579999998532
+          }
+        },
+        {
+          "name": "insert-1000-into-256k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.14262705000005554,
+            "p99": 0.15716699999984485
+          }
+        },
+        {
+          "name": "insert-1000-into-1m-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.13263775000002626,
+            "p99": 0.1521669999997357
+          }
+        },
+        {
+          "name": "merge-1k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.0041979499999797555,
+            "p99": 0.005999999999858119
+          }
+        },
+        {
+          "name": "merge-8k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.026756200000022545,
+            "p99": 0.07637500000009823
+          }
+        },
+        {
+          "name": "merge-64k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.009091650000027585,
+            "p99": 0.009833000000071479
+          }
+        },
+        {
+          "name": "merge-256k-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.03371455000001333,
+            "p99": 0.03600000000005821
+          }
+        },
+        {
+          "name": "merge-1m-bits",
+          "iterations": 20,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.1318706999999449,
+            "p99": 0.14170800000010786
+          }
+        }
+      ]
+    },
+    {
+      "benchmark": "blind-index-perf",
+      "timestamp": "2026-08-29T00:15:32.632Z",
+      "system": {
+        "node": "v22.19.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "results": [
+        {
+          "name": "derive-and-tokenize-1-fields",
+          "iterations": 10,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.05907919999999649,
+            "p99": 0.07562499999994543
+          }
+        },
+        {
+          "name": "derive-and-tokenize-2-fields",
+          "iterations": 10,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.11058329999996204,
+            "p99": 0.1659999999997126
+          }
+        },
+        {
+          "name": "derive-and-tokenize-4-fields",
+          "iterations": 10,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.22844159999999647,
+            "p99": 0.37150000000019645
+          }
+        },
+        {
+          "name": "derive-and-tokenize-8-fields",
+          "iterations": 10,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.34855439999996635,
+            "p99": 0.4022920000002159
+          }
+        },
+        {
+          "name": "derive-and-tokenize-16-fields",
+          "iterations": 10,
+          "unit": "ms",
+          "stats": {
+            "mean": 0.7637124999999741,
+            "p99": 1.4450000000001637
+          }
+        }
+      ]
+    }
+  ]
+}

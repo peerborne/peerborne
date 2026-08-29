@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title description">
+  <title id="title">Simulated convergence scaling</title>
+  <desc id="description">Line chart of simulated convergence latency from two to 32 peers on a logarithmic latency axis. Dots show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity=".035"/>
+    </pattern>
+    <style>text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }</style>
+  </defs>
+  <rect width="1120" height="620" rx="26" fill="url(#background)"/>
+  <rect width="1120" height="620" rx="26" fill="url(#grid)"/>
+  <path d="M0 26A26 26 0 0 1 26 0H1094A26 26 0 0 1 1120 26V32H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="42" y="59" fill="#f8fafc" font-size="29" font-weight="780">Simulated convergence scaling</text>
+    <text x="42" y="84" fill="#94a3b8" font-size="15">Full local sign/encrypt/broadcast/decrypt/verify simulation; log latency axis</text>
+    <line x1="92" y1="107" x2="120" y2="107" stroke="#2dd4bf" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="106" cy="107" r="5" fill="#0f172a" stroke="#2dd4bf" stroke-width="2"/>
+    <text x="130" y="112" fill="#e2e8f0" font-size="14" font-weight="650">Convergence</text>
+    <line x1="92" y1="485.00" x2="1070" y2="485.00" stroke="#334155" stroke-width="1"/>
+    <text x="78" y="490.00" fill="#94a3b8" font-size="13" text-anchor="end">10</text>
+    <line x1="92" y1="368.33" x2="1070" y2="368.33" stroke="#334155" stroke-width="1"/>
+    <text x="78" y="373.33" fill="#94a3b8" font-size="13" text-anchor="end">100</text>
+    <line x1="92" y1="251.67" x2="1070" y2="251.67" stroke="#334155" stroke-width="1"/>
+    <text x="78" y="256.67" fill="#94a3b8" font-size="13" text-anchor="end">1k</text>
+    <line x1="92" y1="135.00" x2="1070" y2="135.00" stroke="#334155" stroke-width="1"/>
+    <text x="78" y="140.00" fill="#94a3b8" font-size="13" text-anchor="end">10k</text>
+    <line x1="92" y1="135" x2="92" y2="485" stroke="#64748b" stroke-width="1.5"/>
+    <line x1="92" y1="485" x2="1070" y2="485" stroke="#64748b" stroke-width="1.5"/>
+    <line x1="92.00" y1="485" x2="92.00" y2="492" stroke="#64748b"/>
+    <text x="92.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">2</text>
+    <line x1="336.50" y1="485" x2="336.50" y2="492" stroke="#64748b"/>
+    <text x="336.50" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">4</text>
+    <line x1="581.00" y1="485" x2="581.00" y2="492" stroke="#64748b"/>
+    <text x="581.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">8</text>
+    <line x1="825.50" y1="485" x2="825.50" y2="492" stroke="#64748b"/>
+    <text x="825.50" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">16</text>
+    <line x1="1070.00" y1="485" x2="1070.00" y2="492" stroke="#64748b"/>
+    <text x="1070.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">32</text>
+    <g aria-label="Convergence">
+      <path d="M92.00 466.78 L336.50 398.55 L581.00 328.54 L825.50 259.42 L1070.00 186.95" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="92.00" y1="466.78" x2="92.00" y2="465.52" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="86.00" y1="465.52" x2="98.00" y2="465.52" stroke="#2dd4bf" stroke-width="2"/>
+      <circle cx="92.00" cy="466.78" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+      <text x="92.00" y="454.78" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">14.3</text>
+      <line x1="336.50" y1="398.55" x2="336.50" y2="396.70" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="330.50" y1="396.70" x2="342.50" y2="396.70" stroke="#2dd4bf" stroke-width="2"/>
+      <circle cx="336.50" cy="398.55" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+      <text x="336.50" y="386.55" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">55.1</text>
+      <line x1="581.00" y1="328.54" x2="581.00" y2="327.25" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="575.00" y1="327.25" x2="587.00" y2="327.25" stroke="#2dd4bf" stroke-width="2"/>
+      <circle cx="581.00" cy="328.54" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+      <text x="581.00" y="316.54" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">219</text>
+      <line x1="825.50" y1="259.42" x2="825.50" y2="256.44" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="819.50" y1="256.44" x2="831.50" y2="256.44" stroke="#2dd4bf" stroke-width="2"/>
+      <circle cx="825.50" cy="259.42" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+      <text x="825.50" y="247.42" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">858</text>
+      <line x1="1070.00" y1="186.95" x2="1070.00" y2="182.83" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="1064.00" y1="182.83" x2="1076.00" y2="182.83" stroke="#2dd4bf" stroke-width="2"/>
+      <circle cx="1070.00" cy="186.95" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+      <text x="1070.00" y="174.95" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">3.59k</text>
+    </g>
+    <text x="581" y="538" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">Simulated peers</text>
+    <text x="24" y="310" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 310)">Latency (ms, log scale)</text>
+    <rect x="42" y="557" width="1036" height="43" rx="12" fill="#0b1524" stroke="#334155"/>
+    <text x="560" y="575" fill="#94a3b8" font-size="11.5" text-anchor="middle">Directional snapshot · Apple M5 · v22.19.0 · darwin/arm64 · commit 414d4bf7 · 2026-08-29</text>
+    <text x="560" y="591" fill="#94a3b8" font-size="11.5" text-anchor="middle">Mean dots + p99 whiskers · 4 timed iterations per point · no pass/fail budget</text>
+  </g>
+</svg>
