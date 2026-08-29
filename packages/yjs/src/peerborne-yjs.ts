@@ -302,7 +302,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
     // used as a Map key in `decideLoadQuorum`; a wrong-length value could
     // either silently mis-bucket against legitimate votes or produce a
     // partial-hash collision under a hostile peer. Reject on the way in.
-    // See PR #284 r24 Copilot review.
     let tipsHash: Uint8Array | undefined;
     if (raw.tipsHash !== undefined) {
       if (typeof raw.tipsHash !== 'string') {
@@ -555,7 +554,7 @@ function cacheKeyToKeyId(cacheKey: string): Uint8Array {
 }
 
 /**
- * BREAKING CHANGE (PR #285): keychain key-ID width unified to 32 bytes.
+ * BREAKING CHANGE: keychain key-ID width is unified to 32 bytes.
  *
  * The keychain now uses 32-byte IDs uniformly for BOTH locally-generated
  * keys (formerly 16-byte UUIDs via `uuid.v4`) and BeeKEM-derived epoch
@@ -753,8 +752,7 @@ export class YjsKeychainProvider
   // 32 bytes: matches both `add()`'s random key-ID output and the
   // BeeKEM-derived epoch ID width from `deriveEpochIdFromRootSecret`.
   // Using one fixed width across the keychain's two key-provisioning
-  // paths means the on-wire key-ID prefix never needs to be truncated
-  // -- which is the failure mode that caused the post-rotation
-  // decryption regression fixed by PR #285 round 6.
+  // paths means the on-wire key-ID prefix never needs to be truncated;
+  // truncation would break post-rotation decryption.
   keyIDLength = 32;
 }

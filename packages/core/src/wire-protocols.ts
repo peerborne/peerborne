@@ -63,7 +63,7 @@ export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
 //                   lying-disclaim attacks AND tip-hash votes are
 //                   given precedence over disclaim votes so peers WITH
 //                   the document outvote unrelated peers in the same
-//                   mesh that don't. See PR #284 r16 / r19.
+//                   mesh that don't.
 //
 //               (c) Serialized + encrypted `CRDTSyncMessage` whose
 //                   only populated payload field is `tipsHash` (plus
@@ -143,8 +143,8 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 // unblocking ACL update is discarded; the recipient must then rely on a
 // fresh document-load against an authorized peer to recover keychain state.
 //
-// Note: only the reader-onboarding path is wired in this PR
-// (`PeerborneDocument.addReader`). A writer-onboarding flow that
+// Note: only the reader-onboarding path is currently wired through
+// `PeerborneDocument.addReader`. A writer-onboarding flow that
 // piggy-backs on the same wire format is a future extension; until that
 // is wired up the protocol is documented as a reader-only flow.
 export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';

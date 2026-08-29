@@ -427,9 +427,8 @@ export class Peerborne<
     // misconfiguration (e.g. `loadQuorumK: 1.5`, `loadQuorumQ: NaN`)
     // surfaces immediately as a structured `LoadQuorumFailedError(
     // invalid-config)` rather than silently degrading every subsequent
-    // `load()` to a single-peer probe. See PR #284 r9 Copilot review for
-    // the input-validation hardening rationale (issues #2/#3): fractional
-    // K let `peers.slice(0, 1.5)` slip through to a 1-peer probe, and
+    // `load()` to a single-peer probe. Fractional K let
+    // `peers.slice(0, 1.5)` slip through to a 1-peer probe, and
     // NaN Q propagated through `effectiveQ` so `bestPeers.length < NaN`
     // evaluated as false and the gate passed with a single responder.
     //
@@ -944,10 +943,9 @@ export class Peerborne<
               // other 2 peers have the doc cannot force new-doc creation
               // (the honest hash X wins the tally). Worst case is the same
               // Q-Byzantine threshold the rest of the quorum gate already
-              // tolerates. See `decideLoadQuorum` for the tally semantics
-              // and PR #284 r16 Copilot review for the original bug report.
+              // tolerates. See `decideLoadQuorum` for the tally semantics.
               //
-              // Information-disclosure tradeoff (PR #284 r27): replying with
+              // Information-disclosure tradeoff: replying with
               // `0xff` lets any peer that can dial this node learn whether
               // `documentId` is registered here. We accept this because the
               // quorum protocol REQUIRES a distinguishable "unknown-doc"

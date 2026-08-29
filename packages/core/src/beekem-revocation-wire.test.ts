@@ -29,9 +29,9 @@
  *     (security property: REMOVED reader is locked out).
  *
  * The full `PeerborneDocument` receive path requires a libp2p/Helia
- * stack which is heavy to spin up in unit tests. The integration
- * surface that's been ADDED in this PR -- the structured
- * sealed-payload envelope + the `processWelcome` step on the joiner
+ * stack which is heavy to spin up in unit tests. The current integration
+ * surface -- the structured sealed-payload envelope plus the
+ * `processWelcome` step on the joiner
  * -- is exercised here against the same wire encoders/decoders used
  * by production code, so a regression in either the envelope shape or
  * the BeeKEM-side handling surfaces here without needing a full e2e

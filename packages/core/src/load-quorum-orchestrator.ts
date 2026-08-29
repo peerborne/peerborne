@@ -14,8 +14,8 @@
  * callback that `PeerborneDocument.load()` passes in. That decoupling
  * exists so the production orchestration path can be exercised by unit tests
  * without a real libp2p/Helia stack (the codebase has no precedent for full
- * libp2p test doubles, and the load orchestration is the security gate
- * Copilot's PR #284 r4 review asked to be regression-tested).
+ * libp2p test doubles, and the load orchestration is a security gate that
+ * needs direct regression coverage).
  *
  * Callers wire this module by:
  *
@@ -68,8 +68,7 @@ export interface LoadQuorumOrchestratorConfig {
    * into a non-vote) is caught loud-and-early. This module does not consume
    * the value itself — `probeFn` is responsible for the wall-clock timeout
    * — but it MUST flow through {@link validateLoadQuorumConfig} on every
-   * load attempt as defence-in-depth against post-`initialize()` mutation.
-   * See PR #284 r15 Copilot review. */
+   * load attempt as defence-in-depth against post-`initialize()` mutation. */
   timeoutMs?: number;
   /** Allow a single-peer fallback path when only one peer is reachable. */
   allowSinglePeer?: boolean;
@@ -84,10 +83,9 @@ export interface LoadQuorumOrchestratorConfig {
  *     disclaimed the document (returned `'unknown-doc'` from the probe).
  *     Caller should treat as "document does not exist yet" and let
  *     `load()` return `false` so a fresh `open()` creates the document
- *     on top of the existing swarm. See PR #284 r16 Copilot review for
- *     the rationale: the previous design conflated unknown-doc with
- *     partition / timeout and made new-doc creation fail in an existing
- *     mesh.
+ *     on top of the existing swarm. The previous design conflated
+ *     unknown-doc with partition / timeout and made new-doc creation fail
+ *     in an existing mesh.
  *   - `{ ok: true, narrowedPeers, winningHashHex }` — quorum passed on
  *     a tip-set hash; caller does the full document-load against
  *     `narrowedPeers` with the binding check pinned to `winningHashHex`.
@@ -145,8 +143,8 @@ export async function runLoadQuorum<T>(opts: {
   // since become `NaN`/`Infinity`/0/-1/1.5/over-bound.
   //
   // Without this guard, a mutated `K = NaN` would slip through to
-  // `effectiveK(NaN, peers)` which returns 0 (per the r9 defensive
-  // floor/finiteness guards), the K=0 branch below would return
+  // `effectiveK(NaN, peers)`, whose floor/finiteness guards return 0;
+  // the K=0 branch below would return
   // `{ skipped: true }`, and `PeerborneDocument.load()` would fall
   // through to the legacy unbound load even though `loadQuorumEnabled`
   // is still `true` — silently violating the operator's intent of a
@@ -155,13 +153,11 @@ export async function runLoadQuorum<T>(opts: {
   // probe race, coerce to immediate-fire, and turn every probe into a
   // non-vote so quorum fails on every load even with a healthy mesh.
   // Throw a structured `invalid-config` `LoadQuorumFailedError` so the
-  // failure is loud at the load-attempt boundary instead. See PR #284
-  // r15 Copilot review for the `timeoutMs` extension.
+  // failure is loud at the load-attempt boundary instead.
   //
   // The validator's documentPath placeholder (`<config>`) is replaced
   // with the actual `documentPath` here so operator logs surface which
-  // document's load attempt tripped the post-init mutation. See
-  // PR #284 r10 Copilot review.
+  // document's load attempt tripped the post-init mutation.
   try {
     validateLoadQuorumConfig({
       loadQuorumK: config?.k,
@@ -181,7 +177,7 @@ export async function runLoadQuorum<T>(opts: {
       // error-message format (e.g. moving the operator-guidance
       // trailer) would silently degrade the surfaced config error to
       // the generic fallback. The structured field is the load-bearing
-      // path now. See PR #284 r23 Copilot review.
+      // path now.
       const detail = err.detail ?? 'invalid load-quorum configuration';
       throw new LoadQuorumFailedError({
         documentPath,
@@ -207,8 +203,7 @@ export async function runLoadQuorum<T>(opts: {
   // default from `k` (effective) gives `defaultQuorumQ(3) = 2`, which
   // tolerates one non-vote among the 3 reachable peers. When the operator
   // explicitly set `loadQuorumQ`, the `??` is a no-op and the explicit
-  // value flows through `effectiveQ`'s `[1, k]` clamp as before. See PR
-  // #284 r7 Copilot review.
+  // value flows through `effectiveQ`'s `[1, k]` clamp as before.
   const configuredQ = config?.q ?? defaultQuorumQ(k);
   const q = effectiveQ(configuredQ, k);
 
@@ -232,8 +227,7 @@ export async function runLoadQuorum<T>(opts: {
     // 2`, the smallest cohort that gives any Byzantine fault tolerance)
     // so the error message reads as a policy refusal, not a vote-count
     // shortfall. Operators who genuinely want single-peer behaviour
-    // must set `loadQuorumAllowSinglePeer: true` explicitly. See PR
-    // #284 r25 Copilot review.
+    // must set `loadQuorumAllowSinglePeer: true` explicitly.
     throw new LoadQuorumFailedError({
       documentPath,
       reason: 'insufficient-responses',
@@ -259,8 +253,7 @@ export async function runLoadQuorum<T>(opts: {
     // though their mesh had multiple peers, making it impossible to tell
     // whether the regression was peer-availability (a runtime fact) or a
     // misconfigured K (their own knob). Include the configured K and the
-    // actual peer count so both cases read accurately. See PR #284 r15
-    // Copilot review.
+    // actual peer count so both cases read accurately.
     console.warn(
       `[${documentPath}] Initial-load quorum: only one peer will be probed ` +
         `(loadQuorumK=${configuredK}, ${peers.length} peer${peers.length === 1 ? '' : 's'} known; ` +
@@ -276,7 +269,7 @@ export async function runLoadQuorum<T>(opts: {
     // probe — is surfaced as a non-vote. Without this catch a misbehaving
     // `probeFn` would let the underlying error escape past the orchestrator
     // and bypass the `LoadQuorumFailedError` API contract `load()` callers
-    // are written against. See PR #284 r5 Copilot review.
+    // are written against.
     let probe: Uint8Array | 'unknown-doc' | null;
     try {
       probe = await probeFn(probedPeer);
@@ -302,7 +295,6 @@ export async function runLoadQuorum<T>(opts: {
       // as new-doc-creation -- `load()` will return `false` so a fresh
       // `open()` can create the document on top of the swarm. This is
       // symmetric with the K-of-Q `kind === 'new-doc'` branch below.
-      // See PR #284 r16 Copilot review.
       console.warn(
         `[${documentPath}] Initial-load quorum single-peer probe returned ` +
           `'unknown-doc'; treating as new-document path (load() will return false).`,
@@ -330,7 +322,6 @@ export async function runLoadQuorum<T>(opts: {
   // `LoadQuorumFailedError` API the caller is written against —
   // surfacing a raw probe error from `load()` instead of the structured
   // `LoadQuorumFailedError(insufficient-responses)` callers expect.
-  // See PR #284 r5 Copilot review.
   const probedPeers = peers.slice(0, k);
   const advertisements: PeerTipAdvertisement[] = await Promise.all(
     probedPeers.map(async (peer) => {
@@ -371,7 +362,7 @@ export async function runLoadQuorum<T>(opts: {
     // `open()` can create the document on top of the existing swarm.
     // Defense remains Q-Byzantine: a single lying peer in a 3-of-3 mesh
     // whose other peers hold the doc cannot force this branch (their
-    // tip-hash bucket wins the tally). See PR #284 r16 Copilot review.
+    // tip-hash bucket wins the tally).
     console.log(
       `[${documentPath}] Initial-load quorum passed (new-doc): ` +
         `${decision.agreeingPeerIds.length}/${decision.respondingCount} ` +
@@ -401,8 +392,7 @@ export async function runLoadQuorum<T>(opts: {
   // expanded trust scope to escape a no-op edge case, which is exactly
   // the kind of silent-degrade-to-unsafe-default that the gate exists to
   // prevent. Surface as a structured `LoadQuorumFailedError` so callers
-  // see the same error contract as any other quorum failure. See PR #284
-  // r12 CodeRabbit review.
+  // see the same error contract as any other quorum failure.
   if (narrowed.length === 0) {
     throw new LoadQuorumFailedError({
       documentPath,
