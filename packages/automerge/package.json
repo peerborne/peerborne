@@ -55,7 +55,7 @@
     "jest": "^29.2.5",
     "ts-jest": "^29.2.5",
     "ts-node": "^10.1.0",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@peerborne/core": "workspace:^"
