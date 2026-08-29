@@ -138,7 +138,7 @@ export function assertTrustedRendezvous(
 
 export function assertRelayMultiaddrForOrigin(
   relayMultiaddr: string | undefined,
-  isSecureContext: boolean,
+  servedOverHttps: boolean,
 ): asserts relayMultiaddr is string {
   if (!relayMultiaddr) {
     throw new Error('Peerborne Note has no relay configured');
@@ -151,7 +151,7 @@ export function assertRelayMultiaddrForOrigin(
   ) {
     throw new Error('Peerborne Note has an invalid relay configuration');
   }
-  if (isSecureContext && !relayMultiaddr.includes('/wss/')) {
-    throw new Error('Secure Peerborne Note pages require a WSS relay');
+  if (servedOverHttps && !relayMultiaddr.includes('/wss/')) {
+    throw new Error('HTTPS Peerborne Note pages require a WSS relay');
   }
 }
