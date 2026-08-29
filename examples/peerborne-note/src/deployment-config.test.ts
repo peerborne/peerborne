@@ -53,6 +53,19 @@ describe('deployment configuration', () => {
     ).toThrow(/Relay configuration requires/);
   });
 
+  it.each(['relay.\u212Aexample.com', 'relay.\u017Fexample.com'])(
+    'rejects a non-ASCII hostname: %s',
+    (host) => {
+      expect(() =>
+        relayConnectSourceFromMultiaddr(
+          `/dns4/${host}/tcp/9001/ws/p2p/${validPeerId}`,
+          false,
+          isValidPeerId,
+        ),
+      ).toThrow(/Relay configuration requires/);
+    },
+  );
+
   it.each([
     `/dns4/-relay.example.com/tcp/443/wss/p2p/${validPeerId}`,
     `/dns4/relay.example.com;/tcp/443/wss/p2p/${validPeerId}`,

@@ -8,7 +8,7 @@ const upgradeInsecureRequestsPlaceholder =
 function isDnsHostname(value: string): boolean {
   if (value.length === 0 || value.length > 253) return false;
   return value.split('.').every((label) =>
-    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(label),
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label),
   );
 }
 
