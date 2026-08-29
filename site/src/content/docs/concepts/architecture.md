@@ -7,19 +7,7 @@ Peerborne composes several open-source subsystems into a coherent local-first st
 
 ## Package dependency graph
 
-```
-@peerborne/core (core)
-├── libp2p (peer-to-peer networking)
-├── Helia (content-addressed storage)
-├── @chainsafe/js-ipns (naming)
-├── BeeKEM (key encapsulation for dynamic groups)
-├── UCAN (authorization capabilities)
-└── @peerborne/yjs / @peerborne/automerge (CRDT adapters)
-
-@peerborne/react → @peerborne/core
-@peerborne/redux → @peerborne/core
-@peerborne/index → @peerborne/core
-```
+![Peerborne core is the shared dependency of the Yjs and Automerge adapters and the React, Redux, and index integrations. Core composes libp2p, Helia and Bitswap, limited IPNS DHT record support, BeeKEM membership code, and an optional UCAN ACL provider that participates in authorization when selected by the application.](../../../assets/diagrams/package-dependencies.svg "Package dependencies: adapters and integrations point to core; core composes runtime primitives.")
 
 ## Data flow: writing a change
 
@@ -92,61 +80,11 @@ This model is **eventually consistent**: local edits apply immediately, remote e
 
 ## Peer-to-peer networking stack
 
-```
-┌─────────────────────────────────────┐
-│            Application              │
-├─────────────────────────────────────┤
-│  PeerborneNode                    │
-│  (document lifecycle, ACL, crypto)  │
-├─────────────────────────────────────┤
-│  libp2p                             │
-│  ├── Transport layer                │
-│  │   ├── WebSocket (relay, bootstrap)│
-│  │   ├── WebRTC (browser-to-browser)│
-│  │   └── WebTransport (modern)      │
-│  ├── Stream Muxing (yamux/mplex)    │
-│  ├── Connection Encryption (noise) │
-│  ├── Discovery                      │
-│  │   ├── Bootstrap list             │
-│  │   ├── Kademlia DHT              │
-│  │   └── AutoNAT                    │
-│  ├── NAT Traversal                  │
-│  │   ├── Circuit Relay v2           │
-│  │   ├── DCUtR (hole-punching)      │
-│  │   └── STUN/TURN                 │
-│  └── PubSub                         │
-│      └── GossipSub (document topics)│
-├─────────────────────────────────────┤
-│  Helia / IPFS                       │
-│  ├── Blockstore (IndexedDB/local)   │
-│  ├── Bitswap (block exchange)       │
-│  └── IPNS (naming)                  │
-└─────────────────────────────────────┘
-```
+![The application uses Peerborne core over libp2p and Helia. The diagram distinguishes the verified WebSocket, Circuit Relay, and GossipSub browser path from partially evidenced WebRTC, discovery, and NAT services and configured-only WebTransport. Browser defaults use PubSub discovery and IndexedDB; Node defaults add mDNS and use replaceable, process-local in-memory stores.](../../../assets/diagrams/networking-stack.svg "Networking stack: configured components labeled by current evidence.")
 
 ## Encryption and identity
 
-```
-Application provides:
-  ├── ECDSA P-384 signing key pair (writer identity)
-  └── ECDH P-256 KEM key pair (key encapsulation)
-
-PeerborneNode manages:
-  ├── Document encryption keys (AES-GCM by default)
-  ├── Signing key → libp2p PeerId mapping (separate keys)
-  └── ACL entries (reader/writer lists bound to signing public keys)
-
-Per document change:
-  ├── Stored artifact
-  │   ├── Serialized change is encrypted with the document key and stored by CID
-  │   └── The stored block has no separate writer signature or ACL check
-  ├── GossipSub artifact
-  │   ├── CRDTSyncMessage is signed with P-384 when signing is enabled
-  │   └── The complete message is serialized and encrypted with the document key
-  └── Receiver
-      ├── Decrypts the envelope before conditional known-writer authorization
-      └── CID-validates, decrypts, and deserializes only fetched change blocks
-```
+![The application supplies separate ECDSA P-384 signing and ECDH P-256 KEM keys, while libp2p owns an independent Peer ID. Peerborne binds document ACLs to signing public keys and creates separate CID-addressed stored payload and GossipSub wire artifacts.](../../../assets/diagrams/encryption-identity.svg "Identity and encryption: application keys, transport identity, and artifacts have separate roles.")
 
 Peerborne does not transmit private signing or KEM keys. Public identity keys
 are exchanged as protocol inputs. When reader KEM enrollment is configured, a

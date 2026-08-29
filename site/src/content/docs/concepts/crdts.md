@@ -25,32 +25,7 @@ await todos.change((state) => {
 Each `document.change()` call creates a CID-addressed stored payload and a
 separate wire message:
 
-```
-Application calls document.change(fn)
-  │
-  ▼
-fn applied to local CRDT replica (Yjs doc.transact / Automerge doc.change)
-  │
-  ▼
-CRDT change serialized and encrypted with the document key
-  (AES-GCM by default)
-  │
-  ▼
-Ciphertext stored in Helia → CID
-  │
-  ▼
-CRDTSyncMessage built
-  ├── new CID
-  ├── inline shadow change tree
-  └── deferred CID references
-  │
-  ▼
-Complete message signed when enabled, serialized, and encrypted with the document key
-  (AES-GCM by default)
-  │
-  ▼
-Full encrypted envelope published to GossipSub (document topic)
-```
+![A document change checks writer access, delegates the local mutation to CRDTProvider.localChange, serializes, encrypts, and stores the returned provider-specific CRDT delta under a CID, then builds, conditionally signs, encrypts, and publishes a separate CRDTSyncMessage.](../../../assets/diagrams/document-change-lifecycle.svg "Document change lifecycle: CRDTProvider.localChange precedes storage and publication.")
 
 ### The shadow sync graph
 
@@ -58,16 +33,7 @@ Peerborne does not put graph links inside each stored change payload. Instead,
 the separately exchanged `CRDTSyncMessage` carries a **shadow sync graph** whose
 node keys are CIDs:
 
-```
-CRDTSyncMessage root: CID C (inline change)
-  └── CID B (inline prior change)
-      ├── CID A (inline ancestor)
-      └── CID B' (deferred concurrent cross-link)
-
-The CRDT layer merges B and B' when both arrive.
-The shadow tree guides discovery; stored payloads contain encrypted
-serialized changes but no parent links.
-```
+![An encrypted CRDTSyncMessage has inline root C with sibling child references B and deferred concurrent B-prime; B references ancestor A. Separate CID-addressed Helia blocks contain encrypted changes but no graph links.](../../../assets/diagrams/shadow-sync-graph.svg "Shadow graph: B and B-prime are sibling references under C; stored blocks contain no links.")
 
 This means:
 
