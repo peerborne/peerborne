@@ -93,7 +93,7 @@ Without pinning:
 
 See the [pinning cookbook](../../cookbook/pinning/) for the integration checklist.
 
-![Two browser origins have separate local IndexedDB stores containing only payloads written or fetched there, while a relay forwards but does not retain document blocks; a recovery stack adds keys, graph and authentication context, writer authorization, and reader-membership state.](../../../assets/diagrams/durability-recovery.svg)
+![Two browser origins have separate local IndexedDB stores containing only payloads written or fetched there, while a relay forwards but does not retain document blocks; a recovery stack adds keys, graph and authentication context, writer authorization, and reader-membership state.](../../../assets/diagrams/durability-recovery.svg "Durability depends on local copies plus keys, graph context, and authorization state.")
 
 **Evidence boundary:** a stored encrypted block is only one recovery input. Full
 restart recovery, remote pinning, cross-peer block fetch, and recovery after

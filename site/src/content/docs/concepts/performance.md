@@ -87,11 +87,11 @@ Source: [`packages/core/src/__benchmarks__/`](https://github.com/Peerborne/peerb
 | **Crypto Overhead** | [`crypto-overhead.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/crypto-overhead.ts) | Key generation cost (ECDSA P-384, AES-GCM-256), key rotation at 10 KB, plaintext vs encrypted change propagation across sizes, isolated crypto operation overhead |
 | **Convergence Simulation** | [`convergence-simulation.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/__benchmarks__/convergence-simulation.ts) | Simulated multi-peer convergence: 2–32 peers making concurrent edits through the full sign-encrypt-broadcast-decrypt-verify pipeline, measures time-to-convergence, message count, and bandwidth |
 
-![Line chart of mean sign-and-encrypt and decrypt-and-verify latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crdt-pipeline-latency.svg)
+![Line chart of mean sign-and-encrypt and decrypt-and-verify latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crdt-pipeline-latency.svg "Mean signed-and-encrypted change latency by payload size; whiskers show p99.")
 
-![Line chart comparing mean plaintext and encrypted synthetic pipeline latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crypto-pipeline-overhead.svg)
+![Line chart comparing mean plaintext and encrypted synthetic pipeline latency from 1 KB to 1 MB, with p99 whiskers.](../../../assets/charts/crypto-pipeline-overhead.svg "Mean plaintext and encrypted pipeline latency by payload size; whiskers show p99.")
 
-![Line chart of local simulated convergence latency from two to 32 peers on a logarithmic latency axis, with p99 whiskers.](../../../assets/charts/convergence-scaling.svg)
+![Line chart of local simulated convergence latency from two to 32 peers on a logarithmic latency axis, with p99 whiskers.](../../../assets/charts/convergence-scaling.svg "Local simulated convergence latency by peer count on a logarithmic axis; whiskers show p99.")
 
 ### Index benchmarks
 
@@ -103,11 +103,11 @@ Source: [`packages/index/src/__benchmarks__/`](https://github.com/Peerborne/peer
 | **Bloom Filter Scaling** | [`bloom-filter-scaling.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/bloom-filter-scaling.ts) | Insert throughput at filter sizes 1K–1M bits, positive/negative query time, false-positive rate at fill counts 100–10K, serialization/deserialization time, CRDT merge (join) time, memory footprint |
 | **Blind Index Performance** | [`blind-index-perf.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/index/src/__benchmarks__/blind-index-perf.ts) | Encrypted search operations: field-key derivation (HKDF), single/compound token generation, token match/mismatch comparison, field-count scaling (1–16 fields), batch throughput (100 tokens) |
 
-![Line chart comparing mean exact-match, prefix, and compound local index query latency from 100 to 10,000 documents, with p99 whiskers.](../../../assets/charts/index-query-scaling.svg)
+![Line chart comparing mean exact-match, prefix, and compound local index query latency from 100 to 10,000 documents, with p99 whiskers.](../../../assets/charts/index-query-scaling.svg "Mean local index-query latency by document count; whiskers show p99.")
 
-![Line chart comparing the mean cost to insert 1,000 items and merge filters across Bloom filter sizes from 1 Kb to 1 Mb, with p99 whiskers.](../../../assets/charts/bloom-filter-scaling.svg)
+![Line chart comparing the mean cost to insert 1,000 items and merge filters across Bloom filter sizes from 1 Kb to 1 Mb, with p99 whiskers.](../../../assets/charts/bloom-filter-scaling.svg "Mean Bloom-filter insertion and merge latency by filter size; whiskers show p99.")
 
-![Line chart of mean blind-index key derivation and tokenization latency from one to 16 fields, with p99 whiskers.](../../../assets/charts/blind-index-scaling.svg)
+![Line chart of mean blind-index key derivation and tokenization latency from one to 16 fields, with p99 whiskers.](../../../assets/charts/blind-index-scaling.svg "Mean blind-index key derivation and tokenization latency by field count; whiskers show p99.")
 
 ## Performance-aware tests
 

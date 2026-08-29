@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
   <title id="title">Peerborne offline editing boundary</title>
   <desc id="desc">A timeline shows that an open local replica can accept, encrypt, and store an edit while disconnected; prior network connectivity is not required for a new local document. Libp2p may redial keep-alive peers, but Peerborne has no durable reconnect-and-replay guarantee, outgoing retry queue, or delivery receipt.</desc>
   <defs>

@@ -13,7 +13,7 @@ Peerborne is an **encrypted, peer-to-peer CRDT document toolkit** for TypeScript
 
 Peerborne removes the plaintext application database from the document path. It stores encrypted change payloads by CID and exchanges separate encrypted sync messages, signed when enabled, through network infrastructure. Relays do not receive document plaintext without the document key, but they still observe connection and traffic metadata and can drop, delay, or censor traffic. Peerborne changes the trust boundary; it does not eliminate infrastructure.
 
-![Centralized collaboration sends plaintext through a trusted application database; Peerborne devices exchange signed-when-enabled encrypted sync envelopes and separately encrypted CID-addressed blocks through infrastructure that sees metadata and can disrupt delivery but lacks document plaintext without the document key.](../../../assets/diagrams/trust-boundary.svg)
+![Centralized collaboration sends plaintext through a trusted application database; Peerborne devices exchange signed-when-enabled encrypted sync envelopes and separately encrypted CID-addressed blocks through infrastructure that sees metadata and can disrupt delivery but lacks document plaintext without the document key.](../../../assets/diagrams/trust-boundary.svg "Centralized plaintext custody and Peerborne's encrypted peer path have different trust boundaries.")
 
 **Evidence boundary:** This compares trust models, not availability or production readiness. Applications still own identity, key backup, and recovery; infrastructure may observe metadata or disrupt delivery, and durable restart recovery remains unproven.
 

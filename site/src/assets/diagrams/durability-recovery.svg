@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
   <title id="title">Peerborne durability and recovery boundaries</title>
   <desc id="desc">Two browser origins have separate local IndexedDB stores containing only payloads written or fetched there, while request and response traffic crosses a relay that does not retain document blocks. A broken line marks the incomplete remote-pinning integration. A tiered recovery chart lists the material needed to reconstruct, write, or manage reader membership.</desc>
   <defs>
