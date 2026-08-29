@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750" role="img" aria-labelledby="package-dependencies-title package-dependencies-description">
+  <title id="package-dependencies-title">Package and runtime dependencies</title>
+  <desc id="package-dependencies-description">Dependency diagram with Peerborne core at the center. The Yjs and Automerge adapter packages, and the React, Redux, and index integration packages, depend on core. Core composes libp2p and Helia, has limited IPNS DHT validator and selector support, and contains BeeKEM membership code. An optional UCAN ACL provider can participate in authorization when selected by the application; it is not enabled automatically. Core does not depend on the CRDT adapter packages.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #94a3b8; font-size: 17px; }
+      .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
+      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbd5e1; font-size: 15px; }
+      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
+      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1200" height="750" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="750" rx="28" fill="url(#grid)"/>
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="50" y="69" class="title">Package and runtime dependencies</text>
+    <text x="50" y="99" class="subtitle">Adapters and integrations depend on core; core composes networking, storage, and security primitives.</text>
+
+    <rect x="934" y="51" width="216" height="34" rx="17" fill="#0f2b2e" stroke="#2dd4bf" stroke-width="1.5"/>
+    <text x="1042" y="74" class="badge" text-anchor="middle" fill="#99f6e4">ARROW = DEPENDS ON</text>
+
+    <text x="50" y="151" class="eyebrow" fill="#a5b4fc">CRDT ADAPTER WORKSPACES</text>
+    <rect x="50" y="170" width="270" height="76" rx="18" fill="#142033" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="72" y="202" class="card-title">@peerborne/yjs</text>
+    <text x="72" y="228" class="body">Yjs CRDTProvider adapter</text>
+    <rect x="50" y="264" width="270" height="76" rx="18" fill="#142033" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="72" y="296" class="card-title">@peerborne/automerge</text>
+    <text x="72" y="322" class="body">Automerge CRDTProvider adapter</text>
+
+    <text x="880" y="151" class="eyebrow" fill="#5eead4">INTEGRATION WORKSPACES</text>
+    <rect x="880" y="170" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <text x="902" y="200" class="card-title">@peerborne/react</text>
+    <text x="902" y="223" class="body">React lifecycle bindings</text>
+    <rect x="880" y="252" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <text x="902" y="282" class="card-title">@peerborne/redux</text>
+    <text x="902" y="305" class="body">Redux bindings</text>
+    <rect x="880" y="334" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <text x="902" y="364" class="card-title">@peerborne/index</text>
+    <text x="902" y="387" class="body">Indexing and query layer</text>
+
+    <g filter="url(#shadow)">
+      <rect x="368" y="164" width="464" height="242" rx="24" fill="#18213c" stroke="#818cf8" stroke-width="2.5"/>
+    </g>
+    <text x="600" y="211" class="card-title" text-anchor="middle" fill="#eef2ff">@peerborne/core</text>
+    <text x="600" y="239" class="body" text-anchor="middle">Document lifecycle and synchronization</text>
+    <line x1="402" y1="258" x2="798" y2="258" stroke="#334155"/>
+    <text x="408" y="291" class="body-strong">CRDTProvider boundary</text>
+<text x="408" y="322" class="body-strong">Encryption + authorization</text>
+<text x="408" y="353" class="body-strong">Shadow graph + storage</text>
+    <text x="640" y="291" class="body-strong">libp2p orchestration</text>
+<text x="640" y="322" class="body-strong">Membership + invitations</text>
+<text x="640" y="353" class="body-strong">Document API</text>
+    <path d="M320 208H360" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M320 302H360" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M880 204H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M880 286H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M880 368H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+
+    <text x="50" y="448" class="eyebrow" fill="#fbbf24">CORE RUNTIME AND INTERNAL PRIMITIVES</text>
+    <rect x="50" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <text x="72" y="523" class="card-title">libp2p</text>
+    <text x="72" y="550" class="body">Networking, discovery,</text>
+<text x="72" y="572" class="body">GossipSub, NAT traversal</text>
+    <rect x="330" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <text x="352" y="523" class="card-title">Helia + Bitswap</text>
+    <text x="352" y="550" class="body">Content-addressed blocks</text>
+<text x="352" y="572" class="body">and block exchange</text>
+    <rect x="610" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <text x="632" y="523" class="card-title">IPNS support (limited)</text>
+    <text x="632" y="550" class="body">DHT record validator</text>
+<text x="632" y="572" class="body">and selector only</text>
+    <rect x="890" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <text x="912" y="523" class="card-title">Core security modules</text>
+    <text x="912" y="550" class="body">BeeKEM membership</text>
+<text x="912" y="572" class="body">Optional UCAN ACL provider</text>
+<text x="912" y="594" class="body">selected by the application</text>
+    <path d="M470 406V457H180V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M550 406V458H460V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M650 406V458H740V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M730 406V457H1020V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+    <rect x="50" y="647" width="1100" height="67" rx="18" fill="#101c2d" stroke="#334155" stroke-width="1.5"/>
+    <text x="74" y="675" class="body-strong">Dependency direction matters:</text>
+    <text x="310" y="675" class="body">Yjs and Automerge adapters depend on core; core does not import either adapter.</text>
+    <text x="74" y="699" class="body">Applications choose and inject a CRDTProvider implementation at the package boundary.</text>
+  </g>
+</svg>

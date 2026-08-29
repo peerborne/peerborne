@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="810" viewBox="0 0 1200 810" role="img" aria-labelledby="change-lifecycle-title change-lifecycle-description">
+  <title id="change-lifecycle-title">The document.change() lifecycle</title>
+  <desc id="change-lifecycle-description">Nine-step flow. An application calls document.change, write access is checked, and core calls CRDTProvider.localChange with the document and callback. The local replica changes and a provider-specific CRDT delta is returned. Peerborne serializes and encrypts that delta, stores the payload in Helia to obtain a CID, builds a CRDT sync message, signs it when enabled, encrypts it, and publishes the full envelope through GossipSub. A later failure does not automatically roll back the local mutation.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #94a3b8; font-size: 17px; }
+      .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
+      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbd5e1; font-size: 15px; }
+      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
+      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1200" height="810" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="810" rx="28" fill="url(#grid)"/>
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="50" y="69" class="title">The document.change() lifecycle</text>
+    <text x="50" y="99" class="subtitle">Core delegates the local mutation to CRDTProvider.localChange before creating storage and wire artifacts.</text>
+
+    <rect x="916" y="51" width="234" height="34" rx="17" fill="#301f2c" stroke="#f472b6" stroke-width="1.5"/>
+    <text x="1033" y="74" class="badge" text-anchor="middle" fill="#fbcfe8">LOCAL MUTATION FIRST</text>
+    <g filter="url(#shadow)">
+      <rect x="50" y="145" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    </g>
+    <circle cx="77" cy="174" r="16" fill="#818cf8"/>
+    <text x="77" y="175" class="number">1</text>
+    <text x="102" y="179" class="card-title">document.change(fn)</text>
+    <text x="72" y="214" class="body">Application supplies a change callback.</text>
+    <g filter="url(#shadow)">
+      <rect x="450" y="145" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    </g>
+    <circle cx="477" cy="174" r="16" fill="#818cf8"/>
+    <text x="477" y="175" class="number">2</text>
+    <text x="502" y="179" class="card-title">Authorize the write</text>
+    <text x="472" y="214" class="body">Current writer access is checked.</text>
+    <g filter="url(#shadow)">
+      <rect x="850" y="145" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <circle cx="877" cy="174" r="16" fill="#2dd4bf"/>
+    <text x="877" y="175" class="number">3</text>
+    <text x="902" y="179" class="card-title">CRDTProvider</text>
+    <text x="872" y="214" class="body">localChange(document, message, fn)</text>
+<text x="872" y="237" class="body">runs the callback at the adapter boundary.</text>
+    <path d="M350 203H442" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M750 203H842" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="850" y="320" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <circle cx="877" cy="349" r="16" fill="#2dd4bf"/>
+    <text x="877" y="350" class="number">4</text>
+    <text x="902" y="354" class="card-title">Local replica changes</text>
+    <text x="872" y="389" class="body">Provider returns the updated document</text>
+<text x="872" y="412" class="body">and a provider-specific CRDT delta.</text>
+    <g filter="url(#shadow)">
+      <rect x="450" y="320" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    </g>
+    <circle cx="477" cy="349" r="16" fill="#818cf8"/>
+    <text x="477" y="350" class="number">5</text>
+    <text x="502" y="354" class="card-title">Serialize + encrypt</text>
+    <text x="472" y="389" class="body">Serialize the provider delta, then</text>
+<text x="472" y="412" class="body">encrypt with the document key.</text>
+    <g filter="url(#shadow)">
+      <rect x="50" y="320" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    </g>
+    <circle cx="77" cy="349" r="16" fill="#818cf8"/>
+    <text x="77" y="350" class="number">6</text>
+    <text x="102" y="354" class="card-title">Store bytes in Helia</text>
+    <text x="72" y="389" class="body">Content addressing returns a CID.</text>
+    <path d="M1000 261V312" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M850 378H758" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M450 378H358" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="50" y="495" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    </g>
+    <circle cx="77" cy="524" r="16" fill="#818cf8"/>
+    <text x="77" y="525" class="number">7</text>
+    <text x="102" y="529" class="card-title">Build CRDTSyncMessage</text>
+    <text x="72" y="564" class="body">Name the CID; include inline history</text>
+<text x="72" y="587" class="body">and deferred CID references.</text>
+    <g filter="url(#shadow)">
+      <rect x="450" y="495" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <circle cx="477" cy="524" r="16" fill="#2dd4bf"/>
+    <text x="477" y="525" class="number">8</text>
+    <text x="502" y="529" class="card-title">Protect wire message</text>
+    <text x="472" y="564" class="body">Sign when enabled, serialize, then</text>
+<text x="472" y="587" class="body">encrypt with the document key.</text>
+    <g filter="url(#shadow)">
+      <rect x="850" y="495" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <circle cx="877" cy="524" r="16" fill="#2dd4bf"/>
+    <text x="877" y="525" class="number">9</text>
+    <text x="902" y="529" class="card-title">Publish full envelope</text>
+    <text x="872" y="564" class="body">Send to the document GossipSub topic;</text>
+<text x="872" y="587" class="body">this is not a CID-only announcement.</text>
+    <path d="M200 436V487" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M350 553H442" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M750 553H842" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+
+    <rect x="50" y="670" width="1100" height="107" rx="18" fill="#301f2c" stroke="#f472b6" stroke-width="2"/>
+    <text x="76" y="705" class="eyebrow" fill="#f9a8d4">FAILURE BOUNDARY</text>
+    <text x="270" y="705" class="body-strong">The local replica changes during CRDTProvider.localChange, before storage and publication finish.</text>
+    <text x="76" y="737" class="body">A later storage or publication error can reject change() while the mutation remains visible locally.</text>
+    <text x="76" y="762" class="body">There is no automatic rollback, durable outbox, or remote delivery receipt.</text>
+  </g>
+</svg>

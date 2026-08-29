@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="785" viewBox="0 0 1200 785" role="img" aria-labelledby="shadow-sync-graph-title shadow-sync-graph-description">
+  <title id="shadow-sync-graph-title">Shadow sync graph</title>
+  <desc id="shadow-sync-graph-description">A CRDT sync message contains inline root C. C has two sibling child-map entries: inline prior change B and deferred concurrent cross-link B prime. B has inline ancestor A. The CRDT layer merges B and B prime when both arrive. Separate Helia blocks are addressed by CIDs and contain encrypted changes but no graph links, separate writer signatures, or per-block ACL decisions.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #94a3b8; font-size: 17px; }
+      .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
+      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbd5e1; font-size: 15px; }
+      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
+      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1200" height="785" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="785" rx="28" fill="url(#grid)"/>
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="50" y="69" class="title">Shadow sync graph</text>
+    <text x="50" y="99" class="subtitle">Graph edges travel in the encrypted wire message, while stored change payloads remain link-free.</text>
+
+    <text x="50" y="145" class="eyebrow" fill="#5eead4">ENCRYPTED CRDTSyncMessage SHADOW TREE</text>
+    <g filter="url(#shadow)">
+      <rect x="270" y="174" width="242" height="94" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <text x="391" y="212" class="node" text-anchor="middle">CID C</text>
+    <text x="391" y="241" class="node-detail" text-anchor="middle">root · inline change</text>
+    <g filter="url(#shadow)">
+      <rect x="95" y="346" width="242" height="94" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <text x="216" y="384" class="node" text-anchor="middle">CID B</text>
+    <text x="216" y="413" class="node-detail" text-anchor="middle">inline prior change</text>
+    <g filter="url(#shadow)">
+      <rect x="445" y="346" width="242" height="94" rx="18" fill="#302441" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8 6"/>
+    </g>
+    <text x="566" y="384" class="node" text-anchor="middle">CID B′</text>
+    <text x="566" y="413" class="node-detail" text-anchor="middle">deferred concurrent cross-link</text>
+    <g filter="url(#shadow)">
+      <rect x="95" y="518" width="242" height="94" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+    </g>
+    <text x="216" y="556" class="node" text-anchor="middle">CID A</text>
+    <text x="216" y="585" class="node-detail" text-anchor="middle">inline ancestor</text>
+    <path d="M391 268V301H216V338" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M391 268V301H566V338" fill="none" stroke="#a78bfa" stroke-width="3" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M216 440V510" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <rect x="197" y="289" width="388" height="34" rx="17" fill="#0f2b2e" stroke="#2dd4bf" stroke-width="1.5"/>
+    <text x="391" y="312" class="badge" text-anchor="middle" fill="#99f6e4">B AND B′ ARE SIBLINGS UNDER C</text>
+
+    <rect x="735" y="145" width="415" height="516" rx="18" fill="#121d30" stroke="#475569" stroke-width="2"/>
+    <text x="761" y="180" class="eyebrow" fill="#93c5fd">SEPARATE HELIA BLOCKS</text>
+    <text x="761" y="212" class="body">Each CID addresses encrypted change bytes.</text>
+    <rect x="761" y="240" width="165" height="70" rx="18" fill="#1b2140" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="843.5" y="271" class="card-title" text-anchor="middle">block C</text>
+    <text x="843.5" y="294" class="body" text-anchor="middle">encrypted change</text>
+    <rect x="959" y="240" width="165" height="70" rx="18" fill="#1b2140" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="1041.5" y="271" class="card-title" text-anchor="middle">block B</text>
+    <text x="1041.5" y="294" class="body" text-anchor="middle">encrypted change</text>
+    <rect x="761" y="331" width="165" height="70" rx="18" fill="#1b2140" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="843.5" y="362" class="card-title" text-anchor="middle">block B′</text>
+    <text x="843.5" y="385" class="body" text-anchor="middle">fetched if missing</text>
+    <rect x="959" y="331" width="165" height="70" rx="18" fill="#1b2140" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="1041.5" y="362" class="card-title" text-anchor="middle">block A</text>
+    <text x="1041.5" y="385" class="body" text-anchor="middle">encrypted change</text>
+    <line x1="761" y1="434" x2="1124" y2="434" stroke="#334155"/>
+    <text x="761" y="469" class="body-strong">Stored payloads do not contain:</text>
+    <text x="781" y="500" class="body">• parent or cross-link edges</text>
+<text x="781" y="528" class="body">• a separate writer signature</text>
+<text x="781" y="556" class="body">• a per-block ACL decision</text>
+    <rect x="761" y="594" width="363" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="942.5" y="617" class="badge" text-anchor="middle" fill="#c7d2fe">GRAPH LIVES IN THE WIRE MESSAGE</text>
+
+    <rect x="50" y="684" width="1100" height="67" rx="18" fill="#111d2e" stroke="#334155" stroke-width="1.5"/>
+    <text x="74" y="712" class="body-strong">Merge semantics:</text>
+    <text x="212" y="712" class="body">the CRDT layer merges B and B′ when both payloads arrive; the shadow graph guides discovery.</text>
+    <text x="74" y="736" class="body">Inline nodes can be applied immediately; an omitted payload is fetched by its CID only when needed.</text>
+  </g>
+</svg>

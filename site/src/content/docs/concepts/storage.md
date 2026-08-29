@@ -20,18 +20,7 @@ links.
 
 Each stored change payload is an opaque blob:
 
-```
-┌─────────────────────────────────────┐
-│      Helia change payload bytes     │
-├─────────────────────────────────────┤
-│  document-key ID                    │
-│  nonce / IV / counter               │
-│  encrypted change bytes             │
-│    └── serialized CRDT change       │
-├─────────────────────────────────────┤
-│  CID addresses all bytes above      │
-└─────────────────────────────────────┘
-```
+![A Helia stored byte frame contains the document-key ID, mode-specific encryption parameters, and encrypted serialized CRDT change bytes. The CID sits outside the frame and addresses all of those bytes.](../../../assets/diagrams/stored-change-payload.svg "Stored payload: the CID addresses the complete encrypted byte frame from outside it.")
 
 Stored bytes are immutable under their CID. The document's current state is
 materialized by the CRDT layer using the separately exchanged shadow sync tree.
