@@ -541,6 +541,520 @@ function storedPayload() {
   });
 }
 
+function localIndexPipeline() {
+  const body = `
+    ${pill(886, 51, 264, 'LOCAL PROJECTION ONLY', {
+      fill: '#0f2b2e',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${card(180, 137, 840, 72, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(600, 168, 'Authorized, decrypted CRDT snapshot', 'card-title', { anchor: 'middle' })}
+    ${text(600, 193, 'Source state already available to the local application', 'body', { anchor: 'middle' })}
+    ${arrow('M600 209V239', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${card(180, 247, 840, 94, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(600, 280, 'IndexManager validation and normalization', 'card-title', { anchor: 'middle' })}
+    ${text(600, 308, 'Schema generation · field types · invalid-value policy · storage policy', 'body', { anchor: 'middle' })}
+    ${text(600, 330, 'Malformed values fail or skip according to the index definition; values stay out of diagnostics.', 'body', { anchor: 'middle' })}
+
+    ${arrow('M600 341V374H280V392')}
+    ${arrow('M600 341V374H920V392')}
+    ${card(80, 400, 400, 112, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(280, 436, 'Named compound physical keys', 'card-title', { anchor: 'middle' })}
+    ${lines(280, 464, ['Leading equality fields, then one range or prefix', 'Required fields only for physical keys'], {
+      anchor: 'middle',
+      lineHeight: 23,
+    })}
+    ${card(720, 400, 400, 112, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(920, 436, 'Stored indexed fields', 'card-title', { anchor: 'middle' })}
+    ${lines(920, 464, ['Local projection for predicate rechecks and output', 'Memory by default; cleartext persistence is explicit'], {
+      anchor: 'middle',
+      lineHeight: 23,
+    })}
+
+    ${arrow('M280 512V550H455V568')}
+    ${arrow('M920 512V550H745V568')}
+    ${card(220, 576, 760, 86, { fill: '#111f34', stroke: '#475569', strokeWidth: 2 })}
+    ${text(600, 610, 'Query planner', 'card-title', { anchor: 'middle' })}
+    ${text(600, 638, 'Select a physical key or require an explicit full scan; record residual predicates.', 'body', { anchor: 'middle' })}
+    ${arrow('M600 662V694')}
+
+    ${card(220, 702, 760, 72, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(600, 733, 'Candidate range, union, or approved full scan', 'card-title', { anchor: 'middle' })}
+    ${text(600, 758, 'Physical lookup narrows work; it never decides the final result by itself.', 'body', { anchor: 'middle' })}
+    ${arrow('M600 774V806', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${card(80, 814, 1040, 84, { fill: '#0f2b2e', stroke: '#2dd4bf', strokeWidth: 2 })}
+    ${text(600, 847, 'Full predicate recheck', 'card-title', { anchor: 'middle' })}
+    ${text(600, 875, 'Then deterministic sort, cursor validation, count, and projection for the bounded local result.', 'body', { anchor: 'middle' })}`;
+
+  return diagramFrame({
+    id: 'local-index-pipeline',
+    height: 930,
+    title: 'Local indexing pipeline',
+    subtitle: 'Indexes are rebuildable materialized projections of authorized, decrypted local document state.',
+    description:
+      'A local authorized and decrypted CRDT snapshot enters IndexManager validation and normalization. The manager derives named compound physical keys and stored indexed fields. The query planner chooses a physical key or an explicitly approved full scan, reads a candidate range or union, rechecks the complete predicate, and then performs deterministic sorting, cursor handling, counting, and projection. Physical lookup narrows local work but does not independently decide results. Memory storage is the default and cleartext local persistence requires an explicit choice.',
+    body,
+  });
+}
+
+function distributedIndexFlow() {
+  const body = `
+    ${pill(796, 51, 354, 'PROTOCOL + ORCHESTRATION PRIMITIVES', {
+      fill: '#3b2b13',
+      stroke: '#f59e0b',
+      text: '#fde68a',
+    })}
+
+    ${card(150, 137, 900, 92, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(600, 172, 'Signed collection manifest', 'card-title', { anchor: 'middle' })}
+    ${text(600, 199, 'Schema hash · generation · search-key epoch · discovery mode · TTL · response budget', 'body', { anchor: 'middle' })}
+    ${text(600, 221, 'Manager signature and monotonic sequence are validated.', 'body', { anchor: 'middle' })}
+
+    ${arrow('M600 229V262H300V280')}
+    ${arrow('M600 229V262H900V280')}
+    ${card(70, 288, 460, 138, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(300, 325, 'Signed, expiring Bloom snapshot', 'card-title', { anchor: 'middle' })}
+    ${lines(300, 354, ['Blind equality-routing tokens only', 'A positive match nominates a peer; it proves nothing', 'about a document or the completeness of the result set.'], {
+      anchor: 'middle',
+      lineHeight: 24,
+    })}
+    ${card(670, 288, 460, 138, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(900, 325, 'Signed, bounded direct request', 'card-title', { anchor: 'middle' })}
+    ${lines(900, 354, ['Blind tokens or an explicitly disclosed query AST', 'Responses remain size-, time-, and count-bounded', 'and can omit, fabricate, or reorder candidates.'], {
+      anchor: 'middle',
+      lineHeight: 24,
+    })}
+
+    ${arrow('M300 426V461H455V479', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M900 426V461H745V479')}
+    ${card(190, 487, 820, 86, { fill: '#2d2518', stroke: '#f59e0b', strokeWidth: 2 })}
+    ${text(600, 520, 'Untrusted candidate peer / document-path claims', 'card-title', { anchor: 'middle' })}
+    ${text(600, 548, 'Signatures attribute the claimant; they do not make a claim true or complete.', 'body', { anchor: 'middle' })}
+    ${arrow('M600 573V605')}
+
+    ${card(190, 613, 820, 92, { fill: '#111f34', stroke: '#475569', strokeWidth: 2 })}
+    ${text(600, 647, 'Normal secure document load', 'card-title', { anchor: 'middle' })}
+    ${text(600, 675, 'Apply configured quorum/CID gates, authorization, signatures, decryption, and history validation.', 'body', { anchor: 'middle' })}
+    ${text(600, 697, 'A collection search key never grants document read access.', 'body', { anchor: 'middle' })}
+    ${arrow('M600 705V737')}
+
+    ${card(190, 745, 820, 74, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(600, 777, 'Complete predicate recheck on authorized local state', 'card-title', { anchor: 'middle' })}
+    ${text(600, 802, 'Only this local evaluation can admit the loaded document to the result page.', 'body', { anchor: 'middle' })}
+    ${arrow('M600 819V851', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${card(190, 859, 820, 70, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(600, 890, 'Deterministic bounded page merge', 'card-title', { anchor: 'middle' })}
+    ${text(600, 915, 'No global completeness or exact-count guarantee in an open Byzantine network.', 'body', { anchor: 'middle' })}
+
+    ${card(50, 957, 1100, 66, { fill: '#301f2c', stroke: '#f472b6', strokeWidth: 2 })}
+    ${text(600, 984, 'EVIDENCE BOUNDARY', 'eyebrow', { anchor: 'middle', fill: '#f9a8d4' })}
+    ${text(600, 1008, 'These are composable protocol and manager primitives—not a shipped turnkey end-to-end distributed search workflow.', 'body-strong', { anchor: 'middle' })}`;
+
+  return diagramFrame({
+    id: 'distributed-index-flow',
+    height: 1055,
+    title: 'Distributed indexing trust flow',
+    subtitle: 'Remote discovery nominates untrusted candidates; normal document security and a full local recheck remain authoritative.',
+    description:
+      'A signed collection manifest controls schema generation, search-key epoch, discovery mode, expiration, and response budgets. Peers can use signed expiring Bloom snapshots with blind routing tokens or signed bounded direct requests. Both paths yield untrusted peer and document-path claims. A requester must load each candidate through normal authorization, signature, decryption, history, and configured quorum or CID gates, then recheck the complete predicate locally before a deterministic bounded merge. Distributed completeness and exact global counts are not guaranteed. The diagram describes composable protocol and orchestration primitives, not a shipped turnkey end-to-end distributed search workflow.',
+    body,
+  });
+}
+
+function relayDataFlow() {
+  const body = `
+    ${pill(892, 51, 258, 'ENCRYPTED APP TRAFFIC', {
+      fill: '#0f2b2e',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${card(50, 250, 260, 142, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(180, 292, 'Browser A', 'card-title', { anchor: 'middle' })}
+    ${text(180, 322, 'libp2p client', 'body-strong', { anchor: 'middle' })}
+    ${text(180, 349, 'behind NAT / firewall', 'body', { anchor: 'middle' })}
+    ${pill(93, 366, 174, 'DOCUMENT PEER', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+
+    <g filter="url(#shadow)">
+      ${card(430, 216, 340, 210, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2.5, radius: 24 })}
+    </g>
+    ${text(600, 260, 'Relay server', 'card-title', { anchor: 'middle', fill: '#99f6e4' })}
+    ${lines(600, 294, ['Bootstrap + identify', 'Circuit Relay v2 forwarding', 'GossipSub peer discovery'], {
+      anchor: 'middle',
+      className: 'body-strong',
+      lineHeight: 27,
+    })}
+    ${pill(494, 377, 212, 'NO DOCUMENT KEY', {
+      fill: '#0f3b3b',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${card(890, 250, 260, 142, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(1020, 292, 'Browser B', 'card-title', { anchor: 'middle' })}
+    ${text(1020, 322, 'libp2p client', 'body-strong', { anchor: 'middle' })}
+    ${text(1020, 349, 'behind NAT / firewall', 'body', { anchor: 'middle' })}
+    ${pill(933, 366, 174, 'DOCUMENT PEER', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+
+    <path d="M310 321H422" fill="none" stroke="#2dd4bf" stroke-width="4" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)"/>
+    <path d="M778 321H890" fill="none" stroke="#2dd4bf" stroke-width="4" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)"/>
+    ${text(366, 302, 'WebSocket', 'body-strong', { anchor: 'middle', fill: '#99f6e4' })}
+    ${text(834, 302, 'WebSocket', 'body-strong', { anchor: 'middle', fill: '#99f6e4' })}
+    ${text(600, 463, 'Circuit Relay v2 carries the live libp2p connection when a direct path is unavailable.', 'body', { anchor: 'middle' })}
+
+    <path d="M180 240C350 116 850 116 1020 240" fill="none" stroke="#a78bfa" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrowIndigo)"/>
+    ${pill(419, 137, 362, 'OPTIONAL DIRECT WEBRTC UPGRADE', {
+      fill: '#302441',
+      stroke: '#a78bfa',
+      text: '#ddd6fe',
+    })}
+
+    ${card(50, 510, 1100, 92, { fill: '#111d2e', stroke: '#475569', strokeWidth: 2 })}
+    ${text(76, 544, 'PATH SEMANTICS', 'eyebrow', { fill: '#93c5fd' })}
+    ${text(245, 544, 'The relay forwards encrypted Peerborne traffic and does not need document plaintext or signing private keys.', 'body-strong')}
+    ${text(76, 576, 'If ICE establishes a direct WebRTC connection, libp2p can remove the relay from the data path; that upgrade is not guaranteed.', 'body')}`;
+
+  return diagramFrame({
+    id: 'relay-data-flow',
+    height: 635,
+    title: 'Browser data flow through Circuit Relay',
+    subtitle: 'A reachable relay provides a cross-NAT path; a direct WebRTC upgrade may replace it when network conditions allow.',
+    description:
+      'Browser A and Browser B connect to a relay server over WebSocket. Circuit Relay version 2 forwards their encrypted Peerborne traffic when a direct path is unavailable. The relay also provides bootstrap identify and GossipSub peer discovery, but it does not need document keys, document plaintext, or signing private keys. A dashed optional path shows that libp2p may upgrade to direct WebRTC after ICE succeeds; this upgrade is not guaranteed.',
+    body,
+  });
+}
+
+function singleRelayTopology() {
+  const body = `
+    ${pill(881, 51, 269, 'DEVELOPMENT / LIMITED TRIAL', {
+      fill: '#3b2b13',
+      stroke: '#f59e0b',
+      text: '#fde68a',
+    })}
+
+    ${card(50, 145, 245, 106, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(172.5, 181, 'DNS + TLS', 'card-title', { anchor: 'middle' })}
+    ${text(172.5, 210, 'relay.example.com', 'body-strong', { anchor: 'middle' })}
+    ${text(172.5, 234, 'HTTPS origin requires WSS', 'body', { anchor: 'middle' })}
+    ${arrow('M295 198H402')}
+
+    <g filter="url(#shadow)">
+      ${card(410, 132, 380, 248, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2.5, radius: 24 })}
+    </g>
+    ${text(600, 172, 'One relay / bootstrap process', 'card-title', { anchor: 'middle', fill: '#99f6e4' })}
+    ${lines(600, 207, ['Bootstrap + identify', 'Circuit Relay v2', 'GossipSub peer discovery'], {
+      anchor: 'middle',
+      className: 'body-strong',
+      lineHeight: 28,
+    })}
+    ${card(453, 300, 294, 52, { fill: '#0f2b2e', stroke: '#2dd4bf' })}
+    ${text(600, 322, '9001 WebSocket · 9002 TCP', 'body-strong', { anchor: 'middle' })}
+    ${text(600, 342, 'often 443/WSS through a reverse proxy', 'body', { anchor: 'middle' })}
+
+    ${card(905, 145, 245, 106, { fill: '#302441', stroke: '#a78bfa', strokeWidth: 2 })}
+    ${text(1027.5, 181, 'Public STUN', 'card-title', { anchor: 'middle' })}
+    ${text(1027.5, 210, 'ICE candidate gathering', 'body-strong', { anchor: 'middle' })}
+    ${text(1027.5, 234, 'for optional direct WebRTC', 'body', { anchor: 'middle' })}
+
+    ${card(80, 510, 260, 112, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(210, 552, 'Browser A', 'card-title', { anchor: 'middle' })}
+    ${text(210, 583, 'configured relay multiaddr', 'body', { anchor: 'middle' })}
+    ${pill(125, 590, 170, 'WSS CLIENT', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+    ${card(470, 510, 260, 112, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(600, 552, 'Browser B', 'card-title', { anchor: 'middle' })}
+    ${text(600, 583, 'configured relay multiaddr', 'body', { anchor: 'middle' })}
+    ${pill(515, 590, 170, 'WSS CLIENT', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+    ${card(860, 510, 260, 112, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(990, 552, 'Browser C', 'card-title', { anchor: 'middle' })}
+    ${text(990, 583, 'configured relay multiaddr', 'body', { anchor: 'middle' })}
+    ${pill(905, 590, 170, 'WSS CLIENT', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+
+    ${arrow('M520 380V432H210V502', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M600 380V502', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M680 380V432H990V502', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    <path d="M1027 251V446H990V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M990 446H600V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M600 446H210V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+
+    ${card(50, 672, 1100, 112, { fill: '#301f2c', stroke: '#f472b6', strokeWidth: 2 })}
+    ${text(76, 707, 'SINGLE POINT OF COORDINATION', 'eyebrow', { fill: '#f9a8d4' })}
+    ${text(76, 739, 'If this process or host is unreachable, new peers lose the configured bootstrap and relay path.', 'body-strong')}
+    ${text(76, 766, 'This topology has no high-availability or concurrent-peer guarantee and does not provide durable document storage.', 'body')}`;
+
+  return diagramFrame({
+    id: 'single-relay-topology',
+    height: 820,
+    title: 'Minimal single-relay topology',
+    subtitle: 'One reachable process combines bootstrap discovery, Circuit Relay v2, and GossipSub peer discovery.',
+    description:
+      'A DNS name and TLS endpoint lead to one relay and bootstrap process. It exposes WebSocket service, commonly behind a port 443 WSS reverse proxy, and a TCP listener for node-to-node connections. Three browsers use a configured relay multiaddress; dashed connections to public STUN represent optional WebRTC ICE candidate gathering. The relay is a single point of coordination, has no high-availability or concurrent-peer guarantee, and does not provide durable document storage.',
+    body,
+  });
+}
+
+function multiRelayTopology() {
+  const relay = (x, label, hostname, region) => `${card(x, 170, 300, 174, {
+    fill: '#123038',
+    stroke: '#14b8a6',
+    strokeWidth: 2,
+  })}
+    ${text(x + 150, 208, label, 'card-title', { anchor: 'middle' })}
+    ${text(x + 150, 238, hostname, 'body-strong', { anchor: 'middle' })}
+    ${text(x + 150, 266, region, 'body', { anchor: 'middle' })}
+    ${text(x + 150, 294, 'WSS for browsers · TCP for relay peers', 'body', { anchor: 'middle' })}
+    ${pill(x + 57, 307, 186, 'OWN DNS + TLS', {
+      fill: '#0f3b3b',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}`;
+  const client = (x, label, choice) => `${card(x, 400, 300, 112, {
+    fill: '#18213c',
+    stroke: '#818cf8',
+    strokeWidth: 2,
+  })}
+    ${text(x + 150, 440, label, 'card-title', { anchor: 'middle' })}
+    ${text(x + 150, 470, choice, 'body', { anchor: 'middle' })}
+    ${text(x + 150, 494, 'from application configuration', 'body', { anchor: 'middle' })}`;
+
+  const body = `
+    ${pill(844, 51, 306, 'NO BUILT-IN MESH OR FAILOVER', {
+      fill: '#3b2b13',
+      stroke: '#f59e0b',
+      text: '#fde68a',
+    })}
+    ${text(50, 142, 'INDEPENDENT RELAY ENDPOINTS', 'eyebrow', { fill: '#5eead4' })}
+    ${relay(50, 'Relay US', 'relay-us.example.com', 'US region')}
+    ${relay(450, 'Relay EU', 'relay-eu.example.com', 'EU region')}
+    ${relay(850, 'Relay AP', 'relay-ap.example.com', 'Asia-Pacific region')}
+
+    ${card(50, 548, 1100, 102, { fill: '#2d2518', stroke: '#f59e0b', strokeWidth: 2 })}
+    ${text(76, 582, 'INDEPENDENT PROCESSES', 'eyebrow', { fill: '#fde68a' })}
+    ${text(76, 614, 'Peerborne does not ship relay-to-relay startup dialing, a supported TCP mesh, shared discovery, or client failover.', 'body-strong')}
+    ${text(76, 639, 'Any routing or peering across these processes is custom deployment code that must be implemented and verified.', 'body')}
+
+    ${client(50, 'Browser A', 'chooses Relay US')}
+    ${client(450, 'Browser B', 'chooses Relay EU')}
+    ${client(850, 'Browser C', 'chooses Relay AP')}
+
+    ${arrow('M200 392V352', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M600 392V352', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M1000 392V352', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${card(50, 730, 1100, 132, { fill: '#301f2c', stroke: '#f472b6', strokeWidth: 2 })}
+    ${text(76, 767, 'WHAT MULTIPLE RELAYS DO NOT AUTOMATE', 'eyebrow', { fill: '#f9a8d4' })}
+    ${text(76, 799, 'Clients do not discover a global relay pool or fail over automatically; applications supply explicit relay multiaddresses.', 'body-strong')}
+    ${text(76, 826, 'Each relay forwards traffic only for its own established connections. Relays do not provide durable document storage.', 'body')}
+    ${text(76, 850, 'Durability requires separate, application-specific publication, persistence, and recovery integration.', 'body')}
+
+    ${card(50, 890, 1100, 66, { fill: '#111d2e', stroke: '#475569', strokeWidth: 2 })}
+    ${text(600, 917, 'DEPLOYMENT BOUNDARY', 'eyebrow', { anchor: 'middle', fill: '#93c5fd' })}
+    ${text(600, 941, 'Multiple processes become a high-availability design only after custom routing, connection policy, and failover are implemented and tested.', 'body', { anchor: 'middle' })}`;
+
+  return diagramFrame({
+    id: 'multi-relay-topology',
+    height: 990,
+    title: 'Multi-relay deployment boundary',
+    subtitle: 'Each relay has its own DNS and TLS endpoint; Peerborne does not provide a mesh or automatic failover between them.',
+    description:
+      'Three independent relay processes use separate DNS names: relay-us, relay-eu, and relay-ap. Each provides WSS for configured browser clients and a TCP listener, but Peerborne does not ship relay-to-relay startup dialing, a supported mesh, shared relay discovery, or automatic client failover. Browser A is configured for the US relay, Browser B for the EU relay, and Browser C for the AP relay. Each process forwards traffic only for its own established connections and does not provide durable document storage. High availability, routing, peering, and durability require application-specific integration and verification.',
+    body,
+  });
+}
+
+function historyCompaction() {
+  const changeNode = (x, y, label, options = {}) => `${card(x, y, options.width ?? 158, 66, {
+    fill: options.root ? '#123038' : '#18213c',
+    stroke: options.root ? '#14b8a6' : '#6366f1',
+    strokeWidth: options.root ? 2.5 : 2,
+  })}
+    ${text(x + (options.width ?? 158) / 2, y + 40, label, 'body-strong', { anchor: 'middle' })}`;
+  const body = `
+    ${pill(865, 51, 285, 'SNAPSHOT STORED SEPARATELY', {
+      fill: '#0f2b2e',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${text(50, 146, 'BEFORE COMPACTION', 'eyebrow', { fill: '#a5b4fc' })}
+    ${card(50, 167, 1100, 145, { fill: '#111f34', stroke: '#475569', strokeWidth: 2 })}
+    ${changeNode(82, 208, 'change 1')}
+    ${changeNode(282, 208, 'change 2')}
+    ${text(490, 249, '…', 'card-title', { anchor: 'middle' })}
+    ${changeNode(552, 208, '…')}
+    ${changeNode(752, 208, 'change 499')}
+    ${changeNode(952, 208, 'change 500', { root: true, width: 166 })}
+    ${arrow('M282 241H248')}
+    ${arrow('M552 241H518')}
+    ${arrow('M752 241H718')}
+    ${arrow('M952 241H918')}
+    ${text(1035, 294, 'current root', 'body', { anchor: 'middle', fill: '#99f6e4' })}
+
+    ${text(50, 363, 'AFTER COMPACTION', 'eyebrow', { fill: '#5eead4' })}
+    ${card(50, 386, 475, 242, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2.5 })}
+    ${text(287.5, 426, 'Latest snapshot record', 'card-title', { anchor: 'middle' })}
+    ${lines(82, 464, ['Serialized full CRDT state', 'lastChangeNodeCID = change 500', 'compactedCount + timestamp', 'writer signature when signing is enabled'], {
+      className: 'body-strong',
+      lineHeight: 27,
+    })}
+    ${pill(82, 576, 411, 'LOAD / SNAPSHOT-LOAD RESPONSES', {
+      fill: '#0f3b3b',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${card(575, 386, 575, 242, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2.5 })}
+    ${text(862.5, 426, 'Retained sync tree after prune', 'card-title', { anchor: 'middle' })}
+    ${changeNode(600, 476, 'kept tail', { width: 105 })}
+    ${changeNode(733, 476, '…', { width: 55 })}
+    ${changeNode(816, 476, 'change 499', { width: 110 })}
+    ${changeNode(954, 476, '500 · boundary/root', { root: true, width: 170 })}
+    ${arrow('M733 509H713')}
+    ${arrow('M816 509H796')}
+    ${arrow('M954 509H934')}
+    ${lines(862.5, 559, ['The recent tail includes the boundary and earlier nodes.', 'Later changes append as new roots; ACL leaves may also remain.'], {
+      anchor: 'middle',
+      lineHeight: 22,
+    })}
+    ${pill(676, 598, 373, 'CURRENT IN-MEMORY TREE AFTER PRUNE', {
+      fill: '#172554',
+      stroke: '#6366f1',
+      text: '#c7d2fe',
+    })}
+
+    ${card(50, 662, 1100, 110, { fill: '#301f2c', stroke: '#f472b6', strokeWidth: 2 })}
+    ${text(76, 696, 'BOUNDARY, NOT AN INLINE CHANGE LINK', 'eyebrow', { fill: '#f9a8d4' })}
+    ${text(76, 728, 'The snapshot carries change 500’s CID as metadata; the snapshot itself is not linked into the sync tree as a change node.', 'body-strong')}
+    ${text(76, 751, 'Pruning the in-memory tree does not delete old Helia blocks unless optional post-prune garbage collection is enabled.', 'body')}`;
+
+  return diagramFrame({
+    id: 'history-compaction',
+    height: 806,
+    title: 'History compaction and snapshot boundary',
+    subtitle: 'A snapshot record is separate from a retained sync tree that can overlap the snapshotted history.',
+    description:
+      'Before compaction at change 500, a sync tree retains changes from change 1 through its current root at change 500. After compaction, a separate latest snapshot record contains serialized CRDT state, the boundary CID for change 500, a compacted count, timestamp, and a writer signature when signing is enabled. The retained in-memory sync tree keeps the boundary and a configurable recent tail of earlier nodes; later changes append to that retained tree and become new roots, and preserved ACL leaves can also remain. The snapshot itself is not an inline parent link. Snapshots are included in load or snapshot-load responses rather than ordinary incremental pubsub, and pruning the in-memory tree does not delete old Helia blocks unless optional garbage collection is enabled.',
+    body,
+  });
+}
+
+function syncEnvelopeLifecycle() {
+  const body = `
+    ${pill(930, 51, 220, 'TWO ARTIFACTS', {
+      fill: '#0f2b2e',
+      stroke: '#2dd4bf',
+      text: '#99f6e4',
+    })}
+
+    ${text(50, 145, '1 · LOCAL STORED PAYLOAD', 'eyebrow', { fill: '#a5b4fc' })}
+    ${card(50, 168, 230, 96, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(165, 205, 'CRDT delta', 'card-title', { anchor: 'middle' })}
+    ${text(165, 234, 'from CRDTProvider', 'body', { anchor: 'middle' })}
+    ${card(340, 168, 250, 96, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(465, 202, 'Serialize + encrypt', 'card-title', { anchor: 'middle' })}
+    ${text(465, 230, 'with the document key', 'body', { anchor: 'middle' })}
+    ${card(650, 148, 280, 136, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2.5 })}
+    ${text(790, 186, 'Stored Helia payload', 'card-title', { anchor: 'middle' })}
+    ${lines(790, 216, ['Encrypted serialized change', 'Unsigned at rest', 'No per-block ACL decision'], {
+      anchor: 'middle',
+      className: 'body-strong',
+      lineHeight: 24,
+    })}
+    ${card(990, 168, 160, 96, { fill: '#0f2b2e', stroke: '#2dd4bf', strokeWidth: 2.5 })}
+    ${text(1070, 205, 'CID', 'card-title', { anchor: 'middle', fill: '#99f6e4' })}
+    ${text(1070, 234, 'content address', 'body', { anchor: 'middle' })}
+    ${arrow('M280 216H332')}
+    ${arrow('M590 216H642')}
+    ${arrow('M930 216H982', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${text(50, 345, '2 · SEPARATE SYNC ENVELOPE', 'eyebrow', { fill: '#5eead4' })}
+    ${card(50, 368, 250, 112, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(175, 405, 'CRDTSyncMessage', 'card-title', { anchor: 'middle' })}
+    ${lines(175, 434, ['Names the CID', 'May also carry inline history'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(350, 368, 250, 112, { fill: '#302441', stroke: '#a78bfa', strokeWidth: 2 })}
+    ${text(475, 405, 'Sign when enabled', 'card-title', { anchor: 'middle' })}
+    ${lines(475, 434, ['P-384 signature covers', 'the wire message'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(650, 368, 250, 112, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(775, 405, 'Serialize + encrypt', 'card-title', { anchor: 'middle' })}
+    ${lines(775, 434, ['Document-key encryption', 'protects the full envelope'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(950, 368, 200, 112, { fill: '#0f2b2e', stroke: '#2dd4bf', strokeWidth: 2 })}
+    ${text(1050, 405, 'Publish', 'card-title', { anchor: 'middle', fill: '#99f6e4' })}
+    ${lines(1050, 434, ['Encrypted envelope', 'on GossipSub'], { anchor: 'middle', lineHeight: 24 })}
+    ${arrow('M300 424H342')}
+    ${arrow('M600 424H642')}
+    ${arrow('M900 424H942', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${text(50, 543, '3 · RECEIVER PROCESSING', 'eyebrow', { fill: '#fbbf24' })}
+    ${card(50, 566, 235, 118, { fill: '#0f2b2e', stroke: '#2dd4bf', strokeWidth: 2 })}
+    ${text(167.5, 605, 'Encrypted envelope', 'card-title', { anchor: 'middle' })}
+    ${text(167.5, 636, 'received from GossipSub', 'body', { anchor: 'middle' })}
+    ${card(325, 566, 235, 118, { fill: '#151f35', stroke: '#6366f1', strokeWidth: 2 })}
+    ${text(442.5, 604, 'Decrypt + deserialize', 'card-title', { anchor: 'middle' })}
+    ${lines(442.5, 635, ['Open the document-key frame', 'and recover the message'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(600, 566, 235, 118, { fill: '#302441', stroke: '#a78bfa', strokeWidth: 2 })}
+    ${text(717.5, 604, 'Verify when required', 'card-title', { anchor: 'middle' })}
+    ${lines(717.5, 635, ['Check a current writer', 'when signing is enabled'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(875, 566, 275, 118, { fill: '#18213c', stroke: '#818cf8', strokeWidth: 2 })}
+    ${text(1012.5, 604, 'Apply inline / fetch CID', 'card-title', { anchor: 'middle' })}
+    ${lines(1012.5, 635, ['Inline changes can apply now;', 'missing payloads use Helia'], { anchor: 'middle', lineHeight: 24 })}
+    ${arrow('M285 625H317', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+    ${arrow('M560 625H592')}
+    ${arrow('M835 625H867')}
+
+    ${arrow('M1012 684V736H265V758')}
+    ${card(100, 766, 330, 112, { fill: '#111f34', stroke: '#475569', strokeWidth: 2 })}
+    ${text(265, 804, 'Validate requested CID', 'card-title', { anchor: 'middle' })}
+    ${lines(265, 835, ['Helia checks fetched bytes', 'against the content address'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(485, 766, 330, 112, { fill: '#123038', stroke: '#14b8a6', strokeWidth: 2 })}
+    ${text(650, 804, 'Decrypt + deserialize block', 'card-title', { anchor: 'middle' })}
+    ${lines(650, 835, ['Use the document key;', 'no separate block signature exists'], { anchor: 'middle', lineHeight: 24 })}
+    ${card(870, 766, 280, 112, { fill: '#0f2b2e', stroke: '#2dd4bf', strokeWidth: 2 })}
+    ${text(1010, 804, 'Apply CRDT change', 'card-title', { anchor: 'middle', fill: '#99f6e4' })}
+    ${lines(1010, 835, ['Merge the validated,', 'decrypted provider delta'], { anchor: 'middle', lineHeight: 24 })}
+    ${arrow('M430 822H477')}
+    ${arrow('M815 822H862', { stroke: '#2dd4bf', marker: 'arrowTeal' })}
+
+    ${card(50, 908, 1100, 102, { fill: '#301f2c', stroke: '#f472b6', strokeWidth: 2 })}
+    ${text(76, 940, 'SIGNING BOUNDARY', 'eyebrow', { fill: '#f9a8d4' })}
+    ${text(76, 968, 'The stored CID-addressed block remains unsigned; the wire-message signature is separate and conditional.', 'body-strong')}
+    ${text(76, 994, 'Disabling ordinary signing leaves encryption in place but removes this writer-authentication gate for ordinary sync.', 'body')}`;
+
+  return diagramFrame({
+    id: 'sync-envelope-lifecycle',
+    height: 1042,
+    title: 'Stored payload and sync-envelope lifecycle',
+    subtitle: 'A local change creates an unsigned encrypted stored block and a separate conditionally signed encrypted wire envelope.',
+    description:
+      'A CRDT delta is serialized and encrypted with the document key, stored in Helia without a block signature or per-block ACL decision, and content-addressed by a CID. A separate CRDT sync message names that CID and may carry inline history. When ordinary signing is enabled, Peerborne signs the wire message with P-384, then serializes and encrypts the full envelope before publishing it on GossipSub. A receiver decrypts and deserializes the envelope, verifies a current writer when required, applies inline changes or fetches missing CIDs, validates fetched bytes against the requested CID, decrypts and deserializes the unsigned stored block, and applies the CRDT delta.',
+    body,
+  });
+}
+
 export function diagramDefinitions() {
   return [
     ['package-dependencies.svg', packageDependencies],
@@ -549,6 +1063,13 @@ export function diagramDefinitions() {
     ['document-change-lifecycle.svg', changeLifecycle],
     ['shadow-sync-graph.svg', shadowSyncGraph],
     ['stored-change-payload.svg', storedPayload],
+    ['local-index-pipeline.svg', localIndexPipeline],
+    ['distributed-index-flow.svg', distributedIndexFlow],
+    ['relay-data-flow.svg', relayDataFlow],
+    ['single-relay-topology.svg', singleRelayTopology],
+    ['multi-relay-topology.svg', multiRelayTopology],
+    ['history-compaction.svg', historyCompaction],
+    ['sync-envelope-lifecycle.svg', syncEnvelopeLifecycle],
   ];
 }
 

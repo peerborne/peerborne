@@ -64,24 +64,10 @@ search.
 
 ## Local architecture
 
-```
-authorized decrypted CRDT snapshot
-              |
-              v
-      IndexManager validation
-       |                  |
-       v                  v
- named compound keys   stored indexed fields
-       |                  |
-       +------ planner ----+
-                 |
-                 v
-       candidate range/union
-                 |
-          full predicate recheck
-                 |
-     deterministic sort/cursor/project
-```
+![Local index pipeline from an authorized decrypted snapshot through validation, planning, predicate recheck, and deterministic results](../site/src/assets/diagrams/local-index-pipeline.svg "A local index is a rebuildable projection of authorized, decrypted document state.")
+
+_A local index is a rebuildable projection of authorized, decrypted document
+state. Every candidate still passes the complete predicate locally._
 
 An `IndexDefinition` binds a name, collection path prefix, schema generation,
 field types, invalid-value policy, local storage policy, and ordered physical
@@ -174,23 +160,11 @@ The suite is informational: no CI regression budgets exist yet.
 
 ## Distributed architecture
 
-```
-signed collection manifest (schema hash + generation + search-key epoch)
-                                |
-             +------------------+------------------+
-             |                                     |
-     signed expiring Bloom snapshot         signed direct request
-       (blind routing tokens only)       (blind tokens or explicit AST)
-             |                                     |
-             +--------- candidate peer/path claims-+
-                                |
-                    normal secure document load
-                 ACL + signature + decrypt + history
-                                |
-                       complete local recheck
-                                |
-                  deterministic bounded page merge
-```
+![Distributed index protocol primitives from a signed manifest through discovery or direct requests, secure document loading, and local verification](../site/src/assets/diagrams/distributed-index-flow.svg "Distributed indexing supplies bounded candidate claims, not an authoritative global result set.")
+
+_These protocol and orchestration primitives supply bounded candidate claims;
+they are not an implemented end-to-end distributed search service or an
+authoritative global result set._
 
 ### Collection control plane
 

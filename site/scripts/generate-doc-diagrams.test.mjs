@@ -3,15 +3,33 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { generateDiagrams } from './generate-doc-diagrams.mjs';
+import {
+  diagramDefinitions,
+  generateDiagrams,
+} from './generate-doc-diagrams.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('all six documentation diagrams are deterministic and current', () => {
+test('all documentation diagrams are deterministic and current', () => {
   const first = generateDiagrams();
   const second = generateDiagrams();
 
-  assert.equal(first.size, 6);
+  assert.equal(first.size, diagramDefinitions().length);
+  assert.deepEqual([...first.keys()], [
+    'package-dependencies.svg',
+    'networking-stack.svg',
+    'encryption-identity.svg',
+    'document-change-lifecycle.svg',
+    'shadow-sync-graph.svg',
+    'stored-change-payload.svg',
+    'local-index-pipeline.svg',
+    'distributed-index-flow.svg',
+    'relay-data-flow.svg',
+    'single-relay-topology.svg',
+    'multi-relay-topology.svg',
+    'history-compaction.svg',
+    'sync-envelope-lifecycle.svg',
+  ]);
   assert.deepEqual(first, second);
   for (const [filename, svg] of first) {
     const output = readFileSync(

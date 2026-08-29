@@ -25,15 +25,17 @@ The core issue: **initial sync time grows linearly** with edit count, making lon
 
 ### 2.1 Overview
 
-Introduce a new node type in the Merkle-DAG: **snapshot nodes**. A snapshot node contains the full serialized CRDT state at a given point in history, acting as a checkpoint. Peers can load from the latest snapshot instead of replaying the entire change history.
+Introduce a **snapshot record** containing the full serialized CRDT state at a
+point in history. It is signed when document signing is enabled. The snapshot
+is stored separately from the retained sync tree and records its boundary
+change CID. Pruning keeps a configurable recent tail, which can include changes
+at and before that boundary, while later changes remain in the same sync tree.
 
-```text
-Before compaction:
-  [change-1] <- [change-2] <- ... <- [change-N] (root)
+![Before compaction the sync tree retains the full change history; afterward a separate snapshot records its boundary while the sync tree keeps a configurable recent tail and later changes](../site/src/assets/diagrams/history-compaction.svg "Compaction stores the snapshot separately while the retained sync tree may overlap the snapshotted history.")
 
-After compaction:
-  [snapshot-at-500] <- [change-501] <- ... <- [change-N] (root)
-```
+_Compaction stores the snapshot separately from the retained sync tree. The
+snapshot is not an inline parent change, although its boundary CID can also be
+present as a retained change node._
 
 ### 2.2 Snapshot Creation
 
@@ -41,7 +43,7 @@ A snapshot is created by an authorized **writer** when the number of un-compacte
 
 1. Serialize the current CRDT document state via `CRDTProvider.getSnapshot(doc)` (already defined as optional on the interface)
 2. Record the CID of the most recent change node included in the snapshot
-3. Sign the snapshot with the writer's private key (see Section 2.6 for payload format)
+3. Sign the snapshot with the writer's private key when document signing is enabled (see Section 2.6 for payload format)
 4. Store the snapshot in-memory (`_latestSnapshot`) — it is included only in load/snapshot-load responses, **not** in incremental pubsub sync messages, to avoid bandwidth bloat
 5. Optionally prune old change nodes from the in-memory sync tree via `_pruneChanges(keepCount)` (see Section 2.4)
 
@@ -58,7 +60,7 @@ export interface CRDTSnapshotNode<ChangesType, PublicKey> {
   /** Number of change nodes compacted into this snapshot */
   compactedCount: number;
 
-  /** Signature of the snapshot creator (see Section 2.6 for binary payload format) */
+  /** Snapshot creator signature, or empty bytes when signing is disabled */
   signature: Uint8Array;
 
   /** Public key of the snapshot creator (optional; may be absent on the wire) */
@@ -96,7 +98,7 @@ The key insight: **CRDTs are designed to converge from any state**. A Yjs `encod
 The document load protocol (`/collabswarm/doc-load/1.0.0`) is updated to:
 
 1. Check if a snapshot exists
-2. If yes, send the snapshot node + only post-snapshot changes
+2. If yes, send the snapshot node plus the current retained changes tree; the receiver skips history at or before the snapshot boundary
 3. If no, send the full change history (backward compatible)
 
 A new protocol `/collabswarm/snapshot-load/1.0.0` is added for peers that explicitly request a snapshot (e.g., when they detect they are too far behind).
@@ -117,12 +119,14 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
 
 When a peer receives a sync message with a `snapshot` field:
 1. Load the snapshot state via `CRDTProvider.applySnapshot(doc, snapshot.state)` when available, or `CRDTProvider.remoteChange(doc, snapshot.state)` as fallback
-2. Then apply any post-snapshot changes from the `changes` tree (the snapshot boundary CID is added to `_hashes` so `_mergeSyncTree` skips pre-snapshot nodes)
-3. Update the hash set to include the snapshot CID and all post-snapshot CIDs
+2. Then apply later changes from the retained `changes` tree (the snapshot boundary CID is added to `_hashes` so `_mergeSyncTree` skips the retained tail at and before the boundary)
+3. Update the hash set with the snapshot boundary and every applied later change CID
 
 ### 2.6 Snapshot Verification
 
-A snapshot must be verified before applying:
+A snapshot must be verified before applying when document signing is enabled.
+With signing disabled, its signature is empty and this application-level writer
+authentication gate is bypassed:
 
 1. **Writer authorization**: The snapshot signature is verified by trying all public keys in the document's writer ACL (the embedded `publicKey` field is not relied upon because some key types like `CryptoKey` do not survive JSON serialization). Before verification, an ACL pre-pass (`_applyACLFromTree`) populates writer keys from the change tree so that fresh `open()` calls can verify snapshots.
 2. **Signature verification**: The signature must be valid for the binary signing payload described below
