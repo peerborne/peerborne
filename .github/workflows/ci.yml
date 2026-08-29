@@ -180,3 +180,28 @@ jobs:
       - name: Stop services
         if: always()
         run: docker compose -f docker-compose.peerborne-nat.yaml down -v
+
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> $GITHUB_OUTPUT
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+          cache: 'yarn'
+      - run: yarn install --immutable
+      - name: Build workspace packages
+        run: yarn build
+      - name: Run benchmarks
+        run: yarn benchmark:ci
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: benchmark-results
+          path: benchmark-results.json
+          retention-days: 30

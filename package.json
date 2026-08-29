@@ -17,7 +17,8 @@
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2"
+    "@playwright/test": "^1.58.2",
+    "tsx": "4.23.12"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -40,6 +41,7 @@
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:validate-consumer": "node scripts/validate-release-consumer.mjs",
     "benchmark:all": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/index' run benchmark",
+    "benchmark:ci": "tsx --expose-gc scripts/benchmark-ci.mjs",
     "visuals:generate": "node scripts/render-peerborne-hook.mjs",
     "visuals:check": "node scripts/render-peerborne-hook.mjs --check",
     "visuals:test": "node --test scripts/render-peerborne-hook.test.mjs && yarn visuals:check"
