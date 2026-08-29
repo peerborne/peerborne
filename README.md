@@ -18,11 +18,16 @@ applications. Peerborne is for collaboration where requiring every participant
 to trust one plaintext data custodian—or one always-reachable application
 server—is itself the problem.
 
-**Status:** alpha software for experiments and prototypes; not production-ready.
+**Status:** early-stage software preparing its initial release; not production-ready.
 
-[![Animated Peerborne architecture: Browser A makes a local edit, an encrypted load response travels through Circuit Relay, Browser B decrypts and loads the existing history using a restored document key, and each peer builds a client-side index.](.github/assets/peerborne-hook.gif)](.github/assets/peerborne-hook.gif)
+[![Animated Peerborne architecture: Browser A issues a signed invitation, Browser B joins with a distinct identity through an encrypted Welcome, the peers exchange live mutations through Circuit Relay, and each builds a client-side index.](.github/assets/peerborne-hook.svg)](.github/assets/peerborne-hook.svg)
 
-The network path shown above is the CI-backed initial-load case: two NAT-isolated Chromium processes use the same identity, Browser B restores the document key out of band, and then loads existing encrypted history through Circuit Relay. It is not live post-load synchronization. The index panels represent separately tested client-side primitives over documents each peer holds—without an application database or search server. Distributed candidate search remains incomplete and is not demonstrated.
+The relay path now has a Docker-backed acceptance test in which two NAT-isolated
+Chromium processes use distinct signing identities, Browser B accepts a signed
+invitation, and both peers exchange live mutations through Circuit Relay. The
+index panels represent separately tested client-side primitives over documents
+each peer holds—without an application database or search server. Distributed
+candidate search remains incomplete and is not demonstrated.
 
 ## Quick start from source
 
@@ -38,7 +43,11 @@ yarn exec playwright install chromium
 yarn test:e2e:browser-test
 ```
 
-The browser test builds and smoke-tests one real encrypted Automerge document. It does not prove multi-peer convergence, persistence across restart, or invitation delivery. Continue with the [verified quick start](site/src/content/docs/getting-started/quick-start.mdx) for an interactive run and the exact evidence boundaries.
+The default browser test builds and smoke-tests one real encrypted Automerge
+document. A separate Docker-backed CI job proves a signed, distinct-identity
+invitation and live bidirectional convergence through Circuit Relay. Persistence
+across restart is still unverified. Continue with the [verified quick start](site/src/content/docs/getting-started/quick-start.mdx)
+for an interactive run and the exact evidence boundaries.
 
 ## Packages
 
@@ -61,7 +70,12 @@ retained for compatibility.
 
 Peerborne composes CRDT providers with Helia/IPFS content-addressed storage and libp2p discovery, pubsub, browser transports, and relay fallback. Changes can be signed and encrypted; ACL, UCAN, epoch, BeeKEM, and welcome-message primitives have focused tests.
 
-Those implemented primitives do not establish every end-to-end product flow. Invitation acceptance and persisted KEM state, revocation across hostile peers, restart recovery, partition/rejoin convergence, pinning/restore, relay failover, and distributed search still need stronger integration evidence. Some networking paths require relay or Docker infrastructure.
+Those implemented primitives do not establish every end-to-end product flow.
+The initial online founder-plus-one invitation path has a dedicated cross-NAT
+acceptance test; persisted KEM state, revocation across hostile peers, restart
+recovery, partition/rejoin convergence, pinning/restore, relay failover, and
+distributed search still need stronger integration evidence. Some networking
+paths require relay or Docker infrastructure.
 
 See the [feature and verification audit](docs/feature-audit.md), [concepts](site/src/content/docs/concepts/), and [limitations](site/src/content/docs/concepts/limitations.md) before making capability claims.
 

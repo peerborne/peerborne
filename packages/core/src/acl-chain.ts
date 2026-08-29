@@ -33,8 +33,8 @@
  * the chain decoupled from any specific CRDT.
  *
  * This module does not yet wire into the main {@link PeerborneDocument}
- * sync path. It is a self-contained building block; a follow-up PR will
- * integrate it with `_mergeWriters` and the sync message verification path.
+ * sync path. It is a self-contained building block for future integration
+ * with `_mergeWriters` and the sync message verification path.
  */
 
 import type { AuthProvider } from './auth-provider.js';

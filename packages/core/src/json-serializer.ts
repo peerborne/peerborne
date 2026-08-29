@@ -71,7 +71,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     try {
       return JSON.parse(message);
     } catch (err) {
-      console.error('Failed to parse message:', message, err);
+      console.error('Failed to parse serialized message', err);
       throw err;
     }
   }

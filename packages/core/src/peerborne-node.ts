@@ -377,7 +377,10 @@ export class PeerborneNode<
           const message = this.syncMessageSerializer.deserializeSyncMessage(
             rawMessage.detail.data,
           );
-          console.log('Received Document Publish message:', rawMessage);
+          console.log(
+            'Received a document publish notification:',
+            message.documentId,
+          );
           const docRef = this.swarm.doc(message.documentId);
 
           if (docRef) {
@@ -404,18 +407,16 @@ export class PeerborneNode<
             }
           } else {
             console.warn(
-              'Failed to process incoming document pin message:',
-              rawMessage,
+              'Unable to load the published document: no local document handler for',
+              message.documentId,
             );
-            console.warn('Unable to load document', message.documentId);
           }
         } else {
           console.log('Skipping publish message from this node...');
         }
       } catch (err) {
         console.error(
-          'Failed to process incoming document pin message:',
-          rawMessage,
+          'Failed to process an incoming document publish notification',
         );
         console.error('Error:', err);
       }

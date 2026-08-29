@@ -61,6 +61,25 @@ describe('BeeKEM', () => {
         expect(node.encryptedPrivateKey.byteLength).toBeGreaterThan(0);
       }
     });
+
+    test('rolls back the tree when member onboarding fails', async () => {
+      const beekem = new BeeKEM();
+      const aliceKeyPair = await generateECDHKeyPair();
+      await beekem.initialize(aliceKeyPair.privateKey, aliceKeyPair.publicKey);
+      const invalidMember = (await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        true,
+        ['sign', 'verify'],
+      )) as CryptoKeyPair;
+
+      await expect(beekem.addMember(invalidMember.publicKey)).rejects.toThrow();
+      expect(beekem.memberCount).toBe(1);
+
+      const bobKeyPair = await generateECDHKeyPair();
+      const { welcome } = await beekem.addMember(bobKeyPair.publicKey);
+      expect(beekem.memberCount).toBe(2);
+      expect(welcome.leafIndex).toBe(2);
+    });
   });
 
   describe('update', () => {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { beforeAll, describe, expect, test } from '@jest/globals';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import type { AesAlgorithmName } from './auth-provider.js';
 import { importSymmetricKey } from './utils.js';
@@ -370,5 +370,119 @@ describe('cross-algorithm failure', () => {
     const { data, nonce } = await gcm.encrypt(new Uint8Array([1, 2, 3]), gcmKey);
     // Same key material but different algorithm = failure
     await expect(ctr.decrypt(data, ctrKey, nonce)).rejects.toThrow();
+  });
+});
+
+describe('public identity serialization', () => {
+  test('round-trips a P-384 verification key', async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const encoded = await auth.serializePublicKey(pair.publicKey);
+    const restored = await auth.deserializePublicKey(encoded);
+    const payload = new Uint8Array([4, 8, 15, 16, 23, 42]);
+    const signature = await auth.sign(payload, pair.privateKey);
+
+    await expect(auth.verify(payload, restored, signature)).resolves.toBe(true);
+  });
+
+  test.each([
+    '',
+    'not base64',
+    'AA==',
+    'AAAA',
+  ])('rejects malformed identity encoding %#', async (encoded) => {
+    await expect(auth.deserializePublicKey(encoded)).rejects.toThrow();
+  });
+
+  test('rejects a valid P-256 point', async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const encoded = await auth.serializePublicKey(pair.publicKey);
+
+    await expect(auth.deserializePublicKey(encoded)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+  });
+});
+
+describe('initial invitation capacity profile', () => {
+  let p384Pair: CryptoKeyPair;
+
+  beforeAll(async () => {
+    p384Pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+  });
+
+  test('accepts P-384 identities with the bundled AES-GCM stack', () => {
+    expect(
+      new SubtleCrypto().supportsInitialInvitationCapacity(
+        p384Pair.privateKey,
+        p384Pair.publicKey,
+      ),
+    ).toBe(true);
+  });
+
+  test.each(['AES-CTR', 'AES-CBC'] as AesAlgorithmName[])(
+    'rejects %s because bundled document keys are AES-GCM keys',
+    (algorithm) => {
+      expect(
+        new SubtleCrypto(undefined, algorithm).supportsInitialInvitationCapacity(
+          p384Pair.privateKey,
+          p384Pair.publicKey,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  test('rejects an unsupported runtime encryption algorithm', () => {
+    const instance = new SubtleCrypto(
+      undefined,
+      'AES-KW' as AesAlgorithmName,
+    );
+
+    expect(
+      instance.supportsInitialInvitationCapacity(
+        p384Pair.privateKey,
+        p384Pair.publicKey,
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects a signing configuration outside ECDSA SHA-384', () => {
+    const instance = new SubtleCrypto({
+      name: 'ECDSA',
+      hash: 'SHA-256',
+    });
+
+    expect(
+      instance.supportsInitialInvitationCapacity(
+        p384Pair.privateKey,
+        p384Pair.publicKey,
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects identities outside P-384', async () => {
+    const p256Pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+
+    expect(
+      auth.supportsInitialInvitationCapacity(
+        p256Pair.privateKey,
+        p256Pair.publicKey,
+      ),
+    ).toBe(false);
   });
 });

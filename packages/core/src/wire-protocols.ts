@@ -63,7 +63,7 @@ export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
 //                   lying-disclaim attacks AND tip-hash votes are
 //                   given precedence over disclaim votes so peers WITH
 //                   the document outvote unrelated peers in the same
-//                   mesh that don't. See PR #284 r16 / r19.
+//                   mesh that don't.
 //
 //               (c) Serialized + encrypted `CRDTSyncMessage` whose
 //                   only populated payload field is `tipsHash` (plus
@@ -78,12 +78,24 @@ export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
 // also cheaply poison every quorum vote at the same time.
 export const tipAdvertiseV1 = '/collabswarm/tip-advertise/1.0.0';
 
+// Public invitation join v1: a recipient opens a direct stream to an
+// inviter advertised by a signed InvitationOffer, sends one canonical signed
+// InvitationJoinRequest frame, and receives one canonical signed
+// InvitationAcceptance frame. The offer itself is transported out of band
+// (for example as a QR code or link). Message codecs, signature domains,
+// expiry checks, recipient/KEM binding, and replay guards live in
+// `invitation-wire.ts` and `invitation-replay-guard.ts`.
+//
+// This is the first protocol introduced under the Peerborne name. Existing
+// `/collabswarm/*` protocol IDs remain unchanged compatibility boundaries.
+export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
+
 // BeeKEM Welcome v1: onboards a new reader into a document. The inviting
 // writer sends a Welcome containing (a) the invitation epoch ID the
-// recipient should record so subsequent `since_invited` history filtering
-// works, and (b) the keychain changes filtered per the document's
-// `HistoryVisibility` setting -- so the new reader can decrypt (at least)
-// the current document state. The payload uses the same shared
+// recipient should record so subsequent `since_invited` key filtering works,
+// and (b) the keychain changes filtered per the document's
+// `HistoryVisibility` setting. This filters epoch keys, not retained CRDT
+// operations. The payload uses the same shared
 // length-prefixed-document-path header as the V2 key-update protocol so
 // the shared handler can route incoming Welcomes to the correct document.
 //
@@ -131,8 +143,8 @@ export const tipAdvertiseV1 = '/collabswarm/tip-advertise/1.0.0';
 // unblocking ACL update is discarded; the recipient must then rely on a
 // fresh document-load against an authorized peer to recover keychain state.
 //
-// Note: only the reader-onboarding path is wired in this PR
-// (`PeerborneDocument.addReader`). A writer-onboarding flow that
+// Note: only the reader-onboarding path is currently wired through
+// `PeerborneDocument.addReader`. A writer-onboarding flow that
 // piggy-backs on the same wire format is a future extension; until that
 // is wired up the protocol is documented as a reader-only flow.
 export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';

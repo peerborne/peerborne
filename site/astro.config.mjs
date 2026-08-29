@@ -137,6 +137,7 @@ export default defineConfig({
         {
           label: 'Cookbook',
           items: [
+            'cookbook/invitations',
             'cookbook/collaborative-wiki',
             'cookbook/password-manager',
             'cookbook/react',

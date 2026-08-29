@@ -16,6 +16,14 @@
  * receive path never has to await an `exportKey` call.
  */
 
+/** Capture immutable CryptoKey handles without retaining a mutable record. */
+export function snapshotKemKeyPair(keyPair: CryptoKeyPair): CryptoKeyPair {
+  return Object.freeze({
+    privateKey: keyPair.privateKey,
+    publicKey: keyPair.publicKey,
+  });
+}
+
 /**
  * Validate that `keyPair` is a usable BeeKEM Welcome KEM key pair and
  * return the raw SEC1-uncompressed bytes of the public key.
@@ -60,8 +68,9 @@ export async function validateAndExportKemKeyPair(
     );
   }
 
+  let rawPublicKey: Uint8Array;
   try {
-    return new Uint8Array(
+    rawPublicKey = new Uint8Array(
       await crypto.subtle.exportKey('raw', keyPair.publicKey),
     );
   } catch (err) {
@@ -84,4 +93,52 @@ export async function validateAndExportKemKeyPair(
       { cause: err },
     );
   }
+
+  // Algorithm metadata alone does not prove the supplied public and private
+  // keys belong to the same pair. Cross-derive through an ephemeral P-256 key:
+  // ECDH symmetry holds only when the installed pair is coherent.
+  const ephemeral = (await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveBits'],
+  )) as CryptoKeyPair;
+  let installedSecret: Uint8Array;
+  let referenceSecret: Uint8Array;
+  try {
+    [installedSecret, referenceSecret] = await Promise.all([
+      crypto.subtle
+        .deriveBits(
+          { name: 'ECDH', public: ephemeral.publicKey },
+          keyPair.privateKey,
+          256,
+        )
+        .then((bits) => new Uint8Array(bits)),
+      crypto.subtle
+        .deriveBits(
+          { name: 'ECDH', public: keyPair.publicKey },
+          ephemeral.privateKey,
+          256,
+        )
+        .then((bits) => new Uint8Array(bits)),
+    ]);
+  } catch (err) {
+    throw new Error('setKemKeyPair: key-pair coherence check failed', {
+      cause: err,
+    });
+  }
+  let difference = installedSecret.byteLength ^ referenceSecret.byteLength;
+  const comparedLength = Math.min(
+    installedSecret.byteLength,
+    referenceSecret.byteLength,
+  );
+  for (let i = 0; i < comparedLength; i++) {
+    difference |= installedSecret[i] ^ referenceSecret[i];
+  }
+  if (difference !== 0) {
+    throw new Error(
+      'setKemKeyPair: public and private keys do not belong to the same pair',
+    );
+  }
+
+  return rawPublicKey;
 }

@@ -47,7 +47,7 @@ Peerborne wraps Automerge documents with encryption and access control. If you o
 | **Encryption model** | Document payloads are end-to-end encrypted; connection and traffic metadata remain visible | Encrypted in transit (server sees data) |
 | **Offline behavior** | IndexedDB-backed Helia/IPFS storage; partition/rejoin recovery is not yet verified end to end | Yjs + IndexedDB support is available after initial load |
 | **Pricing** | Open source (MIT) | Free tier + paid plans |
-| **Project status** | Alpha; not production-ready | Established managed service |
+| **Project status** | Initial release; not production-ready | Established managed service |
 | **AI collaboration features** | Not included | AI comments, AI copilots |
 
 Use Liveblocks for production collaborative UIs with presence, comments, and rich-text when you are comfortable with a managed service. Use Peerborne when you need end-to-end encryption and data sovereignty, or when you want to own your infrastructure.
@@ -65,7 +65,7 @@ Use Liveblocks for production collaborative UIs with presence, comments, and ric
 | **Encryption** | End-to-end (AES-GCM per document by default) | Field-level encryption plugin |
 | **Convergence** | CRDT (Yjs/Automerge) | CRDT plugin + conflict handlers |
 | **Framework support** | React, Redux | React, Angular, Vue, Svelte, Node.js, Expo |
-| **Project status** | Alpha; not production-ready | Established project |
+| **Project status** | Initial release; not production-ready | Established project |
 
 RxDB is an established local-first database with broad backend support. Peerborne is focused on encrypted peer-to-peer CRDT collaboration without a central database. They solve different problems.
 
@@ -81,7 +81,7 @@ RxDB is an established local-first database with broad backend support. Peerborn
 | **Encryption** | Document payloads are end-to-end encrypted | Server is trusted for access control; the v2 design scopes E2E encryption to selected sensitive fields |
 | **Server** | Relay nodes (pass-through) | Jazz sync server (stateful) |
 | **Framework support** | React, Redux | React, Vue, Svelte, Solid, Expo |
-| **Project status** | Alpha; not production-ready | Public alpha (Jazz v2) |
+| **Project status** | Initial release; not production-ready | Public alpha (Jazz v2) |
 
 Jazz v2 provides a relational model and managed or self-hosted sync infrastructure. Peerborne focuses on encrypted CRDT documents and user-operated peer-to-peer networking. Both are early-stage projects that require careful evaluation.
 

@@ -15,14 +15,12 @@
  * test doubles: existing tests in `peerborne.test.ts` replicate logic
  * against mocks rather than instantiating `PeerborneDocument`, since the
  * module's top-level imports drag in ESM-only libp2p packages that Jest's
- * default CommonJS resolver cannot load. Standing up that infrastructure
- * inside this PR is the explicit "stop and report" threshold flagged for
- * load-quorum testing; extracting the orchestration into a pure-ish module
- * gives the equivalent coverage with no new test-infra debt.)
+ * default CommonJS resolver cannot load. A full libp2p harness is outside
+ * this suite's scope; extracting the orchestration into a pure-ish module
+ * gives equivalent coverage without new test infrastructure.)
  *
- * This file closes the gap raised by Copilot's PR #284 r4 review: the
- * production quorum path is now covered by a test matrix that exercises all
- * five flagged cases (a) all-agree, (b) majority-agree-with-dissenter,
+ * The production quorum path is covered by a test matrix that exercises all
+ * five cases: (a) all-agree, (b) majority-agree-with-dissenter,
  * (c) vote-vs-serve mismatch, (d) insufficient responses (timeouts), and
  * (e) single-peer fallback path.
  */
@@ -77,7 +75,7 @@ const peerIdOf = (p: TestPeer) => p;
  * in the narrowed cohort has bind-failed (and at least one bind failure
  * was recorded) does the harness throw
  * `LoadQuorumFailedError(reason: 'bind-check-failed-all-agreeing-peers')`.
- * This mirrors the PR #284 r6 DoS fix in production `load()` -- a single
+ * This mirrors the DoS defense in production `load()` -- a single
  * malicious peer in the agreeing cohort that votes for the majority hash
  * and then serves a mismatched full load can NOT unilaterally abort the
  * whole load.
@@ -101,7 +99,7 @@ async function simulateFullLoad(opts: {
       // Transport/protocol failure: peer didn't even return a hash.
       // Production `load()` catches transport errors inside the loop and
       // continues to the next peer WITHOUT recording a bind failure.
-      // See PR #284 r17 Copilot review for the mixed-cohort distinction.
+      // Transport failures remain distinct from bind failures in mixed cohorts.
       continue;
     }
     if (servedHashHex === opts.winningHashHex) {
@@ -115,7 +113,7 @@ async function simulateFullLoad(opts: {
     agreeingPeerBindFailures.set(peer, servedHashHex);
   }
   // Loop exhausted. Failure-reason decision mirrors production
-  // `PeerborneDocument.load()` post-r17:
+  // `PeerborneDocument.load()`:
   //
   //   - `bindFailures.size === cohortSize` -- EVERY peer bind-failed
   //     (coordinated Byzantine equivocation). Escalate with the
@@ -149,7 +147,7 @@ async function simulateFullLoad(opts: {
   });
 }
 
-describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => {
+describe('runLoadQuorum: production orchestration coverage', () => {
   // Typed `any` because Jest's generic `jest.fn()` typings are awkward to
   // satisfy alongside `mockImplementation((peer) => ...)`, and the call
   // sites explicitly annotate `peer: TestPeer` where it matters.
@@ -228,7 +226,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     // harness must exhaust the cohort BEFORE escalating, so the
     // serveFn is called for every peer and the final error carries the
     // dedicated `bind-check-failed-all-agreeing-peers` reason plus a
-    // per-peer `agreeingPeerBindFailures` map. See PR #284 r6.
+    // per-peer `agreeingPeerBindFailures` map.
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
 
@@ -267,7 +265,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   test('(c2) DoS regression: ONE Byzantine agreeing peer cannot abort the whole load; honest peer is tried next', async () => {
-    // Regression for the critical PR #284 r6 finding: previously, if the
+    // Regression: previously, if the
     // first peer chosen for the full load was Byzantine on the load
     // step (voted hash X, served tips hashing to Y), the loader threw
     // `LoadQuorumFailedError` and aborted -- never trying the OTHER
@@ -314,16 +312,16 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     expect(serveFn).not.toHaveBeenCalledWith('p3');
   });
 
-  test('(c2-missing-tips) PR #284 r9 issue #1: responder omits `tips` on v3 quorum-enabled load => per-peer bind failure; loader tries next agreeing peer', async () => {
-    // PR #284 r9 Copilot review (issue #1): the v3 load-response
+  test('(c2-missing-tips) responder omits `tips` on v3 quorum-enabled load => per-peer bind failure; loader tries next agreeing peer', async () => {
+    // The v3 load-response
     // contract requires `tips` to be present on every quorum-enabled
     // load response so the responder commits to an explicit frontier
     // attestation. A v3 responder that omits `tips` previously slipped
     // through the bind path (the `Array.isArray(message.tips)` defense-
     // in-depth branch simply skipped). Now the omission is treated as
     // a per-peer bind failure with the sentinel `'(missing tips)'` so
-    // the loader retries the next agreeing peer (mirrors the PR #284
-    // r6 DoS fix: one peer cannot unilaterally DoS the load).
+    // the loader retries the next agreeing peer, so one peer cannot
+    // unilaterally deny service to the load.
     //
     // The simulated harness models the missing-tips case by having the
     // peer's `serveFn` return the `'(missing tips)'` sentinel (which
@@ -365,7 +363,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     expect(serveFn).not.toHaveBeenCalledWith('p3');
   });
 
-  test('(c2-missing-tips-all) PR #284 r9 issue #1: ALL agreeing peers omit `tips` => LoadQuorumFailedError(bind-check-failed-all-agreeing-peers) with `(missing tips)` sentinel', async () => {
+  test('(c2-missing-tips-all) ALL agreeing peers omit `tips` => LoadQuorumFailedError(bind-check-failed-all-agreeing-peers) with `(missing tips)` sentinel', async () => {
     // The whole cohort violates the v3 protocol contract by omitting
     // `tips` on every load response. Loader must exhaust the cohort,
     // escalate with the dedicated reason, and record the
@@ -445,8 +443,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     expect(lqfe.message).toMatch(/bind-check|agreeing cohort|3 peer/);
   });
 
-  test('(c4) multi-head honest responder: advertise=served frontier hash binds; loader accepts even when responder has un-served concurrent heads (PR #284 r8)', async () => {
-    // Regression for the PR #284 r8 Copilot finding: previously, an
+  test('(c4) multi-head honest responder: advertise=served frontier hash binds; loader accepts even when responder has un-served concurrent heads', async () => {
+    // Regression: previously, an
     // honest peer with multiple concurrent heads in `_currentFrontier()`
     // would advertise tipsHash({H1, H2, H3}) in the probe round but
     // only serve a tree rooted at H1 (the wire shape carries one tree).
@@ -500,8 +498,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   test('(c5) Byzantine responder that lies about heads: advertises tipsHash(claimed-full-frontier) but serves a tree hashing to served-only => bind check rejects', async () => {
-    // Complement to (c4): a peer that DIDN'T apply the PR #284 r8 fix
-    // (or is actively malicious) would compute its advertise hash
+    // Complement to (c4): a peer using a mismatched full-frontier
+    // advertisement (or acting maliciously) would compute its hash
     // over its full local DAG frontier {H1, H2, H3} but only ship H1's
     // tree. The probe-round hash is HASH_Y_HEX (the bigger set); the
     // load-round structural derivation is HASH_X_HEX (the served-only
@@ -633,8 +631,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     // Surfaced `requiredQ` is the load-bearing policy threshold (2 -- the
     // smallest cohort that gives any Byzantine fault tolerance), NOT the
     // numeric `defaultQuorumQ(1) = 1` that would falsely suggest the
-    // lone peer's vote was "almost enough". See PR #284 r25 Copilot
-    // review.
+    // lone peer's vote was "almost enough".
     expect((err as LoadQuorumFailedError).requiredQ).toBe(2);
     expect((err as LoadQuorumFailedError).respondingCount).toBe(0);
   });
@@ -667,7 +664,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   test('loadQuorumK = 0 throws LoadQuorumFailedError(invalid-config) even with peers connected', async () => {
-    // Regression for PR #284 r5: a `loadQuorumK <= 0` previously
+    // Regression: a `loadQuorumK <= 0` previously
     // collapsed `effectiveK(...)` to 0, the orchestrator returned
     // `{ skipped: true }`, and `PeerborneDocument.open()` then treated
     // the load as "new document" and forked any existing copy held by
@@ -726,12 +723,12 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     expect(probeMock).not.toHaveBeenCalled();
   });
 
-  describe('post-init mutation of K/Q is caught as invalid-config (PR #284 r10)', () => {
-    // Regression for PR #284 r10 Copilot review issue #2: `runLoadQuorum`
+  describe('post-init mutation of K/Q is caught as invalid-config', () => {
+    // Regression: `runLoadQuorum`
     // previously only rejected `K <= 0`. If a caller's `config.loadQuorumK`
     // was valid at `initialize()` but later mutated to `NaN`/`Infinity`/`-1`
-    // BEFORE `load()` ran, `effectiveK(NaN, peers)` returned 0 (per the r9
-    // defensive guards), the K=0 branch returned `{ skipped: true }`, and
+    // BEFORE `load()` ran, `effectiveK(NaN, peers)` returned 0 through its
+    // defensive guards, the K=0 branch returned `{ skipped: true }`, and
     // `load()` fell through to the legacy unbound load — but
     // `loadQuorumEnabled` was still `true`, so the operator's intent
     // (quorum-protected load) was silently violated. The defensive
@@ -756,8 +753,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
       expect(err).toBeInstanceOf(LoadQuorumFailedError);
       expect((err as LoadQuorumFailedError).reason).toBe('invalid-config');
       // The error message must show `NaN` (not the misleading `null`
-      // produced by `JSON.stringify(NaN)`) — that's the PR #284 r10
-      // issue #1 fix for `formatConfigValue`.
+      // produced by `JSON.stringify(NaN)`), preserving the actual
+      // misconfigured value through `formatConfigValue`.
       expect((err as LoadQuorumFailedError).message).toMatch(
         /loadQuorumK must be a positive integer; got NaN/,
       );
@@ -821,7 +818,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
 
     test('Q = NaN throws LoadQuorumFailedError(invalid-config) (was: silent single-peer quorum pass)', async () => {
       // Symmetric case for Q. Without the validator, `effectiveQ(NaN, k)`
-      // returned `defaultQuorumQ(k)` via the r9 fallback — so the gate
+      // returned `defaultQuorumQ(k)` via the defensive fallback — so the gate
       // ran with a sensible Q but the operator's *intent* (their
       // explicitly-set Q) had been silently corrupted. Surface the
       // mutation as a hard error instead.
@@ -917,7 +914,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     });
 
     // -----------------------------------------------------------------
-    // loadQuorumTimeoutMs post-init mutation guard (PR #284 r15)
+    // loadQuorumTimeoutMs post-init mutation guard
     // -----------------------------------------------------------------
     // `loadQuorumTimeoutMs` flows directly into `setTimeout(...)` inside
     // the probe race. A post-init mutation to `NaN`/`Infinity`/`0`/
@@ -1066,7 +1063,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   // ---------------------------------------------------------------------
-  // single-peer warning text (PR #284 r15 Copilot review issue #2)
+  // single-peer warning text
   // ---------------------------------------------------------------------
   // The legacy wording was "only one peer known", which is accurate when
   // the mesh truly has one peer but actively misleading when the operator
@@ -1075,7 +1072,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   // hadn't. The rewritten message includes both the configured K and the
   // actual peer count so the cause is unambiguous in either case.
 
-  describe('single-peer fallback warning text reflects both cause cases (PR #284 r15)', () => {
+  describe('single-peer fallback warning text reflects both cause cases', () => {
     let warnSpy: ReturnType<typeof jest.spyOn>;
     beforeEach(() => {
       warnSpy = jest
@@ -1168,7 +1165,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   test('multi-peer probe that REJECTS is recorded as a non-vote; other peers still tally', async () => {
-    // Contract regression for PR #284 r5: a `probeFn` that throws/rejects
+    // Contract regression: a `probeFn` that throws/rejects
     // must NOT escape the orchestrator. Without the per-probe catch the
     // whole `Promise.all` would reject and bubble past the
     // `LoadQuorumFailedError` API contract `load()` callers are written
@@ -1242,7 +1239,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   });
 
   test('size-cap-triggered non-vote does NOT poison quorum when honest majority still responds', async () => {
-    // Regression for the DoS hardening fix from PR #284 r4: an
+    // Regression for the DoS hardening: an
     // oversized tip-advertise response is surfaced as `null` (non-vote)
     // by `_probeTipAdvertise`'s outer catch. Verify that a single peer
     // hitting the size cap does not flip the quorum into a Byzantine
@@ -1268,8 +1265,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     expect(result.winningHashHex).toBe(HASH_X_HEX);
   });
 
-  describe('legacy load loop preserves un-deduped peer list (PR #284 r7)', () => {
-    // Regression for PR #284 r7 Copilot review: the load loop previously
+  describe('legacy load loop preserves un-deduped peer list', () => {
+    // Regression: the load loop previously
     // deduped peers by peer id UNCONDITIONALLY -- before the quorum probe,
     // affecting BOTH the quorum probe AND the legacy single-peer load
     // loop. When `loadQuorumEnabled: false`, the legacy loop should keep
@@ -1327,7 +1324,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
 
       // Dedup is for the QUORUM probe only; the legacy loop keeps
       // `orderedPeers` un-deduped (this mirrors the production code in
-      // `PeerborneDocument.load()` after the PR #284 r7 fix).
+      // `PeerborneDocument.load()`).
       const quorumPeers = dedupePeersByPeerId(orderedPeers, idOf);
       expect(quorumPeers).toEqual([
         { id: 'alice', addr: '/direct/alice' },
@@ -1431,8 +1428,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     });
   });
 
-  describe('default Q is derived from EFFECTIVE K, not configured K (PR #284 r7)', () => {
-    // Regression for PR #284 r7 Copilot review: previously `defaultQuorumQ`
+  describe('default Q is derived from EFFECTIVE K, not configured K', () => {
+    // Regression: previously `defaultQuorumQ`
     // was passed the CONFIGURED K, so a configured K=7 against a peer list
     // of size 3 required `effectiveQ(defaultQuorumQ(7), effectiveK(7, 3))`
     // = `effectiveQ(4, 3)` = 3 -- i.e. ALL 3 reachable peers had to agree,
@@ -1554,7 +1551,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     });
   });
 
-  // PR #284 r17: when the agreeing cohort partly bind-fails and partly
+  // When the agreeing cohort partly bind-fails and partly
   // transport-fails, the loader must NOT use the
   // `bind-check-failed-all-agreeing-peers` reason -- that reason's public
   // docs explicitly say EVERY peer in the cohort equivocated, and using
@@ -1563,7 +1560,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
   // mixture of one bad actor + transient network errors. Mixed failures
   // surface as `agreeing-peers-unreachable` (still threading the per-peer
   // bind-failure map through for diagnostics).
-  describe("mixed bind/transport failure cohort uses 'agreeing-peers-unreachable' (PR #284 r17)", () => {
+  describe("mixed bind/transport failure cohort uses 'agreeing-peers-unreachable'", () => {
     test("(c-mixed-1) 1 bind-failure + 2 transport-failures => 'agreeing-peers-unreachable'", async () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
@@ -1660,11 +1657,11 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     });
   });
 
-  // PR #284 r16: `'unknown-doc'` probe results let the orchestrator
+  // `'unknown-doc'` probe results let the orchestrator
   // detect the new-doc-creation case in an existing swarm. A Q-of-K
   // majority of disclaims surfaces `{ newDoc: true }`; the loader uses
   // this to return `false` so a fresh `open()` can create the document.
-  describe("'unknown-doc' new-document-creation path (PR #284 r16)", () => {
+  describe("'unknown-doc' new-document-creation path", () => {
     test("3 peers all probe 'unknown-doc' => orchestrator returns { newDoc: true }", async () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue('unknown-doc');
@@ -1685,8 +1682,8 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
       expect(probeMock).toHaveBeenCalledTimes(3);
     });
 
-    test("majority 'unknown-doc' (2 of 3) with 1 tip-hash dissenter => no-majority (tip-hash priority, PR #284 r19)", async () => {
-      // r19 Copilot review: tip-hash votes take PRIORITY over
+    test("majority 'unknown-doc' (2 of 3) with 1 tip-hash dissenter => no-majority (tip-hash priority)", async () => {
+      // Tip-hash votes take PRIORITY over
       // unknown-doc disclaims because the probe samples the WHOLE libp2p
       // mesh (`getConnections()`), not only peers that hold this
       // document. Two unrelated peers in the mesh legitimately
@@ -1773,7 +1770,7 @@ describe('runLoadQuorum: production orchestration coverage (PR #284 r4)', () => 
     });
   });
 
-  describe('quorum agreement maps to zero peers => fail closed (PR #284 r12)', () => {
+  describe('quorum agreement maps to zero peers => fail closed', () => {
     // If `peerIdOf` returns a stable id for the probe round but the post-
     // probe narrowing step somehow loses every agreeing peer (e.g. a bug
     // in `peerIdOf` produces a different id on the second call, or the

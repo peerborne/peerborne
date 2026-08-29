@@ -405,8 +405,8 @@ export interface PeerborneConfig {
    * `defaultQuorumQ(7) = 4` would require ALL 3 reachable peers to
    * agree -- losing the one-fault tolerance the formula is meant to
    * provide. Deriving from effective K instead gives `defaultQuorumQ(3) =
-   * 2`, which tolerates one non-vote among the 3 reachable peers. See
-   * `load-quorum-orchestrator.ts` and PR #284 r7 / r23 reviews.
+   * 2`, which tolerates one non-vote among the 3 reachable peers. The
+   * derivation is implemented in `load-quorum-orchestrator.ts`.
    *
    * Worked examples (`effectiveK -> default Q`):
    *   - effectiveK=1 -> Q=1 (single-peer pass-through; requires
@@ -419,7 +419,7 @@ export interface PeerborneConfig {
    * This is the standard "strictly more than half" Byzantine-fault-
    * tolerant threshold and matches the design note in #189 §5.4.2.
    * Using `floor + 1` rather than `ceil + 1` tolerates one fault at
-   * effectiveK=3 (Q=2, not Q=3) as the PR description requires.
+   * effectiveK=3 (Q=2, not Q=3), as required by the design note.
    *
    * When the operator explicitly sets `loadQuorumQ`, this default is a
    * no-op and the explicit value flows through `effectiveQ`'s `[1, k]`

@@ -1084,7 +1084,7 @@ describe('concurrent mutation safety', () => {
 });
 
 describe('oversized change rejection', () => {
-  // Thread A (CodeRabbit): the size gate must run *before* the full
+  // The size gate must run *before* the full
   // header+payload buffer is assembled, so a hostile peer cannot force a
   // multi-megabyte allocation on the hot path by sending an oversized
   // `change`.
@@ -1214,7 +1214,7 @@ describe('oversized change rejection', () => {
   });
 
   test('Uint8Array change is rejected before serializeChange is even called', async () => {
-    // Thread A (Copilot follow-up): when `entry.change` is itself a
+    // When `entry.change` is itself a
     // `Uint8Array` (the common case for byte-oriented CRDTs like Yjs),
     // the chain must size-gate it *before* `_serializeChange` runs --
     // otherwise the (potentially identity) serializer has already
@@ -1298,7 +1298,7 @@ describe('oversized change rejection', () => {
 });
 
 describe('ingested entries are snapshot, not aliased', () => {
-  // Thread B (CodeRabbit): the chain must not store the caller-owned entry
+  // The chain must not store the caller-owned entry
   // object directly. Mutating the entry after ingestion (or after
   // authorAndAppend returns) used to leak straight into `_entries` and
   // could corrupt parent-hash links, signature verification on replay,

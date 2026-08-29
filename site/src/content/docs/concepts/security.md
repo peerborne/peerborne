@@ -37,6 +37,38 @@ The libp2p peer ID is separate from the signing identity. This means:
 - The same signing identity can be used across multiple libp2p nodes
 - Applications can supply libp2p private-key configuration instead of using the generated upstream default
 
+## Signed invitations
+
+The initial online invitation protocol binds three signed envelopes:
+
+1. The founder signs an expiring offer containing the document ID, requested
+   role, issuer identity, and founder rendezvous addresses.
+2. The recipient signs a join request bound to the exact offer, their signing
+   identity, and their raw P-256 KEM public key.
+3. The founder signs an acceptance bound to both earlier envelopes. Its BeeKEM
+   Welcome is sealed to the recipient KEM key, and its initial document state
+   is encrypted under the document key.
+
+Accepting an invitation verifies every binding and the resulting ACL before
+opening the document. Failure never falls back to new-document creation. See
+[Invite a collaborator](../../cookbook/invitations/) for the API and its
+founder-plus-one, online-only trust boundary.
+
+Before changing membership, the founder also performs a fail-closed capacity
+check. The bundled Automerge JSON providers and P-384/SHA-384 SubtleCrypto
+declare the one profile whose bounds Peerborne tests. It combines the retained
+sync tree, complete keychain, latest snapshot, tips, signature, projected ACL
+growth, encryption framing, and a 128 KiB reserve under the 1 MiB wire-field
+cap. A custom provider is rejected unless it deliberately implements the same
+capacity-profile attestation; doing so makes that provider responsible for
+preserving every declared bound. The exact sealed Welcome and encrypted
+bootstrap are checked again after construction.
+
+An offer is still a bearer capability. Its self-signature does not identify a
+human or organization, and the first person who obtains the link can claim its
+role. Applications should deliver it through an authenticated private channel
+or separately verify the issuer fingerprint.
+
 ## Implemented authorization
 
 ### Reader/writer ACL
@@ -92,6 +124,19 @@ AES-GCM document keys. The lower-level `SubtleCrypto` auth primitive also
 supports AES-CTR and AES-CBC, but that primitive support is not a bundled
 document-key path. Peers can decrypt content only when they hold the needed
 epoch key.
+
+`historyVisibility` controls which document-key epochs are supplied in some
+load and Welcome responses. It does not remove or redact retained CRDT
+operations, force a key rotation per operation, or guarantee that earlier
+content is unavailable: one epoch key can decrypt multiple operations, and a
+sync tree or snapshot can carry retained history. Treat `current_only` and
+`since_invited` as key-distribution filters, not deletion or historical-content
+confidentiality guarantees.
+
+The initial invitation API therefore requires an explicit
+`historyVisibility = 'full_history'` choice and rejects the other modes before
+changing membership. Invitation recipients may receive retained operations for
+values that were later changed or deleted.
 
 ```text
 stored payload = encrypt(document key, serialized CRDT change) → CID
@@ -203,12 +248,16 @@ Verified in CI:
 - BeeKEM key encapsulation and decapsulation
 - UCAN capability issuance and verification (standalone module)
 - Encrypted document retrieval through Circuit Relay
+- Distinct-identity invitation acceptance and bidirectional post-join
+  convergence through Circuit Relay
 
 Not verified:
 
 - Reader revocation with key rotation and live peer notification
 - Conflicting real peers serving adversarial shadow-tree payloads during quorum loading
 - PathUpdate delivery across NAT boundaries
+- Invitation or replay-state persistence across process restart
+- Offline invitation acceptance or relay failover
 - Resistance to Sybil attacks on quorum
 - Key recovery or backup flows
 

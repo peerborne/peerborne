@@ -54,6 +54,14 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    * this method; the next major version will make it required.
    */
   serializePublicKey?(publicKey: PublicKey): Promise<string>;
+
+  /**
+   * Restore a public identity from the canonical representation produced by
+   * `serializePublicKey`. Network invitation flows require this operation so
+   * the inviter can verify proof of possession from a previously unknown
+   * recipient and the recipient can pin the inviter named in the offer.
+   */
+  deserializePublicKey?(serialized: string): Promise<PublicKey>;
 }
 
 /**
@@ -73,6 +81,22 @@ export function requireSerializePublicKey<PrivateKey, PublicKey, DocumentKey>(
       `${featureName} requires AuthProvider.serializePublicKey, but the ` +
         `current AuthProvider does not implement it. Upgrade or provide a ` +
         `serializePublicKey method on your AuthProvider implementation.`,
+    );
+  }
+  return impl.bind(authProvider);
+}
+
+/** Resolve `deserializePublicKey` or fail before starting an invitation. */
+export function requireDeserializePublicKey<PrivateKey, PublicKey, DocumentKey>(
+  authProvider: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
+  featureName: string,
+): (serialized: string) => Promise<PublicKey> {
+  const impl = authProvider.deserializePublicKey;
+  if (!impl) {
+    throw new Error(
+      `${featureName} requires AuthProvider.deserializePublicKey, but the ` +
+        `current AuthProvider does not implement it. Upgrade or provide a ` +
+        `deserializePublicKey method on your AuthProvider implementation.`,
     );
   }
   return impl.bind(authProvider);

@@ -60,7 +60,6 @@ export const TIPS_HASH_LENGTH = 32;
  * loader's structural bind check
  * (`computeServedFrontier(message.changes, ...)` over the received
  * payload) hashes to a different value -- rejecting the honest peer.
- * Round 8 of the PR #284 Copilot review caught this exact bug.
  *
  * # Implementer warning: do NOT hash `_hashes` directly
  *
@@ -70,10 +69,8 @@ export const TIPS_HASH_LENGTH = 32;
  * history depths differ (history compaction, snapshot-loads that don't
  * restore ancestor CIDs, different join times). Hashing the full set
  * would cause those honest peers to produce different hashes and the
- * quorum gate (see `load-quorum.ts`) would never agree. Round 3 of the
- * PR #284 Copilot review caught this earlier variant of the bug; the
- * previous wording of this docstring ("typically a peer's `_hashes`")
- * was misleading and has been corrected.
+ * quorum gate (see `load-quorum.ts`) would never agree. The served
+ * frontier is the stable input shared by peers with equivalent state.
  *
  * Passing the served frontier makes the hash deterministic across honest
  * peers whose `_lastSyncMessage` / `_latestSnapshot` describe the same

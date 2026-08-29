@@ -412,7 +412,7 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
   });
 
   test('upgrades a deferred-leaf entry and walks newly-discovered children when CID is later seen inline', () => {
-    // Regression test for PR #259 Copilot thread A:
+    // Regression for deferred-leaf promotion:
     // If a CID is FIRST encountered as a deferred leaf (no `children`) and
     // LATER encountered inline with a populated `children` map (possible if
     // serializer or key ordering varies, or if a future remote message
@@ -544,7 +544,7 @@ describe('Merkle CRDT recent-tip tracking from a remote sync tree', () => {
   type Node = CRDTChangeNode<string>;
 
   /**
-   * Regression test for the ordering bug noted on PR #259:
+   * Regression for remote-tip ordering:
    * `mergeRemoteSyncTree` emits entries in root-first traversal order (the
    * remote head first, then its ancestors). `_syncDocumentChanges` tracks
    * each entry as a recent tip via the LRU `trackTipInList` helper, which
@@ -730,7 +730,7 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
   });
 
   test('frontier semantics: two trees of different cardinality but same head produce the same heads', () => {
-    // PR #284 round-3 acceptance scenario: peer A has merged a long
+    // Snapshot-equivalence scenario: peer A has merged a long
     // ancestor chain (`_hashes` includes many CIDs) while peer B loaded
     // from a snapshot (its `_hashes` includes only the snapshot boundary
     // + post-snapshot changes). Both peers consider HEAD their current
@@ -796,14 +796,14 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
 
     // Each peer's frontier is exactly {HEAD} despite very different
     // `_hashes` cardinality (4 vs 3) and tree shapes. This is the
-    // convergence property that round-3 of the Copilot review demanded.
+    // convergence property required across different history representations.
     expect(Array.from(frontierA).sort()).toEqual(['HEAD']);
     expect(Array.from(frontierB).sort()).toEqual(['HEAD']);
 
     // Counter-check: the old buggy implementation (`Array.from(_hashes)`)
     // would have produced DIFFERENT frontiers for these two peers (4
     // entries vs 3 entries), so any tipsHash derived from it would have
-    // diverged -- the bug round 3 of the review caught.
+    // diverged -- the behavior this regression prevents.
     expect(peerAHashes.size).not.toBe(peerBHashes.size);
   });
 });
@@ -811,16 +811,15 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
 /**
  * Tests for `computeServedFrontier`, the structural-binding helper that
  * derives a load-response's frontier from the actual served payload
- * rather than the responder's `tips` attestation. Closes the gap caught
- * by PR #284 r7 Copilot review: previously the quorum frontier binding
- * hashed the responder-supplied `tips` array and compared to the
+ * rather than the responder's `tips` attestation. Previously the quorum
+ * frontier binding hashed the responder-supplied `tips` array and compared to the
  * agreed `winningHashHex`, which let a Byzantine peer vote hash X and
  * then serve a divergent payload while keeping `tips` set to X's CIDs.
  * The new binding derives the served frontier structurally from
  * `message.changeId` + `message.changes` (+ optional snapshot
  * boundary), so the responder cannot lie about what they served.
  */
-describe('computeServedFrontier (PR #284 r7 served-payload frontier derivation)', () => {
+describe('computeServedFrontier (served-payload frontier derivation)', () => {
   const docKind: CRDTChangeNodeKind = crdtDocumentChangeNode;
 
   test('empty payload (no changes, no snapshot) => empty frontier', () => {
@@ -1058,10 +1057,10 @@ describe('computeServedFrontier (PR #284 r7 served-payload frontier derivation)'
   });
 
   /**
-   * Tests added for the PR #284 r8 multi-head responder fix.
+   * Multi-head responder regression coverage.
    *
-   * These tests document the exact bug Copilot flagged: an honest peer
-   * with multiple concurrent heads in `_currentFrontier()` cannot serve
+   * An honest peer with multiple concurrent heads in `_currentFrontier()`
+   * cannot serve
    * all of them in a single load response (the wire shape carries one
    * tree rooted at `_lastSyncMessage.changeId`). Advertising
    * `tipsHash(_currentFrontier())` therefore disagrees with the served
@@ -1073,9 +1072,9 @@ describe('computeServedFrontier (PR #284 r7 served-payload frontier derivation)'
    * instead. These tests verify the structural property holds across the
    * multi-head scenario.
    */
-  describe('multi-head responder served-vs-current frontier divergence (PR #284 r8)', () => {
+  describe('multi-head responder served-vs-current frontier divergence', () => {
     test('responder with concurrent heads {H1, H2, H3} serves a tree rooted at H1 only: served frontier is {H1}, NOT {H1, H2, H3}', () => {
-      // Scenario from the Copilot review:
+      // Scenario:
       //   - Peer A made one local change H1 (so `_lastSyncMessage.changeId = H1`).
       //   - Peer A then received H2 and H3 via GossipSub from concurrent
       //     writers. Both are in `_hashes` but neither is a child of any
@@ -1268,14 +1267,13 @@ describe('computeServedFrontier (PR #284 r7 served-payload frontier derivation)'
  * incoming tree contains the prior root's CID -- so the served-frontier
  * coverage can only grow, never shrink.
  *
- * Closes the relay-peer empty-served-frontier bug (#284 r14): a peer
- * that joined via `load()` and never made a local change previously
+ * A peer that joined via `load()` and never made a local change previously
  * left `_lastSyncMessage` undefined, advertised `tipsHash([])`, and
  * served an empty load. Two such relay peers would agree on the empty
  * hash, satisfy quorum, and let an honest newcomer accept an empty
  * document while the mesh had data.
  */
-describe('treeContainsCid (PR #284 r14 _lastSyncMessage subsumption check)', () => {
+describe('treeContainsCid (_lastSyncMessage subsumption check)', () => {
   const docKind: CRDTChangeNodeKind = crdtDocumentChangeNode;
 
   test('returns false when target is undefined / empty', () => {
@@ -1376,9 +1374,9 @@ describe('treeContainsCid (PR #284 r14 _lastSyncMessage subsumption check)', () 
 
 /**
  * Structural regression tests for the relay-peer empty-served-frontier
- * bug (PR #284 r14 Copilot review). These tests don't instantiate
+ * bug. These tests don't instantiate
  * `PeerborneDocument` (the load-quorum test infra has the same ESM
- * libp2p limitation flagged in `load-quorum-orchestrator.test.ts`);
+ * libp2p limitation documented in `load-quorum-orchestrator.test.ts`);
  * instead they verify the structural property the fix establishes:
  * after a peer applies a remote sync tree and refreshes its
  * `_lastSyncMessage` from it, `computeServedFrontier` over the refreshed
@@ -1391,7 +1389,7 @@ describe('treeContainsCid (PR #284 r14 _lastSyncMessage subsumption check)', () 
  * peer that never makes a local change still has a meaningful served
  * frontier.
  */
-describe('relay-peer served-frontier (PR #284 r14: _lastSyncMessage refresh from sync)', () => {
+describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () => {
   const docKind: CRDTChangeNodeKind = crdtDocumentChangeNode;
 
   /**
@@ -1428,7 +1426,7 @@ describe('relay-peer served-frontier (PR #284 r14: _lastSyncMessage refresh from
   }
 
   test('relay peer (no prior _lastSyncMessage) advertises a non-empty served frontier after one remote sync', () => {
-    // Reproduce the round-14 bug pre-fix:
+    // Reproduce the pre-fix empty-frontier behavior:
     //   - Peer B has _lastSyncMessage = undefined (relay peer, no local
     //     changes since open()/load()).
     //   - B receives a sync tree from A rooted at X with a leaf body.
@@ -1592,7 +1590,7 @@ describe('relay-peer served-frontier (PR #284 r14: _lastSyncMessage refresh from
   });
 });
 
-describe('stripInlineChanges (PR #284 r17 content-bind defense)', () => {
+describe('stripInlineChanges (content-bind defense)', () => {
   type Changes = { ops: string[] };
 
   test('strips top-level inline change', () => {
@@ -1715,7 +1713,7 @@ describe('stripInlineChanges (PR #284 r17 content-bind defense)', () => {
   });
 });
 
-describe('collectAllCidsInTree (PR #284 r18 post-sync verification basis)', () => {
+describe('collectAllCidsInTree (post-sync verification basis)', () => {
   type Changes = { ops: string[] };
 
   test('flat root with no children returns just the root CID', () => {

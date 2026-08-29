@@ -126,7 +126,7 @@ describe('YjsJSONSerializer tipsHash round-trip (quorum)', () => {
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tipsHash/);
   });
 
-  // PR #284 r24 Copilot review: `tipsHash` is defined as a fixed 32-byte
+  // `tipsHash` is defined as a fixed 32-byte
   // SHA-256 digest; the deserializer previously accepted any base64-decoded
   // length and let downstream quorum logic mis-bucket the value. Reject
   // wrong-length payloads at the wire boundary.

@@ -55,7 +55,12 @@ The example must use one **stable, application-persisted ECDSA P-384 signing ide
 
 ## Multi-user work still required
 
-**Status: Deferred/incomplete integration.** The wiki has no automatic invitation, identity directory, key exchange, or account recovery. Sharing an article path or signing public key does not transfer its document key. A real invitation flow must authenticate the recipient out of band, exchange the recipient's signing and P-256 ECDH KEM public keys, persist both parties' key material, and exercise the core onboarding APIs described in the [password-manager recipe](../password-manager/).
+**Status: Deferred/incomplete integration.** The wiki has no invitation UI,
+identity directory, key persistence, or account recovery. Sharing an article
+path or signing public key does not transfer its document key. An application
+can use the core founder-plus-one onboarding API described in [Invite a
+collaborator](../invitations/), but it must still authenticate invitation
+delivery and persist both parties' signing and KEM key material.
 
 Do not describe full-string or editor-state replacement as a production-safe collaborative delta strategy. The current smoke test does not assert concurrent editor behavior. If adapting the design to Yjs, choose shared types and operations deliberately; see [Designing Yjs schemas](../yjs-schema-design/).
 
