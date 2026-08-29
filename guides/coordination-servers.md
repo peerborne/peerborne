@@ -20,7 +20,7 @@ Peerborne uses [libp2p](https://libp2p.io/) for networking. The following server
 
 ### 1.1 Bootstrap / Signaling Node
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | Initial peer discovery. When a Peerborne client starts, it dials the bootstrap node to join the network and discover other peers. |
 | **When needed** | Always. At least one bootstrap node must be reachable for a new peer to join the swarm. |
@@ -39,7 +39,7 @@ In Peerborne, the bootstrap node and relay node are combined into a single proce
 
 ### 1.2 Circuit Relay Node
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | NAT traversal for browsers that cannot establish direct WebRTC connections. The relay forwards data between two peers that cannot reach each other directly. |
 | **When needed** | Whenever browser peers are behind restrictive NATs (symmetric NAT, corporate firewalls). This is the common case on the open internet. |
@@ -50,16 +50,17 @@ In Peerborne, the bootstrap node and relay node are combined into a single proce
 In Peerborne's architecture, the relay server runs `circuitRelayServer()` which implements libp2p Circuit Relay V2. Browser clients configure `circuitRelayTransport()` to connect through the relay.
 
 **Data flow through relay:**
-```text
-Browser A ──WebSocket──> Relay Server ──WebSocket──> Browser B
-                  (Circuit Relay V2)
-```
+
+![Browser A and Browser B exchange encrypted libp2p traffic through a Circuit Relay v2 server when a direct path is unavailable](../site/src/assets/diagrams/relay-data-flow.svg "The relay forwards opaque libp2p traffic; it does not decrypt document payloads.")
+
+_The relay forwards opaque libp2p traffic; it does not decrypt document
+payloads._
 
 After the relayed connection is established, libp2p may upgrade to a direct WebRTC connection if both peers' NATs allow it (ICE hole-punching). If direct connection succeeds, the relay is no longer in the data path.
 
 ### 1.3 STUN Server
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | WebRTC ICE candidate gathering. STUN (Session Traversal Utilities for NAT) allows browsers to discover their public IP address and port mapping, which is needed to establish direct WebRTC connections. |
 | **When needed** | Whenever WebRTC is used (browser-to-browser). |
@@ -71,7 +72,7 @@ Peerborne's browser clients use `@libp2p/webrtc` which relies on the browser's b
 
 ### 1.4 TURN Server
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | Relays media/data when STUN-based hole-punching fails (symmetric NAT on both sides). TURN (Traversal Using Relays around NAT) is a fallback relay at the WebRTC layer. |
 | **When needed** | When peers are behind symmetric NATs where STUN cannot establish a direct path. |
@@ -84,7 +85,7 @@ If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open sour
 
 ### 1.5 Pinning Service
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | Persistent storage for IPFS/Helia content. When all peers go offline, pinned content remains available. Without pinning, document data exists only while at least one peer with that data is online. |
 | **When needed** | When data persistence is required beyond peer availability. |
@@ -97,7 +98,7 @@ Self-hosted pinning therefore requires application-specific publication, persist
 
 ### 1.6 DHT Bootstrap Node
 
-| | |
+| Field | Details |
 |---|---|
 | **Purpose** | Kademlia DHT for large-scale peer discovery. The DHT enables peers to find each other without relying solely on pubsub-based discovery. |
 | **When needed** | At scale (hundreds+ of peers) where pubsub discovery alone is insufficient. |
@@ -127,29 +128,10 @@ At minimum, you need **one relay/bootstrap server** and access to **public STUN 
 
 ### 2.2 Architecture
 
-```text
-                    ┌─────────────────────┐
-                    │   Your Server       │
-                    │                     │
-                    │  ┌───────────────┐  │
-                    │  │ Relay Server  │  │
-                    │  │ (Bootstrap +  │  │
-                    │  │  Circuit Relay│  │
-                    │  │  + GossipSub) │  │
-                    │  └──────┬────────┘  │
-                    │         │           │
-                    │    Port 9001 (WS)   │
-                    │    Port 9002 (TCP)  │
-                    └─────────┼───────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-         ┌────┴────┐    ┌────┴────┐    ┌────┴────┐
-         │Browser A│    │Browser B│    │Browser C│
-         └─────────┘    └─────────┘    └─────────┘
+![A single host runs the combined bootstrap and Circuit Relay server for several browser peers, with STUN assisting direct WebRTC paths](../site/src/assets/diagrams/single-relay-topology.svg "A minimal deployment has one failure domain and no capacity guarantee.")
 
-         (All browsers use public STUN for WebRTC)
-```
+_A minimal deployment combines bootstrap, GossipSub, and Circuit Relay v2 on
+one host. It has one failure domain and no tested capacity guarantee._
 
 ### 2.3 Quick Start with Docker
 
@@ -290,58 +272,40 @@ The relay-info.json output path is determined automatically: `/shared/relay-info
 
 ### 3.1 Architecture
 
-For production with 100+ peers, deploy multiple relay nodes. Note that each
-relay has its own libp2p peer ID, so a single load-balanced hostname that
+For deployments that need multiple failure domains, deploy multiple relay
+nodes. Each relay has its own libp2p peer ID, so a single load-balanced hostname that
 routes clients to arbitrary backends will break dialing of
 `/.../p2p/<peerId>` addresses. The supported pattern is one public DNS name
 per relay (clients are configured with all of them); see
 [`docs/deployment.md`](../docs/deployment.md) for details.
 
-```text
-                          ┌──────────────┐
-                          │   DNS / LB   │
-                          │ relay.app.com│
-                          └──────┬───────┘
-                                 │
-                 ┌───────────────┼───────────────┐
-                 │               │               │
-          ┌──────┴──────┐ ┌─────┴──────┐ ┌──────┴──────┐
-          │  Relay #1   │ │  Relay #2  │ │  Relay #3   │
-          │ (Region A)  │ │ (Region B) │ │ (Region C)  │
-          │ Port 9001   │ │ Port 9001  │ │ Port 9001   │
-          │ Port 9002   │ │ Port 9002  │ │ Port 9002   │
-          └──────┬──────┘ └─────┬──────┘ └──────┬──────┘
-                 │              │               │
-                 └──────────────┼───────────────┘
-                                │ (TCP mesh between relays)
-                                │
-              ┌─────────────────┼─────────────────┐
-              │                 │                 │
-         ┌────┴────┐      ┌────┴────┐      ┌────┴────┐
-         │Browser  │      │Browser  │      │Pinning  │
-         │ Peers   │      │ Peers   │      │ Node    │
-         └─────────┘      └─────────┘      └─────────┘
-```
+![Browser clients connect to independently named regional relay processes; Peerborne does not provide built-in relay meshing or failover](../site/src/assets/diagrams/multi-relay-topology.svg "Each relay keeps its own DNS name and peer ID, but the repository does not ship a relay mesh or failover layer.")
 
-### 3.2 Recommended Topology by Scale
+_Each relay keeps its own DNS name and peer ID. The repository does not ship
+relay-to-relay startup dialing, a supported relay mesh, or client failover._
 
-#### Small (10-50 peers)
+### 3.2 Illustrative Topology Patterns
+
+These are availability patterns, not tested capacity tiers. Measure connection,
+reservation, bandwidth, and topic load for your own deployment.
+
+#### Single failure domain
 - 1 relay/bootstrap server
 - Public STUN servers
-- Optional: 1 pinning node
+- Application-specific durability integration if offline availability is needed
 
-#### Medium (50-500 peers)
+#### Multiple regions
 - 2-3 relay/bootstrap servers in different regions
-- Each relay connects to the others via TCP (port 9002)
-- Multiple bootstrap addresses in client config
-- 1 pinning node
+- Custom relay-to-relay dialing only after the application supplies and validates it
+- Independently named bootstrap addresses in application config
+- Application-specific durability integration
 - Consider adding a TURN server (coturn)
 
-#### Large (500-1000+ peers)
+#### Higher availability
 - 3-5 relay/bootstrap servers, geographically distributed
-- Relay nodes form a full mesh via TCP
-- DNS-based load balancing or anycast
-- Multiple pinning nodes
+- One DNS name and stable peer ID per relay
+- Application-specific routing and failover; Peerborne does not provide them
+- Multiple application-managed durability nodes, if implemented
 - Dedicated DHT bootstrap nodes (set `clientMode: false`)
 - TURN server cluster
 - Monitoring and alerting
@@ -360,11 +324,17 @@ const config = defaultNodeConfig({
 });
 ```
 
-The client will attempt to connect to all bootstrap nodes. Once connected to any one, pubsub peer discovery will find the rest of the network.
+The client attempts the configured bootstrap addresses independently. A
+connection to one relay exposes only the peers visible through that relay's
+discovery mesh; it does not discover other isolated relay processes or provide
+automatic cross-relay failover.
 
-### 3.4 Relay Node Inter-Connection
+### 3.4 Custom Relay Inter-Connection (Not Shipped)
 
-Relay nodes should connect to each other so GossipSub messages propagate across the entire network. Configure each relay to bootstrap from the others:
+The checked-in relay does not configure startup dialing between relay
+processes. Cross-relay GossipSub propagation would require custom code and
+deployment validation. The following is an unshipped, unverified source-edit
+sketch rather than a supported configuration recipe:
 
 ```typescript
 // In relay-server/src/index.ts, add bootstrap for peer relays
@@ -388,11 +358,12 @@ peerDiscovery: [
 - A **TLS-terminating reverse proxy** (nginx, Caddy, Traefik) in front of a single relay is fine and required for `wss://` in production (see Section 2.6). The proxy terminates TLS and forwards WebSocket frames transparently via `Upgrade` headers — this is technically Layer 7 but preserves the connection end-to-end.
 - Do **not** use a **connection-splitting proxy** that terminates one WebSocket and opens a new upstream WebSocket, as this breaks libp2p's connection state and multiplexed streams.
 - For **multiple relay nodes**, give clients all relay addresses (one
-  multiaddr per relay, each with its own peer ID) and let libp2p handle
-  connection management. A single shared hostname that load-balances across
-  backends with different peer IDs is **not** supported. Source-IP hashing
-  does not pin a peer ID. Use one hostname/SNI route per durable relay identity;
-  DNS round-robin on a single hostname has the same problem.
+  multiaddr per relay, each with its own peer ID). Libp2p may dial those
+  configured addresses, but Peerborne does not provide or verify an application
+  failover policy. A single shared hostname that load-balances across backends
+  with different peer IDs is **not** supported. Source-IP hashing does not pin a
+  peer ID. Use one hostname/SNI route per durable relay identity; DNS
+  round-robin on a single hostname has the same problem.
 
 ### 3.6 Monitoring and Health Checks
 

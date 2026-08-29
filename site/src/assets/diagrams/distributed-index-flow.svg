@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1055" viewBox="0 0 1200 1055" role="img" aria-labelledby="distributed-index-flow-title distributed-index-flow-description">
+  <title id="distributed-index-flow-title">Distributed indexing trust flow</title>
+  <desc id="distributed-index-flow-description">A signed collection manifest controls schema generation, search-key epoch, discovery mode, expiration, and response budgets. Peers can use signed expiring Bloom snapshots with blind routing tokens or signed bounded direct requests. Both paths yield untrusted peer and document-path claims. A requester must load each candidate through normal authorization, signature, decryption, history, and configured quorum or CID gates, then recheck the complete predicate locally before a deterministic bounded merge. Distributed completeness and exact global counts are not guaranteed. The diagram describes composable protocol and orchestration primitives, not a shipped turnkey end-to-end distributed search workflow.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #94a3b8; font-size: 17px; }
+      .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
+      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbd5e1; font-size: 15px; }
+      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
+      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1200" height="1055" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="1055" rx="28" fill="url(#grid)"/>
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="50" y="69" class="title">Distributed indexing trust flow</text>
+    <text x="50" y="99" class="subtitle">Remote discovery nominates untrusted candidates; normal document security and a full local recheck remain authoritative.</text>
+
+    <rect x="796" y="51" width="354" height="34" rx="17" fill="#3b2b13" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="973" y="74" class="badge" text-anchor="middle" fill="#fde68a">PROTOCOL + ORCHESTRATION PRIMITIVES</text>
+
+    <rect x="150" y="137" width="900" height="92" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <text x="600" y="172" class="card-title" text-anchor="middle">Signed collection manifest</text>
+    <text x="600" y="199" class="body" text-anchor="middle">Schema hash · generation · search-key epoch · discovery mode · TTL · response budget</text>
+    <text x="600" y="221" class="body" text-anchor="middle">Manager signature and monotonic sequence are validated.</text>
+
+    <path d="M600 229V262H300V280" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M600 229V262H900V280" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <rect x="70" y="288" width="460" height="138" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+    <text x="300" y="325" class="card-title" text-anchor="middle">Signed, expiring Bloom snapshot</text>
+    <text x="300" y="354" class="body" text-anchor="middle">Blind equality-routing tokens only</text>
+<text x="300" y="378" class="body" text-anchor="middle">A positive match nominates a peer; it proves nothing</text>
+<text x="300" y="402" class="body" text-anchor="middle">about a document or the completeness of the result set.</text>
+    <rect x="670" y="288" width="460" height="138" rx="18" fill="#151f35" stroke="#6366f1" stroke-width="2"/>
+    <text x="900" y="325" class="card-title" text-anchor="middle">Signed, bounded direct request</text>
+    <text x="900" y="354" class="body" text-anchor="middle">Blind tokens or an explicitly disclosed query AST</text>
+<text x="900" y="378" class="body" text-anchor="middle">Responses remain size-, time-, and count-bounded</text>
+<text x="900" y="402" class="body" text-anchor="middle">and can omit, fabricate, or reorder candidates.</text>
+
+    <path d="M300 426V461H455V479" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M900 426V461H745V479" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <rect x="190" y="487" width="820" height="86" rx="18" fill="#2d2518" stroke="#f59e0b" stroke-width="2"/>
+    <text x="600" y="520" class="card-title" text-anchor="middle">Untrusted candidate peer / document-path claims</text>
+    <text x="600" y="548" class="body" text-anchor="middle">Signatures attribute the claimant; they do not make a claim true or complete.</text>
+    <path d="M600 573V605" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+    <rect x="190" y="613" width="820" height="92" rx="18" fill="#111f34" stroke="#475569" stroke-width="2"/>
+    <text x="600" y="647" class="card-title" text-anchor="middle">Normal secure document load</text>
+    <text x="600" y="675" class="body" text-anchor="middle">Apply configured quorum/CID gates, authorization, signatures, decryption, and history validation.</text>
+    <text x="600" y="697" class="body" text-anchor="middle">A collection search key never grants document read access.</text>
+    <path d="M600 705V737" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+
+    <rect x="190" y="745" width="820" height="74" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+    <text x="600" y="777" class="card-title" text-anchor="middle">Complete predicate recheck on authorized local state</text>
+    <text x="600" y="802" class="body" text-anchor="middle">Only this local evaluation can admit the loaded document to the result page.</text>
+    <path d="M600 819V851" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+
+    <rect x="190" y="859" width="820" height="70" rx="18" fill="#151f35" stroke="#6366f1" stroke-width="2"/>
+    <text x="600" y="890" class="card-title" text-anchor="middle">Deterministic bounded page merge</text>
+    <text x="600" y="915" class="body" text-anchor="middle">No global completeness or exact-count guarantee in an open Byzantine network.</text>
+
+    <rect x="50" y="957" width="1100" height="66" rx="18" fill="#301f2c" stroke="#f472b6" stroke-width="2"/>
+    <text x="600" y="984" class="eyebrow" text-anchor="middle" fill="#f9a8d4">EVIDENCE BOUNDARY</text>
+    <text x="600" y="1008" class="body-strong" text-anchor="middle">These are composable protocol and manager primitives—not a shipped turnkey end-to-end distributed search workflow.</text>
+  </g>
+</svg>

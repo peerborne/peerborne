@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="635" viewBox="0 0 1200 635" role="img" aria-labelledby="relay-data-flow-title relay-data-flow-description">
+  <title id="relay-data-flow-title">Browser data flow through Circuit Relay</title>
+  <desc id="relay-data-flow-description">Browser A and Browser B connect to a relay server over WebSocket. Circuit Relay version 2 forwards their encrypted Peerborne traffic when a direct path is unavailable. The relay also provides bootstrap identify and GossipSub peer discovery, but it does not need document keys, document plaintext, or signing private keys. A dashed optional path shows that libp2p may upgrade to direct WebRTC after ICE succeeds; this upgrade is not guaranteed.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #94a3b8; font-size: 17px; }
+      .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
+      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbd5e1; font-size: 15px; }
+      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
+      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbd5e1; font-size: 15px; }
+      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1200" height="635" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="635" rx="28" fill="url(#grid)"/>
+  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <g>
+    <text x="50" y="69" class="title">Browser data flow through Circuit Relay</text>
+    <text x="50" y="99" class="subtitle">A reachable relay provides a cross-NAT path; a direct WebRTC upgrade may replace it when network conditions allow.</text>
+
+    <rect x="892" y="51" width="258" height="34" rx="17" fill="#0f2b2e" stroke="#2dd4bf" stroke-width="1.5"/>
+    <text x="1021" y="74" class="badge" text-anchor="middle" fill="#99f6e4">ENCRYPTED APP TRAFFIC</text>
+
+    <rect x="50" y="250" width="260" height="142" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <text x="180" y="292" class="card-title" text-anchor="middle">Browser A</text>
+    <text x="180" y="322" class="body-strong" text-anchor="middle">libp2p client</text>
+    <text x="180" y="349" class="body" text-anchor="middle">behind NAT / firewall</text>
+    <rect x="93" y="366" width="174" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="180" y="389" class="badge" text-anchor="middle" fill="#c7d2fe">DOCUMENT PEER</text>
+
+    <g filter="url(#shadow)">
+      <rect x="430" y="216" width="340" height="210" rx="24" fill="#123038" stroke="#14b8a6" stroke-width="2.5"/>
+    </g>
+    <text x="600" y="260" class="card-title" text-anchor="middle" fill="#99f6e4">Relay server</text>
+    <text x="600" y="294" class="body-strong" text-anchor="middle">Bootstrap + identify</text>
+<text x="600" y="321" class="body-strong" text-anchor="middle">Circuit Relay v2 forwarding</text>
+<text x="600" y="348" class="body-strong" text-anchor="middle">GossipSub peer discovery</text>
+    <rect x="494" y="377" width="212" height="34" rx="17" fill="#0f3b3b" stroke="#2dd4bf" stroke-width="1.5"/>
+    <text x="600" y="400" class="badge" text-anchor="middle" fill="#99f6e4">NO DOCUMENT KEY</text>
+
+    <rect x="890" y="250" width="260" height="142" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <text x="1020" y="292" class="card-title" text-anchor="middle">Browser B</text>
+    <text x="1020" y="322" class="body-strong" text-anchor="middle">libp2p client</text>
+    <text x="1020" y="349" class="body" text-anchor="middle">behind NAT / firewall</text>
+    <rect x="933" y="366" width="174" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="1020" y="389" class="badge" text-anchor="middle" fill="#c7d2fe">DOCUMENT PEER</text>
+
+    <path d="M310 321H422" fill="none" stroke="#2dd4bf" stroke-width="4" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)"/>
+    <path d="M778 321H890" fill="none" stroke="#2dd4bf" stroke-width="4" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)"/>
+    <text x="366" y="302" class="body-strong" text-anchor="middle" fill="#99f6e4">WebSocket</text>
+    <text x="834" y="302" class="body-strong" text-anchor="middle" fill="#99f6e4">WebSocket</text>
+    <text x="600" y="463" class="body" text-anchor="middle">Circuit Relay v2 carries the live libp2p connection when a direct path is unavailable.</text>
+
+    <path d="M180 240C350 116 850 116 1020 240" fill="none" stroke="#a78bfa" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrowIndigo)"/>
+    <rect x="419" y="137" width="362" height="34" rx="17" fill="#302441" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="600" y="160" class="badge" text-anchor="middle" fill="#ddd6fe">OPTIONAL DIRECT WEBRTC UPGRADE</text>
+
+    <rect x="50" y="510" width="1100" height="92" rx="18" fill="#111d2e" stroke="#475569" stroke-width="2"/>
+    <text x="76" y="544" class="eyebrow" fill="#93c5fd">PATH SEMANTICS</text>
+    <text x="245" y="544" class="body-strong">The relay forwards encrypted Peerborne traffic and does not need document plaintext or signing private keys.</text>
+    <text x="76" y="576" class="body">If ICE establishes a direct WebRTC connection, libp2p can remove the relay from the data path; that upgrade is not guaranteed.</text>
+  </g>
+</svg>

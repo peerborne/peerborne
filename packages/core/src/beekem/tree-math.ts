@@ -3,17 +3,9 @@
  *
  * Based on the MLS RFC 9420 tree math (Appendix C).
  *
- * Node indexing (example with 8 leaves):
- *
- * ```
- *         7
- *        / \
- *       3   11
- *      / \ / \
- *     1  5 9  13
- *    /\ /\ /\ /\
- *   0 2 4 6 8 10 12 14
- * ```
+ * For an eight-leaf tree, breadth layout uses root 7; its children 3 and 11;
+ * the next internal level 1, 5, 9, and 13; and leaves 0, 2, 4, 6, 8, 10, 12,
+ * and 14.
  *
  * - Leaves are at even indices (0, 2, 4, ...)
  * - Internal nodes are at odd indices (1, 3, 5, ...)

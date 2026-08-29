@@ -1,102 +1,62 @@
-# Flow
+# Document Change Security Flows
 
-## Decrypt Change Message
+The current change path creates two related artifacts. The serialized CRDT
+change is encrypted with the document key and stored by CID without its own
+application signature. A separate sync envelope carries history references,
+is signed when ordinary document signing is enabled, and is then encrypted for
+transport. Receivers decrypt the envelope and, when signing is enabled, verify
+the writer before applying validated history.
 
-```plantuml
-@startuml
-title Decrypt Change Message 
-start
-:open stream to peer
- (document);
-:change source recv'd
- (document);
-:decrypt
- (auth prov);
-if (can decrypt?) then(yes)
-  if (for any key in
-      ACL_write,
-      can verify?) then (yes)
-    :deserialize
-      (document);
-    :apply remote change
-      (CRDT provider);
-    stop
-  else (no)
-    :warning;
-  stop
-  endif
-else(no)
-  :warning;
-stop
-endif
-@enduml
-```
-[[plantuml](
-  http://www.plantuml.com/plantuml/uml/NP6nJiGm44HxVyLqv2I-u2Wub2kXGVJ8SZONYsHjhJSvcQ_7IHo1SBFIpFFCMhuajQBpD1hrEXAkv2H7HJjOlX7UA2LRfjamSmwH64c5x0GDY4HYq7J1pHEndfxCsUqNKvZ54OJSyj3zGxgzewXsrW5Hmb9atwDnbb7TvnDq86uofPC1LhSF0iiPNvJXsM0xB-thvrsyqcCLreo5nFUvHk3804frAfOT_JTL_CzcEs9Z73E4fg24_JK7shvVFxPrVKTI-QGX6e36H6Wur9wx5VPyMv43uCxtPiKgzSjinEvVoYYVyGC0
-  )]
+![A local change becomes a separately encrypted stored payload and a conditionally signed, encrypted sync envelope that a receiver decrypts and verifies](../site/src/assets/diagrams/sync-envelope-lifecycle.svg "Stored payloads and sync envelopes have separate integrity and authorization checks.")
 
+_Stored payloads and sync envelopes have separate integrity and authorization
+checks._
 
-## Change Document
+The full change pipeline also shows CID creation, inline and deferred history,
+and the receiver's ordered checks:
 
-```plantuml
-@startuml
-title Change Document 
-start
+![A Peerborne change creates separate CID-addressed storage and encrypted GossipSub wire artifacts](../site/src/assets/diagrams/change-pipeline.svg "One local change creates distinct storage and wire artifacts.")
 
-if (write access?) then (yes)
-:create change object;
-:serialize change object;
-:sign change object 
-(auth prov);
-:encrypt
-(document key);
-else(no)
-endif
-stop
-@enduml
-```
+_One local change creates distinct storage and wire artifacts. See the
+[security concept](../site/src/content/docs/concepts/security.md) for the
+current guarantees and limitations._
 
-[[plantuml](
-http://www.plantuml.com/plantuml/uml/RSz1hi8m30JGlK_XPNA5_iMl11S9wRGrf4aLkw1oUY8g5aWixMTBCxrQgBOjYKmiWKzpo1FuNEAs81lJsubaPFUeOk0G8rJ_FTkCp6w7UkfYHMWMZ-zokIBQ7tMAAY79yuV8bB-NJ6wjSWy6lc7txGOvrdqrSiCdpG582fUB9-H1HY9IAolrRMezNW00
-  )]
+## References
 
+- [Web Cryptography API: symmetric encryption](https://jameshfisher.com/2017/11/02/web-cryptography-api-symmetric-encryption/)
+- [TypeScript generics](https://www.typescriptlang.org/docs/handbook/2/generics.html)
+- [JavaScript typed arrays](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Typed_arrays)
 
-References:
-  https://jameshfisher.com/2017/11/02/web-cryptography-api-symmetric-encryption/
-  https://www.tutorialsteacher.com/typescript/typescript-generic-class
-  https://www.typescriptlang.org/docs/handbook/2/generics.html
-  https://developer.mozilla.org/en-US/docs/Web/JavaScript/Typed_arrays 
+# SubtleCrypto Algorithms
 
-
-#Subtle Crypo Algos
-
-# Key type
+## Key Type
 
 https://developer.mozilla.org/en-US/docs/Web/API/CryptoKey
 
-## encrypt
+## Encrypt
 
 https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/encrypt
 
-### Algos for symmetric
+### Symmetric Algorithms
 
-  All symmetric algos require shared data used to encrypt and decrypt. All use underlying cipher AES (Advanced Encryption Standard):
-  * CTR
-  * CBC
-  * GCM
+All symmetric algorithms require shared key material used to encrypt and
+decrypt. The supported AES modes are:
+
+- CTR
+- CBC
+- GCM
 
 > GCM does provide built-in authentication, and for this reason it's often recommended over the other two ... GCM is an "authenticated" mode, which means that it includes checks that the ciphertext has not been modified by an attacker
 
-AesGcmParams
-  * name: "AES-GCM"
-  * iv: BufferSource
-    * unique for every encryption operation carried out with a given key
-    * 96 bits long ... from a random number generator
-    * does not have to be secret, just unique: so it is OK, for example, to transmit it in the clear alongside the encrypted message
-  * tagLength is optional and defaults to 128; bits of the authentication tag 
+`AesGcmParams`:
 
-## sign
+- `name`: `AES-GCM`
+- `iv`: a 96-bit `BufferSource` that must be unique for every encryption
+  operation with the same key; it does not need to be secret
+- `tagLength`: optional authentication-tag length; defaults to 128 bits
 
-### Algos for public-key
+## Sign
+
+### Public-Key Algorithms
 
 Three of these algorithms (RSASSA-PKCS1-v1_5, RSA-PSS, and ECDSA) are public-key

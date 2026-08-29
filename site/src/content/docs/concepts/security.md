@@ -138,10 +138,7 @@ The initial invitation API therefore requires an explicit
 changing membership. Invitation recipients may receive retained operations for
 values that were later changed or deleted.
 
-```text
-stored payload = encrypt(document key, serialized CRDT change) → CID
-sync/response  = encrypt(document key, serialize(CRDTSyncMessage + optional signature))
-```
+![A local change becomes a separately encrypted stored payload and a conditionally signed, encrypted sync envelope that a receiver decrypts and verifies](../../../assets/diagrams/sync-envelope-lifecycle.svg "Storage blocks and wire envelopes are distinct encrypted artifacts with different integrity checks.")
 
 ### Ordinary document signing configuration
 
