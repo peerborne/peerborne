@@ -389,7 +389,7 @@ describe('YjsKeychain', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // PR #285 round 6 regression coverage: BeeKEM PathUpdate flow installs
+  // BeeKEM PathUpdate compatibility: the flow installs
   // epoch keys via addEpochKey(...) using the FULL 32-byte HKDF output
   // (no truncation). The keychain MUST store the key under a cache-key
   // form that round-trips with getKey() on the exact same 32 bytes.
@@ -410,7 +410,8 @@ describe('YjsKeychain', () => {
     await keychain.addEpochKey(epochId, key);
 
     // The exact 32-byte ID that went in must come back out of getKey.
-    // A failure here surfaces the round-6 cache-key-format mismatch.
+    // A failure here means the epoch ID bytes did not round-trip through
+    // the hexadecimal cache-key encoding.
     const retrieved = keychain.getKey(epochId);
     expect(retrieved).toBe(key);
 

@@ -192,15 +192,13 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * advertised hash would not match what the load response actually
    * contains. The loader's structural bind check derives the served
    * frontier from the received `changes` tree and rejects honest peers
-   * whose advertise hash disagrees. Round 8 of the PR #284 Copilot
-   * review caught this exact bug.
+   * whose advertise hash disagrees.
    *
    * Implementers **MUST NOT** hash the full `_hashes` set either. Two
    * honest peers with the same logical document state can have DIFFERENT
    * observed-CID sets when their history depths differ (history
    * compaction, snapshot-loads that don't restore ancestors, different
-   * join times). Round 3 of the PR #284 Copilot review caught and fixed
-   * that earlier variant of the bug.
+   * join times), so hashing the full set creates false disagreement.
    *
    * Hashing the served frontier makes the hash deterministic across
    * honest peers whose `_lastSyncMessage` / `_latestSnapshot` describe
@@ -238,13 +236,12 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * serve one of them in a single load response. Advertising the full
    * local DAG frontier in `tips` would not match the structurally-derived
    * frontier of the served payload, so the loader's bind check would
-   * reject honest peers. Round 8 of the PR #284 Copilot review caught
-   * this; advertising the served frontier closes the gap.
+   * reject honest peers. Advertising the served frontier closes the gap.
    *
    * # Why this field exists at all (defense-in-depth)
    *
-   * The loader's PRIMARY binding (PR #284 r7) is derived structurally
-   * from `message.changes` / `message.snapshot` via
+   * The loader's PRIMARY binding is derived structurally from
+   * `message.changes` / `message.snapshot` via
    * `computeServedFrontier`, so a malicious peer that lies in `tips`
    * cannot bypass the gate by simply claiming the agreed CIDs. The
    * `tips` field is verified as a defense-in-depth attestation: if
@@ -264,8 +261,7 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    *     any) inflate `_hashes` beyond what the responder advertised;
    *   - on a compacted/pruned peer, the responder's `_hashes` includes
    *     referenced ancestors which two honest peers can have differently
-   *     based on sync history -- which is exactly the bug round 3 of the
-   *     Copilot review flagged.
+   *     based on sync history, making the hash history-dependent.
    *
    * Because the load response is signed by the responder, `tips` is a
    * responder-signed attestation of "the heads of what I am serving";

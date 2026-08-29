@@ -295,8 +295,7 @@ export function collectReferencedAncestors<ChangesType>(
  * then computing `_hashes \ _referencedAncestors` on an EMPTY pre-sync
  * loader, except it works in pure form (no I/O, no Helia blockstore
  * fetch, no document state mutation). The returned array is unsorted;
- * `tipsHash` performs its own canonical sort. See PR #284 r7 Copilot
- * review for the design discussion.
+ * `tipsHash` performs its own canonical sort.
  */
 export function computeServedFrontier<ChangesType>(
   changeId: string | undefined,
@@ -434,8 +433,8 @@ export function trackTipInList<Tip extends { cid: string }>(
  * the same root for chaining convenience.
  *
  * Used by `PeerborneDocument._sendLoadRequestAndSync` on quorum-bound
- * loads as a defense-in-depth against inline-content forgery (PR #284
- * r17 Copilot review). The structural quorum bind proves Q peers agree
+ * loads as a defense-in-depth against inline-content forgery. The
+ * structural quorum bind proves Q peers agree
  * on the FRONTIER CIDs, but a Byzantine peer that voted for the agreed
  * frontier can still serve a tree whose `children` map uses those CIDs
  * as keys but whose inline `change` values are forged. Stripping inline
@@ -474,7 +473,7 @@ export function stripInlineChanges<ChangesType>(
  * key). Returns the CIDs in insertion order, deduplicated via the
  * underlying `Set`. Used by `PeerborneDocument._sendLoadRequestAndSync`
  * on quorum-bound loads as the basis for the post-`sync()` "did every
- * stripped block actually arrive?" check (PR #284 r18 Copilot review):
+ * stripped block actually arrive?" check:
  *
  *   1. Collect all CIDs from the served tree BEFORE `stripInlineChanges`
  *      reduces it to a CID-keyed shell.

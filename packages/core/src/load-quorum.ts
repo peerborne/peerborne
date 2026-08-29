@@ -47,8 +47,7 @@ import { tipsHashToHex } from './tips-hash.js';
  *     real tip-hash, the `'unknown-doc'` bucket is EXCLUDED from the
  *     agreement vote; the new-doc path is only taken when ZERO peers
  *     reported a real tip-hash. See `Peerborne.tipAdvertiseHandler`
- *     for the wire sentinel and PR #284 r16 / r19 Copilot review for
- *     the precedence rationale.
+ *     for the wire sentinel.
  *
  *     Worst-case Byzantine exposure for new-doc is identical to the
  *     tip-hash case: Q lying peers can force a wrong outcome, but a
@@ -93,8 +92,8 @@ export type LoadQuorumDecision =
        * branch on `kind` to decide whether to proceed with the full
        * document-load (`'tip-hash'`) or to let the loader return `false`
        * so a fresh `open()` creates the document on top of the swarm
-       * (`'new-doc'`). See `Peerborne.tipAdvertiseHandler` and
-       * PR #284 r16 Copilot review for the unknown-doc wire signal.
+       * (`'new-doc'`). See `Peerborne.tipAdvertiseHandler` for the
+       * unknown-doc wire signal.
        */
       kind: 'tip-hash' | 'new-doc';
       winningHashHex: string;
@@ -136,7 +135,7 @@ export function decideLoadQuorum(
   // backstop for any other code path that builds the advertisements list
   // by hand. Coding-guideline rule applies here: throw on programming
   // mistakes (vs. logging warnings for runtime issues) so the failure is
-  // loud at the first call site. See PR #284 r12 CodeRabbit review.
+  // loud at the first call site.
   if (!Number.isInteger(q) || q < 1) {
     throw new Error(
       `decideLoadQuorum: q must be a positive integer; got ${String(q)}. ` +
@@ -211,8 +210,7 @@ export function decideLoadQuorum(
   // legitimately returns the `'unknown-doc'` sentinel). Without this
   // precedence rule, two such uninvolved peers could outvote the one
   // peer that actually has the document and force the loader into the
-  // new-doc-creation path -- forking the document silently. See
-  // PR #284 r19 Copilot review.
+  // new-doc-creation path -- forking the document silently.
   //
   // Precedence rule: if ANY peer returned a real tip-hash, the
   // `'unknown-doc'` bucket is excluded from the agreement vote. The
@@ -371,7 +369,6 @@ export function constantTimeHexEquals(a: string, b: string): boolean {
  * produce `Math.min(NaN, 3) === NaN` and a `peers.slice(0, NaN) === []`
  * silent skip. Floor + finiteness guards collapse both classes to 0,
  * which the orchestrator surfaces as `LoadQuorumFailedError(invalid-config)`.
- * See PR #284 r9 Copilot review.
  */
 export function effectiveK(
   configuredK: number,
@@ -399,8 +396,7 @@ export function effectiveK(
  * false), and `decideLoadQuorum` then evaluated `bestPeers.length < NaN`
  * as false — so the gate passed with a single responding peer. We
  * collapse NaN/Infinity to {@link defaultQuorumQ}(k) here as a fallback
- * that mirrors the orchestrator's `?? defaultQuorumQ(k)` default. See
- * PR #284 r9 Copilot review.
+ * that mirrors the orchestrator's `?? defaultQuorumQ(k)` default.
  */
 export function effectiveQ(configuredQ: number, k: number): number {
   if (k <= 0) return 0;
@@ -419,7 +415,7 @@ export function effectiveQ(configuredQ: number, k: number): number {
  * realistic per-probe budget on a wide-area mesh (the default is 5 s) but
  * small enough to catch a typo like `5000000` (5 000 s = ~83 min) or a
  * mistakenly-passed nanosecond value before it stalls `open()` for an
- * absurd duration. See PR #284 r15 Copilot review.
+ * absurd duration.
  */
 export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
 
@@ -428,17 +424,17 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  *
  * Runs at {@link Peerborne.initialize} time so a misconfigured value is
  * surfaced loudly at startup rather than silently degrading every
- * subsequent `load()` call. Required behavior under PR #284 r9 Copilot
- * review (issues #2/#3): `loadQuorumK: 1.5` previously slipped through
- * `Math.min(configuredK, peersLen)` to produce `peers.slice(0, 1.5)`
+ * subsequent `load()` call. For example, `loadQuorumK: 1.5` previously
+ * slipped through `Math.min(configuredK, peersLen)` to produce
+ * `peers.slice(0, 1.5)`
  * which probes only 1 peer (silent single-peer load); `loadQuorumQ: NaN`
  * propagated through `effectiveQ` to make `bestPeers.length < NaN`
  * evaluate as false (silent single-peer quorum pass). Both classes of
  * misconfig are now rejected here with a clear operator-visible error.
  *
- * `loadQuorumTimeoutMs` is also validated here under PR #284 r15 Copilot
- * review: the value flows directly into `setTimeout(...)` inside the
- * tip-advertise probe race, where `NaN`/`Infinity`/`0`/negative are coerced
+ * `loadQuorumTimeoutMs` is also validated here because the value flows
+ * directly into `setTimeout(...)` inside the tip-advertise probe race,
+ * where `NaN`/`Infinity`/`0`/negative are coerced
  * to immediate-fire / overflow behaviour by the timer queue. Every probe
  * then resolves as a non-vote and quorum fails on every load attempt even
  * with a fully healthy mesh — silently breaking the gate. We require a
@@ -543,7 +539,6 @@ export function validateLoadQuorumConfig(config: {
  * literal `null`, strings) still get quoted/serialized cleanly.
  *
  * Used by `validateLoadQuorumConfig` and `runLoadQuorum`'s post-init guard.
- * See PR #284 r10 Copilot review.
  */
 export function formatConfigValue(value: unknown): string {
   if (typeof value === 'number' && !Number.isFinite(value)) {
@@ -580,8 +575,7 @@ export function formatConfigValue(value: unknown): string {
  *   - `'invalid-config'` — the operator misconfigured the gate (e.g.
  *     `loadQuorumK <= 0`) in a way that would silently disable trust
  *     defences. Surfaced as a configuration error rather than a quorum
- *     failure so the misconfiguration is loud at `open()` time. See
- *     PR #284 r5 Copilot review.
+ *     failure so the misconfiguration is loud at `open()` time.
  *   - `'bind-check-failed-all-agreeing-peers'` — quorum agreement was
  *     reached, but EVERY peer in the agreeing cohort served a full-load
  *     response whose `tips` array did not hash to `winningHashHex` (or
@@ -589,11 +583,10 @@ export function formatConfigValue(value: unknown): string {
  *     can tell "no peer was even willing to vote" apart from "the agreeing
  *     cohort was entirely Byzantine on the load step". Surfaced by
  *     `PeerborneDocument.load()` after exhausting every narrowed peer.
- *     See PR #284 r6 Copilot review for the DoS rationale: without the
- *     per-peer retry, a single malicious peer in the agreeing cohort could
- *     vote for the majority hash and then serve a mismatched full load to
- *     unilaterally abort the whole load, preventing the loader from
- *     trying any of the OTHER honest agreeing peers.
+ *     Without the per-peer retry, a single malicious peer in the agreeing
+ *     cohort could vote for the majority hash and then serve a mismatched
+ *     full load to unilaterally abort the whole load, preventing the loader
+ *     from trying any of the OTHER honest agreeing peers.
  */
 export type LoadQuorumFailedReason =
   | 'insufficient-responses'
@@ -643,16 +636,14 @@ export class LoadQuorumFailedError extends Error {
    *  `'(missing tips)'` when the responder omitted the `tips` array). Lets
    *  callers and operators see WHICH peers in the agreeing cohort
    *  equivocated between the probe round and the load round, and what
-   *  they served instead. Empty for all other reasons. See PR #284 r6
-   *  Copilot review. */
+   *  they served instead. Empty for all other reasons. */
   public readonly agreeingPeerBindFailures: ReadonlyMap<string, string>;
   /** Structured detail string for the `'invalid-config'` reason (e.g.
    *  `loadQuorumK must be a positive integer; got NaN`). Exposed as a
    *  field so callers (notably `runLoadQuorum`'s post-init guard) can
    *  forward the validator's structured wording into a rethrown error
    *  with a different `documentPath` WITHOUT regex-parsing
-   *  `error.message`. Empty/undefined for all other reasons. See PR
-   *  #284 r23 Copilot review. */
+   *  `error.message`. Empty/undefined for all other reasons. */
   public readonly detail?: string;
 
   constructor(opts: {
