@@ -20,7 +20,7 @@ server—is itself the problem.
 
 **Status:** early-stage software preparing its initial release; not production-ready.
 
-[![Animated Peerborne architecture: Browser A makes a local edit, an encrypted load response travels through Circuit Relay, Browser B decrypts and loads the existing history using a restored document key, and each peer builds a client-side index.](.github/assets/peerborne-hook.gif)](.github/assets/peerborne-hook.gif)
+[![Animated Peerborne architecture: Browser A issues a signed invitation, Browser B joins with a distinct identity through an encrypted Welcome, the peers exchange live mutations through Circuit Relay, and each builds a client-side index.](.github/assets/peerborne-hook.svg)](.github/assets/peerborne-hook.svg)
 
 The relay path now has a Docker-backed acceptance test in which two NAT-isolated
 Chromium processes use distinct signing identities, Browser B accepts a signed
