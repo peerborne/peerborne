@@ -11,7 +11,7 @@
     "@testing-library/user-event": "^14.6.5",
     "@types/jest": "^29.5.13",
     "@types/node": "^22.7.5",
-    "@types/react": "^19.2.3",
+    "@types/react": "^19.2.18",
     "@types/react-bootstrap": "^1.1.0",
     "@types/react-dom": "^19.2.4",
     "@types/react-redux": "^7.1.34",
