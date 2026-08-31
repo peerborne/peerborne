@@ -4157,7 +4157,7 @@ __metadata:
     libp2p: "npm:^3.3.8"
     react: "npm:^19.2.8"
     react-dom: "npm:^19.2.8"
-    react-redux: "npm:^9.2.0"
+    react-redux: "npm:^9.3.0"
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
     typescript: "npm:^5.9.3"
@@ -4390,7 +4390,7 @@ __metadata:
     react-bootstrap: "npm:^2.10.10"
     react-bootstrap-icons: "npm:^1.11.6"
     react-dom: "npm:^19.2.8"
-    react-redux: "npm:^9.2.0"
+    react-redux: "npm:^9.3.0"
     react-router-dom: "npm:^5.3.4"
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
@@ -13236,9 +13236,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-redux@npm:^9.2.0":
-  version: 9.2.0
-  resolution: "react-redux@npm:9.2.0"
+"react-redux@npm:^9.3.0":
+  version: 9.3.0
+  resolution: "react-redux@npm:9.3.0"
   dependencies:
     "@types/use-sync-external-store": "npm:^0.0.6"
     use-sync-external-store: "npm:^1.4.0"
@@ -13251,7 +13251,7 @@ __metadata:
       optional: true
     redux:
       optional: true
-  checksum: 10/b3d2f89f469169475ab0a9f8914d54a336ac9bc6a31af6e8dcfe9901e6fe2cfd8c1a3f6ce7a2f7f3e0928a93fbab833b668804155715598b7f2ad89927d3ff50
+  checksum: 10/3384e98e382ddb2f2a8f35bc7145fabd60f2fb0ccd999df5587bd926de9590f52cd3a29c4a01fe191d710a9c8f9d7293efff8d5fc32debc84de25c911b70fc45
   languageName: node
   linkType: hard
 
