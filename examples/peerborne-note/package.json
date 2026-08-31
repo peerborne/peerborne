@@ -23,7 +23,7 @@
     "@libp2p/peer-id": "^6.0.14",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.7.5",
-    "@types/react": "^19.2.3",
+    "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
     "fake-indexeddb": "^6.2.5",
