@@ -281,9 +281,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@astrojs/starlight@npm:^0.41.3":
-  version: 0.41.7
-  resolution: "@astrojs/starlight@npm:0.41.7"
+"@astrojs/starlight@npm:^0.41.9":
+  version: 0.41.9
+  resolution: "@astrojs/starlight@npm:0.41.9"
   dependencies:
     "@astrojs/markdown-satteri": "npm:^0.3.5"
     "@astrojs/mdx": "npm:^7.0.5"
@@ -320,7 +320,7 @@ __metadata:
   peerDependenciesMeta:
     "@astrojs/markdown-remark":
       optional: true
-  checksum: 10/a1ecfb76426f40b4184e604dd6cbedb00e68bc672a4b48a99363747ef2a139c16ac33952389afe76fb6b852def2ccdcec7495b3ccd8d398dad2477ac9b396c49
+  checksum: 10/b28e5ba15a560b5054121c1b59493b991bc488edac050512a45e6019a62236f0952e59cbee57f9cd3e6c8fa042d060a8a7f045dfea7a19ab3e3e942d9cb733ce
   languageName: node
   linkType: hard
 
@@ -4350,7 +4350,7 @@ __metadata:
   resolution: "@peerborne/site@workspace:site"
   dependencies:
     "@astrojs/markdown-remark": "npm:^7.2.4"
-    "@astrojs/starlight": "npm:^0.41.3"
+    "@astrojs/starlight": "npm:^0.41.9"
     "@peerborne/core": "workspace:*"
     "@peerborne/yjs": "workspace:*"
     astro: "npm:^7.0.7"

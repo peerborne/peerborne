@@ -18,7 +18,7 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.3",
+    "@astrojs/starlight": "^0.41.9",
     "@peerborne/core": "workspace:*",
     "@peerborne/yjs": "workspace:*",
     "astro": "^7.0.7",
