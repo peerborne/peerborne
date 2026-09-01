@@ -55,7 +55,7 @@
     "@libp2p/gossipsub": "^17.0.0",
     "@libp2p/identify": "^4.1.12",
     "@libp2p/interface": "^3.2.5",
-    "@libp2p/tcp": "^11.0.26",
+    "@libp2p/tcp": "^11.0.27",
     "@libp2p/websockets": "^10.1.19",
     "@vitejs/plugin-react": "^4.3.4",
     "libp2p": "^3.3.8",
