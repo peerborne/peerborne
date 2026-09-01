@@ -3567,7 +3567,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/tcp@npm:^11.0.15, @libp2p/tcp@npm:^11.0.21, @libp2p/tcp@npm:^11.0.26":
+"@libp2p/tcp@npm:^11.0.15, @libp2p/tcp@npm:^11.0.21":
   version: 11.0.26
   resolution: "@libp2p/tcp@npm:11.0.26"
   dependencies:
@@ -3580,6 +3580,22 @@ __metadata:
     progress-events: "npm:^1.0.1"
     uint8arraylist: "npm:^3.0.2"
   checksum: 10/9380f7c4fe2ac3e263dcfeb5e6bf6f2c6fc0b953b3d36448be68b806bdccf4fd96271ba36c95fcce7a9557c7d37c19e531e443666bcfb40bbeb0bc6f9134850c
+  languageName: node
+  linkType: hard
+
+"@libp2p/tcp@npm:^11.0.27":
+  version: 11.0.27
+  resolution: "@libp2p/tcp@npm:11.0.27"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/utils": "npm:^7.4.0"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@multiformats/multiaddr-matcher": "npm:^3.0.2"
+    main-event: "npm:^1.0.1"
+    p-event: "npm:^7.0.0"
+    progress-events: "npm:^1.0.1"
+    uint8arraylist: "npm:^3.0.2"
+  checksum: 10/24360fe09231042b93fcca4b7b46c3e9f3912eec0a61749b631f05d02745f92cf98dec2563a74aa59721b3fac4e0f5d73a8edf63b6147d0e9b516cfcb77001ed
   languageName: node
   linkType: hard
 
@@ -4405,7 +4421,7 @@ __metadata:
     "@libp2p/gossipsub": "npm:^17.0.0"
     "@libp2p/identify": "npm:^4.1.12"
     "@libp2p/interface": "npm:^3.2.5"
-    "@libp2p/tcp": "npm:^11.0.26"
+    "@libp2p/tcp": "npm:^11.0.27"
     "@libp2p/websockets": "npm:^10.1.19"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
