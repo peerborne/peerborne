@@ -3613,14 +3613,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/webtransport@npm:^6.0.35":
-  version: 6.0.35
-  resolution: "@libp2p/webtransport@npm:6.0.35"
+"@libp2p/webtransport@npm:^6.0.37":
+  version: 6.0.37
+  resolution: "@libp2p/webtransport@npm:6.0.37"
   dependencies:
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
-    "@libp2p/interface": "npm:^3.2.5"
-    "@libp2p/peer-id": "npm:^6.0.14"
-    "@libp2p/utils": "npm:^7.3.2"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/utils": "npm:^7.4.0"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@multiformats/multiaddr-matcher": "npm:^3.0.2"
     multiformats: "npm:^14.0.0"
@@ -3628,7 +3628,7 @@ __metadata:
     race-signal: "npm:^2.0.0"
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/dd46ec9759ce1beb1304a62bf3d40598ac65a36c2f96d10b3f765596205435959fbb635106e66f04b4fdf54985807a252066f00a1822114df1766acfd6fda53e
+  checksum: 10/10aef19639de39a48132d729875fced4249ce000fdc97af9f9c3adaff7daffa51880276708882640627c4a4669eedb64dab419fde3ff96a5fe96a7a3bbfe84ac
   languageName: node
   linkType: hard
 
@@ -4193,7 +4193,7 @@ __metadata:
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
     "@libp2p/webrtc": "npm:^6.0.29"
     "@libp2p/websockets": "npm:^10.1.19"
-    "@libp2p/webtransport": "npm:^6.0.35"
+    "@libp2p/webtransport": "npm:^6.0.37"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@peculiar/webcrypto": "npm:^1.7.1"
     "@types/node": "npm:^22.7.5"
