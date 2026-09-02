@@ -4437,7 +4437,7 @@ __metadata:
     "@types/react-dom": "npm:^19.2.4"
     "@types/react-redux": "npm:^7.1.34"
     "@vitejs/plugin-react": "npm:^4.3.4"
-    jsondiffpatch: "npm:^0.7.2"
+    jsondiffpatch: "npm:^0.7.6"
     jsoneditor: "npm:^10"
     jsoneditor-react: "npm:^3.1.2"
     libp2p: "npm:^3.3.8"
@@ -11108,14 +11108,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"jsondiffpatch@npm:^0.7.2":
-  version: 0.7.3
-  resolution: "jsondiffpatch@npm:0.7.3"
+"jsondiffpatch@npm:^0.7.6":
+  version: 0.7.6
+  resolution: "jsondiffpatch@npm:0.7.6"
   dependencies:
     "@dmsnell/diff-match-patch": "npm:^1.1.0"
   bin:
     jsondiffpatch: bin/jsondiffpatch.js
-  checksum: 10/c7ad8f63c4d6283f79a9a1883d101544ea1ed675cf45200cd1a6fbe802f761a36c07c46caaa4071e73b7142fc7d7839ec4df7873cc878b48013252c2fc265032
+  checksum: 10/d741d5547c28c97098ac46fcad63805992e30567e9d9ecb16780f6d1f2c8e2d6838ef3ede7b6b17295baf87acb5bef03f4d2fb6159eba81dcbcbd6e66c6ac79d
   languageName: node
   linkType: hard
 
