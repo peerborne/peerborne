@@ -3038,7 +3038,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/bootstrap@npm:^12.0.16, @libp2p/bootstrap@npm:^12.0.24, @libp2p/bootstrap@npm:^12.0.29":
+"@libp2p/bootstrap@npm:^12.0.16, @libp2p/bootstrap@npm:^12.0.24":
   version: 12.0.29
   resolution: "@libp2p/bootstrap@npm:12.0.29"
   dependencies:
@@ -3049,6 +3049,20 @@ __metadata:
     "@multiformats/multiaddr-matcher": "npm:^3.0.2"
     main-event: "npm:^1.0.1"
   checksum: 10/81d5cbd20195698a2b778d2dd0589c287340064b8b9cacf1cdab03fc2f189d4f1999146e4b324b3577d48d63608fc2e4e674d57bbc3f6002e3de4ea9be466afa
+  languageName: node
+  linkType: hard
+
+"@libp2p/bootstrap@npm:^12.0.30":
+  version: 12.0.30
+  resolution: "@libp2p/bootstrap@npm:12.0.30"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.12"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@multiformats/multiaddr-matcher": "npm:^3.0.2"
+    main-event: "npm:^1.0.1"
+  checksum: 10/690206315f95accc1b07b4a97290306a490f31e7f54f1e4f924890b5dd705ee4b4f1b6c18c980ec1000f0b277550dd9f55e0fbae49695cbb34c75efb17e0c6e3
   languageName: node
   linkType: hard
 
@@ -4466,7 +4480,7 @@ __metadata:
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
     "@libp2p/autonat": "npm:^3.0.27"
-    "@libp2p/bootstrap": "npm:^12.0.29"
+    "@libp2p/bootstrap": "npm:^12.0.30"
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/dcutr": "npm:^3.0.26"
     "@libp2p/gossipsub": "npm:^17.0.0"
