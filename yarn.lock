@@ -1738,7 +1738,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/bitswap@npm:^4.0.11, @helia/bitswap@npm:^4.0.14":
+"@helia/bitswap@npm:^4.0.14":
   version: 4.0.14
   resolution: "@helia/bitswap@npm:4.0.14"
   dependencies:
@@ -1911,7 +1911,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/libp2p@npm:^2.1.0, @helia/libp2p@npm:^2.1.3":
+"@helia/libp2p@npm:^2.1.3":
   version: 2.1.3
   resolution: "@helia/libp2p@npm:2.1.3"
   dependencies:
@@ -4492,7 +4492,7 @@ __metadata:
     eslint: "npm:^10.4.1"
     fake-indexeddb: "npm:^6.2.5"
     fast-check: "npm:^4.9.0"
-    helia: "npm:^7.1.7"
+    helia: "npm:^7.1.10"
     helia-v6: "npm:helia@6.1.4"
     ipns: "npm:^11.0.1"
     it-pipe: "npm:^3.0.1"
@@ -9337,14 +9337,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"helia@npm:^7.1.7":
-  version: 7.1.7
-  resolution: "helia@npm:7.1.7"
+"helia@npm:^7.1.10":
+  version: 7.1.10
+  resolution: "helia@npm:7.1.10"
   dependencies:
-    "@helia/bitswap": "npm:^4.0.11"
+    "@helia/bitswap": "npm:^4.0.14"
     "@helia/http": "npm:^4.0.6"
     "@helia/interface": "npm:^7.1.1"
-    "@helia/libp2p": "npm:^2.1.0"
+    "@helia/libp2p": "npm:^2.1.3"
     "@helia/utils": "npm:^3.0.5"
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
@@ -9372,7 +9372,7 @@ __metadata:
     multiformats: "npm:^14.0.0"
     progress-events: "npm:^1.1.0"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/c81b2f65649f0937d1cbe0d28bf67d797ee318bbbb234641c8af318c3e95dad3910900ac79034c22fa1680bc431b03f7491eaf0424af7c71fded39c1861e6b89
+  checksum: 10/448bd3baa0a7bdbab6a3293905ee56e6c777f1fd74b2dfa9b985b6ffa7a0b6ee7f4677740a1914ca1ef0e63fec33b0a4785c8b24850deb3a7d3ba1e37d4a03f8
   languageName: node
   linkType: hard
 
