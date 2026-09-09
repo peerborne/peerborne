@@ -1,6 +1,14 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
-import { Doc, encodeStateAsUpdateV2 } from 'yjs';
+import { runInNewContext } from 'node:vm';
 import {
+  applyUpdateV2,
+  Doc,
+  encodeStateAsUpdateV2,
+  encodeStateVector,
+} from 'yjs';
+import {
+  MAX_KEYCHAIN_EPOCHS,
+  snapshotDeepEnumerableData,
   type CRDTChangeNode,
   MAX_MERKLE_DAG_DEPTH,
 } from '@peerborne/core';
@@ -11,6 +19,7 @@ import {
   YjsKeychain,
   YjsKeychainProvider,
   YjsJSONSerializer,
+  serializeKey,
 } from './peerborne-yjs.js';
 
 // ECDSA P-384 test keys (extractable, verify-only)
@@ -259,6 +268,26 @@ describe('YjsACL', () => {
   });
 });
 
+async function testDocumentKey(fill: number): Promise<{
+  key: CryptoKey;
+  serialized: string;
+}> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new Uint8Array(32).fill(fill),
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt'],
+  );
+  return { key, serialized: await serializeKey(key) };
+}
+
+function yjsKeychainUpdate(entries: unknown[]): Uint8Array {
+  const doc = new Doc();
+  doc.getArray<unknown>('keys').push(entries);
+  return encodeStateAsUpdateV2(doc);
+}
+
 describe('YjsKeychain', () => {
   test('add() returns [keyIDBytes, CryptoKey, changes]', async () => {
     const keychain = new YjsKeychain();
@@ -273,6 +302,44 @@ describe('YjsKeychain', () => {
     expect(key.type).toBe('secret');
     expect(changes).toBeInstanceOf(Uint8Array);
     expect(changes.length).toBeGreaterThan(0);
+  });
+
+  test('prepareKey() stages a bounded random key without live mutation', async () => {
+    const keychain = new YjsKeychain();
+    const before = keychain.history();
+    const prepared = await keychain.prepareKey();
+    const stableId = new Uint8Array(prepared.keyId);
+    expect(stableId).toHaveLength(32);
+    expect(prepared.key.algorithm).toMatchObject({
+      name: 'AES-GCM',
+      length: 256,
+    });
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+
+    const independent = new YjsKeychain();
+    await independent.addEpochKey(stableId, prepared.key);
+    independent.merge(prepared.currentKeyChange!);
+    expect((await independent.keys()).map(([id]) => id)).toEqual([stableId]);
+
+    prepared.keyId.fill(0xff);
+    prepared.commit();
+    expect((await keychain.current())[0]).toEqual(stableId);
+    expect(keychain.getKey(stableId)).toBe(prepared.key);
+    expect(() => prepared.commit()).toThrow(
+      'Prepared epoch key was already committed',
+    );
+  });
+
+  test('prepareKey() commit rejects a stale live base', async () => {
+    const keychain = new YjsKeychain();
+    const prepared = await keychain.prepareKey();
+    await keychain.add();
+
+    expect(() => prepared.commit()).toThrow(
+      'Keychain changed while epoch key was staged',
+    );
+    expect(await keychain.keys()).toHaveLength(1);
   });
 
   test('keys() returns all added keys', async () => {
@@ -299,6 +366,36 @@ describe('YjsKeychain', () => {
     const keychain = new YjsKeychain();
     const unknownID = new Uint8Array(32);
     expect(keychain.getKey(unknownID)).toBeUndefined();
+  });
+
+  test('currentKeyChange() reuses replay-safe history for a one-key keychain', async () => {
+    const source = new YjsKeychain();
+    const [id] = await source.add();
+
+    const first = await source.currentKeyChange();
+    const repeated = await source.currentKeyChange();
+    expect(repeated).toEqual(first);
+    const restored = new YjsKeychain();
+    restored.merge(source.history());
+    expect(await restored.currentKeyChange()).toEqual(first);
+
+    const receiver = new YjsKeychain();
+    receiver.merge(first);
+    receiver.merge(repeated);
+    expect(await receiver.currentKeyChange()).toEqual(first);
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
+  });
+
+  test('currentKeyChange() rejects a later key rather than synthesizing a fresh client', async () => {
+    const source = new YjsKeychain();
+    await source.add();
+    await source.add();
+    const before = source.history();
+
+    await expect(source.currentKeyChange()).rejects.toThrow(
+      'Yjs cannot export the current key replay-safely',
+    );
+    expect(source.history()).toEqual(before);
   });
 
   test('current() throws on empty keychain', async () => {
@@ -342,54 +439,72 @@ describe('YjsKeychain', () => {
     expect(provider.keyIDLength).toBe(32);
   });
 
-  test('historySince() returns only keys from the given key ID onward', async () => {
+  test('historySince() reuses replay-safe history at the first key', async () => {
     const source = new YjsKeychain();
     const [id1] = await source.add();
     const [id2] = await source.add();
     const [id3] = await source.add();
 
-    // Slice from the second key: receiver should observe ids 2 and 3 only.
-    const slice = await source.historySince(id2);
+    const first = await source.historySince(id1);
+    const repeated = await source.historySince(id1);
+    expect(repeated).toEqual(first);
+    const restored = new YjsKeychain();
+    restored.merge(source.history());
+    const restoredHistory = await restored.historySince(id1);
+    expect(restoredHistory).toEqual(first);
 
     const receiver = new YjsKeychain();
-    receiver.merge(slice);
+    receiver.merge(first);
+    receiver.merge(repeated);
+    receiver.merge(restoredHistory);
     const keys = await receiver.keys();
-    expect(keys).toHaveLength(2);
-    const ids = keys.map(([id]) => Array.from(id));
-    expect(ids).toContainEqual(Array.from(id2));
-    expect(ids).toContainEqual(Array.from(id3));
-    expect(ids).not.toContainEqual(Array.from(id1));
-  });
-
-  test('historySince() falls back to full history when the boundary key is unknown', async () => {
-    const source = new YjsKeychain();
-    const [id1] = await source.add();
-    const [id2] = await source.add();
-
-    const unknownID = new Uint8Array(32).fill(0xff);
-    const slice = await source.historySince(unknownID);
-
-    const receiver = new YjsKeychain();
-    receiver.merge(slice);
-    const keys = await receiver.keys();
-    expect(keys).toHaveLength(2);
+    expect(keys).toHaveLength(3);
     const ids = keys.map(([id]) => Array.from(id));
     expect(ids).toContainEqual(Array.from(id1));
     expect(ids).toContainEqual(Array.from(id2));
+    expect(ids).toContainEqual(Array.from(id3));
   });
 
-  test('historySince() with the current key returns only the current key', async () => {
+  test('historySince() repeatedly rejects an unknown boundary without mutation', async () => {
     const source = new YjsKeychain();
     await source.add();
     await source.add();
-    const [currentID] = await source.current();
-    const slice = await source.historySince(currentID);
+    const before = source.history();
 
-    const receiver = new YjsKeychain();
-    receiver.merge(slice);
-    const keys = await receiver.keys();
-    expect(keys).toHaveLength(1);
-    expect(Array.from(keys[0][0])).toEqual(Array.from(currentID));
+    const unknownID = new Uint8Array(32).fill(0xff);
+    await expect(source.historySince(unknownID)).rejects.toThrow(
+      'Unknown keychain history boundary',
+    );
+    await expect(source.historySince(unknownID)).rejects.toThrow(
+      'Unknown keychain history boundary',
+    );
+    expect(source.history()).toEqual(before);
+  });
+
+  test('historySince() rejects a later boundary rather than synthesizing fresh clients', async () => {
+    const source = new YjsKeychain();
+    await source.add();
+    const [laterID] = await source.add();
+
+    await expect(source.historySince(laterID)).rejects.toThrow(
+      'Yjs cannot export this keychain suffix replay-safely',
+    );
+  });
+
+  test('addEpochKey() rejects a duplicate ID without poisoning its cache', async () => {
+    const source = new YjsKeychain();
+    const [id, key] = await source.add();
+    const replacement = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(source.addEpochKey(id, replacement)).rejects.toThrow(
+      'Duplicate keychain key ID',
+    );
+    expect(source.getKey(id)).toBe(key);
+    expect(await source.keys()).toHaveLength(1);
   });
 
   // ───────────────────────────────────────────────────────────────────
@@ -425,6 +540,699 @@ describe('YjsKeychain', () => {
     expect(currentID.length).toBe(32);
     expect(Array.from(currentID)).toEqual(Array.from(epochId));
     expect(currentKey).toBe(key);
+  });
+
+  test.each([31, 33])(
+    'prepareEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new YjsKeychain();
+      const historyBefore = new Uint8Array(keychain.history());
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.prepareEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test('addEpochKey() rejects non-AES document keys without mutation', async () => {
+    const keychain = new YjsKeychain();
+    const before = keychain.history();
+    const hmacKey = await crypto.subtle.generateKey(
+      { name: 'HMAC', hash: 'SHA-256', length: 256 },
+      true,
+      ['sign', 'verify'],
+    );
+
+    await expect(
+      keychain.addEpochKey(new Uint8Array(32).fill(3), hmacKey),
+    ).rejects.toThrow('Document key must be a 256-bit AES-GCM key');
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test.each([31, 33])(
+    'addEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new YjsKeychain();
+      const historyBefore = new Uint8Array(keychain.history());
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.addEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test('prepareEpochKey() accepts cross-realm bytes and snapshots them before awaiting', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = runInNewContext(
+      'new Uint8Array(32).fill(7)',
+    ) as Uint8Array;
+    const expectedEpochId = new Uint8Array(32).fill(7);
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    expect(epochId).not.toBeInstanceOf(Uint8Array);
+    const preparing = keychain.prepareEpochKey(epochId, key);
+    epochId.fill(9);
+    const prepared = await preparing;
+    prepared.commit();
+
+    const [currentId, currentKey] = await keychain.current();
+    expect(currentId).toEqual(expectedEpochId);
+    expect(currentKey).toBe(key);
+    expect(keychain.getKey(expectedEpochId)).toBe(key);
+  });
+
+  test.each([
+    ['another typed-array kind', new Uint16Array(16)],
+    [
+      'a Uint8Array lookalike',
+      {
+        byteLength: 32,
+        length: 32,
+        [Symbol.toStringTag]: 'Uint8Array',
+      },
+    ],
+  ])('prepareEpochKey() rejects %s', async (_label, epochId) => {
+    const keychain = new YjsKeychain();
+    const historyBefore = new Uint8Array(keychain.history());
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(
+      keychain.prepareEpochKey(epochId as unknown as Uint8Array, key),
+    ).rejects.toThrow(/Epoch ID/);
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test('prepareEpochKey() rejects SharedArrayBuffer-backed bytes', async () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const keychain = new YjsKeychain();
+    const historyBefore = new Uint8Array(keychain.history());
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(
+      keychain.prepareEpochKey(
+        new Uint8Array(new SharedArrayBuffer(32)),
+        key,
+      ),
+    ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test('prepareEpochKey() commits its private bytes after returned changes are mutated', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    const keys = await keychain.keys();
+    expect(keys).toHaveLength(1);
+    expect(keys[0][0]).toEqual(epochId);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('prepareEpochKey() exposes an exact replay-safe current projection', async () => {
+    const keychain = new YjsKeychain();
+    const firstId = crypto.getRandomValues(new Uint8Array(32));
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const first = await keychain.prepareEpochKey(firstId, firstKey);
+    expect(first.currentKeyChange).toBeDefined();
+    const receiver = new YjsKeychain();
+    receiver.merge(first.currentKeyChange!);
+    receiver.merge(first.currentKeyChange!);
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([firstId]);
+    first.commit();
+
+    const nextKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const nextId = crypto.getRandomValues(new Uint8Array(32));
+    const next = await keychain.prepareEpochKey(nextId, nextKey);
+    expect(next.currentKeyChange).toBeDefined();
+    const narrowReceiver = new YjsKeychain();
+    narrowReceiver.merge(next.currentKeyChange!);
+    narrowReceiver.merge(next.currentKeyChange!);
+    expect((await narrowReceiver.keys()).map(([id]) => id)).toEqual([nextId]);
+  });
+
+  test('prepareMerge() commits its private bytes after returned changes are mutated', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    const keys = await receiver.keys();
+    expect(keys).toHaveLength(1);
+    expect(keys[0][0]).toEqual(epochId);
+  });
+
+  test('prepareMerge() rejects non-canonical entries before live state or cache mutation', async () => {
+    const validKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const serialized = await serializeKey(validKey);
+    const invalidEntries: unknown[] = [
+      ['aa'.repeat(16), serialized],
+      ['AB'.repeat(32), serialized],
+      ['ab'.repeat(32), 'not-a-key'],
+      ['ab'.repeat(32), `${'A'.repeat(42)}B=`],
+      ['ab'.repeat(32), serialized, 'extra'],
+      ['ab'.repeat(32), 7],
+    ];
+
+    for (const entry of invalidEntries) {
+      const receiver = new YjsKeychain();
+      expect(() =>
+        receiver.prepareMerge(yjsKeychainUpdate([entry])),
+      ).toThrow(/Invalid (keychain entry|serialized keychain key)/);
+      expect(await receiver.keys()).toHaveLength(0);
+      expect(receiver.getKey(new Uint8Array(32))).toBeUndefined();
+    }
+  });
+
+  test('prepareMerge() rejects duplicate IDs before they can poison cached key material', async () => {
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const id = new Uint8Array(32).fill(5);
+    const idHex = Array.from(id, (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    const firstSerialized = await serializeKey(firstKey);
+    const secondSerialized = await serializeKey(secondKey);
+    const receiver = new YjsKeychain();
+
+    expect(() =>
+      receiver.prepareMerge(
+        yjsKeychainUpdate([
+          [idHex, firstSerialized],
+          [idHex, secondSerialized],
+        ]),
+      ),
+    ).toThrow('Duplicate keychain key ID');
+    expect(await receiver.keys()).toHaveLength(0);
+    expect(receiver.getKey(id)).toBeUndefined();
+  });
+
+  test('prepareMerge() rejects delete, rewrite, and reorder attempts', async () => {
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const firstEntry: [string, string] = [
+      '11'.repeat(32),
+      await serializeKey(firstKey),
+    ];
+    const secondEntry: [string, string] = [
+      '22'.repeat(32),
+      await serializeKey(secondKey),
+    ];
+
+    const deleted = new Doc();
+    deleted.getArray<[string, string]>('keys').push([firstEntry, secondEntry]);
+    deleted.getArray('keys').delete(0, 1);
+    expect(() =>
+      new YjsKeychain().prepareMerge(encodeStateAsUpdateV2(deleted)),
+    ).toThrow('Keychain history must not contain deletions');
+
+    const rewritten = new Doc();
+    rewritten.getArray<[string, string]>('keys').push([firstEntry]);
+    rewritten.getArray('keys').delete(0, 1);
+    rewritten.getArray<[string, string]>('keys').push([secondEntry]);
+    expect(() =>
+      new YjsKeychain().prepareMerge(encodeStateAsUpdateV2(rewritten)),
+    ).toThrow('Keychain history must not contain deletions');
+
+    const source = new Doc();
+    source.getArray<[string, string]>('keys').push([firstEntry]);
+    const receiver = new YjsKeychain();
+    receiver.merge(encodeStateAsUpdateV2(source));
+    const beforeInsert = encodeStateVector(source);
+    source.getArray<[string, string]>('keys').insert(0, [secondEntry]);
+    const reorder = encodeStateAsUpdateV2(source, beforeInsert);
+    expect(() => receiver.prepareMerge(reorder)).toThrow(
+      /unrelated operation|append without rewriting entries/,
+    );
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([
+      new Uint8Array(32).fill(0x11),
+    ]);
+  });
+
+  test('prepareMerge() rejects unrelated and dependency-incomplete Yjs operations', async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const entry: [string, string] = [
+      '33'.repeat(32),
+      await serializeKey(key),
+    ];
+    const unrelated = new Doc();
+    unrelated.getMap<unknown>('other').set('hidden', entry);
+    expect(() =>
+      new YjsKeychain().prepareMerge(encodeStateAsUpdateV2(unrelated)),
+    ).toThrow('Keychain history contains an unrelated operation');
+
+    const dependent = new Doc();
+    dependent.getArray<[string, string]>('keys').push([entry]);
+    const beforeSecond = encodeStateVector(dependent);
+    dependent.getArray<[string, string]>('keys').push([
+      ['44'.repeat(32), await serializeKey(key)],
+    ]);
+    const missingPredecessor = encodeStateAsUpdateV2(dependent, beforeSecond);
+    expect(() =>
+      new YjsKeychain().prepareMerge(missingPredecessor),
+    ).toThrow('Keychain history has unresolved update dependencies');
+
+    const concurrentLeft = new Doc();
+    const concurrentRight = new Doc();
+    concurrentLeft.getArray<[string, string]>('keys').push([entry]);
+    concurrentRight.getArray<[string, string]>('keys').push([
+      ['55'.repeat(32), await serializeKey(key)],
+    ]);
+    const concurrent = new Doc();
+    applyUpdateV2(concurrent, encodeStateAsUpdateV2(concurrentLeft));
+    applyUpdateV2(concurrent, encodeStateAsUpdateV2(concurrentRight));
+    expect(() =>
+      new YjsKeychain().prepareMerge(encodeStateAsUpdateV2(concurrent)),
+    ).toThrow('Keychain history contains an unrelated operation');
+  });
+
+  test('delete-only updates reject and replay-only commits invalidate older staging', async () => {
+    const keychain = new YjsKeychain();
+    await keychain.add();
+    const nextId = new Uint8Array(32).fill(9);
+    const nextKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const stagedEpoch = await keychain.prepareEpochKey(nextId, nextKey);
+
+    const replica = new Doc();
+    applyUpdateV2(replica, keychain.history());
+    const beforeDelete = encodeStateVector(replica);
+    replica.getArray('keys').delete(0, 1);
+    expect(encodeStateVector(replica)).toEqual(beforeDelete);
+    const deletionOnly = encodeStateAsUpdateV2(replica, beforeDelete);
+    expect(() => keychain.prepareMerge(deletionOnly)).toThrow(
+      'Keychain history must not contain deletions',
+    );
+
+    const replay = keychain.prepareMerge(keychain.history());
+    replay.commit();
+    expect(() => stagedEpoch.commit()).toThrow(
+      'Keychain changed while epoch key was staged',
+    );
+  });
+
+  test('history projections reject tombstoned historical key material', async () => {
+    const { serialized } = await testDocumentKey(0x71);
+    const tombstoned = new Doc();
+    tombstoned.getArray<[string, string]>('keys').push([
+      ['11'.repeat(32), serialized],
+    ]);
+    tombstoned.getArray('keys').delete(0, 1);
+    tombstoned.getArray<[string, string]>('keys').push([
+      ['22'.repeat(32), serialized],
+    ]);
+    const compromised = new YjsKeychain();
+    Object.defineProperty(compromised, '_keychain', {
+      value: tombstoned,
+      writable: true,
+    });
+
+    expect(() => compromised.history()).toThrow(
+      'Keychain history must not contain deletions',
+    );
+    await expect(compromised.stateCommitment()).rejects.toThrow(
+      'Keychain history must not contain deletions',
+    );
+    await expect(compromised.currentKeyChange()).rejects.toThrow(
+      'Keychain history must not contain deletions',
+    );
+    await expect(
+      compromised.historySince(new Uint8Array(32).fill(0x22)),
+    ).rejects.toThrow('Keychain history must not contain deletions');
+    await expect(compromised.keys()).rejects.toThrow(
+      'Keychain history must not contain deletions',
+    );
+  });
+
+  test('prepareMerge() hydrates detached staged keys and transfers them only on commit', async () => {
+    const source = new YjsKeychain();
+    const [firstId] = await source.add();
+    const [currentId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+
+    expect(prepared.currentKeyId).toEqual(currentId);
+    prepared.keyIds[0].fill(0xff);
+    prepared.currentKeyId!.fill(0xee);
+    expect(await prepared.stateCommitment!()).toEqual(
+      await source.stateCommitment(),
+    );
+    const hydrated = await prepared.hydrateKeys();
+    expect(hydrated.map(([id]) => id)).toEqual([firstId, currentId]);
+    expect(prepared.getKey(firstId)).toBe(hydrated[0][1]);
+    expect(prepared.getKey(currentId)).toBe(hydrated[1][1]);
+    expect(await receiver.keys()).toHaveLength(0);
+    expect(receiver.getKey(currentId)).toBeUndefined();
+
+    prepared.commit();
+    expect(receiver.getKey(firstId)).toBe(hydrated[0][1]);
+    expect(receiver.getKey(currentId)).toBe(hydrated[1][1]);
+    expect((await receiver.current())[0]).toEqual(currentId);
+    expect(await receiver.stateCommitment()).toEqual(
+      await source.stateCommitment(),
+    );
+  });
+
+  test('prepareMerge() accepts cross-realm bytes and rejects shared backing', async () => {
+    const source = new YjsKeychain();
+    const [id] = await source.add();
+    const history = source.history();
+    const crossRealm = runInNewContext(
+      `new Uint8Array([${Array.from(history).join(',')}])`,
+    ) as Uint8Array;
+    expect(crossRealm).not.toBeInstanceOf(Uint8Array);
+    const receiver = new YjsKeychain();
+    receiver.prepareMerge(crossRealm).commit();
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(history.byteLength));
+      shared.set(history);
+      expect(() => new YjsKeychain().prepareMerge(shared)).toThrow(
+        'Yjs keychain change has an invalid length or backing buffer',
+      );
+    }
+  });
+
+  test('merge coalesces independently authored identical histories and rejects material conflicts', async () => {
+    const epochId = new Uint8Array(32).fill(0x44);
+    const epochKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const left = new YjsKeychain();
+    const right = new YjsKeychain();
+    await left.addEpochKey(epochId, epochKey);
+    await right.addEpochKey(epochId, epochKey);
+    const originalLeftHistory = left.history();
+    const originalRightHistory = right.history();
+    expect(originalLeftHistory).not.toEqual(originalRightHistory);
+    expect(await left.stateCommitment()).toEqual(
+      await right.stateCommitment(),
+    );
+    left.merge(originalRightHistory);
+    right.merge(originalLeftHistory);
+    expect(await left.keys()).toHaveLength(1);
+    expect(await right.keys()).toHaveLength(1);
+    expect(left.history()).toEqual(right.history());
+    const nextId = new Uint8Array(32).fill(0x55);
+    await right.addEpochKey(nextId, epochKey);
+
+    left.merge(right.history());
+    expect((await left.keys()).map(([id]) => id)).toEqual([epochId, nextId]);
+
+    const conflicting = new YjsKeychain();
+    const conflictingKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await conflicting.addEpochKey(epochId, conflictingKey);
+    expect(() => left.prepareMerge(conflicting.history())).toThrow(
+      /Duplicate keychain key ID|append/,
+    );
+    expect((await left.keys()).map(([id]) => id)).toEqual([epochId, nextId]);
+  });
+
+  test('requires full history after independently authored epoch operations diverge', async () => {
+    const founder = new YjsKeychain();
+    await founder.add();
+    const sender = new YjsKeychain();
+    const receiver = new YjsKeychain();
+    sender.merge(founder.history());
+    receiver.merge(founder.history());
+    const epochId = new Uint8Array(32).fill(0x66);
+    const epochKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await sender.addEpochKey(epochId, epochKey);
+    await receiver.addEpochKey(epochId, epochKey);
+    expect(sender.history()).not.toEqual(receiver.history());
+    expect(await sender.stateCommitment()).toEqual(
+      await receiver.stateCommitment(),
+    );
+    const [, , incremental] = await sender.add();
+
+    expect(() => receiver.prepareMerge(incremental)).toThrow(
+      'Keychain history has unresolved update dependencies',
+    );
+    receiver.merge(sender.history());
+    expect(await receiver.keys()).toHaveLength(3);
+  });
+
+  test('context-gated standalone append rejects rollback and binds predecessor and new ID', async () => {
+    const keyA = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const keyB = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const keyC = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const idA = new Uint8Array(32).fill(0xa1);
+    const idB = new Uint8Array(32).fill(0xb2);
+    const idC = new Uint8Array(32).fill(0xc3);
+    const receiver = new YjsKeychain();
+    await receiver.addEpochKey(idA, keyA);
+    const projectionSource = new YjsKeychain();
+    const stagedB = await projectionSource.prepareEpochKey(idB, keyB);
+    const projectionB = stagedB.currentKeyChange!;
+
+    expect(() => receiver.prepareMerge(projectionB)).toThrow(
+      'Standalone keychain history is not an append-only view',
+    );
+    expect(() =>
+      (receiver.prepareMerge as (...args: unknown[]) => unknown)(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Standalone keychain history is not an append-only view');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idC,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append predecessor does not match current key');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idC,
+      }),
+    ).toThrow('Keychain projection does not match expected new key');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: new Uint8Array(31),
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Key ID has an invalid length or backing buffer');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: {
+          byteLength: 32,
+          buffer: new ArrayBuffer(32),
+        } as Uint8Array,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Key ID must be a genuine Uint8Array');
+
+    const stale = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: idA,
+      expectedNewKeyId: idB,
+    });
+    receiver.prepareMerge(receiver.history()).commit();
+    expect(() => stale.commit()).toThrow(
+      'Keychain changed while merge was staged',
+    );
+
+    const previousIntent = runInNewContext(
+      `new Uint8Array(32).fill(${idA[0]})`,
+    ) as Uint8Array;
+    const newIntent = runInNewContext(
+      `new Uint8Array(32).fill(${idB[0]})`,
+    ) as Uint8Array;
+    expect(previousIntent).not.toBeInstanceOf(Uint8Array);
+    expect(newIntent).not.toBeInstanceOf(Uint8Array);
+    const valid = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: previousIntent,
+      expectedNewKeyId: newIntent,
+    });
+    const appendCommitment = await valid.stateCommitment!();
+    previousIntent.fill(0);
+    newIntent.fill(0);
+    valid.commit();
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
+    expect(await receiver.stateCommitment()).toEqual(appendCommitment);
+
+    receiver.prepareMerge(projectionB).commit();
+    const replayedCommitment = await receiver.stateCommitment();
+    const replay = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: idA,
+      expectedNewKeyId: idB,
+    });
+    expect(replay.keyIds).toEqual([idA, idB]);
+    expect(replay.currentKeyId).toEqual(idB);
+    expect(await replay.stateCommitment!()).toEqual(replayedCommitment);
+    replay.commit();
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
+
+    const conflictingB = await new YjsKeychain().prepareEpochKey(idB, keyC);
+    expect(() =>
+      receiver.prepareAppend(conflictingB.currentKeyChange!, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append replay does not match live history');
+
+    const stagedC = await new YjsKeychain().prepareEpochKey(idC, keyC);
+    receiver
+      .prepareAppend(stagedC.currentKeyChange!, {
+        expectedPreviousKeyId: idB,
+        expectedNewKeyId: idC,
+      })
+      .commit();
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append predecessor does not match current key');
+    expect((await receiver.current())[0]).toEqual(idC);
+  });
+
+  test('enforces the keychain epoch limit before over-limit mutations', async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const serialized = await serializeKey(key);
+    const entries: [string, string][] = Array.from(
+      { length: MAX_KEYCHAIN_EPOCHS },
+      (_, index) => [index.toString(16).padStart(64, '0'), serialized],
+    );
+    const source = new Doc();
+    source.getArray<[string, string]>('keys').push(entries);
+    const receiver = new YjsKeychain();
+    const atLimit = receiver.prepareMerge(encodeStateAsUpdateV2(source));
+    expect(atLimit.keyIds).toHaveLength(MAX_KEYCHAIN_EPOCHS);
+    atLimit.commit();
+    const before = receiver.history();
+
+    const beforeOverflow = encodeStateVector(source);
+    source.getArray<[string, string]>('keys').push([
+      [MAX_KEYCHAIN_EPOCHS.toString(16).padStart(64, '0'), serialized],
+    ]);
+    expect(() =>
+      receiver.prepareMerge(encodeStateAsUpdateV2(source, beforeOverflow)),
+    ).toThrow('Keychain exceeds the supported epoch limit');
+    await expect(
+      receiver.addEpochKey(new Uint8Array(32).fill(0xff), key),
+    ).rejects.toThrow('Keychain exceeds the supported epoch limit');
+    await expect(receiver.prepareKey()).rejects.toThrow(
+      'Keychain exceeds the supported epoch limit',
+    );
+    const previousId = new Uint8Array(32);
+    const overflowId = new Uint8Array(32);
+    new DataView(previousId.buffer).setUint32(
+      28,
+      MAX_KEYCHAIN_EPOCHS - 1,
+    );
+    new DataView(overflowId.buffer).setUint32(28, MAX_KEYCHAIN_EPOCHS);
+    const overflowProjection = await new YjsKeychain().prepareEpochKey(
+      overflowId,
+      key,
+    );
+    expect(() =>
+      receiver.prepareAppend(overflowProjection.currentKeyChange!, {
+        expectedPreviousKeyId: previousId,
+        expectedNewKeyId: overflowId,
+      }),
+    ).toThrow('Keychain exceeds the supported epoch limit');
+    expect(receiver.history()).toEqual(before);
   });
 
   test('addEpochKey() output merges into a fresh keychain and getKey() works there too', async () => {
@@ -492,7 +1300,7 @@ describe('YjsKeychain', () => {
     }
   }
 
-  test('since_invited visibility returns only keys from _invitationEpoch onward', async () => {
+  test('since_invited visibility rejects a suffix the provider cannot export replay-safely', async () => {
     const sender = new YjsKeychain();
     const [id1] = await sender.add();
     const [id2] = await sender.add();
@@ -500,52 +1308,33 @@ describe('YjsKeychain', () => {
 
     // Simulate the receiver having been invited at id2.
     const invitationEpoch = id2;
-    const changes = await keychainChangesForVisibility(
-      sender,
-      'since_invited',
-      invitationEpoch,
+    await expect(
+      keychainChangesForVisibility(sender, 'since_invited', invitationEpoch),
+    ).rejects.toThrow(
+      'Yjs cannot export this keychain suffix replay-safely',
     );
-    const receiver = new YjsKeychain();
-    receiver.merge(changes);
-    const ids = (await receiver.keys()).map(([id]) => Array.from(id));
-    expect(ids).toHaveLength(2);
-    expect(ids).toContainEqual(Array.from(id2));
-    expect(ids).toContainEqual(Array.from(id3));
-    expect(ids).not.toContainEqual(Array.from(id1));
+    void id1;
+    void id3;
   });
 
-  test('since_invited visibility falls back to current_only when invitation epoch unset', async () => {
+  test('since_invited visibility rejects an unsafe current-only projection when invitation epoch is unset', async () => {
     const sender = new YjsKeychain();
     const [id1] = await sender.add();
     const [id2] = await sender.add();
     void id1;
-    const changes = await keychainChangesForVisibility(
-      sender,
-      'since_invited',
-      undefined,
-    );
-    const receiver = new YjsKeychain();
-    receiver.merge(changes);
-    const ids = (await receiver.keys()).map(([id]) => Array.from(id));
-    expect(ids).toHaveLength(1);
-    expect(ids).toContainEqual(Array.from(id2));
+    await expect(
+      keychainChangesForVisibility(sender, 'since_invited', undefined),
+    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
+    void id2;
   });
 
-  test('current_only visibility returns only the most recent key', async () => {
+  test('current_only visibility rejects an unsafe multi-key projection', async () => {
     const sender = new YjsKeychain();
     await sender.add();
     await sender.add();
-    const [currentID] = await sender.current();
-    const changes = await keychainChangesForVisibility(
-      sender,
-      'current_only',
-      undefined,
-    );
-    const receiver = new YjsKeychain();
-    receiver.merge(changes);
-    const keys = await receiver.keys();
-    expect(keys).toHaveLength(1);
-    expect(Array.from(keys[0][0])).toEqual(Array.from(currentID));
+    await expect(
+      keychainChangesForVisibility(sender, 'current_only', undefined),
+    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
   });
 
   test('full_history visibility returns all keys', async () => {
@@ -704,6 +1493,51 @@ describe('YjsJSONSerializer', () => {
     );
   });
 
+  test('preserves signed V4 full-load bytes across deserialize and reserialize', () => {
+    const serializer = new YjsJSONSerializer();
+    // Mirror the intended V4 response construction order: signature already
+    // has an insertion slot from the cached sync message, while
+    // keychainChanges is appended after the V4 challenge.
+    const message: any = {
+      documentId: '/signed-load',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document' as const,
+        keyID: 'epoch-7',
+        change: new Uint8Array([1]),
+        children: {
+          PARENT: { kind: 'writer' as const, change: new Uint8Array([2]) },
+        },
+      },
+      signature: undefined,
+    };
+    message.tips = ['ROOT'];
+    message.loadSecurityState = {
+      version: 1 as const,
+      controlHead: new Uint8Array(32),
+      groupId: 'group',
+      epoch: 1n,
+      treeHash: new Uint8Array(32),
+      confirmedTranscriptHash: new Uint8Array(32),
+    };
+    message.loadChallenge = new Uint8Array(32);
+    message.keychainChanges = new Uint8Array([3]);
+
+    const { signature: _unsigned, ...signedPayload } = message;
+    const expectedSignedBytes = serializer.serializeSyncMessage(signedPayload);
+    message.signature = 'signature';
+    const decoded = serializer.deserializeSyncMessage(
+      serializer.serializeSyncMessage(message),
+    );
+    const { signature: _received, ...verificationPayload } = decoded;
+    const detachedVerificationPayload =
+      snapshotDeepEnumerableData(verificationPayload);
+
+    expect(
+      serializer.serializeSyncMessage(detachedVerificationPayload),
+    ).toEqual(expectedSignedBytes);
+  });
+
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
     const serializer = new YjsJSONSerializer();
     const epochId = new Uint8Array(32);
@@ -795,6 +1629,38 @@ describe('YjsJSONSerializer', () => {
     const serialized = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(serialized);
     expect(deserialized.pathUpdate).toEqual(pathUpdate);
+  });
+
+  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+    const serializer = new YjsJSONSerializer();
+    const pathUpdate = {
+      version: 2 as const,
+      generation: 7,
+      numLeaves: 2,
+      senderLeafIndex: 0,
+      senderLeafPublicKey: 'AAAA',
+      nodes: [{
+        nodeIndex: 1,
+        publicKey: 'AQID',
+        encryptedPrivateKey: 'BAUG',
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
+        ],
+      }],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: 'AAAA' },
+        { nodeIndex: 1, publicKey: 'AQID' },
+        { nodeIndex: 2, publicKey: 'CgsM' },
+      ],
+      treeHash: 'DQ4P',
+    };
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'pathupdate-v2-doc',
+      pathUpdate,
+    });
+    expect(serializer.deserializeSyncMessage(wire).pathUpdate).toEqual(
+      pathUpdate,
+    );
   });
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {
