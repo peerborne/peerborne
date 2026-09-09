@@ -23,7 +23,10 @@ describe('JSONSerializer additional coverage', () => {
 
   describe('serializeSyncMessage / deserializeSyncMessage', () => {
     test('round-trip sync message', () => {
-      const msg = { changes: { foo: 'bar' }, nonce: 'AQIDBA==' };
+      const msg = {
+        changes: { kind: 'document' as const, change: { foo: 'bar' } },
+        nonce: 'AQIDBA==',
+      };
       const encoded = serializer.serializeSyncMessage(msg);
       const decoded = serializer.deserializeSyncMessage(encoded);
       expect(decoded).toEqual(msg);
@@ -31,7 +34,7 @@ describe('JSONSerializer additional coverage', () => {
 
     test('round-trip sync message with additional fields', () => {
       const msg = {
-        changes: { foo: 'bar' },
+        changes: { kind: 'document' as const, change: { foo: 'bar' } },
         nonce: 'AQIDBA==',
         keyUpdate: { epoch: 3 },
         eciesSealed: 'base64-sealed',
