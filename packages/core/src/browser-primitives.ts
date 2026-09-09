@@ -10,6 +10,14 @@ export {
 export { LRUCache } from './lru-cache.js';
 export { TIPS_HASH_LENGTH } from './tips-hash.js';
 export { SubtleCrypto } from './auth-subtlecrypto.js';
+export {
+  deserializeInitialLoadChallengeFromWire,
+  serializeInitialLoadChallengeForWire,
+} from './initial-load-challenge.js';
+export {
+  deserializeLoadSecurityCommitmentsFromWire,
+  serializeLoadSecurityCommitmentsForWire,
+} from './load-security-state-wire.js';
 export * from './group-security-provider.js';
 export * from './membership-control-record.js';
 export * from './group-state-store.js';
