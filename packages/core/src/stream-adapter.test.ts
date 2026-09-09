@@ -5,12 +5,16 @@ describe('wrapStream', () => {
   let sendMock: any;
   let onDrainMock: any;
   let closeMock: any;
+  let closeReadMock: any;
+  let abortMock: any;
   let wrapped: DuplexStream;
 
   beforeEach(() => {
     sendMock = jest.fn();
     onDrainMock = jest.fn();
     closeMock = jest.fn();
+    closeReadMock = jest.fn();
+    abortMock = jest.fn();
 
     async function* asyncGen() {
       yield new Uint8Array([4, 5, 6]);
@@ -19,6 +23,8 @@ describe('wrapStream', () => {
       send: sendMock,
       onDrain: onDrainMock,
       close: closeMock,
+      closeRead: closeReadMock,
+      abort: abortMock,
       [Symbol.asyncIterator]: asyncGen,
     } as any;
     wrapped = wrapStream(mockStream);
@@ -56,11 +62,25 @@ describe('wrapStream', () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
+  test('closeRead delegates to stream.closeRead()', async () => {
+    closeReadMock.mockResolvedValue(undefined);
+    await wrapped.closeRead();
+    expect(closeReadMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('abort delegates to stream.abort()', () => {
+    const error = new Error('reject');
+    wrapped.abort(error);
+    expect(abortMock).toHaveBeenCalledWith(error);
+  });
+
   test('sink does not close if stream throws during send', async () => {
     const failingStream = {
       send: jest.fn().mockImplementation(() => { throw new Error('send failed'); }),
       onDrain: async () => {},
       close: jest.fn(),
+      closeRead: jest.fn(),
+      abort: jest.fn(),
       [Symbol.asyncIterator]: async function* () {},
     } as any;
     const w = wrapStream(failingStream);
