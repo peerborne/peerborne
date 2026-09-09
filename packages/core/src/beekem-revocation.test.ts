@@ -1,19 +1,10 @@
 /**
- * End-to-end security test for the BeeKEM-based reader revocation
- * flow used by `PeerborneDocument.removeReader`.
+ * Unit-level coverage of BeeKEM reader-revocation primitives.
  *
- * The flow is exercised at the cryptographic layer (BeeKEM tree +
- * HKDF doc-key derivation + AES-GCM round-trip) rather than through
- * the full libp2p stack, so the test stays fast and deterministic
- * while still validating the security property: a removed reader
- * who was connected at the moment of revocation cannot derive the
- * new document encryption key, and so cannot decrypt subsequent
- * traffic.
- *
- * The integration-layer wiring (per-document BeeKEM state, wire
- * protocol dispatch, signature gating) is covered by the
- * peerborne-document path-update tests and (eventually) the
- * Playwright integration suite.
+ * These tests compose the BeeKEM tree, HKDF document-key derivation, and
+ * AES-GCM helpers without constructing a `PeerborneDocument` or network
+ * stack. Document transition ordering is covered by the dedicated
+ * peerborne-document transition and reader-registration harnesses.
  */
 
 import { describe, expect, test } from '@jest/globals';
@@ -23,8 +14,8 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import {
-  deserializePathUpdateFromWire,
-  serializePathUpdateForWire,
+  deserializePathUpdateV2FromWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
@@ -65,13 +56,49 @@ async function decryptUnder(
   return new Uint8Array(pt);
 }
 
+async function treeFingerprint(beekem: BeeKEM): Promise<string> {
+  const nodes = (
+    beekem as unknown as {
+      _nodes: Map<
+        number,
+        {
+          type: string;
+          publicKey: CryptoKey | null;
+          privateKey?: CryptoKey;
+        }
+      >;
+    }
+  )._nodes;
+  const entries = await Promise.all(
+    [...nodes.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(async ([index, node]) => ({
+        index,
+        type: node.type,
+        publicKey:
+          node.publicKey === null
+            ? null
+            : Buffer.from(
+                await crypto.subtle.exportKey('raw', node.publicKey),
+              ).toString('base64'),
+        privateKey:
+          node.privateKey === undefined
+            ? null
+            : Buffer.from(
+                await crypto.subtle.exportKey('pkcs8', node.privateKey),
+              ).toString('base64'),
+      })),
+  );
+  return JSON.stringify(entries);
+}
+
 describe('BeeKEM reader revocation', () => {
   test('removed reader cannot derive the new document key even if connected', async () => {
     // Alice (writer) sets up a 2-member group (Alice + Bob). The test
     // focuses on the simplest configuration that exercises the
     // revocation security property: a removed reader cannot derive the
     // new document key from the writer-broadcast PathUpdate. Larger
-    // tree configurations are exercised by the wire-integration tests
+    // tree configurations are exercised by the wire-codec composition tests
     // in `beekem-revocation-wire.test.ts`.
     // Tree layout (2 leaves):
     //   leaf positions: 0=Alice, 1=Bob
@@ -98,19 +125,18 @@ describe('BeeKEM reader revocation', () => {
     // `PathUpdate` + `rootSecret` are exactly what `removeReader`
     // broadcasts and installs in the keychain -- no follow-up
     // `update()` call is involved. Asserting against `removeMember`'s
-    // return values mirrors what the integration code actually ships
-    // on the wire.
+    // return values covers the primitives consumed by the document layer.
     const bobLeafIndex = 2;
     const { pathUpdate, rootSecret: aliceNewRoot } =
       await alice.removeMember(bobLeafIndex);
 
     // Wire-format round-trip: PathUpdate goes over the
-    // beekemPathUpdateV1 protocol, so the security claim must hold
+    // beekemPathUpdateV2 protocol, so the security claim must hold
     // through serialization too.
     const wire = JSON.parse(
-      JSON.stringify(serializePathUpdateForWire(pathUpdate)),
+      JSON.stringify(serializePathUpdateV2ForWire(pathUpdate)),
     );
-    const restored = deserializePathUpdateFromWire(wire);
+    const restored = deserializePathUpdateV2FromWire(wire);
 
     // Bob -- the removed reader -- cannot derive the new root from
     // the PathUpdate. With his leaf blanked, processPathUpdate has
@@ -168,9 +194,9 @@ describe('BeeKEM reader revocation', () => {
 
     const { pathUpdate, rootSecret: aliceRoot } = await alice.update();
     const wire = JSON.parse(
-      JSON.stringify(serializePathUpdateForWire(pathUpdate)),
+      JSON.stringify(serializePathUpdateV2ForWire(pathUpdate)),
     );
-    const restored = deserializePathUpdateFromWire(wire);
+    const restored = deserializePathUpdateV2FromWire(wire);
     const bobRoot = await bob.processPathUpdate(restored);
 
     expect(Buffer.from(aliceRoot).equals(Buffer.from(bobRoot))).toBe(true);
@@ -202,40 +228,60 @@ describe('BeeKEM reader revocation', () => {
 
     const bobKeys = await generateECDHKeyPair();
     const { welcome } = await alice.addMember(bobKeys.publicKey);
-    const bob = new BeeKEM();
-    await bob.processWelcome(welcome, bobKeys.privateKey, bobKeys.publicKey);
+    const bobControl = new BeeKEM();
+    const bobSubject = new BeeKEM();
+    await bobControl.processWelcome(
+      welcome,
+      bobKeys.privateKey,
+      bobKeys.publicKey,
+    );
+    await bobSubject.processWelcome(
+      welcome,
+      bobKeys.privateKey,
+      bobKeys.publicKey,
+    );
 
-    const charlieKeys = await generateECDHKeyPair();
-    await alice.addMember(charlieKeys.publicKey);
-    // (Charlie's BeeKEM state is not needed for this test; we just
-    // want a non-trivial tree.)
+    const { pathUpdate, rootSecret: aliceRoot } = await alice.update();
+    const wire = serializePathUpdateV2ForWire(pathUpdate);
 
-    const { pathUpdate } = await alice.update();
-    const wire = serializePathUpdateForWire(pathUpdate);
+    // The unchanged generation-2 update must be applicable and converge. This
+    // control ensures the tampered subject below reaches ciphertext
+    // authentication rather than failing an earlier generation check.
+    const controlUpdate = deserializePathUpdateV2FromWire(
+      JSON.parse(JSON.stringify(wire)),
+    );
+    const controlRoot = await bobControl.processPathUpdate(controlUpdate);
+    expect(controlRoot).toEqual(aliceRoot);
 
-    // Flip a bit in the first node's encryptedPrivateKey. The
+    const generationBefore = bobSubject.generation;
+    const treeBefore = await treeFingerprint(bobSubject);
+    const rootBefore = await bobSubject.getRootSecret();
+
+    // Flip a bit in the first v2 copath bundle. The
     // BeeKEM module's AES-GCM-backed ECIES has built-in
     // authentication, so tampered ciphertext must surface as a
     // decryption error -- not silently produce an
     // attacker-controlled derived key.
     const tampered = JSON.parse(JSON.stringify(wire));
-    if (tampered.nodes.length > 0) {
-      const bytes = Buffer.from(tampered.nodes[0].encryptedPrivateKey, 'base64');
-      bytes[bytes.length - 1] ^= 0xff; // flip last byte
-      tampered.nodes[0].encryptedPrivateKey = bytes.toString('base64');
-    }
+    const firstBundle = tampered.nodes[0]?.encryptedPathKeyBundles[0];
+    if (!firstBundle) throw new Error('test PathUpdate has no v2 bundle');
+    const bytes = Buffer.from(firstBundle.ciphertext, 'base64');
+    bytes[bytes.length - 1] ^= 0xff; // flip last byte
+    firstBundle.ciphertext = bytes.toString('base64');
 
-    const restored = deserializePathUpdateFromWire(tampered);
-    await expect(bob.processPathUpdate(restored)).rejects.toThrow();
+    const restored = deserializePathUpdateV2FromWire(tampered);
+    await expect(bobSubject.processPathUpdate(restored)).rejects.toThrow();
+    expect(bobSubject.generation).toBe(generationBefore);
+    expect(await treeFingerprint(bobSubject)).toBe(treeBefore);
+    expect(await bobSubject.getRootSecret()).toEqual(rootBefore);
   });
 
   test('writer can recover leaf assignment from BeeKEM tree after cache wipe', async () => {
-    // Models the integration-layer "writer restart wipes
-    // _readerLeafIndices but BeeKEM tree state is still around" case
-    // exercised by `PeerborneDocument.removeReader`'s fallback to
-    // `BeeKEM.findLeafByPublicKey`. The peerborne-document layer
-    // tracks the reader's KEM public key alongside the leaf index;
-    // on a cache miss it scans the BeeKEM tree by that public key.
+    // Models loss of the in-memory `_readerLeafIndices` cache while the same
+    // BeeKEM instance and tree remain available. This does not model a process
+    // restart or durable tree restoration. The peerborne-document layer tracks
+    // the reader's KEM public key alongside the leaf index and can scan the
+    // live BeeKEM tree by that public key on a cache miss.
     //
     // This test exercises the cryptographic primitive that backs
     // that fallback: `findLeafByPublicKey` returns the correct
@@ -281,9 +327,7 @@ describe('BeeKEM reader revocation', () => {
 
   test('removing a reader does not reuse the same root secret', async () => {
     // Quick sanity that `removeMember` itself produces a *new* root,
-    // not the previous one. The `removeReader` integration calls
-    // `removeMember` only -- not a follow-up `update()` -- so this
-    // test exercises the same surface.
+    // not the previous one, without requiring a follow-up `update()`.
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
@@ -298,155 +342,6 @@ describe('BeeKEM reader revocation', () => {
     const { rootSecret: postRoot } = await alice.removeMember(2);
 
     expect(Buffer.from(preRoot).equals(Buffer.from(postRoot))).toBe(false);
-  });
-
-  test('surviving reader decrypts the ACL-change broadcast with its pre-revocation key', async () => {
-    // CRITICAL ORDERING INVARIANT:
-    //
-    //   The `removeReader` flow broadcasts two messages: a gossipsub
-    //   ACL-change message (encrypted under the current keychain key)
-    //   and a unicast PathUpdate (which carries enough state for
-    //   surviving readers to derive the NEW key). Those two
-    //   broadcasts are independent; either can arrive at a surviving
-    //   reader first.
-    //
-    //   If the writer installed the new key into its keychain BEFORE
-    //   broadcasting the ACL change, the ACL change would be
-    //   encrypted under the new key -- which a surviving reader
-    //   doesn't have until they process the PathUpdate. They'd be
-    //   unable to decrypt the ACL change unless the PathUpdate
-    //   happens to arrive first, an ordering the wire does not
-    //   guarantee.
-    //
-    //   The fix: install the new key into the LOCAL keychain only
-    //   AFTER both broadcasts have gone out. The ACL change is then
-    //   encrypted under the previous key (which surviving readers
-    //   already have), so it's decryptable regardless of PathUpdate
-    //   arrival order.
-    //
-    // This test models the writer-side sequence with a stub keychain
-    // and asserts: a surviving reader holding only the
-    // pre-revocation key successfully decrypts the simulated
-    // ACL-change ciphertext. (The full `PeerborneDocument` call
-    // path is omitted -- it requires a libp2p stack -- but the
-    // sequencing invariant is exactly the same.)
-    type StubKey = {
-      readonly id: string;
-      readonly cryptoKey: CryptoKey;
-    };
-    // Stub keychain modelling the "last-write-wins" current()
-    // behaviour of the production Yjs/Automerge providers (see
-    // `_keychain.current()` in `_makeChange`).
-    class StubKeychain {
-      private readonly keys: StubKey[] = [];
-      readonly callLog: string[] = [];
-      install(id: string, cryptoKey: CryptoKey) {
-        this.callLog.push(`addEpochKey:${id}`);
-        this.keys.push({ id, cryptoKey });
-      }
-      current(): StubKey {
-        this.callLog.push('current');
-        if (this.keys.length === 0) throw new Error('empty keychain');
-        return this.keys[this.keys.length - 1];
-      }
-    }
-
-    // Pre-revocation key: a freshly generated AES-GCM key, modelling
-    // whatever epoch key the writer was already encrypting under
-    // before the revocation begins. The surviving reader has this
-    // key (it's been on the keychain since they joined).
-    const preRevocationKey = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    );
-
-    const writerKeychain = new StubKeychain();
-    writerKeychain.install('pre-revocation', preRevocationKey);
-    writerKeychain.callLog.length = 0; // reset; setup install isn't part of the flow under test
-
-    // 2-member BeeKEM: Alice (writer) + Bob (revoked). Bob is the
-    // member we remove. The surviving-reader perspective is modelled
-    // by the pre-revocation key alone -- the survivor doesn't need a
-    // BeeKEM instance to validate the ACL-change decryptability
-    // invariant (that's a property of the keychain key the ACL
-    // change was encrypted under, not the BeeKEM tree state). The
-    // tree-side primitive that a removed reader CANNOT derive the
-    // new key is exercised in the other tests in this file.
-    const alice = new BeeKEM();
-    const aliceKeys = await generateECDHKeyPair();
-    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
-
-    const bobKeys = await generateECDHKeyPair();
-    await alice.addMember(bobKeys.publicKey);
-    const bobLeafIndex = 2; // leaf-1 -> node index 2
-
-    // -- Begin modelled removeReader flow (mirrors steps 2-6 in
-    //    `removeReader` JSDoc) --
-
-    // Step 2-3: BeeKEM rotation + HKDF derivation (the writer holds
-    // the new key locally; the keychain is NOT updated yet).
-    const { rootSecret } = await alice.removeMember(bobLeafIndex);
-    const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
-
-    // Step 4: broadcast the ACL change. This goes through
-    // `_makeChange` in production, which calls `_keychain.current()`
-    // to pick the encryption key. We model that by reading the
-    // current key off the stub keychain (which still points at
-    // `preRevocationKey`, because the new key hasn't been installed
-    // yet).
-    const currentKeyAtAclBroadcast = writerKeychain.current();
-    const aclChangePlaintext = new TextEncoder().encode(
-      '<readers ACL minus Carol>',
-    );
-    const aclChangeCiphertext = await encryptUnder(
-      currentKeyAtAclBroadcast.cryptoKey,
-      aclChangePlaintext,
-    );
-
-    // Step 5: PathUpdate broadcast. In production this goes out to
-    // every surviving peer over `beekemPathUpdateV1` and they
-    // derive the new key by processing it. The post-revocation
-    // decryptability of the *new* key by a surviving reader is
-    // covered by `surviving reader re-derives the same document key
-    // as the writer` above; this test focuses on the *previous* key
-    // remaining valid for the ACL-change broadcast.
-
-    // Step 6: install the new key in the writer's keychain. This is
-    // the deferred step -- everything above used the previous key.
-    writerKeychain.install('post-revocation', newKey);
-
-    // INVARIANT (a) -- call order:
-    //   `current` was consulted for the ACL broadcast BEFORE
-    //   `addEpochKey` installed the new key. If a future refactor
-    //   moves the install before the broadcast, this assertion
-    //   catches it.
-    expect(writerKeychain.callLog).toEqual([
-      'current',
-      'addEpochKey:post-revocation',
-    ]);
-
-    // INVARIANT (b) -- surviving-reader decryptability:
-    //   A surviving reader has the pre-revocation key (received via
-    //   the keychain delta back when they joined). They have not yet
-    //   processed any PathUpdate-derived key. They must be able to
-    //   decrypt the ACL change with the pre-revocation key alone.
-    const survivorDecrypted = await decryptUnder(
-      preRevocationKey,
-      aclChangeCiphertext.iv,
-      aclChangeCiphertext.ct,
-    );
-    expect(survivorDecrypted).toEqual(aclChangePlaintext);
-
-    // Defensive double-check: an ACL change ENCRYPTED UNDER THE NEW
-    // KEY (the bug-shape we're guarding against) would NOT be
-    // decryptable by a survivor holding only the pre-revocation key.
-    // This is what `_makeChange` would produce if the install moved
-    // back above the broadcast.
-    const aclUnderNewKey = await encryptUnder(newKey, aclChangePlaintext);
-    await expect(
-      decryptUnder(preRevocationKey, aclUnderNewKey.iv, aclUnderNewKey.ct),
-    ).rejects.toThrow();
   });
 
   test('upfront readerKemPublicKey length validation throws before any BeeKEM mutation', async () => {
@@ -470,18 +365,16 @@ describe('BeeKEM reader revocation', () => {
     // This unit test exercises the cryptographic primitive that
     // backs the upfront gate: a malformed (wrong-length) buffer must
     // fail BEFORE BeeKEM tree mutation (i.e. before `addMember`
-    // would be called). The integration-layer wiring of "ACL is
-    // unchanged after the throw" is enforced by the ordering in the
-    // production code -- the upfront check at the top of `addReader`
-    // is the literal first non-precondition step.
+    // would be called). This establishes only the modeled primitive order;
+    // document-level behavior belongs in the peerborne-document harness.
     //
     // To exercise the property without needing a full
-    // `PeerborneDocument`, we mirror the integration-layer order:
+    // `PeerborneDocument`, we mirror the intended document-layer order:
     //   1. caller-provided length validation (the new gate)
     //   2. ACL mutation
     //   3. BeeKEM.addMember (would mutate the tree)
     // If step 1 throws, steps 2 and 3 must NOT run -- which is the
-    // exact ordering guarantee the production check provides.
+    // local mirror is intended to exercise.
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
@@ -550,210 +443,6 @@ describe('BeeKEM reader revocation', () => {
     ).toBe(false);
   });
 
-  test('removeReader installs new epoch key locally even when a broadcast step fails', async () => {
-    // POST-MUTATION LOCAL KEY INSTALLATION INVARIANT:
-    //
-    //   `PeerborneDocument.removeReader` runs three steps AFTER the
-    //   BeeKEM `removeMember` mutation:
-    //     (a) ACL-removal broadcast via `_makeChange` -- can throw
-    //         (signing failure, payload serialization, pubsub IO)
-    //     (b) PathUpdate broadcast via `_distributeBeeKEMPathUpdate`
-    //         -- can throw (signing failure, transport-level dial
-    //         issues that propagate)
-    //     (c) `addEpochKey` -- local-only keychain install
-    //
-    //   In the OLD shape, if (a) or (b) threw, (c) never ran -- so
-    //   the writer would be left with BeeKEM advanced but the local
-    //   keychain still pointing at the previous key. Outgoing writer
-    //   traffic would then encrypt under a key that surviving readers
-    //   (post-PathUpdate) no longer accept.
-    //
-    //   The fix wraps (a) and (b) in try/catch + warn + fall
-    //   through, so (c) always runs and the writer transitions to
-    //   the new key. The BeeKEM mutation is the atomicity boundary;
-    //   everything after it is best-effort with logged warnings,
-    //   EXCEPT the local key install which always runs.
-    //
-    // This test models the writer-side sequence with a stub
-    // keychain and an injected `_makeChange` failure. The assertion
-    // is: even though `_makeChange` threw, BeeKEM advanced AND the
-    // writer can still encrypt a fresh message under the
-    // post-revocation key (because `addEpochKey` ran via the
-    // post-mutation fall-through). The full `PeerborneDocument` call
-    // path is omitted -- the sequencing invariant is what the
-    // production try/catch guarantees.
-    type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
-    class StubKeychain {
-      private readonly keys: StubKey[] = [];
-      readonly callLog: string[] = [];
-      install(id: string, cryptoKey: CryptoKey) {
-        this.callLog.push(`addEpochKey:${id}`);
-        this.keys.push({ id, cryptoKey });
-      }
-      current(): StubKey {
-        if (this.keys.length === 0) throw new Error('empty keychain');
-        return this.keys[this.keys.length - 1];
-      }
-    }
-
-    // Pre-revocation key -- whatever the writer was encrypting
-    // under before revocation started.
-    const preRevocationKey = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    );
-    const writerKeychain = new StubKeychain();
-    writerKeychain.install('pre-revocation', preRevocationKey);
-    writerKeychain.callLog.length = 0; // reset post-setup
-
-    // 2-member BeeKEM (Alice writer + Bob revoked).
-    const alice = new BeeKEM();
-    const aliceKeys = await generateECDHKeyPair();
-    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
-
-    const bobKeys = await generateECDHKeyPair();
-    await alice.addMember(bobKeys.publicKey);
-    const bobLeafIndex = 2;
-
-    const rootBefore = await alice.getRootSecret();
-
-    // Step 1-2: BeeKEM rotation + key derivation. The writer holds
-    // the new key locally; the keychain is NOT updated yet.
-    const { rootSecret } = await alice.removeMember(bobLeafIndex);
-    const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
-
-    // Sanity: BeeKEM has advanced.
-    const rootAfterRemove = await alice.getRootSecret();
-    expect(
-      Buffer.from(rootBefore).equals(Buffer.from(rootAfterRemove)),
-    ).toBe(false);
-
-    // Step 3: ACL-removal broadcast. We INJECT a failure here to
-    // model `_makeChange` throwing (e.g. signing failure, pubsub
-    // publish failure). The production code wraps this call in
-    // try/catch + warn + fall through; we mirror that here.
-    const makeChangeStub = async () => {
-      throw new Error('injected: pubsub publish failed');
-    };
-    let aclChangeLoggedFailure = false;
-    try {
-      await makeChangeStub();
-    } catch (err) {
-      aclChangeLoggedFailure = true;
-      // Fall through (matches production behaviour).
-    }
-    expect(aclChangeLoggedFailure).toBe(true);
-
-    // Step 4: PathUpdate broadcast. Also wrapped in try/catch in
-    // production. Here we model it as succeeding (we want this test
-    // focused on the `_makeChange`-fails case; a separate test could
-    // inject `_distributeBeeKEMPathUpdate` to throw with the same
-    // structural result).
-    //
-    // Step 5: install the new key in the writer's keychain. This is
-    // the post-revocation install that MUST run regardless of step
-    // 3/4 failure -- otherwise the writer is stuck encrypting under
-    // the pre-revocation key while BeeKEM has advanced.
-    writerKeychain.install('post-revocation', newKey);
-
-    // INVARIANT (a): after step 5 the writer's current keychain
-    // entry is the post-revocation key, NOT the pre-revocation key.
-    expect(writerKeychain.current().id).toBe('post-revocation');
-
-    // INVARIANT (b): the writer can encrypt a fresh outgoing message
-    // under the new key. This is the operational property the
-    // local-key installation invariant preserves: even though the ACL
-    // broadcast failed, the writer is on the new epoch for outgoing traffic.
-    const outgoing = new TextEncoder().encode('post-revocation writer message');
-    const ciphertext = await encryptUnder(
-      writerKeychain.current().cryptoKey,
-      outgoing,
-    );
-    // Decryption with the SAME key (sanity) succeeds; decryption
-    // with the PRE-revocation key (the bug shape) fails.
-    expect(await decryptUnder(newKey, ciphertext.iv, ciphertext.ct)).toEqual(
-      outgoing,
-    );
-    await expect(
-      decryptUnder(preRevocationKey, ciphertext.iv, ciphertext.ct),
-    ).rejects.toThrow();
-
-    // INVARIANT (c): the call log shows the install happened
-    // exactly once (`addEpochKey:post-revocation`). If a future
-    // refactor accidentally re-introduces "throw on broadcast
-    // failure, skip the install", this assertion catches it.
-    expect(writerKeychain.callLog).toEqual([
-      'addEpochKey:post-revocation',
-    ]);
-  });
-
-  test('removeReader installs new epoch key locally even when PathUpdate broadcast fails', async () => {
-    // PATHUPDATE FAILURE VARIANT:
-    //
-    //   Mirror of the test above, but with the failure injected into
-    //   `_distributeBeeKEMPathUpdate` rather than `_makeChange`.
-    //   Both broadcast steps are wrapped in try/catch + log + fall
-    //   through; the local keychain install must always run.
-    //
-    // Surviving readers that miss the PathUpdate fall back to a
-    // fresh document load to recover key state; this test focuses on
-    // the WRITER side of the invariant (writer never gets stuck on
-    // the previous epoch).
-    type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
-    class StubKeychain {
-      private readonly keys: StubKey[] = [];
-      install(id: string, cryptoKey: CryptoKey) {
-        this.keys.push({ id, cryptoKey });
-      }
-      current(): StubKey {
-        if (this.keys.length === 0) throw new Error('empty keychain');
-        return this.keys[this.keys.length - 1];
-      }
-    }
-
-    const preRevocationKey = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    );
-    const writerKeychain = new StubKeychain();
-    writerKeychain.install('pre-revocation', preRevocationKey);
-
-    const alice = new BeeKEM();
-    const aliceKeys = await generateECDHKeyPair();
-    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
-    const bobKeys = await generateECDHKeyPair();
-    await alice.addMember(bobKeys.publicKey);
-
-    const { rootSecret } = await alice.removeMember(2);
-    const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
-
-    // Step 3: ACL broadcast succeeds (modelled as a no-op).
-
-    // Step 4: PathUpdate broadcast THROWS. The production code logs
-    // a warning and falls through to step 5.
-    const distributeStub = async () => {
-      throw new Error('injected: PathUpdate dial failed');
-    };
-    let pathUpdateLoggedFailure = false;
-    try {
-      await distributeStub();
-    } catch {
-      pathUpdateLoggedFailure = true;
-      // Fall through.
-    }
-    expect(pathUpdateLoggedFailure).toBe(true);
-
-    // Step 5: install MUST still run.
-    writerKeychain.install('post-revocation', newKey);
-
-    // The writer can encrypt under the post-revocation key.
-    const message = new TextEncoder().encode('post-revocation writer message');
-    const ct = await encryptUnder(writerKeychain.current().cryptoKey, message);
-    expect(await decryptUnder(newKey, ct.iv, ct.ct)).toEqual(message);
-  });
-
   test('addReader founder-vs-joined-writer gate refuses to initialize a divergent founder tree', async () => {
     // FOUNDER-TREE INITIALIZATION INVARIANT:
     //
@@ -768,27 +457,28 @@ describe('BeeKEM reader revocation', () => {
     //   Welcomes would come from a tree shape no other peer shared, so
     //   revocations would never converge.
     //
-    //   The fix: gate `addReader` on a `_hashes.size > 0` probe BEFORE
-    //   any state mutation. A genuine founder reaches `addReader` for
-    //   the first time with `_hashes.size === 0` (the readers-ACL
-    //   change is appended by `_makeChange` AFTER the gate). A joined
-    //   writer has already merged at least the writer-ACL change that
-    //   authorized them, so `_hashes` is non-empty -- the gate throws
-    //   with a recovery message pointing at the BeeKEM Welcome path.
+    //   The fix uses explicit local-creation provenance. Hash count alone is
+    //   insufficient because successful founder creation replicates its writer
+    //   ACL before the first addReader call. Loaded/invited writers never set
+    //   the monotonic local-founder flag and therefore cannot seed a new tree.
     //
-    // The integration-layer wiring is exercised by the production
-    // ordering: this test pins the gate's decision logic as a pure
-    // helper so future changes to the probe (e.g. swapping for
-    // `_lastSyncMessage`) are explicit.
+    // This test pins only the gate's decision logic as a pure helper. The
+    // peerborne-document transition harness exercises the actual method.
     type FakeDoc = {
       _beekemInitialized: boolean;
       _hashes: Set<string>;
+      _localFounderEstablished: boolean;
+      _invitationEpoch?: Uint8Array;
     };
     function founderGate(doc: FakeDoc) {
       // Mirror of the production gate in
       // `PeerborneDocument.addReader`. A divergence here is a test
       // bug; the production code is the source of truth.
-      if (!doc._beekemInitialized && doc._hashes.size > 0) {
+      if (
+        !doc._beekemInitialized &&
+        !doc._localFounderEstablished &&
+        (doc._hashes.size > 0 || doc._invitationEpoch !== undefined)
+      ) {
         throw new Error(
           'cannot register a reader -- this writer has document state ' +
             'but no BeeKEM tree bootstrapped from a Welcome.',
@@ -796,10 +486,11 @@ describe('BeeKEM reader revocation', () => {
       }
     }
 
-    // Genuine founder: fresh document, never merged any change.
+    // Genuine founder: successful creation already replicated one change.
     const founder: FakeDoc = {
       _beekemInitialized: false,
-      _hashes: new Set<string>(),
+      _hashes: new Set<string>(['founder-writer-acl']),
+      _localFounderEstablished: true,
     };
     expect(() => founderGate(founder)).not.toThrow();
 
@@ -809,6 +500,7 @@ describe('BeeKEM reader revocation', () => {
     const joinedWriter: FakeDoc = {
       _beekemInitialized: false,
       _hashes: new Set<string>(['ipfs-cid-of-writer-acl-change']),
+      _localFounderEstablished: false,
     };
     expect(() => founderGate(joinedWriter)).toThrow(
       /no BeeKEM tree bootstrapped from a Welcome/,
@@ -816,11 +508,11 @@ describe('BeeKEM reader revocation', () => {
 
     // Joined writer who HAS received and processed a BeeKEM Welcome:
     // `_beekemInitialized === true`. The gate must allow `addReader`
-    // even though `_hashes` is non-empty (this is the steady-state
-    // case once Welcome delivery is wired end-to-end).
+    // even though `_hashes` is non-empty (the post-Welcome steady state).
     const welcomedJoiner: FakeDoc = {
       _beekemInitialized: true,
       _hashes: new Set<string>(['ipfs-cid-of-writer-acl-change']),
+      _localFounderEstablished: false,
     };
     expect(() => founderGate(welcomedJoiner)).not.toThrow();
   });

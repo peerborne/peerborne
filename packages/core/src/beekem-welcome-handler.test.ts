@@ -285,8 +285,8 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     // Without the sealed keychain delta the recipient would record
     // `welcomeEpochId` as their `_invitationEpoch` but have no
     // corresponding key installed in their keychain, leaving them
-    // unable to decrypt traffic and corrupting later `since_invited`
-    // filtering. The validator must refuse to accept such a Welcome.
+    // unable to decrypt traffic and leaving the local anchor unsupported by
+    // installed key material. The validator must refuse such a Welcome.
     const msg = baseAcceptableMessage();
     delete msg.eciesSealed;
     const result = await evaluateBeeKEMWelcome(msg, makeDeps());

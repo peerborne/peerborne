@@ -132,7 +132,11 @@ export async function withInvitationProtocolStream<
   Result,
 >(
   open: (signal: AbortSignal) => Promise<Stream>,
-  operation: (stream: Stream, signal: AbortSignal) => Promise<Result>,
+  operation: (
+    stream: Stream,
+    signal: AbortSignal,
+    admitStateMutation: () => void,
+  ) => Promise<Result>,
   timeoutMs: number = INVITATION_STREAM_TIMEOUT_MS,
 ): Promise<Result> {
   const controller = new AbortController();
@@ -143,13 +147,18 @@ export async function withInvitationProtocolStream<
     if (!controller.signal.aborted) controller.abort(error);
     if (stream && !aborted) {
       aborted = true;
-      stream.abort?.(error);
+      try {
+        stream.abort?.(error);
+      } catch {
+        // Stream teardown is best-effort and must not replace the operation's
+        // authenticated-load or terminal provider error.
+      }
     }
   };
 
   try {
     const result = await withInvitationDeadline(
-      async () => {
+      async (admitStateMutation) => {
         stream = await open(controller.signal);
         if (controller.signal.aborted) {
           const error =
@@ -159,7 +168,7 @@ export async function withInvitationProtocolStream<
           abort(error);
           throw error;
         }
-        return operation(stream, controller.signal);
+        return operation(stream, controller.signal, admitStateMutation);
       },
       abort,
       timeoutMs,
@@ -169,15 +178,40 @@ export async function withInvitationProtocolStream<
   } finally {
     if (stream) {
       if (completed) {
+        let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+        const gracefulCleanup = Promise.all([
+          Promise.resolve().then(() => stream!.close()),
+          ...(stream.closeRead
+            ? [Promise.resolve().then(() => stream!.closeRead!())]
+            : []),
+        ]).then(
+          () => ({ status: 'completed' } as const),
+          (cause) => ({ status: 'failed', cause } as const),
+        );
+        const cleanupDeadline = new Promise<{
+          readonly status: 'timed-out';
+        }>((resolve) => {
+          cleanupTimer = setTimeout(
+            () => resolve({ status: 'timed-out' }),
+            timeoutMs,
+          );
+        });
         try {
-          await stream.close();
-        } catch {
-          /* already closed */
-        }
-        try {
-          await stream.closeRead?.();
-        } catch {
-          /* already closed */
+          const cleanup = await Promise.race([
+            gracefulCleanup,
+            cleanupDeadline,
+          ]);
+          if (cleanup.status === 'failed') {
+            abort(
+              new Error('Invitation stream cleanup failed', {
+                cause: cleanup.cause,
+              }),
+            );
+          } else if (cleanup.status === 'timed-out') {
+            abort(new Error('Invitation stream cleanup timed out'));
+          }
+        } finally {
+          if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
         }
       } else {
         abort(new Error('Invitation stream failed'));
@@ -195,12 +229,17 @@ export async function withIssuerPinnedInvitationStream<
 >(
   founderAddress: string,
   dial: (address: string, signal: AbortSignal) => Promise<Stream>,
-  loadAndVerify: (stream: Stream) => Promise<Result>,
+  loadAndVerify: (
+    stream: Stream,
+    signal: AbortSignal,
+    admitStateMutation: () => void,
+  ) => Promise<Result>,
   timeoutMs: number = INVITATION_STREAM_TIMEOUT_MS,
 ): Promise<Result> {
   return withInvitationProtocolStream(
     (signal) => dial(founderAddress, signal),
-    (stream) => loadAndVerify(stream),
+    (stream, signal, admitStateMutation) =>
+      loadAndVerify(stream, signal, admitStateMutation),
     timeoutMs,
   );
 }

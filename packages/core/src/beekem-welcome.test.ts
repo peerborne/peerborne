@@ -13,8 +13,9 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  *
  *   1. `_invitationEpoch` is set from `welcomeEpochId` after a Welcome is
  *      processed (Issue #178).
- *   2. The visibility filter (`since_invited`) returns only the keys at or
- *      after the recorded `_invitationEpoch` (Issue #179).
+ *   2. Modeled `since_invited` load responses remain current-only because the
+ *      request does not authenticate a requester-specific boundary (Issue
+ *      #179).
  *
  * The real implementations live in:
  *   - `PeerborneDocument.handleBeeKEMWelcomeRequestData` (sets `_invitationEpoch`)
@@ -81,13 +82,10 @@ function keychainChangesForVisibility(
     case 'full_history':
       return kc.history();
     case 'since_invited':
-      // When the local boundary is unknown (e.g. founding member),
-      // default to `current_only` rather than full history. Mirrors the
-      // production fallback in
-      // `PeerborneDocument._keychainChangesForVisibility`; if you
-      // change the production fallback, change it here too.
-      if (invitationEpoch === undefined) return kc.currentKeyChange();
-      return kc.historySince(invitationEpoch);
+      // Load requests do not authenticate a requester-specific invitation
+      // boundary, so the responder's own epoch must never widen disclosure.
+      void invitationEpoch;
+      return kc.currentKeyChange();
     case 'current_only':
     default:
       return kc.currentKeyChange();
@@ -137,9 +135,9 @@ function keychainChangesForWelcome(
  * The signature, readers-ACL, and seal-presence checks are not modeled
  * in this helper; direct unit-test coverage of those security-critical
  * gates lives in `beekem-welcome-handler.test.ts`, which drives the
- * extracted `evaluateBeeKEMWelcome` function with mock providers. Full
- * end-to-end coverage that stands up a real `PeerborneDocument` over
- * libp2p/Helia lives in `e2e/integration/`.
+ * extracted `evaluateBeeKEMWelcome` function with mock providers. A full
+ * network test that stands up a real `PeerborneDocument` over libp2p/Helia
+ * is not currently present and remains deferred.
  *
  * The helper requires `welcomeRecipient` on every message to mirror
  * production behavior, which unconditionally drops Welcomes missing the
@@ -169,8 +167,8 @@ function applyWelcomeStateChanges(
   // anchor (mirrors `PeerborneDocument._shouldAdvanceInvitationEpoch`).
   // See the doc-comment on the production method for the threat model
   // (an out-of-order or hostile Welcome carrying an earlier
-  // `welcomeEpochId` would otherwise shrink the recipient's join
-  // boundary and leak more history via `since_invited`).
+  // `welcomeEpochId` would otherwise let stale onboarding state supersede a
+  // newer local ordering anchor).
   state.invitationEpoch = chooseInvitationEpoch(
     state.invitationEpoch,
     message.welcomeEpochId,
@@ -312,12 +310,10 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
     // Threat model: a later writer-signed
     // Welcome addressed to this node might carry an *earlier*
     // `welcomeEpochId` than the one already recorded -- either
-    // through network reordering or as a deliberate attempt to shrink
-    // the recipient's join boundary. Unconditionally overwriting
-    // `_invitationEpoch` would regress the anchor and cause this
-    // node's future `since_invited` history responses to leak keys
-    // from before the original invitation. The production handler
-    // therefore applies a monotonic-forward update.
+    // through network reordering or as a deliberate attempt to regress the
+    // recipient's local ordering anchor. Unconditionally overwriting
+    // `_invitationEpoch` would let stale onboarding state supersede newer
+    // state, so the production handler applies a monotonic-forward update.
     const senderKc = new InMemoryKeychain();
     const id1 = new Uint8Array(32).fill(1);
     const id2 = new Uint8Array(32).fill(2);
@@ -405,7 +401,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
 });
 
 describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
-  test('since_invited returns only the keys at or after _invitationEpoch', () => {
+  test('since_invited load is current-only even for an earlier responder epoch', () => {
     const kc = new InMemoryKeychain();
     const id1 = new Uint8Array(32).fill(1);
     const id2 = new Uint8Array(32).fill(2);
@@ -416,24 +412,19 @@ describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
 
     const slice = keychainChangesForVisibility(kc, 'since_invited', id2);
     expect(slice.map((k) => k.id)).toEqual([
-      InMemoryKeychain.toHex(id2),
       InMemoryKeychain.toHex(id3),
     ]);
   });
 
-  test('since_invited with no _invitationEpoch falls back to current_only (founding member)', () => {
+  test('since_invited load remains current-only without a responder epoch', () => {
     const kc = new InMemoryKeychain();
     const id1 = new Uint8Array(32).fill(1);
     const id2 = new Uint8Array(32).fill(2);
     kc.add(id1, 'k1');
     kc.add(id2, 'k2');
 
-    // No recorded invitation epoch (e.g. founding member) defaults to
-    // current_only, not full history. Returning the full keychain in
-    // this case would silently leak every prior epoch to a peer the
-    // founder responds to. Documents that truly need full-history
-    // sharing should configure `historyVisibility: 'full_history'`
-    // explicitly.
+    // An absent responder-local epoch does not provide an authenticated
+    // requester boundary, so ordinary load projection remains current-only.
     const slice = keychainChangesForVisibility(kc, 'since_invited', undefined);
     expect(slice).toHaveLength(1);
     expect(slice[0].id).toBe(InMemoryKeychain.toHex(id2));
@@ -450,7 +441,7 @@ describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
     const slice = keychainChangesForVisibility(kc, 'since_invited', unknown);
     // A malformed or stale boundary must not widen disclosure to pre-invite
     // epochs. Current-only preserves confidentiality and permits a future
-    // authenticated Welcome/remove-rejoin recovery.
+    // authenticated membership remove/rejoin recovery.
     expect(slice).toHaveLength(1);
     expect(slice[0].id).toBe(InMemoryKeychain.toHex(id2));
   });
@@ -475,12 +466,11 @@ describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
 });
 
 describe('Welcome-side keychain filtering (recipient perspective)', () => {
-  // Regression: under `since_invited`, the inviter's own
-  // `_invitationEpoch` was being used to filter the keychain in the
-  // Welcome, which leaks the inviter's post-invite slice to a newly-
-  // added reader whose invitation epoch is the *current* key. The
-  // recipient-perspective filter should send only the current key.
-  test('since_invited sends only the current key (not the inviter slice)', () => {
+  // Welcome projection and ordinary-load projection are separate helpers with
+  // different trust inputs. They both currently project only the current key
+  // for `since_invited`: a Welcome uses the new recipient's current invitation
+  // epoch, while an ordinary load lacks an authenticated requester boundary.
+  test('since_invited Welcome sends only the recipient current key', () => {
     const kc = new InMemoryKeychain();
     const epochs = [1, 2, 3, 4].map((i) => new Uint8Array(32).fill(i));
     for (let i = 0; i < epochs.length; i++) {
@@ -511,8 +501,8 @@ describe('Welcome-side keychain filtering (recipient perspective)', () => {
   });
 });
 
-describe('End-to-end Welcome -> since_invited filtering (Issues #178 + #179)', () => {
-  test('after Welcome is applied, since_invited returns only keys from invitation onward', () => {
+describe('Modeled Welcome -> load visibility (Issues #178 + #179)', () => {
+  test('later modeled load responses remain current-only after Welcome', () => {
     // Sender's keychain has 4 keys.
     const senderKc = new InMemoryKeychain();
     const epochs = [1, 2, 3, 4].map((i) => new Uint8Array(32).fill(i));
@@ -526,11 +516,8 @@ describe('End-to-end Welcome -> since_invited filtering (Issues #178 + #179)', (
       documentId: '/doc/welcome',
       welcomeEpochId: invitationEpoch,
       welcomeRecipient: 'my-pubkey',
-      // For Welcome we send what the new reader needs to decrypt going forward
-      // under `current_only` semantics: the current key + future ones via
-      // subsequent updates. For an end-to-end since_invited test we use
-      // `full_history` so the new reader has both id3 and id4 to feed into
-      // its later filtering operation.
+      // Seed this unit model with full retained history so the later visibility
+      // check can prove that older keys are not included in a load response.
       keychainChanges: keychainChangesForVisibility(senderKc, 'full_history', undefined),
     };
 
@@ -546,15 +533,14 @@ describe('End-to-end Welcome -> since_invited filtering (Issues #178 + #179)', (
     // ...and has _invitationEpoch set to the boundary at id3.
     expect(Array.from(receiver.invitationEpoch!)).toEqual(Array.from(invitationEpoch));
 
-    // When this receiver later sends a doc-load response under
-    // `since_invited`, the recipient should observe id3 and id4 only.
+    // A later load request authenticates reader membership but not the
+    // requester's invitation epoch, so this responder must send only id4.
     const reLoadSlice = keychainChangesForVisibility(
       receiver.keychain,
       'since_invited',
       receiver.invitationEpoch,
     );
     expect(reLoadSlice.map((k) => k.id)).toEqual([
-      InMemoryKeychain.toHex(epochs[2]),
       InMemoryKeychain.toHex(epochs[3]),
     ]);
   });

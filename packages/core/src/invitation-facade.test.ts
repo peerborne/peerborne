@@ -312,7 +312,7 @@ describe('public invitation facade', () => {
 
   test('rejects disabled signing before parsing or KEM/network work', async () => {
     const peerborne = createFacade();
-    (peerborne as any)._config = { enableSigning: false };
+    (peerborne as any)._enableSigning = false;
     const doc = jest.fn();
     (peerborne as any).doc = doc;
 

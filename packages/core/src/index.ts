@@ -355,6 +355,7 @@ export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
 export type { CRDTSnapshotNode } from './snapshot-node.js';
 export type { CompactionConfig } from './compaction-config.js';
+export type { BeeKEMWireVersion } from './wire-protocols.js';
 export {
   LOAD_SECURITY_STATE_VERSION,
   LOAD_SECURITY_HASH_LENGTH,
@@ -406,6 +407,15 @@ export type {
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
 export {
+  initialLoadProtocols,
+  MAX_INITIAL_LOAD_RESPONSE_SIZE,
+  MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
+  MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+  MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+  shouldServeInitialLoadProtocol,
+} from './initial-load-protocols.js';
+export type { InitialLoadProtocolFamily } from './initial-load-protocols.js';
+export {
   allowsUnauthenticatedUnknownDocumentSentinel,
   isUnknownDocumentAdvertisement,
   unknownDocumentAdvertisement,
@@ -422,6 +432,7 @@ export {
   serializeInitialLoadChallengeForWire,
   validateInitialLoadChallenge,
 } from './initial-load-challenge.js';
+export { validateSecurityConfiguration } from './security-config.js';
 export {
   documentLoadV3,
   documentLoadV4,

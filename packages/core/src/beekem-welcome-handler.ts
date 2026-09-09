@@ -105,8 +105,8 @@ export function evaluateBeeKEMWelcomeTransition(
  * broadcast in plaintext to every connected peer and carry the document
  * keychain delta + an `_invitationEpoch` binding; without a writer
  * signature any peer could inject arbitrary `keychainChanges` and force
- * a recipient's join boundary, enabling key poisoning / DoS against
- * `since_invited` history filtering. `enableSigning` is a knob for
+ * a recipient's local join anchor, enabling key poisoning / DoS.
+ * `enableSigning` is a knob for
  * application-layer signing of *document changes*; Welcome authenticity
  * is a separate concern and must always be verified. Wire that up by
  * having `verifyWriterSignature` actually do the verification regardless
@@ -234,8 +234,8 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // validator stays the single structural gate: anything else would
   // otherwise pass this gate and fail later inside the receive path
   // (e.g. `importEciesPublicKey` rejects on length mismatch) with a
-  // less specific error. Treating it as malformed lets the bounded
-  // pending-Welcome buffer drop it cleanly without retrying.
+  // less specific error. Treat it as malformed and drop it before any
+  // decryption or state transition.
   let welcomeRecipientKemPublicKey: Uint8Array;
   try {
     welcomeRecipientKemPublicKey = copyUnsharedUint8Array(
@@ -293,7 +293,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // keychain delta and bind a recipient's `_invitationEpoch`; without
   // an unconditional writer-signature requirement any connected peer
   // could inject arbitrary `keychainChanges` (key poisoning) or set
-  // `_invitationEpoch` for an existing reader (history-filter DoS).
+  // `_invitationEpoch` for an existing reader (state/ordering DoS).
   // The dep contract requires `verifyWriterSignature` to always do
   // real verification here.
   if (!message.signature) {

@@ -548,19 +548,17 @@ describe('YjsKeychain', () => {
       case 'full_history':
         return kc.history();
       case 'since_invited':
-        // When the local boundary is unknown (founding member),
-        // default to `current_only` rather than full history. Mirrors
-        // the production fallback in
-        // `PeerborneDocument._keychainChangesForVisibility`.
-        if (!invitationEpoch) return await kc.currentKeyChange();
-        return await kc.historySince(invitationEpoch);
+        // Ordinary load requests do not carry an authenticated
+        // requester-specific invitation boundary.
+        void invitationEpoch;
+        return await kc.currentKeyChange();
       case 'current_only':
       default:
         return await kc.currentKeyChange();
     }
   }
 
-  test('since_invited visibility returns only keys from _invitationEpoch onward', async () => {
+  test('since_invited load visibility is current-only for an earlier responder epoch', async () => {
     const sender = new YjsKeychain();
     const [id1] = await sender.add();
     const [id2] = await sender.add();
@@ -576,8 +574,8 @@ describe('YjsKeychain', () => {
     const receiver = new YjsKeychain();
     receiver.merge(changes);
     const ids = (await receiver.keys()).map(([id]) => Array.from(id));
-    expect(ids).toHaveLength(2);
-    expect(ids).toContainEqual(Array.from(id2));
+    expect(ids).toHaveLength(1);
+    expect(ids).not.toContainEqual(Array.from(id2));
     expect(ids).toContainEqual(Array.from(id3));
     expect(ids).not.toContainEqual(Array.from(id1));
   });

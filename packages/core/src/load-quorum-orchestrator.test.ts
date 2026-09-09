@@ -104,13 +104,14 @@ async function simulateFullLoad(opts: {
   // Loop exhausted. Failure-reason decision mirrors production
   // `PeerborneDocument.load()`:
   //
-  //   - `bindFailures.size === cohortSize` -- EVERY peer bind-failed
-  //     (coordinated Byzantine equivocation). Escalate with the
-  //     dedicated reason.
+  //   - `bindFailures.size === cohortSize` -- EVERY peer returned a response
+  //     that did not bind to the advertised value. Escalate with the dedicated
+  //     reason without diagnosing whether the cause was concurrent state
+  //     advance, incomplete retrieval, protocol violation, or equivocation.
   //   - `bindFailures.size > 0 && < cohortSize` -- MIXED failure (some
   //     bind-failed, others transport-failed). Surface as
-  //     `agreeing-peers-unreachable` so callers don't wrongly treat a
-  //     transient retrieval failure as coordinated Byzantine behaviour.
+  //     `agreeing-peers-unreachable` because some peers never returned a
+  //     response on which the applicability check could run.
   //   - `bindFailures.size === 0` -- all transport-failed; same
   //     `agreeing-peers-unreachable` reason.
   if (opts.narrowedPeers.length === 0) {
@@ -209,10 +210,10 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect(loadOutcome.loadedFromPeer).toBe('p1');
   });
 
-  test('(c) 3 peers all vote X but EVERY peer serves tips hashing to Y => LoadQuorumFailedError(bind-check-failed-all-agreeing-peers)', async () => {
-    // The whole cohort is Byzantine on the load step: every agreeing peer
-    // voted X in the probe round but serves Y on the full load. The
-    // harness must exhaust the cohort BEFORE escalating, so the
+  test('(c) 3 peers all vote X but EVERY retrieved response hashes to Y => LoadQuorumFailedError(bind-check-failed-all-agreeing-peers)', async () => {
+    // Every agreeing peer votes X in the probe round but its retrieved full
+    // response hashes to Y. The harness must exhaust the cohort BEFORE
+    // escalating, so the
     // serveFn is called for every peer and the final error carries the
     // dedicated `bind-check-failed-all-agreeing-peers` reason plus a
     // per-peer `agreeingPeerBindFailures` map.
@@ -241,7 +242,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     );
     // Every agreeing peer must have been tried before the escalation.
     expect(serveFn).toHaveBeenCalledTimes(3);
-    // Per-peer record of what each Byzantine peer served instead.
+    // Per-peer record of what each non-binding response contained.
     expect(
       (err as LoadQuorumFailedError).agreeingPeerBindFailures,
     ).toEqual(
@@ -356,8 +357,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // The whole cohort violates the v3 protocol contract by omitting
     // `tips` on every load response. Loader must exhaust the cohort,
     // escalate with the dedicated reason, and record the
-    // `'(missing tips)'` sentinel per peer so operators can tell
-    // missing-tips equivocation apart from served-vs-claimed mismatch.
+    // `'(missing tips)'` sentinel per peer so operators can tell a
+    // missing-required-field protocol violation from a hash mismatch.
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
 
@@ -387,13 +388,13 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect(lqfe.agreeingPeerBindFailures.get('p3')).toBe(MISSING_TIPS);
   });
 
-  test('(c3) all agreeing peers Byzantine on load: error carries per-peer agreeingPeerBindFailures with what each served', async () => {
-    // Complement of (c2): when EVERY agreeing peer equivocates between
-    // probe and load, the loader must escalate -- with the new
+  test('(c3) all agreeing responses fail binding: error carries per-peer agreeingPeerBindFailures with what each served', async () => {
+    // Complement of (c2): when EVERY retrieved response fails to bind to the
+    // probe value, the loader must escalate -- with the new
     // `bind-check-failed-all-agreeing-peers` reason and a per-peer
-    // record of what each Byzantine peer served instead, so callers
-    // can tell "the whole cohort lied on the load step" apart from
-    // "no peer responded at all".
+    // record of what each peer served instead. The structured reason
+    // distinguishes cohort-wide applicability failure from no response
+    // without claiming which underlying cause occurred.
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
 
@@ -407,7 +408,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect('ok' in result && result.ok).toBe(true);
     if (!('ok' in result)) throw new Error('expected ok=true');
 
-    // Each Byzantine peer can serve a DIFFERENT mismatched hash; the
+    // Each peer can return a DIFFERENT mismatched hash; the
     // per-peer record must preserve the distinction.
     const HASH_Z_HEX = 'cc'.repeat(32);
     const serveFn = jest.fn(async (peer: TestPeer) => {
@@ -687,8 +688,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
   test('single-peer fallback DENIED when allowSinglePeer=false (default)', async () => {
     // The orchestrator must refuse to run quorum against a single peer
-    // unless the caller opts in. This protects against silently degrading
-    // BFT semantics in small/partitioned meshes.
+    // unless the caller opts in. This prevents a multi-peer corroboration
+    // policy from silently degrading to single-source trust.
     const peers: TestPeer[] = ['p1'];
     probeMock.mockResolvedValue(HASH_X);
 
@@ -704,7 +705,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // the lone peer.
     expect(probeMock).not.toHaveBeenCalled();
     // Surfaced `requiredQ` is the load-bearing policy threshold (2 -- the
-    // smallest cohort that gives any Byzantine fault tolerance), NOT the
+    // smallest cohort that provides any independent corroboration), NOT the
     // numeric `defaultQuorumQ(1) = 1` that would falsely suggest the
     // lone peer's vote was "almost enough".
     expect((err as LoadQuorumFailedError).requiredQ).toBe(2);
@@ -1529,7 +1530,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // was passed the CONFIGURED K, so a configured K=7 against a peer list
     // of size 3 required `effectiveQ(defaultQuorumQ(7), effectiveK(7, 3))`
     // = `effectiveQ(4, 3)` = 3 -- i.e. ALL 3 reachable peers had to agree,
-    // losing the one-fault tolerance the formula targets. The fix passes
+    // removing the one non-response/disagreement allowance of Q=2. The fix passes
     // the effective K to `defaultQuorumQ`, so the default Q tracks the
     // actual quorum size in use.
     //
@@ -1668,11 +1669,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
   // When the agreeing cohort partly bind-fails and partly
   // transport-fails, the loader must NOT use the
-  // `bind-check-failed-all-agreeing-peers` reason -- that reason's public
-  // docs explicitly say EVERY peer in the cohort equivocated, and using
-  // it for mixed failure modes can make callers wrongly conclude
-  // coordinated Byzantine behaviour when the underlying cause was a
-  // mixture of one bad actor + transient network errors. Mixed failures
+  // `bind-check-failed-all-agreeing-peers` reason -- that reason requires a
+  // binding/applicability check to have failed for EVERY peer. Mixed failures
   // surface as `agreeing-peers-unreachable` (still threading the per-peer
   // bind-failure map through for diagnostics).
   describe("mixed bind/transport failure cohort uses 'agreeing-peers-unreachable'", () => {
@@ -1745,9 +1743,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
     test("(c-mixed-3) only when EVERY peer bind-fails does the dedicated reason fire", async () => {
       // Sanity check: the dedicated reason is still reachable when the
-      // cohort is fully bind-failed. Regression guard so the fix for the
-      // mixed-cohort issue doesn't accidentally suppress the coordinated-
-      // Byzantine reason.
+      // cohort is fully bind-failed. Regression guard so the mixed-cohort
+      // handling does not suppress the dedicated applicability reason.
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({

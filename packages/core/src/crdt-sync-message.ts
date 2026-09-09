@@ -59,10 +59,11 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
 
   /**
    * Optional invitation epoch ID for BeeKEM Welcome messages. When the
-   * recipient processes a Welcome, this is the key ID the recipient should
-   * record as their `_invitationEpoch`, gating subsequent `since_invited`
-   * history filtering. The field is base64-encoded for JSON-safe transport
-   * by the sync-message serializers.
+   * recipient processes a Welcome, this is the key ID it records as its
+   * monotonic `_invitationEpoch` audit/ordering anchor. Ordinary load does not
+   * use a responder's local anchor as another requester's history boundary.
+   * The field is base64-encoded for JSON-safe transport by the sync-message
+   * serializers.
    */
   welcomeEpochId?: Uint8Array;
 
@@ -158,16 +159,16 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   pathUpdateEpochId?: Uint8Array;
 
   /**
-   * Optional canonical hash of the responder's served tip set, used by the
-   * initial-load quorum protocol (`tipAdvertiseV1`, see `wire-protocols.ts`
-   * and `tips-hash.ts`).
+   * Optional canonical initial-load advertisement digest. The legacy
+   * `tipAdvertiseV1` family hashes the responder's served tip set; the strict
+   * `securityAdvertiseV1` family additionally commits to the complete V4
+   * response manifest and trusted security tuple.
    *
    * When a new node opens a document it queries up to K peers in parallel
-   * via `tipAdvertiseV1`; each peer responds with a `CRDTSyncMessage` whose
-   * only populated payload field is `tipsHash`. The loader counts how many
-   * peers returned the same hash and proceeds with a full
-   * documentLoadV3/snapshotLoadV3 against one of the agreeing peers only
-   * when at least Q peers agree.
+   * via the selected advertisement protocol; each peer responds with a
+   * `CRDTSyncMessage` carrying `tipsHash`. The loader counts matching digests
+   * and proceeds with the corresponding V3 or V4 document/snapshot-load
+   * protocol against an agreeing peer only when at least Q peers agree.
    *
    * # Protocol contract: WHAT to hash
    *
@@ -219,11 +220,9 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   tipsHash?: Uint8Array;
 
   /**
-   * Explicit tip-set advertisement, populated by load responses
-   * (documentLoadV3 and snapshotLoadV3) to bind the served full state to
-   * the responder's served frontier. **Part of the signed payload** on v3
-   * load responses -- changing the wire shape from v2 is why the protocol
-   * id was bumped (see `wire-protocols.ts`).
+   * Explicit tip-set advertisement populated by V3 and V4 document/snapshot
+   * load responses to bind the served full state to the responder's served
+   * frontier. It is part of the signed payload in both families.
    *
    * "Frontier" here means the **served frontier** -- the heads of the
    * change tree this load response actually carries (computed by
@@ -271,8 +270,8 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * that hashes to anything other than the served-payload frontier is
    * caught by the defense-in-depth check.
    *
-   * `tips` is REQUIRED on v3 load responses (responder always populates,
-   * loader rejects absence when the quorum gate is enabled). The field
+   * `tips` is REQUIRED on V3 and V4 load responses whenever the quorum gate
+   * is enabled (responders populate it and loaders reject absence). The field
    * remains optional in the TypeScript type because the same
    * `CRDTSyncMessage` shape is also used for pubsub-broadcast change
    * messages, which do not carry a frontier advertisement.

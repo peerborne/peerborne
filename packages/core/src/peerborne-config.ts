@@ -26,6 +26,7 @@ import { IDBBlockstore } from 'blockstore-idb';
 import { CompactionConfig } from './compaction-config.js';
 import { DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
 import { hasBootstrapPeers } from './bootstrap-config.js';
+import type { LoadSecurityCommitments } from './load-security-state.js';
 
 /**
  * Project-local ICE-server interface used in place of the DOM lib's
@@ -284,30 +285,64 @@ export interface PeerborneConfig {
    *
    * Topic validators are registered during `open()` and properly removed
    * during `close()` to prevent stale validator references.
+   * A requested `true` is normalized to `false` when `enableSigning` is false,
+   * because an unsigned document has no writer signature for them to enforce.
+   * The value is captured by `Peerborne.initialize()`; mutate the policy by
+   * reinitializing rather than changing the caller-owned config object.
    *
    * Default: false (for backward compatibility).
    */
   enableTopicValidators?: boolean;
 
   /**
-   * Enable Peerborne application-level signing and verification.
-   * When false, application-level signing is bypassed: sync message signatures,
-   * load request signatures, snapshot signatures, topic validator signature
-   * checks, and key update verification. Topic validators are not registered
-   * at all when signing is disabled to avoid unnecessary per-message overhead.
+   * Enable Peerborne application-level signing and verification for ordinary
+   * CRDT sync, document/snapshot load, and document-key update messages.
+   * When false, signatures and signature checks are bypassed on those message
+   * paths. Topic validators are not registered at all when signing is disabled
+   * to avoid unnecessary per-message overhead.
+   *
+   * This flag does not disable writer authentication for BeeKEM Welcome or
+   * PathUpdate messages: those group-security transitions always require a
+   * valid writer signature. The invitation APIs also reject while ordinary
+   * application-level signing is disabled.
    * Note: libp2p/GossipSub transport-level signing (e.g., `globalSignaturePolicy`)
    * is NOT affected by this flag.
    *
-   * **WARNING: Disabling signing removes all authentication and authorization
-   * checks. Any peer that can decrypt traffic (e.g., possesses a previous
-   * document key) can forge sync, key-update, and load messages. Peers with
-   * `enableSigning: false` will NOT interoperate with peers that have signing
-   * enabled (they will reject empty/missing signatures). Only use in trusted
-   * development/testing environments.**
+   * **WARNING: Disabling signing removes authentication and authorization
+   * checks from the ordinary sync, load, snapshot, and document-key update
+   * paths. Any peer that can decrypt that traffic (e.g., possesses a previous
+   * document key) can forge those messages. Peers with `enableSigning: false`
+   * will NOT interoperate on those paths with peers that have signing enabled
+   * (they will reject empty/missing signatures). Only use in trusted
+   * development/testing environments. BeeKEM writer authentication remains
+   * mandatory.**
+   *
+   * The value is captured by `Peerborne.initialize()`. Mutating the caller's
+   * config object afterward does not change the active authentication policy;
+   * reinitialize with a new config to change it.
    *
    * Default: true (signatures are computed and verified).
    */
   enableSigning?: boolean;
+
+  /**
+   * Allow receiving the legacy BeeKEM PathUpdate v1 protocol.
+   *
+   * **INSECURE MIGRATION OPTION:** v1 updates carry no generation number or
+   * parent-tree commitment. A valid previously signed update can therefore be
+   * replayed against generation-less legacy state and roll the ratchet and
+   * document key back. Peerborne does not register the v1 protocol handler and
+   * rejects direct v1 application unless this option is exactly `true`.
+   *
+   * Enable this only for a bounded migration of a legacy document, then move
+   * every member to generation-bearing BeeKEM v2 state and reinitialize with
+   * the option disabled. Current membership operations send only v2 updates.
+   * The value is captured by `Peerborne.initialize()` so mutating the caller's
+   * config object cannot enable the legacy path at runtime.
+   *
+   * @default false
+   */
+  allowInsecureLegacyBeeKEMPathUpdateV1?: boolean;
 
   /**
    * Configuration for history compaction.
@@ -373,6 +408,12 @@ export interface PeerborneConfig {
    * negotiated protocol and the rest of the configuration. This is useful for
    * development and intentionally accepts the weaker single-peer trust model.
    *
+   * The complete quorum policy (enabled, K, explicit Q, timeout, and
+   * single-peer permission) is captured by `Peerborne.initialize()`.
+   * Post-initialization mutation of the caller's config object cannot lower
+   * the active threshold or enable a single-peer decision; reinitialize to
+   * change the policy.
+   *
    * @default true
    */
   loadQuorumEnabled?: boolean;
@@ -426,10 +467,11 @@ export interface PeerborneConfig {
   loadQuorumQ?: number;
 
   /**
-   * Per-peer timeout (milliseconds) for the initial-load quorum
-   * advertisement probes. A peer that does not respond within this window
-   * is recorded as a non-vote (NOT a disagreement); see
-   * `load-quorum.ts::decideLoadQuorum` for the distinction.
+   * Per-peer timeout (milliseconds) for each initial-load quorum
+   * advertisement probe and for the remote-read phase of each selected
+   * full-document or snapshot response. Probe timeouts are non-votes; a
+   * full-response timeout aborts that stream and advances to the next peer.
+   * The full-response deadline remains active when quorum is disabled.
    *
    * Default chosen to be larger than typical RTT + protocol-negotiation
    * latency on a wide-area mesh, but small enough that a partitioned peer
@@ -462,6 +504,82 @@ export interface PeerborneConfig {
   loadQuorumAllowSinglePeer?: boolean;
 
   /**
+   * Require the first accepted load response and quorum advertisement to be
+   * signed by an application-pinned writer when the local writers ACL is
+   * empty. This removes the legacy bootstrap fallback that treated knowledge
+   * of the document encryption key as sufficient authentication.
+   *
+   * The unauthenticated legacy `0xff` unknown-document sentinel is also
+   * ignored in this mode. Consequently, creating a fresh document name while
+   * already connected to peers currently fails closed: the protocol has no
+   * authenticated nonexistence proof, and {@link validateDocumentPath} does
+   * not override a failed network load. This avoids treating an
+   * unauthenticated absence claim as truth.
+   * The same ambiguity exists with no connected peers: an empty first load may
+   * be a genuine founder or an eclipse/partition. Peerborne therefore requires
+   * the captured {@link validateDocumentPath} callback to return exact `true`
+   * before founding an empty strict document on that no-peer path. An
+   * already-loaded local replica can still reopen offline.
+   *
+   * Requires {@link resolveTrustedDocumentWriters} and signing to be enabled.
+   * @default false
+   */
+  requireAuthenticatedInitialLoad?: boolean;
+
+  /**
+   * Resolve writer identities trusted out-of-band for two empty-local-ACL
+   * bootstrap boundaries: a document's first load and an inbound BeeKEM
+   * Welcome. These keys are never learned from the untrusted message they
+   * authenticate. For a Welcome received before the local writer ACL has
+   * converged, the returned identities are therefore authorized to bootstrap
+   * the recipient's group-security state and document key, not merely to
+   * attest an initial load. Once a local writer ACL exists, that ACL takes
+   * precedence and this resolver is not used for the Welcome authorization.
+   * Return an empty list to reject either empty-ACL bootstrap.
+   * Key values must remain immutable for the duration of an authorization
+   * attempt; Peerborne snapshots the list and canonical authority IDs but
+   * cannot generically clone an application-defined `PublicKey` object.
+   * The resolver function identity is captured by `Peerborne.initialize()`.
+   */
+  resolveTrustedDocumentWriters?: (
+    documentPath: string,
+  ) => readonly unknown[] | Promise<readonly unknown[]>;
+
+  /**
+   * Select the V4 initial-load protocol family, whose signed quorum value
+   * binds the served CRDT frontier and canonical complete response manifest
+   * (node graph, snapshot, and keychain delta) to control-log and group-state
+   * commitments. Strict documents never fall back to the legacy V3/tip-v1
+   * family.
+   *
+   * Requires the quorum gate, authenticated initial load, and
+   * {@link resolveLoadSecurityCommitments}. V4 votes are deduplicated by the
+   * verified writer authority returned by `AuthProvider.serializePublicKey`,
+   * not merely by libp2p PeerId. The serializer therefore must be
+   * deterministic and collision-resistant, and the pinned writer set must
+   * represent independently controlled authorities for Q to provide a real
+   * second opinion. Every load uses a fresh request challenge that is echoed
+   * inside the writer-signed advertisement and selected full response, so a
+   * previously recorded quorum transcript is not valid in a later round.
+   * @default false
+   */
+  requireSecurityStateQuorum?: boolean;
+
+  /**
+   * Return an atomic view of the document's current control and group
+   * commitments. Responders attach this tuple to V4 loads and security-aware
+   * advertisements. Loaders bind it to the served frontier before applying
+   * state. Supplying this callback alone does not select V4 for outgoing
+   * loads; set {@link requireSecurityStateQuorum} for strict selection. A V4
+   * load captures one defensive copy before its first peer probe. Rejection,
+   * `undefined`, or malformed output aborts that load without downgrade.
+   * The resolver function identity is captured by `Peerborne.initialize()`.
+   */
+  resolveLoadSecurityCommitments?: (
+    documentPath: string,
+  ) => LoadSecurityCommitments | Promise<LoadSecurityCommitments>;
+
+  /**
    * Optional callback to validate document paths before creation.
    *
    * Called when `open()` determines the document is new (i.e., `load()` returned
@@ -479,6 +597,10 @@ export interface PeerborneConfig {
    * May return a boolean or a Promise<boolean> for async validation.
    * Return `true` to allow creation, `false` to reject it.
    * When absent, all document paths are allowed.
+   * The callback identity is captured by `Peerborne.initialize()` so later
+   * mutation of the caller-owned config cannot bypass creation policy.
+   * Authenticated initial-load mode requires this callback to explicitly
+   * authorize creation whenever no existing local state was loaded.
    *
    * @param documentPath The path of the document being created.
    * @param userPublicKey The public key of the current user.

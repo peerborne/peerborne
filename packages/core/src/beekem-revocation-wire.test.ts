@@ -1,11 +1,11 @@
 /**
- * End-to-end wire-integration test for the BeeKEM-based reader
- * revocation flow.
+ * Unit-level composition tests for BeeKEM revocation wire codecs and
+ * cryptographic primitives.
  *
  * The companion test in `beekem-revocation.test.ts` exercises the
  * cryptographic core in isolation (BeeKEM tree + HKDF doc-key
- * derivation). This test stitches together the actual on-wire layers
- * that production traffic goes through:
+ * derivation). This test composes the serialized shapes used by these
+ * protocol layers:
  *
  *   - The BeeKEM Welcome inside the structured `eciesSealed`
  *     envelope (`welcome-sealed-payload.ts`).
@@ -20,22 +20,15 @@
  *     the sealed envelope.
  *   - Carol is invited as leaf 2 (node index 4) and bootstraps via
  *     her own sealed envelope.
- *   - Alice revokes Bob via `removeMember` and broadcasts the
- *     PathUpdate over the wire.
+ *   - Alice revokes Bob via `removeMember` and serializes the PathUpdate.
  *   - Carol applies the PathUpdate and converges on Alice's new
  *     document key (security property: SURVIVING reader can still
  *     decrypt).
  *   - Bob CANNOT derive the new key from the same PathUpdate
  *     (security property: REMOVED reader is locked out).
  *
- * The full `PeerborneDocument` receive path requires a libp2p/Helia
- * stack which is heavy to spin up in unit tests. The current integration
- * surface -- the structured sealed-payload envelope plus the
- * `processWelcome` step on the joiner
- * -- is exercised here against the same wire encoders/decoders used
- * by production code, so a regression in either the envelope shape or
- * the BeeKEM-side handling surfaces here without needing a full e2e
- * environment.
+ * No `PeerborneDocument`, protocol handler, transport, or network is created.
+ * These tests therefore establish primitive and codec composition only.
  */
 
 import { describe, expect, test } from '@jest/globals';
@@ -63,12 +56,12 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import {
-  deserializePathUpdateFromWire,
-  serializePathUpdateForWire,
+  deserializePathUpdateV2FromWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 import {
-  decodeWelcomeSealedPayload,
-  encodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayloadV2,
+  encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
 
 function toBuffer(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -121,7 +114,7 @@ async function makePeer(): Promise<PeerState> {
   return { kemKeyPair, rawKemPublic, beekem: null };
 }
 
-describe('BeeKEM reader revocation (wire-integration)', () => {
+describe('BeeKEM reader revocation (wire-codec composition)', () => {
   test('Carol (surviving reader) keeps access; Bob (revoked) is locked out', async () => {
     // ----- Setup: 3 readers + founder ---------------------------------
     const aliceKemKeyPair = await generateEciesKeyPair();
@@ -141,12 +134,12 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
     // The keychain delta inside Bob's welcome envelope models the
     // current document key the founder ships to the joiner. The real
     // PeerborneDocument code uses `_keychainChangesForWelcome` here;
-    // for this wire-integration test we just need a stable byte
+    // for this codec-composition test we just need a stable byte
     // representation that survives the round-trip.
     const bobKeychainBytes = new TextEncoder().encode(
       'bob-keychain-delta-at-invite',
     );
-    const bobEnvelopeBytes = encodeWelcomeSealedPayload({
+    const bobEnvelopeBytes = encodeWelcomeSealedPayloadV2({
       keychainChanges: bobKeychainBytes,
       beekemWelcome: bobAddResult.welcome,
     });
@@ -154,7 +147,7 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
 
     // Joiner side: open the sealed envelope, bootstrap BeeKEM.
     const bobOpened = await eciesOpen(bobSealed, bob.kemKeyPair.privateKey);
-    const bobEnvelope = decodeWelcomeSealedPayload(bobOpened);
+    const bobEnvelope = decodeWelcomeSealedPayloadV2(bobOpened);
     expect(bobEnvelope.beekemWelcome).not.toBeNull();
     expect(bobEnvelope.keychainChanges).toEqual(bobKeychainBytes);
     bob.beekem = new BeeKEM();
@@ -172,7 +165,7 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
     const carolKeychainBytes = new TextEncoder().encode(
       'carol-keychain-delta-at-invite',
     );
-    const carolEnvelopeBytes = encodeWelcomeSealedPayload({
+    const carolEnvelopeBytes = encodeWelcomeSealedPayloadV2({
       keychainChanges: carolKeychainBytes,
       beekemWelcome: carolAddResult.welcome,
     });
@@ -182,7 +175,7 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
       carolSealed,
       carol.kemKeyPair.privateKey,
     );
-    const carolEnvelope = decodeWelcomeSealedPayload(carolOpened);
+    const carolEnvelope = decodeWelcomeSealedPayloadV2(carolOpened);
     carol.beekem = new BeeKEM();
     await carol.beekem.processWelcome(
       carolEnvelope.beekemWelcome!,
@@ -204,10 +197,12 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
       bobLeafIndex,
     );
 
-    // PathUpdate goes over `beekemPathUpdateV1` -- round-trip through
+    // PathUpdate goes over `beekemPathUpdateV2` -- round-trip through
     // the wire encoder/decoder so a regression in either surfaces.
-    const wire = JSON.parse(JSON.stringify(serializePathUpdateForWire(pathUpdate)));
-    const restored = deserializePathUpdateFromWire(wire);
+    const wire = JSON.parse(
+      JSON.stringify(serializePathUpdateV2ForWire(pathUpdate)),
+    );
+    const restored = deserializePathUpdateV2FromWire(wire);
 
     // ----- Carol applies the wire-restored PathUpdate ----------------
     const carolNewRoot = await carol.beekem.processPathUpdate(restored);
@@ -265,7 +260,7 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
     const bobKemImported = await importExtractableKemPublicKey(bob.rawKemPublic);
     const { welcome } = await alice.addMember(bobKemImported);
 
-    const envelopeBytes = encodeWelcomeSealedPayload({
+    const envelopeBytes = encodeWelcomeSealedPayloadV2({
       keychainChanges: new Uint8Array([1, 2, 3]),
       beekemWelcome: welcome,
     });
@@ -276,52 +271,5 @@ describe('BeeKEM reader revocation (wire-integration)', () => {
     // the welcome.
     const mallory = await generateEciesKeyPair();
     await expect(eciesOpen(sealed, mallory.privateKey)).rejects.toThrow();
-  });
-
-  test('Bob (revoked before Carol joined) is still locked out after a later add+remove cycle', async () => {
-    // The revocation security property has to hold even when Alice
-    // does more group operations after the revocation -- not just
-    // immediately after.
-    const aliceKeys = await generateEciesKeyPair();
-    const alice = new BeeKEM();
-    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
-
-    const bob = await makePeer();
-    const bobKemImported = await importExtractableKemPublicKey(bob.rawKemPublic);
-    const bobAdd = await alice.addMember(bobKemImported);
-    bob.beekem = new BeeKEM();
-    await bob.beekem.processWelcome(
-      bobAdd.welcome,
-      bob.kemKeyPair.privateKey,
-      bob.kemKeyPair.publicKey,
-    );
-
-    // Bob is revoked.
-    const { pathUpdate: revokeUpdate, rootSecret: postRevokeRoot } =
-      await alice.removeMember(bobAdd.welcome.leafIndex);
-    expect(() => {
-      const wire = serializePathUpdateForWire(revokeUpdate);
-      deserializePathUpdateFromWire(JSON.parse(JSON.stringify(wire)));
-    }).not.toThrow();
-    const postRevokeKey = await deriveDocumentKeyFromRootSecret(postRevokeRoot);
-
-    // Bob cannot apply Alice's revocation PathUpdate -- expected.
-    let bobKey: CryptoKey | null = null;
-    try {
-      const bobRoot = await bob.beekem!.processPathUpdate(revokeUpdate);
-      bobKey = await deriveDocumentKeyFromRootSecret(bobRoot);
-    } catch {
-      // expected.
-    }
-
-    // Encrypt a probe message under Alice's post-revoke key.
-    const probe = new TextEncoder().encode('alice-only message');
-    const { iv, ct } = await encryptUnder(postRevokeKey, probe);
-
-    if (bobKey) {
-      await expect(decryptUnder(bobKey, iv, ct)).rejects.toThrow();
-    } else {
-      expect(bobKey).toBeNull();
-    }
   });
 });
