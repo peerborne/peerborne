@@ -12,4 +12,8 @@ export {
   LRUCache,
   TIPS_HASH_LENGTH,
   SubtleCrypto,
+  deserializeInitialLoadChallengeFromWire,
+  serializeInitialLoadChallengeForWire,
+  deserializeLoadSecurityCommitmentsFromWire,
+  serializeLoadSecurityCommitmentsForWire,
 } from '@peerborne/core/browser-primitives';

@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
+import { snapshotDeepEnumerableData } from '@peerborne/core';
 import {
   change as automergeChange,
   from as automergeFrom,
@@ -383,6 +384,31 @@ describe('AutomergeKeychain', () => {
     expect(ids).toContainEqual(Array.from(id2));
   });
 
+  test('prepareMerge detaches caller changes and commits independently of returned buffers', async () => {
+    const source = new AutomergeKeychain();
+    const [keyId] = await source.add();
+    const callerChanges = source.history().map(
+      (change) => new Uint8Array(change),
+    );
+    const receiver = new AutomergeKeychain();
+    const prepared = receiver.prepareMerge(callerChanges);
+
+    expect(prepared.changes).not.toBe(callerChanges);
+    expect(prepared.changes[0]).not.toBe(callerChanges[0]);
+    const stagedFirstByte = prepared.changes[0][0];
+    callerChanges[0].fill(stagedFirstByte ^ 0xff);
+    callerChanges.length = 0;
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(prepared.changes[0][0]).toBe(stagedFirstByte);
+
+    prepared.changes[0].fill(stagedFirstByte ^ 0xff);
+    prepared.changes.length = 0;
+    prepared.commit();
+    expect((await receiver.keys()).map(([id]) => Array.from(id))).toContainEqual(
+      Array.from(keyId),
+    );
+  });
+
   test('seed history is deterministic across creation times', () => {
     const now = jest.spyOn(Date, 'now');
     try {
@@ -441,7 +467,7 @@ describe('AutomergeKeychain', () => {
     expect(ids).not.toContainEqual(Array.from(id1));
   });
 
-  test('historySince() falls back to full history when the boundary key is unknown', async () => {
+  test('historySince() falls back to current-only when the boundary key is unknown', async () => {
     const source = new AutomergeKeychain();
     const [id1] = await source.add();
     const [id2] = await source.add();
@@ -449,16 +475,11 @@ describe('AutomergeKeychain', () => {
     const unknownID = new Uint8Array(32).fill(0xff);
     const slice = await source.historySince(unknownID);
 
-    // The unknown-boundary path should return the full change list,
-    // and (thanks to the deterministic seed actor) that slice should
-    // merge cleanly into a fresh receiver keychain carrying both keys.
-    const fullHistory = source.history();
-    expect(slice.length).toBe(fullHistory.length);
-
     const receiver = new AutomergeKeychain();
     receiver.merge(slice);
     const ids = (await receiver.keys()).map(([id]) => Array.from(id));
-    expect(ids).toContainEqual(Array.from(id1));
+    expect(ids).toHaveLength(1);
+    expect(ids).not.toContainEqual(Array.from(id1));
     expect(ids).toContainEqual(Array.from(id2));
   });
 
@@ -514,6 +535,48 @@ describe('AutomergeKeychain', () => {
     expect(Array.from(currentID)).toEqual(Array.from(epochId));
     expect(currentKey).toBe(key);
   });
+
+  test.each([31, 33])(
+    'prepareEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new AutomergeKeychain();
+      const historyBefore = keychain
+        .history()
+        .map((binaryChange) => new Uint8Array(binaryChange));
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.prepareEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID must be exactly 32 bytes');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test.each([31, 33])(
+    'addEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new AutomergeKeychain();
+      const historyBefore = keychain
+        .history()
+        .map((binaryChange) => new Uint8Array(binaryChange));
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.addEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID must be exactly 32 bytes');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
 
   test('addEpochKey() output merges into a fresh keychain and getKey() works there too', async () => {
     // Models the surviving-reader case: writer installs the new
@@ -730,6 +793,53 @@ describe('AutomergeJSONSerializer', () => {
     expect(deserialized.changes).toBeUndefined();
   });
 
+  test('preserves signed V4 full-load bytes across deserialize and reserialize', () => {
+    // Mirror the intended V4 response construction order: signature already
+    // has an insertion slot from the cached sync message, while
+    // keychainChanges is appended after the V4 challenge.
+    const message: any = {
+      documentId: '/signed-load',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document' as const,
+        keyID: 'epoch-7',
+        change: [new Uint8Array([1])],
+        children: {
+          PARENT: {
+            kind: 'writer' as const,
+            change: [new Uint8Array([2])],
+          },
+        },
+      },
+      signature: undefined,
+    };
+    message.tips = ['ROOT'];
+    message.loadSecurityState = {
+      version: 1 as const,
+      controlHead: new Uint8Array(32),
+      groupId: 'group',
+      epoch: 1n,
+      treeHash: new Uint8Array(32),
+      confirmedTranscriptHash: new Uint8Array(32),
+    };
+    message.loadChallenge = new Uint8Array(32);
+    message.keychainChanges = [new Uint8Array([3])];
+
+    const { signature: _unsigned, ...signedPayload } = message;
+    const expectedSignedBytes = serializer.serializeSyncMessage(signedPayload);
+    message.signature = 'signature';
+    const decoded = serializer.deserializeSyncMessage(
+      serializer.serializeSyncMessage(message),
+    );
+    const { signature: _received, ...verificationPayload } = decoded;
+    const detachedVerificationPayload =
+      snapshotDeepEnumerableData(verificationPayload);
+
+    expect(
+      serializer.serializeSyncMessage(detachedVerificationPayload),
+    ).toEqual(expectedSignedBytes);
+  });
+
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = (i * 11) & 0xff;
@@ -821,6 +931,37 @@ describe('AutomergeJSONSerializer', () => {
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.pathUpdate).toEqual(pathUpdate);
+  });
+
+  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+    const pathUpdate = {
+      version: 2 as const,
+      generation: 7,
+      numLeaves: 2,
+      senderLeafIndex: 0,
+      senderLeafPublicKey: 'AAAA',
+      nodes: [{
+        nodeIndex: 1,
+        publicKey: 'AQID',
+        encryptedPrivateKey: 'BAUG',
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
+        ],
+      }],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: 'AAAA' },
+        { nodeIndex: 1, publicKey: 'AQID' },
+        { nodeIndex: 2, publicKey: 'CgsM' },
+      ],
+      treeHash: 'DQ4P',
+    };
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'pathupdate-v2-doc',
+      pathUpdate,
+    });
+    expect(serializer.deserializeSyncMessage(wire).pathUpdate).toEqual(
+      pathUpdate,
+    );
   });
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {

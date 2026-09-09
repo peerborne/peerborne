@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeAll } from '@jest/globals';
 import { Doc, encodeStateAsUpdateV2 } from 'yjs';
+import { snapshotDeepEnumerableData } from '@peerborne/core';
 import {
   YjsProvider,
   YjsACL,
@@ -357,7 +358,7 @@ describe('YjsKeychain', () => {
     expect(ids).not.toContainEqual(Array.from(id1));
   });
 
-  test('historySince() falls back to full history when the boundary key is unknown', async () => {
+  test('historySince() falls back to current-only when the boundary key is unknown', async () => {
     const source = new YjsKeychain();
     const [id1] = await source.add();
     const [id2] = await source.add();
@@ -368,9 +369,9 @@ describe('YjsKeychain', () => {
     const receiver = new YjsKeychain();
     receiver.merge(slice);
     const keys = await receiver.keys();
-    expect(keys).toHaveLength(2);
+    expect(keys).toHaveLength(1);
     const ids = keys.map(([id]) => Array.from(id));
-    expect(ids).toContainEqual(Array.from(id1));
+    expect(ids).not.toContainEqual(Array.from(id1));
     expect(ids).toContainEqual(Array.from(id2));
   });
 
@@ -421,6 +422,77 @@ describe('YjsKeychain', () => {
     expect(currentID.length).toBe(32);
     expect(Array.from(currentID)).toEqual(Array.from(epochId));
     expect(currentKey).toBe(key);
+  });
+
+  test.each([31, 33])(
+    'prepareEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new YjsKeychain();
+      const historyBefore = new Uint8Array(keychain.history());
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.prepareEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID must be exactly 32 bytes');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test.each([31, 33])(
+    'addEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new YjsKeychain();
+      const historyBefore = new Uint8Array(keychain.history());
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.addEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID must be exactly 32 bytes');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test('prepareEpochKey() commits its private bytes after returned changes are mutated', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    const keys = await keychain.keys();
+    expect(keys).toHaveLength(1);
+    expect(keys[0][0]).toEqual(epochId);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('prepareMerge() commits its private bytes after returned changes are mutated', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    const keys = await receiver.keys();
+    expect(keys).toHaveLength(1);
+    expect(keys[0][0]).toEqual(epochId);
   });
 
   test('addEpochKey() output merges into a fresh keychain and getKey() works there too', async () => {
@@ -622,6 +694,51 @@ describe('YjsJSONSerializer', () => {
     expect(deserialized.keychainChanges).toEqual(new Uint8Array([50, 51, 52]));
   });
 
+  test('preserves signed V4 full-load bytes across deserialize and reserialize', () => {
+    const serializer = new YjsJSONSerializer();
+    // Mirror the intended V4 response construction order: signature already
+    // has an insertion slot from the cached sync message, while
+    // keychainChanges is appended after the V4 challenge.
+    const message: any = {
+      documentId: '/signed-load',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document' as const,
+        keyID: 'epoch-7',
+        change: new Uint8Array([1]),
+        children: {
+          PARENT: { kind: 'writer' as const, change: new Uint8Array([2]) },
+        },
+      },
+      signature: undefined,
+    };
+    message.tips = ['ROOT'];
+    message.loadSecurityState = {
+      version: 1 as const,
+      controlHead: new Uint8Array(32),
+      groupId: 'group',
+      epoch: 1n,
+      treeHash: new Uint8Array(32),
+      confirmedTranscriptHash: new Uint8Array(32),
+    };
+    message.loadChallenge = new Uint8Array(32);
+    message.keychainChanges = new Uint8Array([3]);
+
+    const { signature: _unsigned, ...signedPayload } = message;
+    const expectedSignedBytes = serializer.serializeSyncMessage(signedPayload);
+    message.signature = 'signature';
+    const decoded = serializer.deserializeSyncMessage(
+      serializer.serializeSyncMessage(message),
+    );
+    const { signature: _received, ...verificationPayload } = decoded;
+    const detachedVerificationPayload =
+      snapshotDeepEnumerableData(verificationPayload);
+
+    expect(
+      serializer.serializeSyncMessage(detachedVerificationPayload),
+    ).toEqual(expectedSignedBytes);
+  });
+
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
     const serializer = new YjsJSONSerializer();
     const epochId = new Uint8Array(32);
@@ -713,6 +830,38 @@ describe('YjsJSONSerializer', () => {
     const serialized = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(serialized);
     expect(deserialized.pathUpdate).toEqual(pathUpdate);
+  });
+
+  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+    const serializer = new YjsJSONSerializer();
+    const pathUpdate = {
+      version: 2 as const,
+      generation: 7,
+      numLeaves: 2,
+      senderLeafIndex: 0,
+      senderLeafPublicKey: 'AAAA',
+      nodes: [{
+        nodeIndex: 1,
+        publicKey: 'AQID',
+        encryptedPrivateKey: 'BAUG',
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
+        ],
+      }],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: 'AAAA' },
+        { nodeIndex: 1, publicKey: 'AQID' },
+        { nodeIndex: 2, publicKey: 'CgsM' },
+      ],
+      treeHash: 'DQ4P',
+    };
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'pathupdate-v2-doc',
+      pathUpdate,
+    });
+    expect(serializer.deserializeSyncMessage(wire).pathUpdate).toEqual(
+      pathUpdate,
+    );
   });
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {

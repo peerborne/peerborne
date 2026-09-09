@@ -28,20 +28,26 @@ describe('keychainHistorySinceOrFull', () => {
     expect(result).toBe('delta-since');
   });
 
-  test('falls back to history() when historySince is not implemented', async () => {
+  test('falls back to currentKeyChange() when historySince is not implemented', async () => {
+    const history = jest.fn(() => 'full-history');
+    const currentKeyChange = jest
+      .fn<() => Promise<string>>()
+      .mockResolvedValue('current-change');
     const keychain: Keychain<string, string> = {
       add: async () => [new Uint8Array(), 'key', 'change'],
-      history: () => 'full-history',
+      history,
       merge: () => {},
       keys: async () => [],
       current: async () => [new Uint8Array(), 'current-key'],
       getKey: () => 'key',
-      currentKeyChange: async () => 'current-change',
+      currentKeyChange,
       addEpochKey: async () => 'epoch-change',
     };
     const fn = keychainHistorySinceOrFull(keychain);
     const result = await fn(new Uint8Array([1]));
-    expect(result).toBe('full-history');
+    expect(result).toBe('current-change');
+    expect(currentKeyChange).toHaveBeenCalledTimes(1);
+    expect(history).not.toHaveBeenCalled();
   });
 });
 

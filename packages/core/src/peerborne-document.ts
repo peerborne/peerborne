@@ -1873,10 +1873,10 @@ export class PeerborneDocument<
           // window. Future rotations propagate via key-update.
           return await this._keychain.currentKeyChange();
         }
-        // `historySince` is optional on the Keychain interface for
-        // backwards compatibility; fall back to full history when the
-        // active provider has not implemented it (matches the
-        // documented "boundary unknown" recovery path).
+        // `historySince` is optional on the Keychain interface for backwards
+        // compatibility; fall back to the current key when the active provider
+        // has not implemented it so a missing capability cannot widen key
+        // disclosure.
         return await keychainHistorySinceOrFull(this._keychain)(
           this._invitationEpoch,
         );

@@ -79,8 +79,9 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * width is uniform across provisioning, storage, and the wire.
    *
    * @param epochId The epoch ID, exactly `KeychainProvider.keyIDLength`
-   *   bytes wide. Implementations MAY throw on mismatched widths but
-   *   the shipped providers store the supplied bytes verbatim.
+   *   bytes wide. Implementations MUST reject a mismatched width instead of
+   *   truncating or padding it. The shipped providers require exactly 32 bytes
+   *   and store those validated bytes verbatim.
    * @param key The encryption key for this epoch.
    * @return A block of change(s) describing the keychain addition.
    */
@@ -97,6 +98,13 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * `commit()` MUST either apply the staged state completely or throw before
    * mutation. It is called at most once, after every asynchronous preparation
    * step has succeeded.
+   *
+   * The `epochId` width contract is identical to `addEpochKey()`: it must equal
+   * `KeychainProvider.keyIDLength`, exactly 32 bytes in the shipped providers,
+   * and a mismatch must be rejected before any state is staged or mutated.
+   *
+   * @param epochId The full-width epoch identifier.
+   * @param key The encryption key for this epoch.
    */
   prepareEpochKey?(
     epochId: Uint8Array,
@@ -114,14 +122,15 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * member receives every key from the moment they were invited onward, but
    * no earlier epoch keys. It does not itself redact retained CRDT operations.
    *
-   * If the supplied `keyID` is not present in the keychain, the keychain is
-   * not yet aware of that epoch -- the method returns the full history so the
-   * recipient can still decrypt; this errs on the side of availability.
+   * If the supplied `keyID` is not present in the keychain, implementations
+   * MUST return only the current-key change or reject. Returning full history
+   * would disclose every pre-invitation epoch when the boundary is malformed,
+   * stale, or attacker-controlled.
    *
    * Optional for backwards compatibility with `Keychain` implementations
    * written before the `since_invited` history-visibility mode landed. When a
    * provider does not implement this method, `since_invited` falls back to
-   * `history()` (matching the documented "boundary unknown" recovery path).
+   * `currentKeyChange()` so a missing capability cannot widen disclosure.
    * Custom keychains that want efficient `since_invited` filtering SHOULD
    * implement this method directly; the next major version will make it
    * required.
@@ -183,11 +192,11 @@ export interface PreparedKeychainMerge<KeychainChange> {
 
 /**
  * Returns a function that invokes `keychain.historySince` when the
- * implementation provides it, and falls back to `keychain.history()`
- * otherwise. Lets callers (notably
- * `PeerborneDocument._keychainChangesForVisibility`) compile against
- * the optional interface method without scattering null checks at
- * every call site.
+ * implementation provides it, and falls back to `currentKeyChange()`
+ * otherwise. The historical export name is retained for source compatibility;
+ * its fallback is deliberately fail-closed. It lets callers compile against
+ * the optional interface method without scattering null checks at every call
+ * site.
  */
 export function keychainHistorySinceOrFull<KeychainChange, DocumentKey>(
   keychain: Keychain<KeychainChange, DocumentKey>,
@@ -196,5 +205,5 @@ export function keychainHistorySinceOrFull<KeychainChange, DocumentKey>(
   if (impl) {
     return (keyID) => impl.call(keychain, keyID);
   }
-  return async () => keychain.history();
+  return async () => keychain.currentKeyChange();
 }
