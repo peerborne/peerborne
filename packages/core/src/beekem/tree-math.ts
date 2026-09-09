@@ -147,6 +147,7 @@ export function directPath(leafIndex: number, numLeaves: number): number[] {
  */
 export function copath(leafIndex: number, numLeaves: number): number[] {
   const dp = directPath(leafIndex, numLeaves);
+  if (dp.length === 0) return [];
   // The first sibling is the sibling of the leaf itself, then siblings of path nodes
   const nodes = [leafIndex, ...dp.slice(0, -1)]; // all except root
   return nodes.map((n) => sibling(n, numLeaves));
