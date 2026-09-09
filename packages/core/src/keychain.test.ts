@@ -1,5 +1,9 @@
 import { describe, expect, test, jest } from '@jest/globals';
-import { Keychain, keychainHistorySinceOrFull } from './keychain.js';
+import {
+  isTransactionalKeychain,
+  Keychain,
+  keychainHistorySinceOrFull,
+} from './keychain.js';
 
 describe('keychainHistorySinceOrFull', () => {
   test('calls historySince when the implementation provides it', async () => {
@@ -38,5 +42,39 @@ describe('keychainHistorySinceOrFull', () => {
     const fn = keychainHistorySinceOrFull(keychain);
     const result = await fn(new Uint8Array([1]));
     expect(result).toBe('full-history');
+  });
+});
+
+describe('isTransactionalKeychain', () => {
+  const makeKeychain = (): Keychain<string, string> => ({
+    add: async () => [new Uint8Array(), 'key', 'change'],
+    history: () => 'full-history',
+    merge: () => {},
+    keys: async () => [],
+    current: async () => [new Uint8Array(), 'current-key'],
+    getKey: () => 'key',
+    currentKeyChange: async () => 'current-change',
+    addEpochKey: async () => 'epoch-change',
+  });
+
+  test('rejects a legacy keychain that lacks atomic staging', () => {
+    expect(isTransactionalKeychain(makeKeychain())).toBe(false);
+  });
+
+  test('accepts a keychain with both BeeKEM staging operations', () => {
+    const keychain = makeKeychain();
+    keychain.prepareEpochKey = async () => ({
+      changes: 'change',
+      history: 'history',
+      currentKeyChange: 'current',
+      commit: () => {},
+    });
+    keychain.prepareMerge = () => ({
+      changes: 'change',
+      keyIds: [],
+      commit: () => {},
+    });
+
+    expect(isTransactionalKeychain(keychain)).toBe(true);
   });
 });

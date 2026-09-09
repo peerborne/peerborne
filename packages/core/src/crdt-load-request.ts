@@ -13,4 +13,7 @@ export type CRDTLoadRequest = {
    * Signature made by requesting user.
    */
   signature: string;
+
+  /** Fresh 32-byte nonce required and signed on security-aware V4 loads. */
+  loadChallenge?: Uint8Array;
 };
