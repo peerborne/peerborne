@@ -1899,23 +1899,23 @@ export class PeerborneDocument<
         return this._keychain.history();
       case 'since_invited':
         if (this._invitationEpoch === undefined) {
-          // No recorded invitation epoch (founding member, or a node
-          // that joined before Welcome wiring landed). Default to the
-          // narrowest key-distribution interpretation -- the current key only -- so a
-          // missing boundary cannot silently widen the disclosure
-          // window. Future rotations propagate via key-update.
+          // No recorded invitation epoch (founding member, or a node that
+          // joined before Welcome wiring landed). Request the narrowest
+          // distribution interpretation. The provider rejects if its CRDT
+          // cannot represent the isolated current key replay-safely.
           return await this._keychain.currentKeyChange();
         }
-        // `historySince` is optional on the Keychain interface for
-        // backwards compatibility; fall back to full history when the
-        // active provider has not implemented it (matches the
-        // documented "boundary unknown" recovery path).
+        // `historySince` is optional on the Keychain interface for source
+        // compatibility. The helper rejects when the provider omits it because
+        // core cannot assume a freshly synthesized current-key delta is safe to
+        // regenerate or replay.
         return await keychainHistorySinceOrFull(this._keychain)(
           this._invitationEpoch,
         );
       case 'current_only':
       default:
-        // Only send the current key. This does not redact retained CRDT history.
+        // Request only the current key. Providers reject when their CRDT cannot
+        // represent that isolated change replay-safely.
         return await this._keychain.currentKeyChange();
     }
   }
@@ -1927,16 +1927,18 @@ export class PeerborneDocument<
    * The visibility computation here is from the **recipient's**
    * perspective, not the inviter's:
    *
-   * - `current_only`: send only the current key. Identical to the load
-   *   response path; this does not redact retained CRDT history.
-   * - `since_invited`: send only the current key. From the recipient's
+   * - `current_only`: request only the current key. Providers reject when
+   *   their CRDT cannot export it replay-safely. This does not redact retained
+   *   CRDT history.
+   * - `since_invited`: request only the current key. From the recipient's
    *   perspective, "since I was invited" is the current epoch
    *   (`welcomeEpochId`) onward, so the Welcome itself should carry
    *   exactly the current key (subsequent rotations arrive via the
    *   key-update protocol). Using `_keychainChangesForVisibility()` here
    *   would instead leak the *inviter's* post-invite slice (or, for
-   *   founders, the full history), violating the recipient's intended
-   *   join boundary.
+   *   founders, the full history), violating the recipient's intended join
+   *   boundary. Providers reject when they cannot make this isolated export
+   *   replay-safe.
    * - `full_history`: send the full keychain so the recipient can audit
    *   or replay all prior blocks (matches the inviter-side visibility
    *   semantics).

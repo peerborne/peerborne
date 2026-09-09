@@ -3,7 +3,9 @@ import {
   init,
   change,
   clone,
+  decodeChange,
   getChanges,
+  getConflicts,
   applyChanges,
   getMissingDeps,
   Change as BinaryChange,
@@ -23,12 +25,23 @@ import {
   CRDTSyncMessage,
   describeValue,
   deserializeChangeNodeFromJSON,
+  deserializeInitialLoadChallengeFromWire,
   INITIAL_INVITATION_CAPACITY_PROFILE,
+  deserializeLoadSecurityCommitmentsFromWire,
   JSONSerializer,
   Keychain,
+  KeychainAppendIntent,
+  PreparedKeychainAddition,
+  PreparedKeychainEpoch,
+  PreparedKeychainMerge,
   KeychainProvider,
   LRUCache,
+  MAX_KEYCHAIN_EPOCHS,
+  computeKeychainStateCommitment,
+  copyUnsharedUint8Array,
   serializeChangeNodeForJSON,
+  serializeInitialLoadChallengeForWire,
+  serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
@@ -97,11 +110,15 @@ export function deserializeKey(
   return (publicKey: string) => {
     const bytes = Base64.toUint8Array(publicKey);
     // Cast needed: Uint8Array<ArrayBufferLike> does not satisfy BufferSource (excludes SharedArrayBuffer)
-    return crypto.subtle.importKey('raw', bytes as Uint8Array<ArrayBuffer>, algorithm, true, keyUsages);
+    return crypto.subtle.importKey(
+      'raw',
+      bytes as Uint8Array<ArrayBuffer>,
+      algorithm,
+      true,
+      keyUsages,
+    );
   };
 }
-
-
 
 export type AutomergeACLDoc = Doc<{
   users?: { [hash: string]: true };
@@ -208,6 +225,9 @@ export type AutomergeKeychainDoc = Doc<{
   keys: [string, string][];
 }>;
 
+const KEY_ID_LENGTH_BYTES = 32;
+const MAX_KEYCHAIN_CHANGE_BYTES = 10 * 1024 * 1024;
+
 /**
  * Convert a Uint8Array to a lowercase hex string for use as a cache key.
  */
@@ -239,7 +259,14 @@ function toHex(bytes: Uint8Array): string {
  * round-trip through this function without any special casing.
  */
 function keyIdToCacheKey(keyIDBytes: Uint8Array): string {
-  return toHex(keyIDBytes);
+  return toHex(
+    copyUnsharedUint8Array(
+      keyIDBytes,
+      KEY_ID_LENGTH_BYTES,
+      KEY_ID_LENGTH_BYTES,
+      'Key ID',
+    ),
+  );
 }
 
 /**
@@ -247,14 +274,13 @@ function keyIdToCacheKey(keyIDBytes: Uint8Array): string {
  * stores cache keys exclusively in lowercase hex (see
  * {@link keyIdToCacheKey}), so this only needs to decode hex.
  *
- * @throws {Error} If the cache key is not a valid even-length hex string.
+ * @throws {Error} If the cache key is not a canonical lowercase 32-byte ID.
  */
 function cacheKeyToKeyId(cacheKey: string): Uint8Array {
-  const hexRegex = /^[0-9a-fA-F]+$/;
-  if (!hexRegex.test(cacheKey) || cacheKey.length % 2 !== 0) {
-    throw new Error(`Invalid cache key format: expected even-length hex string, got "${cacheKey}"`);
+  if (!/^[0-9a-f]{64}$/.test(cacheKey)) {
+    throw new Error('Invalid keychain key ID');
   }
-  const bytes = new Uint8Array(cacheKey.length / 2);
+  const bytes = new Uint8Array(KEY_ID_LENGTH_BYTES);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(cacheKey.substring(i * 2, i * 2 + 2), 16);
   }
@@ -283,10 +309,9 @@ const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
  * Build a fresh keychain document. The seed change (creating the empty
  * `keys` array) is written under {@link KEYCHAIN_SEED_ACTOR} so it is
  * identical across all keychain instances; the returned document then
- * uses a random per-instance actor for any subsequent changes. This is
- * what makes {@link AutomergeKeychain.historySince} and
- * {@link AutomergeKeychain.currentKeyChange} mergeable into a fresh
- * receiver keychain without a root-array actor conflict.
+ * uses a random per-instance actor for any subsequent changes. Shared seed
+ * operations let actual keychain histories merge without a root-array actor
+ * conflict; filtered exports must still preserve their existing operation IDs.
  */
 function newKeychainDoc(): AutomergeKeychainDoc {
   const seeded = change(
@@ -300,6 +325,349 @@ function newKeychainDoc(): AutomergeKeychainDoc {
   return clone(seeded);
 }
 
+type CanonicalKeychainEntry = readonly [string, string];
+
+function assertAesGcmDocumentKey(key: CryptoKey): void {
+  try {
+    const algorithm = key.algorithm as AesKeyAlgorithm;
+    if (
+      key.type !== 'secret' ||
+      algorithm.name !== 'AES-GCM' ||
+      algorithm.length !== 256 ||
+      !key.usages.includes('encrypt') ||
+      !key.usages.includes('decrypt')
+    ) {
+      throw new Error();
+    }
+  } catch {
+    throw new TypeError('Document key must be a 256-bit AES-GCM key');
+  }
+}
+
+function assertSerializedDocumentKey(
+  serialized: unknown,
+): asserts serialized is string {
+  if (
+    typeof serialized !== 'string' ||
+    !/^[A-Za-z0-9+/]{43}=$/.test(serialized)
+  ) {
+    throw new Error('Invalid serialized keychain key');
+  }
+  let raw: Uint8Array;
+  try {
+    raw = Base64.toUint8Array(serialized);
+  } catch {
+    throw new Error('Invalid serialized keychain key');
+  }
+  if (
+    raw.byteLength !== 32 ||
+    Base64.fromUint8Array(raw) !== serialized
+  ) {
+    throw new Error('Invalid serialized keychain key');
+  }
+}
+
+function assertCanonicalKeychainEntry(
+  entry: unknown,
+): asserts entry is [string, string] {
+  if (
+    !Array.isArray(entry) ||
+    entry.length !== 2 ||
+    typeof entry[0] !== 'string' ||
+    typeof entry[1] !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(entry[0])
+  ) {
+    throw new Error('Invalid keychain entry');
+  }
+  assertSerializedDocumentKey(entry[1]);
+}
+
+function validateCanonicalKeychainEntries(
+  entries: readonly unknown[],
+): CanonicalKeychainEntry[] {
+  if (entries.length > MAX_KEYCHAIN_EPOCHS) {
+    throw new Error('Keychain exceeds the supported epoch limit');
+  }
+  const result: CanonicalKeychainEntry[] = [];
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    assertCanonicalKeychainEntry(entry);
+    if (ids.has(entry[0])) {
+      throw new Error('Duplicate keychain key ID');
+    }
+    ids.add(entry[0]);
+    result.push([entry[0], entry[1]]);
+  }
+  return result;
+}
+
+function sameKeychainEntry(
+  left: CanonicalKeychainEntry,
+  right: CanonicalKeychainEntry,
+): boolean {
+  return left[0] === right[0] && left[1] === right[1];
+}
+
+function assertAppendOnlyTransition(
+  before: readonly CanonicalKeychainEntry[],
+  after: readonly CanonicalKeychainEntry[],
+): void {
+  if (after.length < before.length) {
+    throw new Error('Keychain merge must preserve existing entries');
+  }
+  for (let index = 0; index < before.length; index++) {
+    if (!sameKeychainEntry(before[index], after[index])) {
+      throw new Error('Keychain merge must append without rewriting entries');
+    }
+  }
+}
+
+function isKeychainPrefix(
+  prefix: readonly CanonicalKeychainEntry[],
+  entries: readonly CanonicalKeychainEntry[],
+): boolean {
+  return (
+    prefix.length <= entries.length &&
+    prefix.every((entry, index) => sameKeychainEntry(entry, entries[index]))
+  );
+}
+
+type CanonicalAppendIntent = {
+  readonly previousKeyId: string;
+  readonly newKeyId: string;
+};
+
+function snapshotAppendIntent(
+  intent: KeychainAppendIntent,
+): CanonicalAppendIntent {
+  if (typeof intent !== 'object' || intent === null) {
+    throw new TypeError('Keychain append intent must be an object');
+  }
+  return {
+    previousKeyId: keyIdToCacheKey(intent.expectedPreviousKeyId),
+    newKeyId: keyIdToCacheKey(intent.expectedNewKeyId),
+  };
+}
+
+function automergeKeychainStateCommitment(
+  entries: readonly CanonicalKeychainEntry[],
+): Promise<Uint8Array> {
+  return computeKeychainStateCommitment(
+    entries.map(([keyId, serialized]) => [
+      cacheKeyToKeyId(keyId),
+      Base64.toUint8Array(serialized),
+    ]),
+  );
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  const sharedLength = Math.min(left.byteLength, right.byteLength);
+  for (let index = 0; index < sharedLength; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.byteLength - right.byteLength;
+}
+
+function compareAutomergeHistories(
+  left: AutomergeKeychainDoc,
+  right: AutomergeKeychainDoc,
+): number {
+  const leftHistory = getAllChanges(left);
+  const rightHistory = getAllChanges(right);
+  const sharedLength = Math.min(leftHistory.length, rightHistory.length);
+  for (let index = 0; index < sharedLength; index++) {
+    const comparison = compareBytes(leftHistory[index], rightHistory[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return leftHistory.length - rightHistory.length;
+}
+
+function sameAutomergeHistory(
+  changes: readonly Uint8Array[],
+  doc: AutomergeKeychainDoc,
+): boolean {
+  const history = getAllChanges(doc);
+  return (
+    changes.length === history.length &&
+    changes.every((binaryChange, index) =>
+      sameBytes(binaryChange, history[index]),
+    )
+  );
+}
+
+function assertNoAutomergeConflicts(
+  doc: AutomergeKeychainDoc,
+  entries: readonly CanonicalKeychainEntry[],
+): void {
+  if (getConflicts(doc, 'keys') !== undefined) {
+    throw new Error('Keychain history contains conflicting operations');
+  }
+  for (let index = 0; index < entries.length; index++) {
+    if (
+      getConflicts(doc.keys, index) !== undefined ||
+      getConflicts(doc.keys[index], 0) !== undefined ||
+      getConflicts(doc.keys[index], 1) !== undefined
+    ) {
+      throw new Error('Keychain history contains conflicting operations');
+    }
+  }
+}
+
+type DecodedAutomergeChange = ReturnType<typeof decodeChange>;
+type DecodedAutomergeSequenceOperation =
+  DecodedAutomergeChange['ops'][number] & {
+    readonly elemId?: unknown;
+    readonly insert?: unknown;
+  };
+
+function automergeOperationId(
+  decoded: DecodedAutomergeChange,
+  operationIndex: number,
+): string {
+  return `${decoded.startOp + operationIndex}@${decoded.actor}`;
+}
+
+function decodeCanonicalAutomergeAppend(
+  decoded: DecodedAutomergeChange,
+  expectedPreviousElementId: string,
+): { readonly entry: CanonicalKeychainEntry; readonly elementId: string } {
+  if (decoded.message !== null || decoded.ops.length !== 111) {
+    throw new Error(
+      'Keychain history contains unrelated metadata or operations',
+    );
+  }
+  const tuple = decoded.ops[0] as DecodedAutomergeSequenceOperation;
+  const idText = decoded.ops[1] as DecodedAutomergeSequenceOperation;
+  const keyText = decoded.ops[2] as DecodedAutomergeSequenceOperation;
+  const tupleId = automergeOperationId(decoded, 0);
+  const idTextId = automergeOperationId(decoded, 1);
+  const keyTextId = automergeOperationId(decoded, 2);
+  if (
+    tuple.action !== 'makeList' ||
+    tuple.obj !== `1@${KEYCHAIN_SEED_ACTOR}` ||
+    tuple.elemId !== expectedPreviousElementId ||
+    tuple.insert !== true ||
+    tuple.pred.length !== 0 ||
+    idText.action !== 'makeText' ||
+    idText.obj !== tupleId ||
+    idText.elemId !== '_head' ||
+    idText.insert !== true ||
+    idText.pred.length !== 0 ||
+    keyText.action !== 'makeText' ||
+    keyText.obj !== tupleId ||
+    keyText.elemId !== idTextId ||
+    keyText.insert !== true ||
+    keyText.pred.length !== 0
+  ) {
+    throw new Error('Keychain history contains a non-append operation');
+  }
+
+  const readText = (startIndex: number, length: number, objectId: string) => {
+    let result = '';
+    let previousElementId = '_head';
+    for (let offset = 0; offset < length; offset++) {
+      const operationIndex = startIndex + offset;
+      const operation = decoded.ops[
+        operationIndex
+      ] as DecodedAutomergeSequenceOperation;
+      if (
+        operation.action !== 'set' ||
+        operation.obj !== objectId ||
+        operation.elemId !== previousElementId ||
+        operation.insert !== true ||
+        operation.pred.length !== 0 ||
+        typeof operation.value !== 'string' ||
+        operation.value.length !== 1
+      ) {
+        throw new Error('Keychain history contains a non-append operation');
+      }
+      result += operation.value;
+      previousElementId = automergeOperationId(decoded, operationIndex);
+    }
+    return result;
+  };
+
+  const entry: CanonicalKeychainEntry = [
+    readText(3, 64, idTextId),
+    readText(67, 44, keyTextId),
+  ];
+  assertCanonicalKeychainEntry(entry);
+  return { entry, elementId: tupleId };
+}
+
+/**
+ * Replay and validate the complete operation history. Visible-state checks
+ * alone would permit tombstoned key material, concurrent/non-append branches,
+ * or unrelated edits to escape in a later full-history projection.
+ */
+function validateAutomergeKeychain(
+  doc: AutomergeKeychainDoc,
+): CanonicalKeychainEntry[] {
+  if (
+    getMissingDeps(doc, []).length !== 0 ||
+    Object.keys(doc).length !== 1 ||
+    Object.keys(doc)[0] !== 'keys' ||
+    !Array.isArray(doc.keys)
+  ) {
+    throw new Error('Invalid Automerge keychain document');
+  }
+
+  const visibleEntries = validateCanonicalKeychainEntries(doc.keys);
+  assertNoAutomergeConflicts(doc, visibleEntries);
+  const history = getAllChanges(doc);
+  const expectedSeed = getAllChanges(newKeychainDoc())[0];
+  if (history.length === 0 || !sameBytes(history[0], expectedSeed)) {
+    throw new Error('Invalid Automerge keychain seed');
+  }
+
+  const retainedEntries: CanonicalKeychainEntry[] = [];
+  let previousElementId = '_head';
+  let previousChangeHash: string | undefined;
+  for (let index = 0; index < history.length; index++) {
+    const binaryChange = history[index];
+    const decoded = decodeChange(binaryChange);
+    if (index === 0) {
+      if (decoded.ops.length !== 1 || decoded.ops[0].action !== 'makeList') {
+        throw new Error('Invalid Automerge keychain seed');
+      }
+    } else {
+      if (
+        previousChangeHash === undefined ||
+        decoded.deps.length !== 1 ||
+        decoded.deps[0] !== previousChangeHash
+      ) {
+        throw new Error('Keychain history is not a linear append sequence');
+      }
+      const append = decodeCanonicalAutomergeAppend(
+        decoded,
+        previousElementId,
+      );
+      retainedEntries.push(append.entry);
+      previousElementId = append.elementId;
+    }
+    previousChangeHash = decoded.hash;
+  }
+
+  validateCanonicalKeychainEntries(retainedEntries);
+  if (
+    visibleEntries.length !== retainedEntries.length ||
+    visibleEntries.some(
+      (entry, index) => !sameKeychainEntry(entry, retainedEntries[index]),
+    )
+  ) {
+    throw new Error('Automerge keychain history does not match visible state');
+  }
+  return visibleEntries;
+}
+
 /**
  * BREAKING CHANGE: keychain key-ID width is unified to 32 bytes.
  *
@@ -311,24 +679,40 @@ function newKeychainDoc(): AutomergeKeychainDoc {
  * step exists.
  *
  * This is an **intentional, on-disk-breaking change** from earlier
- * shipped revisions of this library, which used 16-byte UUIDs. There
- * are NO live users at the time of this change (project doctrine:
- * see `CLAUDE.md`/`SPECS.md`), so no migration shim is provided. Any
+ * shipped revisions of this library, which used 16-byte UUIDs. The project
+ * is alpha-only and no migration shim is provided. Any
  * document state persisted with the old 16-byte UUID format will fail
  * to load against this version because `cacheKeyToKeyId` only accepts
- * even-length hex strings (no UUID/dashed format), and existing 16-byte
+ * 64-character lowercase hex (no UUID/dashed format), and existing 16-byte
  * key IDs would be looked up under a different cache-key format than
  * they were stored under.
  *
- * If a future deployment ever needs migration, the recovery path is a
- * fresh keychain via `add()` + a BeeKEM Welcome to redistribute
- * material under the new ID width.
+ * Persisted deployments require a fresh document or a separately reviewed
+ * migration; ordinary document load is not a keychain/ratchet migration
+ * mechanism.
  */
 export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
-  private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
+  private readonly _keyCache = new LRUCache<string, CryptoKey>(
+    MAX_KEYCHAIN_EPOCHS,
+  );
   private _keychain: AutomergeKeychainDoc = newKeychainDoc();
+  private _revision = 0;
 
   async add(): Promise<[Uint8Array, CryptoKey, BinaryChange[]]> {
+    const prepared = await this.prepareKey();
+    prepared.commit();
+    return [new Uint8Array(prepared.keyId), prepared.key, prepared.changes];
+  }
+
+  async prepareKey(): Promise<
+    PreparedKeychainAddition<BinaryChange[], CryptoKey>
+  > {
+    if (
+      validateAutomergeKeychain(this._keychain).length ===
+      MAX_KEYCHAIN_EPOCHS
+    ) {
+      throw new Error('Keychain exceeds the supported epoch limit');
+    }
     // 32 random bytes match the width used by BeeKEM-derived epoch IDs
     // (`deriveEpochIdFromRootSecret`), so the wire-format key-ID prefix
     // is a single fixed width regardless of how the key was provisioned.
@@ -338,8 +722,9 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     // mismatch with `getKey` (stored under hex, looked up under UUID
     // format). Removing the size asymmetry removes the need for the
     // truncation in the first place.
-    const keyIDBytes = crypto.getRandomValues(new Uint8Array(32));
-    const keyIDHex = toHex(keyIDBytes);
+    const keyIDBytes = crypto.getRandomValues(
+      new Uint8Array(KEY_ID_LENGTH_BYTES),
+    );
     const key = await crypto.subtle.generateKey(
       {
         name: 'AES-GCM',
@@ -349,17 +734,12 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
       ['encrypt', 'decrypt'],
     );
 
-    const serialized = await serializeKey(key);
-    this._keyCache.set(keyIDHex, key);
-    const keychainNew = change(this._keychain, (doc) => {
-      if (!doc.keys) {
-        doc.keys = [];
-      }
-      doc.keys.push([keyIDHex, serialized]);
-    });
-    const keychainChanges = getChanges(this._keychain, keychainNew);
-    this._keychain = keychainNew;
-    return [keyIDBytes, key, keychainChanges];
+    const prepared = await this.prepareEpochKey(keyIDBytes, key);
+    return {
+      ...prepared,
+      keyId: new Uint8Array(keyIDBytes),
+      key,
+    };
   }
 
   /**
@@ -373,32 +753,290 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
    * @param key - The AES-GCM CryptoKey for this epoch.
    * @returns The Automerge changes representing the keychain update for broadcasting.
    */
-  async addEpochKey(epochId: Uint8Array, key: CryptoKey): Promise<BinaryChange[]> {
-    const epochIdHex = toHex(epochId);
-    this._keyCache.set(epochIdHex, key);
+  async addEpochKey(
+    epochId: Uint8Array,
+    key: CryptoKey,
+  ): Promise<BinaryChange[]> {
+    const prepared = await this.prepareEpochKey(epochId, key);
+    prepared.commit();
+    return prepared.changes;
+  }
+
+  async prepareEpochKey(
+    epochId: Uint8Array,
+    key: CryptoKey,
+  ): Promise<PreparedKeychainEpoch<BinaryChange[]>> {
+    const stableEpochId = copyUnsharedUint8Array(
+      epochId,
+      KEY_ID_LENGTH_BYTES,
+      KEY_ID_LENGTH_BYTES,
+      'Epoch ID',
+    );
+    const epochIdHex = toHex(stableEpochId);
+    assertAesGcmDocumentKey(key);
     const serialized = await serializeKey(key);
-    const keychainNew = change(this._keychain, (doc) => {
-      if (!doc.keys) {
-        doc.keys = [];
-      }
+    assertSerializedDocumentKey(serialized);
+    const base = this._keychain;
+    const baseRevision = this._revision;
+    const baseEntries = validateAutomergeKeychain(base);
+    if (baseEntries.length === MAX_KEYCHAIN_EPOCHS) {
+      throw new Error('Keychain exceeds the supported epoch limit');
+    }
+    if (baseEntries.some(([keyID]) => keyID === epochIdHex)) {
+      throw new Error('Duplicate keychain key ID');
+    }
+    const keychainNew = change(clone(base), (doc) => {
       doc.keys.push([epochIdHex, serialized]);
     });
-    const keychainChanges = getChanges(this._keychain, keychainNew);
-    this._keychain = keychainNew;
-    return keychainChanges;
+    const stagedEntries = validateAutomergeKeychain(keychainNew);
+    assertAppendOnlyTransition(baseEntries, stagedEntries);
+    const changes = getChanges(base, keychainNew);
+    const history = getAllChanges(keychainNew);
+    // This exact projection is safe to cache and replay because retries reuse
+    // its existing actor operation. It must not be regenerated later from a
+    // multi-key live history under a fresh actor.
+    const projectionBase = newKeychainDoc();
+    const projection = change(projectionBase, (doc) => {
+      doc.keys.push([epochIdHex, serialized]);
+    });
+    validateAutomergeKeychain(projection);
+    const currentKeyChange = getAllChanges(projection);
+    let committed = false;
+    return {
+      changes: changes.map(
+        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+      ),
+      history: history.map(
+        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+      ),
+      currentKeyChange: currentKeyChange.map(
+        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+      ),
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared epoch key was already committed');
+        }
+        if (this._keychain !== base || this._revision !== baseRevision) {
+          throw new Error('Keychain changed while epoch key was staged');
+        }
+        this._keyCache.set(epochIdHex, key);
+        this._keychain = keychainNew;
+        this._revision++;
+        committed = true;
+      },
+    };
   }
 
   history(): BinaryChange[] {
+    validateAutomergeKeychain(this._keychain);
     return getAllChanges(this._keychain);
   }
+  async stateCommitment(): Promise<Uint8Array> {
+    return await automergeKeychainStateCommitment(
+      validateAutomergeKeychain(this._keychain),
+    );
+  }
   merge(change: BinaryChange[]): void {
-    const [doc] = applyChanges(this._keychain, change);
-    this._keychain = doc;
+    this.prepareMerge(change).commit();
+  }
+
+  prepareMerge(
+    changes: BinaryChange[],
+  ): PreparedKeychainMerge<BinaryChange[], CryptoKey> {
+    return this._prepareMerge(changes);
+  }
+
+  prepareAppend(
+    changes: BinaryChange[],
+    intent: KeychainAppendIntent,
+  ): PreparedKeychainMerge<BinaryChange[], CryptoKey> {
+    return this._prepareMerge(changes, snapshotAppendIntent(intent));
+  }
+
+  private _prepareMerge(
+    changes: BinaryChange[],
+    stableAppendIntent?: CanonicalAppendIntent,
+  ): PreparedKeychainMerge<BinaryChange[], CryptoKey> {
+    if (!Array.isArray(changes)) {
+      throw new TypeError('Automerge keychain changes must be an array');
+    }
+    const changeCount = changes.length;
+    if (!Number.isSafeInteger(changeCount) || changeCount < 0) {
+      throw new TypeError('Invalid Automerge keychain change count');
+    }
+    if (changeCount > MAX_KEYCHAIN_EPOCHS + 1) {
+      throw new Error('Too many Automerge keychain changes');
+    }
+    const base = this._keychain;
+    const baseRevision = this._revision;
+    const baseEntries = validateAutomergeKeychain(base);
+    const stableChanges: BinaryChange[] = [];
+    let totalChangeBytes = 0;
+    for (let index = 0; index < changeCount; index++) {
+      const binaryChange = changes[index];
+      const stableChange = copyUnsharedUint8Array(
+        binaryChange,
+        1,
+        MAX_KEYCHAIN_CHANGE_BYTES,
+        'Automerge keychain change',
+      );
+      totalChangeBytes += stableChange.byteLength;
+      if (totalChangeBytes > MAX_KEYCHAIN_CHANGE_BYTES) {
+        throw new Error('Automerge keychain changes exceed the size limit');
+      }
+      stableChanges.push(stableChange as BinaryChange);
+    }
+    let merged: AutomergeKeychainDoc | undefined;
+    let stagedEntries: CanonicalKeychainEntry[] | undefined;
+
+    // Independently authored, byte-identical epoch tuples may have different
+    // Automerge actor operations. Select one complete canonical lineage when
+    // its logical history is an exact prefix/superset instead of retaining two
+    // copies of the same key material.
+    let incoming: AutomergeKeychainDoc | undefined;
+    let incomingEntries: CanonicalKeychainEntry[] | undefined;
+    try {
+      [incoming] = applyChanges(newKeychainDoc(), stableChanges);
+      incomingEntries = validateAutomergeKeychain(incoming);
+    } catch {
+      incoming = undefined;
+      incomingEntries = undefined;
+    }
+    if (stableAppendIntent !== undefined) {
+      if (
+        !incoming ||
+        !incomingEntries ||
+        incomingEntries.length !== 1 ||
+        !sameAutomergeHistory(stableChanges, incoming)
+      ) {
+        throw new Error(
+          'Keychain append intent requires a canonical standalone single-key projection',
+        );
+      }
+      const projected = incomingEntries[0];
+      if (projected[0] !== stableAppendIntent.newKeyId) {
+        throw new Error('Keychain projection does not match expected new key');
+      }
+      const current = baseEntries[baseEntries.length - 1];
+      if (current?.[0] === stableAppendIntent.newKeyId) {
+        const previous = baseEntries[baseEntries.length - 2];
+        if (
+          !sameKeychainEntry(current, projected) ||
+          previous?.[0] !== stableAppendIntent.previousKeyId
+        ) {
+          throw new Error('Keychain append replay does not match live history');
+        }
+        merged = base;
+        stagedEntries = baseEntries;
+      } else {
+        if (current?.[0] !== stableAppendIntent.previousKeyId) {
+          throw new Error(
+            'Keychain append predecessor does not match current key',
+          );
+        }
+        if (baseEntries.some(([keyID]) => keyID === projected[0])) {
+          throw new Error('Keychain append would replay an older key');
+        }
+        merged = change(clone(base), (doc) => {
+          doc.keys.push([projected[0], projected[1]]);
+        });
+        stagedEntries = validateAutomergeKeychain(merged);
+      }
+    } else if (incoming && incomingEntries) {
+      const current = baseEntries[baseEntries.length - 1];
+      if (
+        baseEntries.length > 1 &&
+        incomingEntries.length === 1 &&
+        current !== undefined &&
+        sameKeychainEntry(current, incomingEntries[0])
+      ) {
+        merged = base;
+        stagedEntries = baseEntries;
+      } else if (
+        baseEntries.length === incomingEntries.length &&
+        isKeychainPrefix(baseEntries, incomingEntries)
+      ) {
+        if (compareAutomergeHistories(base, incoming) <= 0) {
+          merged = base;
+          stagedEntries = baseEntries;
+        } else {
+          merged = incoming;
+          stagedEntries = incomingEntries;
+        }
+      } else if (isKeychainPrefix(baseEntries, incomingEntries)) {
+        merged = incoming;
+        stagedEntries = incomingEntries;
+      } else if (isKeychainPrefix(incomingEntries, baseEntries)) {
+        merged = base;
+        stagedEntries = baseEntries;
+      } else {
+        throw new Error(
+          'Standalone keychain history is not an append-only view',
+        );
+      }
+    }
+
+    if (!merged || !stagedEntries) {
+      [merged] = applyChanges(clone(base), stableChanges);
+      stagedEntries = validateAutomergeKeychain(merged);
+    }
+    assertAppendOnlyTransition(baseEntries, stagedEntries);
+    const committedKeyIds = stagedEntries.map(([keyID]) =>
+      cacheKeyToKeyId(keyID),
+    );
+    const returnedKeyIds = committedKeyIds.map((keyID) =>
+      new Uint8Array(keyID),
+    );
+    const currentKeyId =
+      committedKeyIds.length === 0
+        ? undefined
+        : new Uint8Array(committedKeyIds[committedKeyIds.length - 1]);
+    const stagedKeyCache = new Map<string, CryptoKey>();
+    let committed = false;
+    return {
+      changes: stableChanges.map(
+        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+      ),
+      keyIds: returnedKeyIds,
+      currentKeyId,
+      hydrateKeys: async () => {
+        const hydrated: [Uint8Array, CryptoKey][] = [];
+        for (const [keyID, serialized] of stagedEntries) {
+          let key = stagedKeyCache.get(keyID);
+          if (!key) {
+            key = await deserializeKey({ name: 'AES-GCM', length: 256 }, [
+              'encrypt',
+              'decrypt',
+            ])(serialized);
+            stagedKeyCache.set(keyID, key);
+          }
+          hydrated.push([cacheKeyToKeyId(keyID), key]);
+        }
+        return hydrated;
+      },
+      getKey: (keyID: Uint8Array) =>
+        stagedKeyCache.get(keyIdToCacheKey(keyID)),
+      stateCommitment: async () =>
+        await automergeKeychainStateCommitment(stagedEntries),
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared keychain merge was already committed');
+        }
+        if (this._keychain !== base || this._revision !== baseRevision) {
+          throw new Error('Keychain changed while merge was staged');
+        }
+        const liveCache = this._keyCache;
+        for (const [keyID, key] of stagedKeyCache) {
+          liveCache.set(keyID, key);
+        }
+        this._keychain = merged;
+        this._revision++;
+        committed = true;
+      },
+    };
   }
   async keys(): Promise<[Uint8Array, CryptoKey][]> {
-    if (!this._keychain.keys) {
-      return [];
-    }
+    validateAutomergeKeychain(this._keychain);
     return await Promise.all(
       this._keychain.keys.map(async ([keyID, serialized]) => {
         const keyIDBytes = cacheKeyToKeyId(keyID);
@@ -415,11 +1053,13 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     );
   }
   async current(): Promise<[Uint8Array, CryptoKey]> {
-    if (!this._keychain.keys || this._keychain.keys.length === 0) {
+    validateAutomergeKeychain(this._keychain);
+    if (this._keychain.keys.length === 0) {
       throw new Error("Can't get an empty keychain's current value");
     }
 
-    const [keyID, serialized] = this._keychain.keys[this._keychain.keys.length - 1];
+    const [keyID, serialized] =
+      this._keychain.keys[this._keychain.keys.length - 1];
     const keyIDBytes = cacheKeyToKeyId(keyID);
 
     let key = this._keyCache.get(keyID);
@@ -433,52 +1073,53 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<BinaryChange[]> {
-    if (!this._keychain.keys || this._keychain.keys.length === 0) {
+    validateAutomergeKeychain(this._keychain);
+    if (this._keychain.keys.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    // Build a minimal Automerge doc containing only the current (most recent) key.
-    // The fresh doc is seeded with the deterministic keychain seed actor so the
-    // initial empty `keys: []` op is identical to the one in any receiver
-    // keychain, allowing the slice to merge cleanly without root-array
-    // actor conflicts.
-    const [keyID, serialized] = this._keychain.keys[this._keychain.keys.length - 1];
-    const minimalDoc = change(newKeychainDoc(), (doc) => {
-      doc.keys.push([keyID, serialized]);
-    });
-    return getAllChanges(minimalDoc);
+    if (this._keychain.keys.length !== 1) {
+      throw new Error(
+        'Automerge cannot export the current key replay-safely',
+      );
+    }
+    return this.history();
   }
 
   /**
-   * Build a keychain change list containing only the keys at or after the
-   * specified key ID. The keys array preserves insertion order, so we
-   * locate the boundary by ID and copy the suffix into a fresh doc.
+   * Return stable existing keychain operations when the requested boundary is
+   * the first retained key.
    *
-   * If the boundary key is not found in this keychain, the full history
-   * is returned so the recipient can still decrypt past blocks rather
-   * than be wedged at the load step.
+   * Automerge append operations after a later boundary depend on operations
+   * that contain the preceding keys. Reconstructing a minimal suffix under a
+   * fresh actor would merge once, but independently regenerated responses would
+   * have distinct operation IDs and duplicate entries. Reject boundaries that
+   * cannot be served from existing operation history without either that replay
+   * ambiguity or disclosure of pre-boundary keys.
    */
   async historySince(keyID: Uint8Array): Promise<BinaryChange[]> {
-    if (!this._keychain.keys || this._keychain.keys.length === 0) {
+    validateAutomergeKeychain(this._keychain);
+    if (this._keychain.keys.length === 0) {
       throw new Error("Can't get history-since from an empty keychain");
     }
     const cacheKey = keyIdToCacheKey(keyID);
-    const startIdx = this._keychain.keys.findIndex(([id]) => id === cacheKey);
-    if (startIdx === -1) {
-      // Fall back to full history when the boundary key is unknown.
-      return getAllChanges(this._keychain);
-    }
-    const tail = this._keychain.keys.slice(startIdx);
-    // Use newKeychainDoc() so the slice's initial empty-array op is
-    // identical to the receiver's, and the slice merges cleanly into a
-    // fresh keychain without losing entries to a root-array actor
-    // conflict on the empty seed.
-    const minimalDoc = change(newKeychainDoc(), (doc) => {
-      for (const [id, serialized] of tail) {
-        doc.keys.push([id, serialized]);
+    let startIdx = -1;
+    for (let i = 0; i < this._keychain.keys.length; i++) {
+      if (this._keychain.keys[i][0] !== cacheKey) continue;
+      if (startIdx !== -1) {
+        throw new Error('Ambiguous keychain history boundary');
       }
-    });
-    return getAllChanges(minimalDoc);
+      startIdx = i;
+    }
+    if (startIdx === -1) {
+      throw new Error('Unknown keychain history boundary');
+    }
+    if (startIdx !== 0) {
+      throw new Error(
+        'Automerge cannot export this keychain suffix replay-safely',
+      );
+    }
+    return this.history();
   }
   getKey(keyIDBytes: Uint8Array): CryptoKey | undefined {
     const cacheKey = keyIdToCacheKey(keyIDBytes);
@@ -501,7 +1142,7 @@ export class AutomergeKeychainProvider
   // Using one fixed width across the keychain's two key-provisioning
   // paths means the on-wire key-ID prefix never needs to be truncated;
   // truncation would break post-rotation decryption.
-  keyIDLength = 32;
+  readonly keyIDLength = KEY_ID_LENGTH_BYTES;
 }
 
 /**
@@ -518,10 +1159,12 @@ function deserializeBinaryChanges(changes: string[]): BinaryChange[] {
   return changes.map((c: string) => Base64.toUint8Array(c)) as BinaryChange[];
 }
 
-export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], CryptoKey> {
+export class AutomergeJSONSerializer extends JSONSerializer<
+  BinaryChange[],
+  CryptoKey
+> {
   readonly initialInvitationCapacityProfile =
     INITIAL_INVITATION_CAPACITY_PROFILE;
-
   serializeChanges(changes: BinaryChange[]): Uint8Array {
     return this.encode(this.serialize(serializeBinaryChanges(changes)));
   }
@@ -540,20 +1183,32 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
       nonce: Base64.fromUint8Array(changes.nonce),
     };
     if (changes.keyID !== undefined) obj.keyID = changes.keyID;
-    if (changes.blindIndexTokens !== undefined && changes.blindIndexTokens !== null) obj.blindIndexTokens = changes.blindIndexTokens;
+    if (
+      changes.blindIndexTokens !== undefined &&
+      changes.blindIndexTokens !== null
+    )
+      obj.blindIndexTokens = changes.blindIndexTokens;
     return this.serialize(obj);
   }
 
   deserializeChangeBlock(changes: string): CRDTChangeBlock<BinaryChange[]> {
     const raw = this.deserialize(changes);
     if (
-      typeof raw !== 'object' || raw === null ||
+      typeof raw !== 'object' ||
+      raw === null ||
       !Array.isArray((raw as Record<string, unknown>).changes) ||
       typeof (raw as Record<string, unknown>).nonce !== 'string'
     ) {
-      throw new Error('Invalid change block: expected {changes: string[], nonce: string}');
+      throw new Error(
+        'Invalid change block: expected {changes: string[], nonce: string}',
+      );
     }
-    const deserialized = raw as { changes: string[]; nonce: string; keyID?: string; blindIndexTokens?: Record<string, string> };
+    const deserialized = raw as {
+      changes: string[];
+      nonce: string;
+      keyID?: string;
+      blindIndexTokens?: Record<string, string>;
+    };
     const result: CRDTChangeBlock<BinaryChange[]> = {
       changes: deserializeBinaryChanges(deserialized.changes),
       nonce: Base64.toUint8Array(deserialized.nonce),
@@ -562,18 +1217,22 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
     return result;
   }
 
-  serializeSyncMessage(message: CRDTSyncMessage<BinaryChange[], CryptoKey>): Uint8Array {
+  serializeSyncMessage(
+    message: CRDTSyncMessage<BinaryChange[], CryptoKey>,
+  ): Uint8Array {
     let snapshotForWire: any;
     if (message.snapshot) {
       snapshotForWire = { ...message.snapshot };
       // Base64-encode each BinaryChange (Uint8Array) in state for JSON safety.
       if (Array.isArray(snapshotForWire.state)) {
-        snapshotForWire.state = snapshotForWire.state.map(
-          (c: Uint8Array) => Base64.fromUint8Array(c),
+        snapshotForWire.state = snapshotForWire.state.map((c: Uint8Array) =>
+          Base64.fromUint8Array(c),
         );
       }
       if (snapshotForWire.signature instanceof Uint8Array) {
-        snapshotForWire.signature = Base64.fromUint8Array(snapshotForWire.signature);
+        snapshotForWire.signature = Base64.fromUint8Array(
+          snapshotForWire.signature,
+        );
       }
       // Drop publicKey -- CryptoKey is not JSON-serializable and
       // snapshot verification uses writer ACL keys, not the embedded key.
@@ -589,7 +1248,10 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
         changes:
           message.changes === undefined
             ? undefined
-            : serializeChangeNodeForJSON(message.changes, serializeBinaryChanges),
+            : serializeChangeNodeForJSON(
+                message.changes,
+                serializeBinaryChanges,
+              ),
         keychainChanges:
           message.keychainChanges &&
           serializeBinaryChanges(message.keychainChanges),
@@ -604,8 +1266,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
           Base64.fromUint8Array(message.welcomeRecipientKemPublicKey),
         eciesSealed:
           message.eciesSealed && Base64.fromUint8Array(message.eciesSealed),
-        // BeeKEM PathUpdate v1 fields. `pathUpdate` is already a
-        // JSON-safe `SerializedPathUpdate`; pass through verbatim.
+        // BeeKEM PathUpdate v1/v2 fields. `pathUpdate` is already the
+        // negotiated version's JSON-safe serialized shape; pass through
+        // verbatim.
         // `pathUpdateEpochId` is a `Uint8Array`; base64-encode it.
         pathUpdate: message.pathUpdate,
         pathUpdateEpochId:
@@ -614,20 +1277,30 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
         // Initial-load quorum tip-set hash (#189 §5.4.2). Base64-encoded
         // for JSON-safe transport, mirrored on the deserialize path below.
         // Only populated on tip-advertise responses.
-        tipsHash:
-          message.tipsHash &&
-          Base64.fromUint8Array(message.tipsHash),
+        tipsHash: message.tipsHash && Base64.fromUint8Array(message.tipsHash),
         // Explicit tip-set advertisement populated on load responses to
         // bind the served state to the responder's frontier (see
         // `CRDTSyncMessage.tips`). Plain string[] of CIDs; passes through
         // JSON verbatim.
         tips: message.tips,
+        loadSecurityState:
+          message.loadSecurityState === undefined
+            ? undefined
+            : serializeLoadSecurityCommitmentsForWire(
+                message.loadSecurityState,
+              ),
+        loadChallenge:
+          message.loadChallenge === undefined
+            ? undefined
+            : serializeInitialLoadChallengeForWire(message.loadChallenge),
         snapshot: snapshotForWire,
       }),
     );
   }
 
-  deserializeSyncMessage(message: Uint8Array): CRDTSyncMessage<BinaryChange[], CryptoKey> {
+  deserializeSyncMessage(
+    message: Uint8Array,
+  ): CRDTSyncMessage<BinaryChange[], CryptoKey> {
     const decoded = this.deserialize(this.decode(message));
     // Wire input is untrusted: a malformed peer can send `null`, an array, or
     // a primitive in place of a sync-message object. Reading properties on
@@ -636,7 +1309,11 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
     // a descriptive error instead. This also denies a trivial DoS path where
     // a peer crashes the deserializer by sending e.g. JSON `null`. Mirrors
     // the equivalent guard in `YjsJSONSerializer.deserializeSyncMessage`.
-    if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
+    if (
+      typeof decoded !== 'object' ||
+      decoded === null ||
+      Array.isArray(decoded)
+    ) {
       throw new Error(
         `Invalid sync message: expected a plain object (got ${describeValue(
           decoded,
@@ -656,6 +1333,8 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
       pathUpdateEpochId?: unknown;
       tipsHash?: unknown;
       tips?: unknown;
+      loadSecurityState?: unknown;
+      loadChallenge?: unknown;
       snapshot?: unknown;
       signature?: unknown;
     };
@@ -711,8 +1390,8 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
       snapshot = { ...(raw.snapshot as Record<string, unknown>) };
       // Decode base64-encoded BinaryChange[] back to Uint8Array[].
       if (Array.isArray(snapshot.state)) {
-        snapshot.state = snapshot.state.map(
-          (c: string) => Base64.toUint8Array(c),
+        snapshot.state = snapshot.state.map((c: string) =>
+          Base64.toUint8Array(c),
         );
       }
       if (typeof snapshot.signature === 'string') {
@@ -728,7 +1407,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
           )})`,
         );
       }
-      keychainChanges = deserializeBinaryChanges(raw.keychainChanges as string[]);
+      keychainChanges = deserializeBinaryChanges(
+        raw.keychainChanges as string[],
+      );
     }
     let welcomeEpochId: Uint8Array | undefined;
     if (raw.welcomeEpochId !== undefined) {
@@ -855,39 +1536,92 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[], Cryp
       }
       tips = raw.tips as string[];
     }
-    // Build the returned object explicitly rather than spreading `...raw` so
-    // that peer-supplied junk keys (e.g. `__proto__`, `constructor`, or any
-    // unrecognized field) don't leak into the deserialized sync message. Only
-    // fields declared on `CRDTSyncMessage` are propagated.
-    const result: CRDTSyncMessage<BinaryChange[], CryptoKey> = {
-      documentId: raw.documentId,
-    };
-    if (raw.changeId !== undefined) result.changeId = raw.changeId as string;
-    if (raw.signature !== undefined) result.signature = raw.signature as string;
-    // Any value other than `undefined` (including `null`, `0`, `""`, etc.)
-    // must be routed through the validator -- using a truthy guard like
-    // `raw.changes && ...` would let a malformed peer message bypass
-    // `deserializeChangeNodeFromJSON`'s shape checks by sending e.g.
-    // `changes: null`, with the falsy value flowing through to
-    // downstream consumers.
-    if (raw.changes !== undefined) {
-      result.changes = deserializeChangeNodeFromJSON(
-        raw.changes as iCRDTChangeNode,
-        deserializeBinaryChanges,
-      );
+    const loadSecurityState =
+      raw.loadSecurityState === undefined
+        ? undefined
+        : deserializeLoadSecurityCommitmentsFromWire(raw.loadSecurityState);
+    const loadChallenge =
+      raw.loadChallenge === undefined
+        ? undefined
+        : deserializeInitialLoadChallengeFromWire(raw.loadChallenge);
+    // Copy only recognized fields, but retain their incoming insertion order.
+    // Sync-message signatures cover the serialized JSON bytes. Rebuilding in a
+    // fixed schema order moves `keychainChanges` ahead of the V4 `tips` /
+    // security fields and makes an honest full-load signature unverifiable.
+    // Iterating the parsed wire keys preserves shipped signed payloads while the
+    // switch continues to drop peer-supplied junk properties.
+    const result = {} as CRDTSyncMessage<BinaryChange[], CryptoKey>;
+    for (const field of Object.keys(raw)) {
+      switch (field) {
+        case 'documentId':
+          result.documentId = raw.documentId;
+          break;
+        case 'changeId':
+          if (raw.changeId !== undefined)
+            result.changeId = raw.changeId as string;
+          break;
+        case 'signature':
+          if (raw.signature !== undefined)
+            result.signature = raw.signature as string;
+          break;
+        case 'changes':
+          // Any value other than `undefined` must pass through the untrusted
+          // Merkle-DAG validator; do not use a truthiness guard here.
+          if (raw.changes !== undefined) {
+            result.changes = deserializeChangeNodeFromJSON(
+              raw.changes as iCRDTChangeNode,
+              deserializeBinaryChanges,
+            );
+          }
+          break;
+        case 'keychainChanges':
+          if (keychainChanges !== undefined)
+            result.keychainChanges = keychainChanges;
+          break;
+        case 'welcomeEpochId':
+          if (welcomeEpochId !== undefined)
+            result.welcomeEpochId = welcomeEpochId;
+          break;
+        case 'welcomeRecipient':
+          if (welcomeRecipient !== undefined)
+            result.welcomeRecipient = welcomeRecipient;
+          break;
+        case 'welcomeRecipientKemPublicKey':
+          if (welcomeRecipientKemPublicKey !== undefined)
+            result.welcomeRecipientKemPublicKey = welcomeRecipientKemPublicKey;
+          break;
+        case 'eciesSealed':
+          if (eciesSealed !== undefined) result.eciesSealed = eciesSealed;
+          break;
+        case 'pathUpdate':
+          if (pathUpdate !== undefined)
+            result.pathUpdate = pathUpdate as CRDTSyncMessage<
+              BinaryChange[],
+              CryptoKey
+            >['pathUpdate'];
+          break;
+        case 'pathUpdateEpochId':
+          if (pathUpdateEpochId !== undefined)
+            result.pathUpdateEpochId = pathUpdateEpochId;
+          break;
+        case 'tipsHash':
+          if (tipsHash !== undefined) result.tipsHash = tipsHash;
+          break;
+        case 'tips':
+          if (tips !== undefined) result.tips = tips;
+          break;
+        case 'loadSecurityState':
+          if (loadSecurityState !== undefined)
+            result.loadSecurityState = loadSecurityState;
+          break;
+        case 'loadChallenge':
+          if (loadChallenge !== undefined) result.loadChallenge = loadChallenge;
+          break;
+        case 'snapshot':
+          if (snapshot !== undefined) result.snapshot = snapshot;
+          break;
+      }
     }
-    if (keychainChanges !== undefined) result.keychainChanges = keychainChanges;
-    if (welcomeEpochId !== undefined) result.welcomeEpochId = welcomeEpochId;
-    if (welcomeRecipient !== undefined) result.welcomeRecipient = welcomeRecipient;
-    if (welcomeRecipientKemPublicKey !== undefined)
-      result.welcomeRecipientKemPublicKey = welcomeRecipientKemPublicKey;
-    if (eciesSealed !== undefined) result.eciesSealed = eciesSealed;
-    if (pathUpdate !== undefined)
-      result.pathUpdate = pathUpdate as CRDTSyncMessage<BinaryChange[], CryptoKey>['pathUpdate'];
-    if (pathUpdateEpochId !== undefined) result.pathUpdateEpochId = pathUpdateEpochId;
-    if (tipsHash !== undefined) result.tipsHash = tipsHash;
-    if (tips !== undefined) result.tips = tips;
-    if (snapshot !== undefined) result.snapshot = snapshot;
     return result;
   }
 }
