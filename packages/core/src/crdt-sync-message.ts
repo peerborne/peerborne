@@ -4,6 +4,7 @@ import {
   SerializedPathUpdateV2,
 } from './path-update-wire.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
+import type { LoadSecurityCommitments } from './load-security-state.js';
 
 /**
  * CRDTSyncMessage is the message sent over both GossipSub pubsub topics and in response to
@@ -277,6 +278,22 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * messages, which do not carry a frontier advertisement.
    */
   tips?: string[];
+
+  /**
+   * Control-log and group-state commitments bound to V4 initial-load
+   * responses and security-aware quorum advertisements. The advertised digest
+   * combines this tuple/frontier commitment with the canonical complete
+   * response-manifest digest. The strict JSON wire codec preserves `epoch` as
+   * an unsigned decimal string and rejects unknown or malformed fields.
+   */
+  loadSecurityState?: LoadSecurityCommitments;
+
+  /**
+   * Exact echo of the requester's fresh V4 initial-load challenge. Required on
+   * security-aware advertisements and full/snapshot responses and covered by
+   * the writer envelope signature. Legacy V3 messages omit it.
+   */
+  loadChallenge?: Uint8Array;
 
   /**
    * Signature of the sync message.
