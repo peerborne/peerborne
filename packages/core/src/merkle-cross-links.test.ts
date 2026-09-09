@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import {
   collectAllCidsInTree,
   collectReferencedAncestors,
@@ -36,14 +37,18 @@ describe('Merkle CRDT cross-link selection (paper §VI.B.e)', () => {
   const writerKind: CRDTChangeNodeKind = crdtWriterChangeNode;
 
   test('returns empty list when there are no recent tips', () => {
-    expect(selectCrossLinks<Tip>([], 'parent', 'new', MAX_CROSS_LINKS)).toEqual([]);
+    expect(selectCrossLinks<Tip>([], 'parent', 'new', MAX_CROSS_LINKS)).toEqual(
+      [],
+    );
   });
 
   test('returns empty list when the only tip is the primary parent', () => {
     // Linear history: the only recent tip *is* the parent, so there's nothing
     // new to cross-link to. This is the no-regression case for linear chains.
     const tips: Tip[] = [{ cid: 'parent', kind: docKind }];
-    expect(selectCrossLinks(tips, 'parent', 'new', MAX_CROSS_LINKS)).toEqual([]);
+    expect(selectCrossLinks(tips, 'parent', 'new', MAX_CROSS_LINKS)).toEqual(
+      [],
+    );
   });
 
   test('excludes the primary parent from cross-links', () => {
@@ -247,7 +252,12 @@ describe('Merkle CRDT cross-link integration scenario', () => {
     trackTipInList(recentTips, { cid: 'tB', kind: docKind });
 
     // Peer A now publishes tC whose primary parent is tA.
-    const crossLinks = selectCrossLinks(recentTips, 'tA', 'tC', MAX_CROSS_LINKS);
+    const crossLinks = selectCrossLinks(
+      recentTips,
+      'tA',
+      'tC',
+      MAX_CROSS_LINKS,
+    );
     const linkedCids = crossLinks.map((t) => t.cid);
 
     expect(linkedCids).toContain('tB');
@@ -261,7 +271,12 @@ describe('Merkle CRDT cross-link integration scenario', () => {
     // for a fresh document with a single linear history.
     const recentTips: Tip[] = [];
     trackTipInList(recentTips, { cid: 't1', kind: docKind });
-    const crossLinks = selectCrossLinks(recentTips, 't1', 't2', MAX_CROSS_LINKS);
+    const crossLinks = selectCrossLinks(
+      recentTips,
+      't1',
+      't2',
+      MAX_CROSS_LINKS,
+    );
     expect(crossLinks).toEqual([]);
   });
 
@@ -274,25 +289,83 @@ describe('Merkle CRDT cross-link integration scenario', () => {
     const recentTips: Tip[] = [];
     trackTipInList(recentTips, { cid: 't1', kind: docKind });
     trackTipInList(recentTips, { cid: 't2', kind: docKind });
-    const crossLinks = selectCrossLinks(recentTips, 't2', 't3', MAX_CROSS_LINKS);
+    const crossLinks = selectCrossLinks(
+      recentTips,
+      't2',
+      't3',
+      MAX_CROSS_LINKS,
+    );
     expect(crossLinks.map((t) => t.cid)).toEqual(['t1']);
   });
 });
 
 describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
   const docKind: CRDTChangeNodeKind = crdtDocumentChangeNode;
+  const writerKind: CRDTChangeNodeKind = crdtWriterChangeNode;
   type Node = CRDTChangeNode<string>;
+
+  const conflictingAliasTree = (): Node => ({
+    kind: docKind,
+    children: {
+      A: {
+        kind: docKind,
+        children: {
+          SHARED: { kind: docKind, change: 'first' },
+        },
+      },
+      B: {
+        kind: docKind,
+        children: {
+          SHARED: { kind: writerKind, change: 'second' },
+        },
+      },
+    },
+  });
+
+  const byteAliasTree = (
+    first: unknown,
+    second: unknown,
+  ): CRDTChangeNode<unknown> => ({
+    kind: docKind,
+    children: {
+      A: {
+        kind: docKind,
+        children: { SHARED: { kind: docKind, change: first } },
+      },
+      B: {
+        kind: docKind,
+        children: { SHARED: { kind: docKind, change: second } },
+      },
+    },
+  });
 
   test('returns empty list for undefined remote root', () => {
     const root: Node = { kind: docKind };
+    expect(mergeRemoteSyncTree(undefined, root, undefined, new Set())).toEqual(
+      [],
+    );
+  });
+
+  test('does not inspect malformed aliases when the remote root is undefined', () => {
     expect(
-      mergeRemoteSyncTree(undefined, root, undefined, new Set()),
+      mergeRemoteSyncTree(
+        undefined,
+        conflictingAliasTree(),
+        undefined,
+        new Set(),
+      ),
     ).toEqual([]);
   });
 
   test('returns empty list when remote root matches local head', () => {
     const root: Node = { kind: docKind, change: 'payload-A' };
     expect(mergeRemoteSyncTree('A', root, 'A', new Set())).toEqual([]);
+  });
+
+  test('does not inspect malformed aliases when the remote root matches the local head', () => {
+    expect(
+      mergeRemoteSyncTree('ROOT', conflictingAliasTree(), 'ROOT', new Set()),
+    ).toEqual([]);
   });
 
   test('skips subtrees whose root CID is already in localHashes', () => {
@@ -306,6 +379,17 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
     };
     const out = mergeRemoteSyncTree('A', root, undefined, new Set(['A']));
     expect(out).toEqual([]);
+  });
+
+  test('does not inspect malformed aliases when the remote root is already local', () => {
+    expect(
+      mergeRemoteSyncTree(
+        'ROOT',
+        conflictingAliasTree(),
+        undefined,
+        new Set(['ROOT']),
+      ),
+    ).toEqual([]);
   });
 
   test('flattens a linear inline tree into one entry per CID', () => {
@@ -519,6 +603,214 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
     expect(byCid.get('D2')).toBe('payload-D2');
   });
 
+  test.each(['conflicting-first', 'canonical-first'] as const)(
+    'rejects a conflicting repeated-CID subtree in %s insertion order',
+    (order) => {
+      const canonicalBranch: Node = {
+        kind: docKind,
+        children: {
+          SHARED: {
+            kind: docKind,
+            children: {
+              C: { kind: docKind, change: 'canonical-C' },
+            },
+          },
+        },
+      };
+      const conflictingBranch: Node = {
+        kind: docKind,
+        children: {
+          SHARED: {
+            kind: docKind,
+            children: {
+              C: { kind: writerKind, change: 'attacker-C' },
+            },
+          },
+        },
+      };
+      const children: Record<string, Node> = {};
+      if (order === 'conflicting-first') {
+        children.Z = conflictingBranch;
+        children.A = canonicalBranch;
+      } else {
+        children.A = canonicalBranch;
+        children.Z = conflictingBranch;
+      }
+      const tree: Node = {
+        kind: docKind,
+        change: 'root',
+        children,
+      };
+
+      expect(() =>
+        mergeRemoteSyncTree('ROOT', tree, undefined, new Set()),
+      ).toThrow(/conflicting descriptions.*C/);
+    },
+  );
+
+  test.each(['second-first', 'first-first'] as const)(
+    'accepts an identical repeated-CID subtree in %s insertion order',
+    (order) => {
+      const branch = (): Node => ({
+        kind: docKind,
+        children: {
+          SHARED: {
+            kind: docKind,
+            change: 'shared',
+            children: {
+              C: { kind: docKind, change: 'payload-C' },
+            },
+          },
+        },
+      });
+      const children: Record<string, Node> = {};
+      if (order === 'second-first') {
+        children.Z = branch();
+        children.A = branch();
+      } else {
+        children.A = branch();
+        children.Z = branch();
+      }
+      const out = mergeRemoteSyncTree(
+        'ROOT',
+        { kind: docKind, change: 'root', children },
+        undefined,
+        new Set(),
+      );
+
+      expect(out.filter(([cid]) => cid === 'SHARED')).toHaveLength(1);
+      expect(out.filter(([cid]) => cid === 'C')).toEqual([
+        ['C', docKind, 'payload-C'],
+      ]);
+    },
+  );
+
+  test('accepts identical Uint8Array payloads from distinct realms', () => {
+    const first = runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array;
+    const second = runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array;
+    Object.defineProperty(first, 'byteLength', {
+      get() {
+        throw new Error('shadowed byteLength getter must not run');
+      },
+    });
+
+    const merged = mergeRemoteSyncTree(
+      'ROOT',
+      byteAliasTree(first, second),
+      undefined,
+      new Set(),
+    );
+
+    expect(merged.filter(([cid]) => cid === 'SHARED')).toHaveLength(1);
+  });
+
+  test('accepts a repeated Uint8Array array payload by object identity', () => {
+    const changes = [new Uint8Array([1]), new Uint8Array([2, 3])];
+
+    const merged = mergeRemoteSyncTree(
+      'ROOT',
+      byteAliasTree(changes, changes),
+      undefined,
+      new Set(),
+    );
+
+    expect(merged.filter(([cid]) => cid === 'SHARED')).toHaveLength(1);
+  });
+
+  test('rejects repeated payloads backed by SharedArrayBuffer', () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const shared = new Uint8Array(new SharedArrayBuffer(3));
+    shared.set([1, 2, 3]);
+
+    expect(() =>
+      mergeRemoteSyncTree(
+        'ROOT',
+        byteAliasTree(shared, shared),
+        undefined,
+        new Set(),
+      ),
+    ).toThrow(/conflicting descriptions.*SHARED/);
+  });
+
+  test('rejects a prototype-spoofed Uint8Array payload', () => {
+    const spoofed = Object.create(Uint8Array.prototype) as unknown;
+
+    expect(() =>
+      mergeRemoteSyncTree(
+        'ROOT',
+        byteAliasTree(spoofed, spoofed),
+        undefined,
+        new Set(),
+      ),
+    ).toThrow(/conflicting descriptions.*SHARED/);
+  });
+
+  test('rejects conflicting inline payloads for one CID', () => {
+    const tree: Node = {
+      kind: docKind,
+      children: {
+        A: {
+          kind: docKind,
+          children: {
+            SHARED: { kind: docKind, change: 'first' },
+          },
+        },
+        B: {
+          kind: docKind,
+          children: {
+            SHARED: { kind: docKind, change: 'second' },
+          },
+        },
+      },
+    };
+
+    expect(() =>
+      mergeRemoteSyncTree('ROOT', tree, undefined, new Set()),
+    ).toThrow(/conflicting descriptions.*SHARED/);
+  });
+
+  test('accepts repeated full subtrees beyond the V4 occurrence budget', () => {
+    const sharedChildren: Record<string, Node> = {};
+    for (let index = 0; index < 128; index++) {
+      sharedChildren[`L${index}`] = {
+        kind: docKind,
+        change: `leaf-${index}`,
+      };
+    }
+    const shared: Node = { kind: docKind, children: sharedChildren };
+    const parents: Record<string, Node> = {};
+    for (let index = 0; index < 129; index++) {
+      parents[`P${index}`] = {
+        kind: docKind,
+        children: { SHARED: shared },
+      };
+    }
+
+    const merged = mergeRemoteSyncTree(
+      'ROOT',
+      { kind: docKind, children: parents },
+      undefined,
+      new Set(),
+    );
+    expect(merged.filter(([cid]) => cid === 'SHARED')).toHaveLength(1);
+    expect(merged.filter(([cid]) => cid.startsWith('L'))).toHaveLength(128);
+  });
+
+  test('accepts a 4097-node legacy chain beyond the V4 node budget', () => {
+    const depth = 4_097;
+    const root: Node = { kind: docKind, change: 'root' };
+    let cursor = root;
+    for (let level = 2; level <= depth; level++) {
+      const child: Node = { kind: docKind, change: `payload-${level}` };
+      cursor.children = { [`N${level}`]: child };
+      cursor = child;
+    }
+
+    expect(
+      mergeRemoteSyncTree('ROOT', root, undefined, new Set()),
+    ).toHaveLength(depth);
+  });
+
   test('cross-link leaf to a CID not in primary subtree is preserved as deferred', () => {
     // No duplication: a cross-link to a tip that isn't in the inline subtree
     // remains a deferred leaf so the receiver can fetch it from the
@@ -566,7 +858,10 @@ describe('Merkle CRDT recent-tip tracking from a remote sync tree', () => {
     // the remote head and An as the deepest ancestor. Use a chain length of
     // MAX_RECENT_TIPS + 3 so the front-to-back order would evict the head.
     const chainLen = MAX_RECENT_TIPS + 3;
-    const cids = ['H', ...Array.from({ length: chainLen - 1 }, (_, i) => `A${i + 1}`)];
+    const cids = [
+      'H',
+      ...Array.from({ length: chainLen - 1 }, (_, i) => `A${i + 1}`),
+    ];
     // Construct nested children: H.children = { A1: { children: { A2: ... }}}
     let inner: Node | undefined;
     for (let i = cids.length - 1; i >= 0; i--) {
@@ -683,9 +978,7 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
       children: crdtChangeNodeDeferred as unknown as Record<string, Node>,
     };
     const out = new Set<string>();
-    expect(() =>
-      collectReferencedAncestors('A', tree, out),
-    ).not.toThrow();
+    expect(() => collectReferencedAncestors('A', tree, out)).not.toThrow();
     expect(out.size).toBe(0);
   });
 
@@ -716,14 +1009,20 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
       kind: docKind,
       change: 'payload-C',
       children: {
-        B1: { kind: docKind, change: 'payload-B1', children: { A: sharedAncestor } },
-        B2: { kind: docKind, change: 'payload-B2', children: { A: sharedAncestor } },
+        B1: {
+          kind: docKind,
+          change: 'payload-B1',
+          children: { A: sharedAncestor },
+        },
+        B2: {
+          kind: docKind,
+          change: 'payload-B2',
+          children: { A: sharedAncestor },
+        },
       },
     };
     const out = new Set<string>();
-    expect(() =>
-      collectReferencedAncestors('C', tree, out),
-    ).not.toThrow();
+    expect(() => collectReferencedAncestors('C', tree, out)).not.toThrow();
     expect(out.has('A')).toBe(true);
     expect(out.has('B1')).toBe(true);
     expect(out.has('B2')).toBe(true);
@@ -834,7 +1133,11 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
   test('snapshot-only payload (no changes) => boundary CID is the sole frontier', () => {
     // Pure-snapshot load (responder has nothing post-snapshot). The
     // boundary CID is the only head.
-    const frontier = computeServedFrontier(undefined, undefined, 'SNAP_BOUNDARY');
+    const frontier = computeServedFrontier(
+      undefined,
+      undefined,
+      'SNAP_BOUNDARY',
+    );
     expect(frontier).toEqual(['SNAP_BOUNDARY']);
   });
 
@@ -1038,10 +1341,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
     const loaderHashes = new Set<string>();
     const loaderRefs = new Set<string>();
     // Walk the tree the same way `_syncDocumentChanges` would:
-    function applyWalk(
-      id: string | undefined,
-      node: CRDTChangeNode<unknown>,
-    ) {
+    function applyWalk(id: string | undefined, node: CRDTChangeNode<unknown>) {
       if (id) loaderHashes.add(id);
       if (node.children === undefined) return;
       if (node.children === false) return;
@@ -1229,9 +1529,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
       // The liar's claim is {H1, H2, H3} -- different from the
       // structural truth. The loader's defense-in-depth check (compare
       // `message.tips` to structurally-derived frontier) catches this.
-      expect(structurallyDerived.sort()).not.toEqual(
-        ['H1', 'H2', 'H3'].sort(),
-      );
+      expect(structurallyDerived.sort()).not.toEqual(['H1', 'H2', 'H3'].sort());
     });
 
     test('multi-head responder with snapshot: served frontier is `_servedFrontier()` inputs (snapshot boundary + served tree)', () => {
@@ -1583,9 +1881,7 @@ describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () =
       treeX,
       undefined,
     );
-    expect(responderAdvertised.sort()).toEqual(
-      loaderDerivedFromPayload.sort(),
-    );
+    expect(responderAdvertised.sort()).toEqual(loaderDerivedFromPayload.sort());
     expect(responderAdvertised).toEqual(['X']);
   });
 });
@@ -1747,9 +2043,9 @@ describe('collectAllCidsInTree (post-sync verification basis)', () => {
   });
 
   test('rootId-only with undefined root: returns just the rootId', () => {
-    expect(collectAllCidsInTree<Changes>('only-root-cid', undefined)).toEqual(
-      ['only-root-cid'],
-    );
+    expect(collectAllCidsInTree<Changes>('only-root-cid', undefined)).toEqual([
+      'only-root-cid',
+    ]);
   });
 
   test('stops at a deferred children sentinel (cannot enumerate descendants)', () => {
@@ -1803,4 +2099,84 @@ describe('collectAllCidsInTree (post-sync verification basis)', () => {
       new Set(['bafy-root', 'bafy-a', 'bafy-b', 'bafy-c']),
     );
   });
+});
+
+describe('canonical sparse/full CID alias traversal', () => {
+  type Node = CRDTChangeNode<unknown>;
+  type AliasOrder = 'sparse-first' | 'full-first';
+
+  const aliasTree = (order: AliasOrder): Node => {
+    const sparseBranch: Node = {
+      kind: crdtDocumentChangeNode,
+      children: {
+        SHARED: { kind: crdtDocumentChangeNode },
+      },
+    };
+    const fullBranch: Node = {
+      kind: crdtDocumentChangeNode,
+      children: {
+        SHARED: {
+          kind: crdtDocumentChangeNode,
+          children: {
+            PARENT: {
+              kind: crdtDocumentChangeNode,
+              children: {
+                GRANDPARENT: { kind: crdtDocumentChangeNode },
+              },
+            },
+          },
+        },
+      },
+    };
+    const children: Record<string, Node> = {};
+    if (order === 'sparse-first') {
+      children.A = sparseBranch;
+      children.Z = fullBranch;
+    } else {
+      children.A = fullBranch;
+      children.Z = sparseBranch;
+    }
+    return { kind: crdtDocumentChangeNode, children };
+  };
+
+  test.each(['sparse-first', 'full-first'] as const)(
+    'collectReferencedAncestors descends through the full alias in %s order',
+    (order) => {
+      const referenced = collectReferencedAncestors(
+        'HEAD',
+        aliasTree(order),
+        new Set<string>(),
+      );
+      expect(referenced).toEqual(
+        new Set(['A', 'SHARED', 'Z', 'PARENT', 'GRANDPARENT']),
+      );
+    },
+  );
+
+  test.each(['sparse-first', 'full-first'] as const)(
+    'computeServedFrontier derives the same complete frontier in %s order',
+    (order) => {
+      expect(
+        computeServedFrontier('HEAD', aliasTree(order), undefined),
+      ).toEqual(['HEAD']);
+    },
+  );
+
+  test.each(['sparse-first', 'full-first'] as const)(
+    'treeContainsCid finds a descendant revealed by the full alias in %s order',
+    (order) => {
+      expect(treeContainsCid('HEAD', aliasTree(order), 'GRANDPARENT')).toBe(
+        true,
+      );
+    },
+  );
+
+  test.each(['sparse-first', 'full-first'] as const)(
+    'collectAllCidsInTree includes every prefetched CID in %s order',
+    (order) => {
+      expect(new Set(collectAllCidsInTree('HEAD', aliasTree(order)))).toEqual(
+        new Set(['HEAD', 'A', 'SHARED', 'Z', 'PARENT', 'GRANDPARENT']),
+      );
+    },
+  );
 });

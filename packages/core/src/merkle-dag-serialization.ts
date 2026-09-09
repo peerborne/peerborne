@@ -26,6 +26,18 @@ const VALID_CHANGE_NODE_KINDS: ReadonlySet<CRDTChangeNodeKind> = new Set(
   Object.keys(VALID_CHANGE_NODE_KIND_RECORD) as CRDTChangeNodeKind[],
 );
 
+/**
+ * Maximum number of change nodes on one root-to-leaf V4 load-manifest path.
+ *
+ * This is a security-aware initial-load policy, not a generic JSON wire limit.
+ * Legacy V1/V3 and GossipSub messages predate that policy and may contain
+ * deeper histories when automatic compaction is disabled. Their serializers
+ * and deserializers therefore use stack-safe, cycle-safe traversal without a
+ * depth cutoff; the receiving document applies aggregate node/edge/byte
+ * budgets before mutation.
+ */
+export const MAX_MERKLE_DAG_DEPTH = 512;
+
 function isValidChangeNodeKind(value: unknown): value is CRDTChangeNodeKind {
   return (
     typeof value === 'string' &&
@@ -65,11 +77,13 @@ export type CRDTChangeNodeWire<TOut> = {
   kind: CRDTChangeNode<unknown>['kind'];
   keyID?: string;
   change?: TOut;
-  children?: { [hash: string]: CRDTChangeNodeWire<TOut> } | CRDTChangeNodeDeferred;
+  children?:
+    | { [hash: string]: CRDTChangeNodeWire<TOut> }
+    | CRDTChangeNodeDeferred;
 };
 
 /**
- * Recursively serialize a `CRDTChangeNode` tree by transforming each node's
+ * Iteratively serialize a `CRDTChangeNode` tree by transforming each node's
  * `change` payload via the provided encoder, preserving the `kind`, `keyID`,
  * and `children` structure for round-tripping through JSON.
  *
@@ -91,71 +105,76 @@ export function serializeChangeNodeForJSON<TIn, TOut>(
   node: CRDTChangeNode<TIn>,
   encodeLeaf: (leaf: TIn) => TOut,
 ): CRDTChangeNodeWire<TOut> {
-  const change = node.change !== undefined ? encodeLeaf(node.change) : undefined;
-  if (node.children !== undefined && node.children !== crdtChangeNodeDeferred) {
-    // Use a null-prototype dictionary so that hash keys coming from peer
-    // wire messages (e.g. `__proto__`, `constructor`) cannot mutate the
-    // shared `Object.prototype` or otherwise alter lookup semantics.
-    const children: { [hash: string]: CRDTChangeNodeWire<TOut> } =
-      Object.create(null);
-    for (const [hash, child] of Object.entries(node.children)) {
-      children[hash] = serializeChangeNodeForJSON(child, encodeLeaf);
+  type Task =
+    | {
+        readonly phase: 'enter';
+        readonly source: CRDTChangeNode<TIn>;
+        readonly parent?: { [hash: string]: CRDTChangeNodeWire<TOut> };
+        readonly hash?: string;
+      }
+    | {
+        readonly phase: 'leave';
+        readonly source: CRDTChangeNode<TIn>;
+      };
+
+  let root!: CRDTChangeNodeWire<TOut>;
+  const active = new WeakSet<object>();
+  const pending: Task[] = [{ phase: 'enter', source: node }];
+  while (pending.length > 0) {
+    const task = pending.pop()!;
+    if (task.phase === 'leave') {
+      active.delete(task.source);
+      continue;
     }
-    return {
-      ...node,
+    const { source, parent, hash } = task;
+    if (active.has(source)) {
+      throw new TypeError('merkle-dag tree must not contain object cycles');
+    }
+    active.add(source);
+    const change =
+      source.change !== undefined ? encodeLeaf(source.change) : undefined;
+    // Preserve the prior recursive codec's exact property insertion order.
+    // Signatures cover the serialized JSON bytes, so reordering otherwise
+    // semantically equivalent node fields would break mixed-version peers.
+    const converted = {
+      ...source,
       change,
-      children,
-    };
-  }
-  return {
-    ...node,
-    change,
-    children: node.children,
-  };
-}
-
-/**
- * Rebuild a validated node while retaining the sender's recognized field
- * order. JSON signatures cover the serialized Merkle tree, and JSON.parse
- * preserves string-key insertion order. Reordering `change` and `children`
- * here would make a receiver verify different bytes from those the sender
- * signed. Unknown fields remain excluded from the result.
- */
-function rebuildNodeInWireOrder<TIn, TOut>(
-  node: CRDTChangeNodeWire<TIn>,
-  change: TOut | undefined,
-  children:
-    | { [hash: string]: CRDTChangeNode<TOut> }
-    | CRDTChangeNodeDeferred
-    | undefined,
-): CRDTChangeNode<TOut> {
-  const result = {} as CRDTChangeNode<TOut>;
-  for (const field of Object.keys(node)) {
-    switch (field) {
-      case 'kind':
-        result.kind = node.kind;
-        break;
-      case 'keyID':
-        if (node.keyID !== undefined) result.keyID = node.keyID;
-        break;
-      case 'change':
-        result.change = change;
-        break;
-      case 'children':
-        result.children = children;
-        break;
+      children: source.children,
+    } as unknown as CRDTChangeNodeWire<TOut>;
+    if (
+      source.children !== undefined &&
+      source.children !== crdtChangeNodeDeferred
+    ) {
+      // Use a null-prototype dictionary so hash keys such as `__proto__` and
+      // `constructor` cannot alter shared prototype state or lookup semantics.
+      const children: { [hash: string]: CRDTChangeNodeWire<TOut> } =
+        Object.create(null);
+      converted.children = children;
+      pending.push({ phase: 'leave', source });
+      const entries = Object.entries(source.children);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [childHash, child] = entries[index]!;
+        pending.push({
+          phase: 'enter',
+          source: child,
+          parent: children,
+          hash: childHash,
+        });
+      }
+    } else {
+      active.delete(source);
+    }
+    if (parent === undefined) {
+      root = converted;
+    } else {
+      parent[hash!] = converted;
     }
   }
-  // JSON wire objects always have an own `kind` field. Retain the prior
-  // programmatic-call behavior for an object that inherits a valid `kind`.
-  if (!Object.prototype.hasOwnProperty.call(result, 'kind')) {
-    result.kind = node.kind;
-  }
-  return result;
+  return root;
 }
 
 /**
- * Inverse of {@link serializeChangeNodeForJSON}: recursively reconstruct a
+ * Inverse of {@link serializeChangeNodeForJSON}: iteratively reconstruct a
  * `CRDTChangeNode` tree from its JSON-friendly wire form, decoding each
  * node's `change` payload via the provided decoder.
  *
@@ -183,87 +202,149 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
   node: CRDTChangeNodeWire<TIn>,
   decodeLeaf: (leaf: TIn) => TOut,
 ): CRDTChangeNode<TOut> {
-  // Wire input is untrusted: a malformed peer can send `null`, an array, or
-  // a primitive in place of a node object. Reading `node.kind` on those
-  // values would throw a bare `TypeError` (`Cannot read properties of null`)
-  // that is hard to attribute back to the peer; reject up front with a
-  // descriptive error instead. This also denies a trivial DoS path where a
-  // peer crashes the deserializer by supplying `changes: null`.
-  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
-    throw new Error(
-      `Invalid merkle-dag node: expected a plain object (got ${describeValue(
-        node,
-      )})`,
-    );
-  }
-  // Wire input is untrusted: a malformed peer message can omit or supply a
-  // non-string `kind`. Reject up front so downstream consumers can rely on
-  // the discriminant being one of the documented `CRDTChangeNodeKind`s
-  // rather than silently propagating an invalid value via `...node`.
-  if (!isValidChangeNodeKind(node.kind)) {
-    throw new Error(
-      `Invalid merkle-dag node: "kind" must be one of ${Array.from(
-        VALID_CHANGE_NODE_KINDS,
-      )
-        .map((k) => JSON.stringify(k))
-        .join(', ')} (got ${JSON.stringify(node.kind)})`,
-    );
-  }
-  // Wire input is untrusted: a peer can send `keyID: 123` / object / null
-  // in place of the documented `keyID?: string`. Reject any non-string value
-  // (when present) so we don't silently propagate it via `...node` and
-  // violate the `CRDTChangeNode.keyID?: string` contract.
-  if (node.keyID !== undefined && typeof node.keyID !== 'string') {
-    throw new Error(
-      `Invalid merkle-dag node: "keyID" must be a string when present (got ${describeValue(
-        node.keyID,
-      )})`,
-    );
-  }
-  const change = node.change !== undefined ? decodeLeaf(node.change) : undefined;
-  if (node.children !== undefined && node.children !== crdtChangeNodeDeferred) {
-    // Wire input is untrusted: validate the children shape before iterating,
-    // since `Object.entries(null)` / non-object inputs throw a `TypeError`
-    // that's hard to attribute back to a malformed peer message.
-    if (
-      typeof node.children !== 'object' ||
-      node.children === null ||
-      Array.isArray(node.children)
-    ) {
-      throw new Error(
-        'Invalid merkle-dag node: "children" must be an object keyed by hash',
-      );
+  type Task =
+    | {
+        readonly phase: 'enter';
+        readonly source: CRDTChangeNodeWire<TIn>;
+        readonly parent?: { [hash: string]: CRDTChangeNode<TOut> };
+        readonly hash?: string;
+      }
+    | {
+        readonly phase: 'leave';
+        readonly source: CRDTChangeNodeWire<TIn>;
+      };
+
+  let root!: CRDTChangeNode<TOut>;
+  const active = new WeakSet<object>();
+  const pending: Task[] = [{ phase: 'enter', source: node }];
+  while (pending.length > 0) {
+    const task = pending.pop()!;
+    if (task.phase === 'leave') {
+      active.delete(task.source);
+      continue;
     }
-    // Null-prototype dictionary: peer-supplied JSON keys like `__proto__`
-    // or `constructor` cannot pollute `Object.prototype` or shadow
-    // inherited members on the resulting children map.
-    const children: { [hash: string]: CRDTChangeNode<TOut> } =
-      Object.create(null);
-    for (const [hash, child] of Object.entries(node.children)) {
-      // Each child must itself be a plain object (not null, not an array,
-      // not a primitive) before we recurse -- otherwise the recursive call
-      // would fail deep in the stack with a less helpful error and might
-      // partially construct a children map.
-      if (
-        typeof child !== 'object' ||
-        child === null ||
-        Array.isArray(child)
-      ) {
+    const { source, parent, hash } = task;
+    if (
+      typeof source !== 'object' ||
+      source === null ||
+      Array.isArray(source)
+    ) {
+      if (hash !== undefined) {
         throw new Error(
           `Invalid merkle-dag node: child at key ${JSON.stringify(
             hash,
-          )} must be a plain object (got ${describeValue(child)})`,
+          )} must be a plain object (got ${describeValue(source)})`,
         );
       }
-      children[hash] = deserializeChangeNodeFromJSON(
-        child as CRDTChangeNodeWire<TIn>,
-        decodeLeaf,
+      throw new Error(
+        `Invalid merkle-dag node: expected a plain object (got ${describeValue(
+          source,
+        )})`,
       );
     }
-    return rebuildNodeInWireOrder(node, change, children);
+    if (active.has(source)) {
+      throw new TypeError('merkle-dag tree must not contain object cycles');
+    }
+    active.add(source);
+    if (!Object.prototype.hasOwnProperty.call(source, 'kind')) {
+      throw new Error(
+        'Invalid merkle-dag node: "kind" must be an own property',
+      );
+    }
+    if (!isValidChangeNodeKind(source.kind)) {
+      throw new Error(
+        `Invalid merkle-dag node: "kind" must be one of ${Array.from(
+          VALID_CHANGE_NODE_KINDS,
+        )
+          .map((kind) => JSON.stringify(kind))
+          .join(', ')} (got ${JSON.stringify(source.kind)})`,
+      );
+    }
+    if (source.keyID !== undefined && typeof source.keyID !== 'string') {
+      throw new Error(
+        `Invalid merkle-dag node: "keyID" must be a string when present (got ${describeValue(
+          source.keyID,
+        )})`,
+      );
+    }
+
+    const change =
+      source.change !== undefined ? decodeLeaf(source.change) : undefined;
+    let decodedChildren:
+      | { [hash: string]: CRDTChangeNode<TOut> }
+      | CRDTChangeNodeDeferred
+      | undefined;
+    if (
+      source.children !== undefined &&
+      source.children !== crdtChangeNodeDeferred
+    ) {
+      if (
+        typeof source.children !== 'object' ||
+        source.children === null ||
+        Array.isArray(source.children)
+      ) {
+        throw new Error(
+          'Invalid merkle-dag node: "children" must be an object keyed by hash',
+        );
+      }
+      decodedChildren = Object.create(null) as {
+        [hash: string]: CRDTChangeNode<TOut>;
+      };
+    } else if (source.children !== undefined) {
+      decodedChildren = source.children;
+    }
+
+    // Keep the relative insertion order of every recognized wire field. The
+    // surrounding sync-message signature covers exact JSON bytes, so rebuilding
+    // a valid node in schema order would make a deserialize/serialize round trip
+    // unverifiable. Unknown fields are still dropped.
+    const result = {} as CRDTChangeNode<TOut>;
+    for (const field of Object.keys(source)) {
+      switch (field) {
+        case 'kind':
+          result.kind = source.kind;
+          break;
+        case 'keyID':
+          if (source.keyID !== undefined) result.keyID = source.keyID;
+          break;
+        case 'change':
+          if (change !== undefined) result.change = change;
+          break;
+        case 'children':
+          if (decodedChildren !== undefined) {
+            result.children = decodedChildren;
+          }
+          break;
+      }
+    }
+
+    if (
+      source.children !== undefined &&
+      source.children !== crdtChangeNodeDeferred
+    ) {
+      const children = decodedChildren as {
+        [hash: string]: CRDTChangeNode<TOut>;
+      };
+      pending.push({ phase: 'leave', source });
+      const entries = Object.entries(source.children);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [childHash, child] = entries[index]!;
+        pending.push({
+          phase: 'enter',
+          source: child,
+          parent: children,
+          hash: childHash,
+        });
+      }
+    } else {
+      active.delete(source);
+    }
+
+    if (parent === undefined) {
+      root = result;
+    } else {
+      parent[hash!] = result;
+    }
   }
-  // Same explicit-construction rationale as above; here `children` is either
-  // `undefined` or the `crdtChangeNodeDeferred` sentinel, both of which are
-  // preserved verbatim.
-  return rebuildNodeInWireOrder(node, change, node.children);
+  return root;
 }

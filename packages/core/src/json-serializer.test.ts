@@ -29,6 +29,48 @@ test('decode Uint8Array to string', () => {
   expect(jsonSerializer.decode(testStringAsUint8Array)).toMatch(testString);
 });
 
+describe('load-request stream framing', () => {
+  const encoder = new TextEncoder();
+
+  test('detects one fragmented top-level object in linear passes', () => {
+    const detector = jsonSerializer.createLoadRequestCompletionDetector();
+    const payload = encoder.encode(
+      ' \n{"documentId":"/quoted-}\\\"","signature":"sig","extra":[{"ok":true}]}',
+    );
+
+    for (let index = 0; index < payload.length - 1; index++) {
+      expect(detector(payload.subarray(index, index + 1))).toBe(false);
+    }
+    expect(detector(payload.subarray(payload.length - 1))).toBe(true);
+    expect(detector(encoder.encode('\r\n '))).toBe(true);
+  });
+
+  test('creates independent state for concurrent request streams', () => {
+    const first = jsonSerializer.createLoadRequestCompletionDetector();
+    const second = jsonSerializer.createLoadRequestCompletionDetector();
+
+    expect(first(encoder.encode('{"documentId":'))).toBe(false);
+    expect(second(encoder.encode('{"documentId":"/two"}'))).toBe(true);
+    expect(first(encoder.encode('"/one"}'))).toBe(true);
+  });
+
+  test('rejects non-object roots and same-chunk trailing data', () => {
+    const nonObject = jsonSerializer.createLoadRequestCompletionDetector();
+    expect(() => nonObject(encoder.encode('[]'))).toThrow(/must be an object/);
+
+    const trailing = jsonSerializer.createLoadRequestCompletionDetector();
+    expect(() => trailing(encoder.encode('{"documentId":"/doc"}x'))).toThrow(
+      /after JSON load request/,
+    );
+  });
+
+  test('defers mismatched delimiters to the single JSON parse attempt', () => {
+    const detector = jsonSerializer.createLoadRequestCompletionDetector();
+    expect(detector(encoder.encode('{"extra":[}'))).toBe(false);
+    expect(detector(encoder.encode(']'))).toBe(true);
+  });
+});
+
 describe('keyID in serializeChangeBlock / deserializeChangeBlock', () => {
   const nonce = new Uint8Array([1, 2, 3, 4]);
 

@@ -24,12 +24,14 @@ import type { Uint8ArrayList } from 'uint8arraylist';
  * Legacy v2-style duplex stream shape. Several call sites in
  * `peerborne-document.ts` and `peerborne.ts` consume streams via this
  * shape (typically through `it-pipe`). `wrapStream` produces values matching
- * this shape from v3 `Stream`s.
+ * this shape from v3 `Stream`s, including full abort for bounded-reader
+ * failures.
  */
 export interface DuplexStream {
   source: AsyncIterable<Uint8Array | Uint8ArrayList>;
   sink: (data: Iterable<Uint8Array> | AsyncIterable<Uint8Array>) => Promise<void>;
   close: () => Promise<void>;
+  abort: (err: Error) => void;
 }
 
 /**
@@ -85,5 +87,6 @@ export function wrapStream(stream: Stream): DuplexStream {
       await stream.close();
     },
     close: () => stream.close(),
+    abort: (err) => stream.abort(err),
   };
 }

@@ -712,6 +712,7 @@ export class Peerborne<
               source,
               (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
               MAX_REQUEST_SIZE,
+              this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
             );
           } catch (err) {
             const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
@@ -748,6 +749,7 @@ export class Peerborne<
               source,
               (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
               MAX_REQUEST_SIZE,
+              this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
             );
           } catch (err) {
             const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
@@ -913,6 +915,7 @@ export class Peerborne<
                 source,
                 (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
                 MAX_REQUEST_SIZE,
+                this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
               );
             } catch (err) {
               const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';

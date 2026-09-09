@@ -1,8 +1,11 @@
 import { describe, expect, jest, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import {
   shuffleArray,
   firstTrue,
   concatUint8Arrays,
+  copyUnsharedUint8Array,
+  snapshotDeepEnumerableData,
   isBufferList,
   readFirstDeserializable,
   readUint8Iterable,
@@ -99,6 +102,117 @@ describe('firstTrue', () => {
     const result = await firstTrue(promises);
     expect(result).toBe(false);
   });
+
+  test('does not treat truthy non-boolean provider results as true', async () => {
+    const promises = [
+      Promise.resolve('false' as unknown as boolean),
+      Promise.resolve({} as unknown as boolean),
+      Promise.resolve(false),
+    ];
+    await expect(firstTrue(promises)).resolves.toBe(false);
+  });
+});
+
+describe('snapshotDeepEnumerableData', () => {
+  test('detaches nested Proxy descriptors without invoking property gets', () => {
+    const nested = { payload: new Uint8Array([1, 2, 3]) };
+    let getCalls = 0;
+    let descriptorCalls = 0;
+    const proxy = new Proxy(nested, {
+      get(target, property, receiver) {
+        getCalls++;
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        descriptorCalls++;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const snapshot = snapshotDeepEnumerableData({
+      first: proxy,
+      second: proxy,
+    });
+    nested.payload[0] = 9;
+
+    expect(getCalls).toBe(0);
+    expect(descriptorCalls).toBeGreaterThan(0);
+    expect(snapshot.first).not.toBe(snapshot.second);
+    expect(snapshot.first.payload).toEqual(new Uint8Array([1, 2, 3]));
+    expect(snapshot.first.payload).not.toBe(snapshot.second.payload);
+  });
+
+  test('rejects nested accessors without invoking them', () => {
+    let getterCalls = 0;
+    const nested = Object.defineProperty({}, 'payload', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return new Uint8Array([1]);
+      },
+    });
+
+    expect(() => snapshotDeepEnumerableData({ nested })).toThrow(
+      /enumerable data properties/,
+    );
+    expect(getterCalls).toBe(0);
+  });
+
+  test('rejects cycles, exotic objects, and SharedArrayBuffer views', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => snapshotDeepEnumerableData(cyclic)).toThrow(/cycles/);
+    expect(() => snapshotDeepEnumerableData({ date: new Date() })).toThrow(
+      /non-plain object/,
+    );
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      expect(() =>
+        snapshotDeepEnumerableData({
+          bytes: new Uint8Array(new SharedArrayBuffer(4)),
+        }),
+      ).toThrow(/invalid length or backing buffer/);
+    }
+  });
+
+  test('enforces aggregate bytes, properties, and explicit depth bounds', () => {
+    expect(() =>
+      snapshotDeepEnumerableData({ bytes: new Uint8Array(5) }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 8,
+        maxProperties: 8,
+        maxArrayLength: 8,
+        maxValueBytes: 4,
+      }),
+    ).toThrow(/detached value bytes/);
+    expect(() =>
+      snapshotDeepEnumerableData({ a: 1, b: 2 }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 8,
+        maxProperties: 1,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/detached properties/);
+
+    const deep: Record<string, unknown> = {};
+    let cursor = deep;
+    for (let depth = 0; depth < 5_000; depth++) {
+      const child: Record<string, unknown> = {};
+      cursor.child = child;
+      cursor = child;
+    }
+    expect(() => snapshotDeepEnumerableData(deep)).not.toThrow();
+
+    expect(() =>
+      snapshotDeepEnumerableData(deep, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 10_000,
+        maxProperties: 10_000,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/maximum depth 8/);
+  });
 });
 
 describe('concatUint8Arrays', () => {
@@ -126,6 +240,32 @@ describe('concatUint8Arrays', () => {
   test('should handle no arrays', () => {
     const result = concatUint8Arrays();
     expect(result).toEqual(new Uint8Array([]));
+  });
+});
+
+describe('copyUnsharedUint8Array', () => {
+  test('accepts genuine cross-realm bytes and ignores shadowed metadata', () => {
+    const crossRealm = runInNewContext('new Uint8Array([1, 2, 3])') as unknown;
+    expect(copyUnsharedUint8Array(crossRealm, 3, 3)).toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+
+    const shadowed = new Uint8Array([4, 5, 6]);
+    Object.defineProperty(shadowed, 'byteLength', {
+      get() {
+        throw new Error('shadowed getter must not run');
+      },
+    });
+    expect(copyUnsharedUint8Array(shadowed, 3, 3)).toEqual(
+      new Uint8Array([4, 5, 6]),
+    );
+  });
+
+  test('rejects SharedArrayBuffer-backed bytes', () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    expect(() =>
+      copyUnsharedUint8Array(new Uint8Array(new SharedArrayBuffer(3)), 3, 3),
+    ).toThrow(/backing buffer/);
   });
 });
 
@@ -179,6 +319,19 @@ describe('readUint8Iterable', () => {
     expect(result).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
   });
 
+  test('does not retain unused growth capacity', async () => {
+    const result = await readUint8Iterable(
+      toAsyncIterable([
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([4]),
+      ]),
+    );
+
+    expect(result).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(result.byteOffset).toBe(0);
+    expect(result.buffer.byteLength).toBe(result.byteLength);
+  });
+
   test('correctly reads a stream with BufferList chunks', async () => {
     const bl1 = new MockBufferList(new Uint8Array([10, 20, 30]));
     const bl2 = new MockBufferList(new Uint8Array([40, 50]));
@@ -193,7 +346,9 @@ describe('readUint8Iterable', () => {
   test('correctly reads a stream with Uint8ArrayList chunks', async () => {
     const list1 = new MockUint8ArrayList(new Uint8Array([7, 8]));
     const list2 = new MockUint8ArrayList(new Uint8Array([9, 10, 11]));
-    const result = await readUint8Iterable(toAsyncIterable([list1, list2]) as any);
+    const result = await readUint8Iterable(
+      toAsyncIterable([list1, list2]) as any,
+    );
     expect(result).toEqual(new Uint8Array([7, 8, 9, 10, 11]));
   });
 
@@ -215,22 +370,41 @@ describe('readUint8Iterable', () => {
 
   describe('maxSize enforcement', () => {
     test('throws RangeError when stream exceeds maxSize', async () => {
-      const chunks = [
-        new Uint8Array([1, 2, 3]),
-        new Uint8Array([4, 5, 6]),
-      ];
+      const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])];
       await expect(
         readUint8Iterable(toAsyncIterable(chunks), 5),
       ).rejects.toThrow(RangeError);
     });
 
     test('succeeds when stream is exactly at maxSize', async () => {
-      const chunks = [
-        new Uint8Array([1, 2, 3]),
-        new Uint8Array([4, 5]),
-      ];
+      const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
       const result = await readUint8Iterable(toAsyncIterable(chunks), 5);
       expect(result).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    test('assembles many tiny chunks at the exact size limit', async () => {
+      async function* tinyChunks() {
+        for (let index = 0; index < 4096; index++) {
+          yield new Uint8Array([index & 0xff]);
+        }
+      }
+
+      const result = await readUint8Iterable(tinyChunks(), 4096);
+      expect(result).toHaveLength(4096);
+      expect(result[0]).toBe(0);
+      expect(result[4095]).toBe(255);
+    });
+
+    test('bounds streams that yield unlimited empty chunks', async () => {
+      async function* emptyChunkFlood() {
+        for (let index = 0; index < 65_537; index++) {
+          yield new Uint8Array(0);
+        }
+      }
+
+      await expect(readUint8Iterable(emptyChunkFlood(), 1)).rejects.toThrow(
+        /maximum allowed chunk count/,
+      );
     });
 
     test('succeeds when stream is under maxSize', async () => {
@@ -267,14 +441,51 @@ describe('readFirstDeserializable', () => {
       await new Promise<void>(() => {});
     }
 
+    const completionDetector = (chunk: Uint8Array) => chunk.includes(0x7d);
     const result = await Promise.race([
-      readFirstDeserializable(sourceThatRemainsOpen(), deserialize, 1024),
+      readFirstDeserializable(
+        sourceThatRemainsOpen(),
+        deserialize,
+        1024,
+        completionDetector,
+      ),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('reader waited for EOF')), 100),
       ),
     ]);
 
     expect(result).toEqual({ documentId: '/relay-test' });
+  });
+
+  test('does not repeatedly deserialize byte-dribbled prefixes', async () => {
+    const payload = encoder.encode('{"documentId":"/dribble"}');
+    async function* oneByteAtATime() {
+      for (const byte of payload) yield new Uint8Array([byte]);
+    }
+    const countingDeserialize = jest.fn(deserialize);
+
+    await expect(
+      readFirstDeserializable(oneByteAtATime(), countingDeserialize, 1024),
+    ).resolves.toEqual({ documentId: '/dribble' });
+    expect(countingDeserialize).toHaveBeenCalledTimes(2);
+  });
+
+  test('ignores empty chunks without invoking the deserializer', async () => {
+    async function* emptyThenComplete() {
+      for (let index = 0; index < 100; index++) yield new Uint8Array(0);
+      yield encoder.encode('{"documentId":"/complete"}');
+      await new Promise<void>(() => {});
+    }
+    const countingDeserialize = jest.fn(deserialize);
+
+    const result = await Promise.race([
+      readFirstDeserializable(emptyThenComplete(), countingDeserialize, 1024),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('reader waited for EOF')), 100),
+      ),
+    ]);
+    expect(result).toEqual({ documentId: '/complete' });
+    expect(countingDeserialize).toHaveBeenCalledTimes(1);
   });
 
   test('rejects a request that exceeds the size limit before it is complete', async () => {

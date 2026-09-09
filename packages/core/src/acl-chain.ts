@@ -843,7 +843,7 @@ export class ACLChain<ChangesType, PrivateKey, PublicKey> {
         index,
       };
     }
-    if (!signatureOk) {
+    if (signatureOk !== true) {
       return {
         ok: false,
         reason: 'bad-signature',
@@ -884,7 +884,7 @@ export class ACLChain<ChangesType, PrivateKey, PublicKey> {
         index,
       };
     }
-    if (!authorized) {
+    if (authorized !== true) {
       return {
         ok: false,
         reason: 'unauthorized-signer',
