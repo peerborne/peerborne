@@ -49,9 +49,10 @@ import { tipsHashToHex } from './tips-hash.js';
  *     reported a real tip-hash. See `Peerborne.tipAdvertiseHandler`
  *     for the wire sentinel.
  *
- *     Worst-case Byzantine exposure for new-doc is identical to the
- *     tip-hash case: Q lying peers can force a wrong outcome, but a
- *     single lying peer cannot.
+ *     The new-doc and tip-hash outcomes use the same configured threshold:
+ *     Q matching votes can select an outcome, and Q=1 permits one vote to
+ *     do so. This tally does not establish independent peer control or
+ *     provide Sybil resistance.
  *   - `null` -- the peer did not return a usable hash. This covers BOTH
  *     timeouts AND non-disclaim declines (unauthorized, wrong document
  *     id, deserialization failure, etc.). Non-responding peers are NOT
@@ -117,8 +118,9 @@ export type LoadQuorumDecision =
  *
  * @param advertisements One entry per peer queried. `hash: null` represents
  *   a non-vote (timeout or decline). Order is irrelevant.
- * @param q The minimum number of *agreeing* peers required. Already clamped
- *   to `[1, K]` by the caller; this function does not re-clamp.
+ * @param q The minimum number of *agreeing* peers required. The caller must
+ *   preserve an explicit value as a trust floor; this function does not
+ *   reduce it to the current cohort size.
  * @returns A {@link LoadQuorumDecision} describing the outcome. Pure: same
  *   inputs always yield the same result.
  */
@@ -131,7 +133,7 @@ export function decideLoadQuorum(
   // could otherwise pass `q <= 0` / `NaN` / non-integer and silently
   // disable the quorum gate -- the largest-bucket size would always be
   // `>= 0 >= q` and a single peer's vote would pass. The orchestrator
-  // already clamps via `effectiveQ`, but this guard is the load-bearing
+  // already normalizes via `effectiveQ`, but this guard is the load-bearing
   // backstop for any other code path that builds the advertisements list
   // by hand. Coding-guideline rule applies here: throw on programming
   // mistakes (vs. logging warnings for runtime issues) so the failure is
@@ -140,7 +142,7 @@ export function decideLoadQuorum(
     throw new Error(
       `decideLoadQuorum: q must be a positive integer; got ${String(q)}. ` +
         `Pass the value through effectiveQ() / runLoadQuorum() so the ` +
-        `clamp against the responding cohort fires before reaching this ` +
+        `positive-integer normalization fires before reaching this ` +
         `function.`,
     );
   }
@@ -173,8 +175,8 @@ export function decideLoadQuorum(
     }
     respondingCount++;
     // `'unknown-doc'` votes tally under a dedicated reserved key so a
-    // Q-of-K majority of disclaims is detectable by the orchestrator
-    // exactly like a tip-hash majority. The key is intentionally NOT a
+    // Q-of-K threshold of disclaims is detectable by the orchestrator
+    // exactly like a tip-hash threshold. The key is intentionally NOT a
     // hex string so it cannot collide with `tipsHashToHex` output.
     const key =
       adv.hash === 'unknown-doc'
@@ -280,24 +282,24 @@ export function decideLoadQuorum(
 
 /**
  * Compute the default quorum threshold `Q` for a given `K` using the
- * strict-majority rule `Math.floor(K / 2) + 1`. This tolerates `floor((K-1)/2)`
- * faulty peers (one fault at K=3, K=4; two at K=5) — the standard BFT
- * threshold — and is the formula `PeerborneConfig.loadQuorumQ` defaults to
- * when the user does not override it.
+ * strict-majority rule `Math.floor(K / 2) + 1`. This is only the default
+ * configured agreement threshold; callers may explicitly configure a valid
+ * non-majority Q. The formula alone supplies neither a consensus protocol nor
+ * Sybil resistance, and any fault analysis assumes the counted identities are
+ * independently controlled. This is the formula `PeerborneConfig.loadQuorumQ`
+ * defaults to when the user does not override it.
  *
  * Worked examples:
  *   - K=1 → Q=1
  *   - K=2 → Q=2
- *   - K=3 → Q=2 (one fault tolerated; previously K=3 → Q=3 under
- *     `Math.ceil(K/2)+1`, which made the gate refuse to pass with even a
- *     single non-vote and defeated the fault-tolerance intent)
+ *   - K=3 → Q=2 (previously K=3 → Q=3 under
+ *     `Math.ceil(K/2)+1`, which required all three peers to vote)
  *   - K=4 → Q=3
  *   - K=5 → Q=3
  *   - K=7 → Q=4
  *
  * Pulled out so the loader, the config docstring, and the test matrix all
- * reference one canonical formula. Callers must still pass the result
- * through `effectiveQ(q, k)` to handle `K=0` and user overrides.
+ * reference one canonical formula.
  */
 export function defaultQuorumQ(k: number): number {
   if (k <= 0) return 0;
@@ -386,9 +388,11 @@ export function effectiveK(
 }
 
 /**
- * Compute the effective `Q` (quorum threshold) given a configured value and
- * the effective K. Clamped to `[1, K]` so a misconfigured `Q > K` cannot
- * make quorum unreachable, and `Q <= 0` does not silently bypass the gate.
+ * Normalize a configured `Q` (quorum threshold). Explicit positive values
+ * are never reduced to the effective K: Q is a trust floor, and peer
+ * scarcity must make the load fail closed rather than lower that floor.
+ * `Q <= 0` is normalized to 1 as a defensive backstop; public entry points
+ * reject it during configuration validation.
  *
  * Defensive against non-finite inputs as a second line of defence behind
  * {@link validateLoadQuorumConfig}. Without the `Number.isFinite` guard,
@@ -399,10 +403,8 @@ export function effectiveK(
  * that mirrors the orchestrator's `?? defaultQuorumQ(k)` default.
  */
 export function effectiveQ(configuredQ: number, k: number): number {
-  if (k <= 0) return 0;
   if (!Number.isFinite(configuredQ)) return defaultQuorumQ(k);
   if (configuredQ < 1) return 1;
-  if (configuredQ > k) return k;
   // Floor for the same reason as `effectiveK`: a fractional Q would
   // otherwise produce a non-integer threshold that compares strangely
   // against integer vote counts.
@@ -422,9 +424,9 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
 /**
  * Validate the load-quorum tuning knobs from {@link PeerborneConfig}.
  *
- * Runs at {@link Peerborne.initialize} time so a misconfigured value is
- * surfaced loudly at startup rather than silently degrading every
- * subsequent `load()` call. For example, `loadQuorumK: 1.5` previously
+ * Call this before using load-quorum settings so a misconfigured value is
+ * surfaced loudly rather than silently degrading a subsequent `load()`.
+ * For example, `loadQuorumK: 1.5` previously
  * slipped through `Math.min(configuredK, peersLen)` to produce
  * `peers.slice(0, 1.5)`
  * which probes only 1 peer (silent single-peer load); `loadQuorumQ: NaN`
@@ -433,21 +435,21 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  * misconfig are now rejected here with a clear operator-visible error.
  *
  * `loadQuorumTimeoutMs` is also validated here because the value flows
- * directly into `setTimeout(...)` inside the tip-advertise probe race,
- * where `NaN`/`Infinity`/`0`/negative are coerced
- * to immediate-fire / overflow behaviour by the timer queue. Every probe
- * then resolves as a non-vote and quorum fails on every load attempt even
- * with a fully healthy mesh — silently breaking the gate. We require a
- * finite positive integer no greater than
- * {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a misplaced
- * decimal is caught at startup.
+ * directly into `setTimeout(...)` inside a tip-advertise probe race.
+ * `NaN`/`Infinity`/`0`/negative values are coerced to immediate-fire or
+ * overflow behaviour by the timer queue. We require a finite positive integer
+ * no greater than {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a
+ * misplaced decimal is caught at startup.
  *
- * `loadQuorumK` and `loadQuorumQ` MUST be finite positive integers
+ * `loadQuorumEnabled` and `loadQuorumAllowSinglePeer` MUST be booleans when
+ * provided. `loadQuorumK` and `loadQuorumQ` MUST be finite positive integers
  * (Number.isInteger(x) && x >= 1).
  * `loadQuorumTimeoutMs` MUST be a finite positive integer in the closed
  * range `[1, LOAD_QUORUM_TIMEOUT_MS_MAX]`.
  *
  * Rejects:
+ *   - non-boolean values for `loadQuorumEnabled` /
+ *     `loadQuorumAllowSinglePeer`
  *   - NaN / Infinity / -Infinity (all knobs)
  *   - non-integers (e.g. 1.5, 2.7) (all knobs)
  *   - zero and negative values (0, -1) (all knobs)
@@ -463,15 +465,34 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  * offending value.
  *
  * @param config The {@link PeerborneConfig} (or its load-quorum subset)
- *   to validate. Pass-through fields (`enabled`, `allowSinglePeer`) are
- *   intentionally NOT validated here; only K, Q, and timeoutMs are the
- *   load-bearing trust/timing knobs.
+ *   to validate. Boolean policy switches are validated exactly when this
+ *   function is invoked.
+ *   Dormant K/Q knobs are ignored when quorum is explicitly disabled; the
+ *   timeout is validated on every invocation.
  */
 export function validateLoadQuorumConfig(config: {
+  loadQuorumEnabled?: boolean;
   loadQuorumK?: number;
   loadQuorumQ?: number;
   loadQuorumTimeoutMs?: number;
+  loadQuorumAllowSinglePeer?: boolean;
 }): void {
+  const checkOptionalBoolean = (
+    name: string,
+    value: boolean | undefined,
+  ): void => {
+    if (value === undefined) return;
+    if (typeof value !== 'boolean') {
+      throw new LoadQuorumFailedError({
+        documentPath: '<config>',
+        reason: 'invalid-config',
+        respondingCount: 0,
+        requiredQ: 0,
+        agreement: new Map(),
+        detail: `${name} must be a boolean; got ${formatConfigValue(value)}`,
+      });
+    }
+  };
   const checkPositiveInt = (name: string, value: number | undefined): void => {
     if (value === undefined) return;
     if (
@@ -517,13 +538,20 @@ export function validateLoadQuorumConfig(config: {
       });
     }
   };
-  checkPositiveInt('loadQuorumK', config.loadQuorumK);
-  checkPositiveInt('loadQuorumQ', config.loadQuorumQ);
+  checkOptionalBoolean('loadQuorumEnabled', config.loadQuorumEnabled);
+  checkOptionalBoolean(
+    'loadQuorumAllowSinglePeer',
+    config.loadQuorumAllowSinglePeer,
+  );
   checkBoundedPositiveInt(
     'loadQuorumTimeoutMs',
     config.loadQuorumTimeoutMs,
     LOAD_QUORUM_TIMEOUT_MS_MAX,
   );
+  // Preserve the established compatibility rule only for dormant K/Q.
+  if (config.loadQuorumEnabled === false) return;
+  checkPositiveInt('loadQuorumK', config.loadQuorumK);
+  checkPositiveInt('loadQuorumQ', config.loadQuorumQ);
 }
 
 /**
@@ -568,8 +596,9 @@ export function formatConfigValue(value: unknown): string {
  *   - `'insufficient-responses'` — fewer than `Q` peers returned a usable
  *     tip-set hash within the configured timeout (timeouts, declines,
  *     decryption failures).
- *   - `'no-majority'` — peers responded but no single tip-set hash reached
- *     the `Q`-of-respondingCount agreement threshold.
+ *   - `'no-majority'` — historical identifier retained for compatibility:
+ *     peers responded but no single tip-set hash reached Q. Q may be an
+ *     explicitly configured non-majority threshold.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
  *   - `'invalid-config'` — the operator misconfigured the gate (e.g.
@@ -584,7 +613,7 @@ export function formatConfigValue(value: unknown): string {
  *     cohort was entirely Byzantine on the load step". Surfaced by
  *     `PeerborneDocument.load()` after exhausting every narrowed peer.
  *     Without the per-peer retry, a single malicious peer in the agreeing
- *     cohort could vote for the majority hash and then serve a mismatched
+ *     cohort could vote for the agreed hash and then serve a mismatched
  *     full load to unilaterally abort the whole load, preventing the loader
  *     from trying any of the OTHER honest agreeing peers.
  */
@@ -656,7 +685,7 @@ export class LoadQuorumFailedError extends Error {
      *  carry the offending value into the operator-visible error message
      *  (e.g. `loadQuorumK must be a positive integer; got NaN`). Non-finite
      *  numbers render as their JS literal (`'NaN'` / `'Infinity'` /
-     *  `'-Infinity'`) via {@link formatConfigValue}, not the misleading
+     *  `'-Infinity'`) via `formatConfigValue`, not the misleading
      *  `'null'` that `JSON.stringify` produces. Ignored for the other
      *  reasons, which compose the detail string from the structured
      *  fields. */
