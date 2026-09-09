@@ -160,6 +160,15 @@ export default defineConfig({
           items: [
             'reference',
             'reference/comparisons',
+            {
+              label: 'Security design decisions',
+              collapsed: true,
+              items: [
+                'reference/security-design/0001-mls-document-security-architecture',
+                'reference/security-design/0002-mls-implementation-dependency',
+                'reference/security-design/0003-zero-knowledge-membership-proofs',
+              ],
+            },
             typeDocSidebarGroup,
           ],
         },

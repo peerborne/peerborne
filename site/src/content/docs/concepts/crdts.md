@@ -141,7 +141,7 @@ also enabled. In particular:
 
 - In-memory pruning can limit the history included in later sync messages
 - Opt-in block GC deletes eligible local copies, so recovery then depends on another provider
-- A quorum-bound first load rejects a snapshot-only response because it lacks a prior writer set for snapshot authentication
+- A legacy/non-authenticated quorum first load rejects a snapshot-only response because it lacks a prior writer set for snapshot authentication; strict authenticated initial load can verify one against application-pinned writers
 - Applications can call `snapshot()` manually even when automatic compaction is disabled
 
 ## Quorum loading
@@ -149,11 +149,38 @@ also enabled. In particular:
 Before accepting a remote document state, Peerborne can require Q-of-K distinct
 currently connected peers to agree on a served-frontier hash. Quorum is
 configured through `PeerborneConfig` and runs automatically during
-`document.open()` when enabled. Agreement and response binding reduce the risk
-of one peer unilaterally selecting a frontier; they do not authenticate the
-interior shadow tree or prove complete history. The check is **not
-Sybil-resistant** — one actor controlling multiple peer identities can subvert
-it.
+`document.open()` when enabled. On the legacy frontier-only path, agreement and
+response binding reduce the risk of one peer unilaterally selecting a frontier;
+they do not authenticate the interior shadow tree, prove complete history, or
+form a consensus system.
+
+The legacy frontier-only quorum is **not** Sybil-resistant. Security-aware V4
+deduplicates votes by verified writer authority instead of libp2p PeerId and
+binds a canonical manifest of the complete state-mutating response plan that a
+peer actually advertises and serves (CID/kind/edge graph, snapshot, and
+keychain delta). This is the complete selected response, not every concurrent
+branch the responder may hold. Repeated CIDs are recursively checked against
+one complete representation, so a conflicting alias is rejected in either
+insertion order. JSON sync trees deeper than 512 nodes on a root-to-leaf path
+are accepted by the generic V1/V3 and GossipSub codecs, which traverse them
+iteratively and reject cycles. The security-aware V4 manifest applies its own
+512-node root-to-leaf limit plus 4,096-node, 16,384-edge, and bounded-payload
+limits before accepting a response. Generic ingress remains subject to its
+protocol frame and detached-value aggregate budgets. One fresh random
+challenge scopes the requester-signed request and all writer-signed
+advertisements and full responses. The loader recomputes the manifest and
+verifies the echoed challenge before sync. While secure randomness and
+writer-envelope verification hold, the challenge prevents cross-round
+transcript replay, not an authorized writer signing stale state again. V4 still
+depends on a locally captured control/group tuple, immutable pinned writer
+keys, independently controlled authorities, and deterministic,
+collision-resistant public-key serialization.
+
+The responder currently rebuilds its V4 full-load plan after advertising it.
+Concurrent edits, snapshots, or keychain changes can consequently produce an
+honest manifest bind failure and make initial load retry or fail. The mismatch
+is rejected before sync; it does not bypass response authentication or admit
+the changed plan.
 
 ## CI-backed evidence
 
@@ -170,7 +197,7 @@ Not verified:
 
 - Multi-peer concurrent editing and convergence under partition
 - Snapshot bootstrap across real peers
-- Conflicting real peers serving adversarial shadow trees during quorum loading
+- Live conflicting peers serving adversarial shadow trees during quorum loading with K > 1
 - Long-running multi-peer compaction and GC followed by recovery
 
 ## Next steps

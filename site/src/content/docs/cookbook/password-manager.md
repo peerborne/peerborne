@@ -59,6 +59,14 @@ await ownerDocumentRef.addWriter(recipientIdentityPublicKey);
 
 Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status. Calling `addReader(identity)` without KEM bytes changes the reader ACL but sends no encrypted Welcome.
 
+If the application supplies a custom `KeychainProvider`, its keychain must
+implement the exported `TransactionalKeychain` capability before this step:
+both `prepareEpochKey` and `prepareMerge` must stage detached state, and their
+synchronous `commit()` functions must apply completely or throw before
+mutation. `setKemKeyPair` rejects a non-transactional custom keychain before it
+exports or registers the KEM key. The bundled Yjs and Automerge keychains
+already provide these methods.
+
 The current React wrapper exposes only `addReader(user)` and `addWriter(user)`. It cannot pass `kemRaw`, cannot call `setKemKeyPair`, and therefore cannot implement this onboarding sequence by itself. The password-manager UI currently pastes only an ECDSA public key, so its sharing controls are not evidence that a second identity can decrypt the document.
 
 ## Safer implementation checklist

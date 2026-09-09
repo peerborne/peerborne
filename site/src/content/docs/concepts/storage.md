@@ -32,8 +32,20 @@ CRDT layer resolves concurrent edits.
 
 The encrypted wire message may carry history inline or defer it to Helia:
 
-- **Inline**: A `CRDTChangeNode` inside the encrypted `CRDTSyncMessage` carries the serialized CRDT change, allowing immediate application after any configured outer-signature check. A first load has no prior writer set for that check.
+- **Inline**: A `CRDTChangeNode` inside the encrypted `CRDTSyncMessage` carries the serialized CRDT change, allowing immediate application after any configured outer-signature check. A first load has no local ACL writer set; strict authenticated initial load instead uses application-pinned writer keys.
 - **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it.
+
+Deferred blocks are bounded symmetrically when written and read: the serialized
+change may be at most 16 MiB, and document encryption plus key-ID/nonce framing
+may expand it to at most 16 MiB plus 64 KiB. Each remote initial-load or
+invitation catch-up candidate also caps its deferred blocks at 16 MiB decoded
+and 32 MiB encrypted. Prefetch uses at most eight concurrent streams;
+decrypt/apply is sequential under the aggregate budget. These are compatibility
+limits, not configurable storage quotas; custom providers must fit within them.
+The fetch deadline is cooperative: the configured Helia blockstore must honor
+the supplied `AbortSignal`. A custom implementation that ignores cancellation
+can leave a read pending past the deadline, but expiry prevents later
+decrypt/apply mutation.
 
 ### No graph links in stored payloads
 
@@ -104,8 +116,10 @@ A reader that needs to reconstruct document history may require:
 
 These inputs do not by themselves authenticate responder-supplied shadow-tree
 node kinds or interior topology, nor do they prove that served history is
-complete. A quorum-bound first load has no prior writer set for authenticating
-the selected outer response and relies on its narrower frontier/CID checks.
+complete. A legacy/non-authenticated quorum first load has no prior writer set
+for authenticating the selected outer response and relies on its narrower
+frontier/CID checks. Strict authenticated initial load verifies the response
+against application-pinned writers.
 
 ### Write recovery
 
@@ -118,11 +132,12 @@ To issue new changes, a peer additionally needs:
 To participate in dynamic group membership (add/remove readers), a peer additionally needs:
 
 6. **The KEM state** — BeeKEM key material (memory-only currently; determining the set of active members requires this)
+7. **Reader bindings for revocation** — the live identity-to-KEM/leaf mapping retained by the writer that registered a reader; a joined or restarted writer cannot reconstruct bindings for pre-existing readers from a Welcome
 
 ### Configurable prerequisites
 
-7. **Network reachability** — connection to at least one peer that can serve missing blocks
-8. **Q-of-K quorum** — agreement from distinct currently connected peers on the served-frontier hash (enabled by default but configurable)
+8. **Network reachability** — connection to at least one peer that can serve missing blocks
+9. **Q-of-K quorum** — agreement from distinct currently connected peers on the served-frontier hash (enabled by default but configurable)
 
 Losing any of these components may make the corresponding recovery path impossible. Key management and backup are application responsibilities.
 
@@ -146,7 +161,7 @@ Snapshots can reduce replay work, but:
 
 - With pruning enabled, in-memory pruning does not delete Helia blocks unless `gcAfterPrune` is also enabled
 - A locally deleted block may still be fetchable from another provider, but there is no replication guarantee
-- A quorum-bound first load rejects a snapshot-only response because it has no prior writer set with which to authenticate the snapshot
+- A legacy/non-authenticated quorum first load rejects a snapshot-only response because it has no prior writer set with which to authenticate the snapshot; strict authenticated initial load can verify one against application-pinned writers
 
 ### Garbage collection
 

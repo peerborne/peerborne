@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="840" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
   <title id="title">Peerborne remote initial document load</title>
-  <desc id="desc">A quorum-enabled remote document load requires Q-of-K peers to agree on a frontier hash before Peerborne binds a selected response, strips inline changes, and fetches the CIDs enumerated by its served changes tree before mutation. A quorum-bound first load has no prior writer set for outer-signature authentication, so it drops an unverifiable snapshot and requires an available changes tree. With quorum disabled, the legacy path skips peer advertisements, frontier binding, stripping, and prefetch. CID validation covers fetched ciphertext bytes, not responder-supplied node kinds or interior topology, writer identity, or history completeness.</desc>
+  <desc id="desc">A quorum-enabled remote document load requires Q-of-K peers to agree on a frontier hash before Peerborne binds a selected response, strips inline changes, and fetches the CIDs enumerated by its served changes tree before mutation. A legacy first load has no prior writer set for outer-signature authentication, so it drops an unverifiable snapshot and requires an available changes tree; strict authenticated initial load can verify the response and snapshot against application-pinned writers. With quorum disabled, the legacy path skips peer advertisements, frontier binding, stripping, and prefetch. CID validation covers fetched ciphertext bytes, not responder-supplied node kinds or interior topology, writer identity, or history completeness.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0f172a"/>
@@ -79,7 +79,7 @@
   </g>
   <path d="M 358 422 H 393 M 743 422 H 778" fill="none" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
   <rect x="68" y="498" width="1064" height="38" rx="19" fill="#31243b" stroke="#fb7185" stroke-opacity="0.65"/>
-  <text x="600" y="523" fill="#fecdd3" font-size="15" text-anchor="middle">Quorum-bound first load: no prior writer set authenticates the outer signature; drop its snapshot and require an available changes tree.</text>
+  <text x="600" y="523" fill="#fecdd3" font-size="15" text-anchor="middle">Legacy first load drops an unauthenticated snapshot; strict mode verifies it against application-pinned writers.</text>
 
   <rect x="44" y="578" width="1112" height="160" rx="22" fill="#0f3539" stroke="#2dd4bf" stroke-width="2"/>
   <text x="68" y="609" class="eyebrow" fill="#5eead4">QUORUM-BOUND HISTORY FETCH + MATERIALIZATION</text>
@@ -97,7 +97,7 @@
     <circle cx="850" cy="652" r="16" fill="#5eead4"/><text x="850" y="653" class="number">9</text>
     <text x="877" y="646" class="step">Decrypt + apply history</text>
     <text x="877" y="672" class="detail">sync builds from cached blocks;</text>
-    <text x="877" y="694" class="detail">a later failure has no rollback.</text>
+    <text x="877" y="694" class="detail">later failure retires; no rollback.</text>
   </g>
   <path d="M 395 652 H 429 M 790 652 H 824" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
   <text x="600" y="723" fill="#99f6e4" font-size="13" text-anchor="middle">CID validation covers fetched ciphertext bytes—not responder-supplied node kinds/interior topology, writer identity, or history completeness.</text>
@@ -106,5 +106,5 @@
   <text x="254" y="796" class="result" fill="#99f6e4" text-anchor="middle">Ready · local mutations may begin</text>
   <rect x="488" y="762" width="668" height="54" rx="27" fill="#301821" stroke="#fb7185" stroke-width="2"/>
   <text x="822" y="786" class="result" fill="#fda4af" text-anchor="middle">Fail · gate, key, signature, frontier, or history error</text>
-  <text x="822" y="806" fill="#fecdd3" font-size="14" text-anchor="middle">missing CID stops pre-sync; later block failure may leave partial state</text>
+  <text x="822" y="806" fill="#fecdd3" font-size="14" text-anchor="middle">missing CID stops pre-sync; post-mutation failure retires with no rollback</text>
 </svg>

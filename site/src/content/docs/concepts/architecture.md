@@ -37,7 +37,7 @@ convergence through this complete path are not yet demonstrated in CI.
 
 ## Data flow: loading an existing document
 
-![A quorum-enabled remote document load obtains Q-of-K frontier agreement, decrypts the selected response before any conditional known-writer signature check, binds its served frontier, and fetches the CIDs enumerated by its served changes tree before mutation; a quorum-bound first load drops an unverifiable snapshot and requires an available changes tree, while the quorum-disabled legacy path skips those gates.](../../../assets/diagrams/initial-load.svg "Initial load: quorum binds the served frontier before history application.")
+![A quorum-enabled remote document load obtains Q-of-K frontier agreement, authenticates a security-aware response against pinned writers or applies the legacy conditional writer check, binds its served state, and fetches the CIDs enumerated by its served changes tree before mutation; a legacy first load drops an unverifiable snapshot, while strict authenticated initial load can verify one against its pinned writers.](../../../assets/diagrams/initial-load.svg "Initial load: quorum binds the served state before history application.")
 
 The configured initial-load gate probes up to an effective K distinct connected
 peers and requires Q matching frontier advertisements before accepting a remote
@@ -52,18 +52,21 @@ CID enumerated by its served changes tree is prefetched before state mutation.
 Helia validates the fetched ciphertext against each CID during that prefetch.
 After the gate passes, `sync()` decrypts, deserializes, and applies the cached
 payloads. A later per-block failure can therefore follow partial local mutation;
-there is no rollback. CID integrity authenticates those ciphertext bytes, not
+the loader permanently retires that instance instead of retrying another
+responder, but there is no rollback. CID integrity authenticates those ciphertext bytes, not
 the responder-supplied node kind or interior tree topology, a writer identity,
 or a complete-history claim. The fetched blocks have no per-block signature or
 ACL decision.
 
-On a first load there is no prior writer set with which to authenticate the
-outer response. A quorum-bound first load therefore drops an unverifiable
+On a legacy/non-authenticated first load there is no prior writer set with
+which to authenticate the outer response. That path drops an unverifiable
 snapshot and replays an available changes tree; a snapshot-only response is
-refused. When quorum is disabled, the legacy response path skips advertisement
-probes, frontier binding, inline stripping, and the prefetch-before-mutation
-gate. The decision logic and orchestration have focused tests; conflicting real
-peers serving adversarial DAG payloads are not yet exercised end to end.
+refused. Strict authenticated initial load instead verifies the outer response
+and snapshot against application-pinned writers. When quorum is disabled, the
+legacy response path skips advertisement probes, frontier binding, inline
+stripping, and the prefetch-before-mutation gate. The decision logic and
+orchestration have focused tests; conflicting real peers serving adversarial
+DAG payloads are not yet exercised end to end.
 
 ## The sync model
 

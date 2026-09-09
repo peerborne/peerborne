@@ -14,8 +14,11 @@ Relay and other infrastructure not given the document key handle ciphertext
 rather than document plaintext; they never need a signing private key. During
 normal post-load sync, once a trusted writer set exists, a peer without a
 current writer key cannot produce an ordinary sync message that receivers
-accept. A first load has no prior writer set for authenticating its selected
-outer response and instead uses the narrower configured quorum/CID gates.
+accept. A first load has no local ACL writer set for authenticating its selected
+outer response. The legacy/non-authenticated path therefore relies on its
+narrower quorum/CID gates and cannot authenticate a snapshot-only bootstrap;
+strict authenticated initial load instead verifies the response and snapshot
+against application-pinned writer keys.
 
 ## Identity and trust roots
 
@@ -123,7 +126,8 @@ auth provider. The bundled document providers generate or import 256-bit
 AES-GCM document keys. The lower-level `SubtleCrypto` auth primitive also
 supports AES-CTR and AES-CBC, but that primitive support is not a bundled
 document-key path. Peers can decrypt content only when they hold the needed
-epoch key.
+epoch key. Revoked peers may retain old keys; see
+[Limitations of revocation](#limitations-of-revocation).
 
 `historyVisibility` controls which document-key epochs are supplied in some
 load and Welcome responses. It does not remove or redact retained CRDT
@@ -159,9 +163,12 @@ path secrets individually encrypted to the surviving BeeKEM subtrees.
 
 Before accepting a remote document state, Peerborne can require **Q-of-K**
 distinct currently connected peers to agree on a served-frontier hash. This
-reduces the risk of one peer unilaterally selecting the frontier; it does not
-authenticate the responder-supplied interior tree or prove that the served
-history is complete. Quorum is configured via `PeerborneConfig`:
+reduces the risk of one peer unilaterally selecting the frontier. On the legacy
+frontier-only path, it can reject a conflicting or truncated response when the
+threshold includes independently controlled honest peers, but it is not
+consensus, does not make colluding peers trustworthy, and does not authenticate
+the responder-supplied interior tree or prove that the served history is
+complete. Quorum is configured via `PeerborneConfig`:
 
 ```ts
 // Override loadQuorumK and loadQuorumQ on the complete config:
@@ -179,8 +186,102 @@ await document.open();
 The quorum check:
 - Probes up to `loadQuorumK` peers for their current frontier hashes
 - Proceeds only when at least `loadQuorumQ` peers agree on the same frontier
+- Treats an explicit `loadQuorumQ` as a floor: if fewer peers are available,
+  the load fails instead of lowering the threshold to match the partition
 - Rejects the load if agreement cannot be reached
-- Is **not Sybil-resistant** — a peer controlling multiple identities can subvert it
+- The legacy frontier-only protocol is **not Sybil-resistant** — a peer
+  controlling multiple identities can subvert it
+
+Signing and the complete quorum policy are captured by `Peerborne.initialize()`.
+Mutating the original config object afterward does not change the active
+authentication mode, K/Q threshold, timeout, or single-peer permission.
+The public `Peerborne.config` getter returns a detached, top-level-frozen view
+of that effective policy rather than the caller's original object; inapplicable
+options may be normalized in the view. It is an inspection surface, not a
+runtime mutation API.
+Security resolver and document-creation callback identities are captured at the
+same boundary. Strict mode cannot distinguish a genuine founder from an
+eclipsed first opener when no peers are connected, so an empty strict open only
+creates the document when the captured `validateDocumentPath` callback returns
+exactly `true`. If peers are already connected, strict creation currently fails
+closed because the protocol has no authenticated nonexistence proof;
+`validateDocumentPath` does not override that failed network load. Already-loaded
+local replicas can still reopen offline.
+
+`requireSecurityStateQuorum` also requires signing, authenticated initial load,
+the quorum gate, pinned trusted writers, and a local
+`resolveLoadSecurityCommitments` trust anchor. V4 advertisements are
+authenticated against the captured writer set and duplicate votes from the
+same serialized writer authority are discarded, even when they arrive through
+different libp2p PeerIds. The V4 vote binds the exact control/group tuple and a
+canonical manifest of the complete state-mutating response plan that the peer
+actually advertises and serves: root identity, canonical node
+CIDs/kinds/edges and serialized inline changes, snapshot content/metadata, and
+keychain changes. It does not attest to unserved concurrent branches that the
+responder may also hold. The selected full response is re-derived and compared
+before sync, so preserving the same served frontier while adding an unvoted
+ancestor or ACL node, or substituting inline change bytes, is rejected.
+When one CID occurs through multiple paths, compatible sparse cross-link
+references are reconciled with its full description. Multiple full
+descriptions must match exactly, and kind or defined key-identity conflicts are
+rejected regardless of traversal order. The V4 manifest rejects a tree path
+deeper than 512 nodes and separately limits the response plan to 4,096 nodes,
+16,384 traversed edges, and 16 MiB for each bounded payload class. That
+512-node rule is specific to security-aware V4 initial load: generic V1/V3 and
+GossipSub JSON Merkle codecs use iterative, cycle-safe traversal and retain
+compatibility with deeper legacy histories. Generic ingress is instead bounded
+by its protocol frame and detached-value object, property, array, and byte
+budgets. These are focused manifest and codec tests, not live hostile-peer
+evidence.
+
+Shared document, key, Welcome, PathUpdate, tip, and security readers cap an
+inbound request at 10 MiB, 65,536 yielded chunks, a five-second next-chunk idle
+interval, and 30 seconds of total assembly. The invitation-join reader instead
+accepts one length-delimited frame capped at 32 KiB for the request and 4 MiB
+for the response, under a 30-second total stream deadline; it does not apply a
+separate chunk-count or next-chunk idle limit. The shipped JSON load-request
+codec finds its top-level object boundary incrementally and invokes
+`JSON.parse` once, so splitting a request into one-byte chunks does not trigger
+repeated whole-prefix parsing. Initial-load envelope signatures must use
+canonical padded Base64 and decode to 1–4,096 bytes; that check happens before
+ACL lookup, and one detached decoded value is reused across candidate
+verifications. These resource controls are covered by focused tests, not a live
+hostile-transport stress test.
+
+V4 currently rebuilds the response plan when the selected full-load request
+arrives instead of retaining an immutable challenge-scoped copy of the plan it
+advertised. An honest concurrent edit, snapshot, or keychain change can
+therefore make the full response miss its earlier manifest commitment; the
+loader rejects it as a bind failure and an initial load can fail if every
+agreeing responder changes in that window. This is an availability limitation,
+not a signature, trusted-tuple, or manifest-integrity bypass.
+
+After manifest validation and bounded block prefetch succeed, applying a load
+is not one cross-provider transaction. Keychain merge, snapshot application,
+ACL changes, and document changes can occur before a later semantic or custom-
+provider failure is reported. If a failure is detected after state mutation
+begins, Peerborne permanently retires that document instance and starts best-
+effort cleanup instead of trying another responder against possibly partial
+state. The same no-retry-after-mutation rule applies to legacy initial-load and
+invitation catch-up candidates, although their authentication gates are
+narrower. Callers must discard the document and its ACL/keychain provider
+instances. Retirement does not let fewer than Q trusted authorities bypass the
+signed V4 commitment, but it is not rollback: an applied prefix can remain in
+those providers. Atomic staged application across the in-place Yjs/Automerge
+and ACL/keychain providers remains future work.
+
+Each V4 round creates a fresh random 32-byte challenge. The requester signs the
+document path and challenge; every advertisement and full/snapshot response
+must echo it inside the writer-signed envelope. This prevents replay of a
+recorded response from another round while secure randomness and signature
+verification hold. It does not stop an authorized or compromised writer from
+signing stale state again in the current round. V4 also assumes
+`AuthProvider.serializePublicKey` is a deterministic, collision-resistant
+authority identifier, the pinned key objects do not mutate during the round,
+and Q pinned writer keys are independently controlled. Q compromised writer
+credentials can still collude. The remote tuple must exactly equal the local
+captured tuple; V4 currently fails closed on a stale local checkpoint rather
+than learning a newer security state from quorum peers.
 
 ## Revocation
 
@@ -190,6 +291,7 @@ When a writer is removed from the ACL:
 - With document signing enabled, after a replica applies the update it invalidates its cached writer set and rejects subsequently verified ordinary sync envelopes signed only by the removed key
 - There is no globally simultaneous cutover: a replica that has not applied the best-effort ACL update still evaluates against its older writer set, and an in-flight message is judged against the set current when that replica verifies it
 - `removeWriter()` revokes write authorization, not BeeKEM reader membership; an identity that remains a reader retains its existing read access, while `removeReader()` separately attempts a BeeKEM key rotation
+- Writer removal carries the replacement-key delta and ACL removal in one sync envelope encrypted under the previous document key. With signing enabled (the default), one signature binds both fields; both direct V2 and GossipSub receive paths authenticate the envelope before merging the keychain delta and then applying the ACL node. This is authenticated ordering, not cross-provider atomic rollback or guaranteed delivery; a removed writer retaining the previous key can recover the replacement key
 - Past contributions remain in the document; stored payloads do not carry persistent per-block writer attribution
 - There is no mechanism to retroactively remove those past contributions
 
@@ -204,20 +306,161 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
 - **PathUpdate** is a best-effort mechanism to notify peers about ACL changes
-- Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
+- While a document remains live, generation-bearing v2 Welcomes and PathUpdates reject stale/conflicting generations, and an exact PathUpdate replay is a no-op
+- These protections are still **incomplete**: the accepted BeeKEM generation and replay digest are memory-only, and PathUpdate has no delivery guarantee
+- Rollback helpers restore the in-memory BeeKEM tree and generation after
+  selected Welcome, PathUpdate, epoch-binding, or key-install failures. This
+  does not persist accepted replay state or atomically roll back the CRDT ACL,
+  keychain side effects, and network delivery as one document transaction.
+- Identity-to-KEM/leaf bindings exist only in the live writer instance that
+  registered each reader. A writer that joined through a Welcome receives the
+  anonymous ratchet tree but not bindings for pre-existing readers, so it
+  cannot revoke those readers by identity. A restarted writer has the same
+  limitation until authenticated binding persistence or transfer exists.
 
 ```ts
 // Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
-`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
+`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort, and the method can continue after an ACL-removal broadcast failure, so there is no guarantee that either notification reaches all peers.
+
+### BeeKEM protocol upgrades and custom keychains
+
+BeeKEM Welcome and PathUpdate v1/v2 are distinct wire protocols, not a
+negotiated extension. Current membership operations send v2 and do not
+downgrade. Peerborne still recognizes a writer-authenticated Welcome v1 only
+for generation-less legacy bootstrap. PathUpdate v1 reception is disabled by
+default; setting `allowInsecureLegacyBeeKEMPathUpdateV1: true` accepts updates
+without v2 generation, parent-tree, or replay binding and therefore permits a
+previously signed update to roll legacy ratchet state back. Once a replica has
+generation-bearing v2 state, it rejects v1 Welcomes and PathUpdates even with
+that option. A v1-only replica will not receive a current v2 rekey, so a group
+must not be operated as a mixed-version security boundary.
+
+There is no automatic in-place v1-to-v2 migration. After upgrading the
+participants, use an authorized writer that still holds the current ratchet
+state and the affected member's locally retained identity-to-KEM/leaf binding
+to remove the legacy membership and re-add that identity with its current KEM
+public key. This authenticated remove/rejoin produces a writer-authenticated,
+recipient-sealed v2 Welcome; do not treat a standalone Welcome as recovery. If
+no such writer exists, or membership and ratchet state cannot be established
+confidently, create a fresh group/document instead. This procedure does not add
+durable replay protection: the accepted BeeKEM generation is still memory-only.
+After every member has moved to v2, reinitialize with
+`allowInsecureLegacyBeeKEMPathUpdateV1: false` or omit the option so v1
+PathUpdates are rejected again.
+
+Applications with a custom `KeychainProvider` must return keychains satisfying
+the exported `TransactionalKeychain` capability before opting into BeeKEM. In
+practice, both `prepareEpochKey` and `prepareMerge` must construct detached
+staged state, and each returned synchronous `commit()` must either apply the
+staged state completely or throw before mutation. Calling `setKemKeyPair` with
+a key on a non-transactional keychain rejects before KEM validation, export, or
+recipient registration. Ordinary non-BeeKEM custom keychains remain compatible;
+the shipped Yjs and Automerge keychains implement the transactional methods.
 
 ### Limitations of revocation
 
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.
-- **BeeKEM state is lost on restart.** If the node restarts, it loses track of which keys have been invalidated.
+- **Ambiguous membership-provider failures retire the instance.** Reader/writer ACL and keychain calls are journaled before they are awaited because custom providers may mutate and then reject. Successful outputs can be resumed after a later preparation or delivery failure, but a provider rejection is never retried: the document fails closed, invalidates local writer authorization, and starts best-effort cleanup. `close()` is not rollback or recovery; discard the document and its ACL/keychain provider instances. The marker is memory-only, so restart recovery requires application-supplied known-good durable state.
+- **BeeKEM replay state is lost on restart.** The accepted v2 generation and PathUpdate digest are not durably persisted. After restart, replaying an old but valid writer-signed, recipient-sealed Welcome can rebootstrap stale ratchet state. `welcomeEpochId` is an invitation/history boundary, not a safe ratchet-generation anchor. Restart-safe replay protection requires persisted authenticated control state. Operational recovery requires an authenticated remove/rejoin performed by a writer retaining the current ratchet and local identity/KEM binding; otherwise use a fresh group/document.
+- **BeeKEM trees have a lifetime append cap.** Removed leaves are blanked, not reused. The implementation rejects additions after 8,192 lifetime leaf slots so worst-case generated v2 PathUpdates, including encrypted copath bundles, stay below the 10 MiB protocol frame; applications must migrate to a fresh group before reaching that limit.
 - **PathUpdate is not guaranteed.** There is no acknowledgment or retry mechanism.
 - **Key reuse risk.** If the application reuses KEM key pairs across documents, revoking access to one document may not fully revoke it from another.
+
+### Protocol-neutral membership coordinator
+
+Issue #186 adds a protocol-neutral provider and coordinator seam, not an MLS
+implementation. For each local or received Commit, the provider must report the
+membership change it actually applied. A strict, domain-separated hash of that
+delta is covered by the signed control record alongside the action, subject,
+request digest, Commit, resulting tree/transcript commitments, and Welcome-set
+hash. The coordinator compares the local result with the requested change and
+checks the receiving provider's result against the signed binding before
+persisting encrypted provider state, replay metadata, and an outbox entry.
+
+The current coordinator permits exactly one cryptographic add, remove, or
+key-package update per control. An add requires one Welcome for the matching
+key-package reference; remove and update require none. Role-only changes and
+batched membership transitions are not represented. The provider must
+authenticate its creator credential to the genesis subject and derive each
+KeyPackage's application member identity from provider-validated credential
+contents. The coordinator compares that identity during pending-package
+creation, local Add/Update, and invitation acceptance; the generic contract
+does not treat caller-supplied credential bytes as a member ID. Pending one-time
+KeyPackages can cross the store boundary only in an encrypted envelope whose
+associated data binds the intended group and complete public KeyPackage. A
+caller-stable operation ID is durably bound to the exact member, credential,
+extension, group, and protocol request so an ambiguous committed write can be
+resumed without generating a second package; the provider authenticates that
+request commitment from the public KeyPackage, so remapping the operation to a
+different same-member package fails closed. Changed retries also fail closed. An
+atomic store operation moves a pending package to a bounded, irreversible
+consumed-reference marker. Provider-returned envelopes are canonicalized into
+independent snapshots before persistence or rollback use. The onboarding and
+coordinator tests use a fake protocol provider whose credential scheme is only
+a test fixture, so this is a contract/persistence seam rather than RFC 9420
+credential or protocol evidence. Before a group exists there is no rollback
+anchor: validation requires a bijection between pending envelopes and request
+bindings and detects remapping, but rollback of an entire otherwise-valid pair
+remains possible unless the application supplies a separate monotonic
+pre-group mechanism.
+
+Invitation onboarding carries a retained signed control prefix bounded by both
+record count and 128 MiB of canonical control bytes. There is currently no
+authenticated checkpoint/suffix scheme for a history that exceeds either
+bound. Another invitation for the same oversized prefix cannot solve that
+limit; until authenticated checkpoints/suffixes exist, applications must create
+a fresh group/document rather than truncate the history.
+
+Coordinator construction requires a `DurableGroupSecurityRollbackAnchor`
+that tracks revision, epoch, control head, and a domain-separated SHA-256
+commitment to every byte of the matching canonical store snapshot through a
+separately protected monotonic boundary. Its atomic `poison` operation
+irreversibly writes a terminal marker/commitment against whichever active
+position wins after both siblings authenticate and authorize, including the
+first-anchor publication window. The marker binds the epoch, parent, sibling
+IDs, and a canonical evidence hash; the full audit evidence is a subsequent
+best-effort store copy. Pending and consumed KeyPackages, encrypted provider
+state, outbox/replay metadata, and stored audit evidence are covered by each
+active snapshot commitment instead of only the visible epoch/head.
+The anchor must not be rollbackable with the group database. The included
+in-memory anchor and transaction store are test implementations and are not
+rollback-resistant. Tests that create a new coordinator/provider over those
+same live objects demonstrate same-process reconstruction only—not process
+termination, browser restart, persistent keystore recovery, or crash
+consistency.
+
+When two authorized controls share one parent, the rollback anchor is poisoned
+before best-effort audit evidence is written to the rollbackable store. A
+restart rejects that state before loading the provider only when an
+application-supplied, separately protected monotonic anchor durably retains the
+poison marker. The included in-memory anchor does not provide that restart
+property. Genesis, join, partition-rejoin, and concurrent-writer fixtures cover
+the ordering with in-memory persistence, not a live hostile network or process-
+persistent store. Fork proof depends on a retained signed record and its
+authorization parent; a sibling first observed after both have fallen outside
+the bounded replay/authorization window cannot be proven by this coordinator.
+
+Bootstrap, join, restore, and active use claim one provider instance
+exclusively; concurrent initialization is serialized per provider, and a
+successfully claimed provider cannot be reused by another coordinator.
+
+A durable-acceptance value binds an acknowledgment to the exact 32-byte
+control-record ID and the complete unique set of Welcome-recipient KeyPackage
+references. Outbox flushing removes an entry only after the callback returns a
+matching value. The callback may return it only after the receiver has
+authenticated and validated the transition and durably persisted accepted
+state and replay metadata; callback or transport success alone is not an
+acknowledgment. Focused tests use a trusted callback and fake provider. There is
+no live authenticated receiver-ACK protocol or document-network integration
+evidence.
+
+The coordinator is not connected to the document ACL/runtime path or a durable
+browser backend/keystore. No reviewed MLS provider is connected, and there is
+no crash/restart or live hostile-network acceptance evidence. These primitives
+do not establish MLS, forward secrecy, post-compromise security, or restart-
+safe BeeKEM behavior.
 
 ## Metadata and hostile infrastructure
 
@@ -251,11 +494,11 @@ Verified in CI:
 Not verified:
 
 - Reader revocation with key rotation and live peer notification
-- Conflicting real peers serving adversarial shadow-tree payloads during quorum loading
+- Live conflicting peers serving adversarial shadow-tree payloads during quorum loading with K > 1
 - PathUpdate delivery across NAT boundaries
 - Invitation or replay-state persistence across process restart
 - Offline invitation acceptance or relay failover
-- Resistance to Sybil attacks on quorum
+- Live resistance to Sybil and colluding-authority attacks on quorum
 - Key recovery or backup flows
 
 ## Next steps
