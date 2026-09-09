@@ -21,9 +21,10 @@
  *
  *   1. Computing the peer list (already-deduped by libp2p PeerId so a single
  *      peer with multiple open connections cannot cast multiple votes).
- *   2. Passing a `probeFn` that, given a peer, returns a `Promise<Uint8Array
- *      | null>` -- the peer's advertised `tipsHash` bytes, or `null` for any
- *      non-vote outcome (timeout, decline, decryption failure, etc.).
+ *   2. Passing a `probeFn` that returns either legacy `tipsHash` bytes, a V4
+ *      `{ hash, signerAuthority }` vote whose authority the caller has already
+ *      authenticated, or `null` for any non-vote outcome (timeout, decline,
+ *      decryption failure, etc.).
  *   3. Passing a `peerIdOf` extractor so this module can narrow the peer list
  *      down to the agreeing cohort without knowing about Multiaddrs.
  *
@@ -43,12 +44,81 @@ import {
   decideLoadQuorum,
   defaultQuorumQ,
   effectiveK,
-  effectiveQ,
   LoadQuorumFailedError,
   PeerTipAdvertisement,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
-import { tipsHashToHex } from './tips-hash.js';
+import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
+import { copyUnsharedUint8Array } from './utils.js';
+
+/**
+ * A V4 vote attributed to a signer authority authenticated by `probeFn`.
+ *
+ * This orchestrator only validates the returned shape and de-duplicates the
+ * authority string. It does not verify a signature or decide whether the
+ * authority is trusted; callers MUST do both before returning this object.
+ */
+export interface SignerAttributedLoadQuorumVote {
+  readonly hash: Uint8Array;
+  readonly signerAuthority: string;
+}
+
+export type LoadQuorumProbeResult =
+  | Uint8Array
+  | SignerAttributedLoadQuorumVote
+  | 'unknown-doc'
+  | null;
+
+type NormalizedLoadQuorumProbeResult =
+  | {
+      readonly kind: 'vote';
+      readonly hash: Uint8Array;
+      readonly signerAuthority?: string;
+    }
+  | { readonly kind: 'unknown-doc' }
+  | { readonly kind: 'non-vote' };
+
+function normalizeLoadQuorumProbeResult(
+  result: unknown,
+): NormalizedLoadQuorumProbeResult {
+  if (result === 'unknown-doc') return { kind: 'unknown-doc' };
+
+  const legacyHash = snapshotVoteHash(result);
+  if (legacyHash !== undefined) {
+    return { kind: 'vote', hash: legacyHash };
+  }
+  if (result === null || typeof result !== 'object') {
+    return { kind: 'non-vote' };
+  }
+
+  let hashValue: unknown;
+  let signerAuthority: unknown;
+  try {
+    const candidate = result as Partial<SignerAttributedLoadQuorumVote>;
+    hashValue = candidate.hash;
+    signerAuthority = candidate.signerAuthority;
+  } catch {
+    return { kind: 'non-vote' };
+  }
+  if (typeof signerAuthority !== 'string') return { kind: 'non-vote' };
+  const hash = snapshotVoteHash(hashValue);
+  return hash === undefined
+    ? { kind: 'non-vote' }
+    : { kind: 'vote', hash, signerAuthority };
+}
+
+function snapshotVoteHash(value: unknown): Uint8Array | undefined {
+  try {
+    return copyUnsharedUint8Array(
+      value,
+      TIPS_HASH_LENGTH,
+      TIPS_HASH_LENGTH,
+      'load-quorum vote hash',
+    );
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Config inputs for `runLoadQuorum`. Mirrors the relevant subset of
@@ -59,7 +129,8 @@ export interface LoadQuorumOrchestratorConfig {
   enabled?: boolean;
   /** Maximum number of peers to probe. Defaults to 3. */
   k?: number;
-  /** Minimum agreement threshold. Defaults to `defaultQuorumQ(k)`. */
+  /** Minimum agreement threshold. An explicit value is a hard floor;
+   * defaults to `defaultQuorumQ(effectiveK)`. */
   q?: number;
   /** Per-probe timeout in ms (caller-enforced inside `probeFn`). Stored here
    * for symmetry with `PeerborneConfig` and validated alongside K/Q so a
@@ -103,9 +174,11 @@ export type LoadQuorumOrchestratorResult<T> =
  *   caller's preferred-peer placement survives.
  * @param peerIdOf Extracts a stable peer-id key from each peer entry; used
  *   to match agreeing-cohort PeerIds back to the original peer entries.
- * @param probeFn Probes one peer for a `tipsHash`. Should return `null` for
- *   any non-vote outcome (timeout, decline, decryption failure, malformed
- *   hash, etc.). If `probeFn` throws or rejects, the orchestrator catches
+ * @param probeFn Probes one peer for a legacy `tipsHash` or a V4 vote whose
+ *   signer authority the callback has already authenticated and authorized.
+ *   This orchestrator does not verify that claim. Return `null` for any
+ *   non-vote outcome (timeout, decline, decryption failure, malformed hash,
+ *   etc.). If `probeFn` throws or rejects, the orchestrator catches
  *   it at the boundary, logs the error, and records the peer as a non-vote
  *   so the surrounding `LoadQuorumFailedError` contract is preserved. Even
  *   so, a thrown probe still indicates a bug in the caller's probe
@@ -122,17 +195,14 @@ export type LoadQuorumOrchestratorResult<T> =
 export async function runLoadQuorum<T>(opts: {
   peers: readonly T[];
   peerIdOf: (peer: T) => string;
-  probeFn: (peer: T) => Promise<Uint8Array | 'unknown-doc' | null>;
+  probeFn: (peer: T) => Promise<LoadQuorumProbeResult>;
   documentPath: string;
   config?: LoadQuorumOrchestratorConfig;
 }): Promise<LoadQuorumOrchestratorResult<T>> {
   const { peers, peerIdOf, probeFn, documentPath, config } = opts;
   const enabled = config?.enabled ?? true;
-  if (!enabled) {
-    return { skipped: true };
-  }
 
-  // Re-validate K/Q/timeoutMs on every `runLoadQuorum` call as
+  // Re-validate booleans/K/Q/timeoutMs on every `runLoadQuorum` call as
   // defence-in-depth against post-`initialize()` mutation of the shared
   // config object (direct mutation, deep-clone reuse with a corrupt
   // field, an operator helper that writes back `NaN`, etc.).
@@ -160,9 +230,11 @@ export async function runLoadQuorum<T>(opts: {
   // document's load attempt tripped the post-init mutation.
   try {
     validateLoadQuorumConfig({
+      loadQuorumEnabled: config?.enabled,
       loadQuorumK: config?.k,
       loadQuorumQ: config?.q,
       loadQuorumTimeoutMs: config?.timeoutMs,
+      loadQuorumAllowSinglePeer: config?.allowSinglePeer,
     });
   } catch (err) {
     if (
@@ -191,26 +263,40 @@ export async function runLoadQuorum<T>(opts: {
     throw err;
   }
 
+  if (enabled === false) {
+    return { skipped: true };
+  }
+
   const configuredK = config?.k ?? 3;
   const allowSinglePeer = config?.allowSinglePeer ?? false;
 
   const k = effectiveK(configuredK, peers.length);
-  // Compute the default Q from the EFFECTIVE K (after clamping against the
-  // known peer count), not the CONFIGURED K. With configured K=7 but only
-  // 3 peers reachable, `defaultQuorumQ(7) = 4` but `effectiveK(7, 3) = 3`,
-  // so `effectiveQ(4, 3) = 3` would require ALL 3 peers to agree -- losing
-  // the one-fault tolerance the formula is meant to provide. Deriving the
-  // default from `k` (effective) gives `defaultQuorumQ(3) = 2`, which
-  // tolerates one non-vote among the 3 reachable peers. When the operator
-  // explicitly set `loadQuorumQ`, the `??` is a no-op and the explicit
-  // value flows through `effectiveQ`'s `[1, k]` clamp as before.
-  const configuredQ = config?.q ?? defaultQuorumQ(k);
-  const q = effectiveQ(configuredQ, k);
+  // Derive the default Q from the EFFECTIVE K (after limiting K to the
+  // currently known peer count), but preserve an explicit Q as a hard trust
+  // floor. A network partition must not silently reduce an operator's Q=4
+  // policy to Q=2 merely because only two peers remain visible.
+  const explicitQ = config?.q;
+  const q = explicitQ ?? defaultQuorumQ(k);
 
   if (k === 0) {
     // No peers known. Treat as "new document" — caller falls through to
     // the legacy "no peer could load" branch.
     return { skipped: true };
+  }
+
+  if (explicitQ !== undefined && explicitQ > k) {
+    console.warn(
+      `[${documentPath}] Initial-load quorum FAILED: only ${k} peer${
+        k === 1 ? '' : 's'
+      } can be probed, below explicit loadQuorumQ=${explicitQ}. Aborting load.`,
+    );
+    throw new LoadQuorumFailedError({
+      documentPath,
+      reason: 'insufficient-responses',
+      respondingCount: 0,
+      requiredQ: explicitQ,
+      agreement: new Map(),
+    });
   }
 
   if (k === 1 && !allowSinglePeer) {
@@ -270,18 +356,18 @@ export async function runLoadQuorum<T>(opts: {
     // `probeFn` would let the underlying error escape past the orchestrator
     // and bypass the `LoadQuorumFailedError` API contract `load()` callers
     // are written against.
-    let probe: Uint8Array | 'unknown-doc' | null;
+    let probe: LoadQuorumProbeResult;
     try {
       probe = await probeFn(probedPeer);
-    } catch (err) {
+    } catch {
       console.warn(
         `[${documentPath}] Initial-load quorum single-peer probe threw; ` +
           `recording as non-vote.`,
-        err,
       );
       probe = null;
     }
-    if (probe === null) {
+    const normalizedProbe = normalizeLoadQuorumProbeResult(probe);
+    if (normalizedProbe.kind === 'non-vote') {
       throw new LoadQuorumFailedError({
         documentPath,
         reason: 'insufficient-responses',
@@ -290,7 +376,7 @@ export async function runLoadQuorum<T>(opts: {
         agreement: new Map(),
       });
     }
-    if (probe === 'unknown-doc') {
+    if (normalizedProbe.kind === 'unknown-doc') {
       // The single probed peer explicitly disclaims the document. Treat
       // as new-doc-creation -- `load()` will return `false` so a fresh
       // `open()` can create the document on top of the swarm. This is
@@ -301,7 +387,7 @@ export async function runLoadQuorum<T>(opts: {
       );
       return { newDoc: true };
     }
-    const winningHashHex = tipsHashToHex(probe);
+    const winningHashHex = tipsHashToHex(normalizedProbe.hash);
     // Narrow to ONLY the probed peer. Without this, the subsequent
     // snapshot/doc-load loop would also try the other peers in the original
     // peer list (which were never probed) and bind their served state
@@ -323,22 +409,49 @@ export async function runLoadQuorum<T>(opts: {
   // surfacing a raw probe error from `load()` instead of the structured
   // `LoadQuorumFailedError(insufficient-responses)` callers expect.
   const probedPeers = peers.slice(0, k);
-  const advertisements: PeerTipAdvertisement[] = await Promise.all(
+  const probeResults = await Promise.all(
     probedPeers.map(async (peer) => {
-      let hash: Uint8Array | 'unknown-doc' | null;
+      let result: LoadQuorumProbeResult;
       try {
-        hash = await probeFn(peer);
-      } catch (err) {
+        result = await probeFn(peer);
+      } catch {
         console.warn(
           `[${documentPath}] Initial-load quorum probe for peer ${peerIdOf(
             peer,
           )} threw; recording as non-vote.`,
-          err,
         );
-        hash = null;
+        result = null;
+      }
+      return { peer, result: normalizeLoadQuorumProbeResult(result) };
+    }),
+  );
+  // V4 votes are attributed to the signing authority that `probeFn` already
+  // verified, not merely to the transport's libp2p PeerId. This orchestrator
+  // does not perform that verification. Keep only the first vote from each
+  // authority so one credential reused across many Sybil PeerIds cannot
+  // satisfy Q by itself. Legacy probes still return bare Uint8Array values and
+  // retain their historical PeerId-based tally unchanged.
+  const seenSignerAuthorities = new Set<string>();
+  const advertisements: PeerTipAdvertisement[] = probeResults.map(
+    ({ peer, result }) => {
+      let hash: Uint8Array | 'unknown-doc' | null = null;
+      if (result.kind === 'vote' && result.signerAuthority !== undefined) {
+        if (
+          result.signerAuthority.length === 0 ||
+          seenSignerAuthorities.has(result.signerAuthority)
+        ) {
+          hash = null;
+        } else {
+          seenSignerAuthorities.add(result.signerAuthority);
+          hash = result.hash;
+        }
+      } else if (result.kind === 'vote') {
+        hash = result.hash;
+      } else if (result.kind === 'unknown-doc') {
+        hash = 'unknown-doc';
       }
       return { peerId: peerIdOf(peer), hash };
-    }),
+    },
   );
   const decision = decideLoadQuorum(advertisements, q);
   if (!decision.ok) {
