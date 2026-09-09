@@ -146,6 +146,10 @@ export * from './ecies.js';
 export * from './welcome-sealed-payload.js';
 export * from './group-security-provider.js';
 export * from './membership-control-record.js';
+export * from './group-state-store.js';
+export * from './group-security-rollback-anchor.js';
+export * from './group-security-store-commitment.js';
+export * from './group-security-durable-acceptance.js';
 export * from './webcrypto-group-state-protector.js';
 
 export {
