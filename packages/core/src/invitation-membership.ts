@@ -1,9 +1,9 @@
 import {
-  crdtChangeNodeDeferred,
   crdtReaderChangeNode,
   crdtWriterChangeNode,
   type CRDTChangeNode,
 } from './crdt-change-node.js';
+import { collectBoundedChangeTree } from './change-tree-walk.js';
 import type { InvitationRole } from './invitation-wire.js';
 
 export interface InitialInvitationMembershipState {
@@ -147,17 +147,9 @@ export class InvitationMembershipQueue {
 export function changeTreeContainsMembershipChange<ChangesType>(
   node: CRDTChangeNode<ChangesType>,
 ): boolean {
-  if (
-    node.kind === crdtReaderChangeNode ||
-    node.kind === crdtWriterChangeNode
-  ) {
-    return true;
-  }
-  if (node.children === undefined || node.children === crdtChangeNodeDeferred) {
-    return false;
-  }
-  return Object.values(node.children).some((child) =>
-    changeTreeContainsMembershipChange(child),
+  return collectBoundedChangeTree(undefined, node).some(
+    ({ kind }) =>
+      kind === crdtReaderChangeNode || kind === crdtWriterChangeNode,
   );
 }
 

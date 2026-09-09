@@ -28,7 +28,8 @@ import { AuthProvider } from './auth-provider.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
-import { CRDTChangeNode, crdtChangeNodeDeferred } from './crdt-change-node.js';
+import { CRDTChangeNode } from './crdt-change-node.js';
+import { collectChangeTreeCidsForPinning } from './change-tree-pinning.js';
 import { CID } from 'multiformats';
 import { EventHandler } from '@libp2p/interface';
 // libp2p v3 moved the GossipSub-specific `Message` type out of `@libp2p/interface`.
@@ -282,18 +283,8 @@ export class PeerborneNode<
   }
 
   private async _pinNewCIDs(cid: string, node: CRDTChangeNode<ChangesType>) {
-    const tasks: Promise<void>[] = [this._pinCID(cid)];
-
-    if (node.children === crdtChangeNodeDeferred) {
-      throw new Error('Currently IPLD deferred nodes are not supported!');
-    }
-
-    if (node.children !== undefined) {
-      for (const [childHash, childNode] of Object.entries(node.children)) {
-        tasks.push(this._pinNewCIDs(childHash, childNode));
-      }
-    }
-    await Promise.all(tasks);
+    const cids = collectChangeTreeCidsForPinning(cid, node);
+    await Promise.all(cids.map((entryCid) => this._pinCID(entryCid)));
   }
 
   // Start
@@ -401,8 +392,8 @@ export class PeerborneNode<
 
             // Pin all of the files that were received.
             if (message.changeId && message.changes) {
-              this._pinNewCIDs(message.changeId, message.changes).catch((err) => {
-                console.error('Failed to pin CIDs for message:', message.changeId, err);
+              this._pinNewCIDs(message.changeId, message.changes).catch(() => {
+                console.error('Failed to pin CIDs for incoming message');
               });
             }
           } else {

@@ -12,9 +12,9 @@
  * that wraps a v3 `Stream` and presents the v2 duplex shape on top of it.
  *
  * This file is intentionally narrow in scope -- it captures only the subset
- * of v2 stream behaviour peerborne actually uses (`source`, `sink`,
- * `close`). Once all call sites are ported to the native v3 API (push/pull
- * via `send()`/iterator), this shim can be removed.
+ * of v2 stream behaviour peerborne actually uses (`source`, `sink`, `close`,
+ * `closeRead`, `abort`). Once all call sites are ported to the native v3 API
+ * (push/pull via `send()`/iterator), this shim can be removed.
  */
 
 import type { Stream } from '@libp2p/interface';
@@ -24,12 +24,15 @@ import type { Uint8ArrayList } from 'uint8arraylist';
  * Legacy v2-style duplex stream shape. Several call sites in
  * `peerborne-document.ts` and `peerborne.ts` consume streams via this
  * shape (typically through `it-pipe`). `wrapStream` produces values matching
- * this shape from v3 `Stream`s.
+ * this shape from v3 `Stream`s and exposes read-side close and abort for
+ * callers that need explicit stream cleanup.
  */
 export interface DuplexStream {
   source: AsyncIterable<Uint8Array | Uint8ArrayList>;
   sink: (data: Iterable<Uint8Array> | AsyncIterable<Uint8Array>) => Promise<void>;
   close: () => Promise<void>;
+  closeRead: () => Promise<void>;
+  abort: (err: Error) => void;
 }
 
 /**
@@ -44,6 +47,9 @@ export interface DuplexStream {
  *   remote peer can detect end-of-request in request/response patterns.
  * - `close` defers to the v3 stream's half-close (it flushes any pending
  *   writes and closes the writable end only; the readable end stays open).
+ * - `closeRead` closes the readable end without discarding already-flushed
+ *   response bytes.
+ * - `abort` exposes the v3 stream's full bidirectional teardown operation.
  *
  * Half-close semantics (important):
  *
@@ -85,5 +91,7 @@ export function wrapStream(stream: Stream): DuplexStream {
       await stream.close();
     },
     close: () => stream.close(),
+    closeRead: () => stream.closeRead(),
+    abort: (err) => stream.abort(err),
   };
 }

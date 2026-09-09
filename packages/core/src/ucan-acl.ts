@@ -64,7 +64,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
     if (!capability) {
-      return this._backing.check(publicKey);
+      return (await this._backing.check(publicKey)) === true;
     }
 
     const keyBase64 = await this._serializePublicKey(publicKey);
@@ -77,7 +77,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     const entry = this._entries.get(keyBase64);
     if (!entry) {
       // Fall back to backing ACL for basic membership check
-      return this._backing.check(publicKey);
+      return (await this._backing.check(publicKey)) === true;
     }
 
     // Check if any held capability implies the required one
@@ -94,7 +94,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     // Filter users by capability
     const filtered: PublicKey[] = [];
     for (const user of allUsers) {
-      if (await this.check(user, capability)) {
+      if ((await this.check(user, capability)) === true) {
         filtered.push(user);
       }
     }

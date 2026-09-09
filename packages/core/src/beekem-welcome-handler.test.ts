@@ -235,6 +235,19 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     });
   });
 
+  test('does not treat a truthy non-boolean ACL result as membership', async () => {
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        isReader: async () => ({ member: true }) as unknown as boolean,
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'drop-unauthorized',
+      reason: 'not-in-readers-acl',
+    });
+  });
+
   test('drops unsigned Welcomes unconditionally (writer-auth is mandatory)', async () => {
     // SECURITY: writer-auth on Welcomes is
     // enforced regardless of the document-key signing toggle. An
@@ -257,6 +270,20 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
       msg,
       makeDeps({
         verifyWriterSignature: async () => false,
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'drop-unauthorized',
+      reason: 'invalid-signature',
+    });
+  });
+
+  test('does not treat a truthy non-boolean signature result as valid', async () => {
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        verifyWriterSignature: async () =>
+          ({ verified: true }) as unknown as boolean,
       }),
     );
     expect(result).toEqual({

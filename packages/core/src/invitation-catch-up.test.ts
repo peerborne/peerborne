@@ -8,9 +8,21 @@ import {
 } from './invitation-catch-up.js';
 import { MAX_INVITATION_MESSAGE_BYTES } from './invitation-wire.js';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
+import { MAX_CHANGE_TREE_NODES } from './change-tree-walk.js';
 import { readUint8Iterable } from './utils.js';
 
 describe('invitation catch-up', () => {
+  function deepTree(length: number) {
+    const root = { kind: crdtDocumentChangeNode } as any;
+    let cursor = root;
+    for (let index = 1; index < length; index++) {
+      const child = { kind: crdtDocumentChangeNode };
+      cursor.children = { [`cid-${index}`]: child };
+      cursor = child;
+    }
+    return root;
+  }
+
   test('requires every advertised bootstrap and catch-up CID', () => {
     const expected = ['root', 'inline-child', 'deferred-child'];
 
@@ -133,6 +145,21 @@ describe('invitation catch-up', () => {
     ).resolves.toBe(false);
   });
 
+  test('does not treat a truthy non-boolean sync result as acceptance', async () => {
+    await expect(
+      syncInvitationMessageCompletely(
+        {
+          documentId: '/invitation-completeness',
+          changeId: 'root-cid',
+          changes: { kind: crdtDocumentChangeNode },
+        },
+        new Set(['root-cid']),
+        async () => ({ applied: true }) as unknown as boolean,
+        'bootstrap',
+      ),
+    ).resolves.toBe(false);
+  });
+
   test('stops only below an applied snapshot boundary', () => {
     const tree = {
       kind: crdtDocumentChangeNode,
@@ -172,6 +199,33 @@ describe('invitation catch-up', () => {
       'post-snapshot-head',
       'missing-post-snapshot',
     ]);
+  });
+
+  test('collects a deep invitation tree without recursive stack growth', () => {
+    expect(
+      collectInvitationCidsToInstall(
+        'root-cid',
+        deepTree(10_000),
+        new Set(),
+      ),
+    ).toHaveLength(10_000);
+  });
+
+  test('rejects an over-budget invitation tree before sync begins', async () => {
+    const sync = jest.fn(async () => true);
+    await expect(
+      syncInvitationMessageCompletely(
+        {
+          documentId: '/oversized-invitation',
+          changeId: 'root-cid',
+          changes: deepTree(MAX_CHANGE_TREE_NODES + 1),
+        },
+        new Set(),
+        sync,
+        'bootstrap',
+      ),
+    ).rejects.toThrow(/exceeds/);
+    expect(sync).not.toHaveBeenCalled();
   });
 
   test('accepts an expanded tree covered by a snapshot boundary', async () => {

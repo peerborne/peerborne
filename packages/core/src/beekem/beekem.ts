@@ -39,6 +39,15 @@ export class BeeKEM {
   private _numLeaves: number = 0;
   private _myLeafIndex: number = -1;
 
+  /** @internal Create a detached copy for validating before commit. */
+  clone(): BeeKEM {
+    const copy = new BeeKEM();
+    copy._nodes = new Map(this._nodes);
+    copy._numLeaves = this._numLeaves;
+    copy._myLeafIndex = this._myLeafIndex;
+    return copy;
+  }
+
   /**
    * Initialize as the first member of a new group.
    * Creates a single-leaf tree with the creator's key pair.
