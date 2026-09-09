@@ -385,4 +385,22 @@ describe('ACL-bearing sync detection', () => {
       }),
     ).toBe(false);
   });
+
+  test('finds a deeply nested membership node without recursion', () => {
+    const root: CRDTChangeNode<Uint8Array> = {
+      kind: crdtDocumentChangeNode,
+    };
+    let cursor = root;
+    for (let index = 1; index < 10_000; index++) {
+      const child: CRDTChangeNode<Uint8Array> = {
+        kind:
+          index === 9_999
+            ? crdtReaderChangeNode
+            : crdtDocumentChangeNode,
+      };
+      cursor.children = { [`cid-${index}`]: child };
+      cursor = child;
+    }
+    expect(changeTreeContainsMembershipChange(root)).toBe(true);
+  });
 });

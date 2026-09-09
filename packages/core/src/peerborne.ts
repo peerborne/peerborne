@@ -42,7 +42,10 @@ import { ChangesSerializer } from './changes-serializer.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
-import { validateLoadQuorumConfig } from './load-quorum.js';
+import {
+  LOAD_QUORUM_TIMEOUT_MS_MAX,
+  validateLoadQuorumConfig,
+} from './load-quorum.js';
 import {
   beekemPathUpdateV1,
   beekemWelcomeV1,
@@ -105,12 +108,19 @@ import {
 import {
   InMemoryInvitationReplayGuard,
 } from './invitation-replay-guard.js';
+import type {
+  SharedProtocolHandlerAdmission,
+  SharedProtocolMutationResult,
+} from './shared-protocol-admission.js';
 
 /** Maximum allowed document path length in key-update V2 wire format. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
 /** Maximum allowed request size for shared protocol handlers (10 MB). */
 const MAX_REQUEST_SIZE = 10 * 1024 * 1024;
+
+/** Match the default per-peer load-quorum probe budget. */
+const DEFAULT_SHARED_PROTOCOL_REQUEST_TIMEOUT_MS = 5000;
 
 /** Default lifetime for a user-facing invitation offer. */
 export const DEFAULT_INVITATION_TTL_MS = 15 * 60 * 1000;
@@ -140,6 +150,238 @@ interface ProtocolStream {
   source: AsyncIterable<Uint8ArrayList | Uint8Array>;
   sink: (data: Iterable<Uint8Array>) => Promise<void>;
   close: () => Promise<void>;
+  closeRead: () => Promise<void>;
+  abort: (error: Error) => void;
+}
+
+class SharedProtocolRequestTimeoutError extends Error {}
+class SharedProtocolHandlerTimeoutError extends Error {}
+
+/**
+ * Stop admitting commits at the deadline and keep the stream owned until
+ * every commit admitted before that cutoff has settled. Cooperative callers
+ * must await all mutation work from the callback they pass to `runMutation`.
+ */
+class SharedProtocolHandlerAdmissionController
+  implements SharedProtocolHandlerAdmission
+{
+  private _active = true;
+  private _mutationCount = 0;
+  private _quiescentWaiters: Array<() => void> = [];
+
+  public isActive(): boolean {
+    return this._active;
+  }
+
+  public expire(): void {
+    this._active = false;
+  }
+
+  public async runMutation<T>(
+    operation: () => T | Promise<T>,
+  ): Promise<SharedProtocolMutationResult<T>> {
+    if (!this._active) return { admitted: false };
+    this._mutationCount++;
+    try {
+      return { admitted: true, value: await operation() };
+    } finally {
+      this._mutationCount--;
+      if (this._mutationCount === 0) {
+        const waiters = this._quiescentWaiters;
+        this._quiescentWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
+    }
+  }
+
+  public whenMutationsQuiesce(): Promise<void> {
+    if (this._mutationCount === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this._quiescentWaiters.push(resolve);
+    });
+  }
+}
+
+const SHARED_PROTOCOL_REQUEST_REJECTED =
+  'Shared protocol request rejected';
+const SHARED_PROTOCOL_HANDLER_TIMED_OUT =
+  'Shared protocol handler timed out';
+const SHARED_PROTOCOL_REQUEST_COMPLETED =
+  'Shared protocol request completed';
+const SHARED_PROTOCOL_HANDLER_FAILED = 'Shared protocol handler failed';
+
+type SharedProtocolAbortClassification =
+  | typeof SHARED_PROTOCOL_REQUEST_REJECTED
+  | typeof SHARED_PROTOCOL_HANDLER_TIMED_OUT
+  | typeof SHARED_PROTOCOL_REQUEST_COMPLETED
+  | typeof SHARED_PROTOCOL_HANDLER_FAILED;
+
+type SharedProtocolName =
+  | 'doc-load'
+  | 'snapshot-load'
+  | 'key-update'
+  | 'beekem-welcome'
+  | 'beekem-pathupdate'
+  | 'tip-advertise';
+
+function sharedProtocolRequestTimeoutMs(configured: unknown): number {
+  return typeof configured === 'number' &&
+    Number.isSafeInteger(configured) &&
+    configured >= 1 &&
+    configured <= LOAD_QUORUM_TIMEOUT_MS_MAX
+    ? configured
+    : DEFAULT_SHARED_PROTOCOL_REQUEST_TIMEOUT_MS;
+}
+
+async function withSharedProtocolRequestDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new SharedProtocolRequestTimeoutError()),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([operation(), deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function withSharedProtocolHandlerDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  admission: SharedProtocolHandlerAdmissionController,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      admission.expire();
+      void admission.whenMutationsQuiesce().then(() => {
+        reject(new SharedProtocolHandlerTimeoutError());
+      });
+    }, timeoutMs);
+  });
+  try {
+    try {
+      const result = await Promise.race([operation(), deadline]);
+      if (timedOut) throw new SharedProtocolHandlerTimeoutError();
+      return result;
+    } catch (error) {
+      if (timedOut && !(error instanceof SharedProtocolHandlerTimeoutError)) {
+        throw new SharedProtocolHandlerTimeoutError();
+      }
+      throw error;
+    }
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function boundedSharedProtocolCleanup(
+  operation: () => Promise<void>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const completed = Promise.resolve()
+    .then(operation)
+    .then(
+      () => true,
+      () => false,
+    );
+  const deadline = new Promise<false>((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([completed, deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function closeSharedProtocolStream(
+  stream: ProtocolStream,
+  timeoutMs: number,
+): Promise<void> {
+  await boundedSharedProtocolCleanup(
+    () => stream.close(),
+    timeoutMs,
+  );
+  await boundedSharedProtocolCleanup(
+    () => stream.closeRead(),
+    timeoutMs,
+  );
+}
+
+async function abortSharedProtocolStream(
+  stream: ProtocolStream,
+  timeoutMs: number,
+  classification: SharedProtocolAbortClassification,
+): Promise<void> {
+  try {
+    stream.abort(new Error(classification));
+  } catch {
+    await closeSharedProtocolStream(stream, timeoutMs);
+  }
+}
+
+async function abortRejectedSharedProtocolStream(
+  stream: ProtocolStream,
+  timeoutMs: number,
+): Promise<void> {
+  await abortSharedProtocolStream(
+    stream,
+    timeoutMs,
+    SHARED_PROTOCOL_REQUEST_REJECTED,
+  );
+}
+
+/**
+ * Apply a deadline to all work after request framing, including provider
+ * calls, backpressure, and the write-side close that flushes a response. At
+ * the deadline, new state commits are denied; a commit already admitted is
+ * allowed to settle before timeout is reported or the stream is reset, so the
+ * configured interval is an admission cutoff rather than an interruption of
+ * an in-flight commit. A completed response is reset only after its close
+ * resolves; every other outcome gets its own fixed reset classification. Full
+ * reset, rather than read half-close, releases the inbound stream slot when
+ * the remote withholds its FIN.
+ */
+async function runSharedProtocolHandlerPhase(
+  stream: ProtocolStream,
+  timeoutMs: number,
+  protocolName: SharedProtocolName,
+  operation: (admission: SharedProtocolHandlerAdmission) => Promise<void>,
+): Promise<void> {
+  const admission = new SharedProtocolHandlerAdmissionController();
+  let classification: SharedProtocolAbortClassification =
+    SHARED_PROTOCOL_HANDLER_FAILED;
+  try {
+    await withSharedProtocolHandlerDeadline(
+      () => operation(admission),
+      timeoutMs,
+      admission,
+    );
+    classification = SHARED_PROTOCOL_REQUEST_COMPLETED;
+  } catch (err) {
+    if (err instanceof SharedProtocolHandlerTimeoutError) {
+      classification = SHARED_PROTOCOL_HANDLER_TIMED_OUT;
+      console.warn(
+        `Shared ${protocolName} handler: post-read processing timed out, dropping`,
+      );
+      return;
+    }
+    throw err;
+  } finally {
+    admission.expire();
+    await admission.whenMutationsQuiesce();
+    await abortSharedProtocolStream(stream, timeoutMs, classification);
+  }
 }
 
 /**
@@ -586,11 +828,11 @@ export class Peerborne<
     const signatureProvider = this._invitationSignatureProvider();
     const recipientPublicKey = await deserializePublicKey(request.recipient);
     if (
-      !(await verifyInvitationJoinRequest(
+      (await verifyInvitationJoinRequest(
         request,
         recipientPublicKey,
         signatureProvider,
-      ))
+      )) !== true
     ) {
       throw new Error('Invitation join signature is invalid');
     }
@@ -679,20 +921,22 @@ export class Peerborne<
   }
 
   /**
-   * Registers shared protocol handlers on libp2p for all three
-   * protocols (doc-load, snapshot-load, key-update). Each handler reads
-   * the incoming stream, extracts the document path, and routes to the
-   * matching PeerborneDocument instance in the registry.
+   * Registers the shared document-protocol and invitation-join handlers on
+   * libp2p. Each document handler reads the incoming stream, extracts the
+   * document path, and routes to the matching PeerborneDocument instance in
+   * the registry.
    *
-   * For doc-load and snapshot-load, the document path is extracted by
-   * deserializing the CRDTLoadRequest from the stream data. For
-   * key-update, a 4-byte length-prefixed document path header precedes
-   * the encrypted payload.
+   * For doc-load, snapshot-load, and tip-advertise, the path is extracted by
+   * deserializing the CRDTLoadRequest. The three update protocols use a
+   * 4-byte length-prefixed document path before their payload.
    */
   private async _registerSharedProtocolHandlers(): Promise<void> {
     if (this._sharedHandlersRegistration) {
       return this._sharedHandlersRegistration;
     }
+    const requestTimeoutMs = sharedProtocolRequestTimeoutMs(
+      this._config?.loadQuorumTimeoutMs,
+    );
 
     // Handler implementation for doc-load requests.
     //
@@ -708,30 +952,48 @@ export class Peerborne<
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
-            request = await readFirstDeserializable(
-              source,
-              (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-              MAX_REQUEST_SIZE,
+            request = await withSharedProtocolRequestDeadline(
+              () =>
+                readFirstDeserializable(
+                  source,
+                  (data) =>
+                    this._loadMessageSerializer.deserializeLoadRequest(data),
+                  MAX_REQUEST_SIZE,
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                ),
+              requestTimeoutMs,
             );
           } catch (err) {
-            const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : err instanceof RangeError
+                  ? 'request too large'
+                  : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
             console.warn(`Shared doc-load handler: ${reason}, dropping`);
-            await stream.sink([] as Iterable<Uint8Array>);
             return [];
           }
-          const doc = this._documentRegistry.get(request.documentId);
-          if (!doc) {
-            console.warn(
-              `Shared doc-load handler: no document registered for "${request.documentId}"`,
-            );
-            await stream.sink([] as Iterable<Uint8Array>);
-            return [];
-          }
-          await doc.handleLoadRequestData(request, stream);
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'doc-load',
+            async (admission) => {
+              const doc = this._documentRegistry.get(request.documentId);
+              if (!doc) {
+                console.warn(
+                  'Shared doc-load handler: no document registered, dropping',
+                );
+                await stream.sink([] as Iterable<Uint8Array>);
+                return;
+              }
+              await doc.handleLoadRequestData(request, stream, admission);
+            },
+          );
           return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared doc-load handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared doc-load handler failed');
       });
     };
 
@@ -744,30 +1006,52 @@ export class Peerborne<
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
-            request = await readFirstDeserializable(
-              source,
-              (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-              MAX_REQUEST_SIZE,
+            request = await withSharedProtocolRequestDeadline(
+              () =>
+                readFirstDeserializable(
+                  source,
+                  (data) =>
+                    this._loadMessageSerializer.deserializeLoadRequest(data),
+                  MAX_REQUEST_SIZE,
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                ),
+              requestTimeoutMs,
             );
           } catch (err) {
-            const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : err instanceof RangeError
+                  ? 'request too large'
+                  : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
             console.warn(`Shared snapshot-load handler: ${reason}, dropping`);
-            await stream.sink([] as Iterable<Uint8Array>);
             return [];
           }
-          const doc = this._documentRegistry.get(request.documentId);
-          if (!doc) {
-            console.warn(
-              `Shared snapshot-load handler: no document registered for "${request.documentId}"`,
-            );
-            await stream.sink([] as Iterable<Uint8Array>);
-            return [];
-          }
-          await doc.handleSnapshotLoadRequestData(request, stream);
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'snapshot-load',
+            async (admission) => {
+              const doc = this._documentRegistry.get(request.documentId);
+              if (!doc) {
+                console.warn(
+                  'Shared snapshot-load handler: no document registered, dropping',
+                );
+                await stream.sink([] as Iterable<Uint8Array>);
+                return;
+              }
+              await doc.handleSnapshotLoadRequestData(
+                request,
+                stream,
+                admission,
+              );
+            },
+          );
           return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared snapshot-load handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared snapshot-load handler failed');
       });
     };
 
@@ -788,27 +1072,46 @@ export class Peerborne<
       return pipe(
         stream.source,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+          let header;
           try {
-            const header = await readPathPrefixedProtocolHeader(
-              source,
-              this._documentRegistry,
-              'key-update',
-              MAX_REQUEST_SIZE,
-              MAX_DOCUMENT_PATH_LENGTH,
+            header = await withSharedProtocolRequestDeadline(
+              () =>
+                readPathPrefixedProtocolHeader(
+                  source,
+                  this._documentRegistry,
+                  'key-update',
+                  MAX_REQUEST_SIZE,
+                  MAX_DOCUMENT_PATH_LENGTH,
+                ),
+              requestTimeoutMs,
             );
-            if (header.kind !== 'ok') {
-              return [];
-            }
-            await header.doc.handleKeyUpdateRequestData(header.payload);
+          } catch (err) {
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            console.warn(`Shared key-update handler: ${reason}, dropping`);
             return [];
-          } finally {
-            // Key-update is fire-and-forget (no response via stream.sink),
-            // but the inbound stream must still be closed to release resources.
-            await stream.close();
           }
+          if (header.kind !== 'ok') {
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            return [];
+          }
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'key-update',
+            (admission) =>
+              header.doc.handleKeyUpdateRequestData(
+                header.payload,
+                admission,
+              ),
+          );
+          return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared key-update handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared key-update handler failed');
       });
     };
 
@@ -826,28 +1129,46 @@ export class Peerborne<
       return pipe(
         stream.source,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+          let header;
           try {
-            const header = await readPathPrefixedProtocolHeader(
-              source,
-              this._documentRegistry,
-              'beekem-welcome',
-              MAX_REQUEST_SIZE,
-              MAX_DOCUMENT_PATH_LENGTH,
+            header = await withSharedProtocolRequestDeadline(
+              () =>
+                readPathPrefixedProtocolHeader(
+                  source,
+                  this._documentRegistry,
+                  'beekem-welcome',
+                  MAX_REQUEST_SIZE,
+                  MAX_DOCUMENT_PATH_LENGTH,
+                ),
+              requestTimeoutMs,
             );
-            if (header.kind !== 'ok') {
-              return [];
-            }
-            await header.doc.handleBeeKEMWelcomeRequestData(header.payload);
+          } catch (err) {
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            console.warn(`Shared beekem-welcome handler: ${reason}, dropping`);
             return [];
-          } finally {
-            // Welcome is fire-and-forget (no response over stream.sink),
-            // but the inbound stream still needs to be closed to release
-            // resources.
-            await stream.close();
           }
+          if (header.kind !== 'ok') {
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            return [];
+          }
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'beekem-welcome',
+            (admission) =>
+              header.doc.handleBeeKEMWelcomeRequestData(
+                header.payload,
+                admission,
+              ),
+          );
+          return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared beekem-welcome handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared beekem-welcome handler failed');
       });
     };
 
@@ -869,28 +1190,48 @@ export class Peerborne<
       return pipe(
         stream.source,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+          let header;
           try {
-            const header = await readPathPrefixedProtocolHeader(
-              source,
-              this._documentRegistry,
-              'beekem-pathupdate',
-              MAX_REQUEST_SIZE,
-              MAX_DOCUMENT_PATH_LENGTH,
+            header = await withSharedProtocolRequestDeadline(
+              () =>
+                readPathPrefixedProtocolHeader(
+                  source,
+                  this._documentRegistry,
+                  'beekem-pathupdate',
+                  MAX_REQUEST_SIZE,
+                  MAX_DOCUMENT_PATH_LENGTH,
+                ),
+              requestTimeoutMs,
             );
-            if (header.kind !== 'ok') {
-              return [];
-            }
-            await header.doc.handleBeeKEMPathUpdateRequestData(header.payload);
+          } catch (err) {
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            console.warn(
+              `Shared beekem-pathupdate handler: ${reason}, dropping`,
+            );
             return [];
-          } finally {
-            // PathUpdate is fire-and-forget (no response over
-            // stream.sink), but the inbound stream still needs to be
-            // closed to release resources.
-            await stream.close();
           }
+          if (header.kind !== 'ok') {
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            return [];
+          }
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'beekem-pathupdate',
+            (admission) =>
+              header.doc.handleBeeKEMPathUpdateRequestData(
+                header.payload,
+                admission,
+              ),
+          );
+          return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared beekem-pathupdate handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared beekem-pathupdate handler failed');
       });
     };
 
@@ -906,79 +1247,56 @@ export class Peerborne<
       return pipe(
         stream.source,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+          let request;
           try {
-            let request;
-            try {
-              request = await readFirstDeserializable(
-                source,
-                (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-                MAX_REQUEST_SIZE,
-              );
-            } catch (err) {
-              const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
-              console.warn(`Shared tip-advertise handler: ${reason}, dropping`);
-              await stream.sink([] as Iterable<Uint8Array>);
-              return [];
-            }
-            const doc = this._documentRegistry.get(request.documentId);
-            if (!doc) {
-              // Unknown document -- respond with the 1-byte UNKNOWN_DOC
-              // sentinel (`0xFF`) so the loader can DISTINGUISH "I don't
-              // have this document" from generic probe failures (timeout,
-              // auth failure, decryption failure, malformed response). The
-              // loader uses this signal so that when EVERY queried peer in
-              // the swarm explicitly disclaims the document, `load()`
-              // returns `false` to let a fresh `open()` create the document
-              // on top of an existing swarm -- the previous empty-response
-              // decline was indistinguishable from a partition / timeout
-              // and made new-document creation in an existing mesh fail
-              // with `LoadQuorumFailedError`.
-              //
-              // Unauthenticated: this signal carries no signature. A
-              // Byzantine peer can lie and claim "unknown" even when other
-              // honest peers have the document. Defense: quorum tallies
-              // `'unknown-doc'` exactly like a tip-hash vote -- if Q of K
-              // peers all agree on `'unknown-doc'` the loader trusts the
-              // disclaimer, but a single lying peer in a 3-of-3 mesh whose
-              // other 2 peers have the doc cannot force new-doc creation
-              // (the honest hash X wins the tally). Worst case is the same
-              // Q-Byzantine threshold the rest of the quorum gate already
-              // tolerates. See `decideLoadQuorum` for the tally semantics.
-              //
-              // Information-disclosure tradeoff: replying with
-              // `0xff` lets any peer that can dial this node learn whether
-              // `documentId` is registered here. We accept this because the
-              // quorum protocol REQUIRES a distinguishable "unknown-doc"
-              // signal to allow new-document creation on an existing swarm;
-              // suppressing the signal would block legitimate `open()` calls
-              // for fresh paths. Two mitigations are wired in: (1) no
-              // unauthenticated-probe log line so attacker-controlled
-              // `documentId` values don't reach the host log, and (2) the
-              // sentinel is a single byte with no per-document content, so
-              // it leaks only the existence bit -- nothing about contents,
-              // membership, or history.
-              await stream.sink([
-                new Uint8Array([0xff]),
-              ] as Iterable<Uint8Array>);
-              return [];
-            }
-            await doc.handleTipAdvertiseRequestData(request, stream);
+            request = await withSharedProtocolRequestDeadline(
+              () =>
+                readFirstDeserializable(
+                  source,
+                  (data) =>
+                    this._loadMessageSerializer.deserializeLoadRequest(data),
+                  MAX_REQUEST_SIZE,
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                ),
+              requestTimeoutMs,
+            );
+          } catch (err) {
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : err instanceof RangeError
+                  ? 'request too large'
+                  : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            console.warn(`Shared tip-advertise handler: ${reason}, dropping`);
             return [];
-          } finally {
-            // Tip-advertise runs on every `open()` quorum probe, so every
-            // connected peer hits this handler. Always close the inbound
-            // stream (even on the sink-already-completed happy path) so
-            // per-connection stream quota doesn't leak under load or when
-            // a downstream call throws after sink. Safe to call after
-            // `stream.sink`: libp2p stream.close() is idempotent on a
-            // already-half-closed stream.
-            await stream.close().catch(() => {
-              // swallow: close-after-error is best-effort cleanup
-            });
           }
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'tip-advertise',
+            async (admission) => {
+              const doc = this._documentRegistry.get(request.documentId);
+              if (!doc) {
+                // The unauthenticated one-byte sentinel is intentionally only
+                // an existence signal. Quorum protects its interpretation and
+                // the attacker-controlled document ID is never logged.
+                await stream.sink([
+                  new Uint8Array([0xff]),
+                ] as Iterable<Uint8Array>);
+                return;
+              }
+              await doc.handleTipAdvertiseRequestData(
+                request,
+                stream,
+                admission,
+              );
+            },
+          );
+          return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared tip-advertise handler:', err);
+      ).then(() => undefined).catch(() => {
+        console.error('Shared tip-advertise handler failed');
       });
     };
 
@@ -1256,11 +1574,11 @@ export class Peerborne<
     const signatureProvider = this._invitationSignatureProvider();
     const issuerPublicKey = await deserializePublicKey(offer.issuer);
     if (
-      !(await verifyInvitationOffer(
+      (await verifyInvitationOffer(
         offer,
         issuerPublicKey,
         signatureProvider,
-      ))
+      )) !== true
     ) {
       throw new Error('Invitation offer signature is invalid');
     }
@@ -1371,11 +1689,11 @@ export class Peerborne<
                 request,
               );
               if (
-                !(await verifyInvitationAcceptance(
+                (await verifyInvitationAcceptance(
                   acceptance,
                   issuerPublicKey,
                   signatureProvider,
-                ))
+                )) !== true
               ) {
                 throw new Error(
                   'invitation acceptance signature is invalid',
