@@ -236,7 +236,15 @@ describe('blindIndexTokens in serializeChangeBlock / deserializeChangeBlock', ()
 describe('V4 initial-load challenge JSON boundary', () => {
   const challenge = new Uint8Array(32).fill(9);
 
-  test('round-trips load requests', () => {
+  test('round-trips sync messages and load requests', () => {
+    expect(
+      jsonSerializer.deserializeSyncMessage(
+        jsonSerializer.serializeSyncMessage({
+          documentId: '/doc',
+          loadChallenge: challenge,
+        }),
+      ).loadChallenge,
+    ).toEqual(challenge);
     expect(
       jsonSerializer.deserializeLoadRequest(
         jsonSerializer.serializeLoadRequest({
@@ -253,9 +261,9 @@ describe('V4 initial-load challenge JSON boundary', () => {
       new TextEncoder().encode(
         JSON.stringify({ documentId: '/doc', loadChallenge: value }),
       );
-    expect(() =>
-      jsonSerializer.deserializeLoadRequest(encode('AQ==')),
-    ).toThrow(/32-byte/);
+    expect(() => jsonSerializer.deserializeSyncMessage(encode('AQ=='))).toThrow(
+      /32-byte/,
+    );
     expect(() =>
       jsonSerializer.deserializeLoadRequest(
         encode('CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk'),
@@ -381,6 +389,66 @@ describe('signed top-level wire field order', () => {
       new InjectedSerializer().deserializeSyncMessage(new Uint8Array()),
     ).toThrow(/wire field "changes" must be a data property/);
     expect(reads).toBe(0);
+  });
+});
+
+describe('V4 load-security state JSON boundary', () => {
+  const commitments = {
+    version: 1 as const,
+    controlHead: new Uint8Array(32).fill(1),
+    groupId: 'base-json-group',
+    epoch: 9007199254740993n,
+    treeHash: new Uint8Array(32).fill(2),
+    confirmedTranscriptHash: new Uint8Array(32).fill(3),
+  };
+
+  test('round-trips canonical commitments without bigint or byte loss', () => {
+    const encoded = jsonSerializer.serializeSyncMessage({
+      documentId: '/doc',
+      loadSecurityState: commitments,
+    });
+    expect(new TextDecoder().decode(encoded)).toContain(
+      '"epoch":"9007199254740993"',
+    );
+    const decoded = jsonSerializer.deserializeSyncMessage(encoded);
+    expect(decoded.loadSecurityState).toEqual(commitments);
+    expect(decoded.loadSecurityState?.controlHead).not.toBe(
+      commitments.controlHead,
+    );
+  });
+
+  test.each([
+    [
+      'non-canonical epoch',
+      {
+        version: 1,
+        controlHead: 'AQ==',
+        groupId: 'group',
+        epoch: '01',
+        treeHash: 'AQ==',
+        confirmedTranscriptHash: 'AQ==',
+      },
+    ],
+    [
+      'unknown field',
+      {
+        version: 1,
+        controlHead: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        groupId: 'group',
+        epoch: '1',
+        treeHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        confirmedTranscriptHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        extra: true,
+      },
+    ],
+    ['non-object tuple', []],
+  ])('rejects malformed %s', (_name, loadSecurityState) => {
+    const wire = new TextEncoder().encode(
+      JSON.stringify({ documentId: '/doc', loadSecurityState }),
+    );
+    expect(() => jsonSerializer.deserializeSyncMessage(wire)).toThrow(
+      /loadSecurityState/,
+    );
   });
 });
 
