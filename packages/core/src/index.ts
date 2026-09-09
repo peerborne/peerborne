@@ -150,6 +150,7 @@ export * from './group-state-store.js';
 export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
+export * from './group-security-coordinator.js';
 export * from './webcrypto-group-state-protector.js';
 
 export {
