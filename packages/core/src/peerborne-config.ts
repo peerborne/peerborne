@@ -353,25 +353,25 @@ export interface PeerborneConfig {
    * Enable the initial-load quorum gate.
    *
    * When `true` (the default), `PeerborneDocument.load()` queries up to
-   * {@link loadQuorumK} peers in parallel via the `tipAdvertiseV1` protocol
-   * for a lightweight tip-set hash before accepting any one peer's full
-   * document state. The full load proceeds only if at least
-   * {@link loadQuorumQ} peers returned the same hash. If quorum is not
-   * met, `load()` rejects with a `LoadQuorumFailedError` and the open
-   * sequence fails -- the application can catch the error and decide how
-   * to recover.
+   * {@link loadQuorumK} distinct peers in parallel through the negotiated
+   * initial-load advertisement protocol before selecting a full response.
+   * The legacy negotiation compares a digest of the advertised tip frontier.
+   * A strict security-aware negotiation uses signer-authenticated votes over
+   * a digest that also binds the document identity, durable group-security
+   * commitments, and complete response manifest. The load proceeds only when
+   * {@link loadQuorumQ} accepted votes agree on the same negotiated digest.
+   * If quorum is not met, `load()` rejects with `LoadQuorumFailedError`.
    *
-   * Closes the gap tracked under issue #189 §5.4 item 2 (also bulleted in
-   * #186). Defends against a single malicious or partitioned peer
-   * unilaterally serving a stale or maliciously-crafted initial state.
+   * This gate reduces reliance on a single source, but it is not by itself a
+   * Byzantine-consensus guarantee. Its protection depends on the configured
+   * Q-of-K threshold, peer independence, and the authentication guarantees of
+   * the negotiated protocol. In particular, an explicit Q of 1 provides no
+   * independent corroboration.
    *
-   * Setting this to `false` reverts to the legacy single-peer load: any
-   * one peer's response is accepted on the strength of its outer
-   * writer-signature alone. This is appropriate for solo-peer dev,
-   * single-node tests, and small-mesh dev scenarios where no second peer
-   * is reachable, but **weakens the trust assumptions** of an open mesh
-   * (the loader has no defence-in-depth against an actively malicious
-   * peer that holds a valid writer key but advertises a forged tip set).
+   * Setting this to `false` uses single-source selection: the loader may
+   * proceed with the first response that passes the checks required by the
+   * negotiated protocol and the rest of the configuration. This is useful for
+   * development and intentionally accepts the weaker single-peer trust model.
    *
    * @default true
    */
@@ -379,59 +379,55 @@ export interface PeerborneConfig {
 
   /**
    * Maximum number of peers to probe in parallel for the initial-load
-   * quorum tip-advertise step. The effective K is
-   * `min(loadQuorumK, knownPeers.length)` so the loader never blocks on a
-   * peer that does not exist.
+   * advertisement step. The effective K is
+   * `min(loadQuorumK, knownPeers.length)`, so no more distinct peers are
+   * selected than are currently known.
    *
-   * The default of 3 is a deliberately small number: it gives the gate
-   * defence against a single dishonest peer (Q=2 majority of 3) without
-   * fanning out enough requests to noticeably impact open latency or
-   * bandwidth.
+   * When three peers are known, the default of 3 paired with the default Q
+   * requires two matching votes while limiting open latency and bandwidth.
+   * That numerical majority does not establish Byzantine fault tolerance
+   * without corresponding peer identity, selection, and authentication
+   * assumptions.
    *
    * @default 3
    */
   loadQuorumK?: number;
 
   /**
-   * Minimum number of peers that must agree on the same tip-set hash to
-   * pass the initial-load quorum gate. Clamped at runtime to
-   * `[1, effectiveK]` so `Q > K` never makes quorum unreachable.
+   * Minimum number of accepted votes that must agree on the same negotiated
+   * advertisement digest. Together, {@link loadQuorumK} and this value define
+   * the configured Q-of-K policy. Once at least one peer is known, an explicit
+   * Q is a hard trust floor: if fewer than Q peers can be probed, loading fails
+   * closed instead of reducing Q to the currently reachable cohort. With no
+   * known peers (`effectiveK = 0`), the loader retains its new-document/no-peer
+   * skip path because there is no remote state to accept.
    *
-   * Default formula: `Math.floor(effectiveK / 2) + 1` (strict majority).
-   * IMPORTANT: the default Q is derived from the EFFECTIVE K (i.e.
-   * `min(loadQuorumK, knownPeersCount)`), NOT from the configured
-   * `loadQuorumK`. This matters when fewer than `loadQuorumK` peers are
-   * reachable: with `loadQuorumK=7` but only 3 peers in the mesh,
-   * `defaultQuorumQ(7) = 4` would require ALL 3 reachable peers to
-   * agree -- losing the one-fault tolerance the formula is meant to
-   * provide. Deriving from effective K instead gives `defaultQuorumQ(3) =
-   * 2`, which tolerates one non-vote among the 3 reachable peers. The
-   * derivation is implemented in `load-quorum-orchestrator.ts`.
+   * When Q is omitted, it is the strict numerical majority
+   * `Math.floor(effectiveK / 2) + 1`, derived from the effective K after
+   * limiting the configured K to the known-peer count.
    *
    * Worked examples (`effectiveK -> default Q`):
    *   - effectiveK=1 -> Q=1 (single-peer pass-through; requires
    *     `loadQuorumAllowSinglePeer: true`)
    *   - effectiveK=2 -> Q=2 (both peers must agree)
-   *   - effectiveK=3 -> Q=2 (a single dishonest peer cannot win the vote)
+   *   - effectiveK=3 -> Q=2
    *   - effectiveK=4 -> Q=3
    *   - effectiveK=5 -> Q=3
    *   - effectiveK=7 -> Q=4
-   * This is the standard "strictly more than half" Byzantine-fault-
-   * tolerant threshold and matches the design note in #189 §5.4.2.
-   * Using `floor + 1` rather than `ceil + 1` tolerates one fault at
-   * effectiveK=3 (Q=2, not Q=3), as required by the design note.
    *
-   * When the operator explicitly sets `loadQuorumQ`, this default is a
-   * no-op and the explicit value flows through `effectiveQ`'s `[1, k]`
-   * clamp instead.
+   * An explicit valid Q is used as configured, even when it is not a majority
+   * of K. It is also preserved when a partition lowers the effective K, which
+   * makes the load fail closed if Q can no longer be reached. Choosing Q=1 or
+   * another non-majority threshold provides only that amount of agreement and
+   * must not be interpreted as Byzantine-majority protection.
    *
-   * @default Math.floor(effectiveK / 2) + 1, clamped to [1, effectiveK]
+   * @default Math.floor(effectiveK / 2) + 1
    */
   loadQuorumQ?: number;
 
   /**
    * Per-peer timeout (milliseconds) for the initial-load quorum
-   * tip-advertise probes. A peer that does not respond within this window
+   * advertisement probes. A peer that does not respond within this window
    * is recorded as a non-vote (NOT a disagreement); see
    * `load-quorum.ts::decideLoadQuorum` for the distinction.
    *
@@ -445,23 +441,21 @@ export interface PeerborneConfig {
 
   /**
    * Allow the initial-load quorum gate to pass with a single responding
-   * peer when no other peers are reachable.
+   * peer when the effective K is 1.
    *
-   * When `true` and the effective K resolves to 1 (only one known peer),
-   * the loader accepts that peer's tip-advertise response and proceeds
-   * with the full load. Useful for small private swarms or development
-   * scenarios where running multiple peers is impractical.
+   * Effective K can resolve to 1 because only one peer is known, or because
+   * `loadQuorumK` is configured as 1 even when multiple peers are known. When
+   * this flag is `true`, the loader may accept the sole probed peer's
+   * negotiated advertisement and proceed with the full load. An explicit
+   * Q greater than 1 remains a hard floor and is not overridden by this flag.
    *
    * **Trust caveat:** with K=1 there is no second opinion, so this flag
-   * weakens the gate's protection back to legacy single-peer trust
-   * semantics in exactly the case it was designed to defend. A warning
-   * is logged when the single-peer path is taken so operators can spot
-   * the regression in their environment.
+   * selects single-peer trust semantics regardless of which advertisement
+   * protocol is negotiated. A warning is logged when this path is taken.
    *
-   * When `false` (the default), a single-peer mesh forces a
-   * `LoadQuorumFailedError`. Callers that genuinely run solo (e.g.
-   * brand-new documents, founding member) should either set
-   * `loadQuorumEnabled: false` or set this flag and accept the warning.
+   * When `false` (the default), any effective-K=1 load fails with
+   * `LoadQuorumFailedError`. Callers that intentionally use one probe should
+   * either disable the quorum gate or enable this flag and accept the warning.
    *
    * @default false
    */
