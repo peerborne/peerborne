@@ -75,6 +75,7 @@ import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
@@ -5896,10 +5897,10 @@ export class PeerborneDocument<
           if (
             decision.reason === 'not-in-readers-acl' &&
             !opts.fromBuffer &&
-            message.welcomeEpochId &&
-            message.welcomeEpochId.length > 0
+            decision.message?.welcomeEpochId !== undefined &&
+            decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
           ) {
-            this._bufferPendingWelcome(message);
+            this._bufferPendingWelcome(decision.message);
           } else if (
             opts.fromBuffer &&
             decision.reason === 'not-in-readers-acl'
@@ -5923,6 +5924,10 @@ export class PeerborneDocument<
           return false;
       }
     }
+
+    // Continue only with the detached canonical message whose exact bytes the
+    // validator authenticated, never the caller-owned serializer result.
+    message = decision.message;
 
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
@@ -6138,7 +6143,7 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
   ): void {
     const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.length === 0) return;
+    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = this._hexEncode(epochId);
     // Refresh recency for duplicate Welcomes: delete-then-set so the
     // Map iteration order puts this entry at the back, matching the

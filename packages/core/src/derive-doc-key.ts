@@ -1,17 +1,10 @@
 /**
  * Derive an AES-GCM `CryptoKey` from a BeeKEM root secret.
  *
- * Used by the BeeKEM-based reader-revocation flow
- * (`PeerborneDocument.removeReader` and the
- * `beekemPathUpdateV1` receive path): after a successful
- * `BeeKEM.removeMember` (which blanks the leaf AND re-derives the
- * writer's path to root in a single step -- no follow-up
- * `BeeKEM.update` is involved), the writer derives the
- * next document encryption key from the new root secret and
- * installs it via `Keychain.addEpochKey`. Surviving readers do the
- * same after `BeeKEM.processPathUpdate`. The removed reader cannot
- * recompute the root secret (their leaf is blanked and the path is
- * re-keyed), so they cannot derive the new document key.
+ * This is the common key-derivation primitive for a BeeKEM root secret. A
+ * protocol integration is responsible for validating the corresponding
+ * group-state transition and atomically staging any keychain mutation before
+ * it publishes or acknowledges the new epoch.
  *
  * The derivation uses HKDF-SHA-256 with a fixed `info` string,
  * `"collabswarm-doc-key-v1"`, so all peers — writer and surviving

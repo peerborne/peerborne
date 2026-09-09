@@ -51,6 +51,36 @@ export interface PathUpdate {
   nodes: PathNodeUpdate[];
 }
 
+/** One authenticated ancestor-key bundle sealed to a copath resolution node. */
+export interface EncryptedPathKeyBundle {
+  /** Tree node whose public key was used to seal the bundle. */
+  recipientNodeIndex: number;
+  /** ECIES ciphertext containing private path keys from this level to root. */
+  ciphertext: Uint8Array;
+}
+
+/** A v2 path node with one bundle per non-blank copath resolution node. */
+export interface PathNodeUpdateV2 extends PathNodeUpdate {
+  encryptedPathKeyBundles: EncryptedPathKeyBundle[];
+}
+
+/**
+ * Parent-bound, ordered update used by the BeeKEM PathUpdate v2 protocol.
+ * The full public snapshot commits to the resulting tree, while
+ * `parentTreeHash` prevents a higher-generation stale fork from replacing the
+ * receiver's current membership state.
+ */
+export interface PathUpdateV2 extends PathUpdate {
+  version: 2;
+  generation: number;
+  /** Hash of the exact generation immediately preceding this update. */
+  parentTreeHash: Uint8Array;
+  numLeaves: number;
+  nodes: PathNodeUpdateV2[];
+  treeNodePublicKeys: WelcomeNodePublicKey[];
+  treeHash: Uint8Array;
+}
+
 /**
  * A single node update in a path update message.
  */
@@ -89,4 +119,26 @@ export interface BeeKEMWelcome {
   treeNodePublicKeys: WelcomeNodePublicKey[];
   /** Serialized tree state hash for verification. */
   treeHash: Uint8Array;
+  /** Sender generation. Omitted on the legacy v1 Welcome shape. */
+  generation?: number;
+  /** Exact leaf count. Omitted on the legacy v1 Welcome shape. */
+  numLeaves?: number;
+  /** Explicit protocol version. Omitted on the legacy v1 Welcome shape. */
+  version?: 2;
 }
+
+/** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
+export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
+  version: 2;
+  generation: number;
+  numLeaves: number;
+}
+
+/**
+ * V2 wire-codec leaf bound.
+ *
+ * The conservative limit bounds decoded work and keeps a largest-shape V2
+ * PathUpdate below the document protocol's 10 MiB frame limit. State engines
+ * that emit V2 values MUST enforce the same bound before serialization.
+ */
+export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;

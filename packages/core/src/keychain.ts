@@ -87,6 +87,28 @@ export interface Keychain<KeychainChange, DocumentKey> {
   addEpochKey(epochId: Uint8Array, key: DocumentKey): Promise<KeychainChange>;
 
   /**
+   * Stage an epoch-key insertion without mutating live keychain state.
+   * Transactional BeeKEM membership transitions can use this optional
+   * capability to finish all fallible signing, sealing, serialization, and
+   * block preparation before a synchronous keychain/tree commit. Custom
+   * keychains that omit it cannot be used for transactional BeeKEM add/remove
+   * operations.
+   *
+   * `commit()` MUST either apply the staged state completely or throw before
+   * mutation. It is called at most once, after every asynchronous preparation
+   * step has succeeded.
+   */
+  prepareEpochKey?(
+    epochId: Uint8Array,
+    key: DocumentKey,
+  ): Promise<PreparedKeychainEpoch<KeychainChange>>;
+
+  /** Stage a remote keychain merge for an atomic Welcome state commit. */
+  prepareMerge?(
+    change: KeychainChange,
+  ): PreparedKeychainMerge<KeychainChange>;
+
+  /**
    * Gets a block of change(s) describing only the keys at or after the given
    * key ID. Used for the `since_invited` history visibility mode where a new
    * member receives every key from the moment they were invited onward, but
@@ -108,6 +130,55 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * @return A block of change(s) containing only keys at or after `keyID`.
    */
   historySince?(keyID: Uint8Array): Promise<KeychainChange>;
+}
+
+/**
+ * Keychain capability for staging BeeKEM membership transitions.
+ *
+ * Callers that require an atomic ratchet/keychain transition can use
+ * `isTransactionalKeychain` to require both staging methods. A plain
+ * `Keychain` remains source-compatible with implementations that omit them.
+ */
+export interface TransactionalKeychain<KeychainChange, DocumentKey>
+  extends Keychain<KeychainChange, DocumentKey> {
+  prepareEpochKey(
+    epochId: Uint8Array,
+    key: DocumentKey,
+  ): Promise<PreparedKeychainEpoch<KeychainChange>>;
+
+  prepareMerge(
+    change: KeychainChange,
+  ): PreparedKeychainMerge<KeychainChange>;
+}
+
+/** Return whether a keychain supports atomic BeeKEM transition staging. */
+export function isTransactionalKeychain<KeychainChange, DocumentKey>(
+  keychain: Keychain<KeychainChange, DocumentKey>,
+): keychain is TransactionalKeychain<KeychainChange, DocumentKey> {
+  return (
+    typeof keychain.prepareEpochKey === 'function' &&
+    typeof keychain.prepareMerge === 'function'
+  );
+}
+
+export interface PreparedKeychainEpoch<KeychainChange> {
+  /** Delta suitable for an already-synchronized keychain. */
+  readonly changes: KeychainChange;
+  /** Standalone full staged keychain history. */
+  readonly history: KeychainChange;
+  /** Standalone staged current-key-only state. */
+  readonly currentKeyChange: KeychainChange;
+  /** Synchronous, single-use, atomic live-state commit. */
+  commit(): void;
+}
+
+export interface PreparedKeychainMerge<KeychainChange> {
+  /** Detached staged state, retained for diagnostics/tests. */
+  readonly changes: KeychainChange;
+  /** Key IDs in the staged provider's canonical history order. */
+  readonly keyIds: readonly Uint8Array[];
+  /** Synchronous, single-use, atomic live-state commit. */
+  commit(): void;
 }
 
 /**
