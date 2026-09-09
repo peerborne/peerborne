@@ -1,5 +1,8 @@
 import { CRDTChangeNode } from './crdt-change-node.js';
-import { SerializedPathUpdate } from './path-update-wire.js';
+import {
+  SerializedPathUpdate,
+  SerializedPathUpdateV2,
+} from './path-update-wire.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
 
 /**
@@ -23,6 +26,10 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * Root of the Merkle-DAG change tree. Each `CRDTChangeNode` contains a change
    * payload and optional `children` linking to prior nodes. A node whose `change`
    * is `undefined` (deferred) should be fetched from the Helia blockstore by CID.
+   * Generic JSON wire codecs traverse this tree iteratively so legacy V1/V3
+   * and GossipSub histories are not subject to the V4 load manifest's
+   * 512-node root-to-leaf policy. Ingress remains bounded by aggregate wire,
+   * object, property, and decoded-value budgets before state mutation.
    *
    * Changes are decrypted via `ChangesSerializer` and sync messages via
    * `SyncMessageSerializer`.
@@ -97,44 +104,37 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   welcomeRecipientKemPublicKey?: Uint8Array;
 
   /**
-   * Sealed payload for BeeKEM Welcome messages. Output of `eciesSeal`
-   * over the inviter-side serialized keychain delta, encrypted under
-   * the recipient's ECDH public key
-   * (`welcomeRecipientKemPublicKey`). The plaintext is the
-   * provider-specific serialized keychain changes (the same bytes the
-   * CRDT-specific `ChangesSerializer` would emit for those changes);
-   * the recipient opens the sealed payload with their KEM private key
-   * and routes the result through the provider deserializer before
-   * merging into the local keychain.
+   * Sealed payload for BeeKEM Welcome messages. The wire field carries the
+   * output of `eciesSeal` over a Welcome envelope encrypted under the
+   * recipient's ECDH public key (`welcomeRecipientKemPublicKey`). V1 permits a
+   * missing/null legacy bootstrap; the separate V2 envelope requires a
+   * non-null generation- and leaf-count-bearing Welcome. Integrations MUST
+   * select the decoder from the negotiated protocol rather than infer a
+   * version from payload contents.
    *
    * The sealed bytes are base64-encoded on the wire for JSON
    * transport.
    *
    * SECURITY: the writer signature covers the sealed bytes, not the
-   * plaintext, so a replayed/altered sealed payload fails signature
-   * verification. AES-GCM authenticates the ciphertext under the
-   * derived per-message key, so a non-recipient cannot read or alter
-   * the plaintext without detection.
+   * plaintext, so alteration fails signature verification. Exact replay
+   * retains a valid signature; V2 integrations MUST also enforce the Welcome
+   * generation transition. AES-GCM authenticates the ciphertext under the
+   * derived per-message key, so a non-recipient cannot read or alter the
+   * plaintext without detection.
    */
   eciesSealed?: Uint8Array;
 
   /**
-   * Optional BeeKEM ratchet-tree `PathUpdate` carried by the
-   * `beekemPathUpdateV1` wire protocol. Populated when a writer revokes
-   * a reader via `PeerborneDocument.removeReader`: the writer calls
-   * `BeeKEM.removeMember(leafIdx)`, serializes the resulting
-   * `PathUpdate` via `serializePathUpdateForWire`, and broadcasts it
-   * here so surviving readers can re-derive the new document
-   * encryption key. (`removeMember` already blanks the removed leaf
-   * and re-derives fresh key material along the writer's path to
-   * root; no follow-up `BeeKEM.update()` call is needed.) Receivers
-   * feed the deserialized `PathUpdate` into `BeeKEM.processPathUpdate`
-   * to advance their local ratchet state.
+   * Optional BeeKEM ratchet-tree update reserved for the distinct V1 and V2
+   * PathUpdate wire protocols. V1 carries `SerializedPathUpdate`; V2 carries
+   * the explicit generation, tree snapshot, and resolution bundles in
+   * `SerializedPathUpdateV2`. Integrations MUST select the decoder from the
+   * negotiated protocol; neither version may be reinterpreted as the other.
    *
-   * Only populated on the BeeKEM PathUpdate v1 wire path; absent on
+   * Only populated on a BeeKEM PathUpdate wire path; absent on
    * sync messages flowing over GossipSub / document-load / Welcome.
    */
-  pathUpdate?: SerializedPathUpdate;
+  pathUpdate?: SerializedPathUpdate | SerializedPathUpdateV2;
 
   /**
    * Optional 32-byte epoch identifier paired with `pathUpdate`. The
@@ -170,8 +170,8 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    *
    * # Protocol contract: WHAT to hash
    *
-   * `tipsHash` is computed over the **served frontier** -- the heads of
-   * the change tree the responder would actually ship in a load response
+   * On legacy V3, `tipsHash` is computed over the **served frontier** --
+   * the heads of the change tree the responder would actually ship in a
    * (NOT the full local DAG frontier). The reference implementation is
    * `PeerborneDocument._servedFrontier()` in `peerborne-document.ts`,
    * which computes this via `computeServedFrontier` over
@@ -179,9 +179,13 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * -- exactly the inputs `handleLoadRequestData` /
    * `handleSnapshotLoadRequestData` populate into the load response.
    *
-   * Hashing this set produces a value the loader can reproduce
-   * structurally from the served payload via `computeServedFrontier`,
-   * which is exactly the binding `_sendLoadRequestAndSync` uses.
+   * On security-aware V4, the 32-byte value additionally commits to a
+   * canonical manifest derived from the complete response plan: root identity,
+   * every node CID/kind/directed edge and deferred marker, snapshot content and
+   * metadata, and serialized keychain changes. The loader recomputes that
+   * manifest from the actual selected response before any sync mutation. Thus
+   * reproducing only the served frontier is sufficient for V3 but deliberately
+   * insufficient for V4.
    *
    * # Implementer warning: do NOT hash `_currentFrontier()` or `_hashes`
    *
@@ -240,16 +244,13 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    *
    * # Why this field exists at all (defense-in-depth)
    *
-   * The loader's PRIMARY binding is derived structurally from
-   * `message.changes` / `message.snapshot` via
-   * `computeServedFrontier`, so a malicious peer that lies in `tips`
-   * cannot bypass the gate by simply claiming the agreed CIDs. The
-   * `tips` field is verified as a defense-in-depth attestation: if
-   * present, it MUST hash to the same value as the
-   * structurally-derived served frontier -- catching responders that
-   * equivocate between their attested heads and the actual served
-   * payload (e.g. tampered `changes` with a still-correct-looking
-   * `tips` array).
+   * The loader's V3 primary binding is derived structurally from
+   * `message.changes` / `message.snapshot` via `computeServedFrontier`.
+   * V4 strengthens that check by hashing the complete response manifest as
+   * described on `tipsHash`; a same-frontier payload with extra ancestors or
+   * altered classifications, snapshot, or keychain data is rejected before
+   * sync. In both families, `tips` remains a signed defense-in-depth
+   * attestation and must agree with the structurally derived frontier.
    *
    * Recomputing `tipsHash(loader._hashes)` after sync is unreliable
    * because:
