@@ -2,7 +2,9 @@ import { describe, expect, test } from '@jest/globals';
 import { Base64 } from 'js-base64';
 import {
   encodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload';
 
 describe('welcome-sealed-payload round-trip', () => {
@@ -44,6 +46,80 @@ describe('welcome-sealed-payload round-trip', () => {
   });
 });
 
+describe('welcome-sealed-payload V2 boundary', () => {
+  const keychainChanges = new Uint8Array([1, 2, 3]);
+  const beekemWelcome = {
+    version: 2 as const,
+    generation: 1,
+    numLeaves: 2,
+    leafIndex: 2,
+    pathKeys: [
+      {
+        nodeIndex: 1,
+        publicKey: new Uint8Array(65).fill(4),
+        encryptedPrivateKey: new Uint8Array([5]),
+      },
+    ],
+    treeNodePublicKeys: [
+      { nodeIndex: 0, publicKey: new Uint8Array(65).fill(6) },
+    ],
+    treeHash: new Uint8Array(32).fill(7),
+  };
+
+  test('round-trips the strict V2 envelope exactly', () => {
+    const encoded = encodeWelcomeSealedPayloadV2({
+      keychainChanges,
+      beekemWelcome,
+    });
+    const wire = JSON.parse(new TextDecoder().decode(encoded));
+
+    expect(Object.keys(wire)).toEqual(['k', 'bk']);
+    expect(decodeWelcomeSealedPayloadV2(encoded)).toEqual({
+      keychainChanges,
+      beekemWelcome,
+    });
+  });
+
+  test.each([
+    ['missing bk', { k: Base64.fromUint8Array(keychainChanges) }],
+    [
+      'extra envelope field',
+      {
+        ...JSON.parse(
+          new TextDecoder().decode(
+            encodeWelcomeSealedPayloadV2({
+              keychainChanges,
+              beekemWelcome,
+            }),
+          ),
+        ),
+        extra: true,
+      },
+    ],
+    ['null bk', { k: Base64.fromUint8Array(keychainChanges), bk: null }],
+    [
+      'malformed nested bk',
+      {
+        ...JSON.parse(
+          new TextDecoder().decode(
+            encodeWelcomeSealedPayloadV2({
+              keychainChanges,
+              beekemWelcome,
+            }),
+          ),
+        ),
+        bk: { version: 2, generation: 0 },
+      },
+    ],
+  ])('rejects %s', (_name, envelope) => {
+    expect(() =>
+      decodeWelcomeSealedPayloadV2(
+        new TextEncoder().encode(JSON.stringify(envelope)),
+      ),
+    ).toThrow(/welcome-sealed-payload v2/);
+  });
+});
+
 describe('decodeWelcomeSealedPayload error paths', () => {
   test('throws on invalid UTF-8', () => {
     const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]);
@@ -52,6 +128,27 @@ describe('decodeWelcomeSealedPayload error paths', () => {
 
   test('throws on invalid JSON', () => {
     expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('not json {{{'))).toThrow(/not valid JSON/);
+  });
+
+  test.each([
+    decodeWelcomeSealedPayload,
+    decodeWelcomeSealedPayloadV2,
+  ])('does not expose decrypted plaintext through parse errors', (decode) => {
+    const privateMarker = 'PRIVATE-WELCOME-PLAINTEXT';
+    let caught: unknown;
+    try {
+      decode(
+        new TextEncoder().encode(
+          `{"k":"AQ==","private":"${privateMarker}"`,
+        ),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(String(caught)).not.toContain(privateMarker);
+    expect((caught as Error).cause).toBeUndefined();
   });
 
   test('throws on array instead of object', () => {

@@ -1,12 +1,9 @@
 /**
  * Sealed-payload envelope for BeeKEM Welcomes.
  *
- * The original ECIES-sealed plaintext carried the keychain delta only.
- * To make Welcomes useful for actually
- * bootstrapping the joiner's BeeKEM ratchet state (so subsequent
- * `processPathUpdate` calls work in production), this envelope adds
- * the BeeKEM `Welcome` returned by `BeeKEM.addMember` alongside the
- * keychain delta.
+ * The envelope carries provider-specific keychain bytes alongside an optional
+ * legacy BeeKEM Welcome. V2 uses a distinct strict envelope with a required,
+ * generation-bearing Welcome.
  *
  * Wire shape (JSON-encoded inside the ECIES seal):
  *
@@ -20,24 +17,21 @@
  * is still a single `Uint8Array`; only its decoded shape grows, so
  * pre-existing tests that inspect the field type continue to pass.
  *
- * The recipient opens the seal, parses the JSON envelope, deserializes
- * the keychain bytes via the CRDT-specific `ChangesSerializer`, and (if
- * present) deserializes the BeeKEM welcome via
- * `deserializeBeeKEMWelcomeFromWire` and bootstraps the local BeeKEM
- * instance via `BeeKEM.processWelcome(welcome, privateKey, publicKey)`.
- *
- * The `bk` field is OPTIONAL so a sealed payload that pre-dates this
- * change (or a Welcome to a recipient that does not need BeeKEM
- * bootstrap, e.g. a future writer-onboarding flow) still parses
- * cleanly. Receivers that find `bk === null` skip the
- * `processWelcome` step.
+ * On the legacy V1 protocol, `bk` remains optional so an older or key-only
+ * payload still parses. The V2 envelope is a separate compatibility boundary:
+ * it requires exactly `{ k, bk }` and `bk` must be a non-null, generation- and
+ * leaf-count-bearing `BeeKEMWelcomeV2`. Callers choose the decoder from the
+ * negotiated protocol and own all state-transition checks.
  */
 import { Base64 } from 'js-base64';
-import { BeeKEMWelcome } from './beekem/types.js';
+import { BeeKEMWelcome, BeeKEMWelcomeV2 } from './beekem/types.js';
 import {
   SerializedBeeKEMWelcome,
+  SerializedBeeKEMWelcomeV2,
   deserializeBeeKEMWelcomeFromWire,
+  deserializeBeeKEMWelcomeV2FromWire,
   serializeBeeKEMWelcomeForWire,
+  serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
 
 /** Parsed shape of the sealed-payload envelope. */
@@ -50,6 +44,10 @@ export interface WelcomeSealedPayload {
    * process subsequent PathUpdates.
    */
   beekemWelcome: BeeKEMWelcome | null;
+}
+
+export interface WelcomeSealedPayloadV2 extends WelcomeSealedPayload {
+  beekemWelcome: BeeKEMWelcomeV2;
 }
 
 /**
@@ -69,6 +67,16 @@ export function encodeWelcomeSealedPayload(
   return new TextEncoder().encode(JSON.stringify(envelope));
 }
 
+export function encodeWelcomeSealedPayloadV2(
+  payload: WelcomeSealedPayloadV2,
+): Uint8Array {
+  const envelope: { k: string; bk: SerializedBeeKEMWelcomeV2 } = {
+    k: Base64.fromUint8Array(payload.keychainChanges),
+    bk: serializeBeeKEMWelcomeV2ForWire(payload.beekemWelcome),
+  };
+  return new TextEncoder().encode(JSON.stringify(envelope));
+}
+
 /**
  * Decode a sealed-payload envelope. Throws on malformed JSON or fields,
  * with descriptive errors that name the bad field.
@@ -83,25 +91,15 @@ export function decodeWelcomeSealedPayload(
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch (err) {
-    throw new Error(
-      `welcome-sealed-payload: plaintext is not valid UTF-8: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
+  } catch {
+    throw new Error('welcome-sealed-payload: plaintext is not valid UTF-8');
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (err) {
-    throw new Error(
-      `welcome-sealed-payload: plaintext is not valid JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
+  } catch {
+    throw new Error('welcome-sealed-payload: plaintext is not valid JSON');
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -123,35 +121,118 @@ export function decodeWelcomeSealedPayload(
   let keychainChanges: Uint8Array;
   try {
     keychainChanges = Base64.toUint8Array(raw.k);
-  } catch (err) {
-    throw new Error(
-      `welcome-sealed-payload: invalid base64 for field 'k': ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
+  } catch {
+    throw new Error("welcome-sealed-payload: invalid base64 for field 'k'");
   }
 
   let beekemWelcome: BeeKEMWelcome | null = null;
   if (raw.bk !== undefined && raw.bk !== null) {
     try {
       beekemWelcome = deserializeBeeKEMWelcomeFromWire(raw.bk);
-    } catch (err) {
+    } catch {
       // `deserializeBeeKEMWelcomeFromWire` throws its own field-level
       // errors but they don't mention the envelope-level field name --
       // surface that here so the malformed field is identifiable from
       // the envelope's perspective ("bk"), matching the module
       // docstring's "name the bad field" contract.
       throw new Error(
-        `welcome-sealed-payload: invalid 'bk' (BeeKEM welcome): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        { cause: err },
+        "welcome-sealed-payload: invalid 'bk' (BeeKEM welcome)",
       );
     }
   }
 
   return { keychainChanges, beekemWelcome };
+}
+
+export function decodeWelcomeSealedPayloadV2(
+  bytes: Uint8Array,
+): WelcomeSealedPayloadV2 {
+  const raw = parseV2Envelope(bytes);
+  const keys = Object.keys(raw);
+  if (
+    keys.length !== 2 ||
+    !Object.prototype.hasOwnProperty.call(raw, 'k') ||
+    !Object.prototype.hasOwnProperty.call(raw, 'bk')
+  ) {
+    throw new Error(
+      keys.some((key) => key !== 'k' && key !== 'bk')
+        ? 'welcome-sealed-payload v2: unexpected field'
+        : "welcome-sealed-payload v2: exact fields 'k' and 'bk' are required",
+    );
+  }
+  if (typeof raw.k !== 'string') {
+    throw new Error(
+      "welcome-sealed-payload v2: 'k' must be a base64 string",
+    );
+  }
+  if (
+    raw.k.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      raw.k,
+    )
+  ) {
+    throw new Error(
+      "welcome-sealed-payload v2: 'k' must use canonical padded base64",
+    );
+  }
+  let keychainChanges: Uint8Array;
+  try {
+    keychainChanges = Base64.toUint8Array(raw.k);
+  } catch {
+    throw new Error(
+      "welcome-sealed-payload v2: invalid base64 for field 'k'",
+    );
+  }
+  if (Base64.fromUint8Array(keychainChanges) !== raw.k) {
+    throw new Error(
+      "welcome-sealed-payload v2: 'k' must use canonical padded base64",
+    );
+  }
+  if (raw.bk === null || raw.bk === undefined) {
+    throw new Error(
+      "welcome-sealed-payload v2: required non-null field 'bk' is missing",
+    );
+  }
+  let beekemWelcome: BeeKEMWelcomeV2;
+  try {
+    beekemWelcome = deserializeBeeKEMWelcomeV2FromWire(raw.bk);
+  } catch {
+    throw new Error(
+      "welcome-sealed-payload v2: invalid 'bk' (BeeKEM Welcome v2)",
+    );
+  }
+  return { keychainChanges, beekemWelcome };
+}
+
+function parseV2Envelope(bytes: Uint8Array): Record<string, unknown> {
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(
+      'welcome-sealed-payload v2: plaintext is not valid UTF-8',
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(
+      'welcome-sealed-payload v2: plaintext is not valid JSON',
+    );
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    (Object.getPrototypeOf(parsed) !== Object.prototype &&
+      Object.getPrototypeOf(parsed) !== null)
+  ) {
+    throw new Error(
+      `welcome-sealed-payload v2: expected a plain object envelope, got ${describe(parsed)}`,
+    );
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function describe(value: unknown): string {

@@ -138,6 +138,10 @@ describe('directPath', () => {
 });
 
 describe('copath', () => {
+  test('1 leaf returns an empty copath', () => {
+    expect(copath(0, 1)).toEqual([]);
+  });
+
   test('4 leaves, leaf 0: siblings of [0, 1] = [2, 5]', () => {
     expect(copath(0, 4)).toEqual([2, 5]);
   });
