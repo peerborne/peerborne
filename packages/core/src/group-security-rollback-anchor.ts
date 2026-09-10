@@ -169,14 +169,7 @@ export class InMemoryGroupSecurityRollbackAnchor
       this.values.set(encodedKey, cloneAnchor(next));
       return true;
     });
-    this.tails.set(
-      encodedKey,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return run;
+    return trackQueuedOperation(this.tails, encodedKey, run);
   }
 
   async poison(
@@ -212,15 +205,32 @@ export class InMemoryGroupSecurityRollbackAnchor
       this.values.set(encodedKey, poisoned);
       return cloneAnchor(poisoned);
     });
-    this.tails.set(
-      encodedKey,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return run;
+    return trackQueuedOperation(this.tails, encodedKey, run);
   }
+}
+
+function trackQueuedOperation<T>(
+  tails: Map<string, Promise<void>>,
+  encodedKey: string,
+  run: Promise<T>,
+): Promise<T> {
+  let settledTail!: Promise<void>;
+  const result = run.then(
+    (value) => {
+      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
+      return value;
+    },
+    (error: unknown) => {
+      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
+      throw error;
+    },
+  );
+  settledTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  tails.set(encodedKey, settledTail);
+  return result;
 }
 
 export function cloneGroupSecurityRollbackAnchor(
