@@ -235,7 +235,7 @@ The relay server reads the following environment variables:
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
 | `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/documents` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/document/,/documents` |
+| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,/document/,/documents` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
 | `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
@@ -257,6 +257,9 @@ those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions
 `MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
 `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
 the relay's application-level registry receives subscription events.
+The v3 and legacy document prefixes are separate migration namespaces; the
+relay does not bridge them. Coordinate every peer on a custom prefix before an
+upgrade because mixed runtime versions on one topic are unsupported.
 
 The relay-info.json output path is determined automatically: `/shared/relay-info.json` if the `/shared` directory exists (Docker volume), otherwise `./relay-info.json` in the working directory.
 
@@ -614,7 +617,7 @@ Override relay defaults by adding entries to `[env]` in `fly.toml`:
 
 ```toml
 [env]
-  TOPIC_ALLOWLIST  = "/document/,/documents"
+  TOPIC_ALLOWLIST  = "/peerborne/document/v3/,/document/,/documents"
   MAX_AUTO_TOPICS  = "500"
   MAX_AUTO_TOPICS_PER_PEER = "32"
   GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"
@@ -735,7 +738,7 @@ See individual Dockerfile documentation in `guides/docker/` for build instructio
 
 **Causes and solutions:**
 1. **Relay not forwarding:** Ensure the relay has `floodPublish: true` and `canRelayMessage: true` in GossipSub config
-2. **Topic mismatch:** Verify both peers subscribe to the same topic (e.g., `/document/<id>`)
+2. **Topic mismatch:** Verify both peers use the same versioned topic (for example, `/peerborne/document/v3/<id>`). The relay does not bridge legacy `/document/<id>` topics.
 3. **Mesh not formed:** GossipSub mesh takes 5-10 seconds to form. Wait or send warmup messages
 4. **libp2p version mismatch:** Use `@libp2p/gossipsub` v17.x with libp2p v3.x. Verify that both packages resolve to compatible `@libp2p/interface` v3.x versions.
 

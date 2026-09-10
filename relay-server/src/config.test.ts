@@ -37,6 +37,11 @@ describe('loadConfig', () => {
       expect(cfg.readinessPort).toBe(DEFAULT_READINESS_PORT)
       expect(cfg.identityKeyPath).toBe(DEFAULT_IDENTITY_KEY_PATH)
       expect(cfg.topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
+      expect(cfg.topicAllowlist).toEqual([
+        '/peerborne/document/v3/',
+        '/document/',
+        '/documents',
+      ])
       expect(cfg.maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
       expect(cfg.maxAutoTopicsPerPeer).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
       expect(cfg.gossipsubMaxTopicBytesPerPeer).toBe(
@@ -139,8 +144,11 @@ describe('loadConfig', () => {
     })
 
     it('splits multiple comma-separated values', () => {
-      expect(loadConfig({ TOPIC_ALLOWLIST: '/document/,/documents,/peerborne/' }).topicAllowlist)
-        .toEqual(['/document/', '/documents', '/peerborne/'])
+      expect(
+        loadConfig({
+          TOPIC_ALLOWLIST: '/peerborne/document/v3/,/document/,/documents',
+        }).topicAllowlist,
+      ).toEqual(['/peerborne/document/v3/', '/document/', '/documents'])
     })
 
     it('trims surrounding whitespace from each segment', () => {

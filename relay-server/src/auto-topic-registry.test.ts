@@ -10,6 +10,33 @@ function registry(maxAutoTopics = 2) {
 }
 
 describe('AutoTopicRegistry', () => {
+  it('tracks v3 and legacy document namespaces as distinct topics', () => {
+    const topics = new AutoTopicRegistry({
+      permanentTopics: ['/documents'],
+      allowlist: ['/peerborne/document/v3/', '/document/'],
+      maxAutoTopics: 2,
+      maxAutoTopicsPerPeer: 2,
+    })
+
+    expect(
+      topics.subscriptionChanged(
+        'peer-a',
+        '/peerborne/document/v3/shared',
+        true,
+      ),
+    ).toEqual({
+      action: 'subscribe',
+      topic: '/peerborne/document/v3/shared',
+    })
+    expect(
+      topics.subscriptionChanged('peer-a', '/document/shared', true),
+    ).toEqual({ action: 'subscribe', topic: '/document/shared' })
+    expect([...topics.topics()].sort()).toEqual([
+      '/document/shared',
+      '/peerborne/document/v3/shared',
+    ])
+  })
+
   it('reclaims the last topics held by a disconnected peer', () => {
     const topics = registry()
     expect(topics.subscriptionChanged('peer-a', '/document/a', true)).toEqual({
