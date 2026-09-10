@@ -1,5 +1,9 @@
 import { describe, expect, test } from '@jest/globals';
-import { documentTopic, DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
+import {
+  documentTopic,
+  DEFAULT_DOCUMENT_PUBLISH_PATH,
+  DEFAULT_DOCUMENT_TOPIC_PREFIX,
+} from './document-topic.js';
 
 describe('documentTopic', () => {
   test('uses the v3 document prefix by default', () => {
@@ -8,6 +12,11 @@ describe('documentTopic', () => {
 
   test('default prefix matches DEFAULT_DOCUMENT_TOPIC_PREFIX', () => {
     expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/peerborne/document/v3/');
+  });
+
+  test('publish notifications use a separate v3 topic by default', () => {
+    expect(DEFAULT_DOCUMENT_PUBLISH_PATH).toBe('/peerborne/documents/v3');
+    expect(DEFAULT_DOCUMENT_PUBLISH_PATH).not.toBe('/documents');
   });
 
   test('avoids double slash with default prefix and leading-slash path', () => {
