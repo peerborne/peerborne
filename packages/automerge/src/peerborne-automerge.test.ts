@@ -1,10 +1,16 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
+import { snapshotDeepEnumerableData } from '@peerborne/core';
+import { YjsKeychain } from '../../yjs/src/peerborne-yjs.js';
 import {
   Change as BinaryChange,
+  clone as automergeClone,
   change as automergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
+  init as automergeInit,
+  merge as automergeMerge,
 } from '@automerge/automerge';
 import {
   AutomergeProvider,
@@ -18,6 +24,7 @@ import {
 } from './peerborne-automerge.js';
 import {
   INITIAL_INVITATION_CAPACITY_PROFILE,
+  MAX_KEYCHAIN_EPOCHS,
   INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
   INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
   INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
@@ -335,7 +342,61 @@ describe('AutomergeACLProvider', () => {
 
 // ─── AutomergeKeychain ──────────────────────────────────────────────
 
+type TestKeychainDoc = {
+  keys: [string, string][];
+  unrelated?: string;
+};
+
+function newTestKeychainDoc() {
+  const seeded = automergeChange(
+    automergeInit<TestKeychainDoc>(
+      'ababababababababababababababababababababab',
+    ),
+    { time: 0 },
+    (doc) => {
+      doc.keys = [];
+    },
+  );
+  return automergeClone(seeded);
+}
+
+function appendTestKeychainEntry(
+  doc: ReturnType<typeof newTestKeychainDoc>,
+  entry: [string, string],
+) {
+  return automergeChange(doc, (next) => {
+    next.keys.push(entry);
+  });
+}
+
 describe('AutomergeKeychain', () => {
+  test('state commitment matches Yjs for the same ordered logical keys', async () => {
+    const automerge = new AutomergeKeychain();
+    const yjs = new YjsKeychain();
+    expect(await automerge.stateCommitment()).toEqual(
+      await yjs.stateCommitment(),
+    );
+    for (const [idFill, keyFill] of [
+      [0x11, 0xaa],
+      [0x22, 0xbb],
+    ] as const) {
+      const id = new Uint8Array(32).fill(idFill);
+      const key = await crypto.subtle.importKey(
+        'raw',
+        new Uint8Array(32).fill(keyFill),
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+      await automerge.addEpochKey(id, key);
+      await yjs.addEpochKey(id, key);
+    }
+
+    expect(await automerge.stateCommitment()).toEqual(
+      await yjs.stateCommitment(),
+    );
+  });
+
   test('add() returns [keyIDBytes, CryptoKey, changes]', async () => {
     const keychain = new AutomergeKeychain();
     const [keyIDBytes, key, changes] = await keychain.add();
@@ -349,6 +410,44 @@ describe('AutomergeKeychain', () => {
     expect(key).toBeDefined();
     expect(key.type).toBe('secret');
     expect(changes.length).toBeGreaterThan(0);
+  });
+
+  test('prepareKey() stages a bounded random key without live mutation', async () => {
+    const keychain = new AutomergeKeychain();
+    const before = keychain.history();
+    const prepared = await keychain.prepareKey();
+    const stableId = new Uint8Array(prepared.keyId);
+    expect(stableId).toHaveLength(32);
+    expect(prepared.key.algorithm).toMatchObject({
+      name: 'AES-GCM',
+      length: 256,
+    });
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+
+    const independent = new AutomergeKeychain();
+    await independent.addEpochKey(stableId, prepared.key);
+    independent.merge(prepared.currentKeyChange!);
+    expect((await independent.keys()).map(([id]) => id)).toEqual([stableId]);
+
+    prepared.keyId.fill(0xff);
+    prepared.commit();
+    expect((await keychain.current())[0]).toEqual(stableId);
+    expect(keychain.getKey(stableId)).toBe(prepared.key);
+    expect(() => prepared.commit()).toThrow(
+      'Prepared epoch key was already committed',
+    );
+  });
+
+  test('prepareKey() commit rejects a stale live base', async () => {
+    const keychain = new AutomergeKeychain();
+    const prepared = await keychain.prepareKey();
+    await keychain.add();
+
+    expect(() => prepared.commit()).toThrow(
+      'Keychain changed while epoch key was staged',
+    );
+    expect(await keychain.keys()).toHaveLength(1);
   });
 
   test('keys() returns all added keys', async () => {
@@ -383,6 +482,31 @@ describe('AutomergeKeychain', () => {
     const ids = (await kc2.keys()).map(([id]) => Array.from(id));
     expect(ids).toContainEqual(Array.from(id1));
     expect(ids).toContainEqual(Array.from(id2));
+  });
+
+  test('prepareMerge detaches caller changes and commits independently of returned buffers', async () => {
+    const source = new AutomergeKeychain();
+    const [keyId] = await source.add();
+    const callerChanges = source.history().map(
+      (change) => new Uint8Array(change),
+    );
+    const receiver = new AutomergeKeychain();
+    const prepared = receiver.prepareMerge(callerChanges);
+
+    expect(prepared.changes).not.toBe(callerChanges);
+    expect(prepared.changes[0]).not.toBe(callerChanges[0]);
+    const stagedFirstByte = prepared.changes[0][0];
+    callerChanges[0].fill(stagedFirstByte ^ 0xff);
+    callerChanges.length = 0;
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(prepared.changes[0][0]).toBe(stagedFirstByte);
+
+    prepared.changes[0].fill(stagedFirstByte ^ 0xff);
+    prepared.changes.length = 0;
+    prepared.commit();
+    expect((await receiver.keys()).map(([id]) => Array.from(id))).toContainEqual(
+      Array.from(keyId),
+    );
   });
 
   test('seed history is deterministic across creation times', () => {
@@ -421,65 +545,102 @@ describe('AutomergeKeychain', () => {
     expect(result).toBeUndefined();
   });
 
-  // The keychain doc's initial empty `keys: []` op is written under the
-  // shared KEYCHAIN_SEED_ACTOR (see newKeychainDoc()), so slices produced
-  // by historySince()/currentKeyChange() can be merged into any fresh
-  // receiver keychain without a root-array actor conflict.
-  test('historySince() returns only keys from the given key ID onward', async () => {
+  test('currentKeyChange() reuses replay-safe history for a one-key keychain', async () => {
+    const source = new AutomergeKeychain();
+    const [id] = await source.add();
+
+    const first = await source.currentKeyChange();
+    const repeated = await source.currentKeyChange();
+    expect(repeated).toEqual(first);
+    const restored = new AutomergeKeychain();
+    restored.merge(source.history());
+    expect(await restored.currentKeyChange()).toEqual(first);
+
+    const receiver = new AutomergeKeychain();
+    receiver.merge(first);
+    receiver.merge(repeated);
+    expect(await receiver.currentKeyChange()).toEqual(first);
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
+  });
+
+  test('currentKeyChange() rejects a later key rather than synthesizing a fresh actor', async () => {
+    const source = new AutomergeKeychain();
+    await source.add();
+    await source.add();
+    const before = source.history().map((entry) => Array.from(entry));
+
+    await expect(source.currentKeyChange()).rejects.toThrow(
+      'Automerge cannot export the current key replay-safely',
+    );
+    expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
+  });
+
+  test('historySince() reuses replay-safe history at the first key', async () => {
     const source = new AutomergeKeychain();
     const [id1] = await source.add();
     const [id2] = await source.add();
     const [id3] = await source.add();
 
-    const slice = await source.historySince(id2);
+    const first = await source.historySince(id1);
+    const repeated = await source.historySince(id1);
+    expect(repeated).toEqual(first);
+    const restored = new AutomergeKeychain();
+    restored.merge(source.history());
+    const restoredHistory = await restored.historySince(id1);
+    expect(restoredHistory).toEqual(first);
 
     const receiver = new AutomergeKeychain();
-    receiver.merge(slice);
+    receiver.merge(first);
+    receiver.merge(repeated);
+    receiver.merge(restoredHistory);
     const keys = await receiver.keys();
-    expect(keys).toHaveLength(2);
+    expect(keys).toHaveLength(3);
     const ids = keys.map(([id]) => Array.from(id));
-    expect(ids).toContainEqual(Array.from(id2));
-    expect(ids).toContainEqual(Array.from(id3));
-    expect(ids).not.toContainEqual(Array.from(id1));
-  });
-
-  test('historySince() falls back to full history when the boundary key is unknown', async () => {
-    const source = new AutomergeKeychain();
-    const [id1] = await source.add();
-    const [id2] = await source.add();
-
-    const unknownID = new Uint8Array(32).fill(0xff);
-    const slice = await source.historySince(unknownID);
-
-    // The unknown-boundary path should return the full change list,
-    // and (thanks to the deterministic seed actor) that slice should
-    // merge cleanly into a fresh receiver keychain carrying both keys.
-    const fullHistory = source.history();
-    expect(slice.length).toBe(fullHistory.length);
-
-    const receiver = new AutomergeKeychain();
-    receiver.merge(slice);
-    const ids = (await receiver.keys()).map(([id]) => Array.from(id));
     expect(ids).toContainEqual(Array.from(id1));
     expect(ids).toContainEqual(Array.from(id2));
+    expect(ids).toContainEqual(Array.from(id3));
   });
 
-  test('historySince() with the current key returns only the current key', async () => {
+  test('historySince() repeatedly rejects an unknown boundary without mutation', async () => {
     const source = new AutomergeKeychain();
     await source.add();
-    const [id2] = await source.add();
-    const [currentID] = await source.current();
-    expect(Array.from(currentID)).toEqual(Array.from(id2));
+    await source.add();
+    const before = source.history().map((entry) => Array.from(entry));
 
-    const slice = await source.historySince(currentID);
-    // The slice is built on a doc seeded with KEYCHAIN_SEED_ACTOR, so it
-    // merges cleanly into a fresh receiver keychain (whose empty `keys`
-    // array shares the same seed actor).
-    const receiver = new AutomergeKeychain();
-    receiver.merge(slice);
-    const keys = await receiver.keys();
-    expect(keys).toHaveLength(1);
-    expect(Array.from(keys[0][0])).toEqual(Array.from(currentID));
+    const unknownID = new Uint8Array(32).fill(0xff);
+    await expect(source.historySince(unknownID)).rejects.toThrow(
+      'Unknown keychain history boundary',
+    );
+    await expect(source.historySince(unknownID)).rejects.toThrow(
+      'Unknown keychain history boundary',
+    );
+    expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
+  });
+
+  test('historySince() rejects a later boundary rather than synthesizing fresh actors', async () => {
+    const source = new AutomergeKeychain();
+    await source.add();
+    const [laterID] = await source.add();
+
+    await expect(source.historySince(laterID)).rejects.toThrow(
+      'Automerge cannot export this keychain suffix replay-safely',
+    );
+  });
+
+  test('addEpochKey() rejects a duplicate ID without poisoning its cache', async () => {
+    const source = new AutomergeKeychain();
+    const [id, key] = await source.add();
+    const replacement = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(source.addEpochKey(id, replacement)).rejects.toThrow(
+      'Duplicate keychain key ID',
+    );
+    expect(source.getKey(id)).toBe(key);
+    expect(await source.keys()).toHaveLength(1);
   });
 
   // ───────────────────────────────────────────────────────────────────
@@ -515,6 +676,680 @@ describe('AutomergeKeychain', () => {
     expect(currentID.length).toBe(32);
     expect(Array.from(currentID)).toEqual(Array.from(epochId));
     expect(currentKey).toBe(key);
+  });
+
+  test.each([31, 33])(
+    'prepareEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new AutomergeKeychain();
+      const historyBefore = keychain
+        .history()
+        .map((binaryChange) => new Uint8Array(binaryChange));
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.prepareEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test('addEpochKey() rejects non-AES document keys without mutation', async () => {
+    const keychain = new AutomergeKeychain();
+    const before = keychain.history();
+    const hmacKey = await crypto.subtle.generateKey(
+      { name: 'HMAC', hash: 'SHA-256', length: 256 },
+      true,
+      ['sign', 'verify'],
+    );
+
+    await expect(
+      keychain.addEpochKey(new Uint8Array(32).fill(3), hmacKey),
+    ).rejects.toThrow('Document key must be a 256-bit AES-GCM key');
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test.each([31, 33])(
+    'addEpochKey() rejects a %i-byte epoch ID without mutating state',
+    async (byteLength) => {
+      const keychain = new AutomergeKeychain();
+      const historyBefore = keychain
+        .history()
+        .map((binaryChange) => new Uint8Array(binaryChange));
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+
+      await expect(
+        keychain.addEpochKey(new Uint8Array(byteLength), key),
+      ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+      expect(keychain.history()).toEqual(historyBefore);
+      expect(await keychain.keys()).toHaveLength(0);
+    },
+  );
+
+  test('prepareEpochKey() accepts cross-realm bytes and snapshots them before awaiting', async () => {
+    const keychain = new AutomergeKeychain();
+    const epochId = runInNewContext(
+      'new Uint8Array(32).fill(7)',
+    ) as Uint8Array;
+    const expectedEpochId = new Uint8Array(32).fill(7);
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    expect(epochId).not.toBeInstanceOf(Uint8Array);
+    const preparing = keychain.prepareEpochKey(epochId, key);
+    epochId.fill(9);
+    const prepared = await preparing;
+    prepared.commit();
+
+    const [currentId, currentKey] = await keychain.current();
+    expect(currentId).toEqual(expectedEpochId);
+    expect(currentKey).toBe(key);
+    expect(keychain.getKey(expectedEpochId)).toBe(key);
+  });
+
+  test.each([
+    ['another typed-array kind', new Uint16Array(16)],
+    [
+      'a Uint8Array lookalike',
+      {
+        byteLength: 32,
+        length: 32,
+        [Symbol.toStringTag]: 'Uint8Array',
+      },
+    ],
+  ])('prepareEpochKey() rejects %s', async (_label, epochId) => {
+    const keychain = new AutomergeKeychain();
+    const historyBefore = keychain
+      .history()
+      .map((binaryChange) => new Uint8Array(binaryChange));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(
+      keychain.prepareEpochKey(epochId as unknown as Uint8Array, key),
+    ).rejects.toThrow(/Epoch ID/);
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test('prepareEpochKey() rejects SharedArrayBuffer-backed bytes', async () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const keychain = new AutomergeKeychain();
+    const historyBefore = keychain
+      .history()
+      .map((binaryChange) => new Uint8Array(binaryChange));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    await expect(
+      keychain.prepareEpochKey(
+        new Uint8Array(new SharedArrayBuffer(32)),
+        key,
+      ),
+    ).rejects.toThrow('Epoch ID has an invalid length or backing buffer');
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
+  test('prepareEpochKey() exposes an exact replay-safe current projection', async () => {
+    const keychain = new AutomergeKeychain();
+    const firstId = crypto.getRandomValues(new Uint8Array(32));
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const first = await keychain.prepareEpochKey(firstId, firstKey);
+    expect(first.currentKeyChange).toBeDefined();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(first.currentKeyChange!);
+    receiver.merge(first.currentKeyChange!);
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([firstId]);
+    first.commit();
+
+    const nextKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const nextId = crypto.getRandomValues(new Uint8Array(32));
+    const next = await keychain.prepareEpochKey(nextId, nextKey);
+    expect(next.currentKeyChange).toBeDefined();
+    const narrowReceiver = new AutomergeKeychain();
+    narrowReceiver.merge(next.currentKeyChange!);
+    narrowReceiver.merge(next.currentKeyChange!);
+    expect((await narrowReceiver.keys()).map(([id]) => id)).toEqual([nextId]);
+  });
+
+  test('prepareMerge() rejects non-canonical entries before live state or cache mutation', async () => {
+    const validKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const serialized = await serializeKey(validKey);
+    const invalidEntries: unknown[] = [
+      ['aa'.repeat(16), serialized],
+      ['AB'.repeat(32), serialized],
+      ['ab'.repeat(32), 'not-a-key'],
+      ['ab'.repeat(32), `${'A'.repeat(42)}B=`],
+      ['ab'.repeat(32), serialized, 'extra'],
+      ['ab'.repeat(32), 7],
+    ];
+
+    for (const entry of invalidEntries) {
+      const malformed = appendTestKeychainEntry(
+        newTestKeychainDoc(),
+        entry as [string, string],
+      );
+      const receiver = new AutomergeKeychain();
+      expect(() =>
+        receiver.prepareMerge(getAllAutomergeChanges(malformed)),
+      ).toThrow(/Invalid (keychain entry|serialized keychain key)/);
+      expect(await receiver.keys()).toHaveLength(0);
+      expect(receiver.getKey(new Uint8Array(32))).toBeUndefined();
+    }
+  });
+
+  test('prepareMerge() rejects duplicate IDs before they can poison cached key material', async () => {
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const id = new Uint8Array(32).fill(5);
+    const idHex = Array.from(id, (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    let duplicate = appendTestKeychainEntry(newTestKeychainDoc(), [
+      idHex,
+      await serializeKey(firstKey),
+    ]);
+    duplicate = appendTestKeychainEntry(duplicate, [
+      idHex,
+      await serializeKey(secondKey),
+    ]);
+    const receiver = new AutomergeKeychain();
+
+    expect(() =>
+      receiver.prepareMerge(getAllAutomergeChanges(duplicate)),
+    ).toThrow('Duplicate keychain key ID');
+    expect(await receiver.keys()).toHaveLength(0);
+    expect(receiver.getKey(id)).toBeUndefined();
+  });
+
+  test('prepareMerge() rejects delete, rewrite, reorder, and unrelated operations', async () => {
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const firstEntry: [string, string] = [
+      '11'.repeat(32),
+      await serializeKey(firstKey),
+    ];
+    const secondEntry: [string, string] = [
+      '22'.repeat(32),
+      await serializeKey(secondKey),
+    ];
+    const firstDoc = appendTestKeychainEntry(newTestKeychainDoc(), firstEntry);
+    const twoKeyDoc = appendTestKeychainEntry(firstDoc, secondEntry);
+
+    const deleted = automergeChange(twoKeyDoc, (doc) => {
+      doc.keys.splice(0, 1);
+    });
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(deleted)),
+    ).toThrow(/non-append|unrelated metadata or operations/);
+
+    const rewritten = automergeChange(automergeClone(firstDoc), (doc) => {
+      doc.keys[0][1] = secondEntry[1];
+    });
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(rewritten)),
+    ).toThrow(/non-append|rewrite|unrelated metadata or operations/);
+
+    const reorderBase = appendTestKeychainEntry(
+      newTestKeychainDoc(),
+      firstEntry,
+    );
+    const receiver = new AutomergeKeychain();
+    receiver.merge(getAllAutomergeChanges(reorderBase));
+    const reordered = automergeChange(automergeClone(reorderBase), (doc) => {
+      doc.keys.splice(0, 0, secondEntry);
+    });
+    expect(() =>
+      receiver.prepareMerge(getAutomergeChanges(reorderBase, reordered)),
+    ).toThrow(/non-append|append without rewriting entries/);
+
+    const unrelatedBase = appendTestKeychainEntry(
+      newTestKeychainDoc(),
+      firstEntry,
+    );
+    const unrelated = automergeChange(automergeClone(unrelatedBase), (doc) => {
+      doc.unrelated = 'not keychain state';
+    });
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(unrelated)),
+    ).toThrow(/Invalid Automerge keychain document|unrelated operation/);
+
+    const metadata = automergeChange(
+      newTestKeychainDoc(),
+      'unrelated retained metadata',
+      (doc) => {
+        doc.keys.push(firstEntry);
+      },
+    );
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(metadata)),
+    ).toThrow('Keychain history contains unrelated metadata');
+
+    const concurrent = automergeMerge(
+      appendTestKeychainEntry(newTestKeychainDoc(), firstEntry),
+      appendTestKeychainEntry(newTestKeychainDoc(), secondEntry),
+    );
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(
+        getAllAutomergeChanges(concurrent),
+      ),
+    ).toThrow('Keychain history is not a linear append sequence');
+  });
+
+  test('history projections reject tombstoned historical key material', async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const serialized = await serializeKey(key);
+    let tombstoned = appendTestKeychainEntry(newTestKeychainDoc(), [
+      '11'.repeat(32),
+      serialized,
+    ]);
+    tombstoned = automergeChange(tombstoned, (doc) => {
+      doc.keys.splice(0, 1);
+    });
+    tombstoned = appendTestKeychainEntry(tombstoned, [
+      '22'.repeat(32),
+      serialized,
+    ]);
+    const compromised = new AutomergeKeychain();
+    Object.defineProperty(compromised, '_keychain', {
+      value: tombstoned,
+      writable: true,
+    });
+
+    expect(() => compromised.history()).toThrow(
+      /non-append|unrelated metadata or operations/,
+    );
+    await expect(compromised.stateCommitment()).rejects.toThrow(
+      /non-append|unrelated metadata or operations/,
+    );
+    await expect(compromised.keys()).rejects.toThrow(
+      /non-append|unrelated metadata or operations/,
+    );
+    await expect(compromised.current()).rejects.toThrow(
+      /non-append|unrelated metadata or operations/,
+    );
+    await expect(compromised.currentKeyChange()).rejects.toThrow(
+      /non-append|unrelated metadata or operations/,
+    );
+    await expect(
+      compromised.historySince(new Uint8Array(32).fill(0x22)),
+    ).rejects.toThrow(/non-append|unrelated metadata or operations/);
+  });
+
+  test('prepareMerge() hydrates detached staged keys and transfers them only on commit', async () => {
+    const source = new AutomergeKeychain();
+    const [firstId] = await source.add();
+    const [currentId] = await source.add();
+    const receiver = new AutomergeKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+
+    expect(prepared.currentKeyId).toEqual(currentId);
+    prepared.keyIds[0].fill(0xff);
+    prepared.currentKeyId!.fill(0xee);
+    expect(await prepared.stateCommitment!()).toEqual(
+      await source.stateCommitment(),
+    );
+    const hydrated = await prepared.hydrateKeys();
+    expect(hydrated.map(([id]) => id)).toEqual([firstId, currentId]);
+    expect(prepared.getKey(firstId)).toBe(hydrated[0][1]);
+    expect(prepared.getKey(currentId)).toBe(hydrated[1][1]);
+    expect(await receiver.keys()).toHaveLength(0);
+    expect(receiver.getKey(currentId)).toBeUndefined();
+
+    prepared.commit();
+    expect(receiver.getKey(firstId)).toBe(hydrated[0][1]);
+    expect(receiver.getKey(currentId)).toBe(hydrated[1][1]);
+    expect((await receiver.current())[0]).toEqual(currentId);
+    expect(await receiver.stateCommitment()).toEqual(
+      await source.stateCommitment(),
+    );
+  });
+
+  test('prepareMerge() accepts cross-realm bytes and rejects shared backing', async () => {
+    const source = new AutomergeKeychain();
+    const [id] = await source.add();
+    const history = source.history();
+    const crossRealm = history.map(
+      (binaryChange) =>
+        runInNewContext(
+          `new Uint8Array([${Array.from(binaryChange).join(',')}])`,
+        ) as Uint8Array,
+    );
+    expect(crossRealm[0]).not.toBeInstanceOf(Uint8Array);
+    const receiver = new AutomergeKeychain();
+    receiver.prepareMerge(crossRealm).commit();
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(
+        new SharedArrayBuffer(history[0].byteLength),
+      );
+      shared.set(history[0]);
+      expect(() => new AutomergeKeychain().prepareMerge([shared])).toThrow(
+        'Automerge keychain change has an invalid length or backing buffer',
+      );
+    }
+  });
+
+  test('merge coalesces independently authored identical histories and rejects material conflicts', async () => {
+    const epochId = new Uint8Array(32).fill(0x44);
+    const epochKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const left = new AutomergeKeychain();
+    const right = new AutomergeKeychain();
+    await left.addEpochKey(epochId, epochKey);
+    await right.addEpochKey(epochId, epochKey);
+    const originalLeftHistory = left.history();
+    const originalRightHistory = right.history();
+    expect(originalLeftHistory).not.toEqual(originalRightHistory);
+    expect(await left.stateCommitment()).toEqual(
+      await right.stateCommitment(),
+    );
+    left.merge(originalRightHistory);
+    right.merge(originalLeftHistory);
+    expect(await left.keys()).toHaveLength(1);
+    expect(await right.keys()).toHaveLength(1);
+    expect(left.history()).toEqual(right.history());
+    const nextId = new Uint8Array(32).fill(0x55);
+    await right.addEpochKey(nextId, epochKey);
+
+    left.merge(right.history());
+    expect((await left.keys()).map(([id]) => id)).toEqual([epochId, nextId]);
+
+    const conflicting = new AutomergeKeychain();
+    const conflictingKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await conflicting.addEpochKey(epochId, conflictingKey);
+    expect(() => left.prepareMerge(conflicting.history())).toThrow(
+      /Duplicate keychain key ID|append/,
+    );
+    expect((await left.keys()).map(([id]) => id)).toEqual([epochId, nextId]);
+  });
+
+  test('requires full history after independently authored epoch operations diverge', async () => {
+    const founder = new AutomergeKeychain();
+    await founder.add();
+    const sender = new AutomergeKeychain();
+    const receiver = new AutomergeKeychain();
+    sender.merge(founder.history());
+    receiver.merge(founder.history());
+    const epochId = new Uint8Array(32).fill(0x66);
+    const epochKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await sender.addEpochKey(epochId, epochKey);
+    await receiver.addEpochKey(epochId, epochKey);
+    expect(sender.history()).not.toEqual(receiver.history());
+    expect(await sender.stateCommitment()).toEqual(
+      await receiver.stateCommitment(),
+    );
+    const [, , incremental] = await sender.add();
+
+    expect(() => receiver.prepareMerge(incremental)).toThrow(
+      /unresolved|Invalid Automerge keychain (?:operation history|document)/,
+    );
+    receiver.merge(sender.history());
+    expect(await receiver.keys()).toHaveLength(3);
+  });
+
+  test('context-gated standalone append rejects rollback and binds predecessor and new ID', async () => {
+    const keyA = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const keyB = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const keyC = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const idA = new Uint8Array(32).fill(0xa1);
+    const idB = new Uint8Array(32).fill(0xb2);
+    const idC = new Uint8Array(32).fill(0xc3);
+    const receiver = new AutomergeKeychain();
+    await receiver.addEpochKey(idA, keyA);
+    const projectionSource = new AutomergeKeychain();
+    const stagedB = await projectionSource.prepareEpochKey(idB, keyB);
+    const projectionB = stagedB.currentKeyChange!;
+
+    expect(() => receiver.prepareMerge(projectionB)).toThrow(
+      'Standalone keychain history is not an append-only view',
+    );
+    expect(() =>
+      receiver.prepareAppend([projectionB[1]], {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('canonical standalone single-key projection');
+    expect(() =>
+      receiver.prepareAppend([...projectionB].reverse(), {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('canonical standalone single-key projection');
+    expect(() =>
+      receiver.prepareAppend([...projectionB, projectionB[1]], {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('canonical standalone single-key projection');
+    expect(() =>
+      (receiver.prepareMerge as (...args: unknown[]) => unknown)(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Standalone keychain history is not an append-only view');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idC,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append predecessor does not match current key');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idC,
+      }),
+    ).toThrow('Keychain projection does not match expected new key');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: new Uint8Array(31),
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Key ID has an invalid length or backing buffer');
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: {
+          byteLength: 32,
+          buffer: new ArrayBuffer(32),
+        } as Uint8Array,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Key ID must be a genuine Uint8Array');
+
+    const stale = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: idA,
+      expectedNewKeyId: idB,
+    });
+    receiver.prepareMerge(receiver.history()).commit();
+    expect(() => stale.commit()).toThrow(
+      'Keychain changed while merge was staged',
+    );
+
+    const previousIntent = runInNewContext(
+      `new Uint8Array(32).fill(${idA[0]})`,
+    ) as Uint8Array;
+    const newIntent = runInNewContext(
+      `new Uint8Array(32).fill(${idB[0]})`,
+    ) as Uint8Array;
+    expect(previousIntent).not.toBeInstanceOf(Uint8Array);
+    expect(newIntent).not.toBeInstanceOf(Uint8Array);
+    const valid = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: previousIntent,
+      expectedNewKeyId: newIntent,
+    });
+    const appendCommitment = await valid.stateCommitment!();
+    previousIntent.fill(0);
+    newIntent.fill(0);
+    valid.commit();
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
+    expect(await receiver.stateCommitment()).toEqual(appendCommitment);
+
+    receiver.prepareMerge(projectionB).commit();
+    const replayedCommitment = await receiver.stateCommitment();
+    const replay = receiver.prepareAppend(projectionB, {
+      expectedPreviousKeyId: idA,
+      expectedNewKeyId: idB,
+    });
+    expect(replay.keyIds).toEqual([idA, idB]);
+    expect(replay.currentKeyId).toEqual(idB);
+    expect(await replay.stateCommitment!()).toEqual(replayedCommitment);
+    replay.commit();
+    expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
+
+    const conflictingB = await new AutomergeKeychain().prepareEpochKey(
+      idB,
+      keyC,
+    );
+    expect(() =>
+      receiver.prepareAppend(conflictingB.currentKeyChange!, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append replay does not match live history');
+
+    const stagedC = await new AutomergeKeychain().prepareEpochKey(idC, keyC);
+    receiver
+      .prepareAppend(stagedC.currentKeyChange!, {
+        expectedPreviousKeyId: idB,
+        expectedNewKeyId: idC,
+      })
+      .commit();
+    expect(() =>
+      receiver.prepareAppend(projectionB, {
+        expectedPreviousKeyId: idA,
+        expectedNewKeyId: idB,
+      }),
+    ).toThrow('Keychain append predecessor does not match current key');
+    expect((await receiver.current())[0]).toEqual(idC);
+  });
+
+  test('enforces the keychain epoch limit before over-limit mutations', async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const serialized = await serializeKey(key);
+    let source = newTestKeychainDoc();
+    for (let index = 0; index < MAX_KEYCHAIN_EPOCHS; index++) {
+      source = appendTestKeychainEntry(source, [
+        index.toString(16).padStart(64, '0'),
+        serialized,
+      ]);
+    }
+    const receiver = new AutomergeKeychain();
+    const atLimit = receiver.prepareMerge(getAllAutomergeChanges(source));
+    expect(atLimit.keyIds).toHaveLength(MAX_KEYCHAIN_EPOCHS);
+    atLimit.commit();
+    const before = receiver.history();
+
+    const overflow = appendTestKeychainEntry(automergeClone(source), [
+      MAX_KEYCHAIN_EPOCHS.toString(16).padStart(64, '0'),
+      serialized,
+    ]);
+    expect(() =>
+      receiver.prepareMerge(getAutomergeChanges(source, overflow)),
+    ).toThrow('Keychain exceeds the supported epoch limit');
+    await expect(
+      receiver.addEpochKey(new Uint8Array(32).fill(0xff), key),
+    ).rejects.toThrow('Keychain exceeds the supported epoch limit');
+    await expect(receiver.prepareKey()).rejects.toThrow(
+      'Keychain exceeds the supported epoch limit',
+    );
+    const previousId = new Uint8Array(32);
+    const overflowId = new Uint8Array(32);
+    new DataView(previousId.buffer).setUint32(
+      28,
+      MAX_KEYCHAIN_EPOCHS - 1,
+    );
+    new DataView(overflowId.buffer).setUint32(28, MAX_KEYCHAIN_EPOCHS);
+    const overflowProjection = await new AutomergeKeychain().prepareEpochKey(
+      overflowId,
+      key,
+    );
+    expect(() =>
+      receiver.prepareAppend(overflowProjection.currentKeyChange!, {
+        expectedPreviousKeyId: previousId,
+        expectedNewKeyId: overflowId,
+      }),
+    ).toThrow('Keychain exceeds the supported epoch limit');
+    expect(receiver.history()).toEqual(before);
   });
 
   test('addEpochKey() output merges into a fresh keychain and getKey() works there too', async () => {
@@ -570,6 +1405,7 @@ describe('AutomergeKeychainProvider', () => {
 
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
+  const SHALLOW_HISTORY_NODE_COUNT = 4_096;
 
   function nestedTree(depth: number): CRDTChangeNode<BinaryChange[]> {
     const root: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
@@ -579,6 +1415,16 @@ describe('AutomergeJSONSerializer', () => {
       cursor.children = { [`cid-${index}`]: child };
       cursor = child;
     }
+    return root;
+  }
+
+  function shallowTree(nodeCount: number): CRDTChangeNode<BinaryChange[]> {
+    const root: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
+    const children: Record<string, CRDTChangeNode<BinaryChange[]>> = {};
+    for (let index = 1; index < nodeCount; index++) {
+      children[`cid-${index}`] = { kind: 'document' };
+    }
+    root.children = children;
     return root;
   }
 
@@ -612,19 +1458,55 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
+    const genericSerialize = jest.spyOn(serializer, 'serialize');
     const wire = serializer.serializeSyncMessage({
       documentId: 'maximum-depth',
       changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
     });
     const restored = serializer.deserializeSyncMessage(wire);
 
-    expect(() => serializer.serializeSyncMessage(restored)).not.toThrow();
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(genericSerialize).not.toHaveBeenCalled();
+    genericSerialize.mockRestore();
     expect(() =>
       serializer.serializeSyncMessage({
         documentId: 'over-maximum-depth',
         changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
       }),
     ).toThrow(/maximum depth/);
+  });
+
+  test('round-trips 4096 shallow history nodes with stable wire bytes', () => {
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wide-history',
+      changes: shallowTree(SHALLOW_HISTORY_NODE_COUNT),
+    });
+    const restored = serializer.deserializeSyncMessage(wire);
+
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(
+      Object.keys(
+        restored.changes!.children as Record<
+          string,
+          CRDTChangeNode<BinaryChange[]>
+        >,
+      ),
+    ).toHaveLength(SHALLOW_HISTORY_NODE_COUNT - 1);
+  });
+
+  test('preserves the existing sync-message wire bytes', () => {
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wire-compatibility',
+      changes: {
+        kind: 'document',
+        change: [new Uint8Array([1, 2])],
+        children: { cid: { kind: 'writer' } },
+      },
+    });
+
+    expect(new TextDecoder().decode(wire)).toBe(
+      '{"documentId":"wire-compatibility","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
+    );
   });
 
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
@@ -759,6 +1641,53 @@ describe('AutomergeJSONSerializer', () => {
     expect(deserialized.changes).toBeUndefined();
   });
 
+  test('preserves signed V4 full-load bytes across deserialize and reserialize', () => {
+    // Mirror the intended V4 response construction order: signature already
+    // has an insertion slot from the cached sync message, while
+    // keychainChanges is appended after the V4 challenge.
+    const message: any = {
+      documentId: '/signed-load',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document' as const,
+        keyID: 'epoch-7',
+        change: [new Uint8Array([1])],
+        children: {
+          PARENT: {
+            kind: 'writer' as const,
+            change: [new Uint8Array([2])],
+          },
+        },
+      },
+      signature: undefined,
+    };
+    message.tips = ['ROOT'];
+    message.loadSecurityState = {
+      version: 1 as const,
+      controlHead: new Uint8Array(32),
+      groupId: 'group',
+      epoch: 1n,
+      treeHash: new Uint8Array(32),
+      confirmedTranscriptHash: new Uint8Array(32),
+    };
+    message.loadChallenge = new Uint8Array(32);
+    message.keychainChanges = [new Uint8Array([3])];
+
+    const { signature: _unsigned, ...signedPayload } = message;
+    const expectedSignedBytes = serializer.serializeSyncMessage(signedPayload);
+    message.signature = 'signature';
+    const decoded = serializer.deserializeSyncMessage(
+      serializer.serializeSyncMessage(message),
+    );
+    const { signature: _received, ...verificationPayload } = decoded;
+    const detachedVerificationPayload =
+      snapshotDeepEnumerableData(verificationPayload);
+
+    expect(
+      serializer.serializeSyncMessage(detachedVerificationPayload),
+    ).toEqual(expectedSignedBytes);
+  });
+
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = (i * 11) & 0xff;
@@ -850,6 +1779,37 @@ describe('AutomergeJSONSerializer', () => {
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.pathUpdate).toEqual(pathUpdate);
+  });
+
+  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+    const pathUpdate = {
+      version: 2 as const,
+      generation: 7,
+      numLeaves: 2,
+      senderLeafIndex: 0,
+      senderLeafPublicKey: 'AAAA',
+      nodes: [{
+        nodeIndex: 1,
+        publicKey: 'AQID',
+        encryptedPrivateKey: 'BAUG',
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
+        ],
+      }],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: 'AAAA' },
+        { nodeIndex: 1, publicKey: 'AQID' },
+        { nodeIndex: 2, publicKey: 'CgsM' },
+      ],
+      treeHash: 'DQ4P',
+    };
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'pathupdate-v2-doc',
+      pathUpdate,
+    });
+    expect(serializer.deserializeSyncMessage(wire).pathUpdate).toEqual(
+      pathUpdate,
+    );
   });
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {

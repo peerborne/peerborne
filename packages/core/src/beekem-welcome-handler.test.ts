@@ -185,11 +185,9 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
   });
 
   test('drops Welcomes with a zero-length welcomeEpochId', async () => {
-    // A truthy check alone passes empty `Uint8Array` values, but
-    // recording an empty epoch ID as `_invitationEpoch` would later
-    // make every `historySince` lookup miss and silently fall back to
-    // returning the full history -- defeating `since_invited`
-    // filtering. The validator must treat empty as malformed.
+    // A truthy check alone passes empty `Uint8Array` values, but an empty ID
+    // cannot identify an installed keychain boundary. Reject it before any
+    // invitation state is applied.
     const msg = {
       ...baseAcceptableMessage(),
       welcomeEpochId: new Uint8Array(0),
