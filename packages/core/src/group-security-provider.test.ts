@@ -158,6 +158,26 @@ describe('EncryptedKeyPackageState', () => {
     expect(isEncryptedKeyPackageState(envelope)).toBe(false);
   });
 
+  test('rejects direct and reflective construction outside trusted factories', () => {
+    const args = [
+      keyPackage,
+      'AES-256-GCM',
+      'forged-key',
+      new Uint8Array([1]),
+      new TextEncoder().encode('PRIVATE PLAINTEXT'),
+    ];
+    const Constructor = EncryptedKeyPackageState as unknown as new (
+      ...values: unknown[]
+    ) => EncryptedKeyPackageState;
+
+    expect(() => new Constructor(...args)).toThrow(
+      'EncryptedKeyPackageState construction is private',
+    );
+    expect(() =>
+      Reflect.construct(EncryptedKeyPackageState as unknown as Function, args),
+    ).toThrow('EncryptedKeyPackageState construction is private');
+  });
+
   test('freezes the envelope constructor and security-relevant prototype', () => {
     expect(Object.isFrozen(EncryptedKeyPackageState)).toBe(true);
     expect(Object.isFrozen(EncryptedKeyPackageState.prototype)).toBe(true);
@@ -349,6 +369,26 @@ describe('EncryptedGroupState', () => {
     expect(isEncryptedGroupState(envelope)).toBe(false);
   });
 
+  test('rejects direct and reflective construction outside trusted factories', () => {
+    const args = [
+      state,
+      'AES-256-GCM',
+      'forged-key',
+      new Uint8Array([1]),
+      new TextEncoder().encode('PRIVATE PLAINTEXT'),
+    ];
+    const Constructor = EncryptedGroupState as unknown as new (
+      ...values: unknown[]
+    ) => EncryptedGroupState;
+
+    expect(() => new Constructor(...args)).toThrow(
+      'EncryptedGroupState construction is private',
+    );
+    expect(() =>
+      Reflect.construct(EncryptedGroupState as unknown as Function, args),
+    ).toThrow('EncryptedGroupState construction is private');
+  });
+
   test('freezes the envelope constructor and security-relevant prototype', () => {
     expect(Object.isFrozen(EncryptedGroupState)).toBe(true);
     expect(Object.isFrozen(EncryptedGroupState.prototype)).toBe(true);
@@ -357,6 +397,154 @@ describe('EncryptedGroupState', () => {
         get: () => state,
       }),
     ).toThrow();
+  });
+});
+
+describe('encrypted envelope provider boundaries', () => {
+  test('strictly snapshots and bounds provider inputs and outputs', async () => {
+    const sealers: Array<
+      (
+        privateState: Uint8Array,
+        protector: GroupStateProtector,
+      ) => Promise<{ open(protector: GroupStateProtector): Promise<Uint8Array> }>
+    > = [
+      (privateState, protector) =>
+        EncryptedKeyPackageState.seal(
+          keyPackage,
+          privateState,
+          protector,
+        ),
+      (privateState, protector) =>
+        EncryptedGroupState.seal(state, privateState, protector),
+    ];
+
+    for (const sealEnvelope of sealers) {
+      let sealCalls = 0;
+      let sealedOutput: unknown = {
+        nonce: new Uint8Array([1]),
+        ciphertext: new Uint8Array([2]),
+      };
+      let openOutput: unknown = new Uint8Array([3]);
+      const protector: GroupStateProtector = {
+        algorithm: 'AES-256-GCM',
+        keyId: 'boundary-key',
+        seal: async () => {
+          sealCalls += 1;
+          return sealedOutput as {
+            nonce: Uint8Array;
+            ciphertext: Uint8Array;
+          };
+        },
+        open: async () => openOutput as Uint8Array,
+      };
+
+      const emptyPrivateState = new Uint8Array(0);
+      Object.defineProperty(emptyPrivateState, 'byteLength', { value: 1 });
+      await expect(
+        sealEnvelope(emptyPrivateState, protector),
+      ).rejects.toThrow(/invalid length/);
+      expect(sealCalls).toBe(0);
+
+      let nonceReads = 0;
+      sealedOutput = Object.defineProperties(
+        { ciphertext: new Uint8Array([2]) },
+        {
+          nonce: {
+            enumerable: true,
+            get() {
+              nonceReads += 1;
+              return new Uint8Array([1]);
+            },
+          },
+        },
+      );
+      await expect(
+        sealEnvelope(new Uint8Array([1]), protector),
+      ).rejects.toThrow(/enumerable data properties/);
+      expect(nonceReads).toBe(0);
+
+      const oversizedNonce = new Uint8Array(0x10000);
+      Object.defineProperty(oversizedNonce, 'byteLength', { value: 1 });
+      sealedOutput = {
+        nonce: oversizedNonce,
+        ciphertext: new Uint8Array([2]),
+      };
+      await expect(
+        sealEnvelope(new Uint8Array([1]), protector),
+      ).rejects.toThrow(/nonce.*invalid length/);
+
+      if (typeof SharedArrayBuffer !== 'undefined') {
+        sealedOutput = {
+          nonce: new Uint8Array(new SharedArrayBuffer(1)),
+          ciphertext: new Uint8Array([2]),
+        };
+        await expect(
+          sealEnvelope(new Uint8Array([1]), protector),
+        ).rejects.toThrow(/nonce.*backing buffer/);
+      }
+
+      sealedOutput = {
+        nonce: crossRealmBytes(new Uint8Array([1])),
+        ciphertext: crossRealmBytes(new Uint8Array([2])),
+      };
+      const envelope = await sealEnvelope(
+        crossRealmBytes(new Uint8Array([1])),
+        protector,
+      );
+      const retainedPlaintext = crossRealmBytes(new Uint8Array([7, 8]));
+      openOutput = retainedPlaintext;
+      const opened = await envelope.open(protector);
+      retainedPlaintext.fill(0);
+      expect(opened).toEqual(new Uint8Array([7, 8]));
+
+      const emptyOpenedState = new Uint8Array(0);
+      Object.defineProperty(emptyOpenedState, 'byteLength', { value: 1 });
+      openOutput = emptyOpenedState;
+      await expect(envelope.open(protector)).rejects.toThrow(/invalid length/);
+      if (typeof SharedArrayBuffer !== 'undefined') {
+        openOutput = new Uint8Array(new SharedArrayBuffer(1));
+        await expect(envelope.open(protector)).rejects.toThrow(
+          /backing buffer/,
+        );
+      }
+    }
+  });
+
+  test('snapshot scratch records bypass inherited field setters', async () => {
+    const protector: GroupStateProtector = {
+      algorithm: 'AES-256-GCM',
+      keyId: 'setter-boundary-key',
+      seal: async () => ({
+        nonce: new Uint8Array([1]),
+        ciphertext: new Uint8Array([2]),
+      }),
+      open: async () => new Uint8Array([3]),
+    };
+    const priorGroupId = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'groupId',
+    );
+    let pending: Promise<EncryptedGroupState> | undefined;
+    try {
+      Object.defineProperty(Object.prototype, 'groupId', {
+        configurable: true,
+        set: () => {
+          throw new Error('inherited groupId setter must not run');
+        },
+      });
+      pending = EncryptedGroupState.seal(
+        state,
+        new Uint8Array([1]),
+        protector,
+      );
+    } finally {
+      if (priorGroupId === undefined) {
+        delete (Object.prototype as { groupId?: unknown }).groupId;
+      } else {
+        Object.defineProperty(Object.prototype, 'groupId', priorGroupId);
+      }
+    }
+    await expect(pending).resolves.toBeInstanceOf(EncryptedGroupState);
   });
 });
 
@@ -415,6 +603,22 @@ describe('applied membership delta commitment', () => {
         ],
       }),
     ).toThrow(/duplicates a memberId/);
+    expect(() =>
+      canonicalAppliedGroupMembershipDelta({
+        changes: [
+          {
+            kind: 'add',
+            memberId: new Uint8Array([1]),
+            keyPackageRef: new Uint8Array([9]),
+          },
+          {
+            kind: 'update',
+            memberId: new Uint8Array([2]),
+            keyPackageRef: new Uint8Array([9]),
+          },
+        ],
+      }),
+    ).toThrow(/duplicates a keyPackageRef/);
   });
 
   test('snapshots bounded own entries without invoking iterator overrides', () => {
@@ -477,6 +681,154 @@ describe('applied membership delta commitment', () => {
         }),
       ).toThrow(/backing buffer/);
     }
+  });
+
+  test('accepts null-prototype records and normalizes hostile proxy failures', () => {
+    const change = Object.assign(Object.create(null), {
+      kind: 'remove' as const,
+      memberId: new Uint8Array([1]),
+    });
+    const delta = Object.assign(Object.create(null), { changes: [change] });
+    expect(() =>
+      canonicalAppliedGroupMembershipDelta(delta),
+    ).not.toThrow();
+
+    for (const trap of ['getPrototypeOf', 'ownKeys'] as const) {
+      const hostile = new Proxy(
+        {},
+        {
+          [trap]: () => {
+            throw new Error('attacker-controlled detail');
+          },
+        },
+      );
+      expect(() =>
+        canonicalAppliedGroupMembershipDelta(
+          hostile as AppliedGroupMembershipDelta,
+        ),
+      ).toThrow('applied membership delta must be a plain object');
+    }
+  });
+
+  test('uses captured byte intrinsics after Reflect.apply is poisoned', () => {
+    const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const byteLength = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      'byteLength',
+    )!.get!;
+    const byteOffset = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      'byteOffset',
+    )!.get!;
+    const buffer = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      'buffer',
+    )!.get!;
+    const tag = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      Symbol.toStringTag,
+    )!.get!;
+    const attackerBuffer = new Uint8Array([0xaa]).buffer;
+    const originalApply = Reflect.apply;
+    let thrown: unknown;
+    try {
+      Reflect.apply = ((
+        target: Function,
+        thisArgument: unknown,
+        argumentsList: ArrayLike<unknown>,
+      ): unknown => {
+        if (target === byteLength) return 1;
+        if (target === byteOffset) return 0;
+        if (target === buffer) return attackerBuffer;
+        if (target === tag) return 'Uint8Array';
+        return originalApply(target, thisArgument, argumentsList);
+      }) as typeof Reflect.apply;
+      try {
+        canonicalAppliedGroupMembershipDelta({
+          changes: [
+            {
+              kind: 'remove',
+              memberId: {} as Uint8Array,
+            },
+          ],
+        });
+      } catch (error) {
+        thrown = error;
+      }
+    } finally {
+      Reflect.apply = originalApply;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/genuine Uint8Array/);
+  });
+
+  test('snapshot and encoding arrays bypass inherited numeric setters', () => {
+    const changes = Array.from({ length: 137 }, (_, index) => ({
+      kind: 'remove' as const,
+      memberId: new Uint8Array([index]),
+    }));
+    const priorChanges = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'changes',
+    );
+    const priorNumeric = Object.getOwnPropertyDescriptor(Array.prototype, 136);
+    let canonical: Uint8Array | undefined;
+    let thrown: unknown;
+    try {
+      Object.defineProperty(Object.prototype, 'changes', {
+        configurable: true,
+        set: () => {
+          throw new Error('inherited changes setter must not run');
+        },
+      });
+      Object.defineProperty(Array.prototype, 136, {
+        configurable: true,
+        set: () => {
+          throw new Error('inherited numeric setter must not run');
+        },
+      });
+      try {
+        canonical = canonicalAppliedGroupMembershipDelta({ changes });
+      } catch (error) {
+        thrown = error;
+      }
+    } finally {
+      if (priorNumeric === undefined) {
+        delete (Array.prototype as unknown[])[136];
+      } else {
+        Object.defineProperty(Array.prototype, 136, priorNumeric);
+      }
+      if (priorChanges === undefined) {
+        delete (Object.prototype as { changes?: unknown }).changes;
+      } else {
+        Object.defineProperty(Object.prototype, 'changes', priorChanges);
+      }
+    }
+    expect(thrown).toBeUndefined();
+    expect(canonical).toBeInstanceOf(Uint8Array);
+  });
+
+  test('duplicate keys do not consult mutable primitive formatters', () => {
+    const numberToString = Number.prototype.toString;
+    const stringPadStart = String.prototype.padStart;
+    let canonical: Uint8Array | undefined;
+    try {
+      Number.prototype.toString = () => {
+        throw new Error('Number#toString must not run');
+      };
+      String.prototype.padStart = () => {
+        throw new Error('String#padStart must not run');
+      };
+      canonical = canonicalAppliedGroupMembershipDelta({
+        changes: [
+          { kind: 'remove', memberId: new Uint8Array([0xab, 0xcd]) },
+        ],
+      });
+    } finally {
+      Number.prototype.toString = numberToString;
+      String.prototype.padStart = stringPadStart;
+    }
+    expect(canonical).toBeInstanceOf(Uint8Array);
   });
 });
 
