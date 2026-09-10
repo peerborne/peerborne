@@ -74,7 +74,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       delete snapshotForWire.publicKey;
     }
     return this.encode(
-      this.serialize({
+      this.serializeNormalizedSyncWireValue({
         ...message,
         // Mirror the deserializer: only `undefined` skips the
         // serialization path. Any defined value flows through
