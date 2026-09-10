@@ -440,10 +440,6 @@ describe('stack-safe JSON serialization', () => {
     for (const value of values) {
       expect(jsonSerializer.serialize(value)).toBe(JSON.stringify(value));
     }
-    expect(
-      (jsonSerializer.serialize as (value: unknown) => unknown)(undefined),
-    ).toBe(JSON.stringify(undefined));
-
     expect(() => jsonSerializer.serialize(Object(1n))).toThrow(TypeError);
     const throwingNumber = new Number(1);
     Object.defineProperty(throwingNumber, Symbol.toPrimitive, {
@@ -463,6 +459,19 @@ describe('stack-safe JSON serialization', () => {
     cyclic.self = cyclic;
     expect(() => jsonSerializer.serialize(cyclic)).toThrow(/circular/i);
   });
+
+  test.each([undefined, () => undefined, Symbol('unsupported')])(
+    'rejects a top-level value that JSON.stringify omits',
+    (value) => {
+      expect(JSON.stringify(value)).toBeUndefined();
+      expect(() => jsonSerializer.serialize(value)).toThrow(
+        /Top-level value is not JSON-serializable/,
+      );
+      expect(() => jsonSerializer.serializeChanges(value)).toThrow(
+        /Top-level value is not JSON-serializable/,
+      );
+    },
+  );
 
   test('matches native primitive BigInt.prototype.toJSON behavior', () => {
     const prototype = BigInt.prototype as typeof BigInt.prototype & {

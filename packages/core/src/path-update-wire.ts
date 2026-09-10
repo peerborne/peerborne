@@ -24,7 +24,10 @@ import {
   PathUpdateV2,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  assertSharedProtocolRequestSize,
+  copyUnsharedUint8Array,
+} from './utils.js';
 
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
@@ -374,6 +377,12 @@ export function serializePathUpdateV2ForWire(
     })),
     treeHash: Base64.fromUint8Array(treeHash),
   };
+  // Every field in this shape is ASCII JSON. Its string length is therefore
+  // the exact UTF-8 byte length and can be checked without another large copy.
+  assertSharedProtocolRequestSize(
+    JSON.stringify(wire).length,
+    'BeeKEM PathUpdate v2 wire payload',
+  );
   // Keep the outbound boundary fail-closed even if runtime validation and the
   // canonical wire decoder evolve independently.
   deserializePathUpdateV2FromWire(wire);

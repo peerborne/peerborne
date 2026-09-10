@@ -7,6 +7,7 @@ import {
   serializePathUpdateForWire,
   serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -235,5 +236,56 @@ describe('path-update-wire V2 outbound boundary', () => {
       /encryptedPathKeyBundles exceeds numLeaves/,
     );
     expect(bundleReads).toBe(0);
+  });
+
+  test('rejects Base64 expansion past the shared-protocol frame cap', () => {
+    const maximumCiphertextBytes = 64 * (4096 + 8) + 4096;
+    const fixedCiphertextCount = 29;
+    const makeUpdate = (tailLength: number): PathUpdateV2 => ({
+      ...validPathUpdateV2(),
+      numLeaves: 32,
+      nodes: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array(0),
+          encryptedPathKeyBundles: [
+            ...Array.from({ length: fixedCiphertextCount }, (_, index) => ({
+              recipientNodeIndex: index,
+              ciphertext: new Uint8Array(maximumCiphertextBytes),
+            })),
+            {
+              recipientNodeIndex: fixedCiphertextCount,
+              ciphertext: new Uint8Array(tailLength),
+            },
+          ],
+        },
+      ],
+      treeNodePublicKeys: Array.from({ length: 63 }, (_, nodeIndex) => ({
+        nodeIndex,
+        publicKey: new Uint8Array(65),
+      })),
+    });
+
+    const baselineWire = serializePathUpdateV2ForWire(makeUpdate(1));
+    const baselineBytes = JSON.stringify(baselineWire).length;
+    const remainingBase64Quartets = Math.floor(
+      (MAX_SHARED_PROTOCOL_REQUEST_BYTES - baselineBytes) / 4,
+    );
+    const boundaryTailLength = 3 * (1 + remainingBase64Quartets);
+    expect(boundaryTailLength).toBeLessThan(maximumCiphertextBytes);
+
+    const boundaryWire = serializePathUpdateV2ForWire(
+      makeUpdate(boundaryTailLength),
+    );
+    const boundaryBytes = JSON.stringify(boundaryWire).length;
+    expect(boundaryBytes).toBeLessThanOrEqual(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    expect(MAX_SHARED_PROTOCOL_REQUEST_BYTES - boundaryBytes).toBeLessThan(4);
+
+    expect(() =>
+      serializePathUpdateV2ForWire(makeUpdate(boundaryTailLength + 1)),
+    ).toThrow(/PathUpdate v2 wire payload exceeds/);
   });
 });

@@ -23,10 +23,9 @@ import { EPOCH_ID_LENGTH } from './epoch.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
   copyUnsharedUint8Array,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-
-const MAX_BEEKEM_WELCOME_MESSAGE_BYTES = 10 * 1024 * 1024;
 
 /**
  * Outcome of validating an incoming Welcome.
@@ -168,7 +167,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     const encoded = copyUnsharedUint8Array(
       deps.syncMessageSerializer.serializeSyncMessage(message),
       1,
-      MAX_BEEKEM_WELCOME_MESSAGE_BYTES,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
       'BeeKEM Welcome encoding',
     );
     message = snapshotEnumerableOwnDataObject<
@@ -261,7 +260,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     eciesSealed = copyUnsharedUint8Array(
       message.eciesSealed,
       1,
-      MAX_BEEKEM_WELCOME_MESSAGE_BYTES,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
       'eciesSealed',
     );
   } catch {
@@ -307,7 +306,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
         messageWithoutSignature,
       ),
       1,
-      MAX_BEEKEM_WELCOME_MESSAGE_BYTES,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
       'BeeKEM Welcome signature encoding',
     );
   } catch {
