@@ -56,7 +56,7 @@
     "@types/node": "^22.7.5",
     "fake-indexeddb": "^6.0.0",
     "jest": "^30.5.0",
-    "ts-jest": "^29.2.5",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
     "tsx": "4.23.12",
     "typescript": "^5.9.3"

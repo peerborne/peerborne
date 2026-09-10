@@ -75,7 +75,7 @@
     "fast-check": "^4.9.0",
     "helia-v6": "npm:helia@6.1.4",
     "jest": "^30.5.0",
-    "ts-jest": "^29.2.5",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
     "tsx": "4.23.12",
     "typedoc": "^0.28.19",
@@ -83,7 +83,7 @@
   },
   "resolutions": {
     "jest": "^30.5.0",
-    "ts-jest": "^29.2.5"
+    "ts-jest": "^29.4.12"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
