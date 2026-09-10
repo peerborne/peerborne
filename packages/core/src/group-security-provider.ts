@@ -65,7 +65,17 @@ const MAX_ENCRYPTED_GROUP_STATE_SERIALIZED_BYTES =
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+const objectDefineProperty = Object.defineProperty;
+const objectPrototype = Object.prototype;
+const objectPrototypeHasOwnProperty = objectPrototype.hasOwnProperty;
+const arrayIsArray = Array.isArray;
+const arrayPrototype = Array.prototype;
+const numberIsInteger = Number.isInteger;
+const numberIsSafeInteger = Number.isSafeInteger;
+const reflectApply = Reflect.apply;
+const reflectOwnKeys = Reflect.ownKeys;
 const uint8ArraySet = Uint8Array.prototype.set;
+const uint8ArraySubarray = Uint8Array.prototype.subarray;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayByteLengthValue = objectGetOwnPropertyDescriptor(
   typedArrayPrototype,
@@ -103,6 +113,35 @@ const typedArrayByteLength = typedArrayByteLengthValue;
 const typedArrayByteOffset = typedArrayByteOffsetValue;
 const typedArrayBuffer = typedArrayBufferValue;
 const typedArrayTag = typedArrayTagValue;
+
+function byteLengthOf(value: Uint8Array): number {
+  return reflectApply(typedArrayByteLength, value, []) as number;
+}
+
+function byteOffsetOf(value: Uint8Array): number {
+  return reflectApply(typedArrayByteOffset, value, []) as number;
+}
+
+function bufferOf(value: Uint8Array): ArrayBufferLike {
+  return reflectApply(typedArrayBuffer, value, []) as ArrayBufferLike;
+}
+
+function defineEnumerableDataProperty(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  objectDefineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+function appendArrayValue<T>(target: T[], value: T): void {
+  defineEnumerableDataProperty(target, target.length, value);
+}
 
 export interface GroupSecurityProtocol {
   readonly id: string;
@@ -341,6 +380,8 @@ export interface GroupSecurityProvider {
 
 const encryptedKeyPackageStateInstances = new WeakSet<object>();
 const encryptedGroupStateInstances = new WeakSet<object>();
+const encryptedKeyPackageStateConstructionToken = {};
+const encryptedGroupStateConstructionToken = {};
 
 /**
  * Ciphertext-only envelope for one pending KeyPackage's private material.
@@ -356,12 +397,16 @@ export class EncryptedKeyPackageState {
   readonly #ciphertextValue: Uint8Array;
 
   private constructor(
+    constructionToken: typeof encryptedKeyPackageStateConstructionToken,
     keyPackageValue: GroupKeyPackage,
     algorithm: string,
     keyId: string,
     nonceValue: Uint8Array,
     ciphertextValue: Uint8Array,
   ) {
+    if (constructionToken !== encryptedKeyPackageStateConstructionToken) {
+      throw new TypeError('EncryptedKeyPackageState construction is private');
+    }
     this.#keyPackageValue = keyPackageValue;
     this.#algorithm = algorithm;
     this.#keyId = keyId;
@@ -401,27 +446,32 @@ export class EncryptedKeyPackageState {
     protector: GroupStateProtector,
   ): Promise<EncryptedKeyPackageState> {
     const snapshot = cloneKeyPackage(keyPackage);
+    const privateStateSnapshot = snapshotBoundedBytes(
+      privateState,
+      'private KeyPackage state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
     validateProtectorIdentity(algorithm, keyId);
-    validateBytes(privateState, 'private KeyPackage state', 1, MAX_CIPHERTEXT_BYTES);
     const associatedData = encodeKeyPackageAssociatedData(
       snapshot,
       algorithm,
       keyId,
     );
     const sealed = await protector.seal(
-      new Uint8Array(privateState),
+      privateStateSnapshot,
       associatedData,
     );
-    validateBytes(sealed.nonce, 'nonce', 1, MAX_SHORT_BYTES);
-    validateBytes(sealed.ciphertext, 'ciphertext', 1, MAX_CIPHERTEXT_BYTES);
+    const sealedSnapshot = snapshotGroupStateCiphertext(sealed);
     return new EncryptedKeyPackageState(
+      encryptedKeyPackageStateConstructionToken,
       snapshot,
       algorithm,
       keyId,
-      new Uint8Array(sealed.nonce),
-      new Uint8Array(sealed.ciphertext),
+      sealedSnapshot.nonce,
+      sealedSnapshot.ciphertext,
     );
   }
 
@@ -436,13 +486,19 @@ export class EncryptedKeyPackageState {
         'KeyPackage protector does not match the envelope algorithm/keyId',
       );
     }
-    return protector.open(
+    const plaintext = await protector.open(
       { nonce: this.nonce, ciphertext: this.ciphertext },
       encodeKeyPackageAssociatedData(
         this.#keyPackageValue,
         this.#algorithm,
         this.#keyId,
       ),
+    );
+    return snapshotBoundedBytes(
+      plaintext,
+      'opened private KeyPackage state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
     );
   }
 
@@ -453,9 +509,9 @@ export class EncryptedKeyPackageState {
         this.#algorithm,
         this.#keyId,
       ),
-      u16(this.#nonceValue.byteLength),
+      u16(byteLengthOf(this.#nonceValue)),
       this.#nonceValue,
-      u32(this.#ciphertextValue.byteLength),
+      u32(byteLengthOf(this.#ciphertextValue)),
       this.#ciphertextValue,
     ]);
   }
@@ -492,6 +548,7 @@ export class EncryptedKeyPackageState {
     validateKeyPackage(keyPackage);
     validateProtectorIdentity(algorithm, keyId);
     return new EncryptedKeyPackageState(
+      encryptedKeyPackageStateConstructionToken,
       keyPackage,
       algorithm,
       keyId,
@@ -516,7 +573,7 @@ export function isEncryptedKeyPackageState(
     value !== null &&
     typeof value === 'object' &&
     encryptedKeyPackageStateInstances.has(value) &&
-    Object.getPrototypeOf(value) === encryptedKeyPackageStatePrototype &&
+    objectGetPrototypeOf(value) === encryptedKeyPackageStatePrototype &&
     !hasOwnEnvelopeOverride(value, [
       'keyPackage',
       'groupId',
@@ -527,7 +584,7 @@ export function isEncryptedKeyPackageState(
       'open',
       'serialize',
     ]) &&
-    Object.getOwnPropertyDescriptor(
+    objectGetOwnPropertyDescriptor(
       encryptedKeyPackageStatePrototype,
       'serialize',
     )?.value === encryptedKeyPackageStateSerialize
@@ -543,12 +600,16 @@ export class EncryptedGroupState {
   readonly #ciphertextValue: Uint8Array;
 
   private constructor(
+    constructionToken: typeof encryptedGroupStateConstructionToken,
     stateValue: GroupSecurityPublicState,
     algorithm: string,
     keyId: string,
     nonceValue: Uint8Array,
     ciphertextValue: Uint8Array,
   ) {
+    if (constructionToken !== encryptedGroupStateConstructionToken) {
+      throw new TypeError('EncryptedGroupState construction is private');
+    }
     this.#stateValue = stateValue;
     this.#algorithm = algorithm;
     this.#keyId = keyId;
@@ -583,32 +644,32 @@ export class EncryptedGroupState {
     protector: GroupStateProtector,
   ): Promise<EncryptedGroupState> {
     const snapshot = clonePublicState(state);
+    const privateStateSnapshot = snapshotBoundedBytes(
+      privateState,
+      'privateState',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
     validateProtectorIdentity(algorithm, keyId);
-    validateBytes(privateState, 'privateState', 1, MAX_CIPHERTEXT_BYTES);
     const associatedData = encodeAssociatedData(
       snapshot,
       algorithm,
       keyId,
     );
     const sealed = await protector.seal(
-      new Uint8Array(privateState),
+      privateStateSnapshot,
       associatedData,
     );
-    validateBytes(sealed.nonce, 'nonce', 1, MAX_SHORT_BYTES);
-    validateBytes(
-      sealed.ciphertext,
-      'ciphertext',
-      1,
-      MAX_CIPHERTEXT_BYTES,
-    );
+    const sealedSnapshot = snapshotGroupStateCiphertext(sealed);
     return new EncryptedGroupState(
+      encryptedGroupStateConstructionToken,
       snapshot,
       algorithm,
       keyId,
-      new Uint8Array(sealed.nonce),
-      new Uint8Array(sealed.ciphertext),
+      sealedSnapshot.nonce,
+      sealedSnapshot.ciphertext,
     );
   }
 
@@ -623,13 +684,19 @@ export class EncryptedGroupState {
         'group-state protector does not match the envelope algorithm/keyId',
       );
     }
-    return protector.open(
+    const plaintext = await protector.open(
       { nonce: this.nonce, ciphertext: this.ciphertext },
       encodeAssociatedData(
         this.#stateValue,
         this.#algorithm,
         this.#keyId,
       ),
+    );
+    return snapshotBoundedBytes(
+      plaintext,
+      'opened private group state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
     );
   }
 
@@ -641,9 +708,9 @@ export class EncryptedGroupState {
     );
     return concat([
       associatedData,
-      u16(this.#nonceValue.byteLength),
+      u16(byteLengthOf(this.#nonceValue)),
       this.#nonceValue,
-      u32(this.#ciphertextValue.byteLength),
+      u32(byteLengthOf(this.#ciphertextValue)),
       this.#ciphertextValue,
     ]);
   }
@@ -685,6 +752,7 @@ export class EncryptedGroupState {
     validatePublicState(state);
     validateProtectorIdentity(algorithm, keyId);
     return new EncryptedGroupState(
+      encryptedGroupStateConstructionToken,
       state,
       algorithm,
       keyId,
@@ -707,7 +775,7 @@ export function isEncryptedGroupState(
     value !== null &&
     typeof value === 'object' &&
     encryptedGroupStateInstances.has(value) &&
-    Object.getPrototypeOf(value) === encryptedGroupStatePrototype &&
+    objectGetPrototypeOf(value) === encryptedGroupStatePrototype &&
     !hasOwnEnvelopeOverride(value, [
       'state',
       'algorithm',
@@ -717,7 +785,7 @@ export function isEncryptedGroupState(
       'open',
       'serialize',
     ]) &&
-    Object.getOwnPropertyDescriptor(
+    objectGetOwnPropertyDescriptor(
       encryptedGroupStatePrototype,
       'serialize',
     )?.value === encryptedGroupStateSerialize
@@ -728,9 +796,14 @@ function hasOwnEnvelopeOverride(
   value: object,
   properties: ReadonlyArray<string>,
 ): boolean {
-  return properties.some((property) =>
-    Object.prototype.hasOwnProperty.call(value, property),
-  );
+  for (let index = 0; index < properties.length; index++) {
+    if (
+      reflectApply(objectPrototypeHasOwnProperty, value, [properties[index]])
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Canonical, protocol-neutral encoding used to bind provider-applied changes. */
@@ -743,6 +816,7 @@ export function canonicalAppliedGroupMembershipDelta(
     u16(snapshot.changes.length),
   ];
   const memberIds = new Set<string>();
+  const keyPackageRefs = new Set<string>();
   for (let index = 0; index < snapshot.changes.length; index++) {
     const change = snapshot.changes[index];
     const label = `applied membership change ${index}`;
@@ -752,16 +826,47 @@ export function canonicalAppliedGroupMembershipDelta(
     }
     memberIds.add(memberKey);
     if (change.kind === 'remove') {
-      parts.push(new Uint8Array([2]), bytes16(change.memberId));
+      appendArrayValue(parts, new Uint8Array([2]));
+      appendArrayValue(parts, bytes16(change.memberId));
       continue;
     }
-    parts.push(
+    const keyPackageRef = byteKey(change.keyPackageRef);
+    if (keyPackageRefs.has(keyPackageRef)) {
+      throw new Error(`${label} duplicates a keyPackageRef`);
+    }
+    keyPackageRefs.add(keyPackageRef);
+    appendArrayValue(
+      parts,
       new Uint8Array([change.kind === 'add' ? 1 : 3]),
-      bytes16(change.memberId),
-      bytes16(change.keyPackageRef),
     );
+    appendArrayValue(parts, bytes16(change.memberId));
+    appendArrayValue(parts, bytes16(change.keyPackageRef));
   }
   return concat(parts);
+}
+
+function snapshotGroupStateCiphertext(
+  sealed: unknown,
+): GroupStateCiphertext {
+  const raw = exactPlainDataValues(
+    sealed,
+    'sealed group state',
+    ['nonce', 'ciphertext'],
+  );
+  return {
+    nonce: snapshotBoundedBytes(
+      raw.nonce,
+      'nonce',
+      1,
+      MAX_SHORT_BYTES,
+    ),
+    ciphertext: snapshotBoundedBytes(
+      raw.ciphertext,
+      'ciphertext',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    ),
+  };
 }
 
 function snapshotAppliedGroupMembershipDelta(
@@ -780,9 +885,13 @@ function snapshotAppliedGroupMembershipDelta(
   );
   const changes: AppliedGroupMembershipChange[] = new Array(values.length);
   for (let index = 0; index < values.length; index++) {
-    changes[index] = snapshotAppliedMembershipChange(
-      values[index],
-      `applied membership change ${index}`,
+    defineEnumerableDataProperty(
+      changes,
+      index,
+      snapshotAppliedMembershipChange(
+        values[index],
+        `applied membership change ${index}`,
+      ),
     );
   }
   return { changes };
@@ -831,8 +940,13 @@ function exactPlainDataValues(
   const descriptors = plainDataDescriptors(value, label);
   requireExactDescriptorKeys(descriptors, label, expectedKeys);
   const result: Record<string, unknown> = {};
-  for (const key of expectedKeys) {
-    result[key] = descriptorDataValue(descriptors, key, label);
+  for (let index = 0; index < expectedKeys.length; index++) {
+    const key = expectedKeys[index];
+    defineEnumerableDataProperty(
+      result,
+      key,
+      descriptorDataValue(descriptors, key, label),
+    );
   }
   return result;
 }
@@ -841,14 +955,18 @@ function plainDataDescriptors(
   value: unknown,
   label: string,
 ): Record<PropertyKey, PropertyDescriptor> {
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    objectGetPrototypeOf(value) !== Object.prototype
-  ) {
+  if (value === null || typeof value !== 'object') {
     throw new Error(`${label} must be a plain object`);
   }
-  return objectGetOwnPropertyDescriptors(value);
+  try {
+    const prototype = objectGetPrototypeOf(value);
+    if (prototype !== objectPrototype && prototype !== null) {
+      throw new Error(`${label} must be a plain object`);
+    }
+    return objectGetOwnPropertyDescriptors(value);
+  } catch {
+    throw new Error(`${label} must be a plain object`);
+  }
 }
 
 function descriptorDataValue(
@@ -872,13 +990,28 @@ function requireExactDescriptorKeys(
   label: string,
   expectedKeys: ReadonlyArray<string>,
 ): void {
-  const keys = Reflect.ownKeys(descriptors);
-  const expected = new Set(expectedKeys);
-  if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key) => typeof key !== 'string' || !expected.has(key))
-  ) {
+  const keys = reflectOwnKeys(descriptors);
+  if (keys.length !== expectedKeys.length) {
     throw new Error(`${label} has unexpected or missing fields`);
+  }
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index];
+    let expected = false;
+    if (typeof key === 'string') {
+      for (
+        let expectedIndex = 0;
+        expectedIndex < expectedKeys.length;
+        expectedIndex++
+      ) {
+        if (key === expectedKeys[expectedIndex]) {
+          expected = true;
+          break;
+        }
+      }
+    }
+    if (!expected) {
+      throw new Error(`${label} has unexpected or missing fields`);
+    }
   }
 }
 
@@ -892,7 +1025,7 @@ function strictArraySnapshot(
   let prototype: object | null;
   let lengthDescriptor: PropertyDescriptor | undefined;
   try {
-    isArray = Array.isArray(value);
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
     prototype = isArray ? objectGetPrototypeOf(value) : null;
     lengthDescriptor = isArray
       ? objectGetOwnPropertyDescriptor(value, 'length')
@@ -906,8 +1039,8 @@ function strictArraySnapshot(
       : undefined;
   if (
     !isArray ||
-    prototype !== Array.prototype ||
-    !Number.isSafeInteger(length) ||
+    prototype !== arrayPrototype ||
+    !numberIsSafeInteger(length) ||
     (length as number) < minimum ||
     (length as number) > maximum
   ) {
@@ -915,16 +1048,23 @@ function strictArraySnapshot(
   }
   let keys: PropertyKey[];
   try {
-    keys = Reflect.ownKeys(value as object);
+    keys = reflectOwnKeys(value as object);
   } catch {
     throw new Error(`${label} must be a bounded plain array`);
   }
-  if (keys.length !== (length as number) + 1 || !keys.includes('length')) {
+  let hasLength = false;
+  for (let index = 0; index < keys.length; index++) {
+    if (keys[index] === 'length') {
+      hasLength = true;
+      break;
+    }
+  }
+  if (keys.length !== (length as number) + 1 || !hasLength) {
     throw new Error(`${label} must not be sparse or contain extra properties`);
   }
   const result = new Array<unknown>(length as number);
   for (let index = 0; index < result.length; index++) {
-    const descriptor = objectGetOwnPropertyDescriptor(value, String(index));
+    const descriptor = objectGetOwnPropertyDescriptor(value, index);
     if (
       descriptor === undefined ||
       !descriptor.enumerable ||
@@ -932,7 +1072,7 @@ function strictArraySnapshot(
     ) {
       throw new Error(`${label} must contain only own data properties`);
     }
-    result[index] = descriptor.value;
+    defineEnumerableDataProperty(result, index, descriptor.value);
   }
   return result;
 }
@@ -948,17 +1088,17 @@ function snapshotBoundedBytes(
   let buffer: ArrayBufferLike;
   let tag: unknown;
   try {
-    length = Reflect.apply(typedArrayByteLength, value, []) as number;
-    byteOffset = Reflect.apply(typedArrayByteOffset, value, []) as number;
-    buffer = Reflect.apply(typedArrayBuffer, value, []) as ArrayBufferLike;
-    tag = Reflect.apply(typedArrayTag, value, []);
+    length = reflectApply(typedArrayByteLength, value, []) as number;
+    byteOffset = reflectApply(typedArrayByteOffset, value, []) as number;
+    buffer = reflectApply(typedArrayBuffer, value, []) as ArrayBufferLike;
+    tag = reflectApply(typedArrayTag, value, []);
   } catch {
     throw new Error(`${field} must be a genuine Uint8Array`);
   }
   let shared = false;
   if (sharedArrayBufferByteLength !== undefined) {
     try {
-      Reflect.apply(sharedArrayBufferByteLength, buffer, []);
+      reflectApply(sharedArrayBufferByteLength, buffer, []);
       shared = true;
     } catch {
       shared = false;
@@ -970,7 +1110,7 @@ function snapshotBoundedBytes(
   try {
     const stableView = new Uint8Array(buffer, byteOffset, length);
     const result = new Uint8Array(length);
-    Reflect.apply(uint8ArraySet, result, [stableView]);
+    reflectApply(uint8ArraySet, result, [stableView]);
     return result;
   } catch {
     throw new Error(`${field} could not be copied safely`);
@@ -991,11 +1131,12 @@ function snapshotOwnDataFields(
   } catch {
     throw new Error(`${label} must be a plain object`);
   }
-  if (prototype !== Object.prototype && prototype !== null) {
+  if (prototype !== objectPrototype && prototype !== null) {
     throw new Error(`${label} must be a plain object`);
   }
   const result: Record<string, unknown> = {};
-  for (const field of fields) {
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index];
     let descriptor: PropertyDescriptor | undefined;
     try {
       descriptor = objectGetOwnPropertyDescriptor(value, field);
@@ -1009,15 +1150,18 @@ function snapshotOwnDataFields(
     ) {
       throw new Error(`${label} must contain only own data properties`);
     }
-    result[field] = descriptor.value;
+    defineEnumerableDataProperty(result, field, descriptor.value);
   }
   return result;
 }
 
 function byteKey(value: Uint8Array): string {
+  const hex = '0123456789abcdef';
   let result = '';
-  for (let index = 0; index < value.byteLength; index++) {
-    result += value[index].toString(16).padStart(2, '0');
+  const length = byteLengthOf(value);
+  for (let index = 0; index < length; index++) {
+    const byte = value[index];
+    result += hex[(byte >>> 4) & 0x0f] + hex[byte & 0x0f];
   }
   return result;
 }
@@ -1209,7 +1353,7 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
     typeof protocol !== 'object' ||
     typeof protocol.id !== 'string' ||
     !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(protocol.id) ||
-    !Number.isInteger(protocol.version) ||
+    !numberIsInteger(protocol.version) ||
     protocol.version < 0 ||
     protocol.version > 0xffff
   ) {
@@ -1234,11 +1378,13 @@ function validateBytes(
   minimum: number,
   maximum: number,
 ): void {
-  if (
-    !(value instanceof Uint8Array) ||
-    value.byteLength < minimum ||
-    value.byteLength > maximum
-  ) {
+  let length: number;
+  try {
+    length = byteLengthOf(value);
+  } catch {
+    throw new Error(`${field} has an invalid length`);
+  }
+  if (length < minimum || length > maximum) {
     throw new Error(`${field} has an invalid length`);
   }
 }
@@ -1250,49 +1396,55 @@ function validateU64(value: bigint, field: string): void {
 }
 
 function bytes16(value: Uint8Array): Uint8Array {
-  if (value.byteLength > 0xffff) throw new Error('value does not fit in u16');
-  return concat([u16(value.byteLength), value]);
+  const length = byteLengthOf(value);
+  if (length > 0xffff) throw new Error('value does not fit in u16');
+  return concat([u16(length), value]);
 }
 
 function bytes32(value: Uint8Array): Uint8Array {
-  if (value.byteLength > 0xffffffff) {
+  const length = byteLengthOf(value);
+  if (length > 0xffffffff) {
     throw new Error('value does not fit in u32');
   }
-  return concat([u32(value.byteLength), value]);
+  return concat([u32(length), value]);
 }
 
 function u16(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+  if (!numberIsInteger(value) || value < 0 || value > 0xffff) {
     throw new Error('value does not fit in u16');
   }
   const out = new Uint8Array(2);
-  new DataView(out.buffer).setUint16(0, value, false);
+  new DataView(bufferOf(out)).setUint16(0, value, false);
   return out;
 }
 
 function u32(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+  if (!numberIsInteger(value) || value < 0 || value > 0xffffffff) {
     throw new Error('value does not fit in u32');
   }
   const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
+  new DataView(bufferOf(out)).setUint32(0, value, false);
   return out;
 }
 
 function u64(value: bigint): Uint8Array {
   validateU64(value, 'epoch');
   const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, value, false);
+  new DataView(bufferOf(out)).setBigUint64(0, value, false);
   return out;
 }
 
 function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  let total = 0;
+  for (let index = 0; index < parts.length; index++) {
+    total += byteLengthOf(parts[index]);
+  }
   const out = new Uint8Array(total);
   let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    reflectApply(uint8ArraySet, out, [part, offset]);
+    offset += byteLengthOf(part);
   }
   return out;
 }
@@ -1310,37 +1462,30 @@ class ByteReader {
   }
 
   expect(expected: Uint8Array, field: string): void {
-    const actual = this.take(expected.byteLength, field);
+    const actual = this.take(byteLengthOf(expected), field);
     if (!equalBytes(actual, expected)) throw new Error(`invalid ${field}`);
   }
 
   u16(field: string): number {
-    const value = new DataView(
-      this.take(2, field).buffer,
-      this.bytes.byteOffset + this.offset - 2,
-      2,
-    );
+    const bytes = this.take(2, field);
+    const value = new DataView(bufferOf(bytes), byteOffsetOf(bytes), 2);
     return value.getUint16(0, false);
   }
 
   u32(field: string): number {
-    const start = this.offset;
-    this.take(4, field);
-    return new DataView(
-      this.bytes.buffer,
-      this.bytes.byteOffset + start,
-      4,
-    ).getUint32(0, false);
+    const bytes = this.take(4, field);
+    return new DataView(bufferOf(bytes), byteOffsetOf(bytes), 4).getUint32(
+      0,
+      false,
+    );
   }
 
   u64(field: string): bigint {
-    const start = this.offset;
-    this.take(8, field);
-    return new DataView(
-      this.bytes.buffer,
-      this.bytes.byteOffset + start,
-      8,
-    ).getBigUint64(0, false);
+    const bytes = this.take(8, field);
+    return new DataView(bufferOf(bytes), byteOffsetOf(bytes), 8).getBigUint64(
+      0,
+      false,
+    );
   }
 
   bytes16(field: string, minimum: number, maximum: number): Uint8Array {
@@ -1366,16 +1511,19 @@ class ByteReader {
   }
 
   done(): void {
-    if (this.offset !== this.bytes.byteLength) {
+    if (this.offset !== byteLengthOf(this.bytes)) {
       throw new Error(`${this.label} has trailing bytes`);
     }
   }
 
   private take(length: number, field: string): Uint8Array {
-    if (length < 0 || this.offset + length > this.bytes.byteLength) {
+    if (length < 0 || this.offset + length > byteLengthOf(this.bytes)) {
       throw new Error(`${this.label} is truncated at ${field}`);
     }
-    const value = this.bytes.subarray(this.offset, this.offset + length);
+    const value = reflectApply(uint8ArraySubarray, this.bytes, [
+      this.offset,
+      this.offset + length,
+    ]) as Uint8Array;
     this.offset += length;
     return value;
   }
@@ -1393,8 +1541,9 @@ class ByteReader {
 }
 
 function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
+  const length = byteLengthOf(a);
+  if (length !== byteLengthOf(b)) return false;
   let different = 0;
-  for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
+  for (let i = 0; i < length; i++) different |= a[i] ^ b[i];
   return different === 0;
 }

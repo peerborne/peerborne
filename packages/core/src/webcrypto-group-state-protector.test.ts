@@ -131,6 +131,70 @@ describe('WebCryptoGroupStateProtector', () => {
     await expect(pending).resolves.toEqual(plaintext);
   });
 
+  test('snapshots associated data before inspecting strict sealed fields', async () => {
+    const protector = await WebCryptoGroupStateProtector.generate('key-1');
+    const plaintext = new Uint8Array([1, 2, 3]);
+    const authenticatedData = new Uint8Array([9]);
+    const sealed = await protector.seal(plaintext, authenticatedData);
+
+    let accessorReads = 0;
+    const accessorSealed = Object.defineProperties(
+      {},
+      {
+        nonce: {
+          enumerable: true,
+          get() {
+            accessorReads += 1;
+            return sealed.nonce;
+          },
+        },
+        ciphertext: {
+          enumerable: true,
+          get() {
+            accessorReads += 1;
+            return sealed.ciphertext;
+          },
+        },
+      },
+    );
+    await expect(
+      protector.open(
+        accessorSealed as {
+          nonce: Uint8Array;
+          ciphertext: Uint8Array;
+        },
+        authenticatedData,
+      ),
+    ).rejects.toThrow(/enumerable data properties/);
+    expect(accessorReads).toBe(0);
+
+    const mutableAssociatedData = new Uint8Array([1]);
+    let mutations = 0;
+    const mutatingSealed = new Proxy(
+      {
+        nonce: new Uint8Array(sealed.nonce),
+        ciphertext: new Uint8Array(sealed.ciphertext),
+      },
+      {
+        get(target, property, receiver) {
+          mutations += 1;
+          mutableAssociatedData.set(authenticatedData);
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+        getPrototypeOf(target) {
+          mutations += 1;
+          mutableAssociatedData.set(authenticatedData);
+          return Reflect.getPrototypeOf(target);
+        },
+      },
+    );
+    await expect(
+      protector.open(mutatingSealed, mutableAssociatedData),
+    ).rejects.toBeDefined();
+    expect(mutations).toBeGreaterThan(0);
+    expect(mutableAssociatedData).toEqual(authenticatedData);
+  });
+
   test('accepts cross-realm byte inputs', async () => {
     const protector = await WebCryptoGroupStateProtector.generate('key-1');
     const crossRealm = (bytes: Uint8Array): Uint8Array =>
