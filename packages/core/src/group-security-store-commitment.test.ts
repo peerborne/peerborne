@@ -7,15 +7,32 @@ import {
   type GroupSecurityPublicState,
 } from './group-security-provider.js';
 import {
-  canonicalGroupSecurityStoreSnapshot,
-  groupSecurityStoreSnapshotCommitment,
-  validateAndCloneGroupStateStoreSnapshot,
+  canonicalGroupSecurityStoreSnapshot as canonicalGroupSecurityStoreSnapshotForKey,
+  groupSecurityStoreSnapshotCommitment as groupSecurityStoreSnapshotCommitmentForKey,
+  validateAndCloneGroupStateStoreSnapshot as validateAndCloneGroupStateStoreSnapshotForKey,
 } from './group-security-store-commitment.js';
-import type { GroupStateStoreSnapshot } from './group-state-store.js';
+import type {
+  GroupStateStoreKey,
+  GroupStateStoreSnapshot,
+} from './group-state-store.js';
 import { WebCryptoGroupStateProtector } from './webcrypto-group-state-protector.js';
 
 const protocol = { id: 'store-commitment.test', version: 1 };
 const groupId = new Uint8Array([1, 2, 3]);
+const storeKey: GroupStateStoreKey = { protocol, groupId };
+
+const canonicalGroupSecurityStoreSnapshot = (
+  snapshot: GroupStateStoreSnapshot,
+): Uint8Array =>
+  canonicalGroupSecurityStoreSnapshotForKey(snapshot, storeKey);
+const groupSecurityStoreSnapshotCommitment = (
+  snapshot: GroupStateStoreSnapshot,
+): Promise<Uint8Array> =>
+  groupSecurityStoreSnapshotCommitmentForKey(snapshot, storeKey);
+const validateAndCloneGroupStateStoreSnapshot = (
+  snapshot: GroupStateStoreSnapshot,
+): GroupStateStoreSnapshot =>
+  validateAndCloneGroupStateStoreSnapshotForKey(snapshot, storeKey);
 
 function bytes(value: number, length = 32): Uint8Array {
   return new Uint8Array(length).fill(value);
@@ -116,9 +133,19 @@ async function fixture(): Promise<GroupStateStoreSnapshot> {
 }
 
 describe('group-security store snapshot commitment', () => {
-  test('preserves the exact canonical outbox encoding', () => {
+  test('preserves the exact canonical outbox encoding', async () => {
+    const protector = await WebCryptoGroupStateProtector.generate(
+      'canonical-outbox-key',
+    );
+    const encryptedState = await EncryptedGroupState.seal(
+      publicState(2n),
+      new Uint8Array([1]),
+      protector,
+    );
+    const serializedState = encryptedState.serialize();
     const value: GroupStateStoreSnapshot = {
       revision: 1,
+      encryptedState,
       pendingKeyPackages: [],
       pendingKeyPackageRequests: [],
       consumedKeyPackageRefs: [],
@@ -138,7 +165,9 @@ describe('group-security store snapshot commitment', () => {
       '70656572626f726e652f67726f75702d73656375726974792d73746f72652d' +
         '736e617073686f742f763200' +
         '0000000000000001' +
-        '00' +
+        '01' +
+        serializedState.byteLength.toString(16).padStart(8, '0') +
+        toHex(serializedState) +
         '00000000' +
         '00000000' +
         '00000000' +
@@ -302,6 +331,93 @@ describe('group-security store snapshot commitment', () => {
         extra as unknown as GroupStateStoreSnapshot,
       ),
     ).toThrow(/unexpected or missing fields/);
+  });
+
+  test('enforces one store key and epoch across every snapshot component', async () => {
+    const original = await fixture();
+    const protector = await WebCryptoGroupStateProtector.generate(
+      'semantic-snapshot-key',
+    );
+    const foreignGroup = cloneSnapshot(original);
+    foreignGroup.pendingKeyPackages[0] =
+      await EncryptedKeyPackageState.seal(
+        {
+          ...keyPackage(1),
+          groupId: new Uint8Array([9, 9, 9]),
+        },
+        new Uint8Array([1]),
+        protector,
+      );
+    await expect(
+      groupSecurityStoreSnapshotCommitment(foreignGroup),
+    ).rejects.toThrow(/groupId does not match store key/);
+
+    const foreignProtocol = cloneSnapshot(original);
+    foreignProtocol.pendingKeyPackages[0] =
+      await EncryptedKeyPackageState.seal(
+        {
+          ...keyPackage(1),
+          protocol: { id: 'other.protocol', version: 1 },
+        },
+        new Uint8Array([1]),
+        protector,
+      );
+    expect(() =>
+      validateAndCloneGroupStateStoreSnapshot(foreignProtocol),
+    ).toThrow(/protocol does not match store key/);
+
+    expect(() =>
+      validateAndCloneGroupStateStoreSnapshotForKey(original, {
+        protocol,
+        groupId: new Uint8Array([0xff]),
+      }),
+    ).toThrow(/groupId does not match store key/);
+
+    const withoutState: GroupStateStoreSnapshot = {
+      revision: 1,
+      encryptedState: undefined,
+      pendingKeyPackages: [],
+      pendingKeyPackageRequests: [],
+      consumedKeyPackageRefs: [],
+      outbox: [original.outbox[0]],
+      replay: [],
+      forkEvidence: undefined,
+    };
+    expect(() =>
+      validateAndCloneGroupStateStoreSnapshot(withoutState),
+    ).toThrow(/without encrypted group state/);
+
+    const futureSnapshots = [
+      mutate(original, (value) => {
+        value.outbox[0].epoch = 3n;
+      }),
+      mutate(original, (value) => {
+        value.replay[0].epoch = 3n;
+      }),
+      mutate(original, (value) => {
+        value.forkEvidence!.epoch = 3n;
+      }),
+    ];
+    for (const future of futureSnapshots) {
+      expect(() =>
+        validateAndCloneGroupStateStoreSnapshot(future),
+      ).toThrow(/newer than encrypted state/);
+    }
+
+    const pendingOnly: GroupStateStoreSnapshot = {
+      revision: 1,
+      encryptedState: undefined,
+      pendingKeyPackages: original.pendingKeyPackages,
+      pendingKeyPackageRequests: original.pendingKeyPackageRequests,
+      consumedKeyPackageRefs: [],
+      outbox: [],
+      replay: [],
+      forkEvidence: undefined,
+    };
+    expect(
+      validateAndCloneGroupStateStoreSnapshot(pendingOnly)
+        .pendingKeyPackages,
+    ).toHaveLength(2);
   });
 
   test('snapshots mutable arrays and buffers before awaiting SHA-256', async () => {
