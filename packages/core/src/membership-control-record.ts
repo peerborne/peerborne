@@ -243,6 +243,7 @@ export class MembershipControlChain {
   private readonly recordIds: Uint8Array[] = [];
   private readonly recordIdSet = new Set<string>();
   private readonly operationToRecord = new Map<string, string>();
+  private readonly slotToRecordIndex = new Map<string, number>();
   private tail: Promise<unknown> = Promise.resolve();
   private forkDetected = false;
   private readonly config: MembershipControlChainConfig;
@@ -345,15 +346,24 @@ export class MembershipControlChain {
       return rejected('group-mismatch', 'record group does not match');
     }
 
-    const previous = this.recordsValue[this.recordsValue.length - 1];
-    const previousId = this.recordIds[this.recordIds.length - 1];
-    if (
-      previous !== undefined &&
-      record.epoch === previous.epoch &&
-      optionalBytesEqual(record.parentRecordId, previous.parentRecordId)
-    ) {
-      const parent = this.recordsValue[this.recordsValue.length - 2];
-      const parentId = this.recordIds[this.recordIds.length - 2];
+    const occupiedSlotIndex = this.slotToRecordIndex.get(
+      membershipControlSlotKey(record.epoch, record.parentRecordId),
+    );
+    if (occupiedSlotIndex !== undefined) {
+      const parentIndex = occupiedSlotIndex - 1;
+      const parent = this.recordsValue[parentIndex];
+      const parentId = this.recordIds[parentIndex];
+      if (
+        (parent === undefined && record.action !== 'create') ||
+        (parent !== undefined && record.action === 'create')
+      ) {
+        return rejected(
+          'epoch-out-of-order',
+          parent === undefined
+            ? 'first record must create the configured initial epoch'
+            : 'record epoch is not next',
+        );
+      }
       let authorized: unknown = false;
       try {
         authorized = await this.config.authorize({
@@ -383,6 +393,8 @@ export class MembershipControlChain {
         'operationId is already bound to another record',
       );
     }
+    const previous = this.recordsValue[this.recordsValue.length - 1];
+    const previousId = this.recordIds[this.recordIds.length - 1];
     if (previous === undefined) {
       if (
         record.action !== 'create' ||
@@ -430,12 +442,27 @@ export class MembershipControlChain {
       return rejected('unauthorized-actor', 'control actor is unauthorized');
     }
 
+    const recordIndex = this.recordsValue.length;
     this.recordsValue.push(cloneRecord(record));
     this.recordIds.push(new Uint8Array(recordId));
     this.recordIdSet.add(recordHex);
     this.operationToRecord.set(operationHex, recordHex);
+    this.slotToRecordIndex.set(
+      membershipControlSlotKey(record.epoch, record.parentRecordId),
+      recordIndex,
+    );
     return { status: 'accepted', recordId: new Uint8Array(recordId) };
   }
+}
+
+function membershipControlSlotKey(
+  epoch: bigint,
+  parentRecordId: Uint8Array | undefined,
+): string {
+  const encodedEpoch = epoch.toString(16).padStart(16, '0');
+  return `${encodedEpoch}:${
+    parentRecordId === undefined ? 'genesis' : toHex(parentRecordId)
+  }`;
 }
 
 function readParent(reader: Reader): Uint8Array | undefined {
@@ -748,15 +775,6 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   let different = 0;
   for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
   return different === 0;
-}
-
-function optionalBytesEqual(
-  first: Uint8Array | undefined,
-  second: Uint8Array | undefined,
-): boolean {
-  return first === undefined || second === undefined
-    ? first === second
-    : equalBytes(first, second);
 }
 
 function toHex(bytes: Uint8Array): string {

@@ -341,6 +341,8 @@ export interface GroupSecurityProvider {
 
 const encryptedKeyPackageStateInstances = new WeakSet<object>();
 const encryptedGroupStateInstances = new WeakSet<object>();
+const encryptedKeyPackageStateConstructionToken = {};
+const encryptedGroupStateConstructionToken = {};
 
 /**
  * Ciphertext-only envelope for one pending KeyPackage's private material.
@@ -356,12 +358,16 @@ export class EncryptedKeyPackageState {
   readonly #ciphertextValue: Uint8Array;
 
   private constructor(
+    constructionToken: typeof encryptedKeyPackageStateConstructionToken,
     keyPackageValue: GroupKeyPackage,
     algorithm: string,
     keyId: string,
     nonceValue: Uint8Array,
     ciphertextValue: Uint8Array,
   ) {
+    if (constructionToken !== encryptedKeyPackageStateConstructionToken) {
+      throw new TypeError('EncryptedKeyPackageState construction is private');
+    }
     this.#keyPackageValue = keyPackageValue;
     this.#algorithm = algorithm;
     this.#keyId = keyId;
@@ -401,27 +407,32 @@ export class EncryptedKeyPackageState {
     protector: GroupStateProtector,
   ): Promise<EncryptedKeyPackageState> {
     const snapshot = cloneKeyPackage(keyPackage);
+    const privateStateSnapshot = snapshotBoundedBytes(
+      privateState,
+      'private KeyPackage state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
     validateProtectorIdentity(algorithm, keyId);
-    validateBytes(privateState, 'private KeyPackage state', 1, MAX_CIPHERTEXT_BYTES);
     const associatedData = encodeKeyPackageAssociatedData(
       snapshot,
       algorithm,
       keyId,
     );
     const sealed = await protector.seal(
-      new Uint8Array(privateState),
+      privateStateSnapshot,
       associatedData,
     );
-    validateBytes(sealed.nonce, 'nonce', 1, MAX_SHORT_BYTES);
-    validateBytes(sealed.ciphertext, 'ciphertext', 1, MAX_CIPHERTEXT_BYTES);
+    const sealedSnapshot = snapshotGroupStateCiphertext(sealed);
     return new EncryptedKeyPackageState(
+      encryptedKeyPackageStateConstructionToken,
       snapshot,
       algorithm,
       keyId,
-      new Uint8Array(sealed.nonce),
-      new Uint8Array(sealed.ciphertext),
+      sealedSnapshot.nonce,
+      sealedSnapshot.ciphertext,
     );
   }
 
@@ -436,13 +447,19 @@ export class EncryptedKeyPackageState {
         'KeyPackage protector does not match the envelope algorithm/keyId',
       );
     }
-    return protector.open(
+    const plaintext = await protector.open(
       { nonce: this.nonce, ciphertext: this.ciphertext },
       encodeKeyPackageAssociatedData(
         this.#keyPackageValue,
         this.#algorithm,
         this.#keyId,
       ),
+    );
+    return snapshotBoundedBytes(
+      plaintext,
+      'opened private KeyPackage state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
     );
   }
 
@@ -492,6 +509,7 @@ export class EncryptedKeyPackageState {
     validateKeyPackage(keyPackage);
     validateProtectorIdentity(algorithm, keyId);
     return new EncryptedKeyPackageState(
+      encryptedKeyPackageStateConstructionToken,
       keyPackage,
       algorithm,
       keyId,
@@ -543,12 +561,16 @@ export class EncryptedGroupState {
   readonly #ciphertextValue: Uint8Array;
 
   private constructor(
+    constructionToken: typeof encryptedGroupStateConstructionToken,
     stateValue: GroupSecurityPublicState,
     algorithm: string,
     keyId: string,
     nonceValue: Uint8Array,
     ciphertextValue: Uint8Array,
   ) {
+    if (constructionToken !== encryptedGroupStateConstructionToken) {
+      throw new TypeError('EncryptedGroupState construction is private');
+    }
     this.#stateValue = stateValue;
     this.#algorithm = algorithm;
     this.#keyId = keyId;
@@ -583,32 +605,32 @@ export class EncryptedGroupState {
     protector: GroupStateProtector,
   ): Promise<EncryptedGroupState> {
     const snapshot = clonePublicState(state);
+    const privateStateSnapshot = snapshotBoundedBytes(
+      privateState,
+      'privateState',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
     validateProtectorIdentity(algorithm, keyId);
-    validateBytes(privateState, 'privateState', 1, MAX_CIPHERTEXT_BYTES);
     const associatedData = encodeAssociatedData(
       snapshot,
       algorithm,
       keyId,
     );
     const sealed = await protector.seal(
-      new Uint8Array(privateState),
+      privateStateSnapshot,
       associatedData,
     );
-    validateBytes(sealed.nonce, 'nonce', 1, MAX_SHORT_BYTES);
-    validateBytes(
-      sealed.ciphertext,
-      'ciphertext',
-      1,
-      MAX_CIPHERTEXT_BYTES,
-    );
+    const sealedSnapshot = snapshotGroupStateCiphertext(sealed);
     return new EncryptedGroupState(
+      encryptedGroupStateConstructionToken,
       snapshot,
       algorithm,
       keyId,
-      new Uint8Array(sealed.nonce),
-      new Uint8Array(sealed.ciphertext),
+      sealedSnapshot.nonce,
+      sealedSnapshot.ciphertext,
     );
   }
 
@@ -623,13 +645,19 @@ export class EncryptedGroupState {
         'group-state protector does not match the envelope algorithm/keyId',
       );
     }
-    return protector.open(
+    const plaintext = await protector.open(
       { nonce: this.nonce, ciphertext: this.ciphertext },
       encodeAssociatedData(
         this.#stateValue,
         this.#algorithm,
         this.#keyId,
       ),
+    );
+    return snapshotBoundedBytes(
+      plaintext,
+      'opened private group state',
+      1,
+      MAX_CIPHERTEXT_BYTES,
     );
   }
 
@@ -685,6 +713,7 @@ export class EncryptedGroupState {
     validatePublicState(state);
     validateProtectorIdentity(algorithm, keyId);
     return new EncryptedGroupState(
+      encryptedGroupStateConstructionToken,
       state,
       algorithm,
       keyId,
@@ -743,6 +772,7 @@ export function canonicalAppliedGroupMembershipDelta(
     u16(snapshot.changes.length),
   ];
   const memberIds = new Set<string>();
+  const keyPackageRefs = new Set<string>();
   for (let index = 0; index < snapshot.changes.length; index++) {
     const change = snapshot.changes[index];
     const label = `applied membership change ${index}`;
@@ -755,6 +785,11 @@ export function canonicalAppliedGroupMembershipDelta(
       parts.push(new Uint8Array([2]), bytes16(change.memberId));
       continue;
     }
+    const keyPackageRef = byteKey(change.keyPackageRef);
+    if (keyPackageRefs.has(keyPackageRef)) {
+      throw new Error(`${label} duplicates a keyPackageRef`);
+    }
+    keyPackageRefs.add(keyPackageRef);
     parts.push(
       new Uint8Array([change.kind === 'add' ? 1 : 3]),
       bytes16(change.memberId),
@@ -762,6 +797,30 @@ export function canonicalAppliedGroupMembershipDelta(
     );
   }
   return concat(parts);
+}
+
+function snapshotGroupStateCiphertext(
+  sealed: unknown,
+): GroupStateCiphertext {
+  const raw = exactPlainDataValues(
+    sealed,
+    'sealed group state',
+    ['nonce', 'ciphertext'],
+  );
+  return {
+    nonce: snapshotBoundedBytes(
+      raw.nonce,
+      'nonce',
+      1,
+      MAX_SHORT_BYTES,
+    ),
+    ciphertext: snapshotBoundedBytes(
+      raw.ciphertext,
+      'ciphertext',
+      1,
+      MAX_CIPHERTEXT_BYTES,
+    ),
+  };
 }
 
 function snapshotAppliedGroupMembershipDelta(

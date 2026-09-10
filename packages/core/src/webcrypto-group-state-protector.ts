@@ -8,6 +8,9 @@ export const WEBCRYPTO_GROUP_STATE_ALGORITHM = 'AES-256-GCM';
 export const WEBCRYPTO_GROUP_STATE_NONCE_LENGTH = 12;
 const WEBCRYPTO_GROUP_STATE_TAG_LENGTH = 16;
 
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+
 const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
   ArrayBuffer.prototype,
   'byteLength',
@@ -141,22 +144,13 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
     sealed: GroupStateCiphertext,
     associatedData: Uint8Array,
   ): Promise<Uint8Array> {
-    const nonceSnapshot = snapshotBytes(
-      sealed.nonce,
-      'nonce',
-      WEBCRYPTO_GROUP_STATE_NONCE_LENGTH,
-      WEBCRYPTO_GROUP_STATE_NONCE_LENGTH,
-    );
-    const ciphertextSnapshot = snapshotBytes(
-      sealed.ciphertext,
-      'ciphertext',
-      WEBCRYPTO_GROUP_STATE_TAG_LENGTH + 1,
-    );
     const associatedDataSnapshot = snapshotBytes(
       associatedData,
       'associatedData',
       1,
     );
+    const { nonce: nonceSnapshot, ciphertext: ciphertextSnapshot } =
+      snapshotSealedCiphertext(sealed);
     const plaintext = await Reflect.apply(
       this.#crypto.decrypt,
       this.#crypto.subtleReceiver,
@@ -177,6 +171,64 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
       ciphertextSnapshot.byteLength - WEBCRYPTO_GROUP_STATE_TAG_LENGTH,
     );
   }
+}
+
+function snapshotSealedCiphertext(
+  sealed: unknown,
+): GroupStateCiphertext {
+  if (sealed === null || typeof sealed !== 'object' || Array.isArray(sealed)) {
+    throw new TypeError('sealed state must be a plain object');
+  }
+  let prototype: object | null;
+  let descriptors: PropertyDescriptorMap;
+  try {
+    prototype = Reflect.apply(objectGetPrototypeOf, Object, [sealed]) as
+      | object
+      | null;
+    descriptors = Reflect.apply(objectGetOwnPropertyDescriptors, Object, [
+      sealed,
+    ]) as PropertyDescriptorMap;
+  } catch {
+    throw new TypeError('sealed state must expose stable own data properties');
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('sealed state must be a plain object');
+  }
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.length !== 2 ||
+    !keys.includes('nonce') ||
+    !keys.includes('ciphertext')
+  ) {
+    throw new TypeError('sealed state has unexpected or missing fields');
+  }
+  const nonce = descriptors.nonce;
+  const ciphertext = descriptors.ciphertext;
+  if (
+    nonce === undefined ||
+    ciphertext === undefined ||
+    nonce.enumerable !== true ||
+    ciphertext.enumerable !== true ||
+    !('value' in nonce) ||
+    !('value' in ciphertext)
+  ) {
+    throw new TypeError(
+      'sealed state must contain only enumerable data properties',
+    );
+  }
+  return {
+    nonce: snapshotBytes(
+      nonce.value,
+      'nonce',
+      WEBCRYPTO_GROUP_STATE_NONCE_LENGTH,
+      WEBCRYPTO_GROUP_STATE_NONCE_LENGTH,
+    ),
+    ciphertext: snapshotBytes(
+      ciphertext.value,
+      'ciphertext',
+      WEBCRYPTO_GROUP_STATE_TAG_LENGTH + 1,
+    ),
+  };
 }
 
 function validateKeyId(keyId: unknown): asserts keyId is string {

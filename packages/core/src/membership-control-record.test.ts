@@ -500,6 +500,251 @@ describe('membership control records', () => {
     expect(chain.length).toBe(2);
   });
 
+  test('detects an authorized sibling for a retained historical slot', async () => {
+    const identity = await HmacIdentity.create();
+    const observedParents: Array<{
+      previousRecord?: MembershipControlRecord;
+      previousRecordId?: Uint8Array;
+    }> = [];
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async (context) => {
+        observedParents.push({
+          previousRecord: context.previousRecord,
+          previousRecordId: context.previousRecordId,
+        });
+        return true;
+      },
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const genesisId = await membershipControlRecordId(genesis);
+    const first = await signMembershipControlRecord(
+      unsigned(1n, 2, genesisId),
+      identity.sign,
+    );
+    const firstId = await membershipControlRecordId(first);
+    const second = await signMembershipControlRecord(
+      unsigned(2n, 3, firstId),
+      identity.sign,
+    );
+    const secondId = await membershipControlRecordId(second);
+    const historicalSibling = await signMembershipControlRecord(
+      unsigned(1n, 3, genesisId),
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(3n, 4, secondId),
+      identity.sign,
+    );
+
+    await expect(chain.ingest(genesis)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    await expect(chain.ingest(first)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    await expect(chain.ingest(second)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    await expect(chain.ingest(historicalSibling)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'fork-detected',
+    });
+    expect(observedParents.at(-1)?.previousRecord).toEqual(genesis);
+    expect(observedParents.at(-1)?.previousRecordId).toEqual(genesisId);
+    await expect(chain.ingest(next)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'fork-detected',
+    });
+    await expect(chain.ingest(second)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'fork-detected',
+    });
+    expect(chain.length).toBe(3);
+  });
+
+  test('rejects create in a retained non-genesis slot without poisoning', async () => {
+    const identity = await HmacIdentity.create();
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async () => true,
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const genesisId = await membershipControlRecordId(genesis);
+    const first = await signMembershipControlRecord(
+      unsigned(1n, 2, genesisId),
+      identity.sign,
+    );
+    const firstId = await membershipControlRecordId(first);
+    const second = await signMembershipControlRecord(
+      unsigned(2n, 3, firstId),
+      identity.sign,
+    );
+    const secondId = await membershipControlRecordId(second);
+    const invalidCreate = await signMembershipControlRecord(
+      { ...unsigned(1n, 4, genesisId), action: 'create' },
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(3n, 5, secondId),
+      identity.sign,
+    );
+
+    await chain.ingest(genesis);
+    await chain.ingest(first);
+    await chain.ingest(second);
+    await expect(chain.ingest(invalidCreate)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'epoch-out-of-order',
+    });
+    await expect(chain.ingest(next)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    expect(chain.length).toBe(4);
+  });
+
+  test('rejects a non-create competing genesis without poisoning', async () => {
+    const identity = await HmacIdentity.create();
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async () => true,
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const genesisId = await membershipControlRecordId(genesis);
+    const invalidGenesis = await signMembershipControlRecord(
+      { ...unsigned(0n, 2), action: 'update' },
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(1n, 3, genesisId),
+      identity.sign,
+    );
+
+    await chain.ingest(genesis);
+    await expect(chain.ingest(invalidGenesis)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'epoch-out-of-order',
+    });
+    await expect(chain.ingest(next)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    expect(chain.length).toBe(2);
+  });
+
+  test('does not let an unauthorized historical sibling poison the chain', async () => {
+    const identity = await HmacIdentity.create();
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async ({ record }) => record.operationId[0] !== 4,
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const genesisId = await membershipControlRecordId(genesis);
+    const first = await signMembershipControlRecord(
+      unsigned(1n, 2, genesisId),
+      identity.sign,
+    );
+    const firstId = await membershipControlRecordId(first);
+    const second = await signMembershipControlRecord(
+      unsigned(2n, 3, firstId),
+      identity.sign,
+    );
+    const secondId = await membershipControlRecordId(second);
+    const unauthorizedSibling = await signMembershipControlRecord(
+      unsigned(1n, 4, genesisId),
+      identity.sign,
+    );
+    const differentEpochSameParent = await signMembershipControlRecord(
+      unsigned(2n, 6, genesisId),
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(3n, 5, secondId),
+      identity.sign,
+    );
+
+    await chain.ingest(genesis);
+    await chain.ingest(first);
+    await chain.ingest(second);
+    await expect(
+      chain.ingest(differentEpochSameParent),
+    ).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'epoch-out-of-order',
+    });
+    await expect(chain.ingest(unauthorizedSibling)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'unauthorized-actor',
+    });
+    await expect(chain.ingest(next)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+    expect(chain.length).toBe(4);
+  });
+
+  test('detects a late competing genesis without a parent context', async () => {
+    const identity = await HmacIdentity.create();
+    const observedParents: Array<{
+      previousRecord?: MembershipControlRecord;
+      previousRecordId?: Uint8Array;
+    }> = [];
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async (context) => {
+        observedParents.push({
+          previousRecord: context.previousRecord,
+          previousRecordId: context.previousRecordId,
+        });
+        return true;
+      },
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(1n, 2, await membershipControlRecordId(genesis)),
+      identity.sign,
+    );
+    const competingGenesis = await signMembershipControlRecord(
+      unsigned(0n, 3),
+      identity.sign,
+    );
+
+    await chain.ingest(genesis);
+    await chain.ingest(next);
+    await expect(chain.ingest(competingGenesis)).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'fork-detected',
+    });
+    expect(observedParents.at(-1)).toEqual({
+      previousRecord: undefined,
+      previousRecordId: undefined,
+    });
+    expect(chain.length).toBe(2);
+  });
+
   test('rejects bad signatures, broken parents, and operation-id conflicts', async () => {
     const identity = await HmacIdentity.create();
     const chain = new MembershipControlChain({

@@ -158,6 +158,26 @@ describe('EncryptedKeyPackageState', () => {
     expect(isEncryptedKeyPackageState(envelope)).toBe(false);
   });
 
+  test('rejects direct and reflective construction outside trusted factories', () => {
+    const args = [
+      keyPackage,
+      'AES-256-GCM',
+      'forged-key',
+      new Uint8Array([1]),
+      new TextEncoder().encode('PRIVATE PLAINTEXT'),
+    ];
+    const Constructor = EncryptedKeyPackageState as unknown as new (
+      ...values: unknown[]
+    ) => EncryptedKeyPackageState;
+
+    expect(() => new Constructor(...args)).toThrow(
+      'EncryptedKeyPackageState construction is private',
+    );
+    expect(() =>
+      Reflect.construct(EncryptedKeyPackageState as unknown as Function, args),
+    ).toThrow('EncryptedKeyPackageState construction is private');
+  });
+
   test('freezes the envelope constructor and security-relevant prototype', () => {
     expect(Object.isFrozen(EncryptedKeyPackageState)).toBe(true);
     expect(Object.isFrozen(EncryptedKeyPackageState.prototype)).toBe(true);
@@ -349,6 +369,26 @@ describe('EncryptedGroupState', () => {
     expect(isEncryptedGroupState(envelope)).toBe(false);
   });
 
+  test('rejects direct and reflective construction outside trusted factories', () => {
+    const args = [
+      state,
+      'AES-256-GCM',
+      'forged-key',
+      new Uint8Array([1]),
+      new TextEncoder().encode('PRIVATE PLAINTEXT'),
+    ];
+    const Constructor = EncryptedGroupState as unknown as new (
+      ...values: unknown[]
+    ) => EncryptedGroupState;
+
+    expect(() => new Constructor(...args)).toThrow(
+      'EncryptedGroupState construction is private',
+    );
+    expect(() =>
+      Reflect.construct(EncryptedGroupState as unknown as Function, args),
+    ).toThrow('EncryptedGroupState construction is private');
+  });
+
   test('freezes the envelope constructor and security-relevant prototype', () => {
     expect(Object.isFrozen(EncryptedGroupState)).toBe(true);
     expect(Object.isFrozen(EncryptedGroupState.prototype)).toBe(true);
@@ -357,6 +397,117 @@ describe('EncryptedGroupState', () => {
         get: () => state,
       }),
     ).toThrow();
+  });
+});
+
+describe('encrypted envelope provider boundaries', () => {
+  test('strictly snapshots and bounds provider inputs and outputs', async () => {
+    const sealers: Array<
+      (
+        privateState: Uint8Array,
+        protector: GroupStateProtector,
+      ) => Promise<{ open(protector: GroupStateProtector): Promise<Uint8Array> }>
+    > = [
+      (privateState, protector) =>
+        EncryptedKeyPackageState.seal(
+          keyPackage,
+          privateState,
+          protector,
+        ),
+      (privateState, protector) =>
+        EncryptedGroupState.seal(state, privateState, protector),
+    ];
+
+    for (const sealEnvelope of sealers) {
+      let sealCalls = 0;
+      let sealedOutput: unknown = {
+        nonce: new Uint8Array([1]),
+        ciphertext: new Uint8Array([2]),
+      };
+      let openOutput: unknown = new Uint8Array([3]);
+      const protector: GroupStateProtector = {
+        algorithm: 'AES-256-GCM',
+        keyId: 'boundary-key',
+        seal: async () => {
+          sealCalls += 1;
+          return sealedOutput as {
+            nonce: Uint8Array;
+            ciphertext: Uint8Array;
+          };
+        },
+        open: async () => openOutput as Uint8Array,
+      };
+
+      const emptyPrivateState = new Uint8Array(0);
+      Object.defineProperty(emptyPrivateState, 'byteLength', { value: 1 });
+      await expect(
+        sealEnvelope(emptyPrivateState, protector),
+      ).rejects.toThrow(/invalid length/);
+      expect(sealCalls).toBe(0);
+
+      let nonceReads = 0;
+      sealedOutput = Object.defineProperties(
+        { ciphertext: new Uint8Array([2]) },
+        {
+          nonce: {
+            enumerable: true,
+            get() {
+              nonceReads += 1;
+              return new Uint8Array([1]);
+            },
+          },
+        },
+      );
+      await expect(
+        sealEnvelope(new Uint8Array([1]), protector),
+      ).rejects.toThrow(/enumerable data properties/);
+      expect(nonceReads).toBe(0);
+
+      const oversizedNonce = new Uint8Array(0x10000);
+      Object.defineProperty(oversizedNonce, 'byteLength', { value: 1 });
+      sealedOutput = {
+        nonce: oversizedNonce,
+        ciphertext: new Uint8Array([2]),
+      };
+      await expect(
+        sealEnvelope(new Uint8Array([1]), protector),
+      ).rejects.toThrow(/nonce.*invalid length/);
+
+      if (typeof SharedArrayBuffer !== 'undefined') {
+        sealedOutput = {
+          nonce: new Uint8Array(new SharedArrayBuffer(1)),
+          ciphertext: new Uint8Array([2]),
+        };
+        await expect(
+          sealEnvelope(new Uint8Array([1]), protector),
+        ).rejects.toThrow(/nonce.*backing buffer/);
+      }
+
+      sealedOutput = {
+        nonce: crossRealmBytes(new Uint8Array([1])),
+        ciphertext: crossRealmBytes(new Uint8Array([2])),
+      };
+      const envelope = await sealEnvelope(
+        crossRealmBytes(new Uint8Array([1])),
+        protector,
+      );
+      const retainedPlaintext = crossRealmBytes(new Uint8Array([7, 8]));
+      openOutput = retainedPlaintext;
+      const opened = await envelope.open(protector);
+      retainedPlaintext.fill(0);
+      expect(opened).toEqual(new Uint8Array([7, 8]));
+
+      const emptyOpenedState = new Uint8Array(0);
+      Object.defineProperty(emptyOpenedState, 'byteLength', { value: 1 });
+      openOutput = emptyOpenedState;
+      await expect(envelope.open(protector)).rejects.toThrow(/invalid length/);
+      if (typeof SharedArrayBuffer !== 'undefined') {
+        openOutput = new Uint8Array(new SharedArrayBuffer(1));
+        await expect(envelope.open(protector)).rejects.toThrow(
+          /backing buffer/,
+        );
+      }
+    }
   });
 });
 
@@ -415,6 +566,22 @@ describe('applied membership delta commitment', () => {
         ],
       }),
     ).toThrow(/duplicates a memberId/);
+    expect(() =>
+      canonicalAppliedGroupMembershipDelta({
+        changes: [
+          {
+            kind: 'add',
+            memberId: new Uint8Array([1]),
+            keyPackageRef: new Uint8Array([9]),
+          },
+          {
+            kind: 'update',
+            memberId: new Uint8Array([2]),
+            keyPackageRef: new Uint8Array([9]),
+          },
+        ],
+      }),
+    ).toThrow(/duplicates a keyPackageRef/);
   });
 
   test('snapshots bounded own entries without invoking iterator overrides', () => {
