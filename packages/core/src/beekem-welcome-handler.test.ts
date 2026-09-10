@@ -6,6 +6,7 @@ import {
   evaluateBeeKEMWelcomeTransition,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 /**
  * Direct unit-test coverage for BeeKEM Welcome validation gates.
@@ -501,7 +502,10 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
           0: 1,
         }) as unknown as Uint8Array,
     ],
-    ['oversized bytes', () => new Uint8Array(10 * 1024 * 1024 + 1)],
+    [
+      'oversized bytes',
+      () => new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES + 1),
+    ],
   ])(
     'drops malformed signature-stripped serializer output: %s',
     async (_name, makeMalformedBytes) => {

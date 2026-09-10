@@ -7,6 +7,7 @@ import {
   decodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload';
 import { serializeBeeKEMWelcomeV2ForWire } from './beekem-welcome-wire.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 describe('welcome-sealed-payload round-trip', () => {
   const keychainBytes = new Uint8Array([1, 2, 3, 4, 5]);
@@ -230,6 +231,35 @@ describe('welcome-sealed-payload V2 boundary', () => {
         beekemWelcome,
       }),
     ).toThrow(/keychainChanges.*no larger than/);
+  });
+
+  test('enforces the exact sealed-payload cap across Base64 expansion', () => {
+    const baseline = encodeWelcomeSealedPayloadV2({
+      keychainChanges: new Uint8Array(1),
+      beekemWelcome,
+    });
+    const remainingBase64Quartets = Math.floor(
+      (MAX_SHARED_PROTOCOL_REQUEST_BYTES - baseline.byteLength) / 4,
+    );
+    const boundaryKeychainLength = 3 * (1 + remainingBase64Quartets);
+
+    const boundary = encodeWelcomeSealedPayloadV2({
+      keychainChanges: new Uint8Array(boundaryKeychainLength),
+      beekemWelcome,
+    });
+    expect(boundary.byteLength).toBeLessThanOrEqual(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    expect(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES - boundary.byteLength,
+    ).toBeLessThan(4);
+
+    expect(() =>
+      encodeWelcomeSealedPayloadV2({
+        keychainChanges: new Uint8Array(boundaryKeychainLength + 1),
+        beekemWelcome,
+      }),
+    ).toThrow(/Welcome v2 sealed payload exceeds/);
   });
 
   test.each([
