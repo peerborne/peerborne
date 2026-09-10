@@ -3,6 +3,7 @@ import {
   CRDTChangeNodeKind,
   crdtChangeNodeDeferred,
 } from './crdt-change-node.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
 /**
  * Maximum number of recent tips to track for Merkle-CRDT cross-linking
@@ -81,6 +82,286 @@ export type MergedSyncEntry<ChangesType> = [
   ChangesType | undefined,
 ];
 
+const MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS = 16 * 1024 * 1024;
+const intrinsicArrayBufferIsView = ArrayBuffer.isView;
+
+type ComparableByteView =
+  | { readonly kind: 'not-view' }
+  | { readonly kind: 'invalid-view' }
+  | { readonly kind: 'bytes'; readonly bytes: Uint8Array };
+
+function snapshotComparableByteView(value: object): ComparableByteView {
+  if (!Reflect.apply(intrinsicArrayBufferIsView, ArrayBuffer, [value])) {
+    return { kind: 'not-view' };
+  }
+  try {
+    return {
+      kind: 'bytes',
+      bytes: copyUnsharedUint8Array(
+        value,
+        0,
+        MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS,
+        'remote sync tree change payload',
+      ),
+    };
+  } catch {
+    return { kind: 'invalid-view' };
+  }
+}
+
+type RemoteNodeDescription<ChangesType> = {
+  readonly node: CRDTChangeNode<ChangesType>;
+  readonly kind: CRDTChangeNodeKind;
+  readonly keyID: string | undefined;
+  readonly hasChange: boolean;
+  readonly childrenMode: 0 | 1 | 2;
+  readonly childIds: readonly string[];
+  readonly sparseReference: boolean;
+};
+
+function describeRemoteNode<ChangesType>(
+  node: CRDTChangeNode<ChangesType>,
+): RemoteNodeDescription<ChangesType> {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+    throw new TypeError('remote sync tree node must be an object');
+  }
+  let childrenMode: 0 | 1 | 2 = 0;
+  let childIds: string[] = [];
+  if (node.children === crdtChangeNodeDeferred) {
+    childrenMode = 1;
+  } else if (node.children !== undefined) {
+    if (
+      node.children === null ||
+      typeof node.children !== 'object' ||
+      Array.isArray(node.children)
+    ) {
+      throw new TypeError(
+        'remote sync tree children must be an object, false, or undefined',
+      );
+    }
+    childrenMode = 2;
+    childIds = Object.keys(node.children).sort();
+  }
+  return {
+    node,
+    kind: node.kind,
+    keyID: node.keyID,
+    hasChange: node.change !== undefined,
+    childrenMode,
+    childIds,
+    sparseReference: node.change === undefined && node.children === undefined,
+  };
+}
+
+function consumeComparisonBudget(
+  budget: { remaining: number },
+  amount = 1,
+): void {
+  budget.remaining -= amount;
+  if (budget.remaining < 0) {
+    throw new RangeError(
+      `remote sync tree exceeds ${MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS} payload comparison items`,
+    );
+  }
+}
+
+function sameChangePayload(
+  first: unknown,
+  second: unknown,
+  budget: { remaining: number },
+): boolean {
+  const pending: Array<readonly [unknown, unknown]> = [[first, second]];
+  const seen = new WeakMap<object, WeakSet<object>>();
+
+  while (pending.length > 0) {
+    const [left, right] = pending.pop()!;
+    consumeComparisonBudget(budget);
+    if (
+      left === null ||
+      right === null ||
+      typeof left !== 'object' ||
+      typeof right !== 'object'
+    ) {
+      if (Object.is(left, right)) continue;
+      return false;
+    }
+
+    let rightValues = seen.get(left);
+    if (rightValues?.has(right)) continue;
+    if (rightValues === undefined) {
+      rightValues = new WeakSet<object>();
+      seen.set(left, rightValues);
+    }
+    rightValues.add(right);
+
+    const leftByteView = snapshotComparableByteView(left);
+    const rightByteView = snapshotComparableByteView(right);
+    if (
+      leftByteView.kind === 'invalid-view' ||
+      rightByteView.kind === 'invalid-view'
+    ) {
+      return false;
+    }
+    if (
+      leftByteView.kind === 'bytes' ||
+      rightByteView.kind === 'bytes'
+    ) {
+      if (
+        leftByteView.kind !== 'bytes' ||
+        rightByteView.kind !== 'bytes'
+      ) {
+        return false;
+      }
+      const leftBytes = leftByteView.bytes;
+      const rightBytes = rightByteView.bytes;
+      if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+      consumeComparisonBudget(budget, leftBytes.byteLength);
+      for (let index = 0; index < leftBytes.byteLength; index++) {
+        if (leftBytes[index] !== rightBytes[index]) return false;
+      }
+      continue;
+    }
+
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right)) return false;
+      if (left.length !== right.length) return false;
+      consumeComparisonBudget(budget, left.length);
+      for (let index = 0; index < left.length; index++) {
+        pending.push([left[index], right[index]]);
+      }
+      continue;
+    }
+
+    const leftPrototype = Object.getPrototypeOf(left);
+    const rightPrototype = Object.getPrototypeOf(right);
+    const leftIsPlain =
+      leftPrototype === Object.prototype || leftPrototype === null;
+    const rightIsPlain =
+      rightPrototype === Object.prototype || rightPrototype === null;
+    if (!leftIsPlain || !rightIsPlain) return false;
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (
+      leftKeys.length !== rightKeys.length ||
+      leftKeys.some((key, index) => key !== rightKeys[index])
+    ) {
+      return false;
+    }
+    consumeComparisonBudget(budget, leftKeys.length);
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    for (const key of leftKeys) {
+      pending.push([leftRecord[key], rightRecord[key]]);
+    }
+  }
+
+  return true;
+}
+
+function sameChildIds(
+  first: readonly string[],
+  second: readonly string[],
+): boolean {
+  return (
+    first.length === second.length &&
+    first.every((childId, index) => childId === second[index])
+  );
+}
+
+export function validateRemoteSyncTreeAliases<ChangesType>(
+  remoteRootId: string | undefined,
+  remoteRoot: CRDTChangeNode<ChangesType>,
+): void {
+  const canonical = new Map<string, RemoteNodeDescription<ChangesType>>();
+  const visiting = new Set<string>();
+  const comparisonBudget = {
+    remaining: MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS,
+  };
+  const conflict = (cid: string): never => {
+    throw new TypeError(
+      `remote sync tree contains conflicting descriptions for CID ${cid}`,
+    );
+  };
+
+  type RemoteWalkFrame =
+    | {
+        readonly phase: 'enter';
+        readonly cid: string | undefined;
+        readonly node: CRDTChangeNode<ChangesType>;
+      }
+    | { readonly phase: 'leave'; readonly cid: string };
+  const pending: RemoteWalkFrame[] = [
+    { phase: 'enter', cid: remoteRootId, node: remoteRoot },
+  ];
+
+  while (pending.length > 0) {
+    const frame = pending.pop()!;
+    if (frame.phase === 'leave') {
+      visiting.delete(frame.cid);
+      continue;
+    }
+
+    const { cid, node } = frame;
+    if (cid !== undefined && visiting.has(cid)) {
+      throw new TypeError(`remote sync tree contains a cycle at CID ${cid}`);
+    }
+    const description = describeRemoteNode(node);
+
+    if (cid !== undefined) {
+      const existing = canonical.get(cid);
+      if (existing === undefined) {
+        canonical.set(cid, description);
+      } else {
+        if (existing.kind !== description.kind) conflict(cid);
+        if (
+          existing.keyID !== undefined &&
+          description.keyID !== undefined &&
+          existing.keyID !== description.keyID
+        ) {
+          conflict(cid);
+        }
+        if (!existing.sparseReference && !description.sparseReference) {
+          if (
+            existing.keyID !== description.keyID ||
+            existing.hasChange !== description.hasChange ||
+            existing.childrenMode !== description.childrenMode ||
+            !sameChildIds(existing.childIds, description.childIds) ||
+            (existing.hasChange &&
+              !sameChangePayload(
+                existing.node.change,
+                description.node.change,
+                comparisonBudget,
+              ))
+          ) {
+            conflict(cid);
+          }
+        } else if (existing.sparseReference && !description.sparseReference) {
+          canonical.set(cid, description);
+        }
+      }
+    }
+
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
+    if (cid !== undefined) {
+      visiting.add(cid);
+      pending.push({ phase: 'leave', cid });
+    }
+    for (let index = description.childIds.length - 1; index >= 0; index--) {
+      const childId = description.childIds[index]!;
+      pending.push({
+        phase: 'enter',
+        cid: childId,
+        node: node.children[childId]!,
+      });
+    }
+  }
+}
+
 /**
  * Pure helper: walk a remote sync tree and return the entries that are new
  * relative to `localHashes` and `localRootId`, deduplicated per traversal.
@@ -119,6 +400,17 @@ export function mergeRemoteSyncTree<ChangesType>(
   localRootId: string | undefined,
   localHashes: ReadonlySet<string>,
 ): MergedSyncEntry<ChangesType>[] {
+  // Preserve the traversal's root-level no-op semantics: none of these paths
+  // reads the supplied tree, so alias validation must not inspect it either.
+  if (
+    remoteRootId === undefined ||
+    remoteRootId === localRootId ||
+    localHashes.has(remoteRootId)
+  ) {
+    return [];
+  }
+  validateRemoteSyncTreeAliases(remoteRootId, remoteRoot);
+
   // CID -> winning entry for this message. Entries with an inline `change`
   // payload beat deferred-leaf entries; otherwise the first-seen entry wins.
   const byCid = new Map<string, MergedSyncEntry<ChangesType>>();
@@ -127,16 +419,17 @@ export function mergeRemoteSyncTree<ChangesType>(
   // (no `children`). When the same CID later appears inline with children,
   // we must descend into those children even though the entry already exists.
   const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[remoteRootId, remoteRoot]];
 
-  function walk(
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): void {
-    if (nodeId === undefined) return;
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (nodeId === undefined) continue;
     // The remote root matches our local head: nothing new under it.
-    if (nodeId === localRootId) return;
+    if (nodeId === localRootId) continue;
     // Already applied locally (or marked seen via a snapshot boundary).
-    if (localHashes.has(nodeId)) return;
+    if (localHashes.has(nodeId)) continue;
 
     const existing = byCid.get(nodeId);
     if (existing) {
@@ -155,21 +448,20 @@ export function mergeRemoteSyncTree<ChangesType>(
     // Don't re-walk children we've already walked. Content addressing means
     // the same CID names the same subtree, so once we've descended through
     // a CID's children we know its full inline subtree.
-    if (walked.has(nodeId)) return;
+    if (walked.has(nodeId)) continue;
 
-    if (node.children === undefined) return;
+    if (node.children === undefined) continue;
     if (node.children === crdtChangeNodeDeferred) {
       throw new Error('IPLD dereferencing is not supported yet!');
     }
     // Mark as walked BEFORE descending so cycles (shouldn't happen with
-    // content addressing, but defensively) don't infinitely recurse.
+    // content addressing, but defensively) don't traverse forever.
     walked.add(nodeId);
-    for (const [childId, childNode] of Object.entries(node.children)) {
-      walk(childId, childNode);
+    const entries = Object.entries(node.children);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
     }
   }
-
-  walk(remoteRootId, remoteRoot);
   return Array.from(byCid.values());
 }
 
@@ -197,8 +489,10 @@ export function mergeRemoteSyncTree<ChangesType>(
  *   - Skips a deferred `children` sentinel (`crdtChangeNodeDeferred`); IPLD
  *     dereferencing happens elsewhere and isn't required to enumerate the
  *     in-memory parent relationships we already have.
- *   - Tracks visited node CIDs so cycles (shouldn't happen with content
- *     addressing, but defensively) don't recurse forever.
+ *   - Tracks CIDs whose enumerable children have been walked so cycles
+ *     (shouldn't happen with content addressing, but defensively) don't
+ *     traverse forever. A sparse occurrence does not mark a CID walked: a
+ *     later canonical full occurrence may reveal its children.
  *
  * Mutates `out` in place and returns it for convenience.
  */
@@ -207,30 +501,36 @@ export function collectReferencedAncestors<ChangesType>(
   root: CRDTChangeNode<ChangesType>,
   out: Set<string>,
 ): Set<string> {
-  const visited = new Set<string>();
+  const walked = new Set<string>();
+  const pending: Array<{
+    nodeId: string | undefined;
+    node: CRDTChangeNode<ChangesType>;
+    referencedByParent: boolean;
+  }> = [{ nodeId: rootId, node: root, referencedByParent: false }];
 
-  function walk(
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): void {
-    if (nodeId !== undefined) {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
+  while (pending.length > 0) {
+    const { nodeId, node, referencedByParent } = pending.pop()!;
+    if (referencedByParent && nodeId !== undefined) out.add(nodeId);
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
     }
-
-    if (node.children === undefined) return;
-    if (node.children === crdtChangeNodeDeferred) return;
-
-    for (const [childId, childNode] of Object.entries(node.children)) {
-      // The `children` map keys are CIDs the current node references as
-      // parents (primary parent + cross-links). They are ancestors by
-      // definition -- record them as referenced.
-      out.add(childId);
-      walk(childId, childNode);
+    if (nodeId !== undefined) {
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    const entries = Object.entries(node.children);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const [childId, childNode] = entries[index]!;
+      pending.push({
+        nodeId: childId,
+        node: childNode,
+        referencedByParent: true,
+      });
     }
   }
-
-  walk(rootId, root);
   return out;
 }
 
@@ -266,7 +566,7 @@ export function collectReferencedAncestors<ChangesType>(
  *         `children` map, record `childId` into BOTH `cids` (the child
  *         is a node in the served tree) AND `referenced` (the child is
  *         a parent of the current node, so it is NOT a head).
- *       - Recurse into the child's own children (if not deferred).
+ *       - Traverse the child's own children (if not deferred).
  *   - If `snapshotBoundaryCid` is provided and non-empty, record it
  *     into `cids`. The snapshot boundary is a node the responder
  *     attests to (post-sync the loader adds it to `_hashes`); whether
@@ -286,10 +586,12 @@ export function collectReferencedAncestors<ChangesType>(
  *     children-keys to the analysis.
  *   - Deferred children sentinel: treated identically to
  *     `collectReferencedAncestors` -- the children of a deferred node
- *     are unknown; we do not recurse. Any CIDs that appear as keys
+ *     are unknown; we do not traverse them. Any CIDs that appear as keys
  *     leading INTO a deferred child are still recorded as referenced
  *     (we saw them as a child-key before the deferred indicator).
- *   - Cycles: defensively guarded by a `visited` set on node CIDs.
+ *   - Cycles: defensively guarded by a set of node CIDs whose enumerable
+ *     children have been walked. Sparse occurrences remain eligible for a
+ *     later full occurrence to reveal children.
  *
  * This is structurally identical to applying the served payload and
  * then computing `_hashes \ _referencedAncestors` on an EMPTY pre-sync
@@ -304,28 +606,40 @@ export function computeServedFrontier<ChangesType>(
 ): string[] {
   const cids = new Set<string>();
   const referenced = new Set<string>();
-  const visited = new Set<string>();
-
-  function walk(
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): void {
-    if (nodeId !== undefined) {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
-      cids.add(nodeId);
-    }
-    if (node.children === undefined) return;
-    if (node.children === crdtChangeNodeDeferred) return;
-    for (const [childId, childNode] of Object.entries(node.children)) {
-      cids.add(childId);
-      referenced.add(childId);
-      walk(childId, childNode);
-    }
-  }
+  const walked = new Set<string>();
 
   if (changes !== undefined) {
-    walk(changeId, changes);
+    const pending: Array<{
+      nodeId: string | undefined;
+      node: CRDTChangeNode<ChangesType>;
+      referencedByParent: boolean;
+    }> = [{ nodeId: changeId, node: changes, referencedByParent: false }];
+    while (pending.length > 0) {
+      const { nodeId, node, referencedByParent } = pending.pop()!;
+      if (nodeId !== undefined) {
+        cids.add(nodeId);
+        if (referencedByParent) referenced.add(nodeId);
+      }
+      if (
+        node.children === undefined ||
+        node.children === crdtChangeNodeDeferred
+      ) {
+        continue;
+      }
+      if (nodeId !== undefined) {
+        if (walked.has(nodeId)) continue;
+        walked.add(nodeId);
+      }
+      const entries = Object.entries(node.children);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [childId, childNode] = entries[index]!;
+        pending.push({
+          nodeId: childId,
+          node: childNode,
+          referencedByParent: true,
+        });
+      }
+    }
   }
   if (snapshotBoundaryCid) {
     cids.add(snapshotBoundaryCid);
@@ -352,8 +666,9 @@ export function computeServedFrontier<ChangesType>(
  *   - Skips a deferred `children` sentinel; we cannot enumerate descendants
  *     of a deferred node, so we conservatively return `false` if the target
  *     would only have been found beneath that sentinel.
- *   - Tracks visited node CIDs so cycles do not recurse forever (content
- *     addressing rules these out in practice; defensive nonetheless).
+ *   - Tracks node CIDs only after their enumerable children are walked so
+ *     cycles do not traverse forever while a sparse occurrence can still be
+ *     upgraded by a later full occurrence.
  *
  * Returns `true` if `targetCid` is found, `false` otherwise. Treats
  * empty / undefined `targetCid` as "not found" so callers can pass an
@@ -366,28 +681,29 @@ export function treeContainsCid<ChangesType>(
 ): boolean {
   if (!targetCid) return false;
   if (root === undefined) return false;
-  if (rootId === targetCid) return true;
-
-  const visited = new Set<string>();
-
-  function walk(
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): boolean {
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (nodeId === targetCid) return true;
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
     if (nodeId !== undefined) {
-      if (visited.has(nodeId)) return false;
-      visited.add(nodeId);
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
     }
-    if (node.children === undefined) return false;
-    if (node.children === crdtChangeNodeDeferred) return false;
-    for (const [childId, childNode] of Object.entries(node.children)) {
-      if (childId === targetCid) return true;
-      if (walk(childId, childNode)) return true;
+    const entries = Object.entries(node.children);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
     }
-    return false;
   }
-
-  return walk(rootId, root);
+  return false;
 }
 
 /**
@@ -427,7 +743,7 @@ export function trackTipInList<Tip extends { cid: string }>(
 }
 
 /**
- * Recursively strip inline `change` content from a `CRDTChangeNode` tree
+ * Iteratively strip inline `change` content from a `CRDTChangeNode` tree
  * by setting `change: undefined` on every node, leaving the CID-keyed
  * `children` structure intact. Mutates the passed tree in-place; returns
  * the same root for chaining convenience.
@@ -447,7 +763,7 @@ export function trackTipInList<Tip extends { cid: string }>(
  * Skips a deferred `children` sentinel (already empty by definition).
  * Walks every other node so a partially-deferred tree is fully stripped.
  *
- * Pure (no I/O, no clock); the recursion is bounded by the tree size.
+ * Pure (no I/O, no clock); an explicit stack avoids call-stack growth.
  * Returned as a free function so the unit tests can exercise the helper
  * without standing up a full `PeerborneDocument` instance.
  */
@@ -455,20 +771,28 @@ export function stripInlineChanges<ChangesType>(
   node: CRDTChangeNode<ChangesType> | undefined,
 ): CRDTChangeNode<ChangesType> | undefined {
   if (!node) return node;
-  node.change = undefined;
-  if (
-    node.children !== undefined &&
-    node.children !== crdtChangeNodeDeferred
-  ) {
-    for (const child of Object.values(node.children)) {
-      stripInlineChanges(child);
+  const pending = [node];
+  const visited = new Set<CRDTChangeNode<ChangesType>>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    current.change = undefined;
+    if (
+      current.children !== undefined &&
+      current.children !== crdtChangeNodeDeferred
+    ) {
+      const children = Object.values(current.children);
+      for (let index = children.length - 1; index >= 0; index--) {
+        pending.push(children[index]!);
+      }
     }
   }
   return node;
 }
 
 /**
- * Recursively collect every CID that appears in a `CRDTChangeNode` tree
+ * Iteratively collect every CID that appears in a `CRDTChangeNode` tree
  * (the optional root CID, every node-id appearing in any `children` map
  * key). Returns the CIDs in insertion order, deduplicated via the
  * underlying `Set`. Used by `PeerborneDocument._sendLoadRequestAndSync`
@@ -485,10 +809,11 @@ export function stripInlineChanges<ChangesType>(
  *      with only a partially-applied document and `load()` report success.
  *
  * Skips a deferred `children` sentinel (we cannot enumerate descendants
- * beneath a deferred node; defensively bounded by a `visited` set on
- * node CIDs).
+ * beneath a deferred node; defensively bounded by a set of node CIDs whose
+ * enumerable children have been walked). Sparse occurrences remain eligible
+ * for a later full occurrence to reveal children.
  *
- * Pure (no I/O); the recursion is bounded by the tree size.
+ * Pure (no I/O); an explicit stack avoids call-stack growth.
  */
 export function collectAllCidsInTree<ChangesType>(
   rootId: string | undefined,
@@ -496,23 +821,29 @@ export function collectAllCidsInTree<ChangesType>(
 ): string[] {
   if (!root) return rootId ? [rootId] : [];
   const cids = new Set<string>();
-  const visited = new Set<string>();
-  function walk(
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): void {
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
     if (nodeId !== undefined) {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
       cids.add(nodeId);
     }
-    if (node.children === undefined) return;
-    if (node.children === crdtChangeNodeDeferred) return;
-    for (const [childId, childNode] of Object.entries(node.children)) {
-      cids.add(childId);
-      walk(childId, childNode);
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
+    if (nodeId !== undefined) {
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    const entries = Object.entries(node.children);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
     }
   }
-  walk(rootId, root);
   return [...cids];
 }

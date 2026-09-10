@@ -301,6 +301,31 @@ describe('BeeKEM', () => {
   });
 
   describe('processPathUpdate', () => {
+    test('can validate an update on a detached clone before committing it', async () => {
+      const alice = new BeeKEM();
+      const aliceKeyPair = await generateECDHKeyPair();
+      await alice.initialize(aliceKeyPair.privateKey, aliceKeyPair.publicKey);
+      const bobKeyPair = await generateECDHKeyPair();
+      const { welcome } = await alice.addMember(bobKeyPair.publicKey);
+      const bob = new BeeKEM();
+      await bob.processWelcome(
+        welcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
+      const originalAliceRoot = await alice.getRootSecret();
+      const { pathUpdate, rootSecret: bobNewRoot } = await bob.update();
+
+      const stagedAlice = alice.clone();
+      const stagedRoot = await stagedAlice.processPathUpdate(pathUpdate);
+      const unchangedAliceRoot = await alice.getRootSecret();
+
+      expect(Buffer.from(stagedRoot).equals(Buffer.from(bobNewRoot))).toBe(true);
+      expect(
+        Buffer.from(unchangedAliceRoot).equals(Buffer.from(originalAliceRoot)),
+      ).toBe(true);
+    });
+
     test('Alice processes Bob update and both derive the same root secret', async () => {
       // Alice creates the group
       const alice = new BeeKEM();

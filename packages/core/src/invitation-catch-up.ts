@@ -3,10 +3,8 @@ import {
   withInvitationDeadline,
 } from './invitation-policy.js';
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
-import {
-  crdtChangeNodeDeferred,
-  type CRDTChangeNode,
-} from './crdt-change-node.js';
+import { type CRDTChangeNode } from './crdt-change-node.js';
+import { collectBoundedChangeTree } from './change-tree-walk.js';
 
 interface AbortableInvitationStream {
   close(): Promise<void>;
@@ -73,7 +71,7 @@ export async function syncInvitationMessageCompletely<
     expectedWithNewSnapshot.add(snapshotBoundary);
   }
   const synced = await sync();
-  if (!synced) return false;
+  if (synced !== true) return false;
   const snapshotCoversHistory =
     snapshotBoundary !== undefined &&
     options.isSnapshotApplied?.() === true;
@@ -91,7 +89,6 @@ export function collectInvitationCidsToInstall<ChangesType>(
   provenSnapshotBoundaries: ReadonlySet<string>,
 ): string[] {
   const required = new Set<string>();
-  const visited = new Set<string>();
   if (!root) {
     if (rootId !== undefined) required.add(rootId);
     return [...required];
@@ -100,29 +97,13 @@ export function collectInvitationCidsToInstall<ChangesType>(
     throw new Error('Invitation change tree is missing its root CID');
   }
 
-  const walk = (
-    nodeId: string | undefined,
-    node: CRDTChangeNode<ChangesType>,
-  ): void => {
+  for (const { nodeId } of collectBoundedChangeTree(rootId, root, {
+    stopBelowNodeIds: provenSnapshotBoundaries,
+  })) {
     if (nodeId !== undefined) {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
       required.add(nodeId);
-      if (provenSnapshotBoundaries.has(nodeId)) {
-        return;
-      }
     }
-    if (
-      node.children === undefined ||
-      node.children === crdtChangeNodeDeferred
-    ) {
-      return;
-    }
-    for (const [childId, child] of Object.entries(node.children)) {
-      walk(childId, child);
-    }
-  };
-  walk(rootId, root);
+  }
   return [...required];
 }
 
