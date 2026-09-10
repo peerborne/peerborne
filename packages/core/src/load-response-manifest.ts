@@ -7,6 +7,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
 const LOAD_RESPONSE_MANIFEST_DOMAIN =
   'peerborne/load-response-manifest/v1\0';
@@ -18,6 +19,43 @@ export const MAX_LOAD_RESPONSE_MANIFEST_OCCURRENCES =
   MAX_LOAD_RESPONSE_MANIFEST_EDGES + 1;
 export const MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES = 1024;
 export const MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES = 16 * 1024 * 1024;
+
+const LOAD_RESPONSE_MANIFEST_INPUT_FIELDS = [
+  'changeId',
+  'changes',
+  'serializeChange',
+  'snapshot',
+  'keychainChangesBytes',
+] as const;
+const LOAD_RESPONSE_MANIFEST_SNAPSHOT_FIELDS = [
+  'stateBytes',
+  'lastChangeNodeCID',
+  'compactedCount',
+  'timestamp',
+] as const;
+const arrayIsArray = Array.isArray;
+const objectCreate = Object.create;
+const objectDefineProperty = Object.defineProperty;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const reflectApply = Reflect.apply;
+
+function defineEnumerableDataProperty(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  reflectApply(objectDefineProperty, Object, [
+    target,
+    key,
+    {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    },
+  ]);
+}
 
 function encodeUtf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -282,6 +320,83 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(digest);
 }
 
+function snapshotManifestOwnDataFields<Fields extends readonly string[]>(
+  value: unknown,
+  fields: Fields,
+  label: string,
+  required: boolean,
+): Record<Fields[number], unknown> {
+  if (value === null || typeof value !== 'object') {
+    throw new TypeError(`${label} must be a plain record`);
+  }
+  let isArray: boolean;
+  let prototype: object | null;
+  let prototypeParent: object | null = null;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
+      | object
+      | null;
+    if (prototype !== null) {
+      prototypeParent = reflectApply(objectGetPrototypeOf, Object, [
+        prototype,
+      ]) as object | null;
+    }
+  } catch {
+    throw new TypeError(`${label} must be a plain record`);
+  }
+  if (isArray || (prototype !== null && prototypeParent !== null)) {
+    throw new TypeError(`${label} must be a plain record`);
+  }
+
+  const snapshot = reflectApply(objectCreate, Object, [null]) as Record<
+    Fields[number],
+    unknown
+  >;
+  for (const field of fields) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        field,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${label} must expose stable own data properties`);
+    }
+    if (descriptor === undefined) {
+      if (required) {
+        throw new TypeError(
+          `${label} ${field} must be an enumerable own data property`,
+        );
+      }
+      defineEnumerableDataProperty(snapshot, field, undefined);
+      continue;
+    }
+    if (descriptor.enumerable !== true || !('value' in descriptor)) {
+      throw new TypeError(
+        `${label} ${field} must be an enumerable own data property`,
+      );
+    }
+    defineEnumerableDataProperty(snapshot, field, descriptor.value);
+  }
+  return snapshot;
+}
+
+function snapshotPayloadBytes(name: string, value: unknown): Uint8Array {
+  try {
+    return copyUnsharedUint8Array(
+      value,
+      0,
+      MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES,
+      name,
+    );
+  } catch {
+    throw new TypeError(
+      `${name} exceeds ${MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES} bytes or is not an unshared Uint8Array`,
+    );
+  }
+}
+
 /**
  * Hash the complete state-mutating plan carried by one V4 load response.
  *
@@ -297,7 +412,53 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
 export async function loadResponseManifestHash<ChangesType>(
   input: LoadResponseManifestInput<ChangesType>,
 ): Promise<Uint8Array> {
-  if (input.changes === undefined && input.changeId !== undefined) {
+  // Capture all known input fields through own data descriptors before
+  // invoking serializeChange or crossing an async digest boundary. Reading
+  // properties directly would let accessors synthesize a manifest from states
+  // that never coexisted.
+  const inputFields = snapshotManifestOwnDataFields(
+    input,
+    LOAD_RESPONSE_MANIFEST_INPUT_FIELDS,
+    'load response manifest input',
+    false,
+  );
+  const rawSnapshot = inputFields.snapshot;
+  const snapshotFields =
+    rawSnapshot === undefined
+      ? undefined
+      : snapshotManifestOwnDataFields(
+          rawSnapshot,
+          LOAD_RESPONSE_MANIFEST_SNAPSHOT_FIELDS,
+          'load response manifest snapshot',
+          true,
+        );
+  const snapshot =
+    snapshotFields === undefined
+      ? undefined
+      : {
+          stateBytes: snapshotPayloadBytes(
+            'snapshot state',
+            snapshotFields.stateBytes,
+          ),
+          lastChangeNodeCID: snapshotFields.lastChangeNodeCID,
+          compactedCount: snapshotFields.compactedCount,
+          timestamp: snapshotFields.timestamp,
+        };
+  const inputKeychainChangesBytes = inputFields.keychainChangesBytes;
+  const keychainChangesBytes =
+    inputKeychainChangesBytes === undefined
+      ? undefined
+      : snapshotPayloadBytes(
+          'keychain changes',
+          inputKeychainChangesBytes,
+        );
+  const changeId = inputFields.changeId as string | undefined;
+  const changes = inputFields.changes as CRDTChangeNode<ChangesType> | undefined;
+  const serializeChange = inputFields.serializeChange as
+    | ((change: ChangesType) => Uint8Array)
+    | undefined;
+
+  if (changes === undefined && changeId !== undefined) {
     throw new TypeError(
       'load response manifest cannot name a change root without a tree',
     );
@@ -376,7 +537,7 @@ export async function loadResponseManifestHash<ChangesType>(
         );
       }
       accountOccurrence();
-      const descriptor = describeNode(node, input.serializeChange);
+      const descriptor = describeNode(node, serializeChange);
       accountDescriptor(descriptor);
       let record = records.get(cid);
       if (record === undefined) {
@@ -452,10 +613,10 @@ export async function loadResponseManifestHash<ChangesType>(
   };
 
   let anonymousRoot: NodeDescriptor | undefined;
-  if (input.changes !== undefined) {
-    if (input.changeId === undefined) {
+  if (changes !== undefined) {
+    if (changeId === undefined) {
       accountOccurrence();
-      anonymousRoot = describeNode(input.changes, input.serializeChange);
+      anonymousRoot = describeNode(changes, serializeChange);
       accountDescriptor(anonymousRoot);
       edgeCount += anonymousRoot.childIds.length;
       if (edgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
@@ -464,29 +625,29 @@ export async function loadResponseManifestHash<ChangesType>(
         );
       }
       if (
-        input.changes.children !== undefined &&
-        input.changes.children !== crdtChangeNodeDeferred
+        changes.children !== undefined &&
+        changes.children !== crdtChangeNodeDeferred
       ) {
         for (const childId of anonymousRoot.childIds) {
           // The anonymous root itself occupies depth one.
-          walkNamed(childId, input.changes.children[childId]!, 2);
+          walkNamed(childId, changes.children[childId]!, 2);
         }
       }
     } else {
       walkNamed(
-        requireString('change root CID', input.changeId),
-        input.changes,
+        requireString('change root CID', changeId),
+        changes,
       );
     }
   }
 
   const parts: Uint8Array[] = [encodeUtf8(LOAD_RESPONSE_MANIFEST_DOMAIN)];
-  if (input.changes === undefined) {
+  if (changes === undefined) {
     parts.push(uint8(0));
-  } else if (input.changeId === undefined) {
+  } else if (changeId === undefined) {
     parts.push(uint8(1), ...descriptorParts(anonymousRoot!));
   } else {
-    parts.push(uint8(2), ...stringParts(input.changeId));
+    parts.push(uint8(2), ...stringParts(changeId));
   }
 
   const sortedRecords = [...records.entries()]
@@ -504,34 +665,29 @@ export async function loadResponseManifestHash<ChangesType>(
     parts.push(...stringParts(cid), ...descriptorParts(descriptor));
   }
 
-  if (input.snapshot === undefined) {
+  if (snapshot === undefined) {
     parts.push(uint8(0));
   } else {
-    const snapshot = input.snapshot;
-    if (!(snapshot.stateBytes instanceof Uint8Array)) {
-      throw new TypeError('snapshot stateBytes must be a Uint8Array');
-    }
-    if (
-      snapshot.stateBytes.byteLength >
-      MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES
-    ) {
-      throw new RangeError(
-        `snapshot state exceeds ${MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES} bytes`,
-      );
-    }
     const snapshotCid = requireString(
       'snapshot lastChangeNodeCID',
       snapshot.lastChangeNodeCID,
       { allowEmpty: true },
     );
+    const compactedCount = snapshot.compactedCount;
     if (
-      !Number.isInteger(snapshot.compactedCount) ||
-      snapshot.compactedCount < 0 ||
-      snapshot.compactedCount > 0xffffffff
+      typeof compactedCount !== 'number' ||
+      !Number.isInteger(compactedCount) ||
+      compactedCount < 0 ||
+      compactedCount > 0xffffffff
     ) {
       throw new RangeError('snapshot compactedCount must be a uint32');
     }
-    if (!Number.isSafeInteger(snapshot.timestamp) || snapshot.timestamp < 0) {
+    const timestamp = snapshot.timestamp;
+    if (
+      typeof timestamp !== 'number' ||
+      !Number.isSafeInteger(timestamp) ||
+      timestamp < 0
+    ) {
       throw new RangeError(
         'snapshot timestamp must be a non-negative safe integer',
       );
@@ -539,31 +695,20 @@ export async function loadResponseManifestHash<ChangesType>(
     parts.push(
       uint8(1),
       ...stringParts(snapshotCid),
-      uint32(snapshot.compactedCount),
-      uint64(snapshot.timestamp),
+      uint32(compactedCount),
+      uint64(timestamp),
       uint32(snapshot.stateBytes.byteLength),
       await sha256(snapshot.stateBytes),
     );
   }
 
-  if (input.keychainChangesBytes === undefined) {
+  if (keychainChangesBytes === undefined) {
     parts.push(uint8(0));
   } else {
-    if (!(input.keychainChangesBytes instanceof Uint8Array)) {
-      throw new TypeError('keychainChangesBytes must be a Uint8Array');
-    }
-    if (
-      input.keychainChangesBytes.byteLength >
-      MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES
-    ) {
-      throw new RangeError(
-        `keychain changes exceed ${MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES} bytes`,
-      );
-    }
     parts.push(
       uint8(1),
-      uint32(input.keychainChangesBytes.byteLength),
-      await sha256(input.keychainChangesBytes),
+      uint32(keychainChangesBytes.byteLength),
+      await sha256(keychainChangesBytes),
     );
   }
 

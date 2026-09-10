@@ -26,6 +26,24 @@ describe('load security state wire codec', () => {
     expect(original.controlHead[0]).toBe(1);
   });
 
+  test('serializes one descriptor snapshot without Proxy property reads', () => {
+    const target = commitments();
+    target.groupId = 'descriptor-group';
+    let propertyReads = 0;
+    const proxy = new Proxy(target, {
+      get(_object, property) {
+        propertyReads++;
+        if (property === 'groupId') return 'substituted-group';
+        throw new Error('commitment property read must not run');
+      },
+    });
+
+    expect(serializeLoadSecurityCommitmentsForWire(proxy).groupId).toBe(
+      'descriptor-group',
+    );
+    expect(propertyReads).toBe(0);
+  });
+
   test('emits exactly the versioned wire keys', () => {
     expect(Object.keys(serializeLoadSecurityCommitmentsForWire(commitments())).sort()).toEqual(
       [
