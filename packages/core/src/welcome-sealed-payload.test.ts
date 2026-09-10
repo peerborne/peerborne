@@ -6,6 +6,7 @@ import {
   decodeWelcomeSealedPayload,
   decodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload';
+import { serializeBeeKEMWelcomeV2ForWire } from './beekem-welcome-wire.js';
 
 describe('welcome-sealed-payload round-trip', () => {
   const keychainBytes = new Uint8Array([1, 2, 3, 4, 5]);
@@ -78,6 +79,32 @@ describe('welcome-sealed-payload V2 boundary', () => {
       keychainChanges,
       beekemWelcome,
     });
+  });
+
+  test('rejects malformed runtime V2 fields before returning wire data', () => {
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        generation: 0,
+      }),
+    ).toThrow(/generation/);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        treeHash: new Uint8Array(31),
+      }),
+    ).toThrow(/treeHash.*32 bytes/);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        pathKeys: [
+          {
+            ...beekemWelcome.pathKeys[0],
+            publicKey: new Uint8Array(64),
+          },
+        ],
+      }),
+    ).toThrow(/publicKey.*65 bytes/);
   });
 
   test.each([
