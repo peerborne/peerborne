@@ -6,6 +6,7 @@ import {
   crdtWriterChangeNode,
   type CRDTChangeNode,
 } from './crdt-change-node.js';
+import { MAX_CHANGE_TREE_DEPTH } from './change-tree-walk.js';
 import {
   assertAcceptedInvitationMembershipTopology,
   assertInitialInvitationMembershipTopology,
@@ -386,15 +387,15 @@ describe('ACL-bearing sync detection', () => {
     ).toBe(false);
   });
 
-  test('finds a deeply nested membership node without recursion', () => {
+  test('finds a maximum-depth membership node without recursion', () => {
     const root: CRDTChangeNode<Uint8Array> = {
       kind: crdtDocumentChangeNode,
     };
     let cursor = root;
-    for (let index = 1; index < 10_000; index++) {
+    for (let index = 1; index < MAX_CHANGE_TREE_DEPTH; index++) {
       const child: CRDTChangeNode<Uint8Array> = {
         kind:
-          index === 9_999
+          index === MAX_CHANGE_TREE_DEPTH - 1
             ? crdtReaderChangeNode
             : crdtDocumentChangeNode,
       };

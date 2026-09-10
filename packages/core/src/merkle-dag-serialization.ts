@@ -8,10 +8,10 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import {
-  collectBoundedChangeTree,
   MAX_CHANGE_TREE_DEPTH,
   MAX_CHANGE_TREE_EDGES,
   MAX_CHANGE_TREE_NODES,
+  snapshotBoundedChangeTree,
 } from './change-tree-walk.js';
 
 // Allow-list of `kind` discriminants accepted from peer wire messages.
@@ -33,16 +33,11 @@ const VALID_CHANGE_NODE_KINDS: ReadonlySet<CRDTChangeNodeKind> = new Set(
 );
 
 /**
- * Maximum number of change nodes on one root-to-leaf V4 load-manifest path.
- *
- * This is a security-aware initial-load policy, not a generic JSON wire limit.
- * Legacy V1/V3 and GossipSub messages predate that policy and may contain
- * deeper histories when automatic compaction is disabled. Their serializers
- * and deserializers therefore use the larger shared change-tree aggregate
- * limits rather than this V4 path limit; all traversal remains stack-safe and
- * cycle-safe, and the receiving document validates before mutation.
+ * Maximum number of change nodes on one root-to-leaf wire path. This shared
+ * limit also bounds legacy and GossipSub trees so native JSON serialization
+ * remains stack-safe when signatures require an exact re-encoding.
  */
-export const MAX_MERKLE_DAG_DEPTH = 512;
+export const MAX_MERKLE_DAG_DEPTH = MAX_CHANGE_TREE_DEPTH;
 
 function isValidChangeNodeKind(value: unknown): value is CRDTChangeNodeKind {
   return (
@@ -113,7 +108,7 @@ export function serializeChangeNodeForJSON<TIn, TOut>(
 ): CRDTChangeNodeWire<TOut> {
   // Match the receive-side aggregate policy and validate the whole structure
   // before an encoder callback can observe a partial traversal.
-  collectBoundedChangeTree(undefined, node);
+  const { root: preflightRoot } = snapshotBoundedChangeTree(undefined, node);
 
   type Task =
     | {
@@ -129,7 +124,7 @@ export function serializeChangeNodeForJSON<TIn, TOut>(
 
   let root!: CRDTChangeNodeWire<TOut>;
   const active = new WeakSet<object>();
-  const pending: Task[] = [{ phase: 'enter', source: node }];
+  const pending: Task[] = [{ phase: 'enter', source: preflightRoot }];
   while (pending.length > 0) {
     const task = pending.pop()!;
     if (task.phase === 'leave') {

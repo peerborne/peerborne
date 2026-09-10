@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import {
+  Change as BinaryChange,
   change as automergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
@@ -21,6 +22,7 @@ import {
   INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
   INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
   INITIAL_INVITATION_MAX_SIGNATURE_BYTES,
+  MAX_MERKLE_DAG_DEPTH,
   BeeKEM,
   SubtleCrypto,
   eciesSeal,
@@ -569,6 +571,17 @@ describe('AutomergeKeychainProvider', () => {
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
 
+  function nestedTree(depth: number): CRDTChangeNode<BinaryChange[]> {
+    const root: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
+    let cursor = root;
+    for (let index = 1; index < depth; index++) {
+      const child: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
+      cursor.children = { [`cid-${index}`]: child };
+      cursor = child;
+    }
+    return root;
+  }
+
   test('preserves nested sync-message signing bytes across the wire', () => {
     const unsignedMessage = {
       documentId: 'signed-doc',
@@ -596,6 +609,22 @@ describe('AutomergeJSONSerializer', () => {
     );
 
     expect(receiverVerificationBytes).toEqual(senderSigningBytes);
+  });
+
+  test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'maximum-depth',
+      changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
+    });
+    const restored = serializer.deserializeSyncMessage(wire);
+
+    expect(() => serializer.serializeSyncMessage(restored)).not.toThrow();
+    expect(() =>
+      serializer.serializeSyncMessage({
+        documentId: 'over-maximum-depth',
+        changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
+      }),
+    ).toThrow(/maximum depth/);
   });
 
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {

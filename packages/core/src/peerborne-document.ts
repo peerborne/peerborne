@@ -27,7 +27,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import {
-  collectBoundedChangeTree,
+  snapshotBoundedChangeTree,
   type BoundedChangeTreeEntry,
 } from './change-tree-walk.js';
 import {
@@ -1445,16 +1445,24 @@ export class PeerborneDocument<
   private _collectACLFromTree(
     node: CRDTChangeNode<ChangesType>,
     rootId?: string,
-  ): BoundedChangeTreeEntry<ChangesType>[] {
-    const entries = collectBoundedChangeTree(rootId, node);
+  ): {
+    readonly aclEntries: BoundedChangeTreeEntry<ChangesType>[];
+    readonly changes: CRDTChangeNode<ChangesType>;
+  } {
+    const { entries, root: changes } = snapshotBoundedChangeTree(rootId, node, {
+      canonicalizeNodeId: (nodeId) => CID.parse(nodeId).toString(),
+    });
     // Reject conflicting descriptions of one content-addressed node before
     // the ACL pre-pass can apply any of them.
-    validateRemoteSyncTreeAliases(rootId, node);
-    return entries.filter(
-      ({ kind, change }) =>
-        change !== undefined &&
-        (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode),
-    );
+    validateRemoteSyncTreeAliases(rootId, changes);
+    return {
+      aclEntries: entries.filter(
+        ({ kind, change }) =>
+          change !== undefined &&
+          (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode),
+      ),
+      changes,
+    };
   }
 
   private _applyCollectedACL(
@@ -1471,7 +1479,7 @@ export class PeerborneDocument<
   }
 
   private _applyACLFromTree(node: CRDTChangeNode<ChangesType>): void {
-    this._applyCollectedACL(this._collectACLFromTree(node));
+    this._applyCollectedACL(this._collectACLFromTree(node).aclEntries);
   }
 
   /**
@@ -2032,17 +2040,45 @@ export class PeerborneDocument<
       }
     };
 
-    // Validate and budget the entire retained tree before pruning mutates a
-    // single children map. A malformed or oversized tree therefore leaves the
-    // cached sync message untouched.
-    collectBoundedChangeTree(
+    // Validate, budget, and detach the entire retained tree before pruning.
+    // All later traversal uses this immutable structural snapshot, so a proxy
+    // cannot expose a different tree between preflight and mutation.
+    const { root: preflightRoot } = snapshotBoundedChangeTree(
       this._lastSyncMessage.changeId,
       this._lastSyncMessage.changes,
+      {
+        canonicalizeNodeId: (nodeId) => CID.parse(nodeId).toString(),
+      },
     );
     validateRemoteSyncTreeAliases(
       this._lastSyncMessage.changeId,
-      this._lastSyncMessage.changes,
+      preflightRoot,
     );
+
+    // Work on a detached mutable copy and publish it only after the complete
+    // prune succeeds. Change payloads remain shared, but traversal containers
+    // are plain data objects captured by the preflight walk.
+    const prunedRoot = { ...preflightRoot } as CRDTChangeNode<ChangesType>;
+    const cloneQueue: Array<
+      readonly [CRDTChangeNode<ChangesType>, CRDTChangeNode<ChangesType>]
+    > = [[preflightRoot, prunedRoot]];
+    for (let cloneIndex = 0; cloneIndex < cloneQueue.length; cloneIndex++) {
+      const [source, target] = cloneQueue[cloneIndex]!;
+      if (
+        source.children === undefined ||
+        source.children === crdtChangeNodeDeferred
+      ) {
+        continue;
+      }
+      const children: Record<string, CRDTChangeNode<ChangesType>> =
+        Object.create(null);
+      target.children = children;
+      for (const [childId, child] of Object.entries(source.children)) {
+        const childClone = { ...child } as CRDTChangeNode<ChangesType>;
+        children[childId] = childClone;
+        cloneQueue.push([child, childClone]);
+      }
+    }
 
     // BFS traversal to collect nodes up to the limit.
     // ACL nodes (reader/writer) are always preserved regardless of keepCount.
@@ -2055,7 +2091,7 @@ export class PeerborneDocument<
     // globally across all branches. Once the limit is reached, all further
     // document nodes in any branch are pruned.
     const queue: Array<CRDTChangeNode<ChangesType>> = [
-      this._lastSyncMessage.changes,
+      prunedRoot,
     ];
     let documentNodesVisited = 0;
     let qi = 0;
@@ -2097,6 +2133,10 @@ export class PeerborneDocument<
     console.log(
       `Pruned change tree for ${this.documentPath}: kept ${documentNodesVisited} document nodes, pruned ${prunedCIDs.size} blocks`,
     );
+    this._lastSyncMessage = {
+      ...this._lastSyncMessage,
+      changes: prunedRoot,
+    };
 
     return prunedCIDs;
   }
@@ -4014,8 +4054,8 @@ export class PeerborneDocument<
       const blockData = rawMessage.detail.data.slice(
         this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
       );
-      this._decryptBlock(blockKeyID, blockNonce, blockData).then(
-        (rawContent) => {
+      void this._decryptBlock(blockKeyID, blockNonce, blockData)
+        .then((rawContent) => {
           if (!rawContent) {
             // If we're unable to decrypt the document, try a fresh document load.
             console.warn(
@@ -4031,8 +4071,10 @@ export class PeerborneDocument<
             this._syncMessageSerializer.deserializeSyncMessage(rawContent);
 
           return this.sync(message);
-        },
-      );
+        })
+        .catch(() => {
+          console.error('Inbound sync message handling failed');
+        });
     };
 
     // All registration and subscription steps are inside try/catch so that
@@ -4235,7 +4277,7 @@ export class PeerborneDocument<
     // Validate and collect the complete ACL pre-pass before any keychain, ACL,
     // snapshot, or document mutation. This makes malformed/over-budget change
     // trees all-or-nothing at the sync boundary.
-    const aclEntries = message.changes
+    const changeTreePreflight = message.changes
       ? this._collectACLFromTree(message.changes, message.changeId)
       : undefined;
 
@@ -4257,8 +4299,8 @@ export class PeerborneDocument<
     // _writers/_readers. This is needed before snapshot verification since
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    if (aclEntries) {
-      this._applyCollectedACL(aclEntries);
+    if (changeTreePreflight) {
+      this._applyCollectedACL(changeTreePreflight.aclEntries);
     }
 
     // Apply snapshot if present and more recent than ours.
@@ -4335,8 +4377,11 @@ export class PeerborneDocument<
 
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
-    if (message.changes) {
-      await this._syncDocumentChanges(message.changeId, message.changes);
+    if (changeTreePreflight) {
+      await this._syncDocumentChanges(
+        message.changeId,
+        changeTreePreflight.changes,
+      );
     }
 
     return true;

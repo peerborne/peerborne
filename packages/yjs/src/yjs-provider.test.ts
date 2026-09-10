@@ -1,6 +1,10 @@
 import { describe, expect, test, beforeAll } from '@jest/globals';
 import { Doc, encodeStateAsUpdateV2 } from 'yjs';
 import {
+  type CRDTChangeNode,
+  MAX_MERKLE_DAG_DEPTH,
+} from '@peerborne/core';
+import {
   YjsProvider,
   YjsACL,
   YjsACLProvider,
@@ -565,6 +569,17 @@ describe('YjsKeychain', () => {
 });
 
 describe('YjsJSONSerializer', () => {
+  function nestedTree(depth: number): CRDTChangeNode<Uint8Array> {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    let cursor = root;
+    for (let index = 1; index < depth; index++) {
+      const child: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+      cursor.children = { [`cid-${index}`]: child };
+      cursor = child;
+    }
+    return root;
+  }
+
   test('serializeChanges/deserializeChanges are identity (passthrough)', () => {
     const serializer = new YjsJSONSerializer();
     const data = new Uint8Array([10, 20, 30, 40]);
@@ -620,6 +635,23 @@ describe('YjsJSONSerializer', () => {
     expect(children['child-hash-1'].kind).toBe('writer');
     expect(children['child-hash-1'].change).toEqual(new Uint8Array([200, 201]));
     expect(deserialized.keychainChanges).toEqual(new Uint8Array([50, 51, 52]));
+  });
+
+  test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'maximum-depth',
+      changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
+    });
+    const restored = serializer.deserializeSyncMessage(wire);
+
+    expect(() => serializer.serializeSyncMessage(restored)).not.toThrow();
+    expect(() =>
+      serializer.serializeSyncMessage({
+        documentId: 'over-maximum-depth',
+        changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
+      }),
+    ).toThrow(/maximum depth/);
   });
 
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
