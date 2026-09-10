@@ -294,6 +294,80 @@ export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
 export type { CRDTSnapshotNode } from './snapshot-node.js';
 export type { CompactionConfig } from './compaction-config.js';
+export {
+  LOAD_SECURITY_STATE_VERSION,
+  LOAD_SECURITY_HASH_LENGTH,
+  MAX_LOAD_SECURITY_GROUP_ID_BYTES,
+  MAX_LOAD_SECURITY_EPOCH,
+  TrustedLoadSecurityCommitmentsError,
+  captureTrustedLoadSecurityCommitments,
+  cloneLoadSecurityCommitments,
+  encodeLoadSecurityState,
+  loadSecurityCommitmentsEqual,
+  loadSecurityStateHash,
+  loadSecurityStateHashToHex,
+  validateLoadSecurityCommitments,
+  validateLoadSecurityState,
+} from './load-security-state.js';
+export type {
+  LoadSecurityCommitments,
+  LoadSecurityCommitmentsResolver,
+  LoadSecurityState,
+} from './load-security-state.js';
+export {
+  serializeLoadSecurityCommitmentsForWire,
+  deserializeLoadSecurityCommitmentsFromWire,
+} from './load-security-state-wire.js';
+export type { LoadSecurityCommitmentsWire } from './load-security-state-wire.js';
+export {
+  loadAdvertisementHash,
+  loadAdvertisementHashToHex,
+} from './load-advertisement-hash.js';
+export {
+  LOAD_RESPONSE_MANIFEST_HASH_LENGTH,
+  MAX_LOAD_RESPONSE_MANIFEST_EDGES,
+  MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES,
+  MAX_LOAD_RESPONSE_MANIFEST_NODES,
+  MAX_LOAD_RESPONSE_MANIFEST_OCCURRENCES,
+  MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES,
+  loadResponseManifestHash,
+} from './load-response-manifest.js';
+export type {
+  LoadResponseManifestInput,
+  LoadResponseManifestSnapshot,
+} from './load-response-manifest.js';
+export {
+  identifyInitialLoadSigner,
+  verifyInitialLoadAuthentication,
+} from './initial-load-auth.js';
+export type {
+  IdentifiedInitialLoadSigner,
+  InitialLoadAuthenticationOptions,
+} from './initial-load-auth.js';
+export {
+  allowsUnauthenticatedUnknownDocumentSentinel,
+  isUnknownDocumentAdvertisement,
+  unknownDocumentAdvertisement,
+} from './initial-load-sentinel-policy.js';
+export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
+export {
+  INITIAL_LOAD_CHALLENGE_LENGTH,
+  MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
+  cloneInitialLoadChallenge,
+  createInitialLoadChallenge,
+  deserializeInitialLoadChallengeFromWire,
+  initialLoadChallengeEquals,
+  initialLoadRequestSignaturePayload,
+  serializeInitialLoadChallengeForWire,
+  validateInitialLoadChallenge,
+} from './initial-load-challenge.js';
+export {
+  documentLoadV3,
+  documentLoadV4,
+  snapshotLoadV3,
+  snapshotLoadV4,
+  securityAdvertiseV1,
+} from './wire-protocols.js';
 export type {
   ACLChainConfig,
   ACLChainOps,

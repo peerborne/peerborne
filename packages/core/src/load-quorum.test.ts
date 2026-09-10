@@ -187,13 +187,13 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
   });
 
   // `'unknown-doc'` is a first-class vote alongside tip-hash
-  // values. A Q-of-K majority of disclaims surfaces a `kind: 'new-doc'`
+  // values. A Q-of-K threshold of disclaims surfaces a `kind: 'new-doc'`
   // outcome that the orchestrator translates into `{ newDoc: true }` and
   // the loader translates into a `false` return so a fresh `open()` can
   // create the document on top of an existing swarm. A single lying
   // disclaim cannot force this branch if the other peers actually have
   // the document (their tip-hash bucket wins the tally).
-  test("'unknown-doc' majority returns kind='new-doc' with disclaim peers in agreeing cohort", () => {
+  test("'unknown-doc' threshold returns kind='new-doc' with disclaim peers in agreeing cohort", () => {
     const decision = decideLoadQuorum(
       [
         { peerId: 'p1', hash: 'unknown-doc' },
@@ -213,7 +213,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test("majority 'unknown-doc' vs minority tip-hash: tip-hash takes PRIORITY", () => {
+  test("larger 'unknown-doc' bucket vs one tip-hash: tip-hash takes PRIORITY", () => {
     // 2 disclaims, 1 peer reports HASH_A. The probe samples from the
     // WHOLE libp2p mesh, not just peers that hold this document, so
     // peers without the doc (legitimately returning unknown-doc) must
@@ -262,7 +262,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test("majority tip-hash beats minority 'unknown-doc' (single lying peer cannot force new-doc)", () => {
+  test("tip-hash threshold beats one 'unknown-doc' vote", () => {
     // 2 honest peers vote HASH_A, 1 malicious peer lies 'unknown-doc'.
     // Tip-hash bucket wins; loader proceeds with normal load.
     const decision = decideLoadQuorum(
@@ -297,7 +297,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test("split unknown-doc vs tip-hash with no Q majority fails with no-majority", () => {
+  test("split unknown-doc vs tip-hash with no bucket at Q fails with no-majority", () => {
     // 1 disclaim, 1 HASH_A, 1 HASH_B, Q=2. No bucket reaches 2.
     const decision = decideLoadQuorum(
       [
@@ -324,12 +324,12 @@ describe('effectiveK / effectiveQ', () => {
     expect(effectiveK(0, 5)).toBe(0);
   });
 
-  test('effectiveQ clamps to [1, K]', () => {
+  test('effectiveQ preserves an explicit trust floor instead of scarcity-clamping', () => {
     expect(effectiveQ(2, 3)).toBe(2);
-    expect(effectiveQ(5, 3)).toBe(3); // Q > K -> K
+    expect(effectiveQ(5, 3)).toBe(5); // Q > K remains unreachable
     expect(effectiveQ(0, 3)).toBe(1); // Q < 1 -> 1
     expect(effectiveQ(-1, 3)).toBe(1);
-    expect(effectiveQ(2, 0)).toBe(0); // no peers -> no quorum possible
+    expect(effectiveQ(2, 0)).toBe(2); // no peers cannot lower explicit Q
   });
 
   // A fractional `configuredK`
@@ -418,7 +418,44 @@ describe('validateLoadQuorumConfig startup input validation', () => {
     ).not.toThrow();
   });
 
-  test('rejects fractional loadQuorumK with invalid-config error', () => {
+  test.each([
+    ['loadQuorumEnabled', 0],
+    ['loadQuorumEnabled', 'false'],
+    ['loadQuorumEnabled', null],
+    ['loadQuorumAllowSinglePeer', 1],
+    ['loadQuorumAllowSinglePeer', 'true'],
+    ['loadQuorumAllowSinglePeer', null],
+  ])('rejects non-boolean %s=%p', (name, value) => {
+    expect(() =>
+      validateLoadQuorumConfig({ [name]: value } as any),
+    ).toThrow(/must be a boolean/);
+  });
+
+  test('disabled quorum still rejects non-boolean policy switches', () => {
+    expect(() =>
+      validateLoadQuorumConfig({
+        loadQuorumEnabled: false,
+        loadQuorumAllowSinglePeer: 'true' as any,
+        loadQuorumK: NaN,
+      }),
+    ).toThrow(/loadQuorumAllowSinglePeer must be a boolean/);
+  });
+
+  test.each([NaN, Infinity, 0, -1, 1.5])(
+    'disabled quorum still rejects active full-response timeout %p',
+    (loadQuorumTimeoutMs) => {
+      expect(() =>
+        validateLoadQuorumConfig({
+          loadQuorumEnabled: false,
+          loadQuorumK: NaN,
+          loadQuorumQ: NaN,
+          loadQuorumTimeoutMs,
+        }),
+      ).toThrow(/loadQuorumTimeoutMs must be a positive integer/);
+    },
+  );
+
+  test('rejects fractional loadQuorumK with invalid-config error (issue #2)', () => {
     // The exact bug: `loadQuorumK: 1.5` slipped through to
     // `peers.slice(0, 1.5)` and silently probed only 1 peer.
     const err = (() => {
@@ -843,19 +880,18 @@ describe('formatConfigValue renders non-finite numbers literally rather than as 
 });
 
 describe('defaultQuorumQ (strict-majority formula, #189 §5.4.2)', () => {
-  // The design note and config docstring require strict majority — i.e.
-  // `Math.floor(K/2) + 1`, NOT `Math.ceil(K/2) + 1`. The earlier ceil-based
-  // default produced Q=3 at K=3, which made the gate refuse to pass with
-  // even one non-vote and silently defeated the BFT intent ("tolerate one
-  // fault"). These tests pin the formula so a future change has to
-  // explicitly justify breaking the matrix.
+  // The default is a strict numerical majority: `Math.floor(K/2) + 1`, not
+  // `Math.ceil(K/2) + 1`. The earlier ceil-based default produced Q=3 at K=3
+  // and required all three peers to vote. This formula is only the default
+  // agreement threshold; it is not a consensus or Sybil-resistance claim,
+  // and callers may explicitly configure a valid non-majority Q.
   test('K=1 -> Q=1', () => {
     expect(defaultQuorumQ(1)).toBe(1);
   });
   test('K=2 -> Q=2', () => {
     expect(defaultQuorumQ(2)).toBe(2);
   });
-  test('K=3 -> Q=2 (one fault tolerated, NOT three-of-three)', () => {
+  test('K=3 -> Q=2 (NOT three-of-three)', () => {
     expect(defaultQuorumQ(3)).toBe(2);
   });
   test('K=4 -> Q=3', () => {
