@@ -11,9 +11,11 @@ import { Peerborne, MAX_DOCUMENT_PATH_LENGTH } from './peerborne.js';
 import type { CreateInvitationOptions } from './peerborne.js';
 import {
   concatUint8Arrays,
-  firstTrue,
+  copyUnsharedUint8Array,
   readUint8Iterable,
   shuffleArray,
+  snapshotDeepEnumerableData,
+  snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import { wrapStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
@@ -42,11 +44,11 @@ import {
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
-import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
 import {
-  snapshotKemKeyPair,
-  validateAndExportKemKeyPair,
-} from './kem-key-pair.js';
+  evaluateBeeKEMWelcome,
+  evaluateBeeKEMWelcomeTransition,
+} from './beekem-welcome-handler.js';
+import { validateAndExportKemKeyPair } from './kem-key-pair.js';
 import {
   eciesSeal,
   eciesOpen,
@@ -54,22 +56,69 @@ import {
   ECIES_P256_PUBLIC_KEY_LENGTH,
 } from './ecies.js';
 import {
-  beekemPathUpdateV1,
+  beekemPathUpdateV2,
   beekemWelcomeV1,
+  beekemWelcomeV2,
   documentKeyUpdateV2,
-  documentLoadV3,
-  snapshotLoadV3,
-  tipAdvertiseV1,
 } from './wire-protocols.js';
+import type { BeeKEMWireVersion } from './wire-protocols.js';
+import {
+  initialLoadProtocols,
+  MAX_INITIAL_LOAD_RESPONSE_SIZE,
+  MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
+  MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+  MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+  shouldServeInitialLoadProtocol,
+} from './initial-load-protocols.js';
+import type { InitialLoadProtocolFamily } from './initial-load-protocols.js';
+import { isUnknownDocumentAdvertisement } from './initial-load-sentinel-policy.js';
+import {
+  cloneInitialLoadChallenge,
+  createInitialLoadChallenge,
+  initialLoadChallengeEquals,
+  initialLoadRequestSignaturePayload,
+} from './initial-load-challenge.js';
+import {
+  loadAdvertisementHash,
+  loadAdvertisementHashToHex,
+} from './load-advertisement-hash.js';
+import { loadResponseManifestHash } from './load-response-manifest.js';
+import {
+  identifyInitialLoadSigner,
+  verifyInitialLoadAuthentication,
+} from './initial-load-auth.js';
+import type { LoadSecurityCommitments } from './load-security-state.js';
+import {
+  captureTrustedLoadSecurityCommitments,
+  cloneLoadSecurityCommitments,
+  loadSecurityCommitmentsEqual,
+} from './load-security-state.js';
+import {
+  captureInitialLoadSignerAuthorities,
+  InitialLoadSignerAuthority,
+} from './initial-load-trust.js';
 import { BeeKEM } from './beekem/beekem.js';
-import { BeeKEMWelcome, PathUpdate } from './beekem/types.js';
+import {
+  BeeKEMWelcome,
+  BeeKEMWelcomeV2,
+  PathUpdate,
+  PathUpdateV2,
+} from './beekem/types.js';
 import {
   deserializePathUpdateFromWire,
+  deserializePathUpdateV2FromWire,
   serializePathUpdateForWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 import {
+  applyBeeKEMPathUpdateWithEpoch,
+  isBeeKEMMessageForDocument,
+} from './beekem-path-update-apply.js';
+import {
   decodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayloadV2,
   encodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
 import {
   deriveDocumentKeyFromRootSecret,
@@ -82,10 +131,14 @@ import {
   dedupePeersByPeerId,
   LoadQuorumFailedError,
 } from './load-quorum.js';
-import { runLoadQuorum } from './load-quorum-orchestrator.js';
+import {
+  SignerAttributedLoadQuorumVote,
+  runLoadQuorum,
+} from './load-quorum-orchestrator.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
 import { mergeCompactionConfig } from './compaction-config.js';
+import { isTransactionalKeychain } from './keychain.js';
 import {
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
@@ -93,7 +146,6 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { keychainHistorySinceOrFull } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { Base64 } from 'js-base64';
@@ -148,17 +200,196 @@ import {
 } from './invitation-membership.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
-/**
- * Constant-time byte-array equality. Used by the BeeKEM PathUpdate
- * receive path to compare epoch IDs without leaking which prefix
- * matched. Returns `false` for mismatched lengths (also in constant
- * time across same-length inputs).
- */
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+type AuthenticatedBeeKEMPathUpdate<ChangesType, PublicKey> = {
+  message: CRDTSyncMessage<ChangesType, PublicKey> & {
+    signature: string;
+    pathUpdateEpochId: Uint8Array;
+  };
+  pathUpdate: PathUpdate | PathUpdateV2;
+};
+
+type PreparedLocalChange<ChangesType, PublicKey> = {
+  hash: string;
+  kind: CRDTChangeNodeKind;
+  encryptedPayload: Uint8Array;
+  updateMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+  referencedAncestorCids: readonly string[];
+  committed: boolean;
+};
+
+type PreparedBeeKEMDelivery = {
+  protocol: string;
+  payload: Uint8Array;
+  label: 'Welcome' | 'PathUpdate';
+};
+
+type PreparedKeyUpdateDelivery = {
+  payload: Uint8Array;
+};
+
+type SyncAuthorizationLease = {
+  isCurrent(): boolean;
+  advanceAfterWriterMutation(): boolean;
+};
+
+type InitialLoadSyncAuthorization<PublicKey> = {
+  writerKeys: readonly PublicKey[];
+  writerVersion: number;
+  /** Internal gate invoked immediately before every live mutation. */
+  onStateMutation?: () => void;
+  deferredBlockBudget?: InitialLoadDeferredBlockBudget;
+  /** Complete strict apply checks before the mutation queue slot is released. */
+  finalizeInMutationSlot?: (applied: boolean) => Promise<boolean>;
+  /** Convert a post-mutation rejection to terminal retirement in that slot. */
+  failInMutationSlot?: (cause: unknown) => void;
+};
+
+type InitialLoadDeferredBlockBudget = {
+  readonly maxEncryptedBlockBytes: number;
+  readonly maxEncryptedAggregateBytes: number;
+  readonly maxDecodedBlockBytes: number;
+  readonly maxDecodedAggregateBytes: number;
+  encryptedBytes: number;
+  decodedBytes: number;
+  /** Candidate-wide deadline for all deferred blockstore reads. */
+  signal: AbortSignal;
+  /** Arm the shared deadline lazily when the first deferred read begins. */
+  begin(): void;
+};
+
+type InitialLoadSignerAuthoritySnapshot<PublicKey> = {
+  authorities: readonly InitialLoadSignerAuthority<PublicKey>[];
+  writerVersion: number;
+};
+
+type BeeKEMReaderRegistration = {
+  welcome: BeeKEMWelcome | null;
+  pathUpdate?: PathUpdateV2;
+  rootSecret?: Uint8Array;
+};
+
+type PendingBeeKEMAdd<ChangesType, PublicKey> = {
+  readerKemPublicKey?: Uint8Array;
+  aclAddState: 'not-needed' | 'started' | 'succeeded';
+  readerChanges?: ChangesType;
+  registration?: BeeKEMReaderRegistration;
+  pathDelivery?: PreparedBeeKEMDelivery;
+  welcomeDelivery?: PreparedBeeKEMDelivery;
+  preparedReaderChange?: PreparedLocalChange<ChangesType, PublicKey>;
+};
+
+type PendingBeeKEMRemoval<ChangesType, PublicKey> = {
+  leafIndex: number;
+  aclRemoveState: 'started' | 'succeeded';
+  readerChanges?: ChangesType;
+  pathDelivery?: PreparedBeeKEMDelivery;
+  preparedReaderChange?: PreparedLocalChange<ChangesType, PublicKey>;
+};
+
+type PendingFounderInitialization<ChangesType> = {
+  writerAddState: 'started' | 'succeeded';
+  writerChanges?: ChangesType;
+  keyAddState: 'not-started' | 'started' | 'succeeded';
+};
+
+type PendingWriterAdd<ChangesType, PublicKey> = {
+  aclAddState: 'started' | 'succeeded';
+  writerChanges?: ChangesType;
+  preparedChange?: PreparedLocalChange<ChangesType, PublicKey>;
+};
+
+type PendingWriterRemoval<ChangesType, PublicKey, DocumentKey> = {
+  authorizedActor: string;
+  selfRemoval: boolean;
+  aclRemoveState: 'started' | 'succeeded';
+  writerChanges?: ChangesType;
+  preparedChange?: PreparedLocalChange<ChangesType, PublicKey>;
+  keyAddState: 'not-started' | 'started' | 'succeeded';
+  previousKey?: [Uint8Array, DocumentKey];
+  keychainChanges?: ChangesType;
+  keyUpdateDelivery?: PreparedKeyUpdateDelivery;
+  publicationState: 'not-started' | 'started' | 'succeeded';
+  distributionState: 'not-started' | 'started' | 'succeeded';
+};
+
+type BeeKEMWriterAuthoritySnapshot<PublicKey> = {
+  source: 'acl' | 'bootstrap';
+  writerKeysVersion: number;
+  authorities: readonly InitialLoadSignerAuthority<PublicKey>[];
+};
+
+type AuthenticatedBeeKEMWelcome<ChangesType, PublicKey> = {
+  message: CRDTSyncMessage<ChangesType, PublicKey>;
+  writerAuthorities: BeeKEMWriterAuthoritySnapshot<PublicKey>;
+};
+
+function snapshotKemKeyPair(keyPair: CryptoKeyPair): CryptoKeyPair {
+  if (typeof keyPair !== 'object' || keyPair === null) {
+    throw new TypeError('setKemKeyPair: key pair must be an object');
+  }
+  const publicKey = Object.getOwnPropertyDescriptor(keyPair, 'publicKey');
+  const privateKey = Object.getOwnPropertyDescriptor(keyPair, 'privateKey');
+  if (
+    publicKey === undefined ||
+    !Object.prototype.hasOwnProperty.call(publicKey, 'value') ||
+    privateKey === undefined ||
+    !Object.prototype.hasOwnProperty.call(privateKey, 'value')
+  ) {
+    throw new TypeError(
+      'setKemKeyPair: publicKey and privateKey must be own data properties',
+    );
+  }
+  return {
+    publicKey: publicKey.value as CryptoKey,
+    privateKey: privateKey.value as CryptoKey,
+  };
+}
+
+function snapshotExactTuple(
+  value: unknown,
+  length: number,
+  label: string,
+): unknown[] {
+  let isArray: boolean;
+  let prototype: object | null;
+  let keys: PropertyKey[];
+  try {
+    isArray = Array.isArray(value);
+    prototype =
+      value !== null && typeof value === 'object'
+        ? Object.getPrototypeOf(value)
+        : null;
+    keys =
+      value !== null && typeof value === 'object' ? Reflect.ownKeys(value) : [];
+  } catch {
+    throw new TypeError(`${label} must be a plain dense tuple`);
+  }
+  if (
+    !isArray ||
+    prototype !== Array.prototype ||
+    keys.length !== length + 1 ||
+    !keys.includes('length')
+  ) {
+    throw new TypeError(`${label} must be a plain dense ${length}-tuple`);
+  }
+  const result = new Array<unknown>(length);
+  for (let index = 0; index < length; index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    } catch {
+      throw new TypeError(`${label} must contain only own data entries`);
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(`${label} must contain only own data entries`);
+    }
+    result[index] = descriptor.value;
+  }
+  return result;
 }
 
 /** Opaque, recipient-bound material returned by the invitation join handler. */
@@ -169,6 +400,7 @@ export interface InvitationBootstrapBundle {
 }
 
 interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
+  readonly currentMessage: CRDTSyncMessage<ChangesType, PublicKey>;
   readonly keychainChanges: ChangesType;
   readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
   readonly serializedBootstrapBaselineBytes: number;
@@ -235,35 +467,10 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
  */
 
 /**
- * Maximum size (in bytes) of a `tipAdvertiseV1` probe response read. A
- * legitimate response is a single encrypted `CRDTSyncMessage` carrying
- * the `documentId` (pre-encryption path of up to `MAX_DOCUMENT_PATH_LENGTH`
- * bytes; this is BIGGER than the tipsHash + signature payload combined),
- * a 32-byte `tipsHash`, and an optional writer signature.
- *
- * Bound derivation:
- *   - documentId: up to `MAX_DOCUMENT_PATH_LENGTH` bytes UTF-8.
- *   - JSON framing + Base64 expansion of the encrypted body: ~256 bytes.
- *   - Writer signature: ECDSA P-384 ≈ 96 raw bytes, Base64 ≈ 128 bytes,
- *     plus the field's JSON key/quotes — round to 256 bytes.
- *   - tipsHash: 32 raw bytes → Base64 ≈ 44 bytes.
- *   - AES-GCM nonce: 12 raw bytes → Base64 ≈ 16 bytes.
- *   - AES-GCM auth tag: 16 bytes.
- *   - Plus slack for the encrypted-payload header (keyID prefix) and any
- *     additional JSON overhead.
- *
- * The previous 2 KiB cap was tighter than `MAX_DOCUMENT_PATH_LENGTH`
- * alone, so a document opened at a maximal path would always blow the cap
- * and be recorded as a non-vote — quorum would never pass for such
- * documents. 6 KiB comfortably covers a maximum-length path plus all of
- * the overheads above while still bounding what a malicious peer can
- * force the loader to buffer before being rejected as a non-vote.
- */
-const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
-
-/**
- * Bound on the number of parallel Helia `blockstore.get(cid)` fetches
- * issued by the quorum-bound load pre-fetch (`_sendLoadRequestAndSync`).
+ * Bound on parallel Helia `blockstore.get(cid)` work in quorum-bound prefetch
+ * and ordinary deferred fetch/decrypt/apply. Initial-load deferred apply is
+ * serialized so aggregate plaintext accounting cannot be overshot by several
+ * concurrent decryptions.
  *
  * A bound is needed because the served `changes` tree can be large
  * under an adversary-shaped response (the agreeing peer voted for the
@@ -278,7 +485,35 @@ const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
  * peer counts) but small enough to bound peak resource use on the
  * loader.
  */
-const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
+const LOAD_BLOCK_MAX_CONCURRENCY = 8;
+
+/**
+ * Every deferred change block has the same 16 MiB decoded compatibility limit
+ * as a V4 manifest's inline-change payload. The encrypted allowance adds
+ * 64 KiB as a wire-compatibility allowance for key IDs, nonces, tags, and
+ * provider expansion. AuthProvider has no expansion contract; custom providers
+ * that exceed this allowance are rejected symmetrically on send and receive.
+ * Initial load additionally applies aggregate encrypted and decoded ceilings
+ * across the complete candidate response.
+ */
+const MAX_DEFERRED_BLOCK_DECODED_BYTES = 16 * 1024 * 1024;
+const MAX_DEFERRED_BLOCK_ENCRYPTED_BYTES =
+  MAX_DEFERRED_BLOCK_DECODED_BYTES + 64 * 1024;
+const MAX_INITIAL_LOAD_DEFERRED_DECODED_BYTES = 16 * 1024 * 1024;
+const MAX_INITIAL_LOAD_DEFERRED_ENCRYPTED_BYTES = 32 * 1024 * 1024;
+const MAX_INITIAL_LOAD_BLOCK_STREAM_CHUNKS = 65_536;
+
+class _DeferredBlockBudgetExceededError extends RangeError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = '_DeferredBlockBudgetExceededError';
+  }
+}
+
+/** Maximum decoded signature accepted on JSON wire envelopes. */
+const MAX_WIRE_SIGNATURE_BYTES = 4096;
+const MAX_WIRE_SIGNATURE_BASE64_LENGTH =
+  4 * Math.ceil(MAX_WIRE_SIGNATURE_BYTES / 3);
 
 /**
  * Module-private sentinel thrown by `_sendLoadRequestAndSync` when the
@@ -288,22 +523,20 @@ const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
  * loop, which records the failure against the responsible peer and
  * proceeds to the NEXT peer in the agreeing cohort.
  *
- * Previously `_sendLoadRequestAndSync` threw `LoadQuorumFailedError` on bind
- * mismatch and `load()` re-raised it, aborting the entire load. A
- * single malicious peer in the agreeing cohort could vote for the
- * majority hash (passing quorum) and then serve a mismatched full load
- * (failing the bind check), unilaterally preventing the loader from
- * trying any other honest agreeing peer.
+ * A per-peer error lets `load()` continue through the agreeing cohort. Bind
+ * failure can reflect concurrent responder state advance, incomplete block
+ * retrieval, inconsistent serialization, protocol violation, or equivocation;
+ * none of those responses may reach local state mutation.
  *
  * Public callers never see this type; `load()` catches it internally
  * and only escalates to `LoadQuorumFailedError(reason:
  * 'bind-check-failed-all-agreeing-peers')` once EVERY peer in the
  * narrowed cohort has bind-failed.
  *
- * The `advertisedHex` field carries the hash the responder's served
- * `tips` actually hashed to (or the sentinel `'(missing tips)'` when the
- * response omitted the `tips` field entirely) so the outer loop can
- * thread it into the final error's `agreeingPeerBindFailures` map.
+ * The historical `advertisedHex` field carries an observed digest when one is
+ * available, or a parenthesized diagnostic marker for failures such as a
+ * missing attestation or untrusted tuple. The outer loop threads it into the
+ * final error's `agreeingPeerBindFailures` map.
  */
 class _QuorumBindCheckFailedError extends Error {
   public readonly advertisedHex: string;
@@ -314,6 +547,20 @@ class _QuorumBindCheckFailedError extends Error {
   }
 }
 
+/**
+ * An encrypted, local-first CRDT document managed by a {@link Peerborne}
+ * instance.
+ *
+ * Membership operations journal each ACL/keychain provider call before
+ * awaiting it. A completed call can be resumed after a later preparation or
+ * delivery failure, but a provider rejection is an ambiguous possible
+ * mutation: the document is permanently retired in-process and starts
+ * best-effort cleanup. Callers must discard the document and its ACL/keychain
+ * provider instances; `close()` is not rollback, and the retirement journal is
+ * not durable across process restart. An initial load is also
+ * retired if it fails after its first live mutation, because CRDT, snapshot,
+ * ACL, and keychain providers do not share a cross-provider rollback contract.
+ */
 export class PeerborneDocument<
   DocType,
   ChangesType,
@@ -370,58 +617,27 @@ export class PeerborneDocument<
   // Controls which document-key epochs peers supply during onboarding/load.
   private _historyVisibility: HistoryVisibility = 'current_only';
 
-  // Tracks the epoch at which this node was invited to the document.
-  // Used by `since_invited` history visibility (`_keychainChangesForVisibility`)
-  // to filter keychain history. Set by `handleBeeKEMWelcomeRequestData` when
-  // this node receives a Welcome message from an inviting writer; remains
-  // `undefined` for the founding member of a document (who has no
-  // invitation epoch).
+  // Tracks the epoch at which this node was invited to the document. It is a
+  // local monotonic audit/ordering anchor; ordinary load cannot safely use a
+  // responder's local value as the requester's `since_invited` boundary and
+  // therefore sends current-only until the wire authenticates a
+  // requester-specific boundary. Set after an authenticated Welcome and left
+  // `undefined` for the founding member.
   private _invitationEpoch: Uint8Array | undefined;
 
-  // Pending BeeKEM Welcomes parked while the recipient is not yet a reader.
-  //
-  // KNOWN RACE: the inviter publishes
-  // the readers-ACL update over pubsub and sends the Welcome over a
-  // direct libp2p stream. The Welcome can arrive before the ACL update
-  // has been applied on the recipient; without buffering, the
-  // `not-in-readers-acl` gate in `evaluateBeeKEMWelcome` would drop the
-  // Welcome permanently because `_sendBeeKEMWelcome` is fire-and-forget
-  // (no retry / no ack). Buffering closes the race: when a Welcome is
-  // dropped solely because the local user is not yet a reader, we park
-  // it here keyed by hex(welcomeEpochId), and re-evaluate buffered
-  // Welcomes after every readers-ACL `merge` (`_drainPendingWelcomesUnlocked`).
-  //
-  // Bounding:
-  //  - `_PENDING_WELCOMES_MAX_ENTRIES` (16): caps memory usage so a
-  //    flood of misaddressed or hostile Welcomes cannot grow the buffer
-  //    without bound. Older entries are evicted in insertion order
-  //    (Map iteration order) when the bound is reached.
-  //  - `_PENDING_WELCOMES_TTL_MS` (5 min): caps how long any Welcome
-  //    sits unresolved. Entries past their TTL are discarded on the
-  //    next drain attempt. Five minutes is well above the worst-case
-  //    GossipSub mesh propagation we observe in `e2e/integration/`
-  //    (~10s through a relay) while remaining short enough that stale
-  //    Welcomes don't linger indefinitely after a legitimate
-  //    re-invite.
-  //
-  // The key is the lower-case hex encoding of `welcomeEpochId` (a
-  // `Uint8Array`), chosen so the buffer's identity matches the
-  // canonical epoch identifier used elsewhere in the receive path and
-  // so duplicate Welcomes (same epoch) coalesce automatically.
-  private _pendingWelcomes = new Map<
-    string,
-    { message: CRDTSyncMessage<ChangesType, PublicKey>; bufferedAtMs: number }
-  >();
-  private static readonly _PENDING_WELCOMES_MAX_ENTRIES = 16;
-  private static readonly _PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
+  // Bound serialized Welcome and PathUpdate messages before parsing or
+  // signature verification.
+  private static readonly _MAX_BEEKEM_WIRE_PAYLOAD_BYTES = 10 * 1024 * 1024;
 
   // Recipient-side ECIES (P-256 ECDH) key pair for opening BeeKEM Welcome
   // sealed payloads. The inviter sends `eciesSealed` -- the keychain delta
-  // encrypted to this public key (see `_sendBeeKEMWelcome`); the recipient
+  // encrypted to this public key (see `_prepareBeeKEMWelcome`); the recipient
   // opens it with the matching private key (see
   // `_evaluateAndApplyBeeKEMWelcome`). When `undefined`, sealed Welcomes
-  // addressed to us cannot be opened and are dropped (the recipient must
-  // fall back to a fresh document load against an authorized peer). The
+  // addressed to us cannot be opened and are dropped. An ordinary load is
+  // encrypted under the unknown document key and cannot repair this; the
+  // recipient must reinstall the intended KEM key and receive a fresh signed,
+  // identity+KEM-bound Welcome. The
   // application is responsible for plumbing in a stable KEM key pair via
   // `setKemKeyPair` and sharing the matching raw public key with inviters
   // out-of-band so they can pass it to `addReader`.
@@ -444,9 +660,11 @@ export class PeerborneDocument<
    * writer who will invite this user, so they can pass it to
    * `addReader(reader, readerKemPublicKey)`.
    *
-   * Idempotent: calling with the same key pair more than once is
-   * fine. Pass `undefined` to clear (subsequent Welcomes will be
-   * dropped).
+   * Idempotent: calling with the same key pair more than once is fine.
+   * Pass `undefined` to clear only before BeeKEM membership setup begins. Once
+   * ratchet or pending membership state exists, clearing or replacing the key
+   * requires a future authenticated rotation protocol and is rejected;
+   * reinstalling the same public-key identity remains allowed.
    *
    * Validation: the key pair MUST be an ECDH P-256 pair, and the
    * private key MUST have `'deriveBits'` in its key usages so
@@ -466,29 +684,76 @@ export class PeerborneDocument<
     // Snapshot synchronously before queueing. A caller-owned CryptoKeyPair is
     // an ordinary mutable record even though its CryptoKey handles are not.
     const snapshot = keyPair && snapshotKemKeyPair(keyPair);
-    return this._mutationQueue.run(() => this._setKemKeyPairUnlocked(snapshot));
+    return this._runInMutationQueue(() =>
+      this._setKemKeyPairUnlocked(snapshot),
+    );
   }
 
   private async _setKemKeyPairUnlocked(
-    keyPair: CryptoKeyPair | undefined,
+    stableKeyPair: CryptoKeyPair | undefined,
   ): Promise<void> {
-    if (keyPair === undefined) {
-      this._kemKeyPair = undefined;
-      this._kemPublicKeyRaw = undefined;
-      return;
+    this._throwIfSecurityProviderMutationFailed();
+    let rawPublic: Uint8Array | undefined;
+    if (stableKeyPair !== undefined) {
+      if (!isTransactionalKeychain(this._keychain)) {
+        throw new TypeError(
+          'setKemKeyPair: BeeKEM requires a TransactionalKeychain that ' +
+            'implements prepareEpochKey and prepareMerge',
+        );
+      }
+      // Capture each caller-controlled pair field exactly once before the
+      // first await. The object itself is an ordinary mutable dictionary even
+      // though genuine CryptoKey values are immutable host objects.
+      rawPublic = copyUnsharedUint8Array(
+        await validateAndExportKemKeyPair(stableKeyPair),
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        'setKemKeyPair public key',
+      );
+      this._throwIfSecurityProviderMutationFailed();
     }
 
-    // Algorithm/curve/usages validation + eager raw-export, kept in
-    // a standalone helper so the validation surface can be unit-tested
-    // without standing up the full document dependency graph.
-    // Throws a clear, install-time error on misconfiguration.
-    const rawPublic = await validateAndExportKemKeyPair(keyPair);
+    await this._runBeeKEMTransition(async () => {
+      this._throwIfSecurityProviderMutationFailed();
+      const hasRatchetState =
+        this._beekemInitialized ||
+        this._beekem !== null ||
+        this._beekemInitPromise !== null ||
+        (this._pendingBeeKEMAdds?.size ?? 0) > 0 ||
+        (this._pendingBeeKEMRemovals?.size ?? 0) > 0 ||
+        this._readerKemPublicKeys.size > 0 ||
+        this._readerLeafIndices.size > 0;
 
-    this._kemKeyPair = keyPair;
-    // Defensive copy: ensure the cached bytes are isolated from the
-    // buffer returned by the helper so callers (and the helper's own
-    // internal state) cannot mutate `_kemPublicKeyRaw` after the fact.
-    this._kemPublicKeyRaw = new Uint8Array(rawPublic);
+      if (stableKeyPair === undefined || rawPublic === undefined) {
+        if (hasRatchetState) {
+          throw new Error(
+            `setKemKeyPair: cannot clear the KEM key while BeeKEM membership ` +
+              `state exists; authenticated KEM rotation is not supported`,
+          );
+        }
+        this._kemKeyPair = undefined;
+        this._kemPublicKeyRaw = undefined;
+        this.swarm.unregisterWelcomeRecipient?.(this.documentPath, this);
+        return;
+      }
+
+      if (
+        hasRatchetState &&
+        (this._kemPublicKeyRaw === undefined ||
+          !this._constantTimeEquals(this._kemPublicKeyRaw, rawPublic))
+      ) {
+        throw new Error(
+          `setKemKeyPair: cannot replace the active KEM key while BeeKEM ` +
+            `membership state exists; authenticated KEM rotation is not supported`,
+        );
+      }
+
+      // Register before exposing the key locally so a duplicate document path
+      // fails without leaving an unreachable half-installed invitation key.
+      this.swarm.registerWelcomeRecipient?.(this.documentPath, this);
+      this._kemKeyPair = stableKeyPair;
+      this._kemPublicKeyRaw = rawPublic;
+    });
   }
 
   /**
@@ -567,7 +832,7 @@ export class PeerborneDocument<
   // BeeKEM ratchet-tree state for cryptographic reader revocation.
   //
   // `removeReader` blanks the removed reader's BeeKEM leaf, re-keys the
-  // path, and broadcasts a `PathUpdate` over `beekemPathUpdateV1`.
+  // path, and broadcasts the next parent-tree-bound v2 `PathUpdate`.
   // Surviving readers feed the update into `processPathUpdate` and
   // re-derive the document encryption key from the fresh root secret
   // (see `derive-doc-key.ts`). The removed reader's leaf is blanked,
@@ -592,8 +857,8 @@ export class PeerborneDocument<
   // tree on a peer that has not gone through either path: a
   // freshly-initialized tree would produce a different root secret
   // than the writer's, and the epoch-ID mismatch gate would drop the
-  // PathUpdate anyway. Surface that as a clean drop-with-warning so a
-  // future fresh document-load can recover keychain state.
+  // PathUpdate anyway. Surface that as a clean drop-with-warning; recovery
+  // requires persisted current ratchet state or an authenticated remove/rejoin.
   private _beekem: BeeKEM | null = null;
   private _beekemInitPromise: Promise<BeeKEM> | null = null;
   // Local membership changes, ACL-bearing remote sync, and invitation
@@ -609,28 +874,71 @@ export class PeerborneDocument<
   // founder", which is the gate `handleBeeKEMPathUpdateRequestData`
   // uses to drop PathUpdates that arrive before bootstrap.
   private _beekemInitialized = false;
+  // Monotonic in-process creation provenance. Set only after the complete
+  // founder ACL/key/change initialization succeeds under the BeeKEM mutex.
+  // Loaded or invited replicas never set it; a restarted founder must restore
+  // ratchet state rather than infer founder authority from document hashes.
+  private _localFounderEstablished = false;
+  // Record each founder provider step before awaiting it and retain the first
+  // completed writer-ACL delta across an in-process retry. ACL providers may
+  // return an empty delta when asked to add an already-present founder; a
+  // started-but-not-completed step is therefore terminally ambiguous rather
+  // than safe to repeat.
+  private _pendingFounderInitialization?: PendingFounderInitialization<ChangesType>;
+  // Terminal in-process retirement marker. ACL/keychain provider ambiguity and
+  // an incomplete initial load after its first live mutation
+  // both make this instance unsafe to reuse.
+  private _securityProviderMutationFailure?: Error;
+  private _pendingWriterAdds = new Map<
+    string,
+    PendingWriterAdd<ChangesType, PublicKey>
+  >();
+  private _pendingWriterRemovals = new Map<
+    string,
+    PendingWriterRemoval<ChangesType, PublicKey, DocumentKey>
+  >();
 
-  // pubkey (serialized) -> BeeKEM leaf index, populated by `addReader`
-  // (writer side) so `removeReader` can look up the leaf to blank.
+  // pubkey (serialized) -> BeeKEM leaf index, populated by local `addReader`
+  // registrations so `removeReader` can look up the leaf to blank.
   // **Fast-path cache only**: `removeReader` falls back to a BeeKEM
-  // tree scan (`BeeKEM.findLeafByPublicKey`) on cache miss, so a cache
-  // wipe (in-process restart, different replica) does not block
-  // revocation as long as the BeeKEM tree itself is initialized and
-  // the reader's KEM public key is still known (see
+  // tree scan (`BeeKEM.findLeafByPublicKey`) on cache miss, so explicitly
+  // evicting this fast-path entry does not block revocation while the same
+  // live instance still retains the reader's KEM public key (see
   // `_readerKemPublicKeys`).
-  // Joiner-side population requires Welcome plumbing that is out of
-  // scope here and tracked alongside the BeeKEM Welcome work.
+  // Processing a Welcome reconstructs the anonymous ratchet tree but does not
+  // reconstruct identity-to-KEM/leaf bindings for pre-existing members. A
+  // joined writer can therefore remove only readers it registered locally;
+  // broader binding persistence/state transfer remains unimplemented.
   private _readerLeafIndices = new Map<string, number>();
 
   // pubkey (serialized identity) -> raw SEC1-uncompressed P-256 ECDH
-  // public key bytes (the reader's KEM public key as passed to
+  // public key bytes (the reader's KEM public key as passed to local
   // `addReader`). Used by `removeReader` as the lookup key when the
   // `_readerLeafIndices` fast-path cache misses: we know the
   // identity but need the KEM key to query the BeeKEM tree via
-  // `BeeKEM.findLeafByPublicKey`. Persistence is not implemented, so
-  // on restart this map is empty and `removeReader`
-  // surfaces the gap with a clear error.
+  // `BeeKEM.findLeafByPublicKey`. Persistence and Welcome-side reconstruction
+  // are not implemented, so a restart or joined writer lacks bindings for
+  // pre-existing readers and `removeReader` surfaces the gap with a clear
+  // error.
   private _readerKemPublicKeys = new Map<string, Uint8Array>();
+
+  // Serializes every document-level BeeKEM transition, including local
+  // founder/add/remove operations, inbound Welcome swaps, PathUpdate ratchets,
+  // and the matching keychain commit. BeeKEM's own lock is per instance and
+  // cannot protect a document while a Welcome replaces that instance.
+  private _beekemTransitionTail: Promise<void> = Promise.resolve();
+  private _beekemTransitionsPending = 0;
+  private _beekemRemoteTransitionsPending = 0;
+  private _beekemRemoteIngressPending = 0;
+  private static readonly _MAX_PENDING_REMOTE_BEEKEM_INGRESS = 4;
+  private static readonly _MAX_PENDING_REMOTE_BEEKEM_TRANSITIONS = 3;
+  private _beekemFanoutTail: Promise<void> = Promise.resolve();
+  // Writer ACL/key-rotation retries need their own serialization boundary.
+  // Keeping network publication off the BeeKEM transition mutex preserves
+  // priority for inbound Welcome/PathUpdate and urgent reader revocation.
+  private _writerMembershipTail: Promise<void> = Promise.resolve();
+  private static readonly _MEMBERSHIP_DELIVERY_TIMEOUT_MS = 5_000;
+  private static readonly _MAX_CONCURRENT_MEMBERSHIP_DELIVERIES = 8;
 
   // BeeKEM leaf node index -> the `BeeKEMWelcome` produced when that
   // leaf was first registered via `_registerBeeKEMReader`. Used by
@@ -643,12 +951,32 @@ export class PeerborneDocument<
   // Welcome (which would re-deliver the keychain delta at the leaf's
   // original epoch).
   //
-  // In-memory only; on writer restart this map is empty and a
-  // re-emit attempt will see the cache miss and the no-op early-out
-  // in `_registerBeeKEMReader`. Recipients in that state should
-  // recover via a fresh document load (which delivers keychain state
-  // via the existing sealed-Welcome envelope or the load response).
+  // In-memory only; on writer restart this map is empty. A normal encrypted
+  // load cannot synthesize the missing tree state; safe recovery requires
+  // persisted current ratchet state or an authenticated remove/rejoin.
   private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcome>();
+  // Exact in-memory transition records retained across retryable local
+  // preparation failures. They prevent an ACL provider that already mutated
+  // from causing a retry to allocate a second BeeKEM generation or lose the
+  // original ACL delta. BeeKEM/keychain persistence remains a documented
+  // process-restart limitation.
+  private _pendingBeeKEMAdds = new Map<
+    string,
+    PendingBeeKEMAdd<ChangesType, PublicKey>
+  >();
+  private _pendingBeeKEMRemovals = new Map<
+    string,
+    PendingBeeKEMRemoval<ChangesType, PublicKey>
+  >();
+  // Per-deserialized-message trust and ACL-version lease used only by the
+  // authenticated load path. WeakMap scoping keeps concurrent loads isolated
+  // without exposing a public API through which callers could supply an
+  // authorization token or arbitrary snapshot authorities.
+  private _initialLoadSyncAuthorizations = new WeakMap<
+    object,
+    InitialLoadSyncAuthorization<PublicKey>
+  >();
+  private _canonicalSyncMessages = new WeakSet<object>();
 
   /**
    * Set the history visibility for this document.
@@ -852,7 +1180,10 @@ export class PeerborneDocument<
     /**
      * SyncMessageSerializer is responsible for serializing/deserializing CRDTSyncMessages.
      */
-    private readonly _syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>,
+    private readonly _syncMessageSerializer: SyncMessageSerializer<
+      ChangesType,
+      PublicKey
+    >,
 
     /**
      * LoadMessageSerializer is responsible for serializing/deserializing CRDTLoadMessages.
@@ -890,9 +1221,13 @@ export class PeerborneDocument<
   }
 
   private async _shuffledPeers() {
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
+    const connected =
+      this.swarm.heliaNode.libp2p
+        .getConnections()
+        ?.map((connection) => connection.remoteAddr) ?? [];
+    const peers = Array.from(
+      new Map(connected.map((peer) => [peer.toString(), peer])).values(),
+    );
     if (peers.length === 0) {
       return peers;
     }
@@ -911,50 +1246,184 @@ export class PeerborneDocument<
     try {
       const key = this._keychain.getKey(blockKeyID);
       if (key) {
-        return this._authProvider.decrypt(data, key, nonce);
+        // Await inside the try so asynchronous AEAD failures are converted to
+        // an ordinary decryption miss instead of escaping as an unhandled
+        // rejection from event-driven receive paths.
+        return await this._authProvider.decrypt(data, key, nonce);
       } else {
-        console.warn(
-          `Failed to find a document key for ${this.documentPath}`,
-        );
+        console.warn(`Failed to find a document key for ${this.documentPath}`);
       }
-    } catch (e) {
-      console.warn(`Failed to decrypt block!`, e);
+    } catch {
+      console.warn(`Failed to decrypt block for ${this.documentPath}`);
     }
   }
 
-  private async _getBlock(hash: CID): Promise<ChangesType> {
+  private async _prefetchInitialLoadBlock(
+    hash: CID,
+    signal: AbortSignal,
+    maxEncryptedBlockBytes: number,
+    accountEncryptedBytes: (byteLength: number) => void,
+  ): Promise<void> {
+    let blockBytes = 0;
+    let chunkCount = 0;
+    for await (const chunk of this.swarm.heliaNode.blockstore.get(hash, {
+      signal,
+    })) {
+      chunkCount++;
+      if (chunkCount > MAX_INITIAL_LOAD_BLOCK_STREAM_CHUNKS) {
+        throw new _DeferredBlockBudgetExceededError(
+          `Initial-load deferred block exceeded ${MAX_INITIAL_LOAD_BLOCK_STREAM_CHUNKS} chunks`,
+        );
+      }
+      if (chunk.length === 0) continue;
+      const nextBlockBytes = blockBytes + chunk.length;
+      if (nextBlockBytes > maxEncryptedBlockBytes) {
+        throw new _DeferredBlockBudgetExceededError(
+          `Initial-load deferred block exceeded ${maxEncryptedBlockBytes} encrypted bytes`,
+        );
+      }
+      accountEncryptedBytes(chunk.length);
+      blockBytes = nextBlockBytes;
+    }
+  }
+
+  private async *_accountInitialLoadEncryptedBlockBytes(
+    source: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    budget: InitialLoadDeferredBlockBudget,
+  ): AsyncGenerator<Uint8Array> {
+    for await (const chunk of source) {
+      if (budget.signal.aborted) throw budget.signal.reason;
+      const nextEncryptedBytes = budget.encryptedBytes + chunk.byteLength;
+      if (nextEncryptedBytes > budget.maxEncryptedAggregateBytes) {
+        throw new _DeferredBlockBudgetExceededError(
+          `Initial-load deferred blocks exceeded ${budget.maxEncryptedAggregateBytes} aggregate encrypted bytes`,
+        );
+      }
+      budget.encryptedBytes = nextEncryptedBytes;
+      yield chunk;
+    }
+    if (budget.signal.aborted) throw budget.signal.reason;
+  }
+
+  private async _getBlock(
+    hash: CID,
+    initialLoadBudget?: InitialLoadDeferredBlockBudget,
+  ): Promise<ChangesType> {
     // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
     // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
     // rather than a single `Uint8Array`. Consume the generator into a
     // contiguous buffer here before slicing the encryption header off.
-    const block = await readUint8Iterable(this.swarm.heliaNode.blockstore.get(hash));
+    // Compatibility limit: all sync paths reject deferred blocks larger than
+    // 16 MiB decoded (or 16 MiB + 64 KiB encrypted). Initial load may impose a
+    // lower per-block cap and also tracks aggregate bytes across its candidate.
+    const maxEncryptedBlockBytes =
+      initialLoadBudget?.maxEncryptedBlockBytes ??
+      MAX_DEFERRED_BLOCK_ENCRYPTED_BYTES;
+    let block: Uint8Array;
+    try {
+      if (initialLoadBudget?.signal.aborted) {
+        throw initialLoadBudget.signal.reason;
+      }
+      initialLoadBudget?.begin();
+      if (initialLoadBudget?.signal.aborted) {
+        throw initialLoadBudget.signal.reason;
+      }
+      const source =
+        initialLoadBudget === undefined
+          ? this.swarm.heliaNode.blockstore.get(hash)
+          : this.swarm.heliaNode.blockstore.get(hash, {
+              signal: initialLoadBudget.signal,
+            });
+      block = await readUint8Iterable(
+        initialLoadBudget === undefined
+          ? source
+          : this._accountInitialLoadEncryptedBlockBytes(
+              source,
+              initialLoadBudget,
+            ),
+        maxEncryptedBlockBytes,
+      );
+    } catch (cause) {
+      if (cause instanceof _DeferredBlockBudgetExceededError) {
+        throw cause;
+      }
+      if (cause instanceof RangeError) {
+        throw new _DeferredBlockBudgetExceededError(
+          `Deferred change block exceeded ${maxEncryptedBlockBytes} encrypted bytes`,
+          { cause },
+        );
+      }
+      throw cause;
+    }
+    if (initialLoadBudget?.signal.aborted) {
+      throw initialLoadBudget.signal.reason;
+    }
+    const headerLength =
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+    if (block.length <= headerLength) {
+      throw new Error(`Encrypted block has an incomplete header (CID: ${hash})`);
+    }
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+      headerLength,
     );
-    const blockData = block.slice(
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
-    );
+    const blockData = block.slice(headerLength);
     const content = await this._decryptBlock(blockKeyID, blockNonce, blockData);
+    if (initialLoadBudget?.signal.aborted) {
+      throw initialLoadBudget.signal.reason;
+    }
     if (!content) {
       throw new Error(`Failed to decrypt block (CID: ${hash})`);
+    }
+    const maxDecodedBlockBytes =
+      initialLoadBudget?.maxDecodedBlockBytes ?? MAX_DEFERRED_BLOCK_DECODED_BYTES;
+    if (content.byteLength > maxDecodedBlockBytes) {
+      throw new _DeferredBlockBudgetExceededError(
+        `Deferred change block exceeded ${maxDecodedBlockBytes} decoded bytes`,
+      );
+    }
+    if (initialLoadBudget !== undefined) {
+      const nextDecodedBytes =
+        initialLoadBudget.decodedBytes + content.byteLength;
+      if (nextDecodedBytes > initialLoadBudget.maxDecodedAggregateBytes) {
+        throw new _DeferredBlockBudgetExceededError(
+          `Initial-load deferred blocks exceeded ${initialLoadBudget.maxDecodedAggregateBytes} aggregate decoded bytes`,
+        );
+      }
+      initialLoadBudget.decodedBytes = nextDecodedBytes;
     }
     return this._changesSerializer.deserializeChanges(content);
   }
 
-  private async _putBlock(block: ChangesType): Promise<string> {
-    const [documentKeyID, documentKey] = await this._keychain.current();
+  private async _putBlock(
+    block: ChangesType,
+    encryptionKey?: readonly [Uint8Array, DocumentKey],
+  ): Promise<string> {
+    const [documentKeyID, documentKey] =
+      encryptionKey ?? (await this._keychain.current());
     if (!documentKey) {
       throw new Error(`Document ${this.documentPath} has an empty keychain!`);
     }
     const content = this._changesSerializer.serializeChanges(block);
+    if (content.byteLength > MAX_DEFERRED_BLOCK_DECODED_BYTES) {
+      throw new RangeError(
+        `Deferred change block exceeded ${MAX_DEFERRED_BLOCK_DECODED_BYTES} decoded bytes`,
+      );
+    }
     const { nonce, data } = await this._authProvider.encrypt(
       content,
       documentKey,
     );
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
+    }
+    const encryptedBlockLength =
+      documentKeyID.byteLength + nonce.byteLength + data.byteLength;
+    if (encryptedBlockLength > MAX_DEFERRED_BLOCK_ENCRYPTED_BYTES) {
+      throw new RangeError(
+        `Deferred change block exceeded ${MAX_DEFERRED_BLOCK_ENCRYPTED_BYTES} encrypted bytes; custom AuthProvider expansion beyond the 64 KiB wire allowance is unsupported`,
+      );
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
     const newFileResult = await this.heliaFs.addBytes(blockData);
@@ -1143,6 +1612,88 @@ export class PeerborneDocument<
   }
 
   /**
+   * Construct the exact state-mutating payload shared by V4 advertisement,
+   * document-load, and snapshot-load handlers. Keeping this in one helper
+   * prevents the lightweight probe from committing to a different candidate
+   * than the selected full response later serves.
+   */
+  private async _createLoadResponsePlan(
+    loadChallenge?: Uint8Array,
+  ): Promise<CRDTSyncMessage<ChangesType, PublicKey>> {
+    const message = this._createSyncMessage();
+    message.signature = undefined;
+    message.tips = undefined;
+    message.tipsHash = undefined;
+    message.loadSecurityState = undefined;
+    message.loadChallenge =
+      loadChallenge === undefined
+        ? undefined
+        : cloneInitialLoadChallenge(loadChallenge);
+    message.keychainChanges = this._requireWireChanges(
+      await this._keychainChangesForVisibility(),
+      'load-response keychain change',
+    );
+    if (this._latestSnapshot === undefined) {
+      message.snapshot = undefined;
+    } else {
+      message.snapshot = this._latestSnapshot;
+    }
+    return message;
+  }
+
+  private _initialLoadRequestSignaturePayload(
+    message: CRDTLoadRequest,
+    securityAware: boolean,
+  ): Uint8Array | null {
+    if (!securityAware) return this._encoder.encode(message.documentId);
+    try {
+      return initialLoadRequestSignaturePayload(
+        message.documentId,
+        message.loadChallenge!,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /** Derive the V4 commitment from the actual response fields sync() applies. */
+  private async _loadResponseManifestHash(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): Promise<Uint8Array> {
+    return loadResponseManifestHash({
+      changeId: message.changeId,
+      changes: message.changes,
+      serializeChange: (change) =>
+        this._changesSerializer.serializeChanges(change),
+      snapshot:
+        message.snapshot === undefined
+          ? undefined
+          : {
+              stateBytes: this._changesSerializer.serializeChanges(
+                message.snapshot.state,
+              ),
+              lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
+              compactedCount: message.snapshot.compactedCount,
+              timestamp: message.snapshot.timestamp,
+            },
+      keychainChangesBytes:
+        message.keychainChanges === undefined
+          ? undefined
+          : this._changesSerializer.serializeChanges(message.keychainChanges),
+    });
+  }
+
+  private _loadResponsePlanFrontier(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): string[] {
+    return computeServedFrontier(
+      message.changeId,
+      message.changes,
+      message.snapshot?.lastChangeNodeCID,
+    );
+  }
+
+  /**
    * Record a CID as a recently-known tip for Merkle-CRDT cross-linking
    * (paper §VI.B.e). Called for both locally-generated and remote-applied
    * change nodes -- a peer A that just received B's change can cross-link
@@ -1162,7 +1713,26 @@ export class PeerborneDocument<
   private async _syncDocumentChanges(
     changeId: string | undefined,
     changes: CRDTChangeNode<ChangesType>,
-  ) {
+    authorizationLease?: SyncAuthorizationLease,
+    initialLoadBudget?: InitialLoadDeferredBlockBudget,
+    admitStateMutation?: () => void,
+  ): Promise<boolean> {
+    // Validate and flatten before mutating frontier bookkeeping. In
+    // particular, a conflicting repeated-CID representation must not be able
+    // to poison `_referencedAncestors` merely because the merge is rejected.
+    const newChangeEntries = await this._mergeSyncTree(
+      changeId,
+      changes,
+      this._lastSyncMessage && this._lastSyncMessage.changeId,
+      this._hashes,
+    );
+    if (
+      authorizationLease !== undefined &&
+      authorizationLease.isCurrent() !== true
+    ) {
+      return false;
+    }
+
     // Walk the incoming sync tree once and record every CID that appears
     // as a `children` key. Those CIDs are referenced ancestors -- by
     // definition no longer heads of the local DAG. Doing this BEFORE the
@@ -1174,15 +1744,14 @@ export class PeerborneDocument<
     // Idempotent and inexpensive: the helper walks at most the size of the
     // delivered tree (bounded by the sender's compaction config); duplicates
     // are no-ops in a Set.
-    collectReferencedAncestors(changeId, changes, this._referencedAncestors);
-
-    // Only process hashes that we haven't seen yet.
-    const newChangeEntries = await this._mergeSyncTree(
-      changeId,
-      changes,
-      this._lastSyncMessage && this._lastSyncMessage.changeId,
-      this._hashes,
-    );
+    const incomingReferencedAncestors = new Set<string>();
+    collectReferencedAncestors(changeId, changes, incomingReferencedAncestors);
+    for (const cid of incomingReferencedAncestors) {
+      if (!this._referencedAncestors.has(cid)) {
+        admitStateMutation?.();
+        this._referencedAncestors.add(cid);
+      }
+    }
 
     // First apply changes that were sent directly.
     let newDocument = this.document;
@@ -1190,10 +1759,11 @@ export class PeerborneDocument<
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
     for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
-      if (sentChanges) {
+      if (sentChanges !== undefined) {
         switch (sentChangeKind) {
           case crdtDocumentChangeNode: {
             // Apply the changes that were sent directly.
+            admitStateMutation?.();
             newDocument = this._crdtProvider.remoteChange(
               newDocument,
               sentChanges,
@@ -1205,9 +1775,9 @@ export class PeerborneDocument<
             break;
           }
           case crdtReaderChangeNode: {
-            // Apply the changes that were sent directly. Use the
-            // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
-            // drained immediately after the ACL update lands.
+            // Apply through the sanctioned wrapper so a provider rejection
+            // terminally retires ambiguous ACL state.
+            admitStateMutation?.();
             this._mergeReaders(sentChanges);
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -1215,7 +1785,14 @@ export class PeerborneDocument<
           }
           case crdtWriterChangeNode: {
             // Apply the changes that were sent directly.
+            admitStateMutation?.();
             this._mergeWriters(sentChanges);
+            if (
+              authorizationLease !== undefined &&
+              authorizationLease.advanceAfterWriterMutation() !== true
+            ) {
+              return false;
+            }
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
             break;
@@ -1254,69 +1831,135 @@ export class PeerborneDocument<
       await this._fireRemoteUpdateHandlers(newDocumentHashes);
     }
 
-    // Then apply missing hashes by fetching them from the blockstore.
-    // Track all fetch promises so we can compact only after all complete,
-    // avoiding premature snapshots of incomplete state.
-    const fetchPromises: Promise<void>[] = [];
-    for (const [missingHash, missingHashKind] of missingDocumentHashes) {
-      const cid = CID.parse(missingHash);
-      fetchPromises.push(
-        this._getBlock(cid)
-          .then(async (missingChanges) => {
-            if (missingChanges) {
-              switch (missingHashKind) {
-                case crdtDocumentChangeNode: {
-                  this._document = this._crdtProvider.remoteChange(
-                    this._document,
-                    missingChanges,
-                  );
-                  this._hashes.add(missingHash);
-                  this._documentChangeCount++;
-                  this._changesSinceSnapshot++;
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtReaderChangeNode: {
-                  // Go through `_mergeReaders` to drain any pending
-                  // BeeKEM Welcomes parked while waiting for this ACL
-                  // update.
-                  this._mergeReaders(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtWriterChangeNode: {
-                  this._mergeWriters(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-              }
-            } else {
-              console.error(
-                `Block '${missingHash}' returned nothing`,
-                missingChanges,
-              );
-            }
-          })
-          .catch((err) => {
-            console.error(
-              'Failed to fetch missing change from blockstore:',
-              missingHash,
-              err,
-            );
-          }),
-      );
+    if (
+      authorizationLease !== undefined &&
+      authorizationLease.isCurrent() !== true
+    ) {
+      return false;
     }
 
-    // Wait for all missing block fetches to complete before checking compaction.
-    // This ensures the snapshot reflects the full document state rather than
-    // a partial view from incomplete fetches.
-    if (fetchPromises.length > 0) {
-      await Promise.all(fetchPromises);
+    // Then apply missing hashes by fetching them from the blockstore. A bounded
+    // worker pool prevents an adversarial 4096-node manifest from starting one
+    // decrypt/apply promise per CID at once. Aggregate-budgeted initial loads
+    // use one worker so concurrent decryptions cannot overshoot the decoded
+    // aggregate ceiling; ordinary sync retains bounded parallel fetching.
+    let authorizationRevoked = false;
+    let blockFetchFailed = false;
+    let stopFetchWorkers = false;
+    let nextMissingIndex = 0;
+    const fetchWorker = async (): Promise<void> => {
+      while (true) {
+        if (stopFetchWorkers) return;
+        const index = nextMissingIndex++;
+        if (index >= missingDocumentHashes.length) return;
+        const [missingHash, missingHashKind] = missingDocumentHashes[index]!;
+        let missingChanges: ChangesType;
+        try {
+          missingChanges = await this._getBlock(
+            CID.parse(missingHash),
+            initialLoadBudget,
+          );
+        } catch {
+          blockFetchFailed = true;
+          if (initialLoadBudget !== undefined) {
+            // Initial load requires complete installation. After the first
+            // failed deferred fetch, further peer-controlled work cannot make
+            // this candidate succeed.
+            stopFetchWorkers = true;
+          }
+          console.error(
+            `Failed to fetch a referenced change for ${this.documentPath}`,
+          );
+          continue;
+        }
+        if (stopFetchWorkers) return;
+        if (!missingChanges) {
+          blockFetchFailed = true;
+          if (initialLoadBudget !== undefined) stopFetchWorkers = true;
+          console.error(
+            `A referenced block returned no changes for ${this.documentPath}`,
+          );
+          continue;
+        }
+        if (
+          authorizationLease !== undefined &&
+          authorizationLease.isCurrent() !== true
+        ) {
+          authorizationRevoked = true;
+          if (initialLoadBudget !== undefined) stopFetchWorkers = true;
+          continue;
+        }
+        // Deadline/cancellation admission errors must escape unchanged and
+        // must not be misclassified as provider or block-fetch failures.
+        admitStateMutation?.();
+        try {
+          switch (missingHashKind) {
+            case crdtDocumentChangeNode: {
+              this._document = this._crdtProvider.remoteChange(
+                this._document,
+                missingChanges,
+              );
+              this._hashes.add(missingHash);
+              this._documentChangeCount++;
+              this._changesSinceSnapshot++;
+              this._trackTip(missingHash, missingHashKind);
+              await this._fireRemoteUpdateHandlers([missingHash]);
+              break;
+            }
+            case crdtReaderChangeNode: {
+              this._mergeReaders(missingChanges);
+              this._hashes.add(missingHash);
+              this._trackTip(missingHash, missingHashKind);
+              await this._fireRemoteUpdateHandlers([missingHash]);
+              break;
+            }
+            case crdtWriterChangeNode: {
+              this._mergeWriters(missingChanges);
+              if (
+                authorizationLease !== undefined &&
+                authorizationLease.advanceAfterWriterMutation() !== true
+              ) {
+                authorizationRevoked = true;
+                if (initialLoadBudget !== undefined) stopFetchWorkers = true;
+                break;
+              }
+              this._hashes.add(missingHash);
+              this._trackTip(missingHash, missingHashKind);
+              await this._fireRemoteUpdateHandlers([missingHash]);
+              break;
+            }
+          }
+        } catch {
+          blockFetchFailed = true;
+          if (initialLoadBudget !== undefined) stopFetchWorkers = true;
+          if (this._securityProviderMutationFailure !== undefined) {
+            this._throwIfSecurityProviderMutationFailed();
+          }
+          console.error(
+            `Failed to apply a referenced change for ${this.documentPath}`,
+          );
+        }
+      }
+    };
+    const maxFetchWorkers =
+      initialLoadBudget === undefined ? LOAD_BLOCK_MAX_CONCURRENCY : 1;
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(maxFetchWorkers, missingDocumentHashes.length),
+        },
+        () => fetchWorker(),
+      ),
+    );
+    if (initialLoadBudget !== undefined && blockFetchFailed) {
+      return false;
+    }
+    if (
+      authorizationRevoked ||
+      (authorizationLease !== undefined &&
+        authorizationLease.isCurrent() !== true)
+    ) {
+      return false;
     }
 
     // Refresh `_lastSyncMessage` so the served frontier reflects what we now
@@ -1337,9 +1980,14 @@ export class PeerborneDocument<
     // `_servedFrontier()`). The next local `_makeChange()` cross-links
     // through `_recentTips` regardless, so concurrent heads are recovered
     // on the next local write.
+    admitStateMutation?.();
     this._refreshLastSyncMessageFromSync(changeId, changes);
 
-    await this._maybeCompact();
+    await this._maybeCompact(admitStateMutation);
+    // Compaction may await ACL and signature providers. Recheck the candidate
+    // deadline before reporting a successful initial-load apply.
+    admitStateMutation?.();
+    return true;
   }
 
   /**
@@ -1366,7 +2014,7 @@ export class PeerborneDocument<
    *
    * The cached message's `documentId` / `keychainChanges` fields are
    * preserved across the swap. Response-specific fields
-   * (`signature`, `tips`, `tipsHash`) are dropped because they are
+   * (`signature`, `tips`, `tipsHash`, `loadSecurityState`) are dropped because they are
    * regenerated per-response by the load / tip-advertise handlers; leaving
    * a stale value would be misleading at best, a wire-protocol violation
    * at worst.
@@ -1401,6 +2049,8 @@ export class PeerborneDocument<
         signature: undefined,
         tips: undefined,
         tipsHash: undefined,
+        loadSecurityState: undefined,
+        loadChallenge: undefined,
       };
       return;
     }
@@ -1419,6 +2069,8 @@ export class PeerborneDocument<
         signature: undefined,
         tips: undefined,
         tipsHash: undefined,
+        loadSecurityState: undefined,
+        loadChallenge: undefined,
       };
       return;
     }
@@ -1428,62 +2080,43 @@ export class PeerborneDocument<
     // `_makeChange()` cross-links via `_recentTips`, recovering both heads.
   }
 
-  /**
-   * Walk the change tree and apply only ACL (reader/writer) nodes.
-   * This is a lightweight pre-pass used before snapshot verification to
-   * ensure writer keys are populated without applying document changes.
-   * ACL merges are idempotent, so re-applying them in the subsequent
-   * full _syncDocumentChanges() call is safe.
-   */
-  private _applyACLFromTree(node: CRDTChangeNode<ChangesType>) {
-    if (node.change) {
-      if (node.kind === crdtWriterChangeNode) {
-        this._mergeWriters(node.change);
-      } else if (node.kind === crdtReaderChangeNode) {
-        this._mergeReaders(node.change);
+  /** Build an isolated writer-ACL candidate without mutating live state. */
+  private async _writerKeysIncludingTree(
+    node: CRDTChangeNode<ChangesType> | undefined,
+  ): Promise<ReadonlyArray<PublicKey>> {
+    const candidate = this._aclProvider.initialize();
+    candidate.merge(this._writers.current());
+    const pending = node === undefined ? [] : [node];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (
+        current.change !== undefined &&
+        current.kind === crdtWriterChangeNode
+      ) {
+        candidate.merge(current.change);
+      }
+      if (
+        current.children !== undefined &&
+        current.children !== crdtChangeNodeDeferred
+      ) {
+        const children = Object.values(current.children);
+        for (let index = children.length - 1; index >= 0; index--) {
+          pending.push(children[index]!);
+        }
       }
     }
-    if (node.children !== undefined && node.children !== crdtChangeNodeDeferred) {
-      for (const child of Object.values(node.children)) {
-        this._applyACLFromTree(child);
-      }
-    }
+    return candidate.users();
   }
 
-
-  /**
-   * Sanctioned wrapper around `_readers.merge` that also drains any
-   * pending BeeKEM Welcomes parked by `handleBeeKEMWelcomeRequestData`
-   * because the local user was not yet a reader. Centralizing the
-   * post-merge drain here closes the readers-ACL / Welcome reordering
-   * race regardless of which code path applied the ACL change.
-   *
-   * All ACL-merge call sites for the readers ACL must go through this
-   * helper -- a bare `_readers.merge(...)` would silently skip the
-   * drain, leaving a Welcome parked until the next merge (or TTL
-   * eviction) and re-introducing the readers-ACL / Welcome reordering
-   * wedge that this buffering / drain pair is designed to close.
-   *
-   * Drain is scheduled through the mutation queue because accepting a
-   * buffered Welcome mutates keychain and BeeKEM state. It remains
-   * fire-and-forget so synchronous ACL-merge call sites do not await a
-   * reentrant queue slot while their enclosing `sync()` still owns the
-   * current one. Errors are caught and logged so a malformed buffered
-   * Welcome cannot starve the receive path.
-   *
-   * @internal
-   */
+  /** Sanctioned wrapper that retires the document on an ambiguous ACL merge. */
   private _mergeReaders(changes: ChangesType): void {
-    this._readers.merge(changes);
-    if (this._pendingWelcomes.size > 0) {
-      void this._mutationQueue
-        .run(() => this._drainPendingWelcomesUnlocked())
-        .catch((err) => {
-          console.error(
-            `Failed to drain pending BeeKEM Welcomes for ${this.documentPath}:`,
-            err,
-          );
-        });
+    try {
+      this._readers.merge(changes);
+    } catch (error) {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        'inbound readers-ACL merge',
+        error,
+      );
     }
   }
 
@@ -1492,7 +2125,143 @@ export class PeerborneDocument<
    * Centralizes the `enableSigning` config check to avoid drift across many call sites.
    */
   private _isSigningEnabled(): boolean {
-    return this.swarm.config?.enableSigning !== false;
+    return this.swarm.enableSigning;
+  }
+
+  private _requiresAuthenticatedInitialLoad(): boolean {
+    return this.swarm.requireAuthenticatedInitialLoad;
+  }
+
+  private async _getBootstrapWriterKeys(): Promise<ReadonlyArray<PublicKey>> {
+    const resolver = this.swarm.resolveTrustedDocumentWriters;
+    if (!resolver) return [];
+    const resolved = await resolver(this.documentPath);
+    if (!Array.isArray(resolved)) {
+      throw new TypeError(
+        'resolveTrustedDocumentWriters must return an array of public keys',
+      );
+    }
+    return resolved as readonly PublicKey[];
+  }
+
+  private async _getLoadSecurityCommitments(): Promise<
+    LoadSecurityCommitments | undefined
+  > {
+    const resolver = this.swarm.resolveLoadSecurityCommitments;
+    if (!resolver) return undefined;
+    const commitments = await resolver(this.documentPath);
+    return cloneLoadSecurityCommitments(commitments);
+  }
+
+  private _assertInitialLoadWriterAuthorizationCurrent(
+    writerVersion: number,
+  ): void {
+    this._throwIfSecurityProviderMutationFailed();
+    if (
+      (this._writerMutationsInFlight ?? 0) !== 0 ||
+      (this._writerKeysVersion ?? 0) !== writerVersion
+    ) {
+      throw new Error(
+        `Writer authorization changed during the security-aware initial-load ` +
+          `round for ${this.documentPath}; retry the load`,
+      );
+    }
+  }
+
+  private async _captureInitialLoadSignerAuthorities(): Promise<
+    InitialLoadSignerAuthoritySnapshot<PublicKey>
+  > {
+    if ((this._writerMutationsInFlight ?? 0) !== 0) {
+      throw new Error(
+        `Writer authorization changed during the security-aware initial-load ` +
+          `round for ${this.documentPath}; retry the load`,
+      );
+    }
+    const writerVersion = this._writerKeysVersion ?? 0;
+    const existingWriterKeys = await this._getWriterKeys();
+    this._assertInitialLoadWriterAuthorizationCurrent(writerVersion);
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'security-aware initial load',
+    );
+    const authorities = await captureInitialLoadSignerAuthorities({
+      documentPath: this.documentPath,
+      existingWriterKeys,
+      resolveTrustedDocumentWriters:
+        existingWriterKeys.length === 0
+          ? (this.swarm.resolveTrustedDocumentWriters as
+              | ((
+                  documentPath: string,
+                ) => readonly PublicKey[] | Promise<readonly PublicKey[]>)
+              | undefined)
+          : undefined,
+      serializePublicKey,
+    });
+    this._assertInitialLoadWriterAuthorizationCurrent(writerVersion);
+    return Object.freeze({ authorities, writerVersion });
+  }
+
+  private async _identifyInitialLoadSignerAuthority(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    authorities: readonly InitialLoadSignerAuthority<PublicKey>[],
+  ): Promise<string | null> {
+    const { signature, ...messageWithoutSignature } = message;
+    let signatureBytes: Uint8Array | undefined;
+    if (signature !== undefined) {
+      try {
+        signatureBytes = this._deserializeSignature(signature);
+      } catch {
+        return null;
+      }
+    }
+    const identified = await identifyInitialLoadSigner({
+      strict: true,
+      signingEnabled: this._isSigningEnabled(),
+      payload: this._syncMessageSerializer.serializeSyncMessage(
+        messageWithoutSignature,
+      ),
+      signature: signatureBytes,
+      existingWriterKeys: authorities.map((entry) => entry.publicKey),
+      trustedBootstrapWriterKeys: [],
+      verify: (payload, key, candidateSignature) =>
+        this._authProvider.verify(payload, key, candidateSignature),
+    });
+    return identified === null
+      ? null
+      : authorities[identified.keyIndex].authorityId;
+  }
+
+  private async _verifyInitialLoadEnvelope(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    existingWriterKeys: readonly PublicKey[],
+    capturedBootstrapWriterKeys?: readonly PublicKey[],
+  ): Promise<boolean> {
+    const { signature, ...messageWithoutSignature } = message;
+    const signingEnabled = this._isSigningEnabled();
+    let signatureBytes: Uint8Array | undefined;
+    if (signingEnabled && signature !== undefined) {
+      try {
+        signatureBytes = this._deserializeSignature(signature);
+      } catch {
+        return false;
+      }
+    }
+    return verifyInitialLoadAuthentication({
+      strict: this._requiresAuthenticatedInitialLoad(),
+      signingEnabled,
+      payload: this._syncMessageSerializer.serializeSyncMessage(
+        messageWithoutSignature,
+      ),
+      signature: signatureBytes,
+      existingWriterKeys,
+      trustedBootstrapWriterKeys:
+        existingWriterKeys.length === 0
+          ? (capturedBootstrapWriterKeys ??
+            (await this._getBootstrapWriterKeys()))
+          : [],
+      verify: (payload, key, candidateSignature) =>
+        this._authProvider.verify(payload, key, candidateSignature),
+    });
   }
 
   /**
@@ -1518,6 +2287,7 @@ export class PeerborneDocument<
    *    mutation) and not adversarial.
    */
   private async _getWriterKeys(): Promise<ReadonlyArray<PublicKey>> {
+    this._throwIfSecurityProviderMutationFailed();
     while (true) {
       if (
         this._writerMutationsInFlight === 0 &&
@@ -1527,6 +2297,7 @@ export class PeerborneDocument<
       }
       const versionAtStart = this._writerKeysVersion;
       const fetched = await this._writers.users();
+      this._throwIfSecurityProviderMutationFailed();
       // Only commit to the cache if (a) the version is still current AND
       // (b) no mutations are in flight. Either condition means the fetch
       // could be racing a still-incomplete mutation; in that case return
@@ -1595,6 +2366,11 @@ export class PeerborneDocument<
     this._invalidateWriterKeyCache();
     try {
       this._writers.merge(changes);
+    } catch (error) {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        'inbound writers-ACL merge',
+        error,
+      );
     } finally {
       this._writerMutationsInFlight--;
       this._invalidateWriterKeyCache();
@@ -1612,15 +2388,46 @@ export class PeerborneDocument<
   }
 
   private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
+    return (
+      (await this._verifyWriterSignatureAtStableVersion(raw, signature)) !==
+      null
+    );
+  }
+
+  private _writerAuthorizationIsCurrent(version: number): boolean {
+    return (
+      this._securityProviderMutationFailure === undefined &&
+      this._writerMutationsInFlight === 0 &&
+      this._writerKeysVersion === version
+    );
+  }
+
+  /**
+   * Verify against one stable ACL-writer snapshot. Rejected verifier promises
+   * are ordinary non-matches: one broken provider/key must not suppress a
+   * later exact-`true` verification. The returned version is a short-lived
+   * authorization lease that callers re-check immediately before their first
+   * synchronous state mutation.
+   */
+  private async _verifyWriterSignatureAtStableVersion(
+    raw: Uint8Array,
+    signature: string,
+  ): Promise<number | null> {
+    if (this._securityProviderMutationFailure !== undefined) return null;
     if (!this._isSigningEnabled()) {
-      return true;
+      return this._writerKeysVersion;
     }
 
+    if (this._writerMutationsInFlight !== 0) return null;
+    const versionAtStart = this._writerKeysVersion;
     const writerKeys = await this._getWriterKeys();
     // Short-circuit: with no writers, no signature can verify. Avoids the
     // base64 decode for an unverifiable input.
     if (writerKeys.length === 0) {
-      return false;
+      return null;
+    }
+    if (!this._writerAuthorizationIsCurrent(versionAtStart)) {
+      return null;
     }
     // Malformed base64 throws inside js-base64. A bad signature must surface
     // as a verification failure, not an exception -- the topic validator path
@@ -1631,15 +2438,21 @@ export class PeerborneDocument<
     try {
       signatureBytes = this._deserializeSignature(signature);
     } catch {
-      return false;
+      return null;
     }
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
+    const results = await Promise.allSettled(
+      writerKeys.map((writerKey) =>
         this._authProvider.verify(raw, writerKey, signatureBytes),
-      );
+      ),
+    );
+    if (!this._writerAuthorizationIsCurrent(versionAtStart)) {
+      return null;
     }
-    return firstTrue(verificationTasks);
+    return results.some(
+      (result) => result.status === 'fulfilled' && result.value === true,
+    )
+      ? versionAtStart
+      : null;
   }
 
   /**
@@ -1649,19 +2462,24 @@ export class PeerborneDocument<
    * embedded publicKey field which may not survive serialization for all
    * key types (e.g. CryptoKey).
    */
-  private async _verifySnapshotSignature(payload: Uint8Array, signature: Uint8Array) {
+  private async _verifySnapshotSignature(
+    payload: Uint8Array,
+    signature: Uint8Array,
+    explicitWriterKeys?: readonly PublicKey[],
+  ) {
     if (!this._isSigningEnabled()) {
       return true;
     }
 
-    const writerKeys = await this._getWriterKeys();
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
+    const writerKeys = explicitWriterKeys ?? (await this._getWriterKeys());
+    const results = await Promise.allSettled(
+      writerKeys.map((writerKey) =>
         this._authProvider.verify(payload, writerKey, signature),
-      );
-    }
-    return firstTrue(verificationTasks);
+      ),
+    );
+    return results.some(
+      (result) => result.status === 'fulfilled' && result.value === true,
+    );
   }
 
   private async _signAsWriter(
@@ -1719,45 +2537,347 @@ export class PeerborneDocument<
     raw: Uint8Array,
     signature: string,
   ): Promise<boolean> {
+    return (
+      (await this._verifyWelcomeWriterSignatureAtStableVersion(
+        raw,
+        signature,
+      )) !== null
+    );
+  }
+
+  private async _verifyWelcomeWriterSignatureAtStableVersion(
+    raw: Uint8Array,
+    signature: string,
+  ): Promise<number | null> {
+    if (this._writerMutationsInFlight !== 0) return null;
+    const versionAtStart = this._writerKeysVersion;
     const writerKeys = await this._getWriterKeys();
-    if (writerKeys.length === 0) {
-      return false;
+    if (
+      writerKeys.length === 0 ||
+      this._writerKeysVersion !== versionAtStart ||
+      this._writerMutationsInFlight !== 0
+    ) {
+      return null;
     }
     let signatureBytes: Uint8Array;
     try {
       signatureBytes = this._deserializeSignature(signature);
     } catch {
+      return null;
+    }
+    const verificationResults = await Promise.allSettled(
+      writerKeys.map((writerKey) =>
+        this._authProvider.verify(raw, writerKey, signatureBytes),
+      ),
+    );
+    if (
+      this._writerKeysVersion !== versionAtStart ||
+      this._writerMutationsInFlight !== 0
+    ) {
+      return null;
+    }
+    return verificationResults.some(
+      (result) => result.status === 'fulfilled' && result.value === true,
+    )
+      ? versionAtStart
+      : null;
+  }
+
+  /**
+   * Capture the complete writer trust set for one inbound Welcome. Existing
+   * ACL writers are authoritative. Only when that ACL is empty may the
+   * application-pinned resolver provide the onboarding trust root.
+   *
+   * The resolver is invoked at most once per ingress. Canonical authority IDs
+   * collapse duplicate credentials, and the captured array is reused for the
+   * pre-authentication pass and the final state commit.
+   */
+  private async _captureBeeKEMWelcomeWriterAuthorities(): Promise<BeeKEMWriterAuthoritySnapshot<PublicKey> | null> {
+    if (this._securityProviderMutationFailure !== undefined) return null;
+    if (this._writerMutationsInFlight !== 0) return null;
+    const writerKeysVersion = this._writerKeysVersion;
+    const existingWriterKeys = await this._getWriterKeys();
+    if (
+      this._writerKeysVersion !== writerKeysVersion ||
+      this._writerMutationsInFlight !== 0
+    ) {
+      return null;
+    }
+
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'BeeKEM Welcome writer authorization',
+    );
+    const resolver = this.swarm.resolveTrustedDocumentWriters as
+      | ((
+          documentPath: string,
+        ) => readonly PublicKey[] | Promise<readonly PublicKey[]>)
+      | undefined;
+    let authorities: readonly InitialLoadSignerAuthority<PublicKey>[];
+    try {
+      authorities = await captureInitialLoadSignerAuthorities({
+        documentPath: this.documentPath,
+        existingWriterKeys,
+        resolveTrustedDocumentWriters:
+          existingWriterKeys.length === 0 ? resolver : undefined,
+        serializePublicKey,
+      });
+    } catch {
+      return null;
+    }
+
+    if (
+      this._writerKeysVersion !== writerKeysVersion ||
+      this._writerMutationsInFlight !== 0
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      source: existingWriterKeys.length === 0 ? 'bootstrap' : 'acl',
+      writerKeysVersion,
+      authorities,
+    });
+  }
+
+  private async _verifyWelcomeWriterSignatureFromSnapshot(
+    raw: Uint8Array,
+    signature: string,
+    snapshot: BeeKEMWriterAuthoritySnapshot<PublicKey>,
+  ): Promise<boolean> {
+    if (
+      this._securityProviderMutationFailure !== undefined ||
+      this._writerMutationsInFlight !== 0 ||
+      this._writerKeysVersion !== snapshot.writerKeysVersion
+    ) {
       return false;
     }
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
-        this._authProvider.verify(raw, writerKey, signatureBytes),
-      );
+    if (snapshot.source === 'bootstrap') {
+      const currentWriterKeys = await this._getWriterKeys();
+      if (
+        currentWriterKeys.length !== 0 ||
+        this._writerMutationsInFlight !== 0 ||
+        this._writerKeysVersion !== snapshot.writerKeysVersion
+      ) {
+        return false;
+      }
     }
-    return firstTrue(verificationTasks);
+
+    let signatureBytes: Uint8Array;
+    let stableRaw: Uint8Array;
+    try {
+      signatureBytes = this._deserializeSignature(signature);
+      stableRaw = copyUnsharedUint8Array(
+        raw,
+        1,
+        PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+        'BeeKEM Welcome signature payload',
+      );
+    } catch {
+      return false;
+    }
+    const verificationResults = await Promise.allSettled(
+      snapshot.authorities.map(({ publicKey }) =>
+        this._authProvider.verify(stableRaw, publicKey, signatureBytes),
+      ),
+    );
+    if (
+      this._securityProviderMutationFailure !== undefined ||
+      this._writerMutationsInFlight !== 0 ||
+      this._writerKeysVersion !== snapshot.writerKeysVersion
+    ) {
+      return false;
+    }
+    if (snapshot.source === 'bootstrap') {
+      const currentWriterKeys = await this._getWriterKeys();
+      if (
+        currentWriterKeys.length !== 0 ||
+        this._writerMutationsInFlight !== 0 ||
+        this._writerKeysVersion !== snapshot.writerKeysVersion
+      ) {
+        return false;
+      }
+    }
+    return verificationResults.some(
+      (result) => result.status === 'fulfilled' && result.value === true,
+    );
+  }
+
+  private async _reauthorizeBeeKEMWelcome(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    snapshot: BeeKEMWriterAuthoritySnapshot<PublicKey>,
+  ): Promise<boolean> {
+    if (
+      typeof message.signature !== 'string' ||
+      message.signature.length === 0
+    ) {
+      return false;
+    }
+    const signature = message.signature;
+    const { signature: _signature, ...messageWithoutSignature } = message;
+    let raw: Uint8Array;
+    try {
+      raw = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(
+          messageWithoutSignature,
+        ),
+        1,
+        PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+        'BeeKEM Welcome signature payload',
+      );
+    } catch {
+      return false;
+    }
+    return this._verifyWelcomeWriterSignatureFromSnapshot(
+      raw,
+      signature,
+      snapshot,
+    );
+  }
+
+  private async _reauthorizeCanonicalBeeKEMMessage(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): Promise<boolean> {
+    if (
+      typeof message.signature !== 'string' ||
+      message.signature.length === 0
+    ) {
+      return false;
+    }
+    const signature = message.signature;
+    const { signature: _signature, ...messageWithoutSignature } = message;
+    let raw: Uint8Array;
+    try {
+      raw = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(
+          messageWithoutSignature,
+        ),
+        1,
+        PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+        'BeeKEM signature payload',
+      );
+    } catch {
+      return false;
+    }
+    return (
+      (await this._verifyWelcomeWriterSignatureAtStableVersion(
+        raw,
+        signature,
+      )) !== null
+    );
   }
 
   private _encoder = new TextEncoder();
 
   private _deserializeSignature(signature: string): Uint8Array {
-    return Base64.toUint8Array(signature);
+    if (
+      typeof signature !== 'string' ||
+      signature.length === 0 ||
+      signature.length > MAX_WIRE_SIGNATURE_BASE64_LENGTH ||
+      !Base64.isValid(signature)
+    ) {
+      throw new TypeError('signature must be canonical bounded base64');
+    }
+    const decoded = Base64.toUint8Array(signature);
+    if (
+      decoded.length === 0 ||
+      decoded.length > MAX_WIRE_SIGNATURE_BYTES ||
+      Base64.fromUint8Array(decoded) !== signature
+    ) {
+      throw new TypeError('signature must be canonical bounded base64');
+    }
+    return decoded;
   }
 
   private _serializeSignature(signature: Uint8Array): string {
-    return Base64.fromUint8Array(signature);
+    return Base64.fromUint8Array(
+      copyUnsharedUint8Array(
+        signature,
+        1,
+        MAX_WIRE_SIGNATURE_BYTES,
+        'signature',
+      ),
+    );
+  }
+
+  /** Verify one decoded request signature against the reader/writer ACL. */
+  private async _authorizeInitialLoadRequest(
+    payload: Uint8Array,
+    signature: unknown,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    if (typeof signature !== 'string') return false;
+
+    let signatureBytes: Uint8Array;
+    try {
+      // Decode and canonicalize before reading the ACL. The same bounded byte
+      // snapshot is reused for every candidate instead of repeatedly decoding
+      // attacker-controlled input inside the verification loop.
+      signatureBytes = this._deserializeSignature(signature);
+    } catch {
+      return false;
+    }
+
+    const readers = (
+      await Promise.all([this._readers.users(), this._writers.users()])
+    ).flat();
+    for (const reader of readers) {
+      if (
+        (await this._authProvider.verify(payload, reader, signatureBytes)) ===
+        true
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private _requireWireChanges(
+    changes: ChangesType,
+    label: string,
+  ): ChangesType {
+    if (changes === undefined) {
+      throw new TypeError(
+        `${label} returned undefined, which cannot be represented by the optional sync-message change field`,
+      );
+    }
+    return changes;
   }
 
   private async _makeChange(
     changes: ChangesType,
     kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
-  ) {
+  ): Promise<void> {
+    const prepared = await this._prepareChange(changes, kind);
+    await this._publishPreparedChange(prepared);
+  }
+
+  private async _prepareChange(
+    changes: ChangesType,
+    kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
+    encryptionKey?: readonly [Uint8Array, DocumentKey],
+    combinedKeychainChanges?: { value: ChangesType },
+  ): Promise<PreparedLocalChange<ChangesType, PublicKey>> {
+    this._requireWireChanges(changes, `${kind} change`);
+    if (combinedKeychainChanges !== undefined) {
+      this._requireWireChanges(
+        combinedKeychainChanges.value,
+        'combined writer-removal keychain change',
+      );
+    }
     // Store changes in blockstore.
-    const hash = await this._putBlock(changes);
-    this._hashes.add(hash);
+    const hash = await this._putBlock(changes, encryptionKey);
 
     // Send new message.
     let updateMessage = this._createSyncMessage();
+    if (combinedKeychainChanges !== undefined) {
+      // Writer removal carries the replacement key and ACL removal in one
+      // old-key-encrypted envelope. When signing is enabled, one signature
+      // binds both fields. Direct V2 and GossipSub receive paths both call
+      // `sync()`, which merges this keychain field before applying the writer
+      // node below. An `undefined` provider delta is rejected above because
+      // the optional wire field cannot distinguish it from absence.
+      updateMessage.keychainChanges = combinedKeychainChanges.value;
+    }
     const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
     const primaryParentId = updateMessage.changeId;
     if (primaryParentId && updateMessage.changes) {
@@ -1797,27 +2917,33 @@ export class PeerborneDocument<
     // `changeNode` (not the full inherited subtree below it) because the
     // inherited subtree's ancestor relationships were already recorded
     // when each of those nodes was created or applied.
-    if (changeNode.children) {
-      for (const childCid of Object.keys(changeNode.children)) {
-        this._referencedAncestors.add(childCid);
-      }
-    }
-
-    // Track this new tip for future cross-linking. The primary parent is
-    // also retained -- it's the immediate predecessor of *this* tip and may
-    // still be useful as a cross-link target for the *next* change if a
-    // later remote sync arrives in between.
-    this._trackTip(hash, kind);
+    const referencedAncestorCids = changeNode.children
+      ? Object.keys(changeNode.children)
+      : [];
 
     // Sign new message.
     updateMessage.signature = await this._signAsWriter(updateMessage);
 
-    this._lastSyncMessage = updateMessage;
-    const serializedUpdate =
-      this._syncMessageSerializer.serializeSyncMessage(updateMessage);
+    // Apply the same codec round-trip, byte cap, and aggregate detached-value
+    // budgets used by inbound sync before committing local frontier state.
+    // This keeps sender and receiver acceptance symmetric for long legacy
+    // histories: a locally-built message is never committed/published if an
+    // honest peer would reject its wire representation as over budget.
+    updateMessage = this._canonicalizeSyncMessage(
+      updateMessage,
+      'outbound sync message',
+    );
+
+    const serializedUpdate = copyUnsharedUint8Array(
+      this._syncMessageSerializer.serializeSyncMessage(updateMessage),
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+      'outbound sync message encoding',
+    );
 
     // Encrypt sync message.
-    const [documentKeyID, documentKey] = await this._keychain.current();
+    const [documentKeyID, documentKey] =
+      encryptionKey ?? (await this._keychain.current());
     if (!documentKey) {
       throw new Error(`Document ${this.documentPath} has an empty keychain!`);
     }
@@ -1828,16 +2954,52 @@ export class PeerborneDocument<
     if (!nonce) {
       throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
     }
+    const encryptedPayload = copyUnsharedUint8Array(
+      concatUint8Arrays(documentKeyID, nonce, data),
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+      'outbound encrypted sync message',
+    );
+    return {
+      hash,
+      kind,
+      encryptedPayload,
+      updateMessage,
+      referencedAncestorCids,
+      committed: false,
+    };
+  }
+
+  private _commitPreparedChange(
+    prepared: PreparedLocalChange<ChangesType, PublicKey>,
+  ): void {
+    this._throwIfSecurityProviderMutationFailed();
+    if (prepared.committed) return;
+    this._hashes.add(prepared.hash);
+    for (const childCid of prepared.referencedAncestorCids) {
+      this._referencedAncestors.add(childCid);
+    }
+    this._trackTip(prepared.hash, prepared.kind);
+    this._lastSyncMessage = prepared.updateMessage;
+    prepared.committed = true;
+  }
+
+  private async _publishPreparedChange(
+    prepared: PreparedLocalChange<ChangesType, PublicKey>,
+  ): Promise<void> {
+    this._commitPreparedChange(prepared);
     await this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
-      concatUint8Arrays(documentKeyID, nonce, data),
+      prepared.encryptedPayload,
     );
+    this._throwIfSecurityProviderMutationFailed();
 
     // Fire change handlers.
-    await this._fireLocalUpdateHandlers([hash]);
+    await this._fireLocalUpdateHandlers([prepared.hash]);
+    this._throwIfSecurityProviderMutationFailed();
 
     // Track document changes for compaction.
-    if (kind === crdtDocumentChangeNode) {
+    if (prepared.kind === crdtDocumentChangeNode) {
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
       await this._maybeCompact();
@@ -1848,16 +3010,14 @@ export class PeerborneDocument<
    * Returns the keychain changes to include in a load response based on
    * the document's history visibility setting.
    *
-   * `since_invited` requires `_invitationEpoch` to be set (typically by the
-   * BeeKEM Welcome flow when the local node joined). When it is unset --
-   * e.g. for the original group creator that never received a Welcome --
-   * the call falls back to `current_only` semantics rather than full
-   * history. The intent of `since_invited` is to bound what *new joiners*
-   * receive; emitting the full keychain whenever the local boundary is
-   * unknown undermines that goal (and leaks every prior epoch to any
-   * peer the local node responds to). Operators that genuinely want
-   * founders to share full history should configure the document with
-   * `historyVisibility: 'full_history'` explicitly.
+   * Ordinary load requests currently authenticate reader membership but do not
+   * bind the requester identity to a persisted invitation epoch. A responder's
+   * own `_invitationEpoch` therefore cannot safely define the requester's
+   * window: a later joiner could otherwise query an earlier joiner and receive
+   * intervening pre-invite keys. Until the protocol carries an authenticated
+   * requester-specific boundary, `since_invited` is deliberately current-only
+   * on load responses. Operators that explicitly accept historical disclosure
+   * can configure `full_history`.
    */
   private async _keychainChangesForVisibility(): Promise<ChangesType> {
     switch (this._historyVisibility) {
@@ -1865,21 +3025,7 @@ export class PeerborneDocument<
         // Send all retained epoch keys.
         return this._keychain.history();
       case 'since_invited':
-        if (this._invitationEpoch === undefined) {
-          // No recorded invitation epoch (founding member, or a node
-          // that joined before Welcome wiring landed). Default to the
-          // narrowest key-distribution interpretation -- the current key only -- so a
-          // missing boundary cannot silently widen the disclosure
-          // window. Future rotations propagate via key-update.
-          return await this._keychain.currentKeyChange();
-        }
-        // `historySince` is optional on the Keychain interface for backwards
-        // compatibility; fall back to the current key when the active provider
-        // has not implemented it so a missing capability cannot widen key
-        // disclosure.
-        return await keychainHistorySinceOrFull(this._keychain)(
-          this._invitationEpoch,
-        );
+        return await this._keychain.currentKeyChange();
       case 'current_only':
       default:
         // Only send the current key. This does not redact retained CRDT history.
@@ -1896,20 +3042,20 @@ export class PeerborneDocument<
    *
    * - `current_only`: send only the current key. Identical to the load
    *   response path; this does not redact retained CRDT history.
-   * - `since_invited`: send only the current key. From the recipient's
-   *   perspective, "since I was invited" is the current epoch
-   *   (`welcomeEpochId`) onward, so the Welcome itself should carry
-   *   exactly the current key (subsequent rotations arrive via the
-   *   key-update protocol). Using `_keychainChangesForVisibility()` here
-   *   would instead leak the *inviter's* post-invite slice (or, for
-   *   founders, the full history), violating the recipient's intended
-   *   join boundary.
+   * - `since_invited`: send only the current key. The recipient's Welcome
+   *   establishes its current invitation epoch; subsequent rotations arrive
+   *   via PathUpdates or combined writer-removal envelopes. Ordinary loads
+   *   also project this policy to current-only today because they lack an
+   *   authenticated requester-specific invitation boundary. The helpers stay
+   *   separate because their policy inputs and future evolution differ.
    * - `full_history`: send the full keychain so the recipient can audit
    *   or replay all prior blocks (matches the inviter-side visibility
    *   semantics).
    */
-  private async _keychainChangesForWelcome(): Promise<ChangesType> {
-    switch (this._historyVisibility) {
+  private async _keychainChangesForWelcome(
+    historyVisibility: HistoryVisibility = this._historyVisibility,
+  ): Promise<ChangesType> {
+    switch (historyVisibility) {
       case 'full_history':
         return this._keychain.history();
       case 'since_invited':
@@ -1922,7 +3068,7 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact() {
+  private async _maybeCompact(admitStateMutation?: () => void) {
     if (!this._compactionConfig.enabled || this._snapshotUnsupported) {
       return;
     }
@@ -1934,7 +3080,10 @@ export class PeerborneDocument<
 
     // Check cheap thresholds before the async writer ACL check to avoid
     // repeated crypto/ACL work on every change.
-    if (this._documentChangeCount < this._compactionConfig.minChangesBeforeSnapshot) {
+    if (
+      this._documentChangeCount <
+      this._compactionConfig.minChangesBeforeSnapshot
+    ) {
       return;
     }
     if (this._changesSinceSnapshot < this._compactionConfig.snapshotInterval) {
@@ -1942,12 +3091,13 @@ export class PeerborneDocument<
     }
 
     // Only writers can create snapshots; read-only peers must not attempt compaction.
-    if (!(await this._writers.check(this._userPublicKey))) {
+    if ((await this._writers.check(this._userPublicKey)) !== true) {
       return;
     }
+    admitStateMutation?.();
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked();
+      await this._snapshotUnlocked(admitStateMutation);
     } finally {
       this._compactionInProgress = false;
     }
@@ -1975,7 +3125,7 @@ export class PeerborneDocument<
       return prunedCIDs;
     }
 
-    // Recursively collect all ACL nodes from a subtree that is about to be pruned.
+    // Iteratively collect all ACL nodes from a subtree that is about to be pruned.
     // Re-attached ACL nodes are stored as leaf nodes (children stripped) so they
     // don't keep nested children subtrees alive after pruning.
     // Non-ACL (document) node CIDs are added to the prunedCIDs set.
@@ -1983,7 +3133,9 @@ export class PeerborneDocument<
       children: Record<string, CRDTChangeNode<ChangesType>>,
       out: Record<string, CRDTChangeNode<ChangesType>>,
     ) => {
-      for (const [childHash, childNode] of Object.entries(children)) {
+      const pending = Object.entries(children).reverse();
+      while (pending.length > 0) {
+        const [childHash, childNode] = pending.pop()!;
         if (
           childNode.kind === crdtReaderChangeNode ||
           childNode.kind === crdtWriterChangeNode
@@ -1999,7 +3151,10 @@ export class PeerborneDocument<
           childNode.children !== undefined &&
           childNode.children !== crdtChangeNodeDeferred
         ) {
-          collectACLNodes(childNode.children, out);
+          const descendants = Object.entries(childNode.children);
+          for (let index = descendants.length - 1; index >= 0; index--) {
+            pending.push(descendants[index]!);
+          }
         }
       }
     };
@@ -2084,7 +3239,9 @@ export class PeerborneDocument<
 
         // Unpin first -- pins.rm is an AsyncGenerator, drain it.
         try {
-          for await (const _ of pins.rm(cid)) { /* drain */ }
+          for await (const _ of pins.rm(cid)) {
+            /* drain */
+          }
         } catch (unpinErr) {
           const msg = String(unpinErr);
           if (!msg.includes('not pinned') && !msg.includes('is not pinned')) {
@@ -2099,8 +3256,8 @@ export class PeerborneDocument<
         // the same change block (e.g., a peer that hasn't compacted).
         await blockstore.delete(cid);
         deleted++;
-      } catch (err) {
-        console.error(`Failed to GC block ${cidStr}:`, err);
+      } catch {
+        console.error(`Failed to GC a pruned block for ${this.documentPath}`);
       }
     }
 
@@ -2120,76 +3277,63 @@ export class PeerborneDocument<
   public async handleLoadRequestData(
     message: CRDTLoadRequest,
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    securityAware = false,
   ): Promise<void> {
     try {
-      if (message.documentId !== this.documentPath) {
+      this._throwIfSecurityProviderMutationFailed();
+      if (
+        !shouldServeInitialLoadProtocol(
+          this.swarm.requireSecurityStateQuorum,
+          securityAware,
+        )
+      ) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
+      }
+      if (!isBeeKEMMessageForDocument(message.documentId, this.documentPath)) {
         console.warn(
-          `Received a load request for the wrong document (${message.documentId} !== ${this.documentPath})`,
+          `Received a load request for the wrong local document (${this.documentPath})`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
       }
-
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn(
-            `Rejected load request for ${message.documentId}: missing signature`,
-          );
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )
-          ) {
-            authorized = true;
-            break;
-          }
-        }
+      const requestSignaturePayload = this._initialLoadRequestSignaturePayload(
+        message,
+        securityAware,
+      );
+      if (requestSignaturePayload === null) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
       }
+
+      // Authorize the requestor. When signing is disabled, the shared helper
+      // preserves the existing unsigned-load behavior.
+      const authorized = await this._authorizeInitialLoadRequest(
+        requestSignaturePayload,
+        message.signature,
+      );
 
       if (!authorized) {
         console.warn(
-          `Detected an unauthorized load request for ${message.documentId}`,
+          `Rejected an unauthorized or malformed load request for ${this.documentPath}`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
       }
 
       // Construct load response based on history visibility setting.
-      const loadMessage = this._createSyncMessage();
-
-      loadMessage.keychainChanges = await this._keychainChangesForVisibility();
-
-      // Include the latest snapshot if available, to accelerate initial sync.
-      if (this._latestSnapshot) {
-        loadMessage.snapshot = this._latestSnapshot;
-      }
+      const loadMessage = await this._createLoadResponsePlan(
+        securityAware ? message.loadChallenge : undefined,
+      );
 
       // Attach an explicit tip-set advertisement so the loader can apply
       // a defense-in-depth consistency check against this responder's
       // self-attested served frontier (issue #186 / #189 §5.4.2).
       //
-      // The loader's PRIMARY binding is derived STRUCTURALLY from the
-      // served `changes`/`snapshot` payload via
-      // `computeServedFrontier`; the responder's `tips` array is NOT
-      // trusted as the source of truth (a Byzantine peer can populate
-      // it with the agreed CIDs while serving a divergent payload).
+      // The loader derives this frontier from the actual response; on V4 it
+      // also derives a complete response manifest covering every node/edge,
+      // snapshot, and keychain delta. The responder's `tips` array is NOT
+      // trusted as the source of truth.
       // `tips` is still emitted by honest responders because the loader
       // ALSO verifies that the responder's own attestation hashes to
       // the same value as the structurally-derived served frontier --
@@ -2208,7 +3352,15 @@ export class PeerborneDocument<
       // that aren't yet cross-linked into `_lastSyncMessage.changes`.
       // This field is part of the SIGNED v3 payload; see
       // `wire-protocols.ts` for the version-bump rationale.
-      loadMessage.tips = this._servedFrontier();
+      loadMessage.tips = this._loadResponsePlanFrontier(loadMessage);
+      if (securityAware) {
+        const commitments = await this._getLoadSecurityCommitments();
+        if (!commitments) {
+          await stream.sink([] as Iterable<Uint8Array>);
+          return;
+        }
+        loadMessage.loadSecurityState = commitments;
+      }
 
       // Sign new message.
       loadMessage.signature = await this._signAsWriter(loadMessage);
@@ -2230,18 +3382,30 @@ export class PeerborneDocument<
         documentKey,
       );
       if (!nonce) {
-        throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
+        throw new Error(
+          `Failed to encrypt sync message! Nonce cannot be empty`,
+        );
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = copyUnsharedUint8Array(
+        concatUint8Arrays(documentKeyID, nonce, data),
+        1,
+        MAX_INITIAL_LOAD_RESPONSE_SIZE,
+        'document-load response',
+      );
       console.log(
         `sending doc-load response (encrypted) for ${this.documentPath}`,
       );
 
+      this._throwIfSecurityProviderMutationFailed();
       await stream.sink([assembled] as Iterable<Uint8Array>);
-    } catch (err: unknown) {
-      console.error(`Error handling doc-load request for ${this.documentPath}:`, err);
+    } catch {
+      console.error(`Error handling doc-load request for ${this.documentPath}`);
       // Ensure the stream is closed so the requester doesn't hang.
-      try { await stream.sink([] as Iterable<Uint8Array>); } catch { /* already closed */ }
+      try {
+        await stream.sink([] as Iterable<Uint8Array>);
+      } catch {
+        /* already closed */
+      }
     }
   }
 
@@ -2256,52 +3420,45 @@ export class PeerborneDocument<
   public async handleSnapshotLoadRequestData(
     message: CRDTLoadRequest,
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    securityAware = false,
   ): Promise<void> {
     try {
+      this._throwIfSecurityProviderMutationFailed();
+      if (
+        !shouldServeInitialLoadProtocol(
+          this.swarm.requireSecurityStateQuorum,
+          securityAware,
+        )
+      ) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
+      }
       if (message.documentId !== this.documentPath) {
         console.warn(
-          `Received a snapshot load request for the wrong document (${message.documentId} !== ${this.documentPath})`,
+          `Received a snapshot load request for the wrong local document (${this.documentPath})`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
       }
-
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn(
-            `Rejected snapshot load request for ${message.documentId}: missing signature`,
-          );
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )
-          ) {
-            authorized = true;
-            break;
-          }
-        }
+      const requestSignaturePayload = this._initialLoadRequestSignaturePayload(
+        message,
+        securityAware,
+      );
+      if (requestSignaturePayload === null) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
       }
+
+      // Authorize the requestor. When signing is disabled, the shared helper
+      // preserves the existing unsigned-load behavior.
+      const authorized = await this._authorizeInitialLoadRequest(
+        requestSignaturePayload,
+        message.signature,
+      );
 
       if (!authorized) {
         console.warn(
-          `Detected an unauthorized snapshot load request for ${message.documentId}`,
+          `Rejected an unauthorized or malformed snapshot load request for ${this.documentPath}`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
@@ -2319,9 +3476,9 @@ export class PeerborneDocument<
 
       // Build a complete sync message with the snapshot, post-snapshot
       // changes, and keychain so the peer can fully catch up.
-      const snapshotMessage = this._createSyncMessage();
-      snapshotMessage.snapshot = this._latestSnapshot;
-      snapshotMessage.keychainChanges = await this._keychainChangesForVisibility();
+      const snapshotMessage = await this._createLoadResponsePlan(
+        securityAware ? message.loadChallenge : undefined,
+      );
       // Tip-set advertisement for the pre-apply structural binding check
       // (see the doc-load handler above and the in-line check in
       // `_sendLoadRequestAndSync` for the rationale).
@@ -2336,7 +3493,15 @@ export class PeerborneDocument<
       // loader's structural bind check. Part of the signed v3 payload
       // -- the version bump (snapshotLoadV2 -> snapshotLoadV3) is
       // required because `tips` is now covered by the writer signature.
-      snapshotMessage.tips = this._servedFrontier();
+      snapshotMessage.tips = this._loadResponsePlanFrontier(snapshotMessage);
+      if (securityAware) {
+        const commitments = await this._getLoadSecurityCommitments();
+        if (!commitments) {
+          await stream.sink([] as Iterable<Uint8Array>);
+          return;
+        }
+        snapshotMessage.loadSecurityState = commitments;
+      }
       snapshotMessage.signature = await this._signAsWriter(snapshotMessage);
 
       const serialized =
@@ -2352,21 +3517,32 @@ export class PeerborneDocument<
         documentKey,
       );
       if (!nonce) {
-        throw new Error(`Failed to encrypt snapshot response! Nonce cannot be empty`);
+        throw new Error(
+          `Failed to encrypt snapshot response! Nonce cannot be empty`,
+        );
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = copyUnsharedUint8Array(
+        concatUint8Arrays(documentKeyID, nonce, data),
+        1,
+        MAX_INITIAL_LOAD_RESPONSE_SIZE,
+        'snapshot-load response',
+      );
       console.log(
         `sending snapshot-load response (encrypted) for ${this.documentPath}`,
       );
 
+      this._throwIfSecurityProviderMutationFailed();
       await stream.sink([assembled] as Iterable<Uint8Array>);
-    } catch (err: unknown) {
+    } catch {
       console.error(
-        `Error handling snapshot-load request for ${this.documentPath}:`,
-        err,
+        `Error handling snapshot-load request for ${this.documentPath}`,
       );
       // Ensure the stream is closed so the requester doesn't hang.
-      try { await stream.sink([] as Iterable<Uint8Array>); } catch { /* already closed */ }
+      try {
+        await stream.sink([] as Iterable<Uint8Array>);
+      } catch {
+        /* already closed */
+      }
     }
   }
 
@@ -2379,8 +3555,10 @@ export class PeerborneDocument<
    * gap tracked under issue #189 §5.4 item 2 (also bulleted in #186).
    * The wire protocol is `tipAdvertiseV1` (see `wire-protocols.ts`);
    * this method returns either an empty payload (decline) or an
-   * encrypted `CRDTSyncMessage` whose only populated payload field is
-   * `tipsHash`. The loader on the other side compares hashes across
+   * encrypted `CRDTSyncMessage` whose advertised payload is `tipsHash`
+   * (plus V4 security commitments). On V3 the hash represents the served
+   * frontier; on V4 it also incorporates a canonical digest of the complete
+   * state-mutating load plan. The loader on the other side compares hashes across
    * multiple peers and requires Q-of-K agreement before accepting any
    * peer's full document state. See `load-quorum.ts` for the decision
    * logic.
@@ -2399,8 +3577,19 @@ export class PeerborneDocument<
   public async handleTipAdvertiseRequestData(
     message: CRDTLoadRequest,
     stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    securityAware = false,
   ): Promise<void> {
     try {
+      this._throwIfSecurityProviderMutationFailed();
+      if (
+        !shouldServeInitialLoadProtocol(
+          this.swarm.requireSecurityStateQuorum,
+          securityAware,
+        )
+      ) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
+      }
       // Tip-advertise runs on every `open()` from every peer that opens
       // this document, so a per-request log line scales with mesh size.
       // Drop the unconditional log entirely; the only field the handler
@@ -2410,47 +3599,30 @@ export class PeerborneDocument<
 
       if (message.documentId !== this.documentPath) {
         console.warn(
-          `Received a tip-advertise request for the wrong document (${message.documentId} !== ${this.documentPath})`,
+          `Received a tip-advertise request for the wrong local document (${this.documentPath})`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
       }
-
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized. Mirrors the
-      // load handlers above so the gate is symmetrical: a deployment that
-      // disables signing keeps the same trust posture across all protocols.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          console.warn(
-            `Rejected tip-advertise request for ${message.documentId}: missing signature`,
-          );
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )
-          ) {
-            authorized = true;
-            break;
-          }
-        }
+      const requestSignaturePayload = this._initialLoadRequestSignaturePayload(
+        message,
+        securityAware,
+      );
+      if (requestSignaturePayload === null) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
       }
+
+      // Authorize the requestor. When signing is disabled, the shared helper
+      // preserves the existing unsigned-load behavior.
+      const authorized = await this._authorizeInitialLoadRequest(
+        requestSignaturePayload,
+        message.signature,
+      );
 
       if (!authorized) {
         console.warn(
-          `Detected an unauthorized tip-advertise request for ${message.documentId}`,
+          `Rejected an unauthorized or malformed tip-advertise request for ${this.documentPath}`,
         );
         await stream.sink([] as Iterable<Uint8Array>);
         return;
@@ -2480,11 +3652,36 @@ export class PeerborneDocument<
       // Two peers with the same `_lastSyncMessage` / `_latestSnapshot`
       // produce byte-identical hashes; see `tips-hash.ts` for the
       // canonicalization (sort + `\n` separator + SHA-256).
-      const hash = await tipsHash(this._servedFrontier());
+      const commitments = securityAware
+        ? await this._getLoadSecurityCommitments()
+        : undefined;
+      if (securityAware && !commitments) {
+        await stream.sink([] as Iterable<Uint8Array>);
+        return;
+      }
+      const responsePlan = securityAware
+        ? await this._createLoadResponsePlan(message.loadChallenge)
+        : undefined;
+      const servedFrontier = responsePlan
+        ? this._loadResponsePlanFrontier(responsePlan)
+        : this._servedFrontier();
+      const hash = securityAware
+        ? await loadAdvertisementHash(
+            this.documentPath,
+            servedFrontier,
+            commitments!,
+            await this._loadResponseManifestHash(responsePlan!),
+          )
+        : await loadAdvertisementHash(this.documentPath, servedFrontier);
 
       const advertisement: CRDTSyncMessage<ChangesType, PublicKey> = {
         documentId: this.documentPath,
         tipsHash: hash,
+        loadSecurityState: commitments,
+        loadChallenge:
+          securityAware && message.loadChallenge !== undefined
+            ? cloneInitialLoadChallenge(message.loadChallenge)
+            : undefined,
       };
 
       // Sign the advertisement so the loader can verify the responder is
@@ -2509,21 +3706,34 @@ export class PeerborneDocument<
         documentKey,
       );
       if (!nonce) {
-        throw new Error(`Failed to encrypt tip-advertise response! Nonce cannot be empty`);
+        throw new Error(
+          `Failed to encrypt tip-advertise response! Nonce cannot be empty`,
+        );
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = copyUnsharedUint8Array(
+        concatUint8Arrays(documentKeyID, nonce, data),
+        1,
+        securityAware
+          ? MAX_SECURITY_ADVERTISE_RESPONSE_SIZE
+          : MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+        'tip-advertise response',
+      );
       console.log(
         `sending tip-advertise response (encrypted) for ${this.documentPath}`,
       );
 
+      this._throwIfSecurityProviderMutationFailed();
       await stream.sink([assembled] as Iterable<Uint8Array>);
-    } catch (err: unknown) {
+    } catch {
       console.error(
-        `Error handling tip-advertise request for ${this.documentPath}:`,
-        err,
+        `Error handling tip-advertise request for ${this.documentPath}`,
       );
       // Ensure the stream is closed so the requester doesn't hang.
-      try { await stream.sink([] as Iterable<Uint8Array>); } catch { /* already closed */ }
+      try {
+        await stream.sink([] as Iterable<Uint8Array>);
+      } catch {
+        /* already closed */
+      }
     }
   }
 
@@ -2550,14 +3760,18 @@ export class PeerborneDocument<
     if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
       throw new Error(`Invalid snapshot timestamp: ${timestamp}`);
     }
-    if (!Number.isInteger(compactedCount) || compactedCount < 0 || compactedCount > 0xFFFFFFFF) {
+    if (
+      !Number.isInteger(compactedCount) ||
+      compactedCount < 0 ||
+      compactedCount > 0xffffffff
+    ) {
       throw new Error(`Invalid snapshot compactedCount: ${compactedCount}`);
     }
     const cidBytes = this._encoder.encode(lastChangeNodeCID);
-    if (cidBytes.length > 0xFFFFFFFF) {
+    if (cidBytes.length > 0xffffffff) {
       throw new Error(`lastChangeNodeCID too large: ${cidBytes.length} bytes`);
     }
-    if (stateBytes.length > 0xFFFFFFFF) {
+    if (stateBytes.length > 0xffffffff) {
       throw new Error(`Snapshot state too large: ${stateBytes.length} bytes`);
     }
     // 1 (version) + 8 (timestamp) + 4 (compactedCount) + 4 (cidLen) + cidBytes + 4 (stateLen) + stateBytes
@@ -2594,12 +3808,101 @@ export class PeerborneDocument<
   }
 
   private async _ensureCurrentUserCanWrite() {
+    this._throwIfSecurityProviderMutationFailed();
     // Check that we are a writer (allowed to write to this document).
-    if (!(await this._writers.check(this._userPublicKey))) {
+    const canWrite = await this._writers.check(this._userPublicKey);
+    this._throwIfSecurityProviderMutationFailed();
+    if (canWrite !== true) {
       throw new Error(
         `Current user does not have write permissions for: ${this.documentPath}`,
       );
     }
+  }
+
+  private _throwIfSecurityProviderMutationFailed(): void {
+    if (this._securityProviderMutationFailure !== undefined) {
+      throw this._securityProviderMutationFailure;
+    }
+  }
+
+  /** Recheck terminal retirement only after this operation owns the slot. */
+  private _runInMutationQueue<Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    return this._mutationQueue.run(async () => {
+      this._throwIfSecurityProviderMutationFailed();
+      return operation();
+    });
+  }
+
+  private _retireAfterAmbiguousSecurityProviderMutation(
+    operation: string,
+    cause?: unknown,
+  ): never {
+    if (this._securityProviderMutationFailure === undefined) {
+      this._securityProviderMutationFailure = new Error(
+        `[${this.documentPath}] ${operation} has an ambiguous ACL or keychain ` +
+          `provider outcome; discard this document and its ACL/keychain ` +
+          `provider instances, then create a fresh instance`,
+        cause === undefined ? undefined : { cause },
+      );
+      // Invalidate before any asynchronous cleanup so an in-flight verifier's
+      // captured authorization version cannot commit after retirement.
+      this._invalidateWriterKeyCache();
+      // Do not await cleanup from inside a membership/BeeKEM transition. The
+      // marker is authoritative immediately; close is best-effort resource
+      // release for an already-open instance.
+      void this.close().catch(() => undefined);
+    }
+    throw this._securityProviderMutationFailure;
+  }
+
+  private _retireAfterIncompleteInitialLoad(
+    cause?: unknown,
+  ): never {
+    if (this._securityProviderMutationFailure === undefined) {
+      this._securityProviderMutationFailure = new Error(
+        `[${this.documentPath}] initial-load application failed ` +
+          `after live document, snapshot, ACL, or keychain state mutation began; ` +
+          `discard this document and its ACL/keychain provider instances, then ` +
+          `create a fresh instance`,
+        cause === undefined ? undefined : { cause },
+      );
+      this._invalidateWriterKeyCache();
+      void this.close().catch(() => undefined);
+    }
+    throw this._securityProviderMutationFailure;
+  }
+
+  private _commitPreparedKeychainState(
+    prepared: { commit(): void },
+    operation: string,
+  ): void {
+    this._throwIfSecurityProviderMutationFailed();
+    try {
+      prepared.commit();
+    } catch (error) {
+      // The staged-keychain contract requires atomic commit or
+      // throw-before-mutation. Retire even when a custom implementation
+      // violates that contract: after a rejection the live state cannot be
+      // distinguished safely from a partially committed provider state.
+      this._retireAfterAmbiguousSecurityProviderMutation(operation, error);
+    }
+  }
+
+  private _requireMembershipWireChanges(
+    changes: ChangesType,
+    operation: string,
+  ): ChangesType {
+    if (changes === undefined) {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        operation,
+        new TypeError(
+          'provider returned an undefined change that the sync wire format cannot represent',
+        ),
+      );
+    }
+    return changes;
   }
 
   /**
@@ -2620,18 +3923,63 @@ export class PeerborneDocument<
    *   `false` return value (by trying the next available peer) and thrown errors.
    */
   private async _sendLoadRequestAndSync(
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> },
+    stream: {
+      sink: (data: Iterable<Uint8Array>) => Promise<void>;
+      source: AsyncIterable<Uint8ArrayList | Uint8Array>;
+      abort?: (err: Error) => void;
+    },
     serializedRequest: Uint8Array,
     expectedTipsHashHex: string | null = null,
+    securityAware = false,
+    trustedLoadSecurityCommitments?: LoadSecurityCommitments,
+    signerAuthorization?: InitialLoadSignerAuthoritySnapshot<PublicKey>,
+    expectedLoadChallenge?: Uint8Array,
+    signal?: AbortSignal,
+    responseReceived?: () => void,
     requiredResponseSigner?: PublicKey,
-    maxResponseBytes?: number,
+    maxResponseBytes = MAX_INITIAL_LOAD_RESPONSE_SIZE,
     requireCompleteCids = false,
+    admitStateMutation?: () => void,
   ): Promise<boolean> {
+    if (signal?.aborted) throw signal.reason;
     await pipe([serializedRequest], stream.sink);
+    if (signal?.aborted) throw signal.reason;
     return await pipe(
       stream.source,
       async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-        const assembled = await readUint8Iterable(source, maxResponseBytes);
+        let assembled: Uint8Array;
+        const effectiveMaxResponseBytes = Math.min(
+          maxResponseBytes,
+          MAX_INITIAL_LOAD_RESPONSE_SIZE,
+        );
+        try {
+          assembled = await readUint8Iterable(
+            source,
+            effectiveMaxResponseBytes,
+          );
+        } catch (cause) {
+          if (cause instanceof RangeError) {
+            try {
+              stream.abort?.(
+                new Error('initial-load response exceeded the wire-size cap'),
+              );
+            } catch {
+              // The underlying stream may already have torn itself down when
+              // its async iterator was cancelled.
+            }
+            throw new _QuorumBindCheckFailedError(
+              '(oversized load response)',
+              `Initial-load response exceeded ${effectiveMaxResponseBytes} wire bytes`,
+            );
+          }
+          throw cause;
+        }
+
+        // The bounded remote-response phase is complete. Check cancellation
+        // before disarming so a timeout that won the race cannot fall through
+        // into authentication or document mutation on a detached task.
+        if (signal?.aborted) throw signal.reason;
+        responseReceived?.();
 
         // Empty response means the peer couldn't serve this request.
         if (assembled.length === 0) {
@@ -2641,7 +3989,8 @@ export class PeerborneDocument<
         // Decrypt the response. Extract the keyID from the header and
         // look it up in the keychain. Responses shorter than the encryption
         // header are treated as malformed and rejected.
-        const headerLength = this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+        const headerLength =
+          this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
         let rawContent: Uint8Array;
         if (assembled.length <= headerLength) {
           // Too short to contain a valid encrypted payload -- reject.
@@ -2651,12 +4000,22 @@ export class PeerborneDocument<
           return false;
         }
 
-        const blockKeyID = assembled.slice(0, this._keychainProvider.keyIDLength);
+        const blockKeyID = assembled.slice(
+          0,
+          this._keychainProvider.keyIDLength,
+        );
         const key = this._keychain.getKey(blockKeyID);
         if (key) {
-          const blockNonce = assembled.slice(this._keychainProvider.keyIDLength, headerLength);
+          const blockNonce = assembled.slice(
+            this._keychainProvider.keyIDLength,
+            headerLength,
+          );
           const blockData = assembled.slice(headerLength);
-          const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
+          const decrypted = await this._authProvider.decrypt(
+            blockData,
+            key,
+            blockNonce,
+          );
           if (!decrypted) {
             throw new Error(
               `Failed to decrypt load response for ${this.documentPath}`,
@@ -2672,109 +4031,335 @@ export class PeerborneDocument<
           return false;
         }
 
-        const message = this._syncMessageSerializer.deserializeSyncMessage(rawContent);
-        if (message.documentId !== this.documentPath) {
+        let message: CRDTSyncMessage<ChangesType, PublicKey>;
+        try {
+          message = this._snapshotDecodedSyncMessage(
+            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+            'initial-load response',
+          );
+        } catch {
           console.warn(
-            `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
+            `Load response for ${this.documentPath} has an unstable or malformed codec value`,
           );
           return false;
+        }
+        if (message.documentId !== this.documentPath) {
+          console.warn(
+            `Load response documentId mismatch for ${this.documentPath}, skipping peer`,
+          );
+          return false;
+        }
+        if (
+          securityAware &&
+          !initialLoadChallengeEquals(
+            expectedLoadChallenge,
+            message.loadChallenge,
+          )
+        ) {
+          throw new _QuorumBindCheckFailedError(
+            '(load challenge mismatch)',
+            "Security-aware load response did not echo this load round's challenge",
+          );
+        }
+        // Bound and canonicalize the complete untrusted V4 response before
+        // signature identification reserializes it. This must precede every
+        // recursive/custom serializer boundary: an oversized/deep tree is a
+        // bind failure, not a chance to exhaust the verifier's stack first.
+        let responseManifestHash: Uint8Array | undefined;
+        if (securityAware) {
+          try {
+            responseManifestHash =
+              await this._loadResponseManifestHash(message);
+          } catch (cause) {
+            throw new _QuorumBindCheckFailedError(
+              '(invalid response manifest)',
+              `Security-aware load response has a malformed or over-limit ` +
+                `state manifest: ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+            );
+          }
         }
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the
         // existing trusted writer set BEFORE sync() mutates state. This
         // prevents a malicious peer from injecting ACL changes that add
         // its own key.
-        // On first load (_writers is empty / bootstrapping), we cannot
-        // verify -- trust relies on the encrypted channel (only peers
-        // with the document key can decrypt the response).
-        if (requiredResponseSigner !== undefined || this._isSigningEnabled()) {
-          const preLoadWriters =
-            requiredResponseSigner === undefined
-              ? await this._getWriterKeys()
-              : [];
-          if (
-            requiredResponseSigner !== undefined ||
-            preLoadWriters.length > 0
-          ) {
-            if (!message.signature) {
-              console.warn(
-                `Load response for ${this.documentPath}: missing signature, skipping peer`,
-              );
-              return false;
-            }
-            const { signature, ...messageWithoutSignature } = message;
-            const raw = this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
-            );
-            // Mirror `_verifyWriterSignature`: a malformed/non-string signature
-            // can cause `js-base64` to throw. Treat decode failure as a
-            // verification failure for this peer (skip and let the caller try
-            // the next one) rather than letting the exception escape -- the
-            // outer snapshot-load attempt swallows errors via a blanket
-            // catch{}, which would hide the malformed input entirely.
-            let signatureBytes: Uint8Array;
-            try {
-              signatureBytes = this._deserializeSignature(signature);
-            } catch {
-              console.warn(
-                `Load response for ${this.documentPath}: malformed signature, skipping peer`,
-              );
-              return false;
-            }
-            const verified =
-              requiredResponseSigner === undefined
-                ? await firstTrue(
-                    preLoadWriters.map((writerKey) =>
-                      this._authProvider.verify(raw, writerKey, signatureBytes),
-                    ),
-                  )
-                : await this._authProvider.verify(
-                    raw,
-                    requiredResponseSigner,
-                    signatureBytes,
-                  );
-            if (!verified) {
-              console.warn(
-                `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
-              );
-              return false;
-            }
+        // V4 always verifies against the signer authorities captured before
+        // the probe round. The legacy path retains its prior bootstrap
+        // behavior for compatibility.
+        // Capture the writer ACL generation used for this outer-envelope
+        // authentication. `sync(message, false)` below intentionally skips a
+        // second signature check because quorum-bound responses have their
+        // inline changes stripped after verification. The captured version is
+        // therefore the authorization lease: any writer mutation before the
+        // first apply step invalidates the load.
+        if ((this._writerMutationsInFlight ?? 0) !== 0) return false;
+        if (securityAware && signerAuthorization === undefined) return false;
+        const preLoadWriterVersion = securityAware
+          ? signerAuthorization!.writerVersion
+          : (this._writerKeysVersion ?? 0);
+        if (
+          securityAware &&
+          ((this._writerKeysVersion ?? 0) !== preLoadWriterVersion ||
+            this._securityProviderMutationFailure !== undefined)
+        ) {
+          return false;
+        }
+        const preLoadWriters = await this._getWriterKeys();
+        const loadWriterAuthorizationIsCurrent = () =>
+          this._securityProviderMutationFailure === undefined &&
+          (this._writerMutationsInFlight ?? 0) === 0 &&
+          (this._writerKeysVersion ?? 0) === preLoadWriterVersion;
+        if (!loadWriterAuthorizationIsCurrent()) {
+          return false;
+        }
+
+        let requiredSignerAuthenticated = true;
+        if (requiredResponseSigner !== undefined) {
+          const { signature, ...messageWithoutSignature } = message;
+          if (signature === undefined) return false;
+          let signatureBytes: Uint8Array;
+          try {
+            signatureBytes = this._deserializeSignature(signature);
+          } catch {
+            return false;
           }
+          try {
+            requiredSignerAuthenticated =
+              (await this._authProvider.verify(
+                this._syncMessageSerializer.serializeSyncMessage(
+                  messageWithoutSignature,
+                ),
+                requiredResponseSigner,
+                signatureBytes,
+              )) === true;
+          } catch {
+            requiredSignerAuthenticated = false;
+          }
+        }
+
+        let authenticated = false;
+        let snapshotWriterKeys: readonly PublicKey[] = preLoadWriters;
+        if (securityAware) {
+          authenticated =
+            signerAuthorization !== undefined &&
+            (await this._identifyInitialLoadSignerAuthority(
+              message,
+              signerAuthorization.authorities,
+            )) !== null;
+          if (authenticated && preLoadWriters.length > 0) {
+            // The quorum round may have captured an authority that was removed
+            // before this full response arrived. Existing replicas require a
+            // signature from the current ACL as well as the round's pinned
+            // authority set.
+            authenticated = await this._verifyInitialLoadEnvelope(
+              message,
+              preLoadWriters,
+            );
+          } else if (authenticated && signerAuthorization !== undefined) {
+            snapshotWriterKeys = signerAuthorization.authorities.map(
+              (authority) => authority.publicKey,
+            );
+          }
+        } else {
+          const bootstrapWriterKeys =
+            preLoadWriters.length === 0
+              ? await this._getBootstrapWriterKeys()
+              : [];
+          authenticated = await this._verifyInitialLoadEnvelope(
+            message,
+            preLoadWriters,
+            bootstrapWriterKeys,
+          );
+          if (preLoadWriters.length === 0) {
+            snapshotWriterKeys = bootstrapWriterKeys;
+          }
+        }
+        authenticated &&= requiredSignerAuthenticated;
+        if (
+          requiredSignerAuthenticated &&
+          requiredResponseSigner !== undefined
+        ) {
+          snapshotWriterKeys = [requiredResponseSigner];
+        }
+        if (!authenticated) {
+          console.warn(
+            `Load response for ${this.documentPath} failed trusted writer authentication, skipping peer`,
+          );
+          return false;
+        }
+        if (!loadWriterAuthorizationIsCurrent()) {
+          return false;
+        }
+        if (signal?.aborted) throw signal.reason;
+        let initialLoadStateMutationStarted = false;
+        const initialLoadAuthorization: InitialLoadSyncAuthorization<PublicKey> =
+          {
+            writerKeys: snapshotWriterKeys,
+            writerVersion: preLoadWriterVersion,
+            onStateMutation: () => {
+              if (signal?.aborted) throw signal.reason;
+              const deferredBlockSignal =
+                initialLoadAuthorization.deferredBlockBudget?.signal;
+              if (deferredBlockSignal?.aborted) {
+                throw deferredBlockSignal.reason;
+              }
+              if (initialLoadStateMutationStarted) return;
+              // Invitation deadlines may be disarmed only once the serialized
+              // mutation slot is actually about to change live state.
+              admitStateMutation?.();
+              initialLoadStateMutationStarted = true;
+            },
+          };
+        const failInitialLoadInMutationSlot = (cause: unknown): void => {
+          if (initialLoadStateMutationStarted) {
+            this._retireAfterIncompleteInitialLoad(cause);
+          }
+        };
+        const finalizeInitialLoadInMutationSlot = async (
+          applied: boolean,
+          verifyComplete?: () => void | Promise<void>,
+        ): Promise<boolean> => {
+          if (!applied) {
+            if (initialLoadStateMutationStarted) {
+              this._retireAfterIncompleteInitialLoad(
+                new Error('authenticated sync returned false'),
+              );
+            }
+            return false;
+          }
+          await verifyComplete?.();
+          return true;
+        };
+        initialLoadAuthorization.failInMutationSlot =
+          failInitialLoadInMutationSlot;
+        initialLoadAuthorization.finalizeInMutationSlot = (applied) =>
+          finalizeInitialLoadInMutationSlot(applied);
+        const maxEncryptedBlockBytes = Math.min(
+          MAX_DEFERRED_BLOCK_ENCRYPTED_BYTES,
+          effectiveMaxResponseBytes,
+        );
+        const maxDecodedBlockBytes = Math.min(
+          MAX_DEFERRED_BLOCK_DECODED_BYTES,
+          effectiveMaxResponseBytes,
+        );
+        const maxEncryptedAggregateBytes = Math.min(
+          MAX_INITIAL_LOAD_DEFERRED_ENCRYPTED_BYTES,
+          effectiveMaxResponseBytes,
+        );
+        const maxDecodedAggregateBytes = Math.min(
+          MAX_INITIAL_LOAD_DEFERRED_DECODED_BYTES,
+          effectiveMaxResponseBytes,
+        );
+        const configuredDeferredBlockTimeout = this.swarm?.loadQuorumTimeoutMs;
+        const deferredBlockTimeoutMs =
+          Number.isSafeInteger(configuredDeferredBlockTimeout) &&
+          configuredDeferredBlockTimeout > 0
+            ? configuredDeferredBlockTimeout
+            : 5_000;
+        const createDeferredBlockBudget = (initialEncryptedBytes = 0) => {
+          const controller = new AbortController();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let started = false;
+          const forwardOuterAbort = (): void => {
+            if (!controller.signal.aborted) {
+              controller.abort(
+                signal?.reason instanceof Error
+                  ? signal.reason
+                  : new Error('initial-load response aborted'),
+              );
+            }
+          };
+          if (signal?.aborted) {
+            forwardOuterAbort();
+          } else {
+            signal?.addEventListener('abort', forwardOuterAbort, {
+              once: true,
+            });
+          }
+          return {
+            budget: {
+              maxEncryptedBlockBytes,
+              maxEncryptedAggregateBytes,
+              maxDecodedBlockBytes,
+              maxDecodedAggregateBytes,
+              encryptedBytes: initialEncryptedBytes,
+              decodedBytes: 0,
+              signal: controller.signal,
+              begin: (): void => {
+                if (started) return;
+                started = true;
+                // Blockstore implementations are required to cooperate with
+                // AbortSignal. Do not race and detach `_getBlock`: a custom
+                // implementation that ignores cancellation may still hang,
+                // but a detached task could later mutate authenticated state.
+                if (!controller.signal.aborted) {
+                  timer = setTimeout(() => {
+                    controller.abort(
+                      new Error(
+                        'initial-load deferred block fetch timed out',
+                      ),
+                    );
+                  }, deferredBlockTimeoutMs);
+                }
+              },
+            } satisfies InitialLoadDeferredBlockBudget,
+            dispose: (): void => {
+              if (timer !== undefined) clearTimeout(timer);
+              signal?.removeEventListener('abort', forwardOuterAbort);
+            },
+          };
+        };
+
+        // A V4 peer does not get to choose the security tuple merely because
+        // a quorum of peers repeats it. Match the locally captured trust
+        // anchor before examining or staging any served CRDT/snapshot state.
+        // This guard applies even if a caller accidentally omits the expected
+        // frontier hash, so every V4 full-document and snapshot candidate is
+        // fail-closed independently of the later frontier bind.
+        if (
+          securityAware &&
+          !loadSecurityCommitmentsEqual(
+            trustedLoadSecurityCommitments,
+            message.loadSecurityState,
+          )
+        ) {
+          throw new _QuorumBindCheckFailedError(
+            '(untrusted security tuple)',
+            'Security-aware load response does not match the locally trusted security tuple',
+          );
         }
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
-        // structurally describe the same tip set the responder voted
-        // for. Done BEFORE `this.sync(...)` so a Byzantine peer that
-        // voted hash X but serves a load with a different frontier
-        // never gets to mutate the in-memory document.
+        // describe the same value the responder voted for. V3 binds the
+        // structurally-derived frontier; V4 additionally binds the complete
+        // node/edge, snapshot, and keychain response manifest. Done BEFORE
+        // `this.sync(...)`, so mismatch never mutates the document.
         //
-        // CRITICAL: the bind decision is derived from the ACTUAL served
-        // payload, NOT from the responder-supplied `message.tips`.
-        // Trusting `message.tips` creates a hole: a Byzantine peer could
-        // vote hash X, put the matching
-        // tip CIDs in `message.tips`, and then serve a `changes` /
-        // `snapshot` payload describing a completely different state.
+        // CRITICAL: the bind decision is derived from the actual served
+        // payload, not from the responder-supplied `message.tips`. Trusting
+        // only that attestation would permit matching tip CIDs alongside a
+        // different `changes` / `snapshot` payload.
         // The advertised-vs-claimed check would pass even though the
-        // application would receive divergent content. Frontier
-        // computation therefore delegates to `computeServedFrontier`, which
-        // walks the served `changes` tree (plus the snapshot boundary
-        // CID) and returns the set of payload CIDs that no other node
-        // in the same payload references as a parent -- i.e. the heads
-        // of what was actually served. We then hash that frontier and
-        // compare to `winningHashHex`.
+        // application would receive divergent content. PR #284 r7
+        // Copilot review caught this; the fix delegates frontier
+        // computation to `computeServedFrontier`; V4 then combines that
+        // frontier with `loadResponseManifestHash`, recomputed from the actual
+        // response rather than a responder-supplied manifest field.
         //
-        // We additionally REQUIRE `message.tips` on every v3 quorum-
-        // enabled load response.
-        // The v3 load-response contract mandates the responder commit
+        // We additionally REQUIRE `message.tips` on every V3/V4 quorum-
+        // enabled load response (PR #284 r9 Copilot review, issue #1).
+        // The quorum load-response contract mandates the responder commit
         // to an explicit frontier attestation; a responder that omits
         // `tips` is recorded as a per-peer bind failure so the loader
-        // retries the next agreeing peer. The structural check above
+        // retries the next agreeing peer. The derived bind check above
         // is the primary defense; the explicit `tips` requirement
         // ensures protocol compliance AND that the defense-in-depth
         // check below (verifying `tips` matches the structurally-
         // derived served frontier) actually runs. Catches the
         // responder-equivocation mode where `tips` and `changes` were
-        // assembled inconsistently — e.g. a peer that claims extra
+        // assembled inconsistently — e.g. a response that claims extra
         // heads in `tips` that are not present in the served tree.
         //
         // Throws the module-private `_QuorumBindCheckFailedError` on
@@ -2782,14 +4367,15 @@ export class PeerborneDocument<
         // peer as a bind-failure and proceed to the NEXT peer in the
         // agreeing cohort. Previously this site threw
         // `LoadQuorumFailedError` directly, which `load()` re-raised --
-        // letting a single malicious peer in the agreeing cohort vote
-        // for the majority hash, serve a mismatched full load, and
-        // unilaterally DoS the entire load by aborting before the
-        // honest agreeing peers could be tried. `load()` only escalates to
+        // preventing later agreeing peers from being tried. `load()` only escalates to
         // a structured `LoadQuorumFailedError` with reason
         // `bind-check-failed-all-agreeing-peers`
         // when EVERY narrowed peer fails the bind step.
         if (expectedTipsHashHex !== null) {
+          // V4's manifest walk validates node/edge/occurrence/payload bounds
+          // before any other traversal of the adversary-controlled tree.
+          // It also canonicalizes repeated sparse/full CID descriptions and
+          // rejects cycles or conflicts before frontier derivation.
           // Derive the served frontier STRUCTURALLY from the payload
           // the responder is asking us to apply -- not from the
           // responder's own `tips` attestation.
@@ -2798,27 +4384,39 @@ export class PeerborneDocument<
             message.changes,
             message.snapshot?.lastChangeNodeCID,
           );
-          const servedBytes = await tipsHash(servedFrontier);
-          const servedHex = tipsHashToHex(servedBytes);
+          // V4 binds the complete state-mutating response plan, not just its
+          // heads. Recompute from the received tree/snapshot/keychain before
+          // stripping inline changes or invoking sync(). A same-frontier tree
+          // with an added child, changed node kind/edge, different snapshot,
+          // or different keychain delta therefore cannot preserve the vote.
+          const servedBytes = securityAware
+            ? await loadAdvertisementHash(
+                this.documentPath,
+                servedFrontier,
+                message.loadSecurityState!,
+                responseManifestHash!,
+              )
+            : await loadAdvertisementHash(this.documentPath, servedFrontier);
+          const servedHex = loadAdvertisementHashToHex(servedBytes);
           if (!constantTimeHexEquals(expectedTipsHashHex, servedHex)) {
             console.warn(
-              `[${this.documentPath}] Quorum frontier binding FAILED: ` +
+              `[${this.documentPath}] Quorum response binding FAILED: ` +
                 `expected tipsHash=${expectedTipsHashHex.slice(0, 12)}... but ` +
-                `served payload's frontier hashes to ${servedHex.slice(0, 12)}.... ` +
-                `An agreeing peer voted for one tip set and served a ` +
-                `different one; treating as Byzantine equivocation.`,
+                `the served response hashes to ${servedHex.slice(0, 12)}.... ` +
+                `The response may have advanced or been assembled ` +
+                `inconsistently; excluding it from this load round.`,
             );
             throw new _QuorumBindCheckFailedError(
               servedHex,
-              `Quorum frontier binding mismatch (served payload): expected ` +
+              `Quorum response binding mismatch (served payload): expected ` +
                 `${expectedTipsHashHex.slice(0, 12)}... got ${servedHex.slice(0, 12)}...`,
             );
           }
-          // Protocol compliance: under the v3 load-response contract,
+          // Protocol compliance: under the V3/V4 load-response contract,
           // a quorum-enabled load REQUIRES `message.tips` to be present
           // on the response so the responder commits to an explicit
           // frontier attestation alongside the served payload. The
-          // structural-frontier check above is the primary defense; this
+          // derived response-binding check above is the primary defense; this
           // explicit `Array.isArray(message.tips)` guard ensures a v3
           // responder that omits `tips` is recorded as a per-peer bind
           // failure (so the loader retries the NEXT agreeing peer)
@@ -2832,22 +4430,29 @@ export class PeerborneDocument<
             console.warn(
               `[${this.documentPath}] Quorum frontier binding FAILED: ` +
                 `quorum-enabled load response omitted required \`tips\` ` +
-                `attestation (v3 protocol violation). Recording peer as ` +
+                `attestation (quorum protocol violation). Recording peer as ` +
                 `bind-failed; loader will try the next agreeing peer.`,
             );
             throw new _QuorumBindCheckFailedError(
               '(missing tips)',
               `Quorum frontier binding: responder omitted required \`tips\` ` +
-                `attestation on v3 quorum-enabled load response.`,
+                `attestation on quorum-enabled load response.`,
             );
           }
           // Defense-in-depth: the responder-supplied `tips` must hash
           // to the same value as the structurally-derived served
           // frontier. A peer whose attested `tips` contradicts their
           // own served payload (e.g. claims extra heads that are not
-          // present in the served tree) is misbehaving.
-          const advertisedBytes = await tipsHash(message.tips);
-          const advertisedHex = tipsHashToHex(advertisedBytes);
+          // present in the served tree) is internally inconsistent.
+          const advertisedBytes = securityAware
+            ? await loadAdvertisementHash(
+                this.documentPath,
+                message.tips,
+                message.loadSecurityState!,
+                responseManifestHash!,
+              )
+            : await loadAdvertisementHash(this.documentPath, message.tips);
+          const advertisedHex = loadAdvertisementHashToHex(advertisedBytes);
           if (!constantTimeHexEquals(servedHex, advertisedHex)) {
             console.warn(
               `[${this.documentPath}] Quorum frontier binding FAILED: ` +
@@ -2903,15 +4508,12 @@ export class PeerborneDocument<
           // signature forged with an attacker-controlled key (which
           // would be admitted if the inline ACL pre-pass were trusted)
           // never reaches `applySnapshot`.
-          // Capture every CID that appears in the served tree BEFORE
-          // stripping. `_syncDocumentChanges` swallows per-block fetch
-          // failures (logs + returns); without a post-sync verification
-          // step a transient bitswap/blockstore miss would let this
-          // method return `true` with only a partially-applied document
-          // and `load()` report success. After `sync()` we re-check that
-          // every captured CID is now in `_hashes`; any missing CID is
-          // surfaced as a per-peer bind failure so the loader can retry
-          // the next peer in the agreeing cohort.
+          // Capture every CID before stripping. The strict apply path returns
+          // false on any deferred-block failure, and this post-check still
+          // verifies complete installation. A failure before mutation remains
+          // retryable; once the mutation admission hook fires, any incomplete
+          // result terminally retires the instance instead of applying a second
+          // candidate to possibly-partial state.
           const expectedCids = collectAllCidsInTree(
             message.changeId,
             message.changes,
@@ -2919,7 +4521,11 @@ export class PeerborneDocument<
 
           stripInlineChanges(message.changes);
           const preLoadWriterCount = (await this._writers.users()).length;
-          if (preLoadWriterCount === 0 && message.snapshot) {
+          if (
+            preLoadWriterCount === 0 &&
+            message.snapshot &&
+            !this._requiresAuthenticatedInitialLoad()
+          ) {
             console.warn(
               `[${this.documentPath}] Dropping snapshot from quorum-bound ` +
                 `first load: writers ACL is not yet populated so the ` +
@@ -2939,11 +4545,9 @@ export class PeerborneDocument<
           // success — `load()` then returns `true` with neither state
           // applied nor an opportunity to retry. Treat as a per-peer
           // bind failure so the agreeing-cohort load loop tries the
-          // next peer (which may serve a real changes tree).
-          if (
-            message.changes === undefined &&
-            message.snapshot === undefined
-          ) {
+          // next peer (which may serve a real changes tree). See
+          // PR #284 r18 Copilot review.
+          if (message.changes === undefined && message.snapshot === undefined) {
             console.warn(
               `[${this.documentPath}] Quorum-bound first-load response ` +
                 `carries neither a changes tree nor a snapshot after the ` +
@@ -2964,65 +4568,114 @@ export class PeerborneDocument<
           // `sync()` mutates the document as each fetched block lands
           // -- so a missing CID would still leave the document
           // partially mutated by the time the post-check threw a bind
-          // failure. To keep a failed quorum-bound load from altering
-          // local state at all, pull every required block from Helia
+          // failure. To keep a failed prefetch from altering local state,
+          // pull every required block from Helia
           // here (BEFORE `sync()` is allowed to mutate). Helia's
           // blockstore content-validates each fetch against its CID
           // intrinsically; bitswap retrieves from any peer in the swarm
           // that holds the legitimate block. If ANY fetch fails (CID
           // not retrievable from any peer, content/CID mismatch, or
-          // timeout inside Helia), throw a per-peer bind failure with
-          // ZERO state mutation -- the load loop can cleanly retry the
+          // a local deadline), throw a per-peer bind failure before sync --
+          // the load loop can cleanly retry the
           // next peer in the agreeing cohort, or escalate to
           // `bind-check-failed-all-agreeing-peers` if every peer
           // exhausts.
           //
-          // Run via a bounded worker pool so a single slow peer cannot
-          // pessimize the load AND a large load response (many CIDs)
-          // cannot trigger a burst of parallel `blockstore.get()` fetches
-          // that exhaust libp2p/Helia per-connection stream quotas or
-          // pressure memory by buffering N inline payloads at once. The
-          // previous implementation used `Promise.allSettled` over the
-          // full `expectedCids` list with no concurrency cap, which
-          // worked fine for typical loads but scaled linearly with the
-          // worst-case adversary-shaped response. `LOAD_PREFETCH_MAX_CONCURRENCY`
-          // (8) is a balance: large enough to overlap WAN-latency-bound
-          // bitswap fetches, small enough to bound peak resource use on
-          // the loader. Block bytes are cached locally on success; the
-          // subsequent `sync()` call only does local lookups for those
-          // CIDs and applies them.
+          // The worker pool bounds stream fan-out, while per-block and
+          // aggregate encrypted byte accounting bounds a candidate's bitswap
+          // work. The subsequent sync re-reads locally cached blocks with the
+          // same per-block cap, continues the encrypted aggregate counter, and
+          // separately accounts decoded plaintext.
+          let prefetchedEncryptedBytes = 0;
           if (expectedCids.length > 0) {
             const missingCids: string[] = [];
             let nextIndex = 0;
+            let prefetchBudgetFailure:
+              | _DeferredBlockBudgetExceededError
+              | undefined;
+            const prefetchController = new AbortController();
+            const configuredPrefetchTimeout = this.swarm.loadQuorumTimeoutMs;
+            const prefetchTimeoutMs =
+              Number.isSafeInteger(configuredPrefetchTimeout) &&
+              configuredPrefetchTimeout > 0
+                ? configuredPrefetchTimeout
+                : 5_000;
+            let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
+            let prefetchTimedOut = false;
             const workerCount = Math.min(
-              LOAD_PREFETCH_MAX_CONCURRENCY,
+              LOAD_BLOCK_MAX_CONCURRENCY,
               expectedCids.length,
             );
+            const accountEncryptedBytes = (byteLength: number): void => {
+              const nextBytes = prefetchedEncryptedBytes + byteLength;
+              if (nextBytes > maxEncryptedAggregateBytes) {
+                throw new _DeferredBlockBudgetExceededError(
+                  `Initial-load deferred blocks exceeded ${maxEncryptedAggregateBytes} aggregate encrypted bytes`,
+                );
+              }
+              prefetchedEncryptedBytes = nextBytes;
+            };
             const worker = async (): Promise<void> => {
               while (true) {
+                if (prefetchController.signal.aborted) return;
                 const i = nextIndex++;
                 if (i >= expectedCids.length) return;
                 const cidStr = expectedCids[i]!;
                 try {
                   const cid = CID.parse(cidStr);
-                  // Force the blockstore to retrieve the block. Helia
-                  // validates content vs CID on `get`; draining the
-                  // returned async-iterable triggers the actual fetch.
-                  // Discard the chunks (no concat) — we only need
-                  // content-validation here, not the bytes.
-                  for await (const _chunk of this.swarm.heliaNode.blockstore.get(
+                  await this._prefetchInitialLoadBlock(
                     cid,
-                  )) {
-                    void _chunk;
+                    prefetchController.signal,
+                    maxEncryptedBlockBytes,
+                    accountEncryptedBytes,
+                  );
+                } catch (error) {
+                  if (error instanceof _DeferredBlockBudgetExceededError) {
+                    prefetchBudgetFailure ??= error;
+                    prefetchController.abort(error);
+                    return;
                   }
-                } catch {
+                  if (prefetchController.signal.aborted) return;
                   missingCids.push(cidStr);
                 }
               }
             };
-            await Promise.all(
+            const workers = Promise.all(
               Array.from({ length: workerCount }, () => worker()),
             );
+            const deadline = new Promise<never>((_, reject) => {
+              prefetchTimer = setTimeout(() => {
+                prefetchTimedOut = true;
+                const error = new Error(
+                  'initial-load block prefetch timed out',
+                );
+                prefetchController.abort(error);
+                reject(error);
+              }, prefetchTimeoutMs);
+            });
+            try {
+              await Promise.race([workers, deadline]);
+            } catch (error) {
+              if (prefetchTimedOut) {
+                throw new _QuorumBindCheckFailedError(
+                  '(prefetch-timeout)',
+                  `Quorum-bound load pre-fetch exceeded ${prefetchTimeoutMs}ms; ` +
+                    `aborting before sync() so document state is unchanged`,
+                );
+              }
+              throw error;
+            } finally {
+              if (prefetchTimer !== undefined) clearTimeout(prefetchTimer);
+              if (!prefetchController.signal.aborted) {
+                prefetchController.abort();
+              }
+            }
+            if (prefetchBudgetFailure !== undefined) {
+              throw new _QuorumBindCheckFailedError(
+                '(prefetch-block-budget-exceeded)',
+                `${prefetchBudgetFailure.message}; aborting before sync() so document state is unchanged`,
+              );
+            }
             if (missingCids.length > 0) {
               console.warn(
                 `[${this.documentPath}] Quorum-bound load pre-fetch ` +
@@ -3045,8 +4698,69 @@ export class PeerborneDocument<
             }
           }
 
-          const syncResult = await this.sync(message, false);
+          const verifyQuorumCidCoverage = (): void => {
+            const missingCids: string[] = [];
+            for (const cid of expectedCids) {
+              if (!this._hashes.has(cid)) missingCids.push(cid);
+            }
+            if (missingCids.length === 0) return;
+            if (initialLoadStateMutationStarted) {
+              this._retireAfterIncompleteInitialLoad(
+                new Error(
+                  `post-sync CID coverage failed for ${missingCids.length} blocks`,
+                ),
+              );
+            }
+            console.warn(
+              `[${this.documentPath}] Quorum-bound load did not complete: ` +
+                `${missingCids.length} of ${expectedCids.length} expected ` +
+                `CIDs were not fetched from Helia (e.g. ${missingCids
+                  .slice(0, 3)
+                  .map((c) => c.slice(0, 12) + '...')
+                  .join(', ')}). No live state mutation was admitted, so the ` +
+                `peer is bind-failed and the loader may try the next agreeing peer.`,
+            );
+            throw new _QuorumBindCheckFailedError(
+              '(missing-blocks)',
+              `Quorum-bound load completed sync() but ${missingCids.length} ` +
+                `of ${expectedCids.length} expected CIDs were not retrievable; ` +
+                `served tree had stripped inline content and bitswap could ` +
+                `not retrieve the missing blocks.`,
+            );
+          };
+          initialLoadAuthorization.finalizeInMutationSlot = (applied) =>
+            finalizeInitialLoadInMutationSlot(
+              applied,
+              verifyQuorumCidCoverage,
+            );
+          const deferredBlockLease = createDeferredBlockBudget(
+            prefetchedEncryptedBytes,
+          );
+          initialLoadAuthorization.deferredBlockBudget =
+            deferredBlockLease.budget;
+          this._initialLoadSyncAuthorizations ??= new WeakMap();
+          this._initialLoadSyncAuthorizations.set(
+            message as object,
+            initialLoadAuthorization,
+          );
+          let syncResult: boolean;
+          try {
+            syncResult = await this.sync(message, false);
+          } catch (cause) {
+            if (initialLoadStateMutationStarted) {
+              this._retireAfterIncompleteInitialLoad(cause);
+            }
+            throw cause;
+          } finally {
+            this._initialLoadSyncAuthorizations.delete(message as object);
+            deferredBlockLease.dispose();
+          }
           if (!syncResult) {
+            if (initialLoadStateMutationStarted) {
+              this._retireAfterIncompleteInitialLoad(
+                new Error('authenticated sync returned false'),
+              );
+            }
             console.warn(
               `sync rejected message during load for ${this.documentPath}`,
             );
@@ -3062,51 +4776,93 @@ export class PeerborneDocument<
           // `_syncDocumentChanges`. A missing CID means bitswap could
           // not retrieve that block; without surfacing this the load
           // would silently report success with a partial document.
-          const missingCids: string[] = [];
-          for (const cid of expectedCids) {
-            if (!this._hashes.has(cid)) missingCids.push(cid);
-          }
-          if (missingCids.length > 0) {
-            console.warn(
-              `[${this.documentPath}] Quorum-bound load did not complete: ` +
-                `${missingCids.length} of ${expectedCids.length} expected ` +
-                `CIDs were not fetched from Helia (e.g. ${missingCids
-                  .slice(0, 3)
-                  .map((c) => c.slice(0, 12) + '...')
-                  .join(', ')}). Recording peer as bind-failed so the ` +
-                `loader tries the next agreeing peer.`,
-            );
-            throw new _QuorumBindCheckFailedError(
-              '(missing-blocks)',
-              `Quorum-bound load completed sync() but ${missingCids.length} ` +
-                `of ${expectedCids.length} expected CIDs were not retrievable; ` +
-                `served tree had stripped inline content and bitswap could ` +
-                `not retrieve the missing blocks.`,
-            );
-          }
+          verifyQuorumCidCoverage();
 
           return true;
         }
 
+        const deferredBlockLease = createDeferredBlockBudget();
+        initialLoadAuthorization.deferredBlockBudget =
+          deferredBlockLease.budget;
         const snapshotBoundaryBeforeSync =
           this._latestSnapshot?.lastChangeNodeCID;
-        const syncResult = requireCompleteCids
-          ? await syncInvitationMessageCompletely(
-              message,
-              this._hashes,
-              () => this.sync(message, false),
-              'catch-up',
-              {
-                provenSnapshotBoundariesBeforeSync:
-                  snapshotBoundaryBeforeSync === undefined
-                    ? undefined
-                    : new Set([snapshotBoundaryBeforeSync]),
-                isSnapshotApplied: () =>
-                  this._latestSnapshot === message.snapshot,
-              },
-            )
-          : await this.sync(message, false);
+        const verifyInvitationCompleteness = async (): Promise<void> => {
+          if (!requireCompleteCids) return;
+          await syncInvitationMessageCompletely(
+            message,
+            this._hashes,
+            async () => true,
+            'catch-up',
+            {
+              provenSnapshotBoundariesBeforeSync:
+                snapshotBoundaryBeforeSync === undefined
+                  ? undefined
+                  : new Set([snapshotBoundaryBeforeSync]),
+              isSnapshotApplied: () =>
+                this._latestSnapshot === message.snapshot,
+            },
+          );
+        };
+        initialLoadAuthorization.finalizeInMutationSlot = (applied) =>
+          finalizeInitialLoadInMutationSlot(
+            applied,
+            verifyInvitationCompleteness,
+          );
+        const applyAuthenticatedLoad = async (): Promise<boolean> => {
+          if (signal?.aborted) throw signal.reason;
+          if (admitStateMutation !== undefined) {
+            return this._runInMutationQueue(async () => {
+              if (signal?.aborted) throw signal.reason;
+              return this._syncUnlocked(
+                message,
+                false,
+                initialLoadAuthorization,
+              );
+            });
+          }
+          this._initialLoadSyncAuthorizations ??= new WeakMap();
+          this._initialLoadSyncAuthorizations.set(
+            message as object,
+            initialLoadAuthorization,
+          );
+          try {
+            return await this.sync(message, false);
+          } finally {
+            this._initialLoadSyncAuthorizations.delete(message as object);
+          }
+        };
+        let syncResult: boolean;
+        try {
+          syncResult = requireCompleteCids
+            ? await syncInvitationMessageCompletely(
+                message,
+                this._hashes,
+                applyAuthenticatedLoad,
+                'catch-up',
+                {
+                  provenSnapshotBoundariesBeforeSync:
+                    snapshotBoundaryBeforeSync === undefined
+                      ? undefined
+                      : new Set([snapshotBoundaryBeforeSync]),
+                  isSnapshotApplied: () =>
+                    this._latestSnapshot === message.snapshot,
+                },
+              )
+            : await applyAuthenticatedLoad();
+        } catch (cause) {
+          if (initialLoadStateMutationStarted) {
+            this._retireAfterIncompleteInitialLoad(cause);
+          }
+          throw cause;
+        } finally {
+          deferredBlockLease.dispose();
+        }
         if (!syncResult) {
+          if (initialLoadStateMutationStarted) {
+            this._retireAfterIncompleteInitialLoad(
+              new Error('authenticated sync returned false'),
+            );
+          }
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
           );
@@ -3122,13 +4878,15 @@ export class PeerborneDocument<
    * Send a single `tipAdvertiseV1` probe to one peer and decrypt the
    * response to extract the peer's `tipsHash`. Returns one of:
    *
-   *   - `Uint8Array` -- the peer's advertised `tipsHash` (32 bytes).
+   *   - `Uint8Array` -- a legacy peer's advertised `tipsHash` (32 bytes).
+   *   - `{ hash, signerAuthority }` -- a V4 advertisement whose envelope
+   *     verified under exactly one captured trusted writer authority.
    *   - `'unknown-doc'` -- the peer explicitly disclaimed the document
    *     (returned the 1-byte `0xFF` UNKNOWN_DOC sentinel). This is the
    *     signal `Peerborne.tipAdvertiseHandler` emits when no document
    *     is registered for the requested path. Distinguishing this from
    *     `null` lets the orchestrator tally `'unknown-doc'` exactly like
-   *     a tip-hash vote so that when a Q-of-K majority of peers all
+   *     a tip-hash vote so that when the configured Q-of-K threshold of peers
    *     disclaim the document, `load()` returns `false` to let a fresh
    *     `open()` create the document on top of an existing swarm. The
    *     previous design returned `null` for the unknown-doc case, which
@@ -3152,7 +4910,23 @@ export class PeerborneDocument<
     peer: import('@multiformats/multiaddr').Multiaddr,
     serializedRequest: Uint8Array,
     signal?: AbortSignal,
-  ): Promise<Uint8Array | 'unknown-doc' | null> {
+    protocolFamily?: InitialLoadProtocolFamily,
+    trustedLoadSecurityCommitments?: LoadSecurityCommitments,
+    signerAuthorization?: InitialLoadSignerAuthoritySnapshot<PublicKey>,
+    expectedLoadChallenge?: Uint8Array,
+  ): Promise<Uint8Array | SignerAttributedLoadQuorumVote | 'unknown-doc' | null> {
+    const protocols =
+      protocolFamily ??
+      initialLoadProtocols(this.swarm.requireSecurityStateQuorum);
+    if (
+      protocols.securityAware &&
+      (signerAuthorization === undefined ||
+        (this._writerMutationsInFlight ?? 0) !== 0 ||
+        (this._writerKeysVersion ?? 0) !== signerAuthorization.writerVersion ||
+        this._securityProviderMutationFailure !== undefined)
+    ) {
+      return null;
+    }
     // Capture the underlying v3 Stream so the abort path below can call
     // `abort()` on it directly (the wrapped DuplexStream only exposes the
     // write-side half-close via `close()`, not a full bidirectional tear-
@@ -3161,10 +4935,14 @@ export class PeerborneDocument<
     // closed -- on partitioned/slow peers, each `load()` could leak K
     // streams, exhausting per-connection stream quotas.
     let rawStream: import('@libp2p/interface').Stream;
-    let stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> };
+    let stream: {
+      sink: (data: Iterable<Uint8Array>) => Promise<void>;
+      source: AsyncIterable<Uint8ArrayList | Uint8Array>;
+    };
     try {
-      rawStream = await this.libp2p.dialProtocol(peer, [tipAdvertiseV1], {
+      rawStream = await this.libp2p.dialProtocol(peer, [protocols.advertise], {
         runOnLimitedConnection: true,
+        signal,
       });
       stream = wrapStream(rawStream);
     } catch {
@@ -3198,25 +4976,18 @@ export class PeerborneDocument<
     }
     try {
       await pipe([serializedRequest], stream.sink);
-      // Size-bound the tip-advertise response read. A `tipAdvertiseV1`
-      // body is an encrypted `CRDTSyncMessage` carrying the `documentId`
-      // (up to `MAX_DOCUMENT_PATH_LENGTH` bytes BEFORE encryption — this
-      // dominates the size), a 32-byte `tipsHash`, and (optionally) a
-      // writer signature. The cap is derived from
-      // `MAX_DOCUMENT_PATH_LENGTH` plus JSON / Base64 / AES-GCM / signature
-      // overheads (see `MAX_TIP_ADVERTISE_RESPONSE_SIZE` docstring above
-      // for the breakdown). The previous 2 KiB cap was smaller than the
-      // `documentId` field alone, so any document with a maximal path was
-      // surfaced as a non-vote and quorum could never pass for it. 6 KiB
-      // is generous for legitimate peers but prevents a malicious peer
-      // from streaming an unbounded payload to force `load()` to buffer
-      // it all before returning a non-vote. If the read overruns the cap,
+      // Size-bound the advertisement response read. V4 has tight document
+      // and group-ID schema limits; legacy V3 instead preserves document IDs
+      // admitted by the shared request ceiling. If the version-specific read
+      // overruns its cap,
       // `readUint8Iterable` throws a `RangeError` that is caught by the
       // surrounding `try { ... } catch { return null; }` — surfacing as a
       // non-vote (same outcome as a timeout), NOT a quorum disagreement.
       const assembled = await readUint8Iterable(
         stream.source,
-        MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+        protocols.securityAware
+          ? MAX_SECURITY_ADVERTISE_RESPONSE_SIZE
+          : MAX_TIP_ADVERTISE_RESPONSE_SIZE,
       );
       if (assembled.length === 0) {
         // Peer declined (unauthorized, decryption failure, document-id
@@ -3229,13 +5000,21 @@ export class PeerborneDocument<
       // 1-byte UNKNOWN_DOC sentinel response: `Peerborne.tipAdvertiseHandler`
       // emits this when no document is registered for the requested path.
       // The orchestrator counts these toward a separate "unknown-doc"
-      // tally so a Q-of-K majority of disclaims becomes a clean
+      // tally so the configured Q-of-K threshold of disclaims becomes a clean
       // new-doc-creation signal rather than a `LoadQuorumFailedError`.
-      // See `_probeTipAdvertise`'s docstring for the rationale.
-      if (assembled.length === 1 && assembled[0] === 0xff) {
+      // See `_probeTipAdvertise`'s docstring and PR #284 r16 Copilot
+      // review for the rationale.
+      if (
+        isUnknownDocumentAdvertisement(assembled, {
+          securityAware: protocols.securityAware,
+          requireAuthenticatedInitialLoad:
+            this._requiresAuthenticatedInitialLoad(),
+        })
+      ) {
         return 'unknown-doc';
       }
-      const headerLength = this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+      const headerLength =
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
       if (assembled.length <= headerLength) {
         // Too short to be a valid encrypted payload.
         return null;
@@ -3249,72 +5028,103 @@ export class PeerborneDocument<
         // load that follows will still gate trust on the actual state.
         return null;
       }
-      const blockNonce = assembled.slice(this._keychainProvider.keyIDLength, headerLength);
+      const blockNonce = assembled.slice(
+        this._keychainProvider.keyIDLength,
+        headerLength,
+      );
       const blockData = assembled.slice(headerLength);
-      const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
+      const decrypted = await this._authProvider.decrypt(
+        blockData,
+        key,
+        blockNonce,
+      );
       if (!decrypted) {
         return null;
       }
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(decrypted);
+        message = this._snapshotDecodedSyncMessage(
+          this._syncMessageSerializer.deserializeSyncMessage(decrypted),
+          'tip advertisement',
+        );
       } catch {
         return null;
       }
       if (message.documentId !== this.documentPath) {
         return null;
       }
-      // Verify the writer signature on the advertisement when possible.
-      // On first load (_writers empty) we cannot verify -- trust falls
-      // back to the encryption envelope (only a peer that already holds
-      // the current key could produce this response) plus the quorum
-      // requirement that multiple such peers agree. This matches the
-      // bootstrapping behaviour of `_sendLoadRequestAndSync`.
-      if (this._isSigningEnabled()) {
+      if (
+        protocols.securityAware &&
+        !initialLoadChallengeEquals(
+          expectedLoadChallenge,
+          message.loadChallenge,
+        )
+      ) {
+        return null;
+      }
+      if (
+        protocols.securityAware &&
+        !loadSecurityCommitmentsEqual(
+          trustedLoadSecurityCommitments,
+          message.loadSecurityState,
+        )
+      ) {
+        return null;
+      }
+      // V4 requires attribution to exactly one signer in the trust set
+      // captured before any peer probe. Legacy advertisements retain their
+      // prior verification/bootstrap behavior for compatibility.
+      let signerAuthority: string | null = null;
+      if (protocols.securityAware) {
+        if (signerAuthorization === undefined) return null;
+        signerAuthority = await this._identifyInitialLoadSignerAuthority(
+          message,
+          signerAuthorization.authorities,
+        );
+        if (signerAuthority === null) return null;
+      } else {
         const preLoadWriters = await this._getWriterKeys();
-        if (preLoadWriters.length > 0) {
-          if (!message.signature) {
-            return null;
-          }
-          const { signature, ...messageWithoutSignature } = message;
-          const raw = this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          );
-          let signatureBytes: Uint8Array;
-          try {
-            signatureBytes = this._deserializeSignature(signature);
-          } catch {
-            return null;
-          }
-          const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(raw, writerKey, signatureBytes),
-          );
-          if (!(await firstTrue(verifyTasks))) {
-            return null;
-          }
+        if (!(await this._verifyInitialLoadEnvelope(message, preLoadWriters))) {
+          return null;
         }
       }
-      if (!(message.tipsHash instanceof Uint8Array) || message.tipsHash.length !== TIPS_HASH_LENGTH) {
+      if (
+        !(message.tipsHash instanceof Uint8Array) ||
+        message.tipsHash.length !== TIPS_HASH_LENGTH
+      ) {
         return null;
+      }
+      if (protocols.securityAware) {
+        if (
+          (this._writerMutationsInFlight ?? 0) !== 0 ||
+          (this._writerKeysVersion ?? 0) !==
+            signerAuthorization!.writerVersion ||
+          this._securityProviderMutationFailure !== undefined
+        ) {
+          return null;
+        }
+        if (signerAuthority === null) return null;
+        return { hash: message.tipsHash, signerAuthority };
       }
       return message.tipsHash;
     } catch {
       return null;
     } finally {
-      // Always detach the abort listener and release the libp2p stream.
-      // The normal success path drops through to here after `return` runs,
-      // so we still need to close the stream to release per-connection
-      // stream quota (the response read consumed the read side but the
-      // write side is half-open until close() runs). On the abort path
-      // `rawStream.abort()` has already been called by `onAbort`; calling
-      // `close()` again is a no-op the libp2p impls tolerate.
+      // Always detach the abort listener and release the libp2p stream. Once
+      // the complete response is consumed, reset the stream synchronously
+      // rather than awaiting a remote graceful-close handshake. A hostile
+      // peer could otherwise keep `close()` pending after the timeout's abort
+      // listener had already been removed, leaking a stream-slot loser behind
+      // the completed Promise.race.
       if (signal) {
         signal.removeEventListener('abort', onAbort);
       }
-      try {
-        await rawStream.close();
-      } catch {
-        /* already torn down */
+      if (!signal?.aborted) {
+        try {
+          rawStream.abort(new Error('tip-advertise probe stream complete'));
+        } catch {
+          /* already torn down */
+        }
       }
     }
   }
@@ -3338,7 +5148,11 @@ export class PeerborneDocument<
     peer: import('@multiformats/multiaddr').Multiaddr,
     serializedRequest: Uint8Array,
     timeoutMs: number,
-  ): Promise<Uint8Array | 'unknown-doc' | null> {
+    protocolFamily?: InitialLoadProtocolFamily,
+    trustedLoadSecurityCommitments?: LoadSecurityCommitments,
+    signerAuthorization?: InitialLoadSignerAuthoritySnapshot<PublicKey>,
+    expectedLoadChallenge?: Uint8Array,
+  ): Promise<Uint8Array | SignerAttributedLoadQuorumVote | 'unknown-doc' | null> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((resolve) => {
@@ -3346,7 +5160,15 @@ export class PeerborneDocument<
     });
     try {
       return await Promise.race([
-        this._probeTipAdvertise(peer, serializedRequest, controller.signal),
+        this._probeTipAdvertise(
+          peer,
+          serializedRequest,
+          controller.signal,
+          protocolFamily,
+          trustedLoadSecurityCommitments,
+          signerAuthorization,
+          expectedLoadChallenge,
+        ),
         timeout,
       ]);
     } finally {
@@ -3357,6 +5179,45 @@ export class PeerborneDocument<
       // resolved is a no-op: the probe's finally block will have already
       // detached the listener and closed the stream itself.
       controller.abort();
+    }
+  }
+
+  /**
+   * Bound the remote-I/O phase of one full initial-load response. The callee
+   * disarms the deadline only after the complete bounded response body has
+   * arrived; local authentication and state application then finish without a
+   * response-body timer racing an in-progress `sync()` mutation. Deferred
+   * blockstore reads use their own candidate-wide deadline and abort signal.
+   */
+  private async _withInitialLoadResponseDeadline<T>(
+    timeoutMs: number,
+    operation: (
+      signal: AbortSignal,
+      responseReceived: () => void,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error('initial-load full response timed out');
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        operation(controller.signal, disarm),
+        timeout,
+      ]);
+    } finally {
+      disarm();
     }
   }
 
@@ -3388,30 +5249,68 @@ export class PeerborneDocument<
     founderAddress: string,
     issuerPublicKey: PublicKey,
   ): Promise<boolean> {
+    this._throwIfSecurityProviderMutationFailed();
+    const protocols = initialLoadProtocols(
+      this.swarm.requireSecurityStateQuorum,
+    );
+    const trustedLoadSecurityCommitments = protocols.securityAware
+      ? await captureTrustedLoadSecurityCommitments(
+          this.documentPath,
+          this.swarm.resolveLoadSecurityCommitments,
+        )
+      : undefined;
+    const signerAuthorization = protocols.securityAware
+      ? await this._captureInitialLoadSignerAuthorities()
+      : undefined;
+    const loadChallenge = protocols.securityAware
+      ? createInitialLoadChallenge()
+      : undefined;
     const signatureBytes = await this._authProvider.sign(
-      this._encoder.encode(this.documentPath),
+      protocols.securityAware
+        ? initialLoadRequestSignaturePayload(
+            this.documentPath,
+            loadChallenge!,
+          )
+        : this._encoder.encode(this.documentPath),
       this._userKey,
     );
+    if (signerAuthorization !== undefined) {
+      this._assertInitialLoadWriterAuthorizationCurrent(
+        signerAuthorization.writerVersion,
+      );
+    }
     const serializedRequest =
       this._loadMessageSerializer.serializeLoadRequest({
         documentId: this.documentPath,
         signature: this._serializeSignature(signatureBytes),
+        loadChallenge,
       });
     return withIssuerPinnedInvitationStream(
       founderAddress,
       (address, signal) =>
-        this.libp2p.dialProtocol(multiaddr(address) as any, [documentLoadV3], {
-          runOnLimitedConnection: true,
-          signal,
-        }),
-      (rawStream) =>
+        this.libp2p.dialProtocol(
+          multiaddr(address) as any,
+          [protocols.documentLoad],
+          {
+            runOnLimitedConnection: true,
+            signal,
+          },
+        ),
+      (rawStream, signal, admitStateMutation) =>
         this._sendLoadRequestAndSync(
           wrapStream(rawStream),
           serializedRequest,
           null,
+          protocols.securityAware,
+          trustedLoadSecurityCommitments,
+          signerAuthorization,
+          loadChallenge,
+          signal,
+          undefined,
           issuerPublicKey,
           MAX_INVITATION_MESSAGE_BYTES,
           true,
+          admitStateMutation,
         ),
     );
   }
@@ -3430,12 +5329,13 @@ export class PeerborneDocument<
    *   helper and `getComponents()` may surface the `/p2p` value as bytes.
    * **Initial-load quorum gate.** When
    * `PeerborneConfig.loadQuorumEnabled` is `true` (the default), `load()`
-   * first queries up to `loadQuorumK` peers in parallel via the
-   * `tipAdvertiseV1` protocol for a lightweight tip-set hash. The full
-   * document-load only proceeds against a peer that participated in a
-   * majority (`loadQuorumQ`-of-K) agreement on the tip set, defending
-   * against a single malicious or partitioned peer unilaterally serving a
-   * stale or maliciously-crafted initial state. The gate runs uniformly
+   * first queries up to `loadQuorumK` peers in parallel. Legacy mode uses
+   * `tipAdvertiseV1` for a served-frontier hash; strict security-aware mode
+   * uses `securityAdvertiseV1` for a digest that also binds the complete V4
+   * response manifest and trusted security tuple. The full load proceeds only
+   * against a peer in a configured `loadQuorumQ`-of-K agreement. The default Q
+   * is a majority; explicitly choosing a lower threshold does not provide a
+   * majority-based Byzantine guarantee. The gate runs uniformly
    * regardless of local `_hashes` state (an empty local `_hashes` is the
    * exact state the gate must defend on first `open()` of an existing
    * document — bypassing it then would be unsafe). If quorum is not met,
@@ -3453,58 +5353,76 @@ export class PeerborneDocument<
    * peer list so it can retry across multiple multiaddrs for the same
    * peer id (e.g. a direct connection + a relay-circuit fallback).
    *
-   * After quorum passes, the served full state is bound to the agreed
-   * hash STRUCTURALLY -- the loader derives the responder's served
-   * frontier from the actual `changes`/`snapshot` payload via
-   * `computeServedFrontier`, hashes that, and verifies it equals
-   * `winningHashHex` BEFORE applying the response. The
-   * responder-supplied `message.tips` array must not be trusted as the
-   * source of truth: doing so lets a Byzantine peer vote hash X, put X's
-   * tips in `message.tips`, and serve a divergent payload. When present,
-   * `message.tips` is additionally checked to
+   * After quorum passes, the served full state is bound to the agreed digest
+   * BEFORE applying the response. V3 derives the responder's served frontier
+   * from the actual `changes`/`snapshot` payload. V4 additionally derives a
+   * canonical complete manifest covering root/CID/kind/edge structure,
+   * deferred markers, snapshot state/metadata, and keychain changes. The
+   * responder-supplied `message.tips` array is not the source of truth. It is
+   * additionally checked to
    * hash to the same value as the structurally-derived served
-   * frontier; this catches the responder-internal-equivocation case
-   * where the served `changes` and the advertised `tips` were
-   * assembled inconsistently. An
-   * agreeing peer whose served payload's structural frontier hashes to
-   * something other than `winningHashHex` is treated as a PER-PEER bind
-   * failure: the loader records the offending peer in
+   * frontier; this catches an inconsistent response assembly. An
+   * agreeing peer whose derived response hash differs from
+   * `winningHashHex` is treated as a PER-PEER bind
+   * failure: the loader records the peer in
    * `agreeingPeerBindFailures`, skips it, and tries the next peer in
-   * the agreeing cohort. This prevents a single malicious peer in the
-   * agreeing cohort from DoS'ing the entire load by voting for the
-   * majority hash (passing quorum) and then serving a mismatched full
-   * load. Only after EVERY peer in the agreeing cohort has bind-failed
+   * the agreeing cohort. A mismatch may result from concurrent responder state
+   * advance, retrieval/serialization failure, protocol violation, or
+   * equivocation; the bind gate prevents any such response from mutating local
+   * state. Only after every peer in the agreeing cohort has bind-failed
    * does the loader throw `LoadQuorumFailedError(reason: 'bind-check-
    * failed-all-agreeing-peers')`, with `agreeingPeerBindFailures`
-   * recording per-peer what each Byzantine peer served instead.
+   * recording per-peer diagnostics.
    * Closes the gap tracked under issue #189 §5.4 item 2 (and bulleted
    * in #186).
    *
-   * @returns `true` if the document was successfully loaded from a peer.
-   *   `false` if no peer could provide the document -- this is ambiguous: it
-   *   may mean the document is brand new (no peers have it) OR that all peers
-   *   failed to respond, failed to decrypt, or failed signature verification.
-   *   Note: `open()` treats `false` as "new document" only when no existing
-   *   document state has already been loaded.
-   * @throws {LoadQuorumFailedError} When the initial-load quorum gate is
-   *   enabled and fewer than `loadQuorumQ` peers agreed on the same tip
-   *   hash within the configured timeout. Callers can `instanceof`-check
-   *   this error to distinguish quorum failure from other I/O errors
-   *   raised inside `load()`. The original single-peer
-   *   "return false on no peers" behaviour is preserved when the quorum
-   *   gate is disabled (`loadQuorumEnabled: false`).
+   * @returns `true` after a successful sync. Returns `false` when there are no
+   *   connected peers, when the quorum explicitly agrees the document is
+   *   unknown, or when quorum is disabled and every legacy load attempt is
+   *   exhausted. `open()` treats `false` as new only when no existing local or
+   *   invitation state is present.
+   * @throws {LoadQuorumFailedError} When an enabled quorum has insufficient
+   *   agreement, every agreeing peer is unreachable/unusable, or every full
+   *   response fails its bind check. Callers can `instanceof`-check this error.
    */
-  // Key exchange happens during:
-  // - Load messages.
-  // - ACL updates via /collabswarm/key-update/1.0.0 protocol
+  // Key state can arrive in load responses, BeeKEM Welcome/PathUpdate
+  // messages, and combined writer-removal sync envelopes.
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+    this._throwIfSecurityProviderMutationFailed();
+    const protocols = initialLoadProtocols(
+      this.swarm.requireSecurityStateQuorum,
+    );
     // Pick a peer. All peers come from getConnections() so they already have
     // open connections. dialProtocol reuses existing connections internally,
     // so no additional connection management is needed here.
     const shuffledPeers = await this._shuffledPeers();
+    this._throwIfSecurityProviderMutationFailed();
     if (shuffledPeers.length === 0) {
       return false;
     }
+
+    // Capture every local trust anchor once before the first V4 probe. True
+    // founders with no connected peers take the new-document return above
+    // and do not need a pre-existing tuple. Once a peer can influence the
+    // load, however, every advertisement and response must match these
+    // immutable snapshots; no peer-facing path re-runs an application
+    // resolver (which could otherwise create a TOCTOU split in one round).
+    const trustedLoadSecurityCommitments = protocols.securityAware
+      ? await captureTrustedLoadSecurityCommitments(
+          this.documentPath,
+          this.swarm.resolveLoadSecurityCommitments,
+        )
+      : undefined;
+    const initialLoadSignerAuthorization = protocols.securityAware
+      ? await this._captureInitialLoadSignerAuthorities()
+      : undefined;
+    this._throwIfSecurityProviderMutationFailed();
+    // One unpredictable nonce scopes every signed V4 request/response in this
+    // load round. Historical advertisements or full responses from an earlier
+    // round cannot be replayed even when the trusted security tuple is stable.
+    const loadChallenge = protocols.securityAware
+      ? createInitialLoadChallenge()
+      : undefined;
 
     const orderedPeers = [...shuffledPeers];
 
@@ -3513,7 +5431,7 @@ export class PeerborneDocument<
     // so we compare by extracting the PeerId component from each Multiaddr.
     if (preferredPeer) {
       const preferredId = preferredPeer.toString();
-      const preferredIdx = orderedPeers.findIndex(p => {
+      const preferredIdx = orderedPeers.findIndex((p) => {
         // Only compare against the PeerId component of the Multiaddr.
         // Falling back to a full-string equality check would compare against
         // the full multiaddr string (e.g. "/ip4/.../p2p/<id>") which will
@@ -3531,7 +5449,8 @@ export class PeerborneDocument<
         // `/p2p/<id>` segments; the remote peer id is always the LAST one,
         // so iterate all matches and use the final occurrence.
         const matches = [...p.toString().matchAll(/\/p2p\/([^/]+)/g)];
-        const peerId = matches.length > 0 ? matches[matches.length - 1][1] : null;
+        const peerId =
+          matches.length > 0 ? matches[matches.length - 1][1] : null;
         return peerId != null && peerId === preferredId;
       });
       if (preferredIdx > 0) {
@@ -3543,16 +5462,29 @@ export class PeerborneDocument<
     let signature = '';
     if (this._isSigningEnabled()) {
       const signatureBytes = await this._authProvider.sign(
-        this._encoder.encode(this.documentPath),
+        protocols.securityAware
+          ? initialLoadRequestSignaturePayload(
+              this.documentPath,
+              loadChallenge!,
+            )
+          : this._encoder.encode(this.documentPath),
         this._userKey,
       );
+      this._throwIfSecurityProviderMutationFailed();
       signature = this._serializeSignature(signatureBytes);
+    }
+    if (initialLoadSignerAuthorization !== undefined) {
+      this._assertInitialLoadWriterAuthorizationCurrent(
+        initialLoadSignerAuthorization.writerVersion,
+      );
     }
     const loadRequest: CRDTLoadRequest = {
       documentId: this.documentPath,
       signature,
+      loadChallenge,
     };
-    const serializedRequest = this._loadMessageSerializer.serializeLoadRequest(loadRequest);
+    const serializedRequest =
+      this._loadMessageSerializer.serializeLoadRequest(loadRequest);
 
     // Dedupe peers by peer id ONLY for the quorum probe round.
     // `getConnections()` returns one entry per OPEN connection, and libp2p
@@ -3571,10 +5503,10 @@ export class PeerborneDocument<
     // ORIGINAL `orderedPeers` so it can retry across multiple multiaddrs
     // for the same peer id -- e.g. a direct connection + a relay-circuit
     // fallback. Collapsing those to one entry pre-quorum would silently
-    // break the legacy fallback even when the quorum gate is off.
-    const quorumPeers = dedupePeersByPeerId(
-      orderedPeers,
-      (p) => this._peerIdOf(p),
+    // break the legacy fallback even when the quorum gate is off. See PR
+    // #284 r7 Copilot review.
+    const quorumPeers = dedupePeersByPeerId(orderedPeers, (p) =>
+      this._peerIdOf(p),
     );
 
     // Initial-load quorum gate (#189 §5.4.2 / #186).
@@ -3586,17 +5518,14 @@ export class PeerborneDocument<
     // behaviour.
     //
     // `winningHashHex` (set when quorum passes) is also used below as the
-    // per-peer binding check inside `_sendLoadRequestAndSync`. The check
-    // is purely structural and runs BEFORE the served state is applied:
-    // the loader hashes `computeServedFrontier(message.changeId,
-    // message.changes, message.snapshot?.lastChangeNodeCID)` and compares
-    // to `winningHashHex`. If they disagree, an agreeing peer voted for
-    // one tip set and served a different one (Byzantine equivocation):
-    // the peer is recorded as a bind failure and the loader retries the
-    // next agreeing peer without ever mutating in-memory state. The
-    // pre-apply ordering is the load-bearing property -- a Byzantine peer
-    // cannot poison the in-memory document because the bind decision
-    // happens before `sync()` runs.
+    // per-peer binding check inside `_sendLoadRequestAndSync`. It runs BEFORE
+    // the served state is applied: V3 hashes the structurally-derived frontier;
+    // V4 also hashes a complete manifest of every sync-mutating field. If the
+    // result disagrees, the peer is recorded as a bind failure and the loader
+    // retries the next agreeing peer without mutating in-memory state. The
+    // mismatch may reflect concurrent state advance, incomplete retrieval,
+    // protocol violation, or equivocation; the pre-apply ordering is the
+    // load-bearing property.
     // NOTE: previously this block bypassed the gate when `_hashes.size === 0`
     // on the assumption it identified a "founding-member" brand-new document.
     // That bypass was unsafe: `_hashes` is ALSO empty on the first `open()`
@@ -3606,35 +5535,55 @@ export class PeerborneDocument<
     // EXISTING swarm is handled by the `'unknown-doc'` probe sentinel: each
     // peer that does not have the document responds with the 1-byte UNKNOWN_DOC
     // marker (see `Peerborne.tipAdvertiseHandler`), the orchestrator tallies
-    // these alongside tip-hash votes, and a Q-of-K majority of disclaims
+    // these alongside tip-hash votes, and a Q-of-K threshold of disclaims
     // surfaces as `{ newDoc: true }` here -- the loader returns `false` and
-    // `open()` proceeds to create the doc fresh. True founders (no peers in
-    // the mesh) are still handled by the `peers.length === 0` short-circuit
-    // at the top of `load()` plus the `k === 0` branch inside `runLoadQuorum`
-    // (which returns `{ skipped: true }`).
+    // `open()` reaches its new-document branch. Strict-security documents
+    // still require an exact-true application `validateDocumentPath` decision
+    // before creation. True founders (no peers in the mesh) are handled by the
+    // `peers.length === 0` short-circuit at the top of `load()` plus the
+    // `k === 0` branch inside `runLoadQuorum` (which returns `{ skipped: true
+    // }`); the same explicit creation authorization applies in `open()`.
     //
     // The K-of-Q decision logic itself lives in `runLoadQuorum`
     // (`load-quorum-orchestrator.ts`) so the orchestration can be unit-tested
     // without standing up a libp2p/Helia stack. The orchestrator is given a
     // probe-fn closure that captures this document's `_raceTipAdvertiseProbe`
     // (the only network-touching call); narrowing, agreement counting, and
-    // single-peer fallback all happen in pure code.
-    const timeoutMs = this.swarm.config?.loadQuorumTimeoutMs ?? 5000;
+    // single-peer fallback all happen in pure code with the same control
+    // flow as before the extraction. See PR #284 r4 Copilot review for the
+    // test-coverage rationale.
+    const timeoutMs = this.swarm.loadQuorumTimeoutMs;
     const quorumResult = await runLoadQuorum({
       peers: quorumPeers,
       peerIdOf: (p) => this._peerIdOf(p),
       probeFn: (peer) =>
-        this._raceTipAdvertiseProbe(peer, serializedRequest, timeoutMs),
+        this._raceTipAdvertiseProbe(
+          peer,
+          serializedRequest,
+          timeoutMs,
+          protocols,
+          trustedLoadSecurityCommitments,
+          initialLoadSignerAuthorization,
+          loadChallenge,
+        ),
       documentPath: this.documentPath,
       config: {
-        enabled: this.swarm.config?.loadQuorumEnabled ?? true,
-        k: this.swarm.config?.loadQuorumK ?? 3,
-        q: this.swarm.config?.loadQuorumQ,
+        // V4 is fail-closed even if a shared config object is mutated after
+        // initialize-time validation. Strict security-aware loading never
+        // degrades to the unquorumed loop.
+        enabled: protocols.securityAware || this.swarm.loadQuorumEnabled,
+        k: this.swarm.loadQuorumK,
+        q: this.swarm.loadQuorumQ,
         timeoutMs,
-        allowSinglePeer:
-          this.swarm.config?.loadQuorumAllowSinglePeer ?? false,
+        allowSinglePeer: this.swarm.loadQuorumAllowSinglePeer,
       },
     });
+    this._throwIfSecurityProviderMutationFailed();
+    if (initialLoadSignerAuthorization !== undefined) {
+      this._assertInitialLoadWriterAuthorizationCurrent(
+        initialLoadSignerAuthorization.writerVersion,
+      );
+    }
 
     let winningHashHex: string | null = null;
     if ('skipped' in quorumResult) {
@@ -3654,21 +5603,25 @@ export class PeerborneDocument<
       // Note: a misconfigured `loadQuorumK <= 0` no longer reaches this
       // branch — `runLoadQuorum` throws `LoadQuorumFailedError(invalid-
       // config)` for that case so the misconfiguration is loud at
-      // `open()` time instead of silently forking the document.
-      const quorumWasEnabled = this.swarm.config?.loadQuorumEnabled ?? true;
+      // `open()` time instead of silently forking the document. See PR
+      // #284 r5 Copilot review.
+      const quorumWasEnabled =
+        protocols.securityAware || this.swarm.loadQuorumEnabled;
       if (quorumWasEnabled && quorumPeers.length === 0) {
+        this._throwIfSecurityProviderMutationFailed();
         return false;
       }
       // Else: gate disabled. Fall through with the original (un-deduped)
       // `orderedPeers` so the legacy loop can retry per-multiaddr.
     } else if ('newDoc' in quorumResult) {
-      // A Q-of-K majority of probed peers explicitly disclaimed the
+      // The configured Q-of-K threshold of probed peers explicitly disclaimed the
       // document via the `'unknown-doc'` sentinel. Return `false` so
       // `open()` can create the document fresh on top of the existing
       // swarm. Without this branch, the previous design conflated
       // unknown-doc with partition / timeout and surfaced
       // `LoadQuorumFailedError` -- preventing new-document creation in
-      // any swarm with online peers.
+      // any swarm with online peers. See PR #284 r16 Copilot review.
+      this._throwIfSecurityProviderMutationFailed();
       return false;
     } else {
       winningHashHex = quorumResult.winningHashHex;
@@ -3679,17 +5632,11 @@ export class PeerborneDocument<
       orderedPeers.push(...quorumResult.narrowedPeers);
     }
 
-    // Capture the post-narrow cohort size so the failure-reason decision
-    // below can distinguish "every agreeing peer bind-failed" (coordinated
-    // Byzantine equivocation on the load step -- the dedicated
-    // `bind-check-failed-all-agreeing-peers` reason) from "some agreeing
-    // peers bind-failed, others failed for transport/protocol reasons"
-    // (mixed failure -- caller should treat as transient and retry, the
-    // `agreeing-peers-unreachable` reason). The previous logic used
-    // `bind-check-failed-all-agreeing-peers` whenever ANY bind failure was
-    // recorded, which contradicted the reason's public name and could
-    // make callers treat a mixed transient retrieval failure as
-    // coordinated Byzantine behaviour.
+    // Capture the narrowed cohort size so the final error distinguishes every
+    // response failing its binding from a mixed bind/transport/protocol
+    // exhaustion. A bind failure is deliberately diagnostic rather than an
+    // attribution: concurrent state advance, retrieval/serialization failure,
+    // protocol violation, and equivocation can all produce it.
     // For the legacy non-quorum path (`winningHashHex === null`), this
     // value is unused -- the failure block guards on `winningHashHex`.
     const narrowedCohortSize = orderedPeers.length;
@@ -3698,25 +5645,20 @@ export class PeerborneDocument<
     // If the peer returns an empty response (no snapshot available),
     // fall back to the regular doc-load protocol.
     //
-    // Quorum frontier binding: when `winningHashHex` is non-null,
-    // `_sendLoadRequestAndSync` derives the responder's served frontier
-    // STRUCTURALLY from the actual `changes`/`snapshot` payload via
-    // `computeServedFrontier`, hashes that, and verifies it equals
-    // `winningHashHex` BEFORE applying the sync, so a Byzantine peer
-    // that voted for one tip set and serves a different one never gets
-    // to mutate in-memory document state. The responder-supplied
+    // Quorum response binding: when `winningHashHex` is non-null,
+    // `_sendLoadRequestAndSync` derives the responder's V3 frontier or V4
+    // complete response manifest from the actual payload and verifies it equals
+    // `winningHashHex` BEFORE applying the sync, so a response that differs
+    // from its advertisement never mutates in-memory state. The responder-supplied
     // `message.tips` is checked as a defense-in-depth consistency
     // requirement but is NOT the source of truth -- previous implementations
-    // trusted it as such, which let a Byzantine peer game the binding
-    // by populating `tips` with the agreed CIDs while serving a
-    // divergent `changes` payload.
+    // trusting it alone would allow agreed CIDs alongside a divergent
+    // `changes` payload.
     //
     // Per-peer bind failures (`_QuorumBindCheckFailedError`) are NOT
     // fatal to the whole load -- they only disqualify the offending
-    // peer. The loop records the failure and continues to the NEXT
-    // peer in the agreeing cohort, so a single malicious peer that
-    // voted for the majority hash and then served a mismatched full
-    // load cannot DoS the entire load. Only after every peer in the
+    // peer. The loop records the failure and continues to the next peer in the
+    // agreeing cohort. Only after every peer in the
     // narrowed cohort has bind-failed does `load()` escalate to
     // `LoadQuorumFailedError(bind-check-failed-all-agreeing-peers)`.
     //
@@ -3725,9 +5667,78 @@ export class PeerborneDocument<
     // (or the hex of the responder's contradicting `tips` attestation
     // when the defense-in-depth secondary check fails). This is
     // threaded into the final error so callers / operators can see
-    // which peers in the agreeing cohort equivocated between the
-    // probe round and the load round and what they served instead.
+    // which peers failed binding and what digest was observed instead.
     const agreeingPeerBindFailures = new Map<string, string>();
+    const attemptFullResponse = async (
+      peer: import('@multiformats/multiaddr').Multiaddr,
+      protocol: string,
+    ): Promise<boolean> => {
+      if (initialLoadSignerAuthorization !== undefined) {
+        this._assertInitialLoadWriterAuthorizationCurrent(
+          initialLoadSignerAuthorization.writerVersion,
+        );
+      }
+      const loaded = await this._withInitialLoadResponseDeadline(
+        timeoutMs,
+        async (signal, responseReceived) => {
+          const rawStream = await this.libp2p.dialProtocol(peer, [protocol], {
+            runOnLimitedConnection: true,
+            signal,
+          });
+          const abortStream = () => {
+            try {
+              rawStream.abort(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new Error('initial-load full response aborted'),
+              );
+            } catch {
+              // Already closed by the remote or the stream adapter.
+            }
+          };
+          if (signal.aborted) {
+            abortStream();
+            throw signal.reason;
+          }
+          signal.addEventListener('abort', abortStream, { once: true });
+          try {
+            return await this._sendLoadRequestAndSync(
+              wrapStream(rawStream),
+              serializedRequest,
+              winningHashHex,
+              protocols.securityAware,
+              trustedLoadSecurityCommitments,
+              initialLoadSignerAuthorization,
+              loadChallenge,
+              signal,
+              responseReceived,
+            );
+          } finally {
+            signal.removeEventListener('abort', abortStream);
+            // The complete response has already been consumed. Tear down the
+            // bidirectional stream synchronously instead of awaiting a remote
+            // graceful-close handshake that could itself stall and consume a
+            // per-connection stream slot. The timeout path already invoked the
+            // same abort listener, so avoid a redundant second reset there.
+            if (!signal.aborted) {
+              try {
+                rawStream.abort(
+                  new Error('initial-load full response stream complete'),
+                );
+              } catch {
+                // Already closed by the remote or stream adapter.
+              }
+            }
+          }
+        },
+      );
+      if (initialLoadSignerAuthorization !== undefined) {
+        this._assertInitialLoadWriterAuthorizationCurrent(
+          initialLoadSignerAuthorization.writerVersion,
+        );
+      }
+      return loaded;
+    };
     for (const peer of orderedPeers) {
       let peerBindFailed = false;
       // An explicitly disabled compaction policy cannot produce snapshots in
@@ -3736,36 +5747,30 @@ export class PeerborneDocument<
       if (this._compactionConfig.enabled) {
         try {
           console.log('Trying snapshot-load from peer:', peer.toString());
-          // dialProtocol returns a libp2p v3 `Stream` (event-driven, with a
-          // `send()`/iterator pair). Wrap it into the v2 `{ source, sink }`
-          // duplex shape that `_sendLoadRequestAndSync` (and the legacy
-          // `it-pipe` calls inside it) still expects.
-          const snapshotStream = wrapStream(await this.libp2p.dialProtocol(peer, [
-            snapshotLoadV3,
-          ], { runOnLimitedConnection: true }));
-          const loaded = await this._sendLoadRequestAndSync(
-            snapshotStream,
-            serializedRequest,
-            winningHashHex,
+          const loaded = await attemptFullResponse(
+            peer,
+            protocols.snapshotLoad,
           );
+          this._throwIfSecurityProviderMutationFailed();
           if (loaded) {
             return true;
           }
           // Empty response -- peer has no snapshot, try doc-load below.
         } catch (err) {
+          this._throwIfSecurityProviderMutationFailed();
           if (err instanceof _QuorumBindCheckFailedError) {
-            // This peer voted hash X in the probe round but the structural
-            // frontier of their served payload hashes to something else
-            // (or their advertised `tips` contradicts the served payload).
-            // Record the failure and skip the doc-load fallback for this
-            // peer -- a peer that equivocated once is not given a second
-            // chance on the same load round.
+            // This peer's full response does not bind to its probe digest.
+            // Record the failure and skip a second protocol attempt against
+            // the same peer in this load round.
             console.warn(
               `[${this.documentPath}] Agreeing peer ${peer.toString()} failed ` +
-                `quorum frontier bind on snapshot-load (offending hash ${err.advertisedHex}); ` +
-                `marking peer as Byzantine for this load and trying next peer in agreeing cohort.`,
+                `quorum response bind on snapshot-load (observed digest ${err.advertisedHex}); ` +
+                `excluding it for this round and trying the next agreeing peer.`,
             );
-            agreeingPeerBindFailures.set(this._peerIdOf(peer), err.advertisedHex);
+            agreeingPeerBindFailures.set(
+              this._peerIdOf(peer),
+              err.advertisedHex,
+            );
             peerBindFailed = true;
           }
           // Else: peer doesn't support snapshot-load protocol, or some
@@ -3774,66 +5779,48 @@ export class PeerborneDocument<
       }
 
       if (peerBindFailed) {
-        // Don't retry doc-load against a peer that already equivocated
-        // on snapshot-load -- continue to the next peer in the cohort.
+        // Do not retry doc-load against a peer whose snapshot response already
+        // failed binding; continue to the next peer in the cohort.
         continue;
       }
 
       try {
         console.log('Trying doc-load from peer:', peer.toString());
-        // See snapshot-load above for why we wrap the v3 Stream here.
-        const docStream = wrapStream(await this.libp2p.dialProtocol(peer, [
-          documentLoadV3,
-        ], { runOnLimitedConnection: true }));
-        const loaded = await this._sendLoadRequestAndSync(
-          docStream,
-          serializedRequest,
-          winningHashHex,
-        );
+        const loaded = await attemptFullResponse(peer, protocols.documentLoad);
+        this._throwIfSecurityProviderMutationFailed();
         if (loaded) {
           return true;
         }
       } catch (err) {
+        this._throwIfSecurityProviderMutationFailed();
         if (err instanceof _QuorumBindCheckFailedError) {
           console.warn(
             `[${this.documentPath}] Agreeing peer ${peer.toString()} failed ` +
-              `quorum frontier bind on doc-load (offending hash ${err.advertisedHex}); ` +
-              `marking peer as Byzantine for this load and trying next peer in agreeing cohort.`,
+              `quorum response bind on doc-load (observed digest ${err.advertisedHex}); ` +
+              `excluding it for this round and trying the next agreeing peer.`,
           );
           agreeingPeerBindFailures.set(this._peerIdOf(peer), err.advertisedHex);
           continue;
         }
         console.warn(
-          `Failed to load document via ${documentLoadV3}:`,
-          peer.toString(),
-          err,
+          `Failed to load document via ${protocols.documentLoad} from ${peer.toString()}`,
         );
       }
     }
 
-    // If quorum was actually run (`winningHashHex !== null`) but the
-    // load loop is exhausted, the cohort agreed the document exists
-    // yet none of them could serve it. Three sub-cases:
+    // If quorum was run (`winningHashHex !== null`) but the load loop is
+    // exhausted, the cohort agreed the document exists yet none supplied an
+    // applicable response. Three diagnostic sub-cases:
     //
     //   a) `agreeingPeerBindFailures.size === narrowedCohortSize` --
-    //      EVERY peer in the agreeing cohort voted for the agreed
-    //      hash and then served a divergent payload. Coordinated
-    //      Byzantine behaviour is the only explanation; we escalate
-    //      with the dedicated `bind-check-failed-all-agreeing-peers`
-    //      reason whose public docs say exactly this.
+    //      Every full response failed binding. This can result from concurrent
+    //      state advance, retrieval/serialization failure, protocol violation,
+    //      or equivocation. Use the dedicated historical reason identifier.
     //
     //   b) `agreeingPeerBindFailures.size > 0` but less than the
-    //      cohort size -- MIXED failure: some peers bind-failed
-    //      (suspicious) and others failed for transport/protocol
-    //      reasons (likely transient). We can't conclude coordinated
-    //      Byzantine equivocation across the whole cohort, so we
-    //      report `'agreeing-peers-unreachable'` and let the caller
-    //      retry. Using `bind-check-failed-all-agreeing-peers` here
-    //      would contradict the reason's public name/docs and could
-    //      make callers wrongly treat a mixed transient failure as
-    //      coordinated Byzantine behaviour. The `agreeingPeerBindFailures`
-    //      map is still threaded through for diagnostics so operators
-    //      can see which peers in the cohort did bind-fail.
+    //      cohort size -- mixed bind and transport/protocol failure. Report
+    //      `'agreeing-peers-unreachable'`; retain the binding map for
+    //      diagnostics.
     //
     //   c) `agreeingPeerBindFailures.size === 0` -- every agreeing
     //      peer failed for a transport/protocol reason; we surface
@@ -3871,7 +5858,8 @@ export class PeerborneDocument<
     }
 
     // No peer could provide the document -- assume new document.
-    console.log(`No connected peer served ${this.documentPath}`);
+    console.log(`Failed to open ${this.documentPath} on any connected peer.`);
+    this._throwIfSecurityProviderMutationFailed();
     return false;
   }
 
@@ -3879,8 +5867,10 @@ export class PeerborneDocument<
    * Opens this peerborne document. The sequence of operations is:
    *
    * 1. Call `.load()` to fetch the document from an existing peer via direct dial.
-   * 2. If the document is new (load returned false), run `validateDocumentPath`
-   *    (if configured) to ensure the path is allowed before proceeding.
+   * 2. If the document is new (load returned false), run
+   *    `validateDocumentPath` to authorize creation. Legacy mode permits an
+   *    omitted callback; strict authentication/security-state mode requires a
+   *    captured callback and an exact `true` result.
    * 3. Assign the pubsub message handler, subscribe to the document's GossipSub
    *    pubsub topic, and register protocol handlers for load, key-update, and
    *    snapshot-load requests.
@@ -3909,13 +5899,20 @@ export class PeerborneDocument<
    * @returns `false` when `load()` returned `false` and no existing state had
    *   already been loaded. In that case `open()` treats the document as new by
    *   adding the current user as a writer and generating an initial encryption
-   *   key. Note that `load()` returning `false` is ambiguous: it may also mean
-   *   all peers failed (see `load()` docs for details).
-   * @throws {Error} If `validateDocumentPath` is configured and rejects the path
-   *   for a new document. Validation runs before subscribing to pubsub or
-   *   registering protocol handlers, so no cleanup is needed on rejection.
+   *   key. With quorum enabled, exhausted or unusable agreeing peers throw;
+   *   `false` is limited to no peers or an explicit unknown-document outcome.
+   * @throws {Error} If `validateDocumentPath` rejects a new path, or if strict
+   *   mode attempts creation without a captured validator. Validation runs
+   *   before subscribing to pubsub or registering protocol handlers, so no
+   *   cleanup is needed on rejection.
+   * @throws {Error} If an earlier ACL/keychain provider call rejected after it
+   *   may have mutated state. The retired document and provider instances must
+   *   be discarded; calling `close()` does not make them reusable.
+   * @throws {LoadQuorumFailedError} If an enabled initial-load quorum cannot
+   *   agree or its agreeing cohort cannot supply an applicable response.
    */
   public async open(): Promise<boolean> {
+    this._throwIfSecurityProviderMutationFailed();
     // Cache the topic once so that subscribe and unsubscribe always target
     // the same string, even if config.pubsubDocumentPrefix changes later.
     this._topic = this._computeTopic();
@@ -3930,25 +5927,63 @@ export class PeerborneDocument<
     const loadedFromPeer = bootstrappedFromInvitation
       ? true
       : await this.load();
-    const isExisting = loadedFromPeer || this._hashes.size > 0;
+    // Any authenticated Welcome establishes that this instance joined an
+    // existing document. Legacy v1 may carry only keychain state and leave the
+    // ratchet uninitialized; it must still never fall through to founder setup.
+    const acceptedInvitation = this._invitationEpoch !== undefined;
+    let isExisting =
+      loadedFromPeer || this._hashes.size > 0 || acceptedInvitation;
+    if (isExisting && this._pendingFounderInitialization !== undefined) {
+      // Reuse the transition-owned collision check before validation,
+      // subscription, or protocol registration exposes the ambiguous local
+      // ACL/keychain state as an opened replica.
+      await this._initializeFounderIfStillNew(loadedFromPeer);
+    }
 
     // Validate document path BEFORE subscribing to pubsub or registering
     // protocol handlers. This prevents temporarily joining an unauthorized topic.
     // _pubsubHandler is not yet assigned, so if validation throws, close() will
     // not attempt to unsubscribe from a subscription that was never created.
     if (!isExisting) {
-      const validateFn = this.swarm.config?.validateDocumentPath;
-      if (validateFn) {
-        let allowed: boolean;
+      const validateFn = this.swarm.validateDocumentPath;
+      if (
+        !validateFn &&
+        (this._requiresAuthenticatedInitialLoad() ||
+          this.swarm.requireSecurityStateQuorum)
+      ) {
+        if (await this._hasExistingStateUnderBeeKEMLock(loadedFromPeer)) {
+          isExisting = true;
+        } else {
+          throw new Error(
+            `Cannot create strict-security document "${this.documentPath}": ` +
+              `validateDocumentPath is required to authorize new document creation`,
+          );
+        }
+      }
+      if (!isExisting && validateFn) {
+        let allowed: boolean | undefined;
+        let validationError: unknown;
         try {
           allowed = await validateFn(this.documentPath, this._userPublicKey);
         } catch (err) {
-          throw err instanceof Error ? err : new Error(String(err));
+          validationError = err;
         }
-        if (!allowed) {
-          throw new Error(
-            `Document path "${this.documentPath}" is not allowed for the current user`,
-          );
+        if (allowed !== true) {
+          // The callback authorizes creation, not joining. A valid Welcome may
+          // have committed while the arbitrary application callback awaited;
+          // recompute under the Welcome/founder mutex before treating its
+          // denial or failure as a creator denial.
+          if (await this._hasExistingStateUnderBeeKEMLock(loadedFromPeer)) {
+            isExisting = true;
+          } else if (validationError !== undefined) {
+            throw validationError instanceof Error
+              ? validationError
+              : new Error(String(validationError));
+          } else {
+            throw new Error(
+              `Document path "${this.documentPath}" is not allowed for the current user`,
+            );
+          }
         }
       }
     }
@@ -3968,33 +6003,43 @@ export class PeerborneDocument<
       const blockData = rawMessage.detail.data.slice(
         this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
       );
-      this._decryptBlock(blockKeyID, blockNonce, blockData).then(
-        (rawContent) => {
+      void this._decryptBlock(blockKeyID, blockNonce, blockData)
+        .then((rawContent) => {
           if (!rawContent) {
-            // If we're unable to decrypt the document, try a fresh document load.
             console.warn(
-              'Trying to re-load document... Unable to decrypt incoming message',
+              `[${this.documentPath}] Unable to decrypt incoming message. ` +
+                `An ordinary encrypted load cannot bootstrap an unknown current ` +
+                `document key; recovery requires a fresh writer-authenticated ` +
+                `Welcome or authenticated remove/rejoin.`,
             );
-            // Prefer loading from the sending peer -- they created this change
-            // and should have the document key(s) needed to read it.
-            const senderPeer = rawMessage.detail.type === 'signed' ? rawMessage.detail.from : undefined;
-            return this.load(senderPeer);
+            return undefined;
           }
 
           const message =
             this._syncMessageSerializer.deserializeSyncMessage(rawContent);
 
           return this.sync(message);
-        },
-      );
+        })
+        .catch(() => {
+          // Event listeners cannot return an awaitable result to GossipSub.
+          // Contain codec/sync/provider failures here so hostile ciphertext or
+          // a retired provider cannot become a process-level unhandled
+          // rejection. A terminal provider marker remains set on the document.
+          console.warn(
+            `[${this.documentPath}] Ignoring incoming message after processing failure`,
+          );
+        });
     };
 
     // All registration and subscription steps are inside try/catch so that
     // close() cleans up any partially-registered state on failure.
-    const pubsub = this.swarm.heliaNode.libp2p.services
-      .pubsub as GossipSub;
+    const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
 
     try {
+      // Validation and load callbacks above are arbitrary async boundaries. A
+      // concurrent membership-provider ambiguity may have retired and closed
+      // this instance while they were pending; never re-register it afterward.
+      this._throwIfSecurityProviderMutationFailed();
       // Register this document with the swarm BEFORE subscribing to pubsub.
       // registerDocument() throws on duplicate document paths; doing this first
       // avoids subscribing to a topic that would then be unsubscribed by close()
@@ -4012,7 +6057,7 @@ export class PeerborneDocument<
       // When enabled, messages from unauthorized peers are rejected at the
       // transport layer with a P4 penalty in peer scoring.
       // Skip entirely when signing is disabled to avoid unnecessary per-message decryption.
-      if (this.swarm.config?.enableTopicValidators && this._isSigningEnabled()) {
+      if (this.swarm.enableTopicValidators && this._isSigningEnabled()) {
         if (typeof pubsub.topicValidators?.set === 'function') {
           const topicValidator: TopicValidatorFn = async (
               _peerId: PeerId,
@@ -4026,10 +6071,12 @@ export class PeerborneDocument<
                 );
                 const blockNonce = message.data.slice(
                   this._keychainProvider.keyIDLength,
-                  this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+                  this._keychainProvider.keyIDLength +
+                    this._authProvider.nonceBits,
                 );
                 const blockData = message.data.slice(
-                  this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+                  this._keychainProvider.keyIDLength +
+                    this._authProvider.nonceBits,
                 );
                 const rawContent = await this._decryptBlock(
                   blockKeyID,
@@ -4038,22 +6085,27 @@ export class PeerborneDocument<
                 );
                 if (!rawContent) {
                   // Decryption failed -- key may not be in keychain yet
-                  console.warn(`[${this.documentPath}] Topic validator: decryption failed, ignoring message`);
+                  console.warn(
+                    `[${this.documentPath}] Topic validator: decryption failed, ignoring message`,
+                  );
                   return TopicValidatorResult.Ignore;
                 }
 
-                const syncMessage =
-                  this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+                const syncMessage = this._snapshotDecodedSyncMessage(
+                  this._syncMessageSerializer.deserializeSyncMessage(
+                    rawContent,
+                  ),
+                  'topic-validator sync message',
+                );
 
                 if (!syncMessage.signature) {
                   return TopicValidatorResult.Reject;
                 }
 
                 const { signature, ...messageWithoutSignature } = syncMessage;
-                const raw =
-                  this._syncMessageSerializer.serializeSyncMessage(
-                    messageWithoutSignature,
-                  );
+                const raw = this._syncMessageSerializer.serializeSyncMessage(
+                  messageWithoutSignature,
+                );
 
                 // Verify the message was signed by an authorized writer for this document
                 if (await this._verifyWriterSignature(raw, signature)) {
@@ -4061,7 +6113,9 @@ export class PeerborneDocument<
                 }
                 return TopicValidatorResult.Reject;
               } catch {
-                console.warn(`[${this.documentPath}] Topic validator: unexpected error, ignoring message`);
+                console.warn(
+                  `[${this.documentPath}] Topic validator: unexpected error, ignoring message`,
+                );
                 return TopicValidatorResult.Ignore;
               }
             };
@@ -4070,20 +6124,8 @@ export class PeerborneDocument<
         }
       }
 
-      if (!isExisting) {
-        this._createdLocally = true;
-        // Add current user as a writer.
-        const founderWriterChanges = await this._addWriter(this._userPublicKey);
-
-        // Add initial document key.
-        console.log(`Adding a key to ${this.documentPath}`);
-        await this._keychain.add();
-
-        // The founder ACL must be part of the replicated change DAG. Keeping
-        // it only in the creator's in-memory ACL lets first-load peers decrypt
-        // document state but leaves them unable to authenticate later writer
-        // updates (or write as the same restored identity).
-        await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+      if (!isExisting || this._pendingFounderInitialization !== undefined) {
+        isExisting = await this._initializeFounderIfStillNew(loadedFromPeer);
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -4092,7 +6134,117 @@ export class PeerborneDocument<
       throw err;
     }
 
+    this._throwIfSecurityProviderMutationFailed();
     return isExisting;
+  }
+
+  private _initializeFounderIfStillNew(
+    loadedFromPeer: boolean,
+  ): Promise<boolean> {
+    return this._runBeeKEMTransition(async () => {
+      this._throwIfSecurityProviderMutationFailed();
+      // A pre-open Welcome may have committed while path validation and
+      // protocol registration were awaiting. Recompute under the same
+      // transition mutex that owns Welcome commits; never initialize a
+      // founder from the stale pre-validation classification.
+      const hasExistingOrInvitedState =
+        loadedFromPeer ||
+        this._hashes.size > 0 ||
+        this._invitationEpoch !== undefined;
+      if (
+        hasExistingOrInvitedState &&
+        this._pendingFounderInitialization !== undefined
+      ) {
+        // The failed founder attempt has already mutated the local writer ACL
+        // (and may have installed a key), while the newly observed state has a
+        // different authenticated origin. Silently adopting it would retain a
+        // local self-writer fork. None of those provider mutations has a
+        // generic rollback contract, so this instance is terminally ambiguous.
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          'incomplete founder initialization collided with loaded or invited document state',
+        );
+      }
+      if (hasExistingOrInvitedState) {
+        return true;
+      }
+
+      let pendingFounder = this._pendingFounderInitialization;
+      if (
+        pendingFounder?.writerAddState === 'started' ||
+        pendingFounder?.keyAddState === 'started'
+      ) {
+        // The ACL/keychain interfaces do not promise throw-before-mutation.
+        // A rejected call may therefore already have changed its provider,
+        // while there is no authenticated delta/commit proving the outcome.
+        // Never repeat or adopt state on this ambiguous provider instance.
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          'founder initialization',
+        );
+      }
+      if (pendingFounder === undefined) {
+        pendingFounder = {
+          writerAddState: 'started',
+          keyAddState: 'not-started',
+        };
+        this._pendingFounderInitialization = pendingFounder;
+        try {
+          pendingFounder.writerChanges = this._requireMembershipWireChanges(
+            await this._addWriter(this._userPublicKey),
+            'founder writer-ACL initialization returned an unrepresentable change',
+          );
+        } catch (error) {
+          this._retireAfterAmbiguousSecurityProviderMutation(
+            'founder writer-ACL initialization',
+            error,
+          );
+        }
+        pendingFounder.writerAddState = 'succeeded';
+      }
+      if (pendingFounder.keyAddState === 'not-started') {
+        console.log(`Adding a key to ${this.documentPath}`);
+        pendingFounder.keyAddState = 'started';
+        try {
+          await this._keychain.add();
+        } catch (error) {
+          this._retireAfterAmbiguousSecurityProviderMutation(
+            'founder keychain initialization',
+            error,
+          );
+        }
+        pendingFounder.keyAddState = 'succeeded';
+      }
+
+      // The founder ACL must be part of the replicated change DAG. Keeping it
+      // only in the creator's in-memory ACL lets first-load peers decrypt state
+      // but leaves them unable to authenticate later writer updates.
+      const preparedFounderChange = await this._prepareChange(
+        pendingFounder.writerChanges as ChangesType,
+        crdtWriterChangeNode,
+      );
+      // `_publishPreparedChange` commits before its first network/handler
+      // await. Record founder provenance in the same synchronous local commit
+      // so a later publish, handler, or compaction failure cannot leave hashes
+      // that classify this replica as existing while permanently disabling its
+      // first BeeKEM add. The publish helper's repeated commit is idempotent.
+      this._commitPreparedChange(preparedFounderChange);
+      this._localFounderEstablished = true;
+      this._createdLocally = true;
+      this._pendingFounderInitialization = undefined;
+      await this._publishPreparedChange(preparedFounderChange);
+      return false;
+    });
+  }
+
+  private _hasExistingStateUnderBeeKEMLock(
+    loadedFromPeer: boolean,
+  ): Promise<boolean> {
+    return this._runBeeKEMTransition(async () =>
+      Boolean(
+        loadedFromPeer ||
+          this._hashes.size > 0 ||
+          this._invitationEpoch !== undefined,
+      ),
+    );
   }
 
   /**
@@ -4102,14 +6254,17 @@ export class PeerborneDocument<
    * Multiple open `PeerborneDocument` instances sharing the same
    * `documentPath` are not supported. Cleanup is instance-safe, so a failed or
    * stale instance does not unregister a newer live document.
+   *
+   * Cleanup is best-effort. In particular, closing a document retired after an
+   * ambiguous ACL/keychain provider rejection does not roll back provider state
+   * or make that document/provider set safe to reuse.
    */
   public async close() {
     // Use the cached topic for cleanup; it is initialized in the constructor.
     const topic = this._topic;
 
     if (this._pubsubHandler) {
-      const pubsub = this.swarm.heliaNode.libp2p.services
-        .pubsub as GossipSub;
+      const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
 
       // Only unsubscribe if this instance actually subscribed. If open()
       // failed before pubsub.subscribe() completed, unsubscribing here
@@ -4120,7 +6275,10 @@ export class PeerborneDocument<
       }
 
       // Cast required: see addEventListener comment above
-      pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
+      pubsub.removeEventListener(
+        'message',
+        this._pubsubHandler as EventListener,
+      );
 
       if (
         this._topicValidator &&
@@ -4134,6 +6292,41 @@ export class PeerborneDocument<
     // Unregister this document from the shared V2 protocol handler registry.
     // Pass `this` so only this instance is removed (instance-safe).
     this.swarm.unregisterDocument(this.documentPath, this);
+    this.swarm.unregisterWelcomeRecipient?.(this.documentPath, this);
+  }
+
+  /**
+   * Round-trip and detach a codec-produced sync message once. All routing,
+   * authentication, and mutation for an ingress operation must use this exact
+   * snapshot; re-reading the original codec object after an await would permit
+   * accessor/Proxy time-of-check/time-of-use substitution.
+   */
+  private _canonicalizeSyncMessage(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    label: string,
+    maximumWireBytes = MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+  ): CRDTSyncMessage<ChangesType, PublicKey> {
+    const canonicalBytes = copyUnsharedUint8Array(
+      this._syncMessageSerializer.serializeSyncMessage(message),
+      1,
+      maximumWireBytes,
+      `${label} encoding`,
+    );
+    return this._snapshotDecodedSyncMessage(
+      this._syncMessageSerializer.deserializeSyncMessage(canonicalBytes),
+      label,
+    );
+  }
+
+  private _snapshotDecodedSyncMessage(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    label: string,
+  ): CRDTSyncMessage<ChangesType, PublicKey> {
+    const snapshot = snapshotDeepEnumerableData<
+      CRDTSyncMessage<ChangesType, PublicKey>
+    >(message, label);
+    (this._canonicalSyncMessages ??= new WeakSet()).add(snapshot as object);
+    return snapshot;
   }
 
   /**
@@ -4142,7 +6335,10 @@ export class PeerborneDocument<
    * - Apply new changes to the existing CRDT document.
    *
    * @param message A sync message to apply.
-   * @param verifySignature Whether to verify the message signature (default: true).
+   * @param verifySignature Whether to perform normal writer verification
+   *   (default: true). Passing `false` does not bypass authentication when
+   *   signing is enabled; it is accepted only for an exact message carrying a
+   *   private, version-bound authorization from the authenticated load path.
    * @returns `true` if the message was applied successfully, `false` if rejected due to auth failure.
    *
    * **BREAKING CHANGE:** Return type changed from `Promise<void>` to
@@ -4154,8 +6350,27 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature = true,
   ): Promise<boolean> {
-    return this._mutationQueue.run(() =>
-      this._syncUnlocked(message, verifySignature),
+    this._throwIfSecurityProviderMutationFailed();
+    const initialLoadAuthorization = this._initialLoadSyncAuthorizations?.get(
+      message as object,
+    );
+    this._initialLoadSyncAuthorizations?.delete(message as object);
+    let stableMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      stableMessage = this._canonicalSyncMessages?.has(message as object)
+        ? message
+        : this._canonicalizeSyncMessage(message, 'sync message');
+    } catch {
+      this._throwIfSecurityProviderMutationFailed();
+      console.warn(`Rejected malformed sync message for ${this.documentPath}`);
+      return false;
+    }
+    return this._runInMutationQueue(() =>
+      this._syncUnlocked(
+        stableMessage,
+        verifySignature,
+        initialLoadAuthorization,
+      ),
     );
   }
 
@@ -4163,127 +6378,249 @@ export class PeerborneDocument<
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature: boolean,
+    initialLoadAuthorization?: InitialLoadSyncAuthorization<PublicKey>,
   ): Promise<boolean> {
+    try {
+      const applied = await this._sync(
+        message,
+        verifySignature,
+        initialLoadAuthorization,
+      );
+      // `_sync()` deliberately uses `false` for ordinary authentication and
+      // validation failures. A provider outcome that became ambiguous across
+      // one of its awaits is terminal instead and must remain observable to
+      // the caller as the exact retirement error.
+      this._throwIfSecurityProviderMutationFailed();
+      const finalized =
+        initialLoadAuthorization?.finalizeInMutationSlot === undefined
+          ? applied
+          : await initialLoadAuthorization.finalizeInMutationSlot(applied);
+      this._throwIfSecurityProviderMutationFailed();
+      return finalized;
+    } catch (cause) {
+      // `sync()` and direct invitation catch-up both hold `_mutationQueue`
+      // around this method. Terminalize before returning or rejecting so the
+      // next queued writer can never observe possibly-partial load state.
+      initialLoadAuthorization?.failInMutationSlot?.(cause);
+      throw cause;
+    }
+  }
+
+  private async _sync(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    verifySignature: boolean,
+    initialLoadAuthorization?: InitialLoadSyncAuthorization<PublicKey>,
+  ): Promise<boolean> {
+    if (this._securityProviderMutationFailure !== undefined) return false;
+    // The initial-load gate runs before every mutation so a deferred-block
+    // deadline that expires after an earlier apply still blocks subsequent
+    // state changes. Its implementation one-shots the external invitation
+    // admission and mutation-started marker internally.
+    const admitStateMutation = initialLoadAuthorization?.onStateMutation;
+    if (message.documentId !== this.documentPath) {
+      console.warn(
+        `Rejected sync message for the wrong local document (${this.documentPath})`,
+      );
+      return false;
+    }
     const { signature, ...messageWithoutSignature } = message;
     const signingEnabled = this._isSigningEnabled();
     if (signingEnabled && !signature) {
       return false;
     }
+    if (
+      signingEnabled &&
+      !verifySignature &&
+      initialLoadAuthorization === undefined
+    ) {
+      return false;
+    }
 
     // Only serialize for signature verification -- skip when signing is disabled
     // to avoid expensive serialization of large messages.
+    let writerAuthorizationVersion: number | undefined;
     if (signingEnabled && verifySignature) {
       const raw = this._syncMessageSerializer.serializeSyncMessage(
         messageWithoutSignature,
       );
-      if (!(await this._verifyWriterSignature(raw, signature!))) {
+      const verifiedVersion = await this._verifyWriterSignatureAtStableVersion(
+        raw,
+        signature!,
+      );
+      if (verifiedVersion === null) {
         console.warn(
-          `Received a sync message with an invalid signature for ${message.documentId}`,
+          `Received a sync message with an invalid signature for ${this.documentPath}`,
         );
         return false;
       }
-    }
-
-    // Update/replace list of document keys (if provided).
-    if (message.keychainChanges) {
-      try {
-        this._keychain.merge(message.keychainChanges);
-        console.log(`Updated keychain in ${this.documentPath}`);
-      } catch (e) {
-        console.error(
-          `Failed to merge keychain changes in ${this.documentPath}`,
-          e,
-        );
-        throw e;
+      writerAuthorizationVersion = verifiedVersion;
+    } else if (signingEnabled && initialLoadAuthorization !== undefined) {
+      if (
+        !this._writerAuthorizationIsCurrent(
+          initialLoadAuthorization.writerVersion,
+        )
+      ) {
+        return false;
       }
+      writerAuthorizationVersion = initialLoadAuthorization.writerVersion;
     }
 
-    // Pre-pass: apply only ACL nodes from the change tree to populate
-    // _writers/_readers. This is needed before snapshot verification since
-    // _verifySnapshotSignature() requires writer keys. ACL merges are
-    // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    if (message.changes) {
-      this._applyACLFromTree(message.changes);
-    }
-
-    // Apply snapshot if present and more recent than ours.
-    // Happens before full change sync so document changes that are already
-    // covered by the snapshot don't need to be applied first (CRDTs handle
-    // duplicate application correctly, but this avoids unnecessary work).
+    // Validate a newer snapshot before mutating the keychain, ACLs, or CRDT.
+    // Candidate writer changes are applied to an isolated ACL instance so a
+    // self-authorizing snapshot cannot poison live authorization state.
+    let snapshotToApply: CRDTSnapshotNode<ChangesType, PublicKey> | undefined;
     if (message.snapshot) {
       const incoming = message.snapshot;
-      if (
+      const isNewer =
         !this._latestSnapshot ||
         incoming.compactedCount > this._latestSnapshot.compactedCount ||
         (incoming.compactedCount === this._latestSnapshot.compactedCount &&
           String(incoming.lastChangeNodeCID ?? '') >
-            String(this._latestSnapshot.lastChangeNodeCID ?? ''))
-      ) {
-        // Verify the snapshot signature against the deterministic payload
-        // by trying all authorized writers (publicKey may not survive
-        // serialization for all key types, e.g. CryptoKey).
-        // When signing is disabled, skip serialization and signature
-        // verification -- accept the snapshot unconditionally.
-        // WARNING: This means any peer can inject arbitrary snapshot state when
-        // signing is disabled. Only disable signing in trusted or development
-        // environments where all peers are known and authenticated by other means.
+            String(this._latestSnapshot.lastChangeNodeCID ?? ''));
+      if (isNewer) {
         let snapshotSignatureValid = !signingEnabled;
         if (signingEnabled) {
           try {
-            const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
+            const currentWriters = await this._getWriterKeys();
+            const candidateWriters = await this._writerKeysIncludingTree(
+              message.changes,
+            );
+            const bootstrapWriters =
+              currentWriters.length === 0 &&
+              this._requiresAuthenticatedInitialLoad()
+                ? (initialLoadAuthorization?.writerKeys ??
+                  (await this._getBootstrapWriterKeys()))
+                : [];
+            const trustedSnapshotWriters =
+              currentWriters.length > 0
+                ? candidateWriters
+                : [...bootstrapWriters, ...candidateWriters];
+            const stateBytes = this._changesSerializer.serializeChanges(
+              incoming.state,
+            );
             const signPayload = this._buildSnapshotSignPayload(
-              stateBytes, incoming.lastChangeNodeCID, incoming.timestamp, incoming.compactedCount,
+              stateBytes,
+              incoming.lastChangeNodeCID,
+              incoming.timestamp,
+              incoming.compactedCount,
             );
             snapshotSignatureValid = await this._verifySnapshotSignature(
-              signPayload, incoming.signature,
+              signPayload,
+              incoming.signature,
+              trustedSnapshotWriters,
             );
-          } catch (e) {
+          } catch {
             console.warn(
               `Rejected snapshot for ${this.documentPath}: malformed snapshot fields`,
-              e,
             );
           }
         }
         if (!snapshotSignatureValid) {
           console.warn(
-            `Rejected snapshot for ${this.documentPath}: no authorized writer produced a valid signature`,
+            `Rejected snapshot for ${this.documentPath}: no trusted writer produced a valid signature`,
           );
-        } else {
-          // Apply the snapshot state. Use applySnapshot when available (e.g.
-          // Automerge save format differs from incremental changes), otherwise
-          // fall back to remoteChange (works for Yjs where snapshots are valid updates).
-          this._document = this._crdtProvider.applySnapshot
-            ? this._crdtProvider.applySnapshot(this._document, incoming.state)
-            : this._crdtProvider.remoteChange(this._document, incoming.state);
-          this._latestSnapshot = incoming;
-          // Ensure our local document change count is at least as high as
-          // the snapshot's compactedCount. This prevents re-triggering
-          // compaction below the threshold after applying a remote snapshot.
-          this._documentChangeCount = Math.max(
-            this._documentChangeCount,
-            incoming.compactedCount,
-          );
-          this._changesSinceSnapshot = 0;
-          // Mark the snapshot boundary CID as seen so _mergeSyncTree skips
-          // it and all ancestor nodes. This prevents re-applying pre-snapshot
-          // changes (which the snapshot already covers) and avoids inflating
-          // _documentChangeCount / _changesSinceSnapshot.
-          if (incoming.lastChangeNodeCID) {
-            this._hashes.add(incoming.lastChangeNodeCID);
-          }
-          console.log(
-            `Applied remote snapshot for ${this.documentPath}: ${incoming.compactedCount} nodes compacted`,
-          );
+          return false;
         }
+        snapshotToApply = incoming;
       }
     }
 
-    // Full change sync: process all nodes (document + ACL) from the DAG.
-    // ACL nodes applied in the pre-pass above will be re-merged idempotently.
-    if (message.changes) {
-      await this._syncDocumentChanges(message.changeId, message.changes);
+    // Linearize the authorization immediately before the first synchronous
+    // mutation. A writer removed while signature/snapshot verification was
+    // awaiting must not retain a stale authority lease. Once this check and a
+    // mutation complete, a concurrent later removal is ordered after this
+    // already-authorized message.
+    const mutatesBeforeTree =
+      message.keychainChanges !== undefined || snapshotToApply !== undefined;
+    if (
+      mutatesBeforeTree &&
+      (this._securityProviderMutationFailure !== undefined ||
+        (writerAuthorizationVersion !== undefined &&
+          !this._writerAuthorizationIsCurrent(writerAuthorizationVersion)))
+    ) {
+      return false;
     }
 
+    if (message.keychainChanges !== undefined) {
+      admitStateMutation?.();
+      try {
+        this._keychain.merge(message.keychainChanges);
+        console.log(`Updated keychain in ${this.documentPath}`);
+      } catch (e) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          'inbound keychain merge',
+          e,
+        );
+      }
+    }
+
+    if (snapshotToApply) {
+      admitStateMutation?.();
+      this._document = this._crdtProvider.applySnapshot
+        ? this._crdtProvider.applySnapshot(
+            this._document,
+            snapshotToApply.state,
+          )
+        : this._crdtProvider.remoteChange(
+            this._document,
+            snapshotToApply.state,
+          );
+      this._latestSnapshot = snapshotToApply;
+      this._documentChangeCount = Math.max(
+        this._documentChangeCount,
+        snapshotToApply.compactedCount,
+      );
+      this._changesSinceSnapshot = 0;
+      if (snapshotToApply.lastChangeNodeCID) {
+        this._hashes.add(snapshotToApply.lastChangeNodeCID);
+      }
+      console.log(
+        `Applied remote snapshot for ${this.documentPath}: ${snapshotToApply.compactedCount} nodes compacted`,
+      );
+    }
+
+    // Full change sync: process all nodes (document + ACL) only after the
+    // snapshot gate succeeds.
+    if (message.changes) {
+      let expectedWriterVersion =
+        writerAuthorizationVersion ?? this._writerKeysVersion;
+      const authorizationLease: SyncAuthorizationLease = {
+        isCurrent: () =>
+          this._securityProviderMutationFailure === undefined &&
+          this._writerMutationsInFlight === 0 &&
+          this._writerKeysVersion === expectedWriterVersion,
+        advanceAfterWriterMutation: () => {
+          // `_mergeWriters` is synchronous. Advancing immediately afterward
+          // admits only its exact pre/post invalidation pair. Never adopt the
+          // current version generically: a re-entrant or unrelated mutation
+          // must invalidate the authenticated lease rather than being folded
+          // into it.
+          const nextExpectedVersion = expectedWriterVersion + 2;
+          if (
+            this._securityProviderMutationFailure !== undefined ||
+            this._writerMutationsInFlight !== 0 ||
+            this._writerKeysVersion !== nextExpectedVersion
+          ) {
+            return false;
+          }
+          expectedWriterVersion = nextExpectedVersion;
+          return true;
+        },
+      };
+      const changesApplied = await this._syncDocumentChanges(
+        message.changeId,
+        message.changes,
+        authorizationLease,
+        initialLoadAuthorization?.deferredBlockBudget,
+        admitStateMutation,
+      );
+      if (!changesApplied) {
+        this._throwIfSecurityProviderMutationFailed();
+        return false;
+      }
+    }
+
+    this._throwIfSecurityProviderMutationFailed();
     return true;
   }
 
@@ -4433,7 +6770,7 @@ export class PeerborneDocument<
    * @throws {Error} If any step in the commit pipeline fails.
    */
   public async endChange(message?: string) {
-    return this._mutationQueue.run(() => this._endChangeUnlocked(message));
+    return this._runInMutationQueue(() => this._endChangeUnlocked(message));
   }
 
   private async _endChangeUnlocked(message?: string) {
@@ -4441,7 +6778,9 @@ export class PeerborneDocument<
       throw new Error('No transaction in progress. Call startChange() first.');
     }
     if (this._committing) {
-      throw new Error('endChange() is already in progress. Await the previous call.');
+      throw new Error(
+        'endChange() is already in progress. Await the previous call.',
+      );
     }
 
     // Snapshot pending fns so late addChange() calls during await don't
@@ -4557,14 +6896,16 @@ export class PeerborneDocument<
    * @param message An optional change message/description to include.
    */
   public async change(changeFn: ChangeFnType, message?: string) {
-    return this._mutationQueue.run(() =>
+    return this._runInMutationQueue(() =>
       this._changeUnlocked(changeFn, message),
     );
   }
 
   private async _changeUnlocked(changeFn: ChangeFnType, message?: string) {
     if (this._inTransaction) {
-      throw new Error('Cannot call change() during an active transaction. Use addChange() instead.');
+      throw new Error(
+        'Cannot call change() during an active transaction. Use addChange() instead.',
+      );
     }
     await this._ensureCurrentUserCanWrite();
 
@@ -4591,7 +6932,9 @@ export class PeerborneDocument<
   /**
    * Returns the current snapshot, if one exists.
    */
-  public get latestSnapshot(): CRDTSnapshotNode<ChangesType, PublicKey> | undefined {
+  public get latestSnapshot():
+    | CRDTSnapshotNode<ChangesType, PublicKey>
+    | undefined {
     return this._latestSnapshot;
   }
 
@@ -4657,15 +7000,22 @@ export class PeerborneDocument<
    * @throws {Error} If the current user does not have write access to this document.
    *   Only writers are authorized to create snapshots.
    */
-  public async snapshot(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
-    return this._mutationQueue.run(() => this._snapshotUnlocked());
+  public async snapshot(): Promise<
+    CRDTSnapshotNode<ChangesType, PublicKey> | undefined
+  > {
+    return this._runInMutationQueue(() => this._snapshotUnlocked());
   }
 
-  private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  private async _snapshotUnlocked(
+    admitStateMutation?: () => void,
+  ): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
     await this._ensureCurrentUserCanWrite();
+    admitStateMutation?.();
 
     if (!this._crdtProvider.getSnapshot) {
-      console.warn('CRDTProvider does not implement getSnapshot(); compaction disabled.');
+      console.warn(
+        'CRDTProvider does not implement getSnapshot(); compaction disabled.',
+      );
       this._snapshotUnsupported = true;
       return undefined;
     }
@@ -4684,7 +7034,10 @@ export class PeerborneDocument<
     let signature: Uint8Array;
     if (this._isSigningEnabled()) {
       const signPayload = this._buildSnapshotSignPayload(
-        stateBytes, lastChangeNodeCID, timestamp, compactedCount,
+        stateBytes,
+        lastChangeNodeCID,
+        timestamp,
+        compactedCount,
       );
       signature = await this._authProvider.sign(signPayload, this._userKey);
     } else {
@@ -4700,6 +7053,7 @@ export class PeerborneDocument<
       timestamp,
     };
 
+    admitStateMutation?.();
     this._latestSnapshot = snapshotNode;
     this._changesSinceSnapshot = 0;
 
@@ -4708,7 +7062,9 @@ export class PeerborneDocument<
     // in load/snapshot-load responses via _latestSnapshot, to avoid bloating
     // every incremental pubsub sync message with the full snapshot state.
     if (this._lastSyncMessage && this._compactionConfig.pruneAfterSnapshot) {
-      const prunedCIDs = this._pruneChanges(this._compactionConfig.keepRecentNodes);
+      const prunedCIDs = this._pruneChanges(
+        this._compactionConfig.keepRecentNodes,
+      );
 
       // Delete pruned blocks from the Helia blockstore asynchronously, but only
       // when explicitly opted-in via `gcAfterPrune`. Filter out any CIDs that
@@ -4721,9 +7077,7 @@ export class PeerborneDocument<
         this._lastSyncMessage?.changes &&
         this._lastSyncMessage.changeId
       ) {
-        const protectedCIDs = lastChangeNodeCID
-          ? [lastChangeNodeCID]
-          : [];
+        const protectedCIDs = lastChangeNodeCID ? [lastChangeNodeCID] : [];
         const deletable = filterDeletableCIDs(
           prunedCIDs,
           this._lastSyncMessage.changeId,
@@ -4731,8 +7085,8 @@ export class PeerborneDocument<
           protectedCIDs,
         );
         if (deletable.size > 0) {
-          this._gcPrunedBlocks(deletable).catch((err) => {
-            console.error(`Blockstore GC failed for ${this.documentPath}:`, err);
+          this._gcPrunedBlocks(deletable).catch(() => {
+            console.error(`Blockstore GC failed for ${this.documentPath}`);
           });
         }
       }
@@ -4751,67 +7105,249 @@ export class PeerborneDocument<
    * @return List of public keys with write access.
    */
   public async getWriters(): Promise<PublicKey[]> {
-    return await this._writers.users();
+    this._throwIfSecurityProviderMutationFailed();
+    const writers = await this._writers.users();
+    this._throwIfSecurityProviderMutationFailed();
+    return writers;
   }
 
   /**
    * Add a new user as a valid writer. Users are identified by their public keys
    *
    * @param writer User's public key
+   * @throws {Error} If the writer ACL provider rejects after its mutation may
+   *   have started. The document is permanently retired in-process; discard it
+   *   and its ACL/keychain provider instances.
    */
   public async addWriter(writer: PublicKey) {
-    return this._mutationQueue.run(() => this._addWriterUnlocked(writer));
+    return this._runInMutationQueue(() => this._addWriterUnlocked(writer));
   }
 
   private async _addWriterUnlocked(
     writer: PublicKey,
     beginMutation?: () => void,
   ): Promise<void> {
+    await this._runWriterMembershipTransition(() =>
+      this._addWriterUnderLock(writer, beginMutation),
+    );
+  }
+
+  private async _addWriterUnderLock(
+    writer: PublicKey,
+    beginMutation?: () => void,
+  ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
-
-    // Check that the writer is not already a writer.
-    if (await this._writers.check(writer)) {
-      return;
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'writer ACL update',
+    );
+    const serializedWriter = await serializePublicKey(writer);
+    let pending = this._pendingWriterAdds.get(serializedWriter);
+    if (pending?.aclAddState === 'started') {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        `addWriter(${serializedWriter})`,
+      );
     }
-
-    // Construct a new writer ACL change.
-    beginMutation?.();
-    const changes = await this._addWriter(writer);
-
-    await this._makeChange(changes, crdtWriterChangeNode);
+    if (pending === undefined) {
+      // Check that the writer is not already a writer.
+      if ((await this._writers.check(writer)) === true) return;
+      beginMutation?.();
+      pending = {
+        aclAddState: 'started',
+      };
+      this._pendingWriterAdds.set(serializedWriter, pending);
+      try {
+        pending.writerChanges = this._requireMembershipWireChanges(
+          await this._addWriter(writer),
+          `addWriter(${serializedWriter}) returned an unrepresentable change`,
+        );
+      } catch (error) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          `addWriter(${serializedWriter}) writer-ACL update`,
+          error,
+        );
+      }
+      pending.aclAddState = 'succeeded';
+    }
+    if (pending.preparedChange === undefined) {
+      pending.preparedChange = await this._prepareChange(
+        pending.writerChanges as ChangesType,
+        crdtWriterChangeNode,
+      );
+    }
+    await this._publishPreparedChange(pending.preparedChange);
+    this._pendingWriterAdds.delete(serializedWriter);
   }
 
   /**
    * Remove a user as a valid writer. Users are identified by their public keys
    *
+   * The replacement-key delta and writer ACL removal share one sync envelope
+   * encrypted under the previous document key. With signing enabled (the
+   * default), one writer signature binds both fields. Direct V2 and GossipSub
+   * receivers authenticate the envelope and use the same key-before-ACL sync
+   * order. This is not cross-provider rollback, a delivery guarantee, or
+   * confidentiality from a holder of the previous key.
+   *
    * @param writer User's public key
+   * @throws {Error} If the writer ACL or keychain provider rejects after its
+   *   mutation may have started. The document is permanently retired
+   *   in-process; discard it and its ACL/keychain provider instances.
    */
   public async removeWriter(writer: PublicKey) {
-    return this._mutationQueue.run(() => this._removeWriterUnlocked(writer));
+    return this._runInMutationQueue(() => this._removeWriterUnlocked(writer));
   }
 
   private async _removeWriterUnlocked(writer: PublicKey): Promise<void> {
-    await this._ensureCurrentUserCanWrite();
+    await this._runWriterMembershipTransition(() =>
+      this._removeWriterUnderLock(writer),
+    );
+  }
 
-    // Check that the writer is already a writer.
-    if (!(await this._writers.check(writer))) {
-      return;
+  private async _removeWriterUnderLock(writer: PublicKey): Promise<void> {
+    this._throwIfSecurityProviderMutationFailed();
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'writer ACL removal',
+    );
+    const serializedWriter = await serializePublicKey(writer);
+    let pending = this._pendingWriterRemovals.get(serializedWriter);
+    if (
+      pending?.aclRemoveState === 'started' ||
+      pending?.keyAddState === 'started'
+    ) {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        `removeWriter(${serializedWriter})`,
+      );
+    }
+    if (pending === undefined) {
+      await this._ensureCurrentUserCanWrite();
+      const authorizedActor = await serializePublicKey(this._userPublicKey);
+      // Check that the writer is already a writer.
+      if ((await this._writers.check(writer)) !== true) return;
+      pending = {
+        authorizedActor,
+        selfRemoval: serializedWriter === authorizedActor,
+        aclRemoveState: 'started',
+        keyAddState: 'not-started',
+        publicationState: 'not-started',
+        distributionState: 'not-started',
+      };
+      this._pendingWriterRemovals.set(serializedWriter, pending);
+      try {
+        pending.writerChanges = this._requireMembershipWireChanges(
+          await this._removeWriter(writer),
+          `removeWriter(${serializedWriter}) returned an unrepresentable writer change`,
+        );
+      } catch (error) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          `removeWriter(${serializedWriter}) writer-ACL update`,
+          error,
+        );
+      }
+      pending.aclRemoveState = 'succeeded';
+    } else {
+      const currentActor = await serializePublicKey(this._userPublicKey);
+      if (!pending.selfRemoval || currentActor !== pending.authorizedActor) {
+        // A retry for somebody else's pending removal remains authorized only
+        // while the initiating local actor is still a writer. Self-removal is
+        // the sole exception: that exact transition caused the local ACL loss
+        // and must be allowed to finish publishing/distributing its retained
+        // material.
+        await this._ensureCurrentUserCanWrite();
+      }
+    }
+    if (pending.previousKey === undefined) {
+      const current = snapshotExactTuple(
+        await this._keychain.current(),
+        2,
+        'removeWriter current key',
+      );
+      pending.previousKey = [
+        copyUnsharedUint8Array(
+          current[0],
+          this._keychainProvider.keyIDLength,
+          this._keychainProvider.keyIDLength,
+          'removeWriter previous key ID',
+        ),
+        current[1] as DocumentKey,
+      ];
     }
 
-    // Construct a new writer ACL change.
-    const changes = await this._removeWriter(writer);
+    if (pending.keyAddState === 'not-started') {
+      pending.keyAddState = 'started';
+      try {
+        const added = snapshotExactTuple(
+          await this._keychain.add(),
+          3,
+          'removeWriter keychain add result',
+        );
+        copyUnsharedUint8Array(
+          added[0],
+          this._keychainProvider.keyIDLength,
+          this._keychainProvider.keyIDLength,
+          'removeWriter replacement key ID',
+        );
+        pending.keychainChanges = this._requireMembershipWireChanges(
+          added[2] as ChangesType,
+          `removeWriter(${serializedWriter}) returned an unrepresentable keychain change`,
+        );
+      } catch (error) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          `removeWriter(${serializedWriter}) keychain rotation`,
+          error,
+        );
+      }
+      pending.keyAddState = 'succeeded';
+    }
 
-    await this._makeChange(changes, crdtWriterChangeNode);
+    if (pending.preparedChange === undefined) {
+      pending.preparedChange = await this._prepareChange(
+        pending.writerChanges as ChangesType,
+        crdtWriterChangeNode,
+        pending.previousKey,
+        { value: pending.keychainChanges as ChangesType },
+      );
+    }
+    if (pending.keyUpdateDelivery === undefined) {
+      pending.keyUpdateDelivery = await this._prepareKeyUpdate(
+        pending.preparedChange,
+      );
+    }
 
-    // Save the current (soon-to-be-previous) key before rotation.
-    // This key is what peers currently have and can use to decrypt the update.
-    const previousKey = await this._keychain.current();
-
-    // Rotate the document key (required after removing any member with access).
-    const [keyID, key, keychainChanges] = await this._keychain.add();
-
-    // Distribute the new key to all remaining members, encrypted with the previous key.
-    await this._distributeKeyUpdate(keychainChanges, previousKey);
+    if (pending.selfRemoval) {
+      // Publish the authoritative combined envelope before best-effort direct
+      // fanout. A connected peer can stall or reject its direct stream, and a
+      // completed sink is not a receiver apply ACK; neither may block the
+      // GossipSub path. Peers that missed GossipSub can still accept the same
+      // signed old-key ciphertext directly while their old ACL is current.
+      if (pending.publicationState !== 'succeeded') {
+        pending.publicationState = 'started';
+        await this._publishPreparedChange(pending.preparedChange);
+        pending.publicationState = 'succeeded';
+      }
+      if (pending.distributionState !== 'succeeded') {
+        pending.distributionState = 'started';
+        await this._fanoutPreparedKeyUpdate(pending.keyUpdateDelivery);
+        pending.distributionState = 'succeeded';
+      }
+    } else {
+      // For another writer, preserve revocation-first semantics: the local
+      // actor remains authorized to sign the already-prepared combined
+      // writer-removal envelope.
+      await this._ensureCurrentUserCanWrite();
+      if (pending.publicationState !== 'succeeded') {
+        pending.publicationState = 'started';
+        await this._publishPreparedChange(pending.preparedChange);
+        pending.publicationState = 'succeeded';
+      }
+      if (pending.distributionState !== 'succeeded') {
+        pending.distributionState = 'started';
+        await this._fanoutPreparedKeyUpdate(pending.keyUpdateDelivery);
+        pending.distributionState = 'succeeded';
+      }
+    }
+    this._pendingWriterRemovals.delete(serializedWriter);
   }
 
   /**
@@ -4823,6 +7359,7 @@ export class PeerborneDocument<
    * @return List of public keys with read access.
    */
   public async getReaders(): Promise<PublicKey[]> {
+    this._throwIfSecurityProviderMutationFailed();
     const [readers, writers] = await Promise.all([
       this._readers.users(),
       this._writers.users(),
@@ -4830,9 +7367,10 @@ export class PeerborneDocument<
     // Filter out any writers that also appear in the readers list to avoid duplicates.
     // Run checks in parallel to avoid sequential async overhead with many writers.
     const checkResults = await Promise.all(
-      writers.map(writer => this._readers.check(writer))
+      writers.map((writer) => this._readers.check(writer)),
     );
-    const filteredWriters = writers.filter((_, i) => !checkResults[i]);
+    this._throwIfSecurityProviderMutationFailed();
+    const filteredWriters = writers.filter((_, i) => checkResults[i] !== true);
     return [...readers, ...filteredWriters];
   }
 
@@ -4843,8 +7381,10 @@ export class PeerborneDocument<
    * to the new reader so they receive (a) the keychain changes appropriate
    * for the document's `historyVisibility` setting (so they can decrypt at
    * least the current state), and (b) the invitation epoch ID they should
-   * record for subsequent `since_invited` history filtering. The Welcome
-   * is delivered via the `beekemWelcomeV1` protocol to every
+   * retain as a monotonic local audit/ordering anchor. The Welcome
+   * uses Welcome v2 when a complete generation-bearing tree bootstrap is
+   * available; cache-miss/stale retries fail closed rather than downgrade to a
+   * key-only v1 payload. It is delivered to every
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
@@ -4852,7 +7392,7 @@ export class PeerborneDocument<
    * (P-256 ECDH + AES-256-GCM) under `readerKemPublicKey`, so only the
    * intended recipient can decrypt it. The recipient binding
    * (`welcomeRecipient`) is the **authorization** gate; the sealed
-   * payload is the **confidentiality** gate. See `_sendBeeKEMWelcome`
+   * payload is the **confidentiality** gate. See `_prepareBeeKEMWelcome`
    * for the full construction.
    *
    * @param reader User's identity (signing) public key.
@@ -4860,20 +7400,40 @@ export class PeerborneDocument<
    *   ECDH public key (65 bytes) of the reader's KEM key pair. The
    *   reader must hold the matching private key (see
    *   `setKemKeyPair`). When this is `undefined`, the readers-ACL
-   *   update is still broadcast but **no Welcome is sent**: the new
-   *   reader can join the document but must recover keychain state
-   *   via a fresh document load against an authorized peer. (The
+   *   update is still broadcast but **no Welcome is sent**. This is an ACL-only
+   *   grant and is not usable for decryption until the writer re-invokes
+   *   `addReader` with the recipient's KEM key. A normal encrypted load cannot
+   *   bootstrap an unknown current key. (The
    *   library refuses to broadcast an un-sealed Welcome to all peers
    *   because that would leak document key material in plaintext.)
    * @returns The BeeKEM Welcome used for this reader, or `null` when no
    *   recipient KEM key was supplied or recoverable.
+   * @throws {Error} If the readers ACL provider rejects after its mutation may
+   *   have started. The document is permanently retired in-process; discard it
+   *   and its ACL/keychain provider instances.
    */
   public async addReader(
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
   ): Promise<BeeKEMWelcome | null> {
-    return this._mutationQueue.run(() =>
-      this._addReaderUnlocked(reader, readerKemPublicKey),
+    let kemPublicKey: Uint8Array | undefined;
+    if (readerKemPublicKey !== undefined) {
+      try {
+        kemPublicKey = copyUnsharedUint8Array(
+          readerKemPublicKey,
+          ECIES_P256_PUBLIC_KEY_LENGTH,
+          ECIES_P256_PUBLIC_KEY_LENGTH,
+          'readerKemPublicKey',
+        );
+      } catch {
+        throw new Error(
+          `[${this.documentPath}] addReader: readerKemPublicKey must be ` +
+            `${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed P-256)`,
+        );
+      }
+    }
+    return this._runInMutationQueue(() =>
+      this._addReaderUnlocked(reader, kemPublicKey),
     );
   }
 
@@ -4883,6 +7443,27 @@ export class PeerborneDocument<
     broadcastWelcome = true,
     beginMutation?: () => void,
   ): Promise<BeeKEMWelcome | null> {
+    const result = await this._runBeeKEMTransition(() =>
+      this._addReaderUnderBeeKEMLock(
+        reader,
+        readerKemPublicKey,
+        broadcastWelcome,
+        beginMutation,
+      ),
+    );
+    await result.fanout;
+    return result.welcome;
+  }
+
+  private async _addReaderUnderBeeKEMLock(
+    reader: PublicKey,
+    readerKemPublicKey?: Uint8Array,
+    broadcastWelcome = true,
+    beginMutation?: () => void,
+  ): Promise<{
+    fanout: Promise<void>;
+    welcome: BeeKEMWelcome | null;
+  }> {
     await this._ensureCurrentUserCanWrite();
 
     // Validate prerequisites BEFORE mutating any ACL state. The founder
@@ -4907,33 +7488,40 @@ export class PeerborneDocument<
     // row. Length alone is insufficient: WebCrypto also rejects off-curve
     // points, and discovering that after `_makeChange` would permanently
     // occupy the founder-plus-one slot without a usable BeeKEM leaf.
-    const validatedReaderKemPublicKey = readerKemPublicKey === undefined
-      ? undefined
-      : new Uint8Array(readerKemPublicKey);
     if (
-      validatedReaderKemPublicKey !== undefined &&
-      validatedReaderKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
+      readerKemPublicKey !== undefined &&
+      readerKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
     ) {
       throw new Error(
         `[${this.documentPath}] addReader: readerKemPublicKey must be ` +
           `${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed P-256), ` +
-          `got ${validatedReaderKemPublicKey.byteLength}`,
+          `got ${readerKemPublicKey.byteLength}`,
       );
     }
-    if (validatedReaderKemPublicKey) {
-      await importEciesPublicKey(validatedReaderKemPublicKey);
+    if (readerKemPublicKey !== undefined) {
+      await importEciesPublicKey(readerKemPublicKey);
+    }
+    const prepareEpochKey = this._keychain.prepareEpochKey;
+    if (
+      readerKemPublicKey !== undefined &&
+      typeof prepareEpochKey !== 'function'
+    ) {
+      throw new Error(
+        `[${this.documentPath}] addReader: this keychain does not implement ` +
+          `transactional prepareEpochKey; refusing a non-atomic BeeKEM transition`,
+      );
     }
 
     // Founder-vs-joined-writer gate. The BeeKEM tree is rooted in
     // exactly one of two ways (see the long comment on `_beekem`):
-    //   - **Founder**: a writer who CREATED the document. `open()` records
-    //     that provenance explicitly in `_createdLocally` before seeding
-    //     leaf 0 with their local KEM key pair via
-    //     `_initializeBeeKEMAsFounder`.
-    //   - **Joined writer**: a writer who was added to an existing
-    //     document by another writer. They MUST receive a BeeKEM
-    //     Welcome (which bootstraps their tree via `processWelcome`)
-    //     before they can manipulate the tree.
+    //   - **Founder**: a writer who completed local document creation in this
+    //     instance (`_localFounderEstablished`) and may seed leaf 0 with its
+    //     installed KEM key pair via `_initializeBeeKEMAsFounder`.
+    //   - **Joined writer**: a writer who was added to an existing document by
+    //     another writer. They MUST receive a BeeKEM Welcome before they can
+    //     add readers or remove readers registered locally on this replica.
+    //     Welcome processing does not reconstruct identity bindings for
+    //     pre-existing readers, so those cannot be removed by identity here.
     //
     // Without this gate, a joined writer whose `_beekemInitialized`
     // is still false (no Welcome received yet) would fall through to
@@ -4944,16 +7532,22 @@ export class PeerborneDocument<
     // writer would never converge with anyone else's view -- a silent
     // correctness bug that this gate closes.
     //
-    // Change count cannot identify founders: normal `open()` has already
-    // replicated the founder-writer ACL before the first addReader call.
-    // Use the explicit creation provenance instead.
-    if (!this._beekemInitialized && !this._createdLocally) {
+    // Hash count alone is not a founder discriminator: successful creation
+    // replicates the founder writer ACL and therefore has hashes before the
+    // first addReader call. The explicit monotonic creation flag distinguishes
+    // that case from a loaded/invited writer with no ratchet tree.
+    if (
+      !this._beekemInitialized &&
+      !this._localFounderEstablished &&
+      (this._hashes.size > 0 || this._invitationEpoch !== undefined)
+    ) {
       throw new Error(
         `[${this.documentPath}] addReader: cannot register a reader -- ` +
           `this writer has document state but no BeeKEM tree bootstrapped ` +
-          `from a Welcome. A joined writer must complete the signed ` +
-          `invitation bootstrap before they can add or remove readers ` +
-          `cryptographically. Initializing a fresh founder tree here would ` +
+          `from a Welcome. A joined writer must receive a fresh authenticated ` +
+          `identity- and KEM-bound Welcome, or complete an authenticated ` +
+          `remove/rejoin, before they can change BeeKEM membership. ` +
+          `Initializing a fresh founder tree here would ` +
           `silently diverge from every other peer's tree state.`,
       );
     }
@@ -4964,22 +7558,111 @@ export class PeerborneDocument<
     // Welcome so the existing ACL row can be paired with keychain
     // material. Without this branch the warning emitted below on the
     // first call would point at a recovery path that is itself a no-op.
-    const alreadyReader = await this._readers.check(reader);
-    if (!alreadyReader && (await this._readers.users()).length > 0) {
-      throw new Error(
-        `[${this.documentPath}] addReader: the initial release supports ` +
-          `one active collaborator per document (founder plus one reader). ` +
-          `Adding another reader would require an add-side BeeKEM PathUpdate ` +
-          `that is not implemented yet. Remove the current reader before ` +
-          `inviting a replacement.`,
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'BeeKEM reader registration',
+    );
+    const serializedReader = await serializePublicKey(reader);
+    let pendingAdd = this._pendingBeeKEMAdds.get(serializedReader);
+    if (pendingAdd?.aclAddState === 'started') {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        `addReader(${serializedReader})`,
       );
     }
-    if (!alreadyReader) {
-      // Send change over network.
-      beginMutation?.();
-      const changes = await this._readers.add(reader);
-      await this._makeChange(changes, crdtReaderChangeNode);
+    if (
+      pendingAdd?.readerKemPublicKey !== undefined &&
+      readerKemPublicKey !== undefined &&
+      !this._constantTimeEquals(
+        pendingAdd.readerKemPublicKey,
+        readerKemPublicKey,
+      )
+    ) {
+      throw new Error(
+        `[${this.documentPath}] addReader: a retryable transition for this ` +
+          `identity is already bound to a different KEM public key`,
+      );
     }
+    if (pendingAdd?.readerKemPublicKey !== undefined) {
+      readerKemPublicKey = pendingAdd.readerKemPublicKey;
+    } else if (pendingAdd !== undefined && readerKemPublicKey !== undefined) {
+      // Upgrade an exact ACL-only retry to the caller's detached KEM binding.
+      // Once retained, every later retry uses these same bytes.
+      pendingAdd.readerKemPublicKey = new Uint8Array(readerKemPublicKey);
+      readerKemPublicKey = pendingAdd.readerKemPublicKey;
+    }
+    const existingKemPublicKey =
+      this._readerKemPublicKeys.get(serializedReader);
+    if (
+      existingKemPublicKey !== undefined &&
+      readerKemPublicKey !== undefined &&
+      !this._constantTimeEquals(existingKemPublicKey, readerKemPublicKey)
+    ) {
+      throw new Error(
+        `[${this.documentPath}] addReader: identity ${serializedReader} is ` +
+          `already bound to a different KEM public key`,
+      );
+    }
+    if (readerKemPublicKey !== undefined) {
+      if (this._beekemInitialized && this._beekem) {
+        const matchingLeaf =
+          await this._beekem.findLeafByPublicKey(readerKemPublicKey);
+        if (existingKemPublicKey === undefined && matchingLeaf !== undefined) {
+          throw new Error(
+            `[${this.documentPath}] addReader: KEM public key already belongs ` +
+              `to a live BeeKEM leaf for a different identity`,
+          );
+        }
+        const existingLeaf = this._readerLeafIndices.get(serializedReader);
+        if (
+          existingKemPublicKey !== undefined &&
+          (matchingLeaf === undefined ||
+            (existingLeaf !== undefined && existingLeaf !== matchingLeaf))
+        ) {
+          throw new Error(
+            `[${this.documentPath}] addReader: the existing identity/KEM ` +
+              `binding does not resolve to its unique live BeeKEM leaf`,
+          );
+        }
+      } else if (
+        existingKemPublicKey === undefined &&
+        this._kemPublicKeyRaw !== undefined &&
+        this._constantTimeEquals(this._kemPublicKeyRaw, readerKemPublicKey)
+      ) {
+        throw new Error(
+          `[${this.documentPath}] addReader: KEM public key already belongs ` +
+            `to the founder's live BeeKEM leaf`,
+        );
+      }
+    }
+    const alreadyReader =
+      pendingAdd !== undefined
+        ? true
+        : (await this._readers.check(reader)) === true;
+    if (!alreadyReader) {
+      beginMutation?.();
+      pendingAdd = {
+        readerKemPublicKey:
+          readerKemPublicKey === undefined
+            ? undefined
+            : new Uint8Array(readerKemPublicKey),
+        aclAddState: 'started',
+      };
+      this._pendingBeeKEMAdds.set(serializedReader, pendingAdd);
+      try {
+        pendingAdd.readerChanges = this._requireMembershipWireChanges(
+          await this._readers.add(reader),
+          `addReader(${serializedReader}) returned an unrepresentable change`,
+        );
+      } catch (error) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          `addReader(${serializedReader}) readers-ACL update`,
+          error,
+        );
+      }
+      pendingAdd.aclAddState = 'succeeded';
+    }
+    const hasReaderChanges = pendingAdd?.aclAddState === 'succeeded';
+    const readerChanges = pendingAdd?.readerChanges as ChangesType;
 
     // Record the new reader in the BeeKEM ratchet tree so:
     //   a) a future `removeReader` call can cryptographically revoke
@@ -5004,30 +7687,14 @@ export class PeerborneDocument<
     // that ambiguous half-onboarded state and surfaces the warning
     // below directing the caller to re-invoke with the KEM key.
     //
-    // If `_registerBeeKEMReader` throws we PROPAGATE the failure
-    // rather than fall through to a half-Welcome. A Welcome with
-    // `beekemWelcomeForJoiner = null` would still let the joiner
-    // decrypt the *current* document key (via the sealed keychain
-    // delta), but their BeeKEM tree would be uninitialized -- so the
-    // NEXT `removeReader` rotation would silently lock them out
-    // (their leaf has no key material to derive the new root from).
-    // The ACL change has already been broadcast and the caller can
-    // retry once the underlying issue is fixed (e.g. by re-invoking
-    // `addReader` with the same KEM public key, or by recovering
-    // BeeKEM state via `setKemKeyPair` + a fresh document load).
-    let beekemWelcomeForJoiner: BeeKEMWelcome | null = null;
-    if (validatedReaderKemPublicKey) {
-      beekemWelcomeForJoiner = await this._registerBeeKEMReader(
-        reader,
-        validatedReaderKemPublicKey,
-        beginMutation,
-      );
-    }
-
+    // If registration or any Welcome/PathUpdate/ACL preparation throws, the
+    // transactional BeeKEM callback restores the tree and no prepared ACL
+    // change is published. We propagate rather than send a key-only Welcome:
+    // that would leave the recipient unable to apply the next PathUpdate.
     // Without the recipient's KEM public key we cannot seal the
     // Welcome payload, and we will NEVER send an un-sealed Welcome --
     // that would broadcast `keychainChanges` to every connected peer.
-    if (!validatedReaderKemPublicKey) {
+    if (!readerKemPublicKey) {
       if (!alreadyReader) {
         console.warn(
           `[${this.documentPath}] addReader: BeeKEM Welcome skipped because ` +
@@ -5035,41 +7702,153 @@ export class PeerborneDocument<
             `has been added to the readers ACL, but to deliver the document ` +
             `key the caller must either (a) re-invoke \`addReader(reader, ` +
             `readerKemPublicKey)\` once the recipient's raw SEC1 P-256 ECDH ` +
-            `public key is available, or (b) have the recipient perform a ` +
-            `fresh document load against an authorized peer to recover ` +
-            `keychain state.`,
+            `public key is available. An ordinary encrypted document load ` +
+            `cannot bootstrap a recipient that does not yet know the current key.`,
         );
       }
-      return null;
+      const preparedReaderChange = hasReaderChanges
+        ? await this._prepareChange(readerChanges, crdtReaderChangeNode)
+        : undefined;
+      const fanout = this._enqueueBeeKEMFanout(async () => {
+        if (preparedReaderChange) {
+          await this._publishPreparedChange(preparedReaderChange);
+        }
+      });
+      if (pendingAdd !== undefined) {
+        this._pendingBeeKEMAdds.delete(serializedReader);
+      }
+      return { fanout, welcome: null };
     }
 
-    // The signed invitation acceptance carries this same recipient-bound
-    // Welcome directly. Skip the legacy fan-out in that path: awaiting every
-    // connected peer would let an unrelated non-draining stream stall the
-    // membership lock and the invitation response.
-    if (!broadcastWelcome) {
-      return beekemWelcomeForJoiner;
+    if (pendingAdd === undefined) {
+      pendingAdd = {
+        readerKemPublicKey: new Uint8Array(readerKemPublicKey),
+        aclAddState: 'not-needed',
+      };
+      this._pendingBeeKEMAdds.set(serializedReader, pendingAdd);
     }
 
-    // Send a BeeKEM Welcome with the visibility-filtered epoch keys + BeeKEM
-    // bootstrap so the new reader can decrypt eligible epochs and apply future
-    // PathUpdates. This does not redact retained operations within an epoch.
-    // Failures are logged but do not abort -- the ACL change has
-    // already been broadcast and the reader can also recover via a
-    // fresh document load.
-    try {
-      await this._sendBeeKEMWelcome(
+    let registration = pendingAdd.registration;
+    if (registration === undefined) {
+      let pathDelivery: PreparedBeeKEMDelivery | undefined;
+      let welcomeDelivery: PreparedBeeKEMDelivery | undefined;
+      let preparedReaderChange:
+        | PreparedLocalChange<ChangesType, PublicKey>
+        | undefined;
+      registration = await this._registerBeeKEMReaderUnderLock(
         reader,
-        validatedReaderKemPublicKey,
-        beekemWelcomeForJoiner,
+        readerKemPublicKey,
+        async (freshRegistration) => {
+          const [newKey, epochId] = await Promise.all([
+            deriveDocumentKeyFromRootSecret(freshRegistration.rootSecret),
+            deriveEpochIdFromRootSecret(freshRegistration.rootSecret),
+          ]);
+          const stagedEpoch = await prepareEpochKey!.call(
+            this._keychain,
+            epochId,
+            newKey as unknown as DocumentKey,
+          );
+          pathDelivery = await this._prepareBeeKEMPathUpdate(
+            freshRegistration.pathUpdate,
+            epochId,
+          );
+          preparedReaderChange = hasReaderChanges
+            ? await this._prepareChange(readerChanges, crdtReaderChangeNode, [
+                epochId,
+                newKey as unknown as DocumentKey,
+              ])
+            : undefined;
+          welcomeDelivery = await this._prepareBeeKEMWelcome(
+            reader,
+            readerKemPublicKey,
+            freshRegistration.welcome,
+            {
+              epochId,
+              welcomeKeychainChanges: this._requireWireChanges(
+                this._historyVisibility === 'full_history'
+                  ? stagedEpoch.history
+                  : stagedEpoch.currentKeyChange,
+                'BeeKEM Welcome keychain change',
+              ),
+            },
+          );
+
+          // All fallible work is complete. The shipped staged keychains make
+          // this synchronous commit atomic and throw-before-mutation if their
+          // base state changed. A custom implementation must provide the same
+          // contract.
+          this._commitPreparedKeychainState(
+            stagedEpoch,
+            `addReader(${serializedReader}) staged epoch commit`,
+          );
+          if (preparedReaderChange) {
+            this._commitPreparedChange(preparedReaderChange);
+          }
+        },
+        beginMutation,
       );
-    } catch (err) {
-      console.warn(
-        `Failed to send BeeKEM Welcome for ${this.documentPath}:`,
-        err,
+      if (welcomeDelivery === undefined) {
+        const cachedWelcome = registration.welcome;
+        const currentGeneration = this._beekem?.generation;
+        if (
+          cachedWelcome === null ||
+          cachedWelcome.version !== 2 ||
+          cachedWelcome.generation === undefined ||
+          cachedWelcome.generation !== currentGeneration
+        ) {
+          this._pendingBeeKEMAdds.delete(serializedReader);
+          throw new Error(
+            `[${this.documentPath}] addReader: the cached Welcome is missing ` +
+              `or stale for the live BeeKEM generation; safe recovery requires ` +
+              `an authenticated remove/rejoin with current ratchet state`,
+          );
+        }
+        // Same-generation re-send: no tree/key state changed, so sealing and
+        // signing a fresh recipient envelope is safely retryable outside a
+        // membership transaction.
+        welcomeDelivery = await this._prepareBeeKEMWelcome(
+          reader,
+          readerKemPublicKey,
+          cachedWelcome,
+        );
+      }
+      pendingAdd.registration = registration;
+      pendingAdd.pathDelivery = pathDelivery;
+      pendingAdd.preparedReaderChange = preparedReaderChange;
+      if (welcomeDelivery === undefined) {
+        throw new Error(
+          `[${this.documentPath}] addReader: transition committed without prepared Welcome`,
+        );
+      }
+      pendingAdd.welcomeDelivery = welcomeDelivery;
+    }
+    const welcomeDelivery = pendingAdd.welcomeDelivery;
+    if (welcomeDelivery === undefined) {
+      throw new Error(
+        `[${this.documentPath}] addReader: retry record has no prepared Welcome`,
       );
     }
-    return beekemWelcomeForJoiner;
+    const pathDelivery = pendingAdd.pathDelivery;
+    const preparedReaderChange = pendingAdd.preparedReaderChange;
+    const fanout = this._enqueueBeeKEMFanout(async () => {
+      if (pathDelivery) {
+        await this._fanoutPreparedBeeKEMDelivery(pathDelivery);
+      }
+      if (preparedReaderChange) {
+        try {
+          await this._publishPreparedChange(preparedReaderChange);
+        } catch {
+          console.warn(
+            `[${this.documentPath}] addReader: readers-ACL broadcast failed`,
+          );
+        }
+      }
+      if (broadcastWelcome) {
+        await this._fanoutPreparedBeeKEMDelivery(welcomeDelivery);
+      }
+    });
+    this._pendingBeeKEMAdds.delete(serializedReader);
+    return { fanout, welcome: registration.welcome };
   }
 
   /**
@@ -5088,13 +7867,31 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    admitStateMutation?: () => void,
   ): Promise<InvitationBootstrapBundle> {
-    return this._mutationQueue.run(() =>
+    const historyVisibility = this._historyVisibility;
+    let kemPublicKey: Uint8Array;
+    try {
+      kemPublicKey = copyUnsharedUint8Array(
+        readerKemPublicKey,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        'invitation recipient KEM public key',
+      );
+    } catch {
+      throw new Error(
+        `Invitation recipient KEM public key must be ` +
+          `${ECIES_P256_PUBLIC_KEY_LENGTH} bytes`,
+      );
+    }
+    return this._runInMutationQueue(() =>
       this._buildInvitationBootstrapUnlocked(
         reader,
-        readerKemPublicKey,
+        kemPublicKey,
         role,
         assertCanMutate,
+        admitStateMutation,
+        historyVisibility,
       ),
     );
   }
@@ -5117,7 +7914,8 @@ export class PeerborneDocument<
       Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
     ]);
     return {
-      createdLocally: this._createdLocally,
+      createdLocally:
+        this._createdLocally && this._localFounderEstablished,
       founder,
       recipient: serializedRecipient,
       readers: serializedReaders,
@@ -5130,18 +7928,29 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    admitStateMutation?: () => void,
+    historyVisibility: HistoryVisibility = this._historyVisibility,
   ): Promise<InvitationBootstrapBundle> {
+    this._throwIfSecurityProviderMutationFailed();
     assertCanMutate?.();
-    assertInitialInvitationHistoryVisibility(this._historyVisibility);
+    assertInitialInvitationHistoryVisibility(historyVisibility);
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
     }
 
-    const capacityPlan = await this._prepareInvitationBootstrapCapacity(reader);
+    const capacityPlan = await this._prepareInvitationBootstrapCapacity(
+      reader,
+      historyVisibility,
+    );
+    this._throwIfSecurityProviderMutationFailed();
 
-    const beginMutation = createInvitationMutationAdmission(assertCanMutate);
+    const beginMutation = createInvitationMutationAdmission(() => {
+      assertCanMutate?.();
+      admitStateMutation?.();
+      this._lastSyncMessage = capacityPlan.currentMessage;
+    });
 
-    const kemPublicKey = new Uint8Array(readerKemPublicKey);
+    const kemPublicKey = readerKemPublicKey;
     const beekemWelcome = await prepareInitialInvitationMembership({
       role,
       getState: () => this._initialInvitationMembershipState(reader),
@@ -5183,12 +7992,35 @@ export class PeerborneDocument<
       },
     });
 
-    const [welcomeEpochId, documentKey] = await this._keychain.current();
-    const keychainChanges = capacityPlan.keychainChanges;
-    const sealedPayload = encodeWelcomeSealedPayload({
-      keychainChanges:
-        this._changesSerializer.serializeChanges(keychainChanges),
-      beekemWelcome,
+    const current = snapshotExactTuple(
+      await this._keychain.current(),
+      2,
+      'invitation current key',
+    );
+    const welcomeEpochId = copyUnsharedUint8Array(
+      current[0],
+      this._keychainProvider.keyIDLength,
+      this._keychainProvider.keyIDLength,
+      'invitation Welcome epoch',
+    );
+    const documentKey = current[1] as DocumentKey;
+    const rawKeychainChanges =
+      await this._keychainChangesForWelcome(historyVisibility);
+    const keychainChanges = this._changesSerializer.deserializeChanges(
+      this._changesSerializer.serializeChanges(rawKeychainChanges),
+    );
+    if (
+      beekemWelcome.version !== 2 ||
+      beekemWelcome.generation === undefined ||
+      beekemWelcome.numLeaves === undefined
+    ) {
+      throw new Error(
+        `Invitation Welcome for ${this.documentPath} is not generation-bearing`,
+      );
+    }
+    const sealedPayload = encodeWelcomeSealedPayloadV2({
+      keychainChanges: this._changesSerializer.serializeChanges(keychainChanges),
+      beekemWelcome: beekemWelcome as BeeKEMWelcomeV2,
     });
     const sealedWelcome = await eciesSeal(
       sealedPayload,
@@ -5221,7 +8053,7 @@ export class PeerborneDocument<
     bootstrapMessage.signature =
       await this._signAsWriterUnconditional(bootstrapMessage);
     if (
-      Base64.toUint8Array(bootstrapMessage.signature).byteLength >
+      this._deserializeSignature(bootstrapMessage.signature).byteLength >
       INITIAL_INVITATION_MAX_SIGNATURE_BYTES
     ) {
       throw new Error(
@@ -5250,10 +8082,11 @@ export class PeerborneDocument<
       );
     }
 
-    const encryptedBootstrap = concatUint8Arrays(
-      welcomeEpochId,
-      encrypted.nonce,
-      encrypted.data,
+    const encryptedBootstrap = copyUnsharedUint8Array(
+      concatUint8Arrays(welcomeEpochId, encrypted.nonce, encrypted.data),
+      1,
+      MAX_INVITATION_MESSAGE_BYTES,
+      'invitation encrypted bootstrap',
     );
     if (
       encryptedBootstrap.byteLength - bootstrapPlaintext.byteLength >
@@ -5270,15 +8103,16 @@ export class PeerborneDocument<
     );
 
     return {
-      welcomeEpochId: new Uint8Array(welcomeEpochId),
-      sealedWelcome,
-      encryptedBootstrap,
+      welcomeEpochId,
+      sealedWelcome: new Uint8Array(sealedWelcome),
+      encryptedBootstrap: new Uint8Array(encryptedBootstrap),
     };
   }
 
   /** Freeze and size the complete bootstrap before changing ACL/BeeKEM state. */
   private async _prepareInvitationBootstrapCapacity(
     reader: PublicKey,
+    historyVisibility: HistoryVisibility = this._historyVisibility,
   ): Promise<
     InvitationBootstrapCapacityPlan<ChangesType, PublicKey>
   > {
@@ -5294,7 +8128,6 @@ export class PeerborneDocument<
           this._createSyncMessage(),
         ),
       );
-    this._lastSyncMessage = frozenCurrentMessage;
     const snapshot = this._latestSnapshot
       ? {
           ...this._latestSnapshot,
@@ -5333,10 +8166,10 @@ export class PeerborneDocument<
       hasRetryLeaf,
       hasRetryWelcome,
     );
-    assertInitialInvitationHistoryVisibility(this._historyVisibility);
+    assertInitialInvitationHistoryVisibility(historyVisibility);
 
     const [rawKeychainChanges, rawFullKeychainChanges] = await Promise.all([
-      this._keychainChangesForWelcome(),
+      this._keychainChangesForWelcome(historyVisibility),
       this._keychain.history(),
     ]);
     const keychainChanges = this._changesSerializer.deserializeChanges(
@@ -5367,6 +8200,7 @@ export class PeerborneDocument<
       this.documentPath,
     );
     return {
+      currentMessage: frozenCurrentMessage,
       keychainChanges,
       snapshot,
       serializedBootstrapBaselineBytes: projection.serializedBaselineBytes,
@@ -5422,158 +8256,52 @@ export class PeerborneDocument<
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
     }
-    if (this._hashes.size > 0 || this._subscribed) {
-      throw new Error(
-        `Invitation bootstrap for ${this.documentPath} requires a fresh document instance`,
-      );
-    }
-    if (!this._kemKeyPair || !this._kemPublicKeyRaw) {
-      throw new Error(
-        `Invitation bootstrap for ${this.documentPath} requires a KEM key pair ` +
-          'installed via setKemKeyPair',
-      );
-    }
-    if (bundle.welcomeEpochId.byteLength !== this._keychainProvider.keyIDLength) {
-      throw new Error(
-        `Invitation welcome epoch must be ${this._keychainProvider.keyIDLength} bytes`,
-      );
-    }
+    this._assertInitialInvitationCapacityProfile();
+    const rawBundle = snapshotEnumerableOwnDataObject<InvitationBootstrapBundle>(
+      bundle,
+      'invitation bootstrap bundle',
+    );
+    const stableBundle: InvitationBootstrapBundle = {
+      welcomeEpochId: copyUnsharedUint8Array(
+        rawBundle.welcomeEpochId,
+        this._keychainProvider.keyIDLength,
+        this._keychainProvider.keyIDLength,
+        'invitation Welcome epoch',
+      ),
+      sealedWelcome: copyUnsharedUint8Array(
+        rawBundle.sealedWelcome,
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'invitation sealed Welcome',
+      ),
+      encryptedBootstrap: copyUnsharedUint8Array(
+        rawBundle.encryptedBootstrap,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBits + 1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'invitation encrypted bootstrap',
+      ),
+    };
+    assertInvitationOpaquePayloadCapacity(
+      stableBundle.sealedWelcome,
+      'Welcome',
+      this.documentPath,
+    );
+    assertInvitationOpaquePayloadCapacity(
+      stableBundle.encryptedBootstrap,
+      'bootstrap',
+      this.documentPath,
+    );
 
-    let welcomeEnvelope;
     try {
-      welcomeEnvelope = decodeWelcomeSealedPayload(
-        await eciesOpen(
-          bundle.sealedWelcome,
-          this._kemKeyPair.privateKey,
+      await this._runInMutationQueue(() =>
+        this._runBeeKEMTransition(() =>
+          this._acceptInvitationBootstrapUnderBeeKEMLock(
+            stableBundle,
+            issuerPublicKey,
+            role,
+          ),
         ),
       );
-    } catch {
-      throw new Error('Invitation sealed Welcome could not be opened');
-    }
-    if (!welcomeEnvelope.beekemWelcome) {
-      throw new Error('Invitation sealed Welcome is missing BeeKEM bootstrap state');
-    }
-
-    assertInitialInvitationBeeKEMWelcomeShape(
-      welcomeEnvelope.beekemWelcome,
-    );
-
-    const beekem = new BeeKEM();
-    try {
-      await beekem.processWelcome(
-        welcomeEnvelope.beekemWelcome,
-        this._kemKeyPair.privateKey,
-        this._kemKeyPair.publicKey,
-      );
-    } catch {
-      throw new Error('Invitation BeeKEM bootstrap could not be processed');
-    }
-    if (beekem.memberCount !== 2 || beekem.myLeafIndex !== 2) {
-      throw new Error(
-        'Invitation BeeKEM bootstrap did not produce the founder-plus-one recipient state',
-      );
-    }
-
-    const keychainChanges = this._changesSerializer.deserializeChanges(
-      welcomeEnvelope.keychainChanges,
-    );
-    this._keychain.merge(keychainChanges);
-    const hydratedKeys = await this._keychain.keys();
-    const epochPresent = hydratedKeys.some(([keyId]) =>
-      constantTimeEqual(keyId, bundle.welcomeEpochId),
-    );
-    if (!epochPresent || !this._keychain.getKey(bundle.welcomeEpochId)) {
-      throw new Error('Invitation Welcome did not install its advertised epoch key');
-    }
-
-    this._beekem = beekem;
-    this._beekemInitialized = true;
-
-    const headerLength =
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
-    if (bundle.encryptedBootstrap.byteLength <= headerLength) {
-      throw new Error('Invitation encrypted bootstrap is truncated');
-    }
-    const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
-      0,
-      this._keychainProvider.keyIDLength,
-    );
-    assertInvitationBootstrapEpochBinding(
-      bundle.welcomeEpochId,
-      bootstrapKeyId,
-    );
-    const bootstrapKey = this._keychain.getKey(bootstrapKeyId);
-    if (!bootstrapKey) {
-      throw new Error('Invitation encrypted bootstrap uses an unknown key');
-    }
-    const nonce = bundle.encryptedBootstrap.subarray(
-      this._keychainProvider.keyIDLength,
-      headerLength,
-    );
-    const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
-    let bootstrapPlaintext: Uint8Array;
-    try {
-      bootstrapPlaintext = await this._authProvider.decrypt(
-        ciphertext,
-        bootstrapKey,
-        nonce,
-      );
-    } catch {
-      throw new Error('Invitation encrypted bootstrap could not be decrypted');
-    }
-
-    const bootstrapMessage =
-      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext);
-    if (bootstrapMessage.documentId !== this.documentPath) {
-      throw new Error('Invitation bootstrap document binding does not match');
-    }
-    if (!bootstrapMessage.signature) {
-      throw new Error('Invitation bootstrap is missing its issuer signature');
-    }
-    const { signature, ...unsignedBootstrap } = bootstrapMessage;
-    let signatureBytes: Uint8Array;
-    try {
-      signatureBytes = this._deserializeSignature(signature);
-    } catch {
-      throw new Error('Invitation bootstrap signature is malformed');
-    }
-    const signedBytes =
-      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
-    if (
-      !(await this._authProvider.verify(
-        signedBytes,
-        issuerPublicKey,
-        signatureBytes,
-      ))
-    ) {
-      throw new Error('Invitation bootstrap signature does not match the offer issuer');
-    }
-
-    if (
-      !(await syncInvitationMessageCompletely(
-        bootstrapMessage,
-        this._hashes,
-        () => this.sync(bootstrapMessage, false),
-        'bootstrap',
-        {
-          provenSnapshotBoundariesBeforeSync:
-            this._latestSnapshot?.lastChangeNodeCID === undefined
-              ? undefined
-              : new Set([
-                  this._latestSnapshot.lastChangeNodeCID,
-                ]),
-          isSnapshotApplied: () =>
-            this._latestSnapshot === bootstrapMessage.snapshot,
-        },
-      ))
-    ) {
-      throw new Error('Invitation bootstrap state was rejected');
-    }
-    await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
-
-    this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
-    this._invitationBootstrapReady = true;
-    try {
       const existing = await this.open();
       if (!existing) {
         throw new Error('Invitation bootstrap attempted to create a new document');
@@ -5594,13 +8322,307 @@ export class PeerborneDocument<
     }
   }
 
+  private async _acceptInvitationBootstrapUnderBeeKEMLock(
+    bundle: InvitationBootstrapBundle,
+    issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+  ): Promise<void> {
+    this._throwIfSecurityProviderMutationFailed();
+    if (
+      this._hashes.size > 0 ||
+      this._subscribed ||
+      this._invitationEpoch !== undefined ||
+      this._beekemInitialized ||
+      this._pendingFounderInitialization !== undefined
+    ) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a fresh document instance`,
+      );
+    }
+    if (!this._kemKeyPair || !this._kemPublicKeyRaw) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a KEM key pair ` +
+          'installed via setKemKeyPair',
+      );
+    }
+    if (!isTransactionalKeychain(this._keychain)) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a ` +
+          'transactional keychain',
+      );
+    }
+
+    let welcomeEnvelope;
+    try {
+      welcomeEnvelope = decodeWelcomeSealedPayloadV2(
+        await eciesOpen(bundle.sealedWelcome, this._kemKeyPair.privateKey),
+      );
+    } catch {
+      throw new Error('Invitation sealed Welcome could not be opened');
+    }
+    assertInitialInvitationBeeKEMWelcomeShape(
+      welcomeEnvelope.beekemWelcome,
+    );
+
+    const beekem = new BeeKEM();
+    let rootSecret: Uint8Array;
+    try {
+      rootSecret = await beekem.processWelcome(
+        welcomeEnvelope.beekemWelcome,
+        this._kemKeyPair.privateKey,
+        this._kemKeyPair.publicKey,
+      );
+    } catch {
+      throw new Error('Invitation BeeKEM bootstrap could not be processed');
+    }
+    if (beekem.memberCount !== 2 || beekem.myLeafIndex !== 2) {
+      throw new Error(
+        'Invitation BeeKEM bootstrap did not produce the founder-plus-one recipient state',
+      );
+    }
+    const [derivedEpochId, derivedDocumentKey] = await Promise.all([
+      deriveEpochIdFromRootSecret(rootSecret),
+      deriveDocumentKeyFromRootSecret(rootSecret),
+    ]);
+    if (!this._constantTimeEquals(derivedEpochId, bundle.welcomeEpochId)) {
+      throw new Error(
+        'Invitation Welcome epoch is not derived from the BeeKEM root',
+      );
+    }
+
+    const headerLength =
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+    const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
+      0,
+      this._keychainProvider.keyIDLength,
+    );
+    assertInvitationBootstrapEpochBinding(
+      bundle.welcomeEpochId,
+      bootstrapKeyId,
+    );
+    const nonce = bundle.encryptedBootstrap.subarray(
+      this._keychainProvider.keyIDLength,
+      headerLength,
+    );
+    const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
+    let bootstrapPlaintext: Uint8Array;
+    try {
+      bootstrapPlaintext = copyUnsharedUint8Array(
+        await this._authProvider.decrypt(
+          ciphertext,
+          derivedDocumentKey as unknown as DocumentKey,
+          nonce,
+        ),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'invitation bootstrap plaintext',
+      );
+    } catch {
+      throw new Error('Invitation encrypted bootstrap could not be decrypted');
+    }
+
+    let bootstrapMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      bootstrapMessage = this._canonicalizeSyncMessage(
+        this._syncMessageSerializer.deserializeSyncMessage(
+          bootstrapPlaintext,
+        ),
+        'invitation bootstrap message',
+        MAX_INVITATION_MESSAGE_BYTES,
+      );
+    } catch {
+      throw new Error('Invitation bootstrap message is malformed');
+    }
+    if (bootstrapMessage.documentId !== this.documentPath) {
+      throw new Error('Invitation bootstrap document binding does not match');
+    }
+    if (!bootstrapMessage.signature) {
+      throw new Error('Invitation bootstrap is missing its issuer signature');
+    }
+    if (bootstrapMessage.keychainChanges === undefined) {
+      throw new Error('Invitation bootstrap is missing its keychain binding');
+    }
+
+    const keychainChanges = this._changesSerializer.deserializeChanges(
+      welcomeEnvelope.keychainChanges,
+    );
+    let welcomeKeychainBytes: Uint8Array;
+    let bootstrapKeychainBytes: Uint8Array;
+    try {
+      welcomeKeychainBytes = copyUnsharedUint8Array(
+        this._changesSerializer.serializeChanges(keychainChanges),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'invitation Welcome keychain changes',
+      );
+      bootstrapKeychainBytes = copyUnsharedUint8Array(
+        this._changesSerializer.serializeChanges(
+          bootstrapMessage.keychainChanges,
+        ),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'invitation bootstrap keychain changes',
+      );
+    } catch {
+      throw new Error('Invitation keychain changes are malformed');
+    }
+    if (!this._constantTimeEquals(welcomeKeychainBytes, bootstrapKeychainBytes)) {
+      throw new Error(
+        'Invitation bootstrap keychain does not match its sealed Welcome',
+      );
+    }
+
+    const { signature, ...unsignedBootstrap } = bootstrapMessage;
+    let signatureBytes: Uint8Array;
+    try {
+      signatureBytes = this._deserializeSignature(signature);
+    } catch {
+      throw new Error('Invitation bootstrap signature is malformed');
+    }
+    let signatureValid = false;
+    try {
+      signatureValid =
+        (await this._authProvider.verify(
+          this._syncMessageSerializer.serializeSyncMessage(
+            unsignedBootstrap,
+          ),
+          issuerPublicKey,
+          signatureBytes,
+        )) === true;
+    } catch {
+      signatureValid = false;
+    }
+    if (!signatureValid) {
+      throw new Error(
+        'Invitation bootstrap signature does not match the offer issuer',
+      );
+    }
+
+    const stagedKeychain = this._keychain.prepareMerge(keychainChanges);
+    if (
+      !stagedKeychain.keyIds.some((keyId) =>
+        this._constantTimeEquals(keyId, bundle.welcomeEpochId),
+      )
+    ) {
+      throw new Error(
+        'Invitation Welcome did not stage its advertised epoch key',
+      );
+    }
+
+    const initialLoadAuthorization: InitialLoadSyncAuthorization<PublicKey> = {
+      writerKeys: [issuerPublicKey],
+      writerVersion: this._writerKeysVersion,
+    };
+    const snapshotBoundaryBeforeSync =
+      this._latestSnapshot?.lastChangeNodeCID;
+    // The exact same keychain state was authenticated and staged above. Avoid
+    // asking the live provider to merge it a second time inside `_sync`.
+    bootstrapMessage.keychainChanges = undefined;
+    let committed = false;
+    try {
+      this._commitPreparedKeychainState(
+        stagedKeychain,
+        'invitation bootstrap staged keychain commit',
+      );
+      committed = true;
+
+      // The shipped keychains keep imported CryptoKeys in a synchronous
+      // lookup cache. A staged merge commits the authenticated CRDT state but
+      // deliberately does not perform asynchronous key import, so hydrate the
+      // committed state before the immediate founder catch-up can call
+      // `getKey()` on its encrypted response.
+      await this._keychain.keys();
+      const installedEpochKey = this._keychain.getKey(
+        bundle.welcomeEpochId,
+      );
+      if (installedEpochKey === undefined) {
+        throw new Error(
+          'Invitation Welcome did not install its advertised epoch key',
+        );
+      }
+
+      // Bind the key material carried by the signed keychain changes to the
+      // BeeKEM-derived root, not merely to its epoch ID. Both decryptions are
+      // bounded snapshots; accepting different plaintext would leave the
+      // bootstrap usable under one key while the next load uses another.
+      let installedKeyPlaintext: Uint8Array;
+      try {
+        installedKeyPlaintext = copyUnsharedUint8Array(
+          await this._authProvider.decrypt(
+            ciphertext,
+            installedEpochKey,
+            nonce,
+          ),
+          1,
+          MAX_INVITATION_MESSAGE_BYTES,
+          'invitation installed-key bootstrap plaintext',
+        );
+      } catch {
+        throw new Error(
+          'Invitation staged epoch key does not match its BeeKEM root',
+        );
+      }
+      if (
+        !this._constantTimeEquals(
+          bootstrapPlaintext,
+          installedKeyPlaintext,
+        )
+      ) {
+        throw new Error(
+          'Invitation staged epoch key does not match its BeeKEM root',
+        );
+      }
+
+      this._beekem = beekem;
+      this._beekemInitialized = true;
+      this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
+
+      const applied = await syncInvitationMessageCompletely(
+        bootstrapMessage,
+        this._hashes,
+        () =>
+          this._syncUnlocked(
+            bootstrapMessage,
+            false,
+            initialLoadAuthorization,
+          ),
+        'bootstrap',
+        {
+          provenSnapshotBoundariesBeforeSync:
+            snapshotBoundaryBeforeSync === undefined
+              ? undefined
+              : new Set([snapshotBoundaryBeforeSync]),
+          isSnapshotApplied: () =>
+            this._latestSnapshot === bootstrapMessage.snapshot,
+        },
+      );
+      if (!applied) {
+        throw new Error('Invitation bootstrap state was rejected');
+      }
+      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+    } catch (error) {
+      if (
+        committed &&
+        this._securityProviderMutationFailure === undefined
+      ) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          'invitation bootstrap state application',
+          error,
+        );
+      }
+      throw error;
+    }
+    this._invitationBootstrapReady = true;
+  }
+
   /**
-   * Build and send a BeeKEM Welcome message to a newly-added reader.
+   * Build an immutable BeeKEM Welcome delivery for a newly-added reader.
+   * Network fanout occurs later on the ordered, deadline-bounded fanout queue.
    *
    * The Welcome payload is a `CRDTSyncMessage` carrying:
    * - `welcomeEpochId`: the current keychain key ID, which the recipient
-   *   records as their `_invitationEpoch` for later `since_invited` history
-   *   filtering.
+   *   records as its local monotonic invitation anchor. Ordinary load does
+   *   not reuse this responder-local value as another requester's boundary.
    * - `welcomeRecipient`: serialized public key of the intended recipient.
    *   The inviter cannot identify which connected peer is the new reader,
    *   so Welcomes are broadcast to every peer; the recipient binding
@@ -5622,9 +8644,10 @@ export class PeerborneDocument<
    *   perspective** (see `_keychainChangesForWelcome()`).
    * - `signature`: writer signature over the message so the receiver can
    *   confirm a legitimate writer is the inviter (and ignore forgeries).
-   *   Crucially, the signature covers the **sealed** bytes, not the
-   *   plaintext, so a replayed or tampered sealed payload fails
-   *   signature verification.
+   *   The signature covers the **sealed** bytes, not the plaintext, so
+   *   alteration fails signature verification. Exact replay retains a valid
+   *   signature: V2 generation checks reject stale/duplicate state changes,
+   *   while legacy V1 may idempotently reprocess an authenticated payload.
    *
    * Confidentiality: the keychain delta is end-to-end encrypted to the
    * recipient at the application layer. libp2p's Noise/TLS transport
@@ -5635,11 +8658,15 @@ export class PeerborneDocument<
    * Wire format (mirrors `documentKeyUpdateV2`):
    *   [4-byte BE doc-path length] [UTF-8 doc-path] [serialized sync message]
    */
-  private async _sendBeeKEMWelcome(
+  private async _prepareBeeKEMWelcome(
     reader: PublicKey,
     readerKemPublicKey: Uint8Array,
     beekemWelcome: BeeKEMWelcome | null,
-  ): Promise<void> {
+    stagedEpoch?: {
+      epochId: Uint8Array;
+      welcomeKeychainChanges: ChangesType;
+    },
+  ): Promise<PreparedBeeKEMDelivery> {
     // Validate the recipient KEM public key length up front so a
     // malformed caller fails fast at the call site rather than deep
     // inside the WebCrypto import.
@@ -5658,7 +8685,12 @@ export class PeerborneDocument<
     // field (`welcomeRecipientKemPublicKey`) and the WebCrypto import
     // must observe the *same* byte sequence; otherwise the receiver
     // would see a signature/payload mismatch.
-    const kemPub = new Uint8Array(readerKemPublicKey);
+    const kemPub = copyUnsharedUint8Array(
+      readerKemPublicKey,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      'readerKemPublicKey',
+    );
 
     // Build the welcome message.
     const welcomeMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
@@ -5672,7 +8704,9 @@ export class PeerborneDocument<
     // group (and so has at least one key), but if it ever does we surface
     // the error to the caller of `addReader` rather than silently sending
     // a Welcome with no epoch ID.
-    const [currentKeyID] = await this._keychain.current();
+    const [currentKeyID] = stagedEpoch
+      ? [stagedEpoch.epochId]
+      : await this._keychain.current();
     welcomeMessage.welcomeEpochId = currentKeyID;
 
     // Recipient binding: serialize the new reader's public key so
@@ -5689,14 +8723,15 @@ export class PeerborneDocument<
     welcomeMessage.welcomeRecipientKemPublicKey = kemPub;
 
     // Visibility-filtered keychain so the new reader receives the selected
-    // epoch-key window. This does not redact retained CRDT operations. Note:
-    // this uses
-    // `_keychainChangesForWelcome()` (recipient's perspective), NOT
-    // `_keychainChangesForVisibility()` (sender's perspective) -- the
-    // latter would, in `since_invited` mode, leak the inviter's
-    // post-invite slice (or, for founders, the full history) to a
-    // reader whose invitation epoch starts at this moment.
-    const keychainPlaintext = await this._keychainChangesForWelcome();
+    // epoch-key window. This does not redact retained CRDT operations. Welcome
+    // and ordinary-load projections use separate helpers because their policy
+    // inputs differ, even though both currently map `since_invited` to the
+    // current key only.
+    const keychainPlaintext = this._requireWireChanges(
+      stagedEpoch?.welcomeKeychainChanges ??
+        (await this._keychainChangesForWelcome()),
+      'BeeKEM Welcome keychain change',
+    );
     const keychainPlaintextBytes =
       this._changesSerializer.serializeChanges(keychainPlaintext);
 
@@ -5708,15 +8743,40 @@ export class PeerborneDocument<
     // `Uint8Array`; only its decoded shape grows. See
     // `welcome-sealed-payload.ts` for the envelope format.
     //
-    // `beekemWelcome` is `null` here only on a re-emit path where
-    // `addReader` was invoked without the KEM key on a previous
-    // call -- the recipient will still recover the document key but
-    // cannot apply future PathUpdates without an out-of-band BeeKEM
-    // bootstrap.
-    const sealedPayloadBytes = encodeWelcomeSealedPayload({
-      keychainChanges: keychainPlaintextBytes,
-      beekemWelcome,
-    });
+    // The helper retains legacy-v1 encoding support for compatibility tests,
+    // but the live add/re-send path requires a complete, current-generation
+    // v2 Welcome and fails closed on a missing or stale cache entry.
+    let generationBearingWelcome: BeeKEMWelcomeV2 | null = null;
+    if (beekemWelcome?.version === 2) {
+      if (
+        beekemWelcome.generation === undefined ||
+        beekemWelcome.numLeaves === undefined
+      ) {
+        throw new Error(
+          'Cannot send incomplete BeeKEM Welcome v2 without generation and numLeaves',
+        );
+      }
+      generationBearingWelcome = beekemWelcome as BeeKEMWelcomeV2;
+    } else if (
+      beekemWelcome?.generation !== undefined ||
+      beekemWelcome?.numLeaves !== undefined
+    ) {
+      throw new Error('Cannot send BeeKEM Welcome with unversioned v2 fields');
+    }
+    const welcomeProtocolVersion: BeeKEMWireVersion =
+      generationBearingWelcome === null ? 1 : 2;
+    const welcomeProtocol =
+      welcomeProtocolVersion === 2 ? beekemWelcomeV2 : beekemWelcomeV1;
+    const sealedPayloadBytes =
+      generationBearingWelcome === null
+        ? encodeWelcomeSealedPayload({
+            keychainChanges: keychainPlaintextBytes,
+            beekemWelcome,
+          })
+        : encodeWelcomeSealedPayloadV2({
+            keychainChanges: keychainPlaintextBytes,
+            beekemWelcome: generationBearingWelcome,
+          });
 
     // Seal the envelope to the recipient's ECDH public key. Only the
     // recipient holding the matching ECDH private key can recover the
@@ -5743,12 +8803,13 @@ export class PeerborneDocument<
     const serialized =
       this._syncMessageSerializer.serializeSyncMessage(welcomeMessage);
 
-    // Build the V1 path-prefixed payload that the shared handler routes.
+    // Complete generation-bearing Welcomes use v2. A failed v2 dial is never
+    // downgraded to a key-only v1 payload.
     const pathBytes = this._encoder.encode(this.documentPath);
     if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
       throw new Error(
         `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM Welcome v1 protocol`,
+          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM Welcome v${welcomeProtocolVersion} protocol`,
       );
     }
     const pathHeader = new Uint8Array(4);
@@ -5757,41 +8818,11 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
-
-    // Best-effort fan-out to all connected peers. Each peer will either
-    // process the Welcome (if it identifies as the new reader) or drop it.
-    // We do not have a way to know which peer is the new reader from the
-    // libp2p connection alone, so broadcasting is the conservative choice.
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr) ?? [];
-
-    const failedPeers: string[] = [];
-    for (const peer of peers) {
-      try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemWelcomeV1], {
-            runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
-      } catch (err) {
-        failedPeers.push(peer.toString());
-        console.warn(
-          `Failed to send BeeKEM Welcome to peer:`,
-          peer.toString(),
-          err,
-        );
-      }
-    }
-
-    if (failedPeers.length > 0) {
-      console.warn(
-        `BeeKEM Welcome for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
-      );
-    }
+    return {
+      protocol: welcomeProtocol,
+      payload: concatUint8Arrays(pathHeader, pathBytes, serialized),
+      label: 'Welcome',
+    };
   }
 
   /**
@@ -5801,8 +8832,7 @@ export class PeerborneDocument<
    *
    * Verifies the writer signature on the message, merges the included
    * keychain changes so future blocks can be decrypted, and records the
-   * `welcomeEpochId` as `_invitationEpoch` so subsequent `since_invited`
-   * history responses are correctly filtered.
+   * `welcomeEpochId` as the local monotonic `_invitationEpoch` anchor.
    *
    * @internal
    * @param payload The serialized sync message (without the document path
@@ -5810,48 +8840,107 @@ export class PeerborneDocument<
    */
   public async handleBeeKEMWelcomeRequestData(
     payload: Uint8Array,
-  ): Promise<void> {
-    return this._mutationQueue.run(() =>
-      this._handleBeeKEMWelcomeRequestDataUnlocked(payload),
-    );
-  }
-
-  private async _handleBeeKEMWelcomeRequestDataUnlocked(
-    payload: Uint8Array,
+    protocolVersion: BeeKEMWireVersion = 1,
   ): Promise<void> {
     try {
-      const message = this._syncMessageSerializer.deserializeSyncMessage(payload);
-      await this._evaluateAndApplyBeeKEMWelcome(message, {
-        fromBuffer: false,
+      await this._runBeeKEMRemoteIngress(async () => {
+        const authenticatedMessage =
+          await this._preauthenticateBeeKEMWelcome(payload);
+        if (authenticatedMessage === null) return;
+        await this._runInMutationQueue(() =>
+          this._handleBeeKEMWelcomeRequestDataUnlocked(
+            authenticatedMessage,
+            protocolVersion,
+          ),
+        );
       });
-    } catch (err: unknown) {
+    } catch {
       console.error(
-        `Error handling BeeKEM Welcome for document ${this.documentPath}:`,
-        err,
+        `Error handling BeeKEM Welcome for document ${this.documentPath}`,
       );
     }
   }
 
+  private async _handleBeeKEMWelcomeRequestDataUnlocked(
+    authenticatedMessage: AuthenticatedBeeKEMWelcome<ChangesType, PublicKey>,
+    protocolVersion: BeeKEMWireVersion,
+  ): Promise<void> {
+    try {
+      this._throwIfSecurityProviderMutationFailed();
+      await this._runBeeKEMTransition(
+        () =>
+          this._evaluateAndApplyBeeKEMWelcome(
+            authenticatedMessage,
+            protocolVersion,
+          ),
+        true,
+      );
+    } catch {
+      console.error(
+        `Error handling BeeKEM Welcome for document ${this.documentPath}`,
+      );
+    }
+  }
+
+  private async _preauthenticateBeeKEMWelcome(
+    payload: Uint8Array,
+  ): Promise<AuthenticatedBeeKEMWelcome<ChangesType, PublicKey> | null> {
+    const stablePayload = copyUnsharedUint8Array(
+      payload,
+      1,
+      PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+      'BeeKEM Welcome payload',
+    );
+    let message: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      message =
+        this._syncMessageSerializer.deserializeSyncMessage(stablePayload);
+    } catch {
+      return null;
+    }
+    const writerAuthorities =
+      await this._captureBeeKEMWelcomeWriterAuthorities();
+    if (writerAuthorities === null) return null;
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'BeeKEM Welcome onboarding',
+    );
+    const decision = await evaluateBeeKEMWelcome(message, {
+      documentPath: this.documentPath,
+      localUserPublicKey: this._userPublicKey,
+      serializePublicKey,
+      // An identity+KEM-bound Welcome authenticated by the captured writer
+      // trust root is the onboarding grant. A new reader may not yet possess
+      // the document key needed to decrypt the readers ACL addition.
+      isReader: async () => true,
+      allowWriterAuthorizedBootstrap: true,
+      verifyWriterSignature: (raw, signature) =>
+        this._verifyWelcomeWriterSignatureFromSnapshot(
+          raw,
+          signature,
+          writerAuthorities,
+        ),
+      syncMessageSerializer: this._syncMessageSerializer,
+    });
+    return decision.kind === 'accept'
+      ? { message: decision.message, writerAuthorities }
+      : null;
+  }
+
   /**
-   * Shared receive-path body for both freshly-arrived Welcomes (called
-   * from `handleBeeKEMWelcomeRequestData`) and Welcomes replayed from the
-   * pending-welcomes buffer (called from `_drainPendingWelcomesUnlocked` after a
-   * readers-ACL update unblocks a previously-dropped Welcome).
+   * Receive-path body for a preauthenticated Welcome. The detached writer
+   * trust snapshot is reused through the final commit check.
    *
-   * @param message The deserialized sync message.
-   * @param opts.fromBuffer When `true`, the message is being replayed from
-   *   the pending-welcomes buffer; we suppress re-buffering on
-   *   `not-in-readers-acl` to avoid an infinite drain loop and instead
-   *   leave the entry in place for the next drain cycle (or TTL
-   *   eviction).
    * @returns `true` iff the Welcome was accepted and applied.
-   *
    * @internal
    */
   private async _evaluateAndApplyBeeKEMWelcome(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
-    opts: { fromBuffer: boolean },
+    authenticated: AuthenticatedBeeKEMWelcome<ChangesType, PublicKey>,
+    protocolVersion: BeeKEMWireVersion,
   ): Promise<boolean> {
+    if (this._securityProviderMutationFailure !== undefined) return false;
+    let message = authenticated.message;
+    const writerAuthorities = authenticated.writerAuthorities;
     // Run the pure validation gates (extracted to
     // `beekem-welcome-handler.ts` so they can be unit-tested without
     // a full libp2p/Helia stack). On `accept` we apply the keychain
@@ -5867,12 +8956,17 @@ export class PeerborneDocument<
       documentPath: this.documentPath,
       localUserPublicKey: this._userPublicKey,
       serializePublicKey,
-      isReader: (pk) => this._readers.check(pk),
+      isReader: async () => true,
+      allowWriterAuthorizedBootstrap: true,
       // Welcomes always require writer-auth, independent of the
       // swarm-wide `enableSigning` toggle -- wire the unconditional
       // verifier so the validator can't be downgraded by config.
       verifyWriterSignature: (raw, signature) =>
-        this._verifyWelcomeWriterSignature(raw, signature),
+        this._verifyWelcomeWriterSignatureFromSnapshot(
+          raw,
+          signature,
+          writerAuthorities,
+        ),
       syncMessageSerializer: this._syncMessageSerializer,
     });
 
@@ -5888,52 +8982,22 @@ export class PeerborneDocument<
           );
           return false;
         case 'drop-unauthorized':
-          // If the Welcome was dropped solely because the local user is
-          // not yet a reader (ACL update + Welcome can reorder;
-          // `_sendBeeKEMWelcome` is fire-and-forget), park the Welcome
-          // in a small bounded buffer and replay it after the next
-          // readers-ACL merge. Without this buffer, a transiently-late
-          // ACL update would permanently wedge onboarding.
-          if (
-            decision.reason === 'not-in-readers-acl' &&
-            !opts.fromBuffer &&
-            decision.message?.welcomeEpochId !== undefined &&
-            decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
-          ) {
-            this._bufferPendingWelcome(decision.message);
-          } else if (
-            opts.fromBuffer &&
-            decision.reason === 'not-in-readers-acl'
-          ) {
-            // A buffered Welcome that is still blocked by
-            // `not-in-readers-acl` on a drain cycle is the expected
-            // steady state until the readers-ACL catches up. The
-            // first-arrival case (above) already logged via
-            // `_bufferPendingWelcome`; emitting `console.warn` on every
-            // subsequent drain produces noisy spam (and is
-            // attacker-triggerable via repeated ACL merges). Use
-            // `console.debug` so operators can still trace if needed.
-            console.debug(
-              `Buffered BeeKEM Welcome for ${this.documentPath} still blocked: ${decision.reason}`,
-            );
-          } else {
-            console.warn(
-              `Dropping unauthorized BeeKEM Welcome for ${this.documentPath}: ${decision.reason}`,
-            );
-          }
+          console.warn(
+            `Dropping unauthorized BeeKEM Welcome for ${this.documentPath}: ${decision.reason}`,
+          );
           return false;
       }
     }
 
-    // Continue only with the detached canonical message whose exact bytes the
-    // validator authenticated, never the caller-owned serializer result.
+    // The validator returns the detached canonical message whose exact bytes
+    // were authenticated. Use only that snapshot for decryption and commit.
     message = decision.message;
 
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
     // that addresses us by identity and KEM public key cannot be
-    // applied. Drop in that case -- the recipient must recover via a
-    // fresh document load against an authorized peer.
+    // applied. Drop in that case; the recipient must reinstall the intended
+    // KEM key and receive a fresh authenticated Welcome.
     //
     // Defense in depth: if the writer-signed `welcomeRecipientKemPublicKey`
     // does NOT match the local installed KEM public key, the writer
@@ -5981,12 +9045,15 @@ export class PeerborneDocument<
       // joiner can bootstrap their local ratchet state. The
       // wire-level field remains a single `Uint8Array`; only the
       // decoded shape grows. See `welcome-sealed-payload.ts`.
-      const envelope = decodeWelcomeSealedPayload(plaintextBytes);
+      const envelope =
+        protocolVersion === 2
+          ? decodeWelcomeSealedPayloadV2(plaintextBytes)
+          : decodeWelcomeSealedPayload(plaintextBytes);
       keychainPlaintext = this._changesSerializer.deserializeChanges(
         envelope.keychainChanges,
       );
       bootstrapWelcome = envelope.beekemWelcome;
-    } catch (err) {
+    } catch {
       // ECIES open failure typically means: the sealed payload is
       // tampered (AES-GCM tag check fails), or the writer encrypted
       // under a different ECDH public key than the one we hold (so
@@ -5996,24 +9063,164 @@ export class PeerborneDocument<
       // plaintext from a non-upgraded peer). Both are
       // security-relevant; log and drop.
       console.warn(
-        `Failed to open sealed BeeKEM Welcome payload for ${this.documentPath}:`,
-        err,
+        `Failed to open sealed BeeKEM Welcome payload for ${this.documentPath}`,
       );
       return false;
     }
 
-    // Merge the keychain changes before recording the invitation epoch,
-    // so a recipient handling concurrent Welcomes is not left with an
-    // _invitationEpoch pointing at a key that hasn't been installed.
-    try {
-      this._keychain.merge(keychainPlaintext);
-    } catch (err) {
-      console.error(
-        `Failed to merge keychain changes from BeeKEM Welcome for ${this.documentPath}:`,
-        err,
+    const transitionDecision = evaluateBeeKEMWelcomeTransition(
+      this._beekemInitialized && this._beekem
+        ? this._beekem.generation
+        : undefined,
+      protocolVersion,
+      bootstrapWelcome?.generation,
+    );
+    if (transitionDecision.kind === 'reject') {
+      console.warn(
+        `Dropping BeeKEM Welcome for ${this.documentPath}: ${transitionDecision.reason}`,
       );
       return false;
     }
+
+    // Stage every optional ratchet bootstrap before the final writer
+    // authorization check. In particular, legacy v1 must not merge keychain
+    // state and then await `processWelcome`: a concurrent writer revocation
+    // during that await would leave unauthorized key material installed.
+    // V2 treats bootstrap failure as fatal; v1 retains its key-only fallback.
+    let stagedBeeKEM: BeeKEM | null = null;
+    let stagedWelcomeEpochId: Uint8Array | undefined;
+    let legacyBootstrapError: unknown;
+    if (protocolVersion === 2) {
+      if (
+        bootstrapWelcome === null ||
+        bootstrapWelcome.version !== 2 ||
+        bootstrapWelcome.generation === undefined ||
+        bootstrapWelcome.numLeaves === undefined
+      ) {
+        console.warn(
+          `Dropping BeeKEM Welcome v2 for ${this.documentPath}: ` +
+            `a non-null generation-bearing Welcome is required.`,
+        );
+        return false;
+      }
+    }
+    if (bootstrapWelcome !== null) {
+      try {
+        const beekem = new BeeKEM();
+        await beekem.processWelcome(
+          bootstrapWelcome,
+          this._kemKeyPair.privateKey,
+          this._kemKeyPair.publicKey,
+        );
+        stagedBeeKEM = beekem;
+        if (protocolVersion === 2) {
+          stagedWelcomeEpochId = await deriveEpochIdFromRootSecret(
+            await beekem.getRootSecret(),
+          );
+        }
+      } catch (err) {
+        if (protocolVersion === 2) {
+          console.warn(
+            `Dropping BeeKEM Welcome v2 for ${this.documentPath}: ratchet bootstrap failed.`,
+          );
+          return false;
+        }
+        legacyBootstrapError = err;
+      }
+    }
+
+    const prepareMerge = this._keychain.prepareMerge;
+    if (typeof prepareMerge !== 'function') {
+      console.error(
+        `Cannot apply BeeKEM Welcome for ${this.documentPath}: keychain does ` +
+          `not implement transactional prepareMerge`,
+      );
+      return false;
+    }
+    let stagedKeychain;
+    try {
+      stagedKeychain = prepareMerge.call(this._keychain, keychainPlaintext);
+    } catch {
+      console.error(
+        `Failed to stage keychain changes from BeeKEM Welcome for ${this.documentPath}`,
+      );
+      return false;
+    }
+
+    const newEpochId = message.welcomeEpochId as Uint8Array;
+    if (
+      protocolVersion === 2 &&
+      (stagedWelcomeEpochId === undefined ||
+        !this._constantTimeEquals(stagedWelcomeEpochId, newEpochId))
+    ) {
+      console.warn(
+        `Dropping BeeKEM Welcome v2 for ${this.documentPath}: ratchet root ` +
+          `does not derive the signed welcomeEpochId`,
+      );
+      return false;
+    }
+    const incomingEpochPresent = stagedKeychain.keyIds.some((keyId) =>
+      this._constantTimeEquals(keyId, newEpochId),
+    );
+    if (!incomingEpochPresent) {
+      console.warn(
+        `Dropping BeeKEM Welcome for ${this.documentPath}: staged keychain ` +
+          `does not contain welcomeEpochId`,
+      );
+      return false;
+    }
+    let nextInvitationEpoch = this._invitationEpoch;
+    let invitationEpochAdvanced = false;
+    let invitationEpochRegressed = false;
+    if (nextInvitationEpoch === undefined) {
+      nextInvitationEpoch = newEpochId;
+      invitationEpochAdvanced = true;
+    } else if (
+      this._shouldAdvanceInvitationEpochInOrder(
+        nextInvitationEpoch,
+        newEpochId,
+        stagedKeychain.keyIds,
+      )
+    ) {
+      nextInvitationEpoch = newEpochId;
+      invitationEpochAdvanced = true;
+    } else if (!this._constantTimeEquals(nextInvitationEpoch, newEpochId)) {
+      invitationEpochRegressed = true;
+    }
+
+    // Re-check immediately before the synchronous merge-and-swap commit.
+    // Another Welcome may have completed while this one was being opened or
+    // staged; using only the earlier check would let a slower, older Welcome
+    // overwrite the newer ratchet state.
+    const commitTransitionDecision = evaluateBeeKEMWelcomeTransition(
+      this._beekemInitialized && this._beekem
+        ? this._beekem.generation
+        : undefined,
+      protocolVersion,
+      stagedBeeKEM?.generation ?? bootstrapWelcome?.generation,
+    );
+    if (commitTransitionDecision.kind === 'reject') {
+      console.warn(
+        `Dropping BeeKEM Welcome for ${this.documentPath}: ${commitTransitionDecision.reason}`,
+      );
+      return false;
+    }
+
+    if (!(await this._reauthorizeBeeKEMWelcome(message, writerAuthorities))) {
+      console.warn(
+        `Dropping BeeKEM Welcome for ${this.documentPath}: writer authorization changed before commit`,
+      );
+      return false;
+    }
+    if (this._securityProviderMutationFailure !== undefined) return false;
+
+    // Commit the detached keychain, ratchet, and invitation anchor without an
+    // intervening await. Shipped keychains guarantee commit either succeeds
+    // completely or throws before mutation.
+    this._commitPreparedKeychainState(
+      stagedKeychain,
+      'inbound BeeKEM Welcome staged keychain commit',
+    );
 
     // Bootstrap our local BeeKEM ratchet state from the inviter's
     // Welcome payload. Without this step the joiner has no leaf
@@ -6023,216 +9230,31 @@ export class PeerborneDocument<
     // of the new document key. Initialize-once: a peer that
     // re-receives a Welcome (e.g. a re-invite after being removed)
     // gets a fresh `BeeKEM` instance for the new epoch.
-    if (bootstrapWelcome !== null) {
-      try {
-        const beekem = new BeeKEM();
-        await beekem.processWelcome(
-          bootstrapWelcome,
-          this._kemKeyPair.privateKey,
-          this._kemKeyPair.publicKey,
-        );
-        this._beekem = beekem;
-        this._beekemInitialized = true;
-      } catch (err) {
-        // BeeKEM bootstrap failure is non-fatal at this layer: the
-        // keychain merge has already succeeded so the joiner can
-        // decrypt CURRENT document traffic. They will, however, be
-        // unable to apply future PathUpdates and may need a fresh
-        // Welcome / document load to recover ratchet state on the
-        // next rotation. Surface a warning so this is visible.
-        console.warn(
-          `BeeKEM bootstrap via processWelcome failed for ${this.documentPath}: ` +
-            `local ratchet state was not installed and future PathUpdates ` +
-            `cannot be applied until a fresh Welcome arrives.`,
-          err,
-        );
-      }
+    if (stagedBeeKEM !== null) {
+      this._beekem = stagedBeeKEM;
+      this._beekemInitialized = true;
+    } else if (legacyBootstrapError !== undefined) {
+      // BeeKEM bootstrap failure is non-fatal for v1: the authenticated
+      // keychain delta still permits current traffic, but the recipient must
+      // recover ratchet state before the next chained PathUpdate.
+      console.warn(
+        `BeeKEM bootstrap via processWelcome failed for ${this.documentPath}: ` +
+          `local ratchet state was not installed and future PathUpdates ` +
+          `cannot be applied until an authenticated membership remove/rejoin.`,
+      );
     }
-
-    // Record the invitation epoch -- this gates `since_invited` history
-    // filtering on subsequent doc-load / snapshot-load responses we send.
-    // `evaluateBeeKEMWelcome` guarantees `welcomeEpochId` is set when
-    // it returns `accept`.
-    //
-    // MONOTONIC UPDATE: if we already have an
-    // `_invitationEpoch`, only advance it forward in keychain order --
-    // never regress to an earlier epoch.
-    //
-    // The threat model: a writer could (maliciously or via reordering)
-    // send a later writer-signed Welcome that nominally addresses this
-    // node but carries an *earlier* `welcomeEpochId`. If we
-    // unconditionally overwrote `_invitationEpoch`, this would shrink
-    // the recipient's join boundary, broadening the set of keys
-    // returned by future `since_invited` history responses we send
-    // (leaking more history than the original invitation granted).
-    //
-    // Comparison strategy: `_keychain.keys()` returns entries in the
-    // insertion order used by Yjs/Automerge keychain implementations
-    // (`keychain.keys.push(...)`). Position in that array is the
-    // canonical "later means later" relation -- the same one
-    // `historySince` relies on to slice the suffix. We compare the
-    // positions of the existing and incoming epoch IDs; if the new
-    // one is strictly later we advance, otherwise we keep the
-    // existing anchor.
-    //
-    // Fallback: if either ID is not present in `keys()` after the
-    // merge above (e.g. the merge dropped the entry, or the local
-    // keychain implementation does not expose insertion order), we
-    // conservatively keep the existing `_invitationEpoch` -- it is
-    // already known-good. The only path that loses fidelity is the
-    // first-Welcome-ever case (no existing anchor) which is handled
-    // by the simple assignment branch.
-    const newEpochId = message.welcomeEpochId as Uint8Array;
-    if (this._invitationEpoch === undefined) {
-      this._invitationEpoch = newEpochId;
+    this._invitationEpoch = nextInvitationEpoch;
+    if (invitationEpochAdvanced) {
       console.log(
         `Recorded BeeKEM Welcome invitation epoch for ${this.documentPath}`,
       );
-    } else {
-      const advanced = await this._shouldAdvanceInvitationEpoch(
-        this._invitationEpoch,
-        newEpochId,
+    } else if (invitationEpochRegressed) {
+      console.warn(
+        `Ignoring out-of-order BeeKEM Welcome for ${this.documentPath}: ` +
+          `incoming epoch is not later than current invitation epoch`,
       );
-      if (advanced) {
-        this._invitationEpoch = newEpochId;
-        console.log(
-          `Recorded BeeKEM Welcome invitation epoch for ${this.documentPath}`,
-        );
-      } else {
-        // Byte-equality check distinguishes benign duplicate Welcomes
-        // (same epoch ID arriving more than once -- expected with
-        // gossipsub fanout) from genuine out-of-order or regression
-        // cases (different epoch ID that is not strictly later than
-        // the current anchor). Only the latter is worth warning about;
-        // duplicates are silently ignored to avoid log noise.
-        let isDuplicate = false;
-        if (this._invitationEpoch.byteLength === newEpochId.byteLength) {
-          let diff = 0;
-          for (let i = 0; i < this._invitationEpoch.byteLength; i++) {
-            diff |= this._invitationEpoch[i] ^ newEpochId[i];
-          }
-          isDuplicate = diff === 0;
-        }
-        if (!isDuplicate) {
-          console.warn(
-            `Ignoring out-of-order BeeKEM Welcome for ${this.documentPath}: ` +
-              `incoming epoch is not later than current invitation epoch`,
-          );
-        }
-      }
     }
     return true;
-  }
-
-  /**
-   * Buffer a Welcome that was dropped solely because the local user is
-   * not yet in the readers ACL. The entry is keyed by
-   * `hex(welcomeEpochId)` so duplicate Welcomes for the same epoch
-   * coalesce automatically. Bounded by
-   * `_PENDING_WELCOMES_MAX_ENTRIES` (oldest evicted in insertion
-   * order); replayed by `_drainPendingWelcomesUnlocked()` after the next
-   * readers-ACL merge.
-   *
-   * Idempotent and safe to call repeatedly with the same epoch ID --
-   * the buffer is conceptually a set keyed on epoch ID, with
-   * insertion-order eviction.
-   *
-   * @internal
-   */
-  private _bufferPendingWelcome(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
-  ): void {
-    const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
-    const key = this._hexEncode(epochId);
-    // Refresh recency for duplicate Welcomes: delete-then-set so the
-    // Map iteration order puts this entry at the back, matching the
-    // intent of insertion-order eviction.
-    this._pendingWelcomes.delete(key);
-
-    // Bound: if at capacity, evict the oldest entry (first in Map
-    // iteration order).
-    if (
-      this._pendingWelcomes.size >=
-      PeerborneDocument._PENDING_WELCOMES_MAX_ENTRIES
-    ) {
-      const oldestKey = this._pendingWelcomes.keys().next().value;
-      if (oldestKey !== undefined) {
-        this._pendingWelcomes.delete(oldestKey);
-        console.warn(
-          `Pending BeeKEM Welcomes buffer for ${this.documentPath} ` +
-            `at capacity (${PeerborneDocument._PENDING_WELCOMES_MAX_ENTRIES}); ` +
-            `evicting oldest entry to make room.`,
-        );
-      }
-    }
-
-    this._pendingWelcomes.set(key, {
-      message,
-      bufferedAtMs: this._now(),
-    });
-    console.log(
-      `Buffered BeeKEM Welcome for ${this.documentPath} pending readers-ACL update ` +
-        `(buffer size=${this._pendingWelcomes.size})`,
-    );
-  }
-
-  /**
-   * Replay buffered BeeKEM Welcomes whose recipient is now in the
-   * readers ACL. Called after every readers-ACL `merge` so a Welcome
-   * that arrived ahead of the ACL update on this node is unblocked as
-   * soon as the ACL catches up. Also discards entries past their TTL
-   * (`_PENDING_WELCOMES_TTL_MS`) so the buffer cannot retain stale
-   * Welcomes indefinitely.
-   *
-   * Each accepted Welcome is removed from the buffer; entries that
-   * still return `not-in-readers-acl` (e.g. the ACL merge didn't
-   * add this user; the merge added someone else) stay in the buffer
-   * until they either resolve or expire.
-   *
-   * @internal
-   */
-  private async _drainPendingWelcomesUnlocked(): Promise<void> {
-    if (this._pendingWelcomes.size === 0) return;
-    const now = this._now();
-    // Iterate over a snapshot of entries because we mutate the Map
-    // during iteration (delete on accept / TTL).
-    const entries = Array.from(this._pendingWelcomes.entries());
-    for (const [key, entry] of entries) {
-      if (now - entry.bufferedAtMs > PeerborneDocument._PENDING_WELCOMES_TTL_MS) {
-        this._pendingWelcomes.delete(key);
-        console.warn(
-          `Discarding stale buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `(age=${now - entry.bufferedAtMs}ms ` +
-            `exceeds TTL=${PeerborneDocument._PENDING_WELCOMES_TTL_MS}ms)`,
-        );
-        continue;
-      }
-      const accepted = await this._evaluateAndApplyBeeKEMWelcome(entry.message, {
-        fromBuffer: true,
-      });
-      if (accepted) {
-        this._pendingWelcomes.delete(key);
-        console.log(
-          `Replayed buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `after readers-ACL update`,
-        );
-      }
-    }
-  }
-
-  /** Indirection so unit tests can stub the wall clock. */
-  private _now(): number {
-    return Date.now();
-  }
-
-  /** Lower-case hex encoding of a `Uint8Array`. */
-  private _hexEncode(bytes: Uint8Array): string {
-    let s = '';
-    for (let i = 0; i < bytes.length; i++) {
-      s += bytes[i].toString(16).padStart(2, '0');
-    }
-    return s;
   }
 
   /**
@@ -6252,21 +9274,10 @@ export class PeerborneDocument<
   }
 
   /**
-   * Test/inspection helper: number of BeeKEM Welcomes currently parked
-   * in the pending-welcomes buffer awaiting a readers-ACL update.
-   *
-   * @internal exposed only for unit tests.
-   */
-  public get pendingWelcomesCount(): number {
-    return this._pendingWelcomes.size;
-  }
-
-  /**
    * Test/inspection helper: returns a copy of the recorded invitation
    * epoch, or `undefined` if no Welcome has been processed (e.g.
    * founding member). The returned `Uint8Array` is a defensive copy so
-   * external callers cannot mutate the document's internal state and
-   * alter subsequent `since_invited` filtering behavior.
+   * external callers cannot mutate the document's internal ordering anchor.
    */
   public get invitationEpoch(): Uint8Array | undefined {
     return this._invitationEpoch === undefined
@@ -6301,14 +9312,6 @@ export class PeerborneDocument<
     existing: Uint8Array,
     incoming: Uint8Array,
   ): Promise<boolean> {
-    // Byte-equal: no advancement needed and not a regression.
-    if (
-      existing.length === incoming.length &&
-      existing.every((b, i) => b === incoming[i])
-    ) {
-      return false;
-    }
-
     let allKeys: [Uint8Array, unknown][];
     try {
       allKeys = await this._keychain.keys();
@@ -6318,14 +9321,25 @@ export class PeerborneDocument<
       return false;
     }
 
-    const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
-      if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-      return true;
-    };
+    return this._shouldAdvanceInvitationEpochInOrder(
+      existing,
+      incoming,
+      allKeys.map(([id]) => id),
+    );
+  }
 
-    const existingIdx = allKeys.findIndex(([id]) => sameBytes(id, existing));
-    const incomingIdx = allKeys.findIndex(([id]) => sameBytes(id, incoming));
+  private _shouldAdvanceInvitationEpochInOrder(
+    existing: Uint8Array,
+    incoming: Uint8Array,
+    keyIds: readonly Uint8Array[],
+  ): boolean {
+    if (this._constantTimeEquals(existing, incoming)) return false;
+    const existingIdx = keyIds.findIndex((id) =>
+      this._constantTimeEquals(id, existing),
+    );
+    const incomingIdx = keyIds.findIndex((id) =>
+      this._constantTimeEquals(id, incoming),
+    );
     if (existingIdx === -1 || incomingIdx === -1) {
       // One of the IDs is not in the keychain -- cannot establish
       // ordering. Keep the existing anchor.
@@ -6337,107 +9351,29 @@ export class PeerborneDocument<
   /**
    * Remove a user as a valid reader. Users are identified by their public keys.
    *
-   * ## Atomicity contract
+   * Authorization, membership, tree, and leaf preconditions run before the
+   * BeeKEM transition. The ACL provider delta is also produced before
+   * `removeMember`, because providers mutate their local CRDT while producing
+   * it. A transactional BeeKEM callback derives and stages the new epoch,
+   * prepares the exact signed PathUpdate and ACL ciphertext, and only then
+   * performs the synchronous staged keychain/change commits. A preparation
+   * failure restores the BeeKEM tree/generation and publishes nothing. It then
+   * releases the BeeKEM transition mutex and runs ordered, bounded fanout:
+   * PathUpdate first, ACL publication second. Each peer delivery has a strict
+   * deadline. The public document mutation queue remains held during this
+   * bounded fanout, so later local mutations may wait for its deadlines. A
+   * survivor that misses a parent-bound generation requires persisted current
+   * ratchet state or an authenticated remove/rejoin; an ordinary encrypted
+   * load cannot repair a missing epoch.
    *
-   * Pre-validates all preconditions before mutating BeeKEM state. The
-   * BeeKEM `removeMember` call is the atomicity boundary:
+   * The removed reader cannot derive the installed epoch because its leaf is
+   * blanked before the new path material is generated.
    *
-   *   - BEFORE the BeeKEM mutation: every check that can fail
-   *     synchronously / cheaply (writer authorization, ACL membership,
-   *     tree initialization, leaf lookup) runs first. If any of these
-   *     throws, no state has been mutated and the caller can retry
-   *     without leaking a half-applied revocation.
-   *   - AT the BeeKEM mutation: `BeeKEM.removeMember(leafIndex)` blanks
-   *     the leaf and re-derives the writer's path key material. This
-   *     advances local BeeKEM state. The CRDT-mutating ACL build step
-   *     (`_readers.remove(reader)` -- not just a "compute change",
-   *     both the Yjs and Automerge providers mutate their internal
-   *     doc state in `remove`) and the PathUpdate signing step (which
-   *     requires the new 32-byte epoch ID derived from the new root
-   *     secret) cannot be hoisted ABOVE the BeeKEM mutation: building
-   *     the ACL change without applying it is not part of the ACL
-   *     interface, and the PathUpdate signature includes the new
-   *     epoch ID by construction.
-   *   - AFTER the BeeKEM mutation succeeds, every subsequent step is
-   *     attempted on a BEST-EFFORT basis: broadcast and ACL-commit
-   *     failures are logged but do not unwind the BeeKEM advance. The
-   *     writer is always left in a consistent state -- BeeKEM advanced,
-   *     local keychain updated with the new epoch key, outgoing traffic
-   *     encrypted under the new key. Surviving readers may need to
-   *     re-sync via a fresh document load if the ACL change or
-   *     PathUpdate broadcast was dropped.
-   *
-   * ## Ordering on the wire
-   *
-   * The ACL-change broadcast must be encryptable by surviving readers
-   * using a key they ALREADY have, not the post-rotation key (which
-   * they only learn about once they process the PathUpdate). The
-   * ACL-change pubsub message and the PathUpdate unicast stream are
-   * delivered independently and can arrive in any order; each must be
-   * independently decryptable to keep the receive path order-
-   * insensitive. This is why `addEpochKey` (which flips
-   * `_keychain.current()` to the new key) is deferred until AFTER
-   * both broadcasts: while `_makeChange` runs, `_keychain.current()`
-   * still returns the **previous** key, which surviving readers can
-   * still decrypt with.
-   *
-   * ## Steps
-   *
-   *   1. Verify the caller is a writer and look up the BeeKEM leaf
-   *      assigned to the removed reader. A missing leaf is a hard
-   *      error (see `@throws` below). Both ECDH-keypair and leaf-
-   *      lookup preconditions are checked here, BEFORE step 2.
-   *   2. Blank the leaf and re-key our path via
-   *      `BeeKEM.removeMember(leafIndex)`, which returns the
-   *      `PathUpdate` to broadcast and the new root secret. We do
-   *      NOT run a follow-up `BeeKEM.update()`: `removeMember`
-   *      already generates fresh key material along the entire path,
-   *      and re-rotating immediately would discard that material in
-   *      favour of yet-another rotation, doubling the work without
-   *      improving the cryptographic property. **This is the atomicity
-   *      boundary: every subsequent step is best-effort.**
-   *   3. Derive the new document key + 32-byte epoch ID from the root
-   *      secret via HKDF (see `derive-doc-key.ts`). **Hold locally;
-   *      the keychain is NOT updated yet.**
-   *   4. Commit the ACL removal and broadcast it via `_makeChange`,
-   *      still encrypted under the **previous** keychain key (so
-   *      surviving readers can decrypt regardless of PathUpdate
-   *      arrival order). On failure: log a warning and fall through;
-   *      surviving readers can recover the new ACL via a fresh
-   *      document load.
-   *   5. Broadcast the signed `PathUpdate` over `beekemPathUpdateV1`
-   *      to every connected peer. Surviving readers feed it into
-   *      `BeeKEM.processPathUpdate` and re-derive the same document
-   *      key + epoch ID. On failure: log a warning and fall through;
-   *      surviving readers can recover via a fresh document load.
-   *      The local keychain install in step 6 still runs so the
-   *      WRITER transitions to the new key.
-   *   6. Install the new key into the LOCAL keychain. From this
-   *      point on every subsequent outgoing message is encrypted
-   *      under the new key. This step ALWAYS runs (even if steps
-   *      4 or 5 logged failures) so the writer never gets stuck
-   *      encrypting under the previous key while the BeeKEM tree
-   *      has advanced.
-   *
-   * The revoked reader can still decrypt the step-4 ACL change (they
-   * have the previous key) -- which is fine: they just learn they've
-   * been removed. They CANNOT derive the new key from the step-5
-   * PathUpdate because their leaf is blanked, so all future writer-
-   * originated traffic remains opaque to them.
-   *
-   * If step 6 itself fails (local IO / WebCrypto error) the writer is
-   * in a partially-rotated state -- BeeKEM has advanced but the local
-   * keychain still holds only the previous key. The call throws so the
-   * caller can recover (the simplest recovery is to re-open the
-   * document, which re-loads keychain state). `addEpochKey` is a
-   * local-only call in both shipped keychain providers (no pubsub
-   * side-effects, no remote IO), so this branch is rare in practice.
-   *
-   * Unlike the previous "encrypt the new key under the old key" scheme,
-   * the removed reader cannot derive the new key even if they were
-   * connected at the moment of revocation: their leaf is blanked and
-   * the new path key material is encrypted to subtrees they no longer
-   * occupy. This closes the revocation-latency gap (#189 §5.4 item 5).
+   * Identity-to-KEM/leaf bindings are in-memory and populated only for readers
+   * registered locally. Processing a Welcome reconstructs the ratchet tree but
+   * not bindings for pre-existing readers, so a joined writer cannot remove
+   * those readers by identity until a future authenticated binding
+   * persistence/state-transfer mechanism is implemented.
    *
    * @param reader User's public key.
    * @throws If the BeeKEM tree has no record of this reader (e.g.
@@ -6445,36 +9381,55 @@ export class PeerborneDocument<
    *   was lost). Callers must surface this rather than silently
    *   degrading: a removeReader that "succeeded" without rotating the
    *   key would leave the removed reader with full ongoing access.
-   * @throws If the local keychain install fails (step 6). Steps 1-3
-   *   (pre-validation + BeeKEM rotation + key derivation) throwing
-   *   leaves the ACL unchanged so the caller can retry; broadcast
-   *   failures in steps 4-5 do NOT throw (they log warnings).
+   * @throws If a local transaction prerequisite or preparation fails.
+   *   Delivery failures are bounded and logged; recovery requires an
+   *   authenticated membership remove/rejoin.
+   * @throws If the readers ACL provider rejects after its mutation may have
+   *   started. The document is permanently retired in-process; discard it and
+   *   its ACL/keychain provider instances.
    */
   public async removeReader(reader: PublicKey) {
-    return this._mutationQueue.run(() =>
+    return this._runInMutationQueue(() =>
       this._removeReaderUnlocked(reader),
     );
   }
 
   private async _removeReaderUnlocked(reader: PublicKey) {
+    const result = await this._runBeeKEMTransition(() =>
+      this._removeReaderUnderBeeKEMLock(reader),
+    );
+    if (result) await result.fanout;
+  }
+
+  private async _removeReaderUnderBeeKEMLock(reader: PublicKey) {
     // ---------------------------------------------------------------
-    // Pre-validation: every check that can fail synchronously and
-    // does not mutate state runs BEFORE the BeeKEM `removeMember`
-    // call. Once that call has run, the BeeKEM tree has advanced
-    // and we no longer have a clean rollback point.
+    // Pre-validation runs before the ACL provider or BeeKEM changes state. An
+    // ambiguous ACL-provider rejection retires the document; subsequent
+    // BeeKEM work uses snapshot rollback and commits only after preparation.
     // ---------------------------------------------------------------
     await this._ensureCurrentUserCanWrite();
-
-    // Check that the reader is already a reader.
-    if (!(await this._readers.check(reader))) {
-      return;
-    }
 
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'BeeKEM reader revocation',
     );
     const serializedReader = await serializePublicKey(reader);
+    let pendingRemoval = this._pendingBeeKEMRemovals.get(serializedReader);
+    if (pendingRemoval?.aclRemoveState === 'started') {
+      this._retireAfterAmbiguousSecurityProviderMutation(
+        `removeReader(${serializedReader})`,
+      );
+    }
+
+    // A provider may already have applied the ACL removal before a later local
+    // preparation failed. The retained transition record makes that exact
+    // operation retryable instead of treating the absent ACL row as success.
+    if (
+      pendingRemoval === undefined &&
+      (await this._readers.check(reader)) !== true
+    ) {
+      return;
+    }
 
     // The BeeKEM tree must be initialized before we can revoke
     // anything: leaf-derivation, key rotation, and PathUpdate
@@ -6491,22 +9446,30 @@ export class PeerborneDocument<
       );
     }
     const beekem = this._beekem;
+    const prepareEpochKey = this._keychain.prepareEpochKey;
+    if (typeof prepareEpochKey !== 'function') {
+      throw new Error(
+        `[${this.documentPath}] removeReader: this keychain does not implement ` +
+          `transactional prepareEpochKey; refusing a non-atomic BeeKEM transition`,
+      );
+    }
 
     // Look up the BeeKEM leaf for the removed reader. Fast-path: an
     // in-memory cache populated by `addReader` on this same writer
     // process. Slow-path: derive the leaf from BeeKEM tree state by
     // matching the reader's KEM public key against every leaf via
     // `BeeKEM.findLeafByPublicKey`. The slow path is what makes
-    // revocation survive a cache wipe (e.g. an in-process clear of
-    // `_readerLeafIndices` for testing, or a hypothetical sibling
-    // replica with the BeeKEM tree but without the cache).
+    // revocation survive an in-process `_readerLeafIndices` cache clear while
+    // the separately retained identity-to-KEM map is still available.
     //
     // Both lookups are in-memory only: BeeKEM tree state is not persisted
     // across writer restarts. A fully restarted writer that loses both
     // BeeKEM state and `_readerKemPublicKeys`
     // hits the "BeeKEM tree not initialized" error above OR the
     // "no leaf found" error below, both with actionable messaging.
-    let leafIndex = this._readerLeafIndices.get(serializedReader);
+    let leafIndex =
+      pendingRemoval?.leafIndex ??
+      this._readerLeafIndices.get(serializedReader);
     if (leafIndex === undefined) {
       const kemPub = this._readerKemPublicKeys.get(serializedReader);
       if (kemPub) {
@@ -6530,9 +9493,10 @@ export class PeerborneDocument<
               `KEM public key is recorded locally but the BeeKEM tree has ` +
               `no matching non-blanked leaf. The tree state may have ` +
               `diverged (leaf already blanked, or this replica never ` +
-              `received the Welcome that placed the reader). A fresh ` +
-              `document load against an authorized peer can re-bootstrap ` +
-              `the local tree.`,
+              `received the Welcome that placed the reader). Recovery requires ` +
+              `persisted current ratchet state or an authenticated membership ` +
+              `remove/rejoin; an ordinary load cannot reconstruct ` +
+              `private tree state.`,
           );
         }
       }
@@ -6547,80 +9511,91 @@ export class PeerborneDocument<
       );
     }
 
-    // ---------------------------------------------------------------
-    // Atomicity boundary: every step from here on advances BeeKEM
-    // state OR is best-effort relative to it.
-    // ---------------------------------------------------------------
+    // Build the local ACL delta before advancing BeeKEM. ACL providers mutate
+    // their local CRDT while producing the delta, so this is the last provider
+    // await allowed before the cryptographic transition. Nothing is published
+    // until the new epoch key has been installed and the exact encrypted ACL
+    // message has been prepared below.
+    if (pendingRemoval === undefined) {
+      pendingRemoval = { leafIndex, aclRemoveState: 'started' };
+      this._pendingBeeKEMRemovals.set(serializedReader, pendingRemoval);
+      try {
+        pendingRemoval.readerChanges = this._requireMembershipWireChanges(
+          await this._readers.remove(reader),
+          `removeReader(${serializedReader}) returned an unrepresentable change`,
+        );
+      } catch (error) {
+        this._retireAfterAmbiguousSecurityProviderMutation(
+          `removeReader(${serializedReader}) readers-ACL update`,
+          error,
+        );
+      }
+      pendingRemoval.aclRemoveState = 'succeeded';
+    }
+    const readerChanges = pendingRemoval.readerChanges as ChangesType;
 
-    // 1. Blank the leaf and re-key our path. `removeMember` re-derives
-    //    key material along the entire path and returns the
+    // The transactional BeeKEM primitive restores the exact tree/generation if
+    // any async preparation below rejects. The staged keychain and prepared
+    // change commits are the final synchronous steps.
+
+    // Transactionally blank the leaf and re-key our path. The operation
+    //    re-derives key material along the entire path and returns the
     //    `PathUpdate` to broadcast plus the new root secret. We use
     //    those return values directly -- no follow-up `update()` is
-    //    needed (it would only discard `removeMember`'s fresh
+    //    needed (it would only discard the removal transition's fresh
     //    material in favour of yet-another rotation).
-    const { pathUpdate, rootSecret } = await beekem.removeMember(leafIndex);
+    if (
+      pendingRemoval.pathDelivery === undefined ||
+      pendingRemoval.preparedReaderChange === undefined
+    ) {
+      let pathDelivery: PreparedBeeKEMDelivery | undefined;
+      let preparedReaderChange:
+        | PreparedLocalChange<ChangesType, PublicKey>
+        | undefined;
+      await beekem.removeMemberTransactionally(
+        leafIndex,
+        async ({ pathUpdate, rootSecret }) => {
+          const [newKey, derivedEpochId32] = await Promise.all([
+            deriveDocumentKeyFromRootSecret(rootSecret),
+            deriveEpochIdFromRootSecret(rootSecret),
+          ]);
+          const stagedEpoch = await prepareEpochKey.call(
+            this._keychain,
+            derivedEpochId32,
+            newKey as unknown as DocumentKey,
+          );
+          pathDelivery = await this._prepareBeeKEMPathUpdate(
+            pathUpdate,
+            derivedEpochId32,
+          );
+          preparedReaderChange = await this._prepareChange(
+            readerChanges,
+            crdtReaderChangeNode,
+            [derivedEpochId32, newKey as unknown as DocumentKey],
+          );
 
-    // 2. Derive the new document key + 32-byte epoch ID from the root
-    //    secret. **Hold these locally; do NOT install in the keychain
-    //    yet.** Installing now would flip `_keychain.current()` to the
-    //    new key, and the ACL-change broadcast in step 3 (which goes
-    //    through `_makeChange`) would then encrypt the readers-ACL
-    //    removal under the **new** key. Surviving readers would not
-    //    yet have the new key (they get it from the PathUpdate in
-    //    step 4, delivered separately and possibly out of order
-    //    relative to the gossipsub-broadcast ACL change), and so
-    //    would be unable to decrypt the ACL change.
-    //
-    //    The full 32-byte ID is both what we put on the wire AND what
-    //    the keychain stores: `keyIDLength` is now 32 in the shipped
-    //    providers (matches `deriveEpochIdFromRootSecret`), so there is
-    //    no truncation step. Earlier revisions truncated to 16 bytes
-    //    here, which collided with the keychain providers' UUID-style
-    //    cache-key encoding for 16-byte inputs and produced a
-    //    deterministic post-rotation decrypt failure on the receiver
-    //    side (key stored under hex, looked up under UUID format).
-    const [newKey, derivedEpochId32] = await Promise.all([
-      deriveDocumentKeyFromRootSecret(rootSecret),
-      deriveEpochIdFromRootSecret(rootSecret),
-    ]);
-
-    // 3. Commit the ACL removal and broadcast it -- still encrypted
-    //    under the **previous** keychain key (the new key hasn't been
-    //    installed yet; see step 5). Surviving readers can decrypt
-    //    this with the key they already have, regardless of whether
-    //    the PathUpdate in step 4 arrives before or after the ACL
-    //    change. The revoked reader can also decrypt the ACL change
-    //    (they still hold the previous key), which is fine -- the
-    //    ACL change just tells them they've been removed. They can't
-    //    derive the **new** key from step 4's PathUpdate because
-    //    their leaf is blanked.
-    //
-    //    Best-effort relative to the BeeKEM mutation: if `_makeChange`
-    //    or the underlying `_readers.remove(reader)` throws (signing,
-    //    serialization, pubsub publish failure, IPFS write error,
-    //    etc.) we log + fall through. The BeeKEM tree has already
-    //    advanced; unwinding it is not possible. Surviving readers
-    //    can re-sync the ACL via a fresh document load. We deliberately
-    //    do not retry: a failed pubsub publish typically indicates a
-    //    transport-level issue that the caller is better placed to
-    //    diagnose than this routine.
-    try {
-      const changes = await this._readers.remove(reader);
-      await this._makeChange(changes, crdtReaderChangeNode);
-    } catch (err) {
-      console.warn(
-        `[${this.documentPath}] removeReader: ACL-removal broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new epoch key will be ` +
-          `installed in the local keychain. Surviving readers may need to ` +
-          `re-load the document to observe the ACL change.`,
-        err,
+          // Final synchronous commits: every fallible outbound step completed
+          // while the BeeKEM transaction could still roll back exactly.
+          this._commitPreparedKeychainState(
+            stagedEpoch,
+            `removeReader(${serializedReader}) staged epoch commit`,
+          );
+          this._commitPreparedChange(preparedReaderChange);
+        },
       );
-      // Fall through: still distribute the PathUpdate and install
-      // the new local key so outgoing writer traffic is on the
-      // post-revocation epoch.
+      pendingRemoval.pathDelivery = pathDelivery;
+      pendingRemoval.preparedReaderChange = preparedReaderChange;
     }
 
-    // 4. Forget the removed reader's per-reader state so subsequent
+    const pathDelivery = pendingRemoval.pathDelivery;
+    const preparedReaderChange = pendingRemoval.preparedReaderChange;
+    if (pathDelivery === undefined || preparedReaderChange === undefined) {
+      throw new Error(
+        `[${this.documentPath}] removeReader: transition committed without prepared delivery`,
+      );
+    }
+
+    // Forget the removed reader's per-reader state so subsequent
     //    `removeReader` calls for the same key (idempotency) take
     //    the "already not a reader" early return instead of trying
     //    to re-revoke a blank leaf, and a future `addReader` for
@@ -6641,73 +9616,18 @@ export class PeerborneDocument<
     this._readerKemPublicKeys.delete(serializedReader);
     this._beekemWelcomeByLeaf.delete(leafIndex);
 
-    // 5. Broadcast the PathUpdate to every connected peer. Carries
-    //    the full 32-byte epoch ID; the receiver matches it against
-    //    its own locally-derived 32-byte value, then installs under
-    //    that same 32-byte ID. No truncation step on either side --
-    //    `keyIDLength` and `deriveEpochIdFromRootSecret` both use 32.
-    //
-    //    Best-effort relative to the BeeKEM mutation: if the
-    //    PathUpdate distribution throws (signing failure, payload
-    //    serialization error, all dials failed in a way the inner
-    //    fan-out propagated) we log + fall through to `addEpochKey`
-    //    so the writer still transitions to the new key for
-    //    outgoing encryption. Surviving readers that miss the
-    //    PathUpdate can recover via a fresh document load (the new
-    //    epoch key is part of the keychain CRDT once the next ACL
-    //    or document change is broadcast and observed).
-    try {
-      await this._distributeBeeKEMPathUpdate(pathUpdate, derivedEpochId32);
-    } catch (err) {
-      console.warn(
-        `[${this.documentPath}] removeReader: PathUpdate broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new key will be installed. ` +
-          `Surviving readers may need to re-load the document.`,
-        err,
-      );
-      // Fall through to addEpochKey so the writer transitions to
-      // the new key.
-    }
-
-    // 6. Install the new key into our LOCAL keychain. From this
-    //    point on, `_keychain.current()` returns the new key and
-    //    every subsequent `_makeChange` encrypts under it.
-    //
-    //    This step always runs (even if steps 3 or 5 above logged
-    //    failures) so the writer never gets stuck on the previous
-    //    key after BeeKEM has advanced -- subsequent local writes
-    //    would otherwise encrypt under a key that surviving readers
-    //    (post-PathUpdate) no longer accept.
-    //
-    //    Failure mode: if `addEpochKey` itself throws (local IO /
-    //    WebCrypto error), the writer is in a partially-rotated state
-    //    -- BeeKEM has advanced but the local keychain still holds
-    //    only the previous key. We surface the failure loudly here
-    //    so operators can intervene (re-open the document to
-    //    recover keychain state). `addEpochKey` is a local-only
-    //    call in both shipped keychain providers (no pubsub
-    //    side-effects, no remote IO), so this branch is rare in
-    //    practice; the publish-then-commit shape is deliberate
-    //    to keep the on-wire ordering correct.
-    try {
-      await this._keychain.addEpochKey(
-        derivedEpochId32,
-        newKey as unknown as DocumentKey,
-      );
-    } catch (err) {
-      // Don't suppress -- let the caller see the failure -- but
-      // log first so the operator-visible diagnostic doesn't get
-      // lost in the rethrow path.
-      console.error(
-        `[${this.documentPath}] removeReader: ACL change + PathUpdate broadcast succeeded, ` +
-          `but local keychain install of the new epoch key failed. The local writer cannot ` +
-          `encrypt under the new key until keychain state is recovered (e.g. re-open the ` +
-          `document). Surviving readers will have installed the new key from the PathUpdate. ` +
-          `Underlying error:`,
-        err,
-      );
-      throw err;
-    }
+    const fanout = this._enqueueBeeKEMFanout(async () => {
+      await this._fanoutPreparedBeeKEMDelivery(pathDelivery);
+      try {
+        await this._publishPreparedChange(preparedReaderChange);
+      } catch {
+        console.warn(
+          `[${this.documentPath}] removeReader: readers-ACL broadcast failed`,
+        );
+      }
+    });
+    this._pendingBeeKEMRemovals.delete(serializedReader);
+    return { fanout };
   }
 
   /**
@@ -6765,8 +9685,8 @@ export class PeerborneDocument<
   /**
    * Register a newly-added reader in the BeeKEM ratchet tree.
    *
-   * Called from `addReader` after the readers-ACL update. Imports the
-   * reader's own KEM public key as the new leaf, records the
+   * Called from `addReader` while the document transition mutex is held.
+   * Imports the reader's own KEM public key as the new leaf, records the
    * resulting leaf index in `_readerLeafIndices` so `removeReader`
    * can later look up the leaf to blank, caches the
    * `BeeKEMWelcome` produced by `BeeKEM.addMember` so it can be
@@ -6781,52 +9701,59 @@ export class PeerborneDocument<
    * the tree and produce a Welcome that no longer matches the
    * joiner's actual leaf index). Instead it returns the cached
    * Welcome from `_beekemWelcomeByLeaf`, so `addReader` can re-send
-   * the same Welcome bytes. If the cache is empty for the existing
-   * leaf (writer restarted), `null` is returned and the caller falls
-   * back to the existing "no BeeKEM bootstrap available, recipient
-   * must recover via a fresh document load" path.
+   * the same Welcome bytes without advancing generation. If the cache is empty
+   * for the existing leaf, `null` is returned and the caller fails closed; an
+   * authenticated remove/rejoin is required.
    *
-   * The path update produced by `BeeKEM.addMember` is not broadcast here.
-   * Existing members therefore cannot safely track a second active joiner.
-   * `addReader` enforces the initial-release founder-plus-one limit before
-   * mutating the ACL; lifting that limit requires a verified add-side
-   * PathUpdate delivery and convergence path.
+   * A fresh registration also returns the exact parent-bound PathUpdate and
+   * root secret from `BeeKEM.addMember`. The caller installs the derived local
+   * epoch before any remote I/O, then distributes that update to existing
+   * members before publishing the ACL change and targeted Welcome. Chained v2
+   * updates must be delivered in order; a missed generation requires persisted
+   * current ratchet state or an authenticated membership remove/rejoin and
+   * cannot be healed by a later update or ordinary encrypted load.
    */
-  private async _registerBeeKEMReader(
+  private async _registerBeeKEMReaderUnderLock(
     reader: PublicKey,
     readerKemPublicKey: Uint8Array,
+    commitFresh?: (result: {
+      pathUpdate: PathUpdateV2;
+      welcome: BeeKEMWelcomeV2;
+      rootSecret: Uint8Array;
+    }) => Promise<void>,
     beginMutation?: () => void,
-  ): Promise<BeeKEMWelcome | null> {
-    // Validate the recipient KEM public key length BEFORE any state
-    // mutation. Without this gate a malformed buffer would still be
-    // recorded in `_readerKemPublicKeys` and seeded into the BeeKEM
-    // leaf (via `crypto.subtle.importKey`), at which point WebCrypto
-    // surfaces a low-signal `DataError` after we have already mutated
-    // identity-keyed state. Fail fast here so callers (and `addReader`)
-    // see a precise, actionable error before any commitment.
-    if (readerKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
+  ): Promise<BeeKEMReaderRegistration> {
+    let kemPublicKey: Uint8Array;
+    try {
+      kemPublicKey = copyUnsharedUint8Array(
+        readerKemPublicKey,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        'readerKemPublicKey',
+      );
+    } catch {
       throw new Error(
         `[${this.documentPath}] _registerBeeKEMReader: readerKemPublicKey ` +
-          `must be ${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed ` +
-          `P-256), got ${readerKemPublicKey.byteLength}`,
+          `must be ${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed P-256)`,
       );
     }
-
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'BeeKEM reader revocation',
     );
     const serializedReader = await serializePublicKey(reader);
 
-    const previousKemPublicKey =
+    const existingKemPublicKey =
       this._readerKemPublicKeys.get(serializedReader);
     if (
-      previousKemPublicKey &&
-      !constantTimeEqual(previousKemPublicKey, readerKemPublicKey)
+      existingKemPublicKey !== undefined &&
+      !this._constantTimeEquals(existingKemPublicKey, kemPublicKey)
     ) {
       throw new Error(
-        `[${this.documentPath}] _registerBeeKEMReader: this reader is ` +
-          `already bound to a different KEM public key`,
+        `[${this.documentPath}] _registerBeeKEMReader: identity ` +
+          `${serializedReader} is already bound to a different KEM public ` +
+          `key. In-place KEM key rotation is not supported; remove and ` +
+          `re-add the reader through an authenticated membership change.`,
       );
     }
 
@@ -6835,19 +9762,47 @@ export class PeerborneDocument<
     // call `BeeKEM.addMember` again -- that would mutate the tree
     // and produce a Welcome that no longer matches the joiner's
     // actual leaf index. Instead we return the cached Welcome (if
-    // any) so the caller can re-send. A miss means the writer
-    // restarted between the original `addReader` and this re-invoke;
-    // we surface that as `null` so the caller falls through to the
-    // existing recovery messaging.
+    // any) so the caller can re-send. A cache miss has no supported
+    // reconstruction path; surface it as `null` so the caller fails closed
+    // with the existing recovery guidance.
     const existingLeaf = this._readerLeafIndices.get(serializedReader);
     if (existingLeaf !== undefined) {
-      if (!previousKemPublicKey) {
+      if (existingKemPublicKey === undefined) {
         throw new Error(
-          `[${this.documentPath}] _registerBeeKEMReader: the existing reader ` +
-            'leaf has no recoverable KEM binding',
+          `[${this.documentPath}] _registerBeeKEMReader: identity ` +
+            `${serializedReader} has an existing BeeKEM leaf without a ` +
+            `bound KEM public key; refusing an unverifiable re-registration.`,
         );
       }
-      return this._beekemWelcomeByLeaf.get(existingLeaf) ?? null;
+      return {
+        welcome: this._beekemWelcomeByLeaf.get(existingLeaf) ?? null,
+      };
+    }
+
+    // `_readerLeafIndices` is explicitly a fast-path cache and may be
+    // cleared while the KEM binding and BeeKEM tree remain live. Recover
+    // that cache instead of allocating another leaf for the same identity.
+    if (existingKemPublicKey !== undefined) {
+      if (!this._beekemInitialized || !this._beekem) {
+        throw new Error(
+          `[${this.documentPath}] _registerBeeKEMReader: identity ` +
+            `${serializedReader} has a KEM binding but the BeeKEM tree is ` +
+            `not initialized; refusing to create a duplicate membership.`,
+        );
+      }
+      const recoveredLeaf =
+        await this._beekem.findLeafByPublicKey(existingKemPublicKey);
+      if (recoveredLeaf === undefined) {
+        throw new Error(
+          `[${this.documentPath}] _registerBeeKEMReader: identity ` +
+            `${serializedReader} has a KEM binding but no matching live ` +
+            `BeeKEM leaf; refusing to create a duplicate membership.`,
+        );
+      }
+      this._readerLeafIndices.set(serializedReader, recoveredLeaf);
+      return {
+        welcome: this._beekemWelcomeByLeaf.get(recoveredLeaf) ?? null,
+      };
     }
 
     // Bootstrap the local BeeKEM tree if needed. On the founder's
@@ -6856,23 +9811,21 @@ export class PeerborneDocument<
     // (writers other than the founder must themselves have been
     // bootstrapped via a Welcome before they can call `addReader`).
     //
-    // Defense-in-depth gate: the caller path through `addReader`
-    // already rejects a joined writer before running `_makeChange`, so by
-    // the time we reach here `_createdLocally` must identify the genuine
-    // founder. A future caller that invokes `_registerBeeKEMReader`
-    // outside `addReader` without that provenance would silently
-    // create a divergent founder tree on a peer that already has
-    // shared state. Throw rather than spawn the rogue tree; the
-    // upstream `addReader` gate's recovery message points at the
-    // right path.
+    // Defense-in-depth: only a locally-created founder (or the legacy
+    // pre-open empty-state path) may initialize leaf 0. A loaded/invited
+    // replica must never infer founder status from the current hash count.
     if (!this._beekemInitialized) {
-      if (!this._createdLocally) {
+      if (
+        !this._localFounderEstablished &&
+        (this._hashes.size > 0 || this._invitationEpoch !== undefined)
+      ) {
         throw new Error(
           `[${this.documentPath}] _registerBeeKEMReader: cannot ` +
             `initialize a fresh founder BeeKEM tree because the local ` +
-            `replica did not create this document locally. A ` +
-            `joined writer must bootstrap via a signed invitation acceptance ` +
-            `before they can register ` +
+            `replica has existing or invited state without local creation ` +
+            `provenance. A ` +
+            `joined writer must bootstrap via a fresh authenticated BeeKEM ` +
+            `Welcome before they can register ` +
             `readers cryptographically.`,
         );
       }
@@ -6886,13 +9839,6 @@ export class PeerborneDocument<
           `cannot register a new reader.`,
       );
     }
-    if (beekem.memberCount >= 2) {
-      throw new Error(
-        `[${this.documentPath}] _registerBeeKEMReader: cannot add another ` +
-          'leaf when the exact existing reader Welcome is unavailable',
-      );
-    }
-
     // Import the reader's own KEM public key as their leaf. This is
     // critical for joiner-side decryption: `BeeKEM.processWelcome`
     // uses the leaf private key (held by the joiner) to decrypt the
@@ -6908,37 +9854,183 @@ export class PeerborneDocument<
     // leaf use we need the extractable variant.
     const memberPublicKey = await crypto.subtle.importKey(
       'raw',
-      readerKemPublicKey as unknown as BufferSource,
+      kemPublicKey as unknown as BufferSource,
       { name: 'ECDH', namedCurve: 'P-256' },
       true, // extractable
       [],
     );
     beginMutation?.();
-    const result = await beekem.addMember(memberPublicKey);
-    // Commit all identity-indexed caches only after the transactional BeeKEM
-    // addition and Welcome construction succeed.
-    this._readerKemPublicKeys.set(
-      serializedReader,
-      new Uint8Array(readerKemPublicKey),
+    const result = await beekem.addMemberTransactionally(
+      memberPublicKey,
+      async (freshResult) => {
+        await commitFresh?.(freshResult);
+        return freshResult;
+      },
     );
-    // `BeeKEMWelcome.leafIndex` is the node index of the new leaf
-    // (even-numbered slot in the tree-math layout), which is exactly
-    // what `removeMember` consumes.
+
+    // Publish the identity binding and all related caches only after the
+    // BeeKEM transition succeeds. This keeps a failed import/add retryable
+    // and makes the cache tuple visible atomically to the next registration.
+    this._readerKemPublicKeys.set(serializedReader, kemPublicKey);
     this._readerLeafIndices.set(serializedReader, result.welcome.leafIndex);
-    // Cache the Welcome under its leaf index so a subsequent
-    // `addReader` re-invocation can re-emit it without mutating the
-    // tree. Keyed by leaf index (not identity) so revocation can
-    // clear the cache atomically when the leaf is blanked.
     this._beekemWelcomeByLeaf.set(result.welcome.leafIndex, result.welcome);
-    return result.welcome;
+    return result;
+  }
+
+  private async _runBeeKEMRemoteIngress<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const pending = this._beekemRemoteIngressPending ?? 0;
+    if (pending >= PeerborneDocument._MAX_PENDING_REMOTE_BEEKEM_INGRESS) {
+      return Promise.reject(new Error('BeeKEM remote ingress is at capacity'));
+    }
+    this._beekemRemoteIngressPending = pending + 1;
+    try {
+      return await operation();
+    } finally {
+      this._beekemRemoteIngressPending--;
+    }
+  }
+
+  private _runBeeKEMTransition<T>(
+    operation: () => Promise<T>,
+    remote = false,
+  ): Promise<T> {
+    const remotePending = this._beekemRemoteTransitionsPending ?? 0;
+    if (
+      remote &&
+      remotePending >= PeerborneDocument._MAX_PENDING_REMOTE_BEEKEM_TRANSITIONS
+    ) {
+      return Promise.reject(
+        new Error(
+          'BeeKEM authenticated remote transition queue is at capacity',
+        ),
+      );
+    }
+    if (remote) {
+      this._beekemRemoteTransitionsPending = remotePending + 1;
+    }
+    this._beekemTransitionsPending = (this._beekemTransitionsPending ?? 0) + 1;
+    const tail = this._beekemTransitionTail ?? Promise.resolve();
+    const result = tail.then(operation, operation);
+    this._beekemTransitionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result.finally(() => {
+      this._beekemTransitionsPending--;
+      if (remote) this._beekemRemoteTransitionsPending--;
+    });
+  }
+
+  private _runWriterMembershipTransition<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const tail = this._writerMembershipTail ?? Promise.resolve();
+    const result = tail.then(operation, operation);
+    this._writerMembershipTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private _enqueueBeeKEMFanout(operation: () => Promise<void>): Promise<void> {
+    const tail = this._beekemFanoutTail ?? Promise.resolve();
+    const result = tail.then(operation, operation);
+    this._beekemFanoutTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async _withMembershipDeliveryDeadline<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    onTimeout?: (error: Error) => void,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error('membership peer delivery timed out');
+        controller.abort(error);
+        try {
+          onTimeout?.(error);
+        } catch {
+          // Stream teardown is best-effort; the deadline must still reject.
+        } finally {
+          reject(error);
+        }
+      }, PeerborneDocument._MEMBERSHIP_DELIVERY_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([operation(controller.signal), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async _fanoutPreparedBeeKEMDelivery(
+    delivery: PreparedBeeKEMDelivery,
+  ): Promise<void> {
+    const connected =
+      this.swarm.heliaNode.libp2p
+        .getConnections()
+        ?.map((connection) => connection.remoteAddr) ?? [];
+    const peers = Array.from(
+      new Map(connected.map((peer) => [peer.toString(), peer])).values(),
+    );
+    let failedPeerCount = 0;
+    let nextPeer = 0;
+    const workerCount = Math.min(
+      peers.length,
+      PeerborneDocument._MAX_CONCURRENT_MEMBERSHIP_DELIVERIES,
+    );
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextPeer < peers.length) {
+        const peer = peers[nextPeer++];
+        let stream: ReturnType<typeof wrapStream> | undefined;
+        try {
+          await this._withMembershipDeliveryDeadline(
+            async (signal) => {
+              const rawStream = await this.libp2p.dialProtocol(
+                peer,
+                [delivery.protocol],
+                { runOnLimitedConnection: true, signal },
+              );
+              if (signal.aborted) {
+                rawStream.abort(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error('BeeKEM peer delivery aborted'),
+                );
+                throw signal.reason;
+              }
+              stream = wrapStream(rawStream);
+              await pipe([delivery.payload], stream.sink);
+            },
+            (error) => stream?.abort(error),
+          );
+        } catch {
+          failedPeerCount++;
+          console.warn(`Failed to send BeeKEM ${delivery.label} to a peer`);
+        }
+      }
+    });
+    await Promise.all(workers);
+    if (failedPeerCount > 0) {
+      console.warn(
+        `BeeKEM ${delivery.label} for ${this.documentPath} failed to reach ${failedPeerCount} peer(s)`,
+      );
+    }
   }
 
   /**
-   * Broadcast a BeeKEM `PathUpdate` to every connected peer over the
-   * `beekemPathUpdateV1` protocol. Used by `removeReader` after a
-   * successful `removeMember` rotation (the leaf-blank + path re-key
-   * are both performed inside `removeMember`; no follow-up
-   * `BeeKEM.update()` call is involved).
+   * Prepare an immutable BeeKEM `PathUpdate` delivery for the
+   * `beekemPathUpdateV2` protocol. The caller owns the transactional
+   * `removeMemberTransactionally` state change, local key commit, and later
+   * fanout; this helper performs no tree mutation or network I/O.
    *
    * Wire format mirrors `documentKeyUpdateV2`: a 4-byte big-endian
    * document-path length, the UTF-8 path bytes, then the serialized
@@ -6949,18 +10041,14 @@ export class PeerborneDocument<
    * forged PathUpdate that steers surviving readers onto an
    * attacker-controlled ratchet state.
    *
-   * Best-effort fan-out: each failed dial is logged but does not
-   * abort the broadcast. A surviving reader that misses the
-   * PathUpdate falls back to a fresh document load to recover key
-   * state, matching the legacy `_distributeKeyUpdate` posture.
    */
-  private async _distributeBeeKEMPathUpdate(
-    pathUpdate: PathUpdate,
+  private async _prepareBeeKEMPathUpdate(
+    pathUpdate: PathUpdateV2,
     pathUpdateEpochId: Uint8Array,
-  ): Promise<void> {
+  ): Promise<PreparedBeeKEMDelivery> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
-      pathUpdate: serializePathUpdateForWire(pathUpdate),
+      pathUpdate: serializePathUpdateV2ForWire(pathUpdate),
       pathUpdateEpochId,
     };
 
@@ -6969,13 +10057,14 @@ export class PeerborneDocument<
     // connected peer rewrite every surviving reader's BeeKEM state.
     message.signature = await this._signAsWriterUnconditional(message);
 
-    const serialized = this._syncMessageSerializer.serializeSyncMessage(message);
+    const serialized =
+      this._syncMessageSerializer.serializeSyncMessage(message);
 
     const pathBytes = this._encoder.encode(this.documentPath);
     if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
       throw new Error(
         `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM PathUpdate v1 protocol`,
+          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM PathUpdate v2 protocol`,
       );
     }
     const pathHeader = new Uint8Array(4);
@@ -6984,50 +10073,22 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
-
-    const peers =
-      this.swarm.heliaNode.libp2p
-        .getConnections()
-        ?.map((x) => x.remoteAddr) ?? [];
-
-    const failedPeers: string[] = [];
-    for (const peer of peers) {
-      try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemPathUpdateV1], {
-            runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
-      } catch (err) {
-        failedPeers.push(peer.toString());
-        console.warn(
-          `Failed to send BeeKEM PathUpdate to peer:`,
-          peer.toString(),
-          err,
-        );
-      }
-    }
-
-    if (failedPeers.length > 0) {
-      console.warn(
-        `BeeKEM PathUpdate for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
-        'Affected peers may be unable to decrypt subsequent messages until they reload the document.',
-      );
-    }
+    return {
+      protocol: beekemPathUpdateV2,
+      payload: concatUint8Arrays(pathHeader, pathBytes, serialized),
+      label: 'PathUpdate',
+    };
   }
 
   /**
-   * Handle an inbound `beekemPathUpdateV1` payload (already
+   * Handle an inbound BeeKEM PathUpdate v1 or v2 payload (already
    * de-framed of the path-prefix header by the shared handler in
    * `peerborne.ts`).
    *
    * Validates the writer signature, deserializes the carried
-   * `PathUpdate`, applies it to the local BeeKEM tree via
-   * `processPathUpdate`, and installs the resulting document key
-   * under the supplied epoch ID. Mirrors the wire framing used by
+   * `PathUpdate`, applies it and the staged key install through the
+   * transactional BeeKEM helper, and installs the resulting document key under
+   * the supplied epoch ID. Mirrors the wire framing used by
    * `handleKeyUpdateRequestData` and `handleBeeKEMWelcomeRequestData`.
    *
    * SECURITY: the writer signature is **always** verified, regardless
@@ -7042,75 +10103,179 @@ export class PeerborneDocument<
    */
   public async handleBeeKEMPathUpdateRequestData(
     payload: Uint8Array,
+    protocolVersion: BeeKEMWireVersion = 1,
   ): Promise<void> {
-    return this._mutationQueue.run(() =>
-      this._handleBeeKEMPathUpdateRequestDataUnlocked(payload),
-    );
+    try {
+      const legacyV1Allowed =
+        protocolVersion === 1 &&
+        this.swarm.allowInsecureLegacyBeeKEMPathUpdateV1;
+      if (protocolVersion !== 2 && !legacyV1Allowed) {
+        console.warn(
+          `Dropping disabled or unsupported BeeKEM PathUpdate for ${this.documentPath}`,
+        );
+        return;
+      }
+      await this._runBeeKEMRemoteIngress(async () => {
+        const authenticated = await this._preauthenticateBeeKEMPathUpdate(
+          payload,
+          protocolVersion,
+        );
+        if (authenticated === null) return;
+        await this._runInMutationQueue(() =>
+          this._handleBeeKEMPathUpdateRequestDataUnlocked(
+            authenticated,
+            protocolVersion,
+          ),
+        );
+      });
+    } catch {
+      console.warn(
+        `Dropping malformed BeeKEM PathUpdate for ${this.documentPath}`,
+      );
+    }
   }
 
   private async _handleBeeKEMPathUpdateRequestDataUnlocked(
-    payload: Uint8Array,
+    authenticated: AuthenticatedBeeKEMPathUpdate<ChangesType, PublicKey>,
+    protocolVersion: BeeKEMWireVersion,
   ): Promise<void> {
     try {
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
-      try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(payload);
-      } catch (err) {
-        console.warn(
-          `Dropping malformed BeeKEM PathUpdate for ${this.documentPath}:`,
-          err,
-        );
-        return;
-      }
-
-      // Defense-in-depth against misrouted payloads (the shared
-      // handler already routes by document path).
-      if (message.documentId && message.documentId !== this.documentPath) {
-        console.warn(
-          `Ignoring BeeKEM PathUpdate for wrong document ` +
-            `(${message.documentId} !== ${this.documentPath})`,
-        );
-        return;
-      }
-
-      // Writer signature is mandatory.
-      if (!message.signature) {
-        console.warn(
-          `Dropping BeeKEM PathUpdate for ${this.documentPath}: missing signature`,
-        );
-        return;
-      }
-      const { signature, ...messageWithoutSignature } = message;
-      const raw = this._syncMessageSerializer.serializeSyncMessage(
-        messageWithoutSignature,
+      this._throwIfSecurityProviderMutationFailed();
+      await this._runBeeKEMTransition(
+        () =>
+          this._handleBeeKEMPathUpdateUnderLock(authenticated, protocolVersion),
+        true,
       );
-      if (!(await this._verifyWelcomeWriterSignature(raw, signature))) {
+    } catch {
+      console.warn(
+        `Dropping malformed BeeKEM PathUpdate for ${this.documentPath}`,
+      );
+    }
+  }
+
+  private async _preauthenticateBeeKEMPathUpdate(
+    payload: Uint8Array,
+    protocolVersion: BeeKEMWireVersion,
+  ): Promise<AuthenticatedBeeKEMPathUpdate<ChangesType, PublicKey> | null> {
+    const stablePayload = copyUnsharedUint8Array(
+      payload,
+      1,
+      PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+      'BeeKEM PathUpdate payload',
+    );
+    let message: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      const parsed =
+        this._syncMessageSerializer.deserializeSyncMessage(stablePayload);
+      const canonical = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(parsed),
+        1,
+        PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+        'BeeKEM PathUpdate encoding',
+      );
+      message = snapshotEnumerableOwnDataObject<
+        CRDTSyncMessage<ChangesType, PublicKey>
+      >(
+        this._syncMessageSerializer.deserializeSyncMessage(canonical),
+        'BeeKEM PathUpdate message',
+      );
+    } catch {
+      return null;
+    }
+
+    if (!isBeeKEMMessageForDocument(message.documentId, this.documentPath)) {
+      return null;
+    }
+    if (
+      typeof message.signature !== 'string' ||
+      message.signature.length === 0
+    ) {
+      return null;
+    }
+    if (message.pathUpdate === undefined) return null;
+
+    let pathUpdate: PathUpdate | PathUpdateV2;
+    try {
+      pathUpdate =
+        protocolVersion === 2
+          ? deserializePathUpdateV2FromWire(message.pathUpdate)
+          : deserializePathUpdateFromWire(message.pathUpdate);
+      message = {
+        ...message,
+        pathUpdate:
+          protocolVersion === 2
+            ? serializePathUpdateV2ForWire(pathUpdate as PathUpdateV2)
+            : serializePathUpdateForWire(pathUpdate as PathUpdate),
+      };
+    } catch {
+      return null;
+    }
+
+    let pathUpdateEpochId: Uint8Array;
+    try {
+      pathUpdateEpochId = copyUnsharedUint8Array(
+        message.pathUpdateEpochId,
+        EPOCH_ID_LENGTH,
+        EPOCH_ID_LENGTH,
+        'pathUpdateEpochId',
+      );
+    } catch {
+      return null;
+    }
+    message = { ...message, pathUpdateEpochId };
+
+    const signature = message.signature!;
+    const { signature: _signature, ...messageWithoutSignature } = message;
+    const raw = copyUnsharedUint8Array(
+      this._syncMessageSerializer.serializeSyncMessage(messageWithoutSignature),
+      1,
+      PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+      'BeeKEM PathUpdate signature payload',
+    );
+    if ((await this._verifyWelcomeWriterSignature(raw, signature)) !== true) {
+      return null;
+    }
+
+    return {
+      message: message as CRDTSyncMessage<ChangesType, PublicKey> & {
+        signature: string;
+        pathUpdateEpochId: Uint8Array;
+      },
+      pathUpdate,
+    };
+  }
+
+  private async _handleBeeKEMPathUpdateUnderLock(
+    authenticated: AuthenticatedBeeKEMPathUpdate<ChangesType, PublicKey>,
+    protocolVersion: BeeKEMWireVersion,
+  ): Promise<void> {
+    try {
+      const legacyV1Allowed =
+        protocolVersion === 1 &&
+        this.swarm.allowInsecureLegacyBeeKEMPathUpdateV1;
+      if (protocolVersion !== 2 && !legacyV1Allowed) {
+        return;
+      }
+      this._throwIfSecurityProviderMutationFailed();
+      const { message, pathUpdate } = authenticated;
+
+      // Re-authorize against the current writer ACL at the state-commit
+      // boundary. Only messages that already passed this check in the bounded
+      // ingress stage can reach the transition queue.
+      const signature = message.signature!;
+      const { signature: _authenticatedSignature, ...messageWithoutSignature } =
+        message;
+      const raw = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(
+          messageWithoutSignature,
+        ),
+        1,
+        PeerborneDocument._MAX_BEEKEM_WIRE_PAYLOAD_BYTES,
+        'BeeKEM PathUpdate signature payload',
+      );
+      if ((await this._verifyWelcomeWriterSignature(raw, signature)) !== true) {
         console.warn(
           `Dropping BeeKEM PathUpdate for ${this.documentPath}: invalid signature`,
-        );
-        return;
-      }
-
-      if (!message.pathUpdate) {
-        console.warn(
-          `Dropping BeeKEM PathUpdate for ${this.documentPath}: missing pathUpdate field`,
-        );
-        return;
-      }
-      if (!message.pathUpdateEpochId) {
-        console.warn(
-          `Dropping BeeKEM PathUpdate for ${this.documentPath}: missing pathUpdateEpochId field`,
-        );
-        return;
-      }
-
-      let pathUpdate: PathUpdate;
-      try {
-        pathUpdate = deserializePathUpdateFromWire(message.pathUpdate);
-      } catch (err) {
-        console.warn(
-          `Dropping malformed BeeKEM PathUpdate for ${this.documentPath}:`,
-          err,
         );
         return;
       }
@@ -7126,8 +10291,8 @@ export class PeerborneDocument<
       //    would also do unnecessary cryptographic work and (worse)
       //    leave a stranded fresh tree behind for the next
       //    PathUpdate to confuse. Drop the message explicitly and
-      //    log: the user will recover keychain state via a fresh
-      //    document load against an authorized peer.
+      //    log: recovery requires persisted current ratchet state or an
+      //    authenticated remove/rejoin.
       //
       //  - **Stale local state**: `processPathUpdate` throws (the
       //    sender's path doesn't intersect our blanked path, or
@@ -7136,127 +10301,121 @@ export class PeerborneDocument<
       if (!this._beekemInitialized || !this._beekem) {
         console.warn(
           `Dropping BeeKEM PathUpdate for ${this.documentPath}: local BeeKEM ` +
-            `state is not initialized (no Welcome received). Recover by ` +
-            `performing a fresh document load against an authorized peer.`,
+          `state is not initialized (no Welcome received). Recovery requires ` +
+            `an authenticated membership remove/rejoin, not an ordinary encrypted load.`,
         );
         return;
       }
       const beekem = this._beekem;
-      let rootSecret: Uint8Array;
-      try {
-        rootSecret = await beekem.processPathUpdate(pathUpdate);
-      } catch (err) {
+      const applyResult = await applyBeeKEMPathUpdateWithEpoch<DocumentKey>(
+        beekem,
+        pathUpdate,
+        protocolVersion,
+        message.pathUpdateEpochId,
+        {
+          deriveEpochId: deriveEpochIdFromRootSecret,
+          deriveDocumentKey: async (rootSecret) =>
+            (await deriveDocumentKeyFromRootSecret(
+              rootSecret,
+            )) as unknown as DocumentKey,
+          installEpochKey: async (epochId, key) => {
+            const prepareEpochKey = this._keychain.prepareEpochKey;
+            if (typeof prepareEpochKey !== 'function') {
+              throw new Error(
+                'Keychain does not implement transactional prepareEpochKey',
+              );
+            }
+            const stagedEpoch = await prepareEpochKey.call(
+              this._keychain,
+              epochId,
+              key,
+            );
+            if (!(await this._reauthorizeCanonicalBeeKEMMessage(message))) {
+              throw new Error(
+                'BeeKEM PathUpdate writer authorization changed before key commit',
+              );
+            }
+            this._throwIfSecurityProviderMutationFailed();
+            this._commitPreparedKeychainState(
+              stagedEpoch,
+              'inbound BeeKEM PathUpdate staged epoch commit',
+            );
+          },
+        },
+      );
+
+      if (applyResult.kind === 'applied') {
+        console.log(
+          `Installed BeeKEM-derived epoch key for ${this.documentPath} via PathUpdate`,
+        );
+        return;
+      }
+      if (applyResult.kind === 'duplicate') {
+        // The ratchet already applied these exact signed v2 bytes. The helper
+        // still verifies the epoch binding, but deliberately skips appending
+        // the same epoch key to CRDT-backed keychains a second time.
+        return;
+      }
+
+      if (applyResult.reason === 'legacy-downgrade') {
         console.warn(
-          `Failed to apply BeeKEM PathUpdate for ${this.documentPath}: ` +
-            `local tree state could not process the update. ` +
-            `Falling back to a fresh document load may be required to ` +
-            `recover keychain state.`,
-          err,
+          `Dropping legacy BeeKEM PathUpdate for ${this.documentPath}: ` +
+            `local state is generation-bearing and cannot be downgraded to v1.`,
         );
         return;
       }
 
-      // Validate the sender's epoch ID against our locally-derived
-      // value. The wire carries the FULL 32-byte HKDF output and the
-      // keychain installs under the same 32-byte ID -- no truncation
-      // step on either side, so the wire-format and storage key are
-      // byte-identical to what both ends will key on for future
-      // encrypted-block lookups.
-      const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
-      const senderEpochId32 = message.pathUpdateEpochId;
-      if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
+      if (applyResult.reason === 'epoch-mismatch') {
         console.warn(
           `BeeKEM PathUpdate epoch-ID mismatch for ${this.documentPath}: ` +
             `local derivation diverged from sender. PathUpdate dropped.`,
         );
         return;
       }
-
-      const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
-      try {
-        await this._keychain.addEpochKey(
-          localEpochId32,
-          newKey as unknown as DocumentKey,
-        );
-      } catch (err) {
+      if (applyResult.reason === 'key-install') {
         console.error(
-          `Failed to install BeeKEM-derived epoch key in keychain for ${this.documentPath}:`,
-          err,
+          `Failed to install BeeKEM-derived epoch key in keychain for ${this.documentPath}`,
         );
         return;
       }
-
-      console.log(
-        `Installed BeeKEM-derived epoch key for ${this.documentPath} via PathUpdate`,
+      console.warn(
+        `Failed to apply BeeKEM PathUpdate for ${this.documentPath}: ` +
+          `local tree state could not process the update. ` +
+          `Persisted current ratchet state or an authenticated remove/rejoin ` +
+          `is required for recovery.`,
       );
-    } catch (err: unknown) {
+    } catch {
       console.error(
-        `Error handling BeeKEM PathUpdate for document ${this.documentPath}:`,
-        err,
+        `Error handling BeeKEM PathUpdate for document ${this.documentPath}`,
       );
     }
   }
 
   /**
-   * Distribute keychain changes to all connected peers via the
-   * legacy `documentKeyUpdateV2` protocol (encrypts the new key under
-   * the previous key).
+   * Frames an already-prepared combined writer-removal sync envelope for
+   * direct delivery over legacy `documentKeyUpdateV2`.
    *
-   * `removeReader` no longer uses this path: it rotates the document
-   * key via BeeKEM's ratchet tree and broadcasts a signed
-   * `PathUpdate` over `beekemPathUpdateV1` instead, which closes the
-   * revocation-latency gap where a removed-but-still-connected
-   * reader could decrypt the rotation message (#189 §5.4 item 5).
+   * `prepared.encryptedPayload` already contains the replacement-key delta and
+   * ACL removal encrypted under the previous key and, when signing is enabled,
+   * bound by one signature. This method adds only the length-prefixed path.
+   * Both transports feed the same envelope through `sync()`. When signing is
+   * enabled, `sync()` authenticates it; in either mode it merges keychain state
+   * before applying the ACL node. Retries reuse identical bytes. This ordering
+   * is not cross-provider rollback, a delivery guarantee, or confidentiality
+   * from a previous-key holder.
    *
-   * `removeWriter` continues to use this method: writer revocation
-   * has different threat properties (the removed writer no longer
-   * has write capability, even if they retain read access through
-   * the old key until the next BeeKEM rotation), and the BeeKEM
-   * tree currently models reader membership only. A follow-up
-   * change will fold writer revocation into the BeeKEM path too.
-   *
-   * @param keychainChanges The keychain CRDT changes containing the new key.
-   * @param previousKey The previous document key to encrypt the update with.
-   *   Peers already have this key and can decrypt the message to learn about the new key.
-   *   This avoids the chicken-and-egg problem of encrypting with a key peers don't have yet.
+   * @param prepared The immutable combined sync envelope prepared by
+   *   `_prepareChange`.
    */
-  private async _distributeKeyUpdate(
-    keychainChanges: ChangesType,
-    previousKey: [Uint8Array, DocumentKey],
-  ) {
-    const keyUpdateMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
-      documentId: this.documentPath,
-      keychainChanges,
-    };
-
-    // Sign the key update message.
-    keyUpdateMessage.signature = await this._signAsWriter(keyUpdateMessage);
-
-    const serialized =
-      this._syncMessageSerializer.serializeSyncMessage(keyUpdateMessage);
-
-    // Encrypt with the PREVIOUS key so that existing peers can decrypt the message.
-    // Peers don't have the new key yet -- that's what this message delivers to them.
-    const [previousKeyID, previousDocumentKey] = previousKey;
-    const { nonce, data } = await this._authProvider.encrypt(
-      serialized,
-      previousDocumentKey,
-    );
-    if (!nonce) {
-      throw new Error(`Failed to encrypt key update! Nonce cannot be empty`);
-    }
-
-    // Send to all connected peers via the V2 key-update protocol.
+  private async _prepareKeyUpdate(
+    prepared: PreparedLocalChange<ChangesType, PublicKey>,
+  ): Promise<PreparedKeyUpdateDelivery> {
     // V2 payload format: 4-byte big-endian path length + UTF-8 path + encrypted payload
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
-
     const pathBytes = this._encoder.encode(this.documentPath);
     if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
       throw new Error(
         `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-        `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the V2 key-update protocol`,
+          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the V2 key-update protocol`,
       );
     }
     const pathHeader = new Uint8Array(4);
@@ -7265,39 +10424,77 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
-    const v2Payload = concatUint8Arrays(pathHeader, pathBytes, previousKeyID, nonce, data);
+    return {
+      payload: copyUnsharedUint8Array(
+        concatUint8Arrays(pathHeader, pathBytes, prepared.encryptedPayload),
+        1,
+        MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+        'V2 key-update request',
+      ),
+    };
+  }
+
+  private async _fanoutPreparedKeyUpdate(
+    delivery: PreparedKeyUpdateDelivery,
+  ): Promise<void> {
+    const v2Payload = delivery.payload;
+
+    // Send to all connected peers via the V2 key-update protocol.
+    const connected =
+      this.swarm.heliaNode.libp2p
+        .getConnections()
+        ?.map((connection) => connection.remoteAddr) ?? [];
+    const peers = Array.from(
+      new Map(connected.map((peer) => [peer.toString(), peer])).values(),
+    );
 
     // WARNING: If some peers fail to receive this update, they will be unable
     // to decrypt future messages encrypted with the new key. They will need to
-    // perform a fresh document load to recover the keychain state.
-    const failedPeers: string[] = [];
-    for (const peer of peers) {
-      try {
-        // Wrap the v3 stream so we can keep using the legacy `pipe(..., sink)`
-        // pattern below; see snapshot-load above for the rationale.
-        const stream = wrapStream(await this.libp2p.dialProtocol(peer, [
-          documentKeyUpdateV2,
-        ], { runOnLimitedConnection: true }));
-        await pipe(
-          [v2Payload],
-          stream.sink,
-        );
-      } catch (err) {
-        const peerAddr = peer.toString();
-        failedPeers.push(peerAddr);
-        console.warn(
-          `Failed to send key update to peer:`,
-          peerAddr,
-          err,
-        );
+    // recover through an authenticated membership remove/rejoin.
+    // An ordinary load is encrypted under the unknown current key.
+    let failedPeerCount = 0;
+    let nextPeer = 0;
+    const workerCount = Math.min(
+      peers.length,
+      PeerborneDocument._MAX_CONCURRENT_MEMBERSHIP_DELIVERIES,
+    );
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextPeer < peers.length) {
+        const peer = peers[nextPeer++];
+        let stream: ReturnType<typeof wrapStream> | undefined;
+        try {
+          await this._withMembershipDeliveryDeadline(
+            async (signal) => {
+              const rawStream = await this.libp2p.dialProtocol(
+                peer,
+                [documentKeyUpdateV2],
+                { runOnLimitedConnection: true, signal },
+              );
+              if (signal.aborted) {
+                rawStream.abort(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error('key-update peer delivery aborted'),
+                );
+                throw signal.reason;
+              }
+              stream = wrapStream(rawStream);
+              await pipe([v2Payload], stream.sink);
+            },
+            (error) => stream?.abort(error),
+          );
+        } catch {
+          failedPeerCount++;
+          console.warn('Failed to send key update to a peer');
+        }
       }
-    }
+    });
+    await Promise.all(workers);
 
-    if (failedPeers.length > 0) {
+    if (failedPeerCount > 0) {
       console.warn(
-        `Key update for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
-        'These peers may be unable to decrypt future messages until they reload the document.',
+        `Key update for ${this.documentPath} failed to reach ${failedPeerCount} peer(s). ` +
+        'These peers may be unable to decrypt future messages; recovery requires an authenticated membership remove/rejoin, not an ordinary encrypted load.',
       );
     }
   }
@@ -7314,20 +10511,38 @@ export class PeerborneDocument<
   public async handleKeyUpdateRequestData(
     payload: Uint8Array,
   ): Promise<void> {
-    return this._mutationQueue.run(() =>
-      this._handleKeyUpdateRequestDataUnlocked(payload),
-    );
+    let stablePayload: Uint8Array;
+    try {
+      stablePayload = copyUnsharedUint8Array(
+        payload,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBits + 1,
+        MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+        'key-update payload',
+      );
+    } catch {
+      console.warn(`Ignoring malformed key-update for ${this.documentPath}`);
+      return;
+    }
+    try {
+      await this._runInMutationQueue(() =>
+        this._handleKeyUpdateRequestDataUnlocked(stablePayload),
+      );
+    } catch {
+      // Ingress handlers intentionally drop failures. Keep that contract when
+      // the acquired-slot retirement check rejects before the unlocked body.
+      console.error(
+        `Error handling key update request for document ${this.documentPath}`,
+      );
+    }
   }
 
   private async _handleKeyUpdateRequestDataUnlocked(
     payload: Uint8Array,
   ): Promise<void> {
     try {
+      this._throwIfSecurityProviderMutationFailed();
       // Decrypt the key update message.
-      const blockKeyID = payload.slice(
-        0,
-        this._keychainProvider.keyIDLength,
-      );
+      const blockKeyID = payload.slice(0, this._keychainProvider.keyIDLength);
       const blockNonce = payload.slice(
         this._keychainProvider.keyIDLength,
         this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
@@ -7343,76 +10558,54 @@ export class PeerborneDocument<
           blockNonce,
           blockData,
         );
-      } catch (e) {
-        console.warn('Failed to decrypt key update message:', e);
+      } catch {
+        console.warn(`Failed to decrypt key update for ${this.documentPath}`);
       }
 
+      this._throwIfSecurityProviderMutationFailed();
+
       if (!rawContent) {
-        console.warn(
-          `Unable to decrypt key update for ${this.documentPath}`,
-        );
+        console.warn(`Unable to decrypt key update for ${this.documentPath}`);
         return;
       }
 
-      const message =
-        this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      try {
+        message = this._snapshotDecodedSyncMessage(
+          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+          'key-update message',
+        );
+      } catch {
+        console.warn(`Ignoring malformed key-update for ${this.documentPath}`);
+        return;
+      }
 
       // The shared V2 key-update handler already routes by the
       // length-prefixed document-path header and drops invalid headers;
       // this check is kept as a defense-in-depth guard against malformed
       // or misrouted messages.
-      if (message.documentId && message.documentId !== this.documentPath) {
+      if (message.documentId !== this.documentPath) {
         console.warn(
-          `Ignoring key-update for wrong document ` +
-          `(${message.documentId} !== ${this.documentPath})`,
+          `Ignoring key-update for the wrong local document (${this.documentPath})`,
         );
         return;
       }
 
-      // Verify the sender is an authorized writer.
-      if (this._isSigningEnabled()) {
-        if (message.signature) {
-          const { signature, ...messageWithoutSignature } = message;
-          const raw =
-            this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
-            );
-          if (!(await this._verifyWriterSignature(raw, signature))) {
-            console.warn(
-              `Received key update with invalid signature for ${this.documentPath}`,
-            );
-            return;
-          }
-        } else {
-          console.warn(
-            `Received unsigned key update for ${this.documentPath}`,
-          );
-          return;
-        }
-      }
-
       console.log(`received key-update for ${this.documentPath}`);
 
-      // Merge keychain changes.
-      if (message.keychainChanges) {
-        try {
-          this._keychain.merge(message.keychainChanges);
-          console.log(
-            `Updated keychain via key-update protocol in ${this.documentPath}`,
-          );
-        } catch (e) {
-          console.error(
-            'Failed to merge keychain changes from key update:',
-            e,
-          );
-        }
+      // A V2 writer-removal delivery is the same sync envelope published on
+      // GossipSub (writer-signed when signing is enabled): it may contain both
+      // the replacement-key delta and writer ACL node. Reuse the normal sync
+      // path so signing-mode-specific authentication, key-before-ACL ordering,
+      // and authorization leasing cannot drift between transports. Legacy
+      // key-only envelopes remain compatible because `changes` is optional.
+      if ((await this._syncUnlocked(message, true)) !== true) {
+        console.warn(`Discarding rejected key update for ${this.documentPath}`);
       }
-    } catch (err: unknown) {
+    } catch {
       console.error(
-        `Error handling key update request for document ${this.documentPath}:`,
-        err,
+        `Error handling key update request for document ${this.documentPath}`,
       );
     }
   }
-
 }

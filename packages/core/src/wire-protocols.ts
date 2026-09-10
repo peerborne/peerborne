@@ -1,5 +1,8 @@
 export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
 
+/** Version selector shared by BeeKEM Welcome and PathUpdate handlers. */
+export type BeeKEMWireVersion = 1 | 2;
+
 // V3 doc-load and snapshot-load handlers use a shared handler model where
 // a single handler serves all documents. They include an explicit `tips`
 // field in the SIGNED `CRDTSyncMessage` payload so the loader can bind the
@@ -13,25 +16,25 @@ export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
 // (3) get bytes that differ from what the sender signed -> signature check
 // fails. Versioning the protocol id forces incompatible peers to dial a
 // protocol they don't have a handler for and fail loudly instead of
-// silently dropping the binding. There are no live users of this project,
-// so we did NOT retain a v2 alias -- removing legacy handlers keeps the
-// codebase clean.
+// silently dropping the binding. This alpha format does not retain a v2
+// alias; persisted/deployed v2 peers require an explicit migration plan.
 //
-// `documentKeyUpdateV2` is intentionally NOT bumped: its wire shape is
-// unaffected by the load-quorum work (no `tips` field, no `tipsHash`).
+// `documentKeyUpdateV2` is not bumped by the load-quorum work because that
+// payload adds neither `tips` nor `tipsHash`. This name does not imply
+// compatibility across the repository's earlier 16-to-32-byte key-ID break:
+// that change also affected unversioned encrypted blocks/pubsub framing and has
+// no dual-width decoder. See MIGRATING.md.
 export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
-// Reserved V4 contract identifiers; runtime integration lands separately. A
-// conforming V4 load response adds a signed `loadSecurityState` tuple. Its
-// quorum digest
+// V4 load responses add a signed `loadSecurityState` tuple. Its quorum digest
 // binds the control/group tuple and served frontier together with a canonical
 // complete response manifest (root, CID/kind/edge graph, deferred markers,
 // snapshot content/metadata, and keychain delta). Each request also signs a
 // fresh 32-byte challenge that every writer-signed advertisement/full response
 // must echo, preventing a complete older quorum transcript from being replayed
-// in a later load round. A conforming loader must recompute the manifest from
-// the actual response before sync. V4 is a separate family because older
-// serializers cannot verify the same signed bytes or binding; callers that opt
-// into it must select the family atomically and never downgrade to V3.
+// in a later load round. The loader recomputes the manifest from the actual
+// response before sync. V4 is a separate family because older serializers
+// cannot verify the same signed bytes or binding; strict clients select it
+// atomically and never downgrade to V3.
 export const documentLoadV4 = '/collabswarm/doc-load/4.0.0';
 export const documentKeyUpdateV2 = '/collabswarm/key-update/2.0.0';
 export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
@@ -73,11 +76,11 @@ export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
 //                   `decideLoadQuorum` (see `load-quorum.ts`). The
 //                   sentinel is intentionally unauthenticated (no
 //                   per-doc keychain to sign/encrypt with); the quorum
-//                   gate's Q-Byzantine threshold defends against
-//                   lying-disclaim attacks AND tip-hash votes are
-//                   given precedence over disclaim votes so peers WITH
-//                   the document outvote unrelated peers in the same
-//                   mesh that don't.
+//                   configured Q-of-K threshold limits a lone lying peer only
+//                   when enough independently controlled responders agree.
+//                   Tip-hash votes take precedence when their own bucket also
+//                   reaches Q. This is not Byzantine consensus or Sybil
+//                   resistance.
 //
 //               (c) Serialized + encrypted `CRDTSyncMessage` whose
 //                   only populated payload field is `tipsHash` (plus
@@ -110,12 +113,13 @@ export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
 // `/collabswarm/*` protocol IDs remain unchanged compatibility boundaries.
 export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 
-// BeeKEM Welcome v1: onboards a new reader into a document. The inviting
-// writer sends a Welcome containing (a) the invitation epoch ID the
-// recipient should record so subsequent `since_invited` key filtering works,
-// and (b) the keychain changes filtered per the document's
-// `HistoryVisibility` setting. This filters epoch keys, not retained CRDT
-// operations. The payload uses the same shared
+// BeeKEM Welcome v1: retained for generation-less legacy receive
+// compatibility. The inviting writer sends a Welcome containing (a) the
+// invitation epoch ID retained as a local audit/ordering anchor, not an
+// ordinary-load history boundary or durable ratchet-generation anchor, and (b)
+// keychain changes filtered per the document's `HistoryVisibility` setting --
+// so the new reader can decrypt (at least) the current document state. The
+// payload uses the same shared
 // length-prefixed-document-path header as the V2 key-update protocol so
 // the shared handler can route incoming Welcomes to the correct document.
 //
@@ -135,9 +139,10 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 // The writer signature covers the sealed bytes (not the plaintext), so a
 // connected peer cannot alter the sealed payload without invalidating the
 // signature. The recipient binding (`welcomeRecipient`, also covered by
-// the signature) prevents an authorized writer from re-pointing a sealed
-// payload at a different identity than the one the encryption keypair
-// belongs to.
+// the signature) prevents a non-writer or network attacker from re-pointing a
+// signed payload at a different identity. An authorized writer chooses both
+// the recipient identity and KEM key and therefore remains part of the trust
+// boundary.
 //
 // Defense-in-depth retained from earlier versions of this protocol:
 //   - `welcomeRecipient` continues to gate processing: a well-behaved
@@ -147,37 +152,35 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 //   - libp2p's Noise/TLS transport still protects on-wire bytes from
 //     off-path observers, on top of the application-layer encryption.
 //
-// =============================================================================
-// Race mitigation on the receive side
-// =============================================================================
-// The inviter sends the readers-ACL update over pubsub and the Welcome over
-// a direct stream; without coordination these can arrive out of order on the
-// recipient. The Welcome itself is fire-and-forget: there is NO ack protocol
-// in this version, and the inviter does NOT retry. Instead, the recipient's
-// `PeerborneDocument._evaluateAndApplyBeeKEMWelcome` buffers Welcomes
-// dropped solely because the local user is not yet in the readers ACL into a
-// small bounded `pendingWelcomes` Map (max 16 entries, ~5 min TTL) keyed by
-// `hex(welcomeEpochId)`. The buffer is drained on every readers-ACL merge,
-// so a Welcome that arrived before its corresponding ACL update gets
-// replayed automatically. A Welcome that exhausts the TTL without an
-// unblocking ACL update is discarded; the recipient must then rely on a
-// fresh document-load against an authorized peer to recover keychain state.
+// The readers-ACL update and Welcome can arrive in either order. Current
+// onboarding treats an exact identity+KEM-bound Welcome authenticated by a
+// current ACL writer (or an application-pinned bootstrap writer while the ACL
+// is empty) as the bootstrap grant, so the recipient need not decrypt the ACL
+// update first. The Welcome is fire-and-forget and is not buffered or retried.
 //
-// Note: only the reader-onboarding path is currently wired through
-// `PeerborneDocument.addReader`. A writer-onboarding flow that
-// piggy-backs on the same wire format is a future extension; until that
-// is wired up the protocol is documented as a reader-only flow.
+// BeeKEM-enabled, KEM-bound `PeerborneDocument.addReader` onboarding requires
+// a complete V2 Welcome and never downgrades to this endpoint. The ACL-only
+// overload does not establish BeeKEM membership. Writer onboarding that
+// piggy-backs on the Welcome flow is not implemented.
 export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';
 
-// Reserved compatibility boundary for the generation- and leaf-count-bearing
-// Welcome v2 wire format. Runtime dialing and handler integration land with
-// the corresponding transactional document transition.
+// The project's legacy BeeKEM construction (not MLS) uses Welcome v2 for a
+// non-null, versioned, generation- and leaf-count-bearing bootstrap inside the
+// recipient-sealed payload. Senders dial one version and never downgrade.
 export const beekemWelcomeV2 = '/collabswarm/beekem-welcome/2.0.0';
 
-// BeeKEM PathUpdate v1: distributes a BeeKEM ratchet-tree path update to
-// every surviving member of a document. Used by
-// `PeerborneDocument.removeReader` to revoke a reader: the writer
-// calls `BeeKEM.removeMember`, which blanks the removed leaf AND
+// The project's legacy BeeKEM construction (not MLS) retains PathUpdate v1
+// only for an explicitly opted-in migration of genuinely legacy,
+// generation-less local state. Its wire bytes are frozen and carry neither a
+// generation nor a parent-tree commitment, so replay can roll legacy ratchet
+// and keychain state back. Peerborne therefore does not register this handler
+// and rejects direct v1 application by default. Enabling
+// `allowInsecureLegacyBeeKEMPathUpdateV1` accepts that replay risk for a
+// bounded migration. Generation-bearing state still rejects v1 rather than
+// downgrading.
+// Earlier peers used PathUpdate v1 to distribute a ratchet-tree update to
+// surviving members. Current `PeerborneDocument.removeReader` sends only v2.
+// In either version, `BeeKEM.removeMember` blanks the removed leaf AND
 // re-keys the writer's path to root in a single step (no separate
 // `BeeKEM.update` call is involved -- see the "Wire format" section
 // below for why). The resulting `PathUpdate` is broadcast to every
@@ -243,9 +246,9 @@ export const beekemWelcomeV2 = '/collabswarm/beekem-welcome/2.0.0';
 // =============================================================================
 // Failure modes
 // =============================================================================
-// Surviving readers MUST receive the PathUpdate (or an equivalent
-// out-of-band Welcome / load that observes the post-rotation
-// keychain state) to install the new epoch key. The PathUpdate
+// Surviving readers MUST receive the PathUpdate or complete an authenticated
+// membership remove/rejoin to install the new epoch key. Ordinary load cannot
+// repair an unknown current key or missing private ratchet path. The PathUpdate
 // distribution is fire-and-forget: the library logs each failed
 // dial but does not retry, matching the best-effort posture of the
 // rest of the document protocol.
@@ -260,11 +263,8 @@ export const beekemWelcomeV2 = '/collabswarm/beekem-welcome/2.0.0';
 // arbitrary peer: `handleLoadRequestData` encrypts its response under
 // the responder's `_keychain.current()`, so the recipient can
 // decrypt the load response only if they ALSO already hold the
-// responder's current key. The reliable recovery path today is a
-// fresh BeeKEM Welcome from an authorized writer (Welcome payloads
-// are sealed under the recipient's KEM public key, not under the
-// keychain), which both rebootstraps the recipient's BeeKEM ratchet
-// state and re-shares the keychain.
+// responder's current key. Recovery today requires an authenticated
+// membership remove/rejoin; a standalone fresh-state transfer is not exposed.
 //
 // Future work: implement reliable PathUpdate delivery (e.g. signed
 // ACK + retry, or rolling-window resend on libp2p reconnect) so a
@@ -274,9 +274,13 @@ export const beekemWelcomeV2 = '/collabswarm/beekem-welcome/2.0.0';
 // liveness requirement.
 export const beekemPathUpdateV1 = '/collabswarm/beekem-pathupdate/1.0.0';
 
-// Reserved compatibility boundary for the parent-tree-, generation-, and
-// shape-bound PathUpdate v2 wire format. Runtime dialing and handler
-// integration land with the corresponding transactional document transition.
+// PathUpdate v2 is the explicit compatibility boundary used for current
+// revocations and multi-member churn. It binds the exact parent tree,
+// consecutive generation, exact leaf count, a shape-bound full public-tree
+// snapshot, and one encrypted ancestor-key bundle per copath resolution node.
+// V1 must not accept these fields. Missed transitions require persisted current
+// ratchet state or an authenticated membership remove/rejoin rather than an
+// unrelated higher-generation snapshot; ordinary load cannot restore the tree.
 export const beekemPathUpdateV2 = '/collabswarm/beekem-pathupdate/2.0.0';
 
 // The historical protocol namespace is retained as a wire-compatibility boundary.

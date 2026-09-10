@@ -118,22 +118,22 @@ export interface Keychain<KeychainChange, DocumentKey> {
 
   /**
    * Gets a block of change(s) describing only the keys at or after the given
-   * key ID. Used for the `since_invited` history visibility mode where a new
-   * member receives every key from the moment they were invited onward, but
-   * no earlier epoch keys. It does not itself redact retained CRDT operations.
+   * key ID. This is a compatibility and future-protocol primitive for callers
+   * that possess an authenticated invitation boundary. Ordinary load responses
+   * currently send only the current key because they cannot bind a request to
+   * such a boundary. This method does not itself redact retained CRDT
+   * operations.
    *
    * If the supplied `keyID` is not present in the keychain, implementations
    * MUST return only the current-key change or reject. Returning full history
    * would disclose every pre-invitation epoch when the boundary is malformed,
    * stale, or attacker-controlled.
    *
-   * Optional for backwards compatibility with `Keychain` implementations
-   * written before the `since_invited` history-visibility mode landed. When a
-   * provider does not implement this method, `since_invited` falls back to
+   * Optional for backwards compatibility with older `Keychain`
+   * implementations. `keychainHistorySinceOrFull` falls back to
    * `currentKeyChange()` so a missing capability cannot widen disclosure.
-   * Custom keychains that want efficient `since_invited` filtering SHOULD
-   * implement this method directly; the next major version will make it
-   * required.
+   * Custom keychains that expose authenticated-boundary filtering SHOULD
+   * implement this method directly.
    *
    * @param keyID The key ID marking the start of the visible window.
    * @return A block of change(s) containing only keys at or after `keyID`.

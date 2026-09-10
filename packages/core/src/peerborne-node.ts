@@ -90,8 +90,9 @@ export const defaultNodeConfig = (
   // the browser and Node defaults stay in sync. Each transport below still
   // gets its own fresh `cloneIceServer`-deep-cloned copy of `sourceIceServers`
   // so mutations never leak between transport state and `config.webrtcIceServers`.
-  const { sourceIceServers, exposedIceServers } = resolveIceServers(webrtcIceServers);
-  return ({
+  const { sourceIceServers, exposedIceServers } =
+    resolveIceServers(webrtcIceServers);
+  return {
     helia: {
       ...createNodeHeliaStores(),
       libp2p: {
@@ -111,14 +112,28 @@ export const defaultNodeConfig = (
           // aliasing with the array exposed on `config.webrtcIceServers` below.
           // Cast to `RTCIceServer[]` only at the libp2p call site so the
           // public peerborne API stays free of DOM lib types.
-          webRTC({ rtcConfiguration: { iceServers: sourceIceServers.map(cloneIceServer) as RTCIceServer[] } }),
-          webRTCDirect({ rtcConfiguration: { iceServers: sourceIceServers.map(cloneIceServer) as RTCIceServer[] } }),
+          webRTC({
+            rtcConfiguration: {
+              iceServers: sourceIceServers.map(
+                cloneIceServer,
+              ) as RTCIceServer[],
+            },
+          }),
+          webRTCDirect({
+            rtcConfiguration: {
+              iceServers: sourceIceServers.map(
+                cloneIceServer,
+              ) as RTCIceServer[],
+            },
+          }),
           webTransport(),
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
         peerDiscovery: [
-          ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
+          ...(hasBootstrapPeers(bootstrapConfig)
+            ? [bootstrap(bootstrapConfig)]
+            : []),
           pubsubPeerDiscovery(),
           mdns(),
         ],
@@ -146,8 +161,8 @@ export const defaultNodeConfig = (
     pubsubDocumentPrefix: '/document/',
     pubsubDocumentPublishPath: '/documents',
     webrtcIceServers: exposedIceServers,
-  // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
-  } as unknown as PeerborneConfig);
+    // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
+  } as unknown as PeerborneConfig;
 };
 
 export class PeerborneNode<
@@ -204,7 +219,10 @@ export class PeerborneNode<
     private readonly nodePublicKey: PublicKey,
     public readonly provider: CRDTProvider<DocType, ChangesType, ChangeFnType>,
     public readonly changesSerializer: ChangesSerializer<ChangesType>,
-    public readonly syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>,
+    public readonly syncMessageSerializer: SyncMessageSerializer<
+      ChangesType,
+      PublicKey
+    >,
     public readonly loadMessageSerializer: LoadMessageSerializer,
     public readonly authProvider: AuthProvider<
       PrivateKey,
@@ -264,17 +282,19 @@ export class PeerborneNode<
     let parsedCid: CID;
     try {
       parsedCid = CID.parse(cid);
-    } catch (err) {
-      console.error('Skipping malformed CID', cid, err);
+    } catch {
+      console.error('Skipping malformed CID from document publish message');
       return;
     }
     this._pinningCids.add(cid);
     await this._acquirePinSlot();
     try {
-      for await (const _ of this.swarm.heliaNode.pins.add(parsedCid)) { /* drain */ }
+      for await (const _ of this.swarm.heliaNode.pins.add(parsedCid)) {
+        /* drain */
+      }
       this._seenCids.add(cid);
-    } catch (err) {
-      console.error('Failed to pin CID', cid, err);
+    } catch {
+      console.error('Failed to pin CID from document publish message');
     } finally {
       this._pinningCids.delete(cid);
       this._releasePinSlot();
@@ -282,15 +302,38 @@ export class PeerborneNode<
   }
 
   private async _pinNewCIDs(cid: string, node: CRDTChangeNode<ChangesType>) {
-    const tasks: Promise<void>[] = [this._pinCID(cid)];
-
-    if (node.children === crdtChangeNodeDeferred) {
-      throw new Error('Currently IPLD deferred nodes are not supported!');
-    }
-
-    if (node.children !== undefined) {
-      for (const [childHash, childNode] of Object.entries(node.children)) {
-        tasks.push(this._pinNewCIDs(childHash, childNode));
+    const tasks: Promise<void>[] = [];
+    type PinTask =
+      | {
+          readonly phase: 'enter';
+          readonly cid: string;
+          readonly node: CRDTChangeNode<ChangesType>;
+        }
+      | { readonly phase: 'leave'; readonly node: CRDTChangeNode<ChangesType> };
+    const pending: PinTask[] = [{ phase: 'enter', cid, node }];
+    const active = new Set<CRDTChangeNode<ChangesType>>();
+    while (pending.length > 0) {
+      const task = pending.pop()!;
+      if (task.phase === 'leave') {
+        active.delete(task.node);
+        continue;
+      }
+      const { cid: currentCID, node: current } = task;
+      if (active.has(current)) {
+        throw new TypeError('Cannot pin a cyclic Merkle-DAG tree');
+      }
+      tasks.push(this._pinCID(currentCID));
+      if (current.children === crdtChangeNodeDeferred) {
+        throw new Error('Currently IPLD deferred nodes are not supported!');
+      }
+      if (current.children !== undefined) {
+        active.add(current);
+        pending.push({ phase: 'leave', node: current });
+        const children = Object.entries(current.children);
+        for (let index = children.length - 1; index >= 0; index--) {
+          const [childCID, childNode] = children[index]!;
+          pending.push({ phase: 'enter', cid: childCID, node: childNode });
+        }
       }
     }
     await Promise.all(tasks);
@@ -337,7 +380,9 @@ export class PeerborneNode<
       console.warn(
         `[peerborne] Stripped TURN credentials from clientConfig for: ${Array.from(
           strippedTurnEntries,
-        ).join('; ')}. Browsers will not authenticate against these TURN servers; ` +
+        ).join(
+          '; ',
+        )}. Browsers will not authenticate against these TURN servers; ` +
           'supply ephemeral credentials at runtime instead of long-lived ' +
           'secrets in clientConfig.',
       );
@@ -377,10 +422,6 @@ export class PeerborneNode<
           const message = this.syncMessageSerializer.deserializeSyncMessage(
             rawMessage.detail.data,
           );
-          console.log(
-            'Received a document publish notification:',
-            message.documentId,
-          );
           const docRef = this.swarm.doc(message.documentId);
 
           if (docRef) {
@@ -401,24 +442,20 @@ export class PeerborneNode<
 
             // Pin all of the files that were received.
             if (message.changeId && message.changes) {
-              this._pinNewCIDs(message.changeId, message.changes).catch((err) => {
-                console.error('Failed to pin CIDs for message:', message.changeId, err);
+              this._pinNewCIDs(message.changeId, message.changes).catch(() => {
+                console.error(
+                  'Failed to pin CIDs from incoming document publish message',
+                );
               });
             }
           } else {
-            console.warn(
-              'Unable to load the published document: no local document handler for',
-              message.documentId,
-            );
+            console.warn('Unable to load document from publish message');
           }
         } else {
           console.log('Skipping publish message from this node...');
         }
-      } catch (err) {
-        console.error(
-          'Failed to process an incoming document publish notification',
-        );
-        console.error('Error:', err);
+      } catch {
+        console.error('Failed to process incoming document pin message');
       }
     };
     // Cast required: EventHandler<CustomEvent<Message>> is incompatible with PubSubBaseProtocol's

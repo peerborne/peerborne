@@ -1,7 +1,16 @@
 import { describe, expect, test } from '@jest/globals';
+import { Base64 } from 'js-base64';
 import {
   CRDTChangeNode,
+  MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
+  MAX_INITIAL_LOAD_RESPONSE_SIZE,
+  MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES,
+  MAX_LOAD_SECURITY_EPOCH,
+  MAX_LOAD_SECURITY_GROUP_ID_BYTES,
   MAX_MERKLE_DAG_DEPTH,
+  MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
+  MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+  MAX_TIP_ADVERTISE_RESPONSE_SIZE,
 } from '@peerborne/core';
 import { YjsJSONSerializer } from './peerborne-yjs.js';
 
@@ -134,6 +143,77 @@ describe('YjsJSONSerializer load security state', () => {
       serializer.deserializeSyncMessage(first),
     );
     expect(second).toEqual(first);
+  });
+
+  test('wire caps admit maximum valid V4 advertisement fields', () => {
+    const serializer = new YjsJSONSerializer();
+    const body = serializer.serializeSyncMessage({
+      documentId: '\0'.repeat(MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES),
+      tipsHash: new Uint8Array(32),
+      loadSecurityState: {
+        version: 1,
+        controlHead: new Uint8Array(32),
+        groupId: '\0'.repeat(MAX_LOAD_SECURITY_GROUP_ID_BYTES),
+        epoch: MAX_LOAD_SECURITY_EPOCH,
+        treeHash: new Uint8Array(32),
+        confirmedTranscriptHash: new Uint8Array(32),
+      },
+      loadChallenge: new Uint8Array(32),
+      signature: Base64.fromUint8Array(new Uint8Array(4096)),
+    });
+    const encryptedWireLength = 32 + 12 + body.length + 16;
+    expect(encryptedWireLength).toBeGreaterThan(6 * 1024);
+    expect(encryptedWireLength).toBeLessThanOrEqual(
+      MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
+    );
+  });
+
+  test('legacy advertisement cap preserves long V3 document IDs', () => {
+    const serializer = new YjsJSONSerializer();
+    const documentId = 'd'.repeat(64 * 1024);
+    const request = serializer.serializeLoadRequest({
+      documentId,
+      signature: '',
+    });
+    const body = serializer.serializeSyncMessage({
+      documentId,
+      tipsHash: new Uint8Array(32),
+      signature: 'A'.repeat(128),
+    });
+    const encryptedWireLength = 32 + 12 + body.length + 16;
+
+    expect(request.length).toBeLessThanOrEqual(
+      MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+    );
+    expect(encryptedWireLength).toBeGreaterThan(
+      MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
+    );
+    expect(encryptedWireLength).toBeLessThanOrEqual(
+      MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+    );
+  });
+
+  test('full-load wire cap admits all three maximum Yjs manifest payloads', () => {
+    const serializer = new YjsJSONSerializer();
+    const payload = new Uint8Array(MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES);
+    const body = serializer.serializeSyncMessage({
+      documentId: '/doc',
+      changeId: 'ROOT',
+      changes: { kind: 'document', change: payload },
+      keychainChanges: payload,
+      snapshot: {
+        state: payload,
+        lastChangeNodeCID: 'ROOT',
+        compactedCount: 1,
+        signature: new Uint8Array(96),
+        timestamp: 1,
+      },
+    });
+    const encryptedWireLength = 32 + 12 + body.length + 16;
+    expect(encryptedWireLength).toBeGreaterThan(64 * 1024 * 1024);
+    expect(encryptedWireLength).toBeLessThanOrEqual(
+      MAX_INITIAL_LOAD_RESPONSE_SIZE,
+    );
   });
 
 });

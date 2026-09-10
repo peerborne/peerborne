@@ -10,7 +10,9 @@ import { MAX_INVITATION_TTL_MS } from './invitation-wire.js';
  *
  * - `current_only` (default): Supply only the current epoch key.
  * - `full_history`: Supply every retained epoch key.
- * - `since_invited`: Supply keys from the recorded invitation epoch onward.
+ * - `since_invited`: Supply the current key on Welcome and ordinary load paths.
+ *   The recorded invitation epoch remains a local ordering anchor until a load
+ *   protocol authenticates a requester-specific boundary.
  */
 export type HistoryVisibility =
   | 'current_only'
@@ -151,15 +153,25 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
   }
 }
 
-/** @internal Race invitation stream work against a hard cleanup deadline. */
+/**
+ * @internal Race invitation stream work against a hard cleanup deadline.
+ * The operation may disarm the deadline only after it owns the serialized
+ * state-mutation slot, so an admitted mutation is awaited rather than detached.
+ */
 export async function withInvitationDeadline<T>(
-  operation: () => Promise<T>,
+  operation: (disarmDeadline: () => void) => Promise<T>,
   onTimeout: (error: Error) => void,
   timeoutMs: number = INVITATION_STREAM_TIMEOUT_MS,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const disarmDeadline = (): void => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+  };
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      timer = undefined;
       const error = new Error('Invitation stream deadline exceeded');
       try {
         onTimeout(error);
@@ -170,9 +182,9 @@ export async function withInvitationDeadline<T>(
     }, timeoutMs);
   });
   try {
-    return await Promise.race([operation(), timeout]);
+    return await Promise.race([operation(disarmDeadline), timeout]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    disarmDeadline();
   }
 }
 

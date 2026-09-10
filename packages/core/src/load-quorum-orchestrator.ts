@@ -303,14 +303,15 @@ export async function runLoadQuorum<T>(opts: {
     // Only one peer reachable AND the operator did not opt into the
     // single-peer pass-through. With a lone peer we cannot distinguish
     // "honest solo peer" from "malicious peer serving a forged state",
-    // so we refuse on policy grounds rather than on the BFT majority
-    // formula -- with `effectiveK = 1`, `defaultQuorumQ(1) = 1`, so
+    // so we refuse on policy grounds rather than applying the default
+    // numerical-majority formula -- with `effectiveK = 1`,
+    // `defaultQuorumQ(1) = 1`, so
     // surfacing the computed `q` (which is 1) as `requiredQ` would be
     // misleading: it would suggest "the lone peer's vote was sufficient
     // numerically but happened not to land", when the truth is "we
     // explicitly refuse to trust any single peer regardless of how it
     // voted". Surface the load-bearing policy requirement (`requiredQ =
-    // 2`, the smallest cohort that gives any Byzantine fault tolerance)
+    // 2`, the smallest cohort that provides any independent corroboration)
     // so the error message reads as a policy refusal, not a vote-count
     // shortfall. Operators who genuinely want single-peer behaviour
     // must set `loadQuorumAllowSinglePeer: true` explicitly.
@@ -346,7 +347,7 @@ export async function runLoadQuorum<T>(opts: {
         `loadQuorumAllowSinglePeer=true); trust assumptions degraded back ` +
         `to single-peer load. ` +
         `${peers.length > 1 ? 'Increase loadQuorumK above 1' : 'Configure additional peers'} ` +
-        `to restore Byzantine-fault-tolerant quorum semantics.`,
+        `to restore multi-peer Q-of-K corroboration.`,
     );
     const probedPeer = peers[0];
     // Contain probe errors at the orchestrator boundary. The orchestrator
@@ -473,9 +474,9 @@ export async function runLoadQuorum<T>(opts: {
     // collectively disclaims the document. Surface as the new-doc path
     // so `PeerborneDocument.load()` returns `false` and a fresh
     // `open()` can create the document on top of the existing swarm.
-    // Defense remains Q-Byzantine: a single lying peer in a 3-of-3 mesh
-    // whose other peers hold the doc cannot force this branch (their
-    // tip-hash bucket wins the tally).
+    // A single lying peer cannot force this branch when Q independently
+    // controlled responders agree on a document hash; this is threshold
+    // corroboration, not Byzantine consensus or Sybil resistance.
     console.log(
       `[${documentPath}] Initial-load quorum passed (new-doc): ` +
         `${decision.agreeingPeerIds.length}/${decision.respondingCount} ` +

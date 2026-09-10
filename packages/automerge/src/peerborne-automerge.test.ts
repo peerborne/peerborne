@@ -26,6 +26,7 @@ import {
   SubtleCrypto,
   eciesSeal,
   encodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
   type CRDTChangeNode,
   type CRDTSyncMessage,
 } from '@peerborne/core';
@@ -1441,7 +1442,7 @@ describe('bounded initial invitation profile', () => {
       beekemWelcome: null,
     });
     const sealedWelcome = await eciesSeal(
-      encodeWelcomeSealedPayload({
+      encodeWelcomeSealedPayloadV2({
         keychainChanges: keychainBytes,
         beekemWelcome: welcome,
       }),
@@ -1450,7 +1451,7 @@ describe('bounded initial invitation profile', () => {
 
     const sealedWelcomeGrowth =
       sealedWelcome.byteLength - withoutBeeKEM.byteLength;
-    expect(sealedWelcomeGrowth).toBe(845);
+    expect(sealedWelcomeGrowth).toBe(886);
     expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
       INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
     );

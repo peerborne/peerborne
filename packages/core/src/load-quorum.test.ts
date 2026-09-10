@@ -1102,7 +1102,10 @@ describe('LoadQuorumFailedError', () => {
     );
     // The composed message names the cohort size for operator observability.
     expect(err.message).toMatch(/agreeing cohort.*2 peer/);
-    expect(err.message).toMatch(/Byzantine equivocation/);
+    expect(err.message).toMatch(/no retrieved response was applicable/);
+    expect(err.message).toMatch(
+      /concurrent state advance, incomplete retrieval, protocol violation, or equivocation/,
+    );
   });
 
   test('agreeingPeerBindFailures defaults to empty map for non-bind reasons', () => {

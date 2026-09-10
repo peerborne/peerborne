@@ -334,7 +334,11 @@ describe('invitation catch-up', () => {
     ).resolves.toBe(true);
     expect(ordinaryLoad).not.toHaveBeenCalled();
     expect(dialProtocol).toHaveBeenCalledTimes(1);
-    expect(loadAndVerify).toHaveBeenCalledWith(rawStream);
+    expect(loadAndVerify).toHaveBeenCalledWith(
+      rawStream,
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
     expect(rawStream.close).toHaveBeenCalledTimes(1);
     expect(rawStream.closeRead).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).not.toHaveBeenCalled();
@@ -363,6 +367,163 @@ describe('invitation catch-up', () => {
     expect(observedSignal?.aborted).toBe(true);
     expect(rawStream.abort).toHaveBeenCalledTimes(1);
     expect(rawStream.close).not.toHaveBeenCalled();
+  });
+
+  test('preserves the operation error when stream abort cleanup throws', async () => {
+    const terminalError = new Error('terminal authenticated-load failure');
+    const rawStream = {
+      close: jest.fn(async () => {}),
+      abort: jest.fn(() => {
+        throw new Error('transport cleanup failure');
+      }),
+    };
+
+    await expect(
+      withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async () => {
+          throw terminalError;
+        },
+      ),
+    ).rejects.toBe(terminalError);
+    expect(rawStream.abort).toHaveBeenCalledTimes(1);
+  });
+
+  test('bounds successful stream cleanup and falls back to reset', async () => {
+    jest.useFakeTimers();
+    const rawStream = {
+      close: jest.fn(async () => new Promise<void>(() => {})),
+      closeRead: jest.fn(async () => new Promise<void>(() => {})),
+      abort: jest.fn((_error: Error) => {}),
+    };
+
+    try {
+      const loading = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async () => true,
+        10,
+      );
+      await jest.advanceTimersByTimeAsync(11);
+
+      await expect(loading).resolves.toBe(true);
+      expect(rawStream.close).toHaveBeenCalledTimes(1);
+      expect(rawStream.closeRead).toHaveBeenCalledTimes(1);
+      expect(rawStream.abort).toHaveBeenCalledTimes(1);
+      expect(rawStream.abort.mock.calls[0][0].message).toBe(
+        'Invitation stream cleanup timed out',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('resets a successful stream when graceful cleanup rejects', async () => {
+    const rawStream = {
+      close: jest.fn(async () => {
+        throw new Error('close failed');
+      }),
+      closeRead: jest.fn(async () => new Promise<void>(() => {})),
+      abort: jest.fn((_error: Error) => {}),
+    };
+
+    await expect(
+      withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async () => true,
+      ),
+    ).resolves.toBe(true);
+    expect(rawStream.close).toHaveBeenCalledTimes(1);
+    expect(rawStream.closeRead).toHaveBeenCalledTimes(1);
+    expect(rawStream.abort).toHaveBeenCalledTimes(1);
+    const cleanupError = rawStream.abort.mock.calls[0][0];
+    expect(cleanupError.message).toBe('Invitation stream cleanup failed');
+    expect((cleanupError.cause as Error).message).toBe('close failed');
+  });
+
+  test('forwards deadline cancellation through late response verification', async () => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let mutated = false;
+    let operationSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      operationSettled = resolve;
+    });
+    const rawStream = {
+      close: jest.fn(async () => {}),
+      abort: jest.fn((_error: Error) => {}),
+    };
+
+    await expect(
+      withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async (_stream, signal) => {
+          await released;
+          try {
+            if (signal.aborted) throw signal.reason;
+            mutated = true;
+            return true;
+          } finally {
+            operationSettled();
+          }
+        },
+        1,
+      ),
+    ).rejects.toThrow(/deadline exceeded/);
+
+    release();
+    await settled;
+    expect(mutated).toBe(false);
+    expect(rawStream.abort).toHaveBeenCalledTimes(1);
+  });
+
+  test('awaits an admitted state mutation after disarming the stream deadline', async () => {
+    jest.useFakeTimers();
+    let mutationEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      mutationEntered = resolve;
+    });
+    let releaseMutation!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const rawStream = {
+      close: jest.fn(async () => {}),
+      abort: jest.fn((_error: Error) => {}),
+    };
+    let observedSignal: AbortSignal | undefined;
+
+    try {
+      const loading = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async (_stream, signal, admitStateMutation) => {
+          observedSignal = signal;
+          admitStateMutation();
+          mutationEntered();
+          await released;
+          return true;
+        },
+        1,
+      );
+      await entered;
+      await jest.advanceTimersByTimeAsync(2);
+
+      expect(observedSignal?.aborted).toBe(false);
+      expect(rawStream.abort).not.toHaveBeenCalled();
+      expect(rawStream.close).not.toHaveBeenCalled();
+      releaseMutation();
+      await expect(loading).resolves.toBe(true);
+      expect(rawStream.close).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseMutation();
+      jest.useRealTimers();
+    }
   });
 
   test('aborts an over-cap founder response and does not retain the stream', async () => {

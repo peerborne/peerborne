@@ -77,13 +77,13 @@ describe('BeeKEM branch coverage', () => {
       await expect(empty.processPathUpdate(pathUpdate)).rejects.toThrow();
     });
 
-    
+
   });
 
   describe('compact', () => {
-    test('empty tree no-op (line 537)', () => {
+    test('preserves the synchronous empty-tree no-op API', () => {
       const beekem = new BeeKEM();
-      expect(() => beekem.compact()).not.toThrow();
+      expect(beekem.compact()).toBeUndefined();
     });
 
     test('collects blanked leaves after removal (lines 525-546)', async () => {
@@ -95,9 +95,53 @@ describe('BeeKEM branch coverage', () => {
       await founder.addMember((await generateKeyPair()).publicKey);
 
       await founder.removeMember(2);
-      expect(() => founder.compact()).not.toThrow();
+      expect(founder.compact()).toBeUndefined();
       const rootSecret = await founder.getRootSecret();
       expect(rootSecret).toBeInstanceOf(Uint8Array);
+    });
+
+    test('serializes behind an in-flight tree transition', async () => {
+      const founder = new BeeKEM();
+      const founderKeys = await generateKeyPair();
+      await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+      const memberKeys = await generateKeyPair();
+      const { welcome } = await founder.addMember(memberKeys.publicKey);
+      const internals = founder as unknown as {
+        _updatePath: (
+          parentTreeHash: Uint8Array,
+        ) => ReturnType<BeeKEM['update']>;
+      };
+      const updatePath = internals._updatePath.bind(founder);
+      let entered!: () => void;
+      let release!: () => void;
+      const enteredBarrier = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const releaseBarrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      internals._updatePath = async (parentTreeHash) => {
+        entered();
+        await releaseBarrier;
+        return updatePath(parentTreeHash);
+      };
+
+      const removal = founder.removeMember(welcome.leafIndex);
+      await enteredBarrier;
+      expect(() => founder.compact()).toThrow(
+        /transition is active or queued; use compactAsync/,
+      );
+      let compacted = false;
+      const compaction = founder.compactAsync().then(() => {
+        compacted = true;
+      });
+      await Promise.resolve();
+      expect(compacted).toBe(false);
+
+      release();
+      await removal;
+      await compaction;
+      expect(compacted).toBe(true);
     });
   });
 

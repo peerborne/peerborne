@@ -424,9 +424,9 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
 /**
  * Validate the load-quorum tuning knobs from {@link PeerborneConfig}.
  *
- * Call this before using load-quorum settings so a misconfigured value is
- * surfaced loudly rather than silently degrading a subsequent `load()`.
- * For example, `loadQuorumK: 1.5` previously
+ * Runs at {@link Peerborne.initialize} time so a misconfigured value is
+ * surfaced loudly at startup rather than silently degrading every
+ * subsequent `load()` call. For example, `loadQuorumK: 1.5` previously
  * slipped through `Math.min(configuredK, peersLen)` to produce
  * `peers.slice(0, 1.5)`
  * which probes only 1 peer (silent single-peer load); `loadQuorumQ: NaN`
@@ -434,12 +434,13 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  * evaluate as false (silent single-peer quorum pass). Both classes of
  * misconfig are now rejected here with a clear operator-visible error.
  *
- * `loadQuorumTimeoutMs` is also validated here because the value flows
- * directly into `setTimeout(...)` inside a tip-advertise probe race.
- * `NaN`/`Infinity`/`0`/negative values are coerced to immediate-fire or
- * overflow behaviour by the timer queue. We require a finite positive integer
- * no greater than {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a
- * misplaced decimal is caught at startup.
+ * `loadQuorumTimeoutMs` is also validated here: the value drives both each
+ * tip-advertise probe and each full-response network read, including the
+ * legacy path when quorum is disabled. `NaN`/`Infinity`/`0`/negative values
+ * are coerced to immediate-fire / overflow behaviour by the timer queue. We
+ * require a finite positive integer no greater than
+ * {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a misplaced
+ * decimal is caught at startup.
  *
  * `loadQuorumEnabled` and `loadQuorumAllowSinglePeer` MUST be booleans when
  * provided. `loadQuorumK` and `loadQuorumQ` MUST be finite positive integers
@@ -465,10 +466,9 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  * offending value.
  *
  * @param config The {@link PeerborneConfig} (or its load-quorum subset)
- *   to validate. Boolean policy switches are validated exactly when this
- *   function is invoked.
+ *   to validate. Boolean policy switches are always validated exactly.
  *   Dormant K/Q knobs are ignored when quorum is explicitly disabled; the
- *   timeout is validated on every invocation.
+ *   full-response timeout remains active and is always validated.
  */
 export function validateLoadQuorumConfig(config: {
   loadQuorumEnabled?: boolean;
@@ -609,9 +609,12 @@ export function formatConfigValue(value: unknown): string {
  *     reached, but EVERY peer in the agreeing cohort served a full-load
  *     response whose `tips` array did not hash to `winningHashHex` (or
  *     omitted `tips` entirely). Distinct from `'no-majority'` so callers
- *     can tell "no peer was even willing to vote" apart from "the agreeing
- *     cohort was entirely Byzantine on the load step". Surfaced by
- *     `PeerborneDocument.load()` after exhausting every narrowed peer.
+ *     can tell "no peer was even willing to vote" apart from "no retrieved
+ *     response was applicable to the agreed value". The reason does not
+ *     diagnose a cause: concurrent responder state advance, incomplete
+ *     retrieval, a protocol violation, or equivocation can all produce this
+ *     binding mismatch. Surfaced by `PeerborneDocument.load()` after
+ *     exhausting every narrowed peer.
  *     Without the per-peer retry, a single malicious peer in the agreeing
  *     cohort could vote for the agreed hash and then serve a mismatched
  *     full load to unilaterally abort the whole load, preventing the loader
@@ -663,9 +666,10 @@ export class LoadQuorumFailedError extends Error {
    *  peer-id (as `_peerIdOf` extracts it) to the advertised tipsHash hex
    *  that peer served on its full-load response (or the sentinel
    *  `'(missing tips)'` when the responder omitted the `tips` array). Lets
-   *  callers and operators see WHICH peers in the agreeing cohort
-   *  equivocated between the probe round and the load round, and what
-   *  they served instead. Empty for all other reasons. */
+   *  callers and operators see WHICH peers in the agreeing cohort returned
+   *  a response that was not applicable to the advertised value, and what
+   *  they served instead. This record is diagnostic evidence of a binding
+   *  mismatch, not proof of equivocation. Empty for all other reasons. */
   public readonly agreeingPeerBindFailures: ReadonlyMap<string, string>;
   /** Structured detail string for the `'invalid-config'` reason (e.g.
    *  `loadQuorumK must be a positive integer; got NaN`). Exposed as a
@@ -706,7 +710,8 @@ export class LoadQuorumFailedError extends Error {
               ? `quorum agreed on a tip-set hash but every peer in the agreeing cohort ` +
                 `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +
                 `response whose tips did not hash to the agreed value (or omitted tips entirely); ` +
-                `treating as coordinated Byzantine equivocation on the load step`
+                `no retrieved response was applicable to the agreed value (possible concurrent ` +
+                `state advance, incomplete retrieval, protocol violation, or equivocation)`
               : opts.reason === 'agreeing-peers-unreachable'
                 ? `quorum agreed on a tip-set hash but every peer in the agreeing ` +
                   `cohort failed to serve a full load (transport / protocol error, ` +

@@ -44,14 +44,26 @@ import { KeychainProvider } from './keychain-provider.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { validateLoadQuorumConfig } from './load-quorum.js';
 import {
+  type PeerborneSecurityPolicyConfig,
+  snapshotPeerborneSecurityPolicy,
+  validateSecurityConfiguration,
+} from './security-config.js';
+import { unknownDocumentAdvertisement } from './initial-load-sentinel-policy.js';
+import {
   beekemPathUpdateV1,
+  beekemPathUpdateV2,
   beekemWelcomeV1,
+  beekemWelcomeV2,
   documentLoadV3,
+  documentLoadV4,
   documentKeyUpdateV2,
   invitationJoinV1,
+  securityAdvertiseV1,
   snapshotLoadV3,
+  snapshotLoadV4,
   tipAdvertiseV1,
 } from './wire-protocols.js';
+import type { BeeKEMWireVersion } from './wire-protocols.js';
 import {
   readFirstDeserializable,
   readPathPrefixedProtocolHeader,
@@ -105,12 +117,16 @@ import {
 import {
   InMemoryInvitationReplayGuard,
 } from './invitation-replay-guard.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_SIZE } from './initial-load-protocols.js';
 
 /** Maximum allowed document path length in key-update V2 wire format. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
-/** Maximum allowed request size for shared protocol handlers (10 MB). */
-const MAX_REQUEST_SIZE = 10 * 1024 * 1024;
+/** Maximum time an inbound shared-protocol reader may wait for its next chunk. */
+const SHARED_PROTOCOL_READ_IDLE_TIMEOUT_MS = 5_000;
+
+/** Maximum wall-clock time allowed to assemble one shared-protocol request. */
+const SHARED_PROTOCOL_READ_TOTAL_TIMEOUT_MS = 30_000;
 
 /** Default lifetime for a user-facing invitation offer. */
 export const DEFAULT_INVITATION_TTL_MS = 15 * 60 * 1000;
@@ -140,6 +156,86 @@ interface ProtocolStream {
   source: AsyncIterable<Uint8ArrayList | Uint8Array>;
   sink: (data: Iterable<Uint8Array>) => Promise<void>;
   close: () => Promise<void>;
+  abort: (err: Error) => void;
+}
+
+/**
+ * Bound both idle time and total assembly time for unauthenticated inbound
+ * shared-protocol requests. The aggregate byte cap remains enforced by the
+ * existing request readers; these deadlines prevent a peer from retaining a
+ * stream slot indefinitely with an incomplete, below-cap request.
+ */
+async function* withSharedProtocolReadDeadline(
+  source: ProtocolStream['source'],
+  abort: ProtocolStream['abort'],
+  protocolName: string,
+): AsyncGenerator<Uint8ArrayList | Uint8Array> {
+  const iterator = source[Symbol.asyncIterator]();
+  const totalDeadline = Date.now() + SHARED_PROTOCOL_READ_TOTAL_TIMEOUT_MS;
+  let reachedEnd = false;
+
+  const abortForDeadline = (kind: 'idle' | 'total'): Error => {
+    const error = new Error(
+      `Inbound ${protocolName} request exceeded its ${kind} read deadline`,
+    );
+    try {
+      abort(error);
+    } catch {
+      // The remote may have reset the stream at the same time as the timer.
+    }
+    return error;
+  };
+
+  try {
+    while (true) {
+      const remainingTotalMs = totalDeadline - Date.now();
+      if (remainingTotalMs <= 0) {
+        throw abortForDeadline('total');
+      }
+
+      const deadlineKind: 'idle' | 'total' =
+        remainingTotalMs <= SHARED_PROTOCOL_READ_IDLE_TIMEOUT_MS
+          ? 'total'
+          : 'idle';
+      const waitMs = Math.min(
+        remainingTotalMs,
+        SHARED_PROTOCOL_READ_IDLE_TIMEOUT_MS,
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(abortForDeadline(deadlineKind)),
+          waitMs,
+        );
+      });
+
+      let next: IteratorResult<Uint8ArrayList | Uint8Array>;
+      try {
+        next = await Promise.race([iterator.next(), timeout]);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      }
+
+      if (next.done) {
+        reachedEnd = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!reachedEnd) {
+      try {
+        const returned = iterator.return?.();
+        if (returned !== undefined) {
+          void returned.catch(() => undefined);
+        }
+      } catch {
+        // Full stream teardown is already owned by the enclosing handler.
+      }
+    }
+  }
 }
 
 /**
@@ -151,6 +247,53 @@ export type PeerbornePeersHandler = (
   peerId: string,
   connection: CustomEvent<PeerId>,
 ) => void;
+
+const objectHasOwnProperty = Object.prototype.hasOwnProperty;
+
+/**
+ * Build the top-level configuration view exposed after initialization.
+ * Security fields come exclusively from the already validated, normalized
+ * policy, while other own properties are captured without re-reading security
+ * fields through a caller-supplied Proxy.
+ */
+function createEffectiveConfigView(
+  source: PeerborneConfig,
+  securityPolicy: Readonly<PeerborneSecurityPolicyConfig>,
+): Readonly<PeerborneConfig> {
+  const view: Record<PropertyKey, unknown> = {};
+
+  for (const key of Reflect.ownKeys(source)) {
+    if (
+      typeof key === 'string' &&
+      objectHasOwnProperty.call(securityPolicy, key)
+    ) {
+      continue;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (!descriptor) {
+      throw new TypeError('Peerborne config changed during initialization');
+    }
+    const value =
+      'value' in descriptor ? descriptor.value : Reflect.get(source, key);
+    Object.defineProperty(view, key, {
+      value,
+      enumerable: descriptor.enumerable,
+      configurable: false,
+      writable: false,
+    });
+  }
+
+  for (const key of Reflect.ownKeys(securityPolicy)) {
+    Object.defineProperty(view, key, {
+      value: Reflect.get(securityPolicy, key),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+
+  return Object.freeze(view) as Readonly<PeerborneConfig>;
+}
 
 /**
  * The peerborne object is the main entry point for the peerborne library.
@@ -219,7 +362,10 @@ export class Peerborne<
       ChangeFnType
     >,
     private readonly _changesSerializer: ChangesSerializer<ChangesType>,
-    private readonly _syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>,
+    private readonly _syncMessageSerializer: SyncMessageSerializer<
+      ChangesType,
+      PublicKey
+    >,
     private readonly _loadMessageSerializer: LoadMessageSerializer,
     private readonly _authProvider: AuthProvider<
       PrivateKey,
@@ -250,8 +396,24 @@ export class Peerborne<
     };
   }
 
-  // configs for the swarm, thus passing its config to all documents opened in a swarm
-  protected _config: PeerborneConfig | null = null;
+  // Effective configuration captured for documents opened in this swarm.
+  protected _config: Readonly<PeerborneConfig> | null = null;
+  private _enableSigning = true;
+  private _enableTopicValidators = false;
+  private _allowInsecureLegacyBeeKEMPathUpdateV1 = false;
+  private _loadQuorumEnabled = true;
+  private _loadQuorumK = 3;
+  private _loadQuorumQ: number | undefined;
+  private _loadQuorumTimeoutMs = 5000;
+  private _loadQuorumAllowSinglePeer = false;
+  private _requireAuthenticatedInitialLoad = false;
+  private _requireSecurityStateQuorum = false;
+  private _resolveTrustedDocumentWriters: PeerborneConfig['resolveTrustedDocumentWriters'] =
+    undefined;
+  private _resolveLoadSecurityCommitments: PeerborneConfig['resolveLoadSecurityCommitments'] =
+    undefined;
+  private _validateDocumentPath: PeerborneConfig['validateDocumentPath'] =
+    undefined;
   private _heliaNode: PeerborneHeliaNode | undefined;
   private _peerId: PeerId | undefined;
   private _peerIds: string[] = [];
@@ -259,8 +421,10 @@ export class Peerborne<
     string,
     PeerbornePeersHandler
   >();
-  private _peerDisconnectHandlers: Map<string, PeerbornePeersHandler> =
-    new Map<string, PeerbornePeersHandler>();
+  private _peerDisconnectHandlers: Map<string, PeerbornePeersHandler> = new Map<
+    string,
+    PeerbornePeersHandler
+  >();
   private _networkStats?: NetworkStats;
 
   private _sharedHandlersRegistration: Promise<void> | undefined;
@@ -272,8 +436,30 @@ export class Peerborne<
   // PeerborneDocument instance.
   private _documentRegistry = new Map<
     string,
-    PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>
+    PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >
   >();
+  // Welcome-only routing for invitation recipients that installed a KEM key
+  // before `open()`. These instances are deliberately invisible to load,
+  // key-update, PathUpdate, and tip-advertisement handlers.
+  private _welcomeRecipientRegistry = new Map<
+    string,
+    PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >
+  >();
+  private static readonly _MAX_WELCOME_RECIPIENT_REGISTRATIONS = 1024;
 
   // Online invitation offers are intentionally in-memory for the initial
   // founder-plus-one flow. A durable store is required before invitations can
@@ -334,9 +520,7 @@ export class Peerborne<
    *
    * Only works after `.initialize()` has been called.
    */
-  public get heliaNode(): HeliaWithLibp2p<
-    ServiceMap & { pubsub: GossipSub }
-  > {
+  public get heliaNode(): HeliaWithLibp2p<ServiceMap & { pubsub: GossipSub }> {
     if (this._heliaNode) {
       return this._heliaNode;
     }
@@ -365,10 +549,82 @@ export class Peerborne<
   }
 
   /**
-   * Gets the current peerborne configuration.
+   * Gets the detached, top-level immutable effective configuration captured by
+   * the latest initialization. Security-policy fields contain their normalized
+   * runtime values and cannot diverge from the dedicated policy getters when
+   * the caller later mutates its source object.
    */
-  public get config(): PeerborneConfig | null {
+  public get config(): Readonly<PeerborneConfig> | null {
     return this._config;
+  }
+
+  /** Whether application-level signing is enabled for this initialization. */
+  public get enableSigning(): boolean {
+    return this._enableSigning;
+  }
+
+  /** Whether GossipSub validators are enabled for this initialization. */
+  public get enableTopicValidators(): boolean {
+    return this._enableTopicValidators;
+  }
+
+  /** Whether the insecure legacy BeeKEM PathUpdate v1 migration path is active. */
+  public get allowInsecureLegacyBeeKEMPathUpdateV1(): boolean {
+    return this._allowInsecureLegacyBeeKEMPathUpdateV1;
+  }
+
+  /** Immutable initial-load quorum policy captured during initialization. */
+  public get loadQuorumEnabled(): boolean {
+    return this._loadQuorumEnabled;
+  }
+
+  public get loadQuorumK(): number {
+    return this._loadQuorumK;
+  }
+
+  public get loadQuorumQ(): number | undefined {
+    return this._loadQuorumQ;
+  }
+
+  public get loadQuorumTimeoutMs(): number {
+    return this._loadQuorumTimeoutMs;
+  }
+
+  public get loadQuorumAllowSinglePeer(): boolean {
+    return this._loadQuorumAllowSinglePeer;
+  }
+
+  /**
+   * Whether initial loads must be authenticated by an application-pinned
+   * writer. Captured during initialization so later mutation of the caller's
+   * config object cannot downgrade the load policy.
+   */
+  public get requireAuthenticatedInitialLoad(): boolean {
+    return this._requireAuthenticatedInitialLoad;
+  }
+
+  /**
+   * Whether initial loads must use the security-state-aware quorum protocol.
+   * Captured during initialization so later mutation of the caller's config
+   * object cannot select a legacy protocol.
+   */
+  public get requireSecurityStateQuorum(): boolean {
+    return this._requireSecurityStateQuorum;
+  }
+
+  /** Trusted-writer resolver captured during initialization. */
+  public get resolveTrustedDocumentWriters(): PeerborneConfig['resolveTrustedDocumentWriters'] {
+    return this._resolveTrustedDocumentWriters;
+  }
+
+  /** Load-security commitment resolver captured during initialization. */
+  public get resolveLoadSecurityCommitments(): PeerborneConfig['resolveLoadSecurityCommitments'] {
+    return this._resolveLoadSecurityCommitments;
+  }
+
+  /** Document-creation policy callback captured during initialization. */
+  public get validateDocumentPath(): PeerborneConfig['validateDocumentPath'] {
+    return this._validateDocumentPath;
   }
 
   /**
@@ -382,12 +638,13 @@ export class Peerborne<
     }
     if (
       this._documentRegistry.size > 0 ||
-      this._pendingInvitationDocuments.size > 0
+      this._pendingInvitationDocuments.size > 0 ||
+      this._welcomeRecipientRegistry.size > 0
     ) {
       throw new Error(
-        'Cannot reinitialize while documents are open or invitation ' +
-        'acceptance is active. Close all documents and wait for invitation ' +
-        'acceptance to finish before calling initialize() again.',
+        'Cannot reinitialize while documents are open, invitation acceptance ' +
+        'is active, or a document is awaiting a Welcome. Close all document ' +
+        'instances and wait for invitation acceptance before calling initialize() again.',
       );
     }
 
@@ -400,6 +657,42 @@ export class Peerborne<
   }
 
   private async _initializeUnlocked(config?: PeerborneConfig) {
+    if (!config) {
+      config = defaultConfig(defaultBootstrapConfig([]));
+    }
+
+    // Validate and snapshot every authentication/quorum policy value before
+    // the first await. Even during reinitialization, a caller cannot race a
+    // mutation of the shared config object against transport teardown to
+    // change the policy that this initialization installs.
+    const securityPolicyConfig = snapshotPeerborneSecurityPolicy(config);
+    validateLoadQuorumConfig(securityPolicyConfig);
+    validateSecurityConfiguration(securityPolicyConfig as PeerborneConfig);
+    const securityPolicy = {
+      enableSigning: securityPolicyConfig.enableSigning !== false,
+      enableTopicValidators:
+        securityPolicyConfig.enableSigning !== false &&
+        securityPolicyConfig.enableTopicValidators === true,
+      allowInsecureLegacyBeeKEMPathUpdateV1:
+        securityPolicyConfig.allowInsecureLegacyBeeKEMPathUpdateV1 === true,
+      loadQuorumEnabled: securityPolicyConfig.loadQuorumEnabled !== false,
+      loadQuorumK: securityPolicyConfig.loadQuorumK ?? 3,
+      loadQuorumQ: securityPolicyConfig.loadQuorumQ,
+      loadQuorumTimeoutMs: securityPolicyConfig.loadQuorumTimeoutMs ?? 5000,
+      loadQuorumAllowSinglePeer:
+        securityPolicyConfig.loadQuorumAllowSinglePeer === true,
+      requireAuthenticatedInitialLoad:
+        securityPolicyConfig.requireAuthenticatedInitialLoad === true,
+      requireSecurityStateQuorum:
+        securityPolicyConfig.requireSecurityStateQuorum === true,
+      resolveTrustedDocumentWriters:
+        securityPolicyConfig.resolveTrustedDocumentWriters,
+      resolveLoadSecurityCommitments:
+        securityPolicyConfig.resolveLoadSecurityCommitments,
+      validateDocumentPath: securityPolicyConfig.validateDocumentPath,
+    } as const;
+    const effectiveConfig = createEffectiveConfigView(config, securityPolicy);
+
     // Outstanding online invitations are bound to the current libp2p
     // endpoint and in-memory replay state. Reinitialization invalidates them.
     this._invitationRegistry.clear();
@@ -411,7 +704,11 @@ export class Peerborne<
     // Tear down the previous Helia/libp2p instance if reinitializing,
     // preventing leaked background resources (connections, timers, etc.).
     if (this._heliaNode) {
-      try { await this._heliaNode.stop(); } catch { /* best-effort */ }
+      try {
+        await this._heliaNode.stop();
+      } catch {
+        /* best-effort */
+      }
       await closeLegacyHeliaStores(this._openedLegacyStores);
       this._openedLegacyStores = [];
       this._heliaNode = undefined;
@@ -419,38 +716,36 @@ export class Peerborne<
       this._peerIds = [];
     }
 
-    if (!config) {
-      config = defaultConfig(defaultBootstrapConfig([]));
-    }
-
-    // Validate the load-quorum tuning knobs at startup so an operator
-    // misconfiguration (e.g. `loadQuorumK: 1.5`, `loadQuorumQ: NaN`)
-    // surfaces immediately as a structured `LoadQuorumFailedError(
-    // invalid-config)` rather than silently degrading every subsequent
-    // `load()` to a single-peer probe. Fractional K let
-    // `peers.slice(0, 1.5)` slip through to a 1-peer probe, and
-    // NaN Q propagated through `effectiveQ` so `bestPeers.length < NaN`
-    // evaluated as false and the gate passed with a single responder.
-    //
-    // Skip validation when the feature is explicitly disabled -- a
-    // shared config object that carries leftover quorum knobs alongside
-    // `loadQuorumEnabled: false` should still initialize cleanly via
-    // the legacy load path. `runLoadQuorum` mirrors this early-exit
-    // ordering: `enabled === false` is checked before validation, so
-    // the two boundaries stay consistent.
-    if (config.loadQuorumEnabled !== false) {
-      validateLoadQuorumConfig(config);
-    }
-
-    this._config = config;
+    this._enableSigning = securityPolicy.enableSigning;
+    this._enableTopicValidators = securityPolicy.enableTopicValidators;
+    this._allowInsecureLegacyBeeKEMPathUpdateV1 =
+      securityPolicy.allowInsecureLegacyBeeKEMPathUpdateV1;
+    this._loadQuorumEnabled = securityPolicy.loadQuorumEnabled;
+    this._loadQuorumK = securityPolicy.loadQuorumK;
+    this._loadQuorumQ = securityPolicy.loadQuorumQ;
+    this._loadQuorumTimeoutMs = securityPolicy.loadQuorumTimeoutMs;
+    this._loadQuorumAllowSinglePeer = securityPolicy.loadQuorumAllowSinglePeer;
+    this._requireAuthenticatedInitialLoad =
+      securityPolicy.requireAuthenticatedInitialLoad;
+    this._requireSecurityStateQuorum =
+      securityPolicy.requireSecurityStateQuorum;
+    this._resolveTrustedDocumentWriters =
+      securityPolicy.resolveTrustedDocumentWriters;
+    this._resolveLoadSecurityCommitments =
+      securityPolicy.resolveLoadSecurityCommitments;
+    this._validateDocumentPath = securityPolicy.validateDocumentPath;
+    this._config = effectiveConfig;
 
     this._sharedHandlersRegistration = undefined;
 
-    this._networkStats = config.enableNetworkStats ? new NetworkStats() : undefined;
+    this._networkStats = effectiveConfig.enableNetworkStats
+      ? new NetworkStats()
+      : undefined;
 
     // Setup Helia node.
-    const { heliaNode, openedLegacyStores } =
-      await createAndStartHeliaNode(config.helia);
+    const { heliaNode, openedLegacyStores } = await createAndStartHeliaNode(
+      effectiveConfig.helia,
+    );
     this._heliaNode = heliaNode;
     this._openedLegacyStores = openedLegacyStores;
 
@@ -492,7 +787,14 @@ export class Peerborne<
    */
   registerDocument(
     documentPath: string,
-    document: PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>,
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
   ): void {
     const pendingInvitation =
       this._pendingInvitationDocuments.get(documentPath);
@@ -504,10 +806,80 @@ export class Peerborne<
     if (this._documentRegistry.has(documentPath)) {
       throw new Error(
         `A document is already registered for "${documentPath}". ` +
-        'Multiple instances per path are not supported. Close the existing document first.',
+          'Multiple instances per path are not supported. Close the existing document first.',
+      );
+    }
+    const welcomeRecipient = this._welcomeRecipientRegistry.get(documentPath);
+    if (welcomeRecipient !== undefined && welcomeRecipient !== document) {
+      throw new Error(
+        `A Welcome recipient is already registered for "${documentPath}". ` +
+          'Multiple instances per path are not supported.',
       );
     }
     this._documentRegistry.set(documentPath, document);
+    if (welcomeRecipient === document) {
+      this._welcomeRecipientRegistry.delete(documentPath);
+    }
+  }
+
+  /** Register one unopened document for recipient-targeted Welcome routing. */
+  registerWelcomeRecipient(
+    documentPath: string,
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
+  ): void {
+    const openDocument = this._documentRegistry.get(documentPath);
+    if (openDocument !== undefined) {
+      if (openDocument !== document) {
+        throw new Error(
+          `A document is already registered for "${documentPath}". ` +
+            'Multiple instances per path are not supported.',
+        );
+      }
+      return;
+    }
+    const existing = this._welcomeRecipientRegistry.get(documentPath);
+    if (existing !== undefined) {
+      if (existing !== document) {
+        throw new Error(
+          `A Welcome recipient is already registered for "${documentPath}". ` +
+            'Multiple instances per path are not supported.',
+        );
+      }
+      return;
+    }
+    if (
+      this._welcomeRecipientRegistry.size >=
+      Peerborne._MAX_WELCOME_RECIPIENT_REGISTRATIONS
+    ) {
+      throw new Error(
+        `Welcome-recipient registry limit of ${Peerborne._MAX_WELCOME_RECIPIENT_REGISTRATIONS} reached`,
+      );
+    }
+    this._welcomeRecipientRegistry.set(documentPath, document);
+  }
+
+  /** Instance-safe removal of a pre-open Welcome-only registration. */
+  unregisterWelcomeRecipient(
+    documentPath: string,
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
+  ): void {
+    if (this._welcomeRecipientRegistry.get(documentPath) === document) {
+      this._welcomeRecipientRegistry.delete(documentPath);
+    }
   }
 
   /**
@@ -523,7 +895,14 @@ export class Peerborne<
    */
   unregisterDocument(
     documentPath: string,
-    document: PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>,
+    document: PeerborneDocument<
+      DocType,
+      ChangesType,
+      ChangeFnType,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >,
   ): void {
     if (this._documentRegistry.get(documentPath) === document) {
       this._documentRegistry.delete(documentPath);
@@ -555,6 +934,7 @@ export class Peerborne<
   private async _processInvitationJoin(
     request: InvitationJoinRequestV1,
     signal?: AbortSignal,
+    admitStateMutation?: () => void,
   ): Promise<InvitationAcceptanceV1> {
     const offerKey = bytesToHex(request.offerDigest);
     const registration = this._invitationRegistry.get(offerKey);
@@ -636,6 +1016,7 @@ export class Peerborne<
             request.recipientKemPublicKey,
             offer.role,
             assertCanMutate,
+            admitStateMutation,
           );
         const now = Date.now();
         const expiresAtMs = invitationAcceptanceExpiresAt(
@@ -701,21 +1082,29 @@ export class Peerborne<
     // The raw stream is also now event-driven instead of `{ source, sink }`,
     // so we wrap it with the stream-adapter shim before passing it to the
     // legacy pipe-based protocol logic below.
-    const docLoadHandler = (rawStream: Stream) => {
+    const docLoadHandler = (securityAware: boolean) => (rawStream: Stream) => {
       const stream: ProtocolStream = wrapStream(rawStream);
       return pipe(
-        stream.source,
+        withSharedProtocolReadDeadline(
+          stream.source,
+          stream.abort,
+          securityAware ? 'document-load v4' : 'document-load v3',
+        ),
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
             request = await readFirstDeserializable(
               source,
-              (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-              MAX_REQUEST_SIZE,
+              (data) =>
+                this._loadMessageSerializer.deserializeLoadRequest(data),
+              MAX_SHARED_PROTOCOL_REQUEST_SIZE,
               this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
             );
           } catch (err) {
-            const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
+            const reason =
+              err instanceof RangeError
+                ? 'request too large'
+                : 'failed to read request';
             console.warn(`Shared doc-load handler: ${reason}, dropping`);
             await stream.sink([] as Iterable<Uint8Array>);
             return [];
@@ -723,55 +1112,72 @@ export class Peerborne<
           const doc = this._documentRegistry.get(request.documentId);
           if (!doc) {
             console.warn(
-              `Shared doc-load handler: no document registered for "${request.documentId}"`,
+              'Shared doc-load handler: no document registered, dropping',
             );
             await stream.sink([] as Iterable<Uint8Array>);
             return [];
           }
-          await doc.handleLoadRequestData(request, stream);
+          await doc.handleLoadRequestData(request, stream, securityAware);
           return [];
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared doc-load handler:', err);
-      });
+      )
+        .then(() => undefined)
+        .catch(() => {
+          console.error('Error in shared doc-load handler');
+        });
     };
 
     // Handler implementation for snapshot-load requests.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    const snapshotLoadHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          let request;
-          try {
-            request = await readFirstDeserializable(
-              source,
-              (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-              MAX_REQUEST_SIZE,
-              this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+    const snapshotLoadHandler =
+      (securityAware: boolean) => (rawStream: Stream) => {
+        const stream: ProtocolStream = wrapStream(rawStream);
+        return pipe(
+          withSharedProtocolReadDeadline(
+            stream.source,
+            stream.abort,
+            securityAware ? 'snapshot-load v4' : 'snapshot-load v3',
+          ),
+          async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+            let request;
+            try {
+              request = await readFirstDeserializable(
+                source,
+                (data) =>
+                  this._loadMessageSerializer.deserializeLoadRequest(data),
+                MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+                this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+              );
+            } catch (err) {
+              const reason =
+                err instanceof RangeError
+                  ? 'request too large'
+                  : 'failed to read request';
+              console.warn(`Shared snapshot-load handler: ${reason}, dropping`);
+              await stream.sink([] as Iterable<Uint8Array>);
+              return [];
+            }
+            const doc = this._documentRegistry.get(request.documentId);
+            if (!doc) {
+              console.warn(
+                'Shared snapshot-load handler: no document registered, dropping',
+              );
+              await stream.sink([] as Iterable<Uint8Array>);
+              return [];
+            }
+            await doc.handleSnapshotLoadRequestData(
+              request,
+              stream,
+              securityAware,
             );
-          } catch (err) {
-            const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
-            console.warn(`Shared snapshot-load handler: ${reason}, dropping`);
-            await stream.sink([] as Iterable<Uint8Array>);
             return [];
-          }
-          const doc = this._documentRegistry.get(request.documentId);
-          if (!doc) {
-            console.warn(
-              `Shared snapshot-load handler: no document registered for "${request.documentId}"`,
-            );
-            await stream.sink([] as Iterable<Uint8Array>);
-            return [];
-          }
-          await doc.handleSnapshotLoadRequestData(request, stream);
-          return [];
-        },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared snapshot-load handler:', err);
-      });
-    };
+          },
+        )
+          .then(() => undefined)
+          .catch(() => {
+            console.error('Error in shared snapshot-load handler');
+          });
+      };
 
     // Handler implementation for key-update requests. The stream data
     // is prefixed with a 4-byte big-endian length followed by the
@@ -788,14 +1194,18 @@ export class Peerborne<
     const keyUpdateHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = wrapStream(rawStream);
       return pipe(
-        stream.source,
+        withSharedProtocolReadDeadline(
+          stream.source,
+          stream.abort,
+          'key-update v2',
+        ),
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           try {
             const header = await readPathPrefixedProtocolHeader(
               source,
               this._documentRegistry,
               'key-update',
-              MAX_REQUEST_SIZE,
+              MAX_SHARED_PROTOCOL_REQUEST_SIZE,
               MAX_DOCUMENT_PATH_LENGTH,
             );
             if (header.kind !== 'ok') {
@@ -809,12 +1219,14 @@ export class Peerborne<
             await stream.close();
           }
         },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared key-update handler:', err);
-      });
+      )
+        .then(() => undefined)
+        .catch(() => {
+          console.error('Error in shared key-update handler');
+        });
     };
 
-    // Handler for BeeKEM Welcome v1. Wire format mirrors key-update v2:
+    // Handlers for BeeKEM Welcome v1/v2. Wire framing mirrors key-update v2:
     // 4-byte big-endian path length, then UTF-8 path, then the serialized
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
@@ -823,38 +1235,54 @@ export class Peerborne<
     //
     // Header parse shared with the key-update handler above via
     // `readPathPrefixedProtocolHeader`.
-    const beekemWelcomeHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          try {
-            const header = await readPathPrefixedProtocolHeader(
-              source,
-              this._documentRegistry,
-              'beekem-welcome',
-              MAX_REQUEST_SIZE,
-              MAX_DOCUMENT_PATH_LENGTH,
-            );
-            if (header.kind !== 'ok') {
+    const createBeeKEMWelcomeHandler =
+      (version: BeeKEMWireVersion) => (rawStream: Stream) => {
+        const stream: ProtocolStream = wrapStream(rawStream);
+        return pipe(
+          withSharedProtocolReadDeadline(
+            stream.source,
+            stream.abort,
+            `beekem-welcome v${version}`,
+          ),
+          async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+            try {
+              const header = await readPathPrefixedProtocolHeader(
+                source,
+                {
+                  get: (documentPath: string) =>
+                    this._documentRegistry.get(documentPath) ??
+                    this._welcomeRecipientRegistry.get(documentPath),
+                },
+                'beekem-welcome',
+                MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+                MAX_DOCUMENT_PATH_LENGTH,
+              );
+              if (header.kind !== 'ok') {
+                return [];
+              }
+              await header.doc.handleBeeKEMWelcomeRequestData(
+                header.payload,
+                version,
+              );
               return [];
+            } finally {
+              // Welcome is fire-and-forget (no response over stream.sink),
+              // but the inbound stream still needs to be closed to release
+              // resources.
+              await stream.close();
             }
-            await header.doc.handleBeeKEMWelcomeRequestData(header.payload);
-            return [];
-          } finally {
-            // Welcome is fire-and-forget (no response over stream.sink),
-            // but the inbound stream still needs to be closed to release
-            // resources.
-            await stream.close();
-          }
-        },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared beekem-welcome handler:', err);
-      });
-    };
+          },
+        )
+          .then(() => undefined)
+          .catch(() => {
+            console.error(`Error in shared beekem-welcome v${version} handler`);
+          });
+      };
+    const beekemWelcomeV1Handler = createBeeKEMWelcomeHandler(1);
+    const beekemWelcomeV2Handler = createBeeKEMWelcomeHandler(2);
 
-    // Handler for BeeKEM PathUpdate v1 (reader-revocation rotations).
-    // Wire format mirrors key-update v2 / BeeKEM Welcome v1: 4-byte
+    // Handlers for BeeKEM PathUpdate v1/v2 (reader-revocation rotations).
+    // Wire format mirrors key-update v2 / BeeKEM Welcome: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
     // `pathUpdateEpochId` / `signature` fields. After routing by path
@@ -866,35 +1294,49 @@ export class Peerborne<
     //
     // Header parse shared with the key-update + Welcome handlers via
     // `readPathPrefixedProtocolHeader`.
-    const beekemPathUpdateHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          try {
-            const header = await readPathPrefixedProtocolHeader(
-              source,
-              this._documentRegistry,
-              'beekem-pathupdate',
-              MAX_REQUEST_SIZE,
-              MAX_DOCUMENT_PATH_LENGTH,
-            );
-            if (header.kind !== 'ok') {
+    const createBeeKEMPathUpdateHandler =
+      (version: BeeKEMWireVersion) => (rawStream: Stream) => {
+        const stream: ProtocolStream = wrapStream(rawStream);
+        return pipe(
+          withSharedProtocolReadDeadline(
+            stream.source,
+            stream.abort,
+            `beekem-pathupdate v${version}`,
+          ),
+          async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+            try {
+              const header = await readPathPrefixedProtocolHeader(
+                source,
+                this._documentRegistry,
+                'beekem-pathupdate',
+                MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+                MAX_DOCUMENT_PATH_LENGTH,
+              );
+              if (header.kind !== 'ok') {
+                return [];
+              }
+              await header.doc.handleBeeKEMPathUpdateRequestData(
+                header.payload,
+                version,
+              );
               return [];
+            } finally {
+              // PathUpdate is fire-and-forget (no response over
+              // stream.sink), but the inbound stream still needs to be
+              // closed to release resources.
+              await stream.close();
             }
-            await header.doc.handleBeeKEMPathUpdateRequestData(header.payload);
-            return [];
-          } finally {
-            // PathUpdate is fire-and-forget (no response over
-            // stream.sink), but the inbound stream still needs to be
-            // closed to release resources.
-            await stream.close();
-          }
-        },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared beekem-pathupdate handler:', err);
-      });
-    };
+          },
+        )
+          .then(() => undefined)
+          .catch(() => {
+            console.error(
+              `Error in shared beekem-pathupdate v${version} handler`,
+            );
+          });
+      };
+    const beekemPathUpdateV1Handler = createBeeKEMPathUpdateHandler(1);
+    const beekemPathUpdateV2Handler = createBeeKEMPathUpdateHandler(2);
 
     // Handler implementation for tip-advertise requests (initial-load
     // quorum probe; see `wire-protocols.ts::tipAdvertiseV1`). Wire format
@@ -903,87 +1345,110 @@ export class Peerborne<
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    const tipAdvertiseHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          try {
-            let request;
+    const tipAdvertiseHandler =
+      (securityAware: boolean) => (rawStream: Stream) => {
+        const stream: ProtocolStream = wrapStream(rawStream);
+        return pipe(
+          withSharedProtocolReadDeadline(
+            stream.source,
+            stream.abort,
+            securityAware ? 'security-advertise v1' : 'tip-advertise v1',
+          ),
+          async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
             try {
-              request = await readFirstDeserializable(
-                source,
-                (data) => this._loadMessageSerializer.deserializeLoadRequest(data),
-                MAX_REQUEST_SIZE,
-                this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+              let request;
+              try {
+                request = await readFirstDeserializable(
+                  source,
+                  (data) =>
+                    this._loadMessageSerializer.deserializeLoadRequest(data),
+                  MAX_SHARED_PROTOCOL_REQUEST_SIZE,
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                );
+              } catch (err) {
+                const reason =
+                  err instanceof RangeError
+                    ? 'request too large'
+                    : 'failed to read request';
+                console.warn(
+                  `Shared tip-advertise handler: ${reason}, dropping`,
+                );
+                await stream.sink([] as Iterable<Uint8Array>);
+                return [];
+              }
+              const doc = this._documentRegistry.get(request.documentId);
+              if (!doc) {
+                // Unknown document -- respond with the 1-byte UNKNOWN_DOC
+                // sentinel (`0xFF`) so the loader can DISTINGUISH "I don't
+                // have this document" from generic probe failures (timeout,
+                // auth failure, decryption failure, malformed response). The
+                // loader uses this signal so that when EVERY queried peer in
+                // the swarm explicitly disclaims the document, `load()`
+                // returns `false` to let a fresh `open()` create the document
+                // on top of an existing swarm -- the previous empty-response
+                // decline was indistinguishable from a partition / timeout
+                // and made new-document creation in an existing mesh fail
+                // with `LoadQuorumFailedError`.
+                //
+                // Unauthenticated: this signal carries no signature. A
+                // Byzantine peer can lie and claim "unknown" even when other
+                // honest peers have the document. Defense: quorum tallies
+                // `'unknown-doc'` exactly like a tip-hash vote -- if Q of K
+                // peers all agree on `'unknown-doc'` the loader trusts the
+                // disclaimer, but a single lying peer in a 3-of-3 mesh whose
+                // other 2 peers have the doc cannot force new-doc creation
+                // (the honest hash X wins the tally). The protection is the
+                // configured Q-of-K agreement threshold and depends on peer
+                // independence; it is not Byzantine consensus or Sybil
+                // resistance. See `decideLoadQuorum` for the tally semantics
+                // and PR #284 r16 Copilot review for the original bug report.
+                //
+                // Information-disclosure tradeoff (PR #284 r27): replying with
+                // `0xff` lets any peer that can dial this node learn whether
+                // `documentId` is registered here. We accept this because the
+                // quorum protocol REQUIRES a distinguishable "unknown-doc"
+                // signal to allow new-document creation on an existing swarm;
+                // suppressing the signal would block legitimate `open()` calls
+                // for fresh paths. Two mitigations are wired in: (1) no
+                // unauthenticated-probe log line so attacker-controlled
+                // `documentId` values don't reach the host log, and (2) the
+                // sentinel is a single byte with no per-document content, so
+                // it leaks only the existence bit -- nothing about contents,
+                // membership, or history.
+                await stream.sink(
+                  unknownDocumentAdvertisement({
+                    securityAware,
+                    requireAuthenticatedInitialLoad:
+                      this.requireAuthenticatedInitialLoad,
+                  }),
+                );
+                return [];
+              }
+              await doc.handleTipAdvertiseRequestData(
+                request,
+                stream,
+                securityAware,
               );
-            } catch (err) {
-              const reason = err instanceof RangeError ? 'request too large' : 'failed to read request';
-              console.warn(`Shared tip-advertise handler: ${reason}, dropping`);
-              await stream.sink([] as Iterable<Uint8Array>);
               return [];
+            } finally {
+              // Tip-advertise runs on every `open()` quorum probe, so every
+              // connected peer hits this handler. Always close the inbound
+              // stream (even on the sink-already-completed happy path) so
+              // per-connection stream quota doesn't leak under load or when
+              // a downstream call throws after sink. Safe to call after
+              // `stream.sink`: libp2p stream.close() is idempotent on a
+              // already-half-closed stream.
+              await stream.close().catch(() => {
+                // swallow: close-after-error is best-effort cleanup
+              });
             }
-            const doc = this._documentRegistry.get(request.documentId);
-            if (!doc) {
-              // Unknown document -- respond with the 1-byte UNKNOWN_DOC
-              // sentinel (`0xFF`) so the loader can DISTINGUISH "I don't
-              // have this document" from generic probe failures (timeout,
-              // auth failure, decryption failure, malformed response). The
-              // loader uses this signal so that when EVERY queried peer in
-              // the swarm explicitly disclaims the document, `load()`
-              // returns `false` to let a fresh `open()` create the document
-              // on top of an existing swarm -- the previous empty-response
-              // decline was indistinguishable from a partition / timeout
-              // and made new-document creation in an existing mesh fail
-              // with `LoadQuorumFailedError`.
-              //
-              // Unauthenticated: this signal carries no signature. A
-              // Byzantine peer can lie and claim "unknown" even when other
-              // honest peers have the document. Defense: quorum tallies
-              // `'unknown-doc'` exactly like a tip-hash vote -- if Q of K
-              // peers all agree on `'unknown-doc'` the loader trusts the
-              // disclaimer, but a single lying peer in a 3-of-3 mesh whose
-              // other 2 peers have the doc cannot force new-doc creation
-              // (the honest hash X wins the tally). Worst case is the same
-              // Q-Byzantine threshold the rest of the quorum gate already
-              // tolerates. See `decideLoadQuorum` for the tally semantics.
-              //
-              // Information-disclosure tradeoff: replying with
-              // `0xff` lets any peer that can dial this node learn whether
-              // `documentId` is registered here. We accept this because the
-              // quorum protocol REQUIRES a distinguishable "unknown-doc"
-              // signal to allow new-document creation on an existing swarm;
-              // suppressing the signal would block legitimate `open()` calls
-              // for fresh paths. Two mitigations are wired in: (1) no
-              // unauthenticated-probe log line so attacker-controlled
-              // `documentId` values don't reach the host log, and (2) the
-              // sentinel is a single byte with no per-document content, so
-              // it leaks only the existence bit -- nothing about contents,
-              // membership, or history.
-              await stream.sink([
-                new Uint8Array([0xff]),
-              ] as Iterable<Uint8Array>);
-              return [];
-            }
-            await doc.handleTipAdvertiseRequestData(request, stream);
-            return [];
-          } finally {
-            // Tip-advertise runs on every `open()` quorum probe, so every
-            // connected peer hits this handler. Always close the inbound
-            // stream (even on the sink-already-completed happy path) so
-            // per-connection stream quota doesn't leak under load or when
-            // a downstream call throws after sink. Safe to call after
-            // `stream.sink`: libp2p stream.close() is idempotent on a
-            // already-half-closed stream.
-            await stream.close().catch(() => {
-              // swallow: close-after-error is best-effort cleanup
-            });
-          }
-        },
-      ).then(() => undefined).catch((err: unknown) => {
-        console.error('Error in shared tip-advertise handler:', err);
-      });
-    };
+          },
+        )
+          .then(() => undefined)
+          .catch(() => {
+            console.error('Error in shared tip-advertise handler');
+          });
+      };
 
     // Public invitation join handler. Unlike document protocols, routing is
     // by the signed offer digest, so a recipient can join before it has a
@@ -993,7 +1458,7 @@ export class Peerborne<
       try {
         await withInvitationProtocolStream(
           async () => rawStream,
-          async (openedStream, signal) => {
+          async (openedStream, signal, admitStateMutation) => {
             const stream: ProtocolStream = wrapStream(openedStream);
             const request = await readInvitationProtocolMessage(
               stream.source,
@@ -1003,6 +1468,7 @@ export class Peerborne<
             const acceptance = await this._processInvitationJoin(
               request,
               signal,
+              admitStateMutation,
             );
             await stream.sink([
               encodeInvitationProtocolFrame(
@@ -1023,13 +1489,70 @@ export class Peerborne<
     // stream payload for routing.
     const relayProtocolOptions = { runOnLimitedConnection: true };
     const registration = Promise.all([
-      this.libp2p.handle(documentLoadV3, docLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(snapshotLoadV3, snapshotLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(documentKeyUpdateV2, keyUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(beekemWelcomeV1, beekemWelcomeHandler, relayProtocolOptions),
-      this.libp2p.handle(beekemPathUpdateV1, beekemPathUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
-      this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
+      this.libp2p.handle(
+        documentLoadV3,
+        docLoadHandler(false),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        documentLoadV4,
+        docLoadHandler(true),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        snapshotLoadV3,
+        snapshotLoadHandler(false),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        snapshotLoadV4,
+        snapshotLoadHandler(true),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        documentKeyUpdateV2,
+        keyUpdateHandler,
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        beekemWelcomeV1,
+        beekemWelcomeV1Handler,
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        beekemWelcomeV2,
+        beekemWelcomeV2Handler,
+        relayProtocolOptions,
+      ),
+      ...(this._allowInsecureLegacyBeeKEMPathUpdateV1
+        ? [
+            this.libp2p.handle(
+              beekemPathUpdateV1,
+              beekemPathUpdateV1Handler,
+              relayProtocolOptions,
+            ),
+          ]
+        : []),
+      this.libp2p.handle(
+        beekemPathUpdateV2,
+        beekemPathUpdateV2Handler,
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        tipAdvertiseV1,
+        tipAdvertiseHandler(false),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        securityAdvertiseV1,
+        tipAdvertiseHandler(true),
+        relayProtocolOptions,
+      ),
+      this.libp2p.handle(
+        invitationJoinV1,
+        invitationJoinHandler,
+        relayProtocolOptions,
+      ),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;
 
@@ -1061,11 +1584,9 @@ export class Peerborne<
       // with the version bundled in @libp2p/interface due to sub-dependency version
       // mismatches in the dependency tree.
       const dialTarget = address.startsWith('/')
-        ? multiaddr(address) as any
+        ? (multiaddr(address) as any)
         : peerIdFromString(address);
-      connectionPromises.push(
-        this.heliaNode.libp2p.dial(dialTarget),
-      );
+      connectionPromises.push(this.heliaNode.libp2p.dial(dialTarget));
     }
     await Promise.all(connectionPromises);
   }
@@ -1091,7 +1612,7 @@ export class Peerborne<
     if (this._documentRegistry.get(document.documentPath) !== document) {
       throw new Error('Invitations can only be created for an open document');
     }
-    if (this.config?.enableSigning === false) {
+    if (!this.enableSigning) {
       throw new Error(
         'Initial-release invitations require application-level signing',
       );
@@ -1189,7 +1710,7 @@ export class Peerborne<
         'Cannot accept an invitation while initialization is active',
       );
     }
-    if (this.config?.enableSigning === false) {
+    if (!this.enableSigning) {
       throw new Error(
         'Initial-release invitations require application-level signing',
       );
@@ -1463,10 +1984,7 @@ export class Peerborne<
    * @param handlerId An identifier used to unsubscribe the provided handler later.
    * @param handler A function that is run every time a peer disconnects.
    */
-  subscribeToPeerDisconnect(
-    handlerId: string,
-    handler: PeerbornePeersHandler,
-  ) {
+  subscribeToPeerDisconnect(handlerId: string, handler: PeerbornePeersHandler) {
     this._peerDisconnectHandlers.set(handlerId, handler);
   }
 
