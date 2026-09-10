@@ -300,9 +300,19 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     return { kind: 'drop-unauthorized', reason: 'missing-signature' };
   }
   const { signature, ...messageWithoutSignature } = message;
-  const raw = deps.syncMessageSerializer.serializeSyncMessage(
-    messageWithoutSignature,
-  );
+  let raw: Uint8Array;
+  try {
+    raw = copyUnsharedUint8Array(
+      deps.syncMessageSerializer.serializeSyncMessage(
+        messageWithoutSignature,
+      ),
+      1,
+      MAX_BEEKEM_WELCOME_MESSAGE_BYTES,
+      'BeeKEM Welcome signature encoding',
+    );
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
   if ((await deps.verifyWriterSignature(raw, signature)) !== true) {
     return { kind: 'drop-unauthorized', reason: 'invalid-signature' };
   }
