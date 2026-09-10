@@ -179,10 +179,10 @@ export type LoadQuorumOrchestratorResult<T> =
  *   This orchestrator does not verify that claim. Return `null` for any
  *   non-vote outcome (timeout, decline, decryption failure, malformed hash,
  *   etc.). If `probeFn` throws or rejects, the orchestrator catches
- *   it at the boundary, logs the error, and records the peer as a non-vote
- *   so the surrounding `LoadQuorumFailedError` contract is preserved. Even
- *   so, a thrown probe still indicates a bug in the caller's probe
- *   implementation and should be fixed at the source.
+ *   it at the boundary, logs a warning without the caught value, and records
+ *   the peer as a non-vote so the surrounding `LoadQuorumFailedError`
+ *   contract is preserved. Even so, a thrown probe still indicates a bug in
+ *   the caller's probe implementation and should be fixed at the source.
  * @param documentPath Used to construct the `LoadQuorumFailedError` on
  *   failure; carries the document name into operator-visible logs.
  * @param config Quorum tuning knobs (see `LoadQuorumOrchestratorConfig`).
