@@ -452,6 +452,130 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     expect(verifiedRawLength).toBeLessThan(reSerialized.length);
   });
 
+  test('detaches signature bytes before invoking an async verifier', async () => {
+    let serializeCalls = 0;
+    let verifiedByte = -1;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ): Uint8Array {
+        serializeCalls++;
+        if (serializeCalls === 1) {
+          return stubSerializer.serializeSyncMessage(message);
+        }
+        const aliased = new Uint8Array([1]);
+        queueMicrotask(() => {
+          aliased[0] = 2;
+        });
+        return aliased;
+      },
+      deserializeSyncMessage(data: Uint8Array) {
+        return stubSerializer.deserializeSyncMessage(data);
+      },
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async (raw) => {
+          await Promise.resolve();
+          verifiedByte = raw[0];
+          return true;
+        },
+      }),
+    );
+
+    expect(result.kind).toBe('accept');
+    expect(verifiedByte).toBe(1);
+  });
+
+  test.each([
+    ['empty bytes', () => new Uint8Array(0)],
+    [
+      'typed-array lookalike',
+      () =>
+        ({
+          length: 1,
+          byteLength: 1,
+          0: 1,
+        }) as unknown as Uint8Array,
+    ],
+    ['oversized bytes', () => new Uint8Array(10 * 1024 * 1024 + 1)],
+  ])(
+    'drops malformed signature-stripped serializer output: %s',
+    async (_name, makeMalformedBytes) => {
+      let serializeCalls = 0;
+      let verifyCalled = false;
+      const serializer = {
+        serializeSyncMessage(
+          message: CRDTSyncMessage<ChangesType, PublicKey>,
+        ): Uint8Array {
+          serializeCalls++;
+          return serializeCalls === 1
+            ? stubSerializer.serializeSyncMessage(message)
+            : makeMalformedBytes();
+        },
+        deserializeSyncMessage(data: Uint8Array) {
+          return stubSerializer.deserializeSyncMessage(data);
+        },
+      } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+      const result = await evaluateBeeKEMWelcome(
+        baseAcceptableMessage(),
+        makeDeps({
+          syncMessageSerializer: serializer,
+          verifyWriterSignature: async () => {
+            verifyCalled = true;
+            return true;
+          },
+        }),
+      );
+
+      expect(result).toEqual({
+        kind: 'drop-malformed',
+        reason: 'invalid-welcome-encoding',
+      });
+      expect(verifyCalled).toBe(false);
+    },
+  );
+
+  test('drops SharedArrayBuffer-backed signature-stripped bytes', async () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    let serializeCalls = 0;
+    let verifyCalled = false;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ): Uint8Array {
+        serializeCalls++;
+        return serializeCalls === 1
+          ? stubSerializer.serializeSyncMessage(message)
+          : new Uint8Array(new SharedArrayBuffer(1));
+      },
+      deserializeSyncMessage(data: Uint8Array) {
+        return stubSerializer.deserializeSyncMessage(data);
+      },
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async () => {
+          verifyCalled = true;
+          return true;
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'drop-malformed',
+      reason: 'invalid-welcome-encoding',
+    });
+    expect(verifyCalled).toBe(false);
+  });
+
   test('gate ordering: missing welcomeEpochId takes precedence over missing welcomeRecipient', async () => {
     const msg: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: '/doc/welcome',
