@@ -24,6 +24,7 @@ import {
   PathUpdateV2,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
@@ -114,34 +115,269 @@ export function serializePathUpdateForWire(
 export function serializePathUpdateV2ForWire(
   update: PathUpdateV2,
 ): SerializedPathUpdateV2 {
-  if (update.version !== 2) {
-    throw new Error('Cannot serialize non-v2 PathUpdate as v2');
+  const budget = createV2DecodeBudget();
+  const raw = snapshotPlainObject(
+    update,
+    [
+      'version',
+      'generation',
+      'parentTreeHash',
+      'numLeaves',
+      'senderLeafIndex',
+      'senderLeafPublicKey',
+      'nodes',
+      'treeNodePublicKeys',
+      'treeHash',
+    ],
+    'Invalid PathUpdateV2',
+  );
+  if (raw.version !== 2) {
+    throw new Error("Invalid PathUpdateV2: 'version' must be 2");
   }
-  return {
-    version: 2,
-    generation: update.generation,
-    parentTreeHash: Base64.fromUint8Array(update.parentTreeHash),
-    numLeaves: update.numLeaves,
-    senderLeafIndex: update.senderLeafIndex,
-    senderLeafPublicKey: Base64.fromUint8Array(update.senderLeafPublicKey),
-    nodes: update.nodes.map((node) => ({
+  requirePositiveInteger(raw.generation, 'generation', 'PathUpdateV2');
+  if ((raw.generation as number) > 0xffffffff) {
+    throw new Error('Invalid PathUpdateV2: generation exceeds 2^32-1');
+  }
+  requirePositiveInteger(raw.numLeaves, 'numLeaves', 'PathUpdateV2');
+  const numLeaves = raw.numLeaves as number;
+  if (numLeaves > MAX_BEEKEM_TREE_LEAVES) {
+    throw new Error(
+      `Invalid PathUpdateV2: numLeaves exceeds ${MAX_BEEKEM_TREE_LEAVES}`,
+    );
+  }
+  const treeWidth = 2 * numLeaves - 1;
+  requireNonNegativeInteger(
+    raw.senderLeafIndex,
+    'senderLeafIndex',
+    'PathUpdateV2',
+  );
+  const senderLeafIndex = raw.senderLeafIndex as number;
+  if (senderLeafIndex >= treeWidth || (senderLeafIndex & 1) !== 0) {
+    throw new Error(
+      "Invalid PathUpdateV2: 'senderLeafIndex' must identify a leaf in the tree",
+    );
+  }
+  if (!Array.isArray(raw.nodes)) {
+    throw new Error(
+      `Invalid PathUpdateV2: 'nodes' must be an array (got ${describe(raw.nodes)})`,
+    );
+  }
+  const rawNodes = snapshotBoundedArray(
+    raw.nodes,
+    MAX_V2_PATH_NODES,
+    'Invalid PathUpdateV2: nodes',
+    budget,
+  );
+  if (!Array.isArray(raw.treeNodePublicKeys)) {
+    throw new Error(
+      `Invalid PathUpdateV2: 'treeNodePublicKeys' must be an array (got ${describe(raw.treeNodePublicKeys)})`,
+    );
+  }
+  const rawTreeNodePublicKeys = snapshotBoundedArray(
+    raw.treeNodePublicKeys,
+    treeWidth,
+    'Invalid PathUpdateV2: treeNodePublicKeys',
+    budget,
+  );
+  if (rawTreeNodePublicKeys.length !== treeWidth) {
+    throw new Error(
+      `Invalid PathUpdateV2: treeNodePublicKeys must contain exactly ${treeWidth} entries`,
+    );
+  }
+
+  const pathIndices = new Set<number>();
+  const nodeSnapshots = rawNodes.map((value, nodeOffset) => {
+    const node = snapshotPlainObject(
+      value,
+      [
+        'nodeIndex',
+        'publicKey',
+        'encryptedPrivateKey',
+        'encryptedPathKeyBundles',
+      ],
+      `Invalid PathUpdateV2: node[${nodeOffset}]`,
+    );
+    requireNonNegativeInteger(
+      node.nodeIndex,
+      `node[${nodeOffset}].nodeIndex`,
+      'PathUpdateV2',
+    );
+    const nodeIndex = node.nodeIndex as number;
+    if (
+      nodeIndex >= treeWidth ||
+      (nodeIndex & 1) === 0 ||
+      pathIndices.has(nodeIndex)
+    ) {
+      throw new Error(
+        `Invalid PathUpdateV2: node[${nodeOffset}] has an out-of-range, leaf, or duplicate nodeIndex`,
+      );
+    }
+    pathIndices.add(nodeIndex);
+    if (!Array.isArray(node.encryptedPathKeyBundles)) {
+      throw new Error(
+        `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles must be an array (got ${describe(node.encryptedPathKeyBundles)})`,
+      );
+    }
+    const rawBundles = snapshotBoundedArray(
+      node.encryptedPathKeyBundles,
+      numLeaves,
+      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles`,
+      budget,
+      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+    );
+    const recipientIndices = new Set<number>();
+    const bundles = rawBundles.map((value, bundleOffset) => {
+      const bundle = snapshotPlainObject(
+        value,
+        ['recipientNodeIndex', 'ciphertext'],
+        `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
+      );
+      requireNonNegativeInteger(
+        bundle.recipientNodeIndex,
+        `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].recipientNodeIndex`,
+        'PathUpdateV2',
+      );
+      const recipientNodeIndex = bundle.recipientNodeIndex as number;
+      if (recipientNodeIndex >= treeWidth) {
+        throw new Error(
+          `Invalid PathUpdateV2: bundle recipient ${recipientNodeIndex} is outside the tree`,
+        );
+      }
+      if (recipientIndices.has(recipientNodeIndex)) {
+        throw new Error(
+          `Invalid PathUpdateV2: duplicate bundle recipient ${recipientNodeIndex} at node[${nodeOffset}]`,
+        );
+      }
+      recipientIndices.add(recipientNodeIndex);
+      return { recipientNodeIndex, ciphertext: bundle.ciphertext };
+    });
+    return {
+      nodeIndex,
+      publicKey: node.publicKey,
+      encryptedPrivateKey: node.encryptedPrivateKey,
+      encryptedPathKeyBundles: bundles,
+    };
+  });
+
+  const snapshotIndices = new Set<number>();
+  const treeNodeSnapshots = rawTreeNodePublicKeys.map((value, nodeOffset) => {
+    const node = snapshotPlainObject(
+      value,
+      ['nodeIndex', 'publicKey'],
+      `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}]`,
+    );
+    requireNonNegativeInteger(
+      node.nodeIndex,
+      `treeNodePublicKeys[${nodeOffset}].nodeIndex`,
+      'PathUpdateV2',
+    );
+    const nodeIndex = node.nodeIndex as number;
+    if (nodeIndex >= treeWidth || snapshotIndices.has(nodeIndex)) {
+      throw new Error(
+        `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}] has an out-of-range or duplicate nodeIndex`,
+      );
+    }
+    snapshotIndices.add(nodeIndex);
+    return { nodeIndex, publicKey: node.publicKey };
+  });
+
+  const parentTreeHash = snapshotRuntimeBytes(
+    raw.parentTreeHash,
+    32,
+    32,
+    'parentTreeHash',
+    budget,
+  );
+  const senderLeafPublicKey = snapshotRuntimeBytes(
+    raw.senderLeafPublicKey,
+    65,
+    65,
+    'senderLeafPublicKey',
+    budget,
+  );
+  const detachedNodes = nodeSnapshots.map((node, nodeOffset) => ({
+    nodeIndex: node.nodeIndex,
+    publicKey: snapshotRuntimeBytes(
+      node.publicKey,
+      65,
+      65,
+      `node[${nodeOffset}].publicKey`,
+      budget,
+    ),
+    encryptedPrivateKey: snapshotRuntimeBytes(
+      node.encryptedPrivateKey,
+      0,
+      MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+      `node[${nodeOffset}].encryptedPrivateKey`,
+      budget,
+    ),
+    encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
+      (bundle, bundleOffset) => ({
+        recipientNodeIndex: bundle.recipientNodeIndex,
+        ciphertext: snapshotRuntimeBytes(
+          bundle.ciphertext,
+          1,
+          MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+          `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
+          budget,
+        ),
+      }),
+    ),
+  }));
+  const detachedTreeNodePublicKeys = treeNodeSnapshots.map(
+    (node, nodeOffset) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey:
+        node.publicKey === null
+          ? null
+          : snapshotRuntimeBytes(
+              node.publicKey,
+              65,
+              65,
+              `treeNodePublicKeys[${nodeOffset}].publicKey`,
+              budget,
+            ),
+    }),
+  );
+  const treeHash = snapshotRuntimeBytes(
+    raw.treeHash,
+    32,
+    32,
+    'treeHash',
+    budget,
+  );
+
+  const wire: SerializedPathUpdateV2 = {
+    version: raw.version,
+    generation: raw.generation as number,
+    parentTreeHash: Base64.fromUint8Array(parentTreeHash),
+    numLeaves,
+    senderLeafIndex,
+    senderLeafPublicKey: Base64.fromUint8Array(senderLeafPublicKey),
+    nodes: detachedNodes.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey: Base64.fromUint8Array(node.publicKey),
       encryptedPrivateKey: Base64.fromUint8Array(node.encryptedPrivateKey),
-      encryptedPathKeyBundles: node.encryptedPathKeyBundles.map((bundle) => ({
-        recipientNodeIndex: bundle.recipientNodeIndex,
-        ciphertext: Base64.fromUint8Array(bundle.ciphertext),
-      })),
+      encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
+        (bundle) => ({
+          recipientNodeIndex: bundle.recipientNodeIndex,
+          ciphertext: Base64.fromUint8Array(bundle.ciphertext),
+        }),
+      ),
     })),
-    treeNodePublicKeys: update.treeNodePublicKeys.map((node) => ({
+    treeNodePublicKeys: detachedTreeNodePublicKeys.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey:
         node.publicKey === null
           ? null
           : Base64.fromUint8Array(node.publicKey),
     })),
-    treeHash: Base64.fromUint8Array(update.treeHash),
+    treeHash: Base64.fromUint8Array(treeHash),
   };
+  // Keep the outbound boundary fail-closed even if runtime validation and the
+  // canonical wire decoder evolve independently.
+  deserializePathUpdateV2FromWire(wire);
+  return wire;
 }
 
 /**
@@ -671,6 +907,31 @@ function reserveV2DecodedBytes(
     );
   }
   budget.decodedBytes += decodedUpperBound;
+}
+
+function snapshotRuntimeBytes(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  fieldName: string,
+  budget: V2DecodeBudget,
+): Uint8Array {
+  let bytes: Uint8Array;
+  try {
+    bytes = copyUnsharedUint8Array(
+      value,
+      minimumLength,
+      maximumLength,
+      `PathUpdateV2.${fieldName}`,
+    );
+  } catch {
+    throw new Error(
+      `Invalid PathUpdateV2: '${fieldName}' must be an unshared Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
+    );
+  }
+  const encodedLength = Math.ceil(bytes.byteLength / 3) * 4;
+  reserveV2DecodedBytes(budget, encodedLength, fieldName);
+  return bytes;
 }
 
 function requireNonNegativeInteger(
