@@ -634,11 +634,10 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     );
   });
 
-  test('iteratively round-trips a legacy tree beyond the V4 manifest depth', () => {
-    const legacyDepth = MAX_MERKLE_DAG_DEPTH * 8;
+  test('iteratively round-trips a tree at the JSON-safe depth limit', () => {
     const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
     let cursor = root;
-    for (let depth = 2; depth <= legacyDepth; depth++) {
+    for (let depth = 2; depth <= MAX_MERKLE_DAG_DEPTH; depth++) {
       const child: CRDTChangeNode<Uint8Array> = { kind: 'document' };
       cursor.children = { [`N${depth}`]: child };
       cursor = child;
@@ -655,17 +654,36 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       current = Object.values(current.children)[0]!;
       actualDepth++;
     }
-    expect(actualDepth).toBe(legacyDepth);
+    expect(actualDepth).toBe(MAX_MERKLE_DAG_DEPTH);
+  });
+
+  test('rejects a tree beyond the JSON-safe depth limit', () => {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    let cursor = root;
+    for (let depth = 2; depth <= MAX_MERKLE_DAG_DEPTH + 1; depth++) {
+      const child: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+      cursor.children = { [`N${depth}`]: child };
+      cursor = child;
+    }
+
+    expect(() => serializeChangeNodeForJSON(root, hexEncode)).toThrow(
+      /maximum depth/,
+    );
+    expect(() =>
+      deserializeChangeNodeFromJSON(
+        root as unknown as CRDTChangeNodeWire<Uint8Array>,
+        (value) => value,
+      ),
+    ).toThrow(/maximum depth/);
   });
 
   test('rejects an inbound tree over the aggregate node budget', () => {
     const root: CRDTChangeNodeWire<string> = { kind: 'document' };
-    let cursor = root;
-    for (let index = 1; index <= MAX_CHANGE_TREE_NODES; index++) {
-      const child: CRDTChangeNodeWire<string> = { kind: 'document' };
-      cursor.children = { [`N${index}`]: child };
-      cursor = child;
+    const children: Record<string, CRDTChangeNodeWire<string>> = {};
+    for (let index = 0; index < MAX_CHANGE_TREE_NODES; index++) {
+      children[`N${index}`] = { kind: 'document' };
     }
+    root.children = children;
     expect(() => deserializeChangeNodeFromJSON(root, hexDecode)).toThrow(
       /exceeds/,
     );

@@ -82,7 +82,9 @@ export type MergedSyncEntry<ChangesType> = [
   ChangesType | undefined,
 ];
 
-const MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS = 16 * 1024 * 1024;
+const MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_BYTES = 16 * 1024 * 1024;
+const MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS =
+  MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_BYTES + 1;
 const intrinsicArrayBufferIsView = ArrayBuffer.isView;
 
 type ComparableByteView =
@@ -100,7 +102,7 @@ function snapshotComparableByteView(value: object): ComparableByteView {
       bytes: copyUnsharedUint8Array(
         value,
         0,
-        MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_ITEMS,
+        MAX_REMOTE_SYNC_PAYLOAD_COMPARISON_BYTES,
         'remote sync tree change payload',
       ),
     };
