@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { JSONSerializer } from './json-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
 import { CRDTChangeNode } from './crdt-change-node.js';
+import { MAX_CHANGE_TREE_DEPTH } from './change-tree-walk.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
 
 const jsonSerializer = new JSONSerializer<any>();
@@ -505,8 +506,8 @@ describe('stack-safe JSON serialization', () => {
     }
   });
 
-  test('round-trips and re-encodes a 4096-node legacy history byte-identically', () => {
-    const legacyDepth = MAX_MERKLE_DAG_DEPTH * 8;
+  test('round-trips and re-encodes the maximum supported history byte-identically', () => {
+    const legacyDepth = MAX_CHANGE_TREE_DEPTH;
     const first = jsonSerializer.serializeSyncMessage({
       documentId: '/doc',
       changes: chain(legacyDepth),

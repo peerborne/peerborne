@@ -213,7 +213,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(0);
     expect(h.appliedEpochs).toHaveLength(1);
     expect(Array.from(h.appliedEpochs[0])).toEqual(
-      Array.from(new Uint8Array(32).fill(7)),
+      Array.from(new Uint8Array(EPOCH_ID_LENGTH).fill(7)),
     );
   });
 
@@ -267,7 +267,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
   test('unsigned and truthy-nonboolean forged duplicates cannot replace a valid buffered Welcome', async () => {
     const h = new PendingWelcomesHarness();
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
-    const key = hex(new Uint8Array(32).fill(7));
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
     const originalPayload = new Uint8Array(
       h.pendingWelcomes.get(key)!.payload,
     );
@@ -290,7 +290,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.evaluateAndApply(message, { fromBuffer: false });
     message.eciesSealed![0] = 0xff;
 
-    const key = hex(new Uint8Array(32).fill(7));
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
     const retained = stubSerializer.deserializeSyncMessage(
       h.pendingWelcomes.get(key)!.payload,
     );
@@ -306,7 +306,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     }
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
     // The oldest entry corresponds to epoch byte 1.
-    const oldestKey = hex(new Uint8Array(32).fill(1));
+    const oldestKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(1));
     expect(h.pendingWelcomes.has(oldestKey)).toBe(true);
 
     // One more push -- the oldest must be evicted, the newest must
@@ -317,7 +317,9 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
     expect(h.pendingWelcomes.has(oldestKey)).toBe(false);
     const newestKey = hex(
-      new Uint8Array(32).fill(PENDING_WELCOMES_MAX_ENTRIES + 1),
+      new Uint8Array(EPOCH_ID_LENGTH).fill(
+        PENDING_WELCOMES_MAX_ENTRIES + 1,
+      ),
     );
     expect(h.pendingWelcomes.has(newestKey)).toBe(true);
   });

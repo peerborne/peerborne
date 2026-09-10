@@ -96,6 +96,12 @@ export function serializeBeeKEMWelcomeV2ForWire(
     numLeaves: welcome.numLeaves,
     ...serializeBeeKEMWelcomeBase(welcome),
   };
+  // SECURITY BOUNDARY: this exported encoder accepts structurally typed input
+  // from JavaScript callers. Base64 encoding makes byte strings canonical, but
+  // it does not validate generation/leaf bounds, complete-tree topology,
+  // fixed-width public keys and hashes, ciphertext limits, or aggregate
+  // budgets. Reuse the strict decoder before releasing outbound wire data so
+  // malformed runtime values fail closed without duplicating that validation.
   deserializeBeeKEMWelcomeV2FromWire(wire);
   return wire;
 }
