@@ -393,6 +393,78 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
     expect(propertyReads).toBe(0);
   });
 
+  test('releases queue tails after distinct compare-and-set misses', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    const internals = anchor as unknown as {
+      values: Map<string, unknown>;
+      tails: Map<string, Promise<void>>;
+    };
+    const expected = {
+      revision: 1,
+      epoch: 0n,
+      controlHead: head(1),
+      storeCommitment: commitment(1),
+      forkPoison: undefined,
+    };
+    const next = {
+      revision: 2,
+      epoch: 1n,
+      controlHead: head(2),
+      storeCommitment: commitment(2),
+      forkPoison: undefined,
+    };
+    const misses = Array.from({ length: 1000 }, (_, index) => {
+      const groupId = new Uint8Array(4);
+      new DataView(groupId.buffer).setUint32(0, index, false);
+      return anchor.advance({ protocol: key.protocol, groupId }, expected, next);
+    });
+
+    await expect(Promise.all(misses)).resolves.toEqual(
+      new Array(1000).fill(false),
+    );
+    expect(internals.values.size).toBe(0);
+    expect(internals.tails.size).toBe(0);
+  });
+
+  test('preserves a queued successor when the prior tail settles', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    const tails = (
+      anchor as unknown as { tails: Map<string, Promise<void>> }
+    ).tails;
+    const nativeDelete = tails.delete.bind(tails);
+    let deleteCalls = 0;
+    Object.defineProperty(tails, 'delete', {
+      value(encodedKey: string): boolean {
+        deleteCalls += 1;
+        return nativeDelete(encodedKey);
+      },
+    });
+    const first = {
+      revision: 1,
+      epoch: 0n,
+      controlHead: head(1),
+      storeCommitment: commitment(1),
+      forkPoison: undefined,
+    };
+    const second = {
+      revision: 2,
+      epoch: 1n,
+      controlHead: head(2),
+      storeCommitment: commitment(2),
+      forkPoison: undefined,
+    };
+
+    await expect(
+      Promise.all([
+        anchor.advance(key, undefined, first),
+        anchor.advance(key, first, second),
+      ]),
+    ).resolves.toEqual([true, true]);
+    expect(await anchor.load(key)).toEqual(second);
+    expect(deleteCalls).toBe(1);
+    expect(tails.size).toBe(0);
+  });
+
   test('accepts genuine cross-realm Uint8Arrays and rejects cross-realm shared backing', async () => {
     const anchor = new InMemoryGroupSecurityRollbackAnchor();
     const crossRealmHead = runInNewContext(

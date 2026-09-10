@@ -163,6 +163,65 @@ describe('InMemoryGroupStateStore', () => {
     expect((await store.load(key))?.outbox).toEqual([]);
   });
 
+  test('keeps transaction state private and enforces the committed baseline', async () => {
+    const store = new InMemoryGroupStateStore();
+    const protector = await WebCryptoGroupStateProtector.generate('store-key');
+    const current = await EncryptedGroupState.seal(
+      state(2n),
+      new Uint8Array([2]),
+      protector,
+    );
+    const rollback = await EncryptedGroupState.seal(
+      state(1n),
+      new Uint8Array([1]),
+      protector,
+    );
+    await store.transaction(key, (transaction) => {
+      transaction.setEncryptedState(current);
+    });
+
+    let escaped: GroupStateStoreTransaction | undefined;
+    let transactionOwnKeys: PropertyKey[] = [];
+    await store.transaction(key, (transaction) => {
+      escaped = transaction;
+      const attack = transaction as unknown as Record<string, unknown>;
+      transactionOwnKeys = Reflect.ownKeys(transaction);
+      const exposedWorking = attack.working as
+        | { encryptedState?: EncryptedGroupState }
+        | undefined;
+      if (exposedWorking !== undefined) {
+        exposedWorking.encryptedState = rollback;
+      }
+      Object.defineProperties(transaction, {
+        active: { configurable: true, value: true, writable: true },
+        committedBytes: { configurable: true, value: 0, writable: true },
+        working: {
+          configurable: true,
+          value: { encryptedState: rollback },
+          writable: true,
+        },
+        validateBeforeCommit: {
+          configurable: true,
+          value: () => undefined,
+          writable: true,
+        },
+        close: {
+          configurable: true,
+          value: () => undefined,
+          writable: true,
+        },
+      });
+    });
+
+    const loaded = await store.load(key);
+    expect(loaded?.revision).toBe(2);
+    expect(loaded?.encryptedState?.state.epoch).toBe(2n);
+    expect(transactionOwnKeys).toEqual([]);
+    expect(() => escaped!.setEncryptedState(rollback)).toThrow(
+      /no longer active/,
+    );
+  });
+
   test('rejects plaintext and structural lookalikes at the store boundary', async () => {
     const store = new InMemoryGroupStateStore();
     await expect(
@@ -1037,6 +1096,84 @@ describe('InMemoryGroupStateStore', () => {
       }),
     ).rejects.toThrow(/EncryptedGroupState/);
     expect((await store.load(key))?.revision).toBe(1);
+  });
+
+  test('releases failed per-key queue tails', async () => {
+    const store = new InMemoryGroupStateStore();
+    const internals = store as unknown as {
+      groups: Map<string, unknown>;
+      tails: Map<string, Promise<void>>;
+    };
+    const failures = Array.from({ length: 1000 }, (_, index) => {
+      const groupId = new Uint8Array(4);
+      new DataView(groupId.buffer).setUint32(0, index, false);
+      return store
+        .transaction({ protocol, groupId }, () => {
+          throw new Error('expected transaction failure');
+        })
+        .then(
+          () => false,
+          () => true,
+        );
+    });
+
+    await expect(Promise.all(failures)).resolves.toEqual(
+      new Array(1000).fill(true),
+    );
+    expect(internals.groups.size).toBe(0);
+    expect(internals.tails.size).toBe(0);
+  });
+
+  test('does not let an earlier settlement delete a queued successor', async () => {
+    const store = new InMemoryGroupStateStore();
+    const tails = (
+      store as unknown as { tails: Map<string, Promise<void>> }
+    ).tails;
+    const nativeDelete = tails.delete.bind(tails);
+    let deleteCalls = 0;
+    Object.defineProperty(tails, 'delete', {
+      value(encodedKey: string): boolean {
+        deleteCalls += 1;
+        return nativeDelete(encodedKey);
+      },
+    });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let signalSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      signalSecondStarted = resolve;
+    });
+    const first = store.transaction(key, () => firstGate);
+    const second = store.transaction(key, async () => {
+      signalSecondStarted();
+      await secondGate;
+    });
+
+    releaseFirst();
+    await secondStarted;
+    expect(tails.size).toBe(1);
+    expect(deleteCalls).toBe(0);
+    let loadSettled = false;
+    const load = store.load(key).then((snapshot) => {
+      loadSettled = true;
+      return snapshot;
+    });
+    await Promise.resolve();
+    expect(loadSettled).toBe(false);
+    releaseSecond();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    await expect(load).resolves.toMatchObject({ revision: 2 });
+    expect(deleteCalls).toBe(1);
+    expect(tails.size).toBe(0);
   });
 
   test('rejects aggregate committed metadata at a low-memory quota without changing revision', async () => {
