@@ -4,11 +4,16 @@ import {
   isEncryptedGroupState,
   isEncryptedKeyPackageState,
 } from './group-security-provider.js';
+import {
+  cloneGroupStateStoreKey,
+  validateGroupStateStoreSnapshotSemantics,
+} from './group-state-store.js';
 import type {
   GroupStateForkEvidence,
   GroupStateOutboxEntry,
   GroupStatePendingKeyPackageRequest,
   GroupStateReplayEntry,
+  GroupStateStoreKey,
   GroupStateStoreSnapshot,
 } from './group-state-store.js';
 
@@ -120,8 +125,9 @@ export const GROUP_SECURITY_STORE_COMMITMENT_LENGTH = 32;
  */
 export async function groupSecurityStoreSnapshotCommitment(
   snapshot: GroupStateStoreSnapshot,
+  key: GroupStateStoreKey,
 ): Promise<Uint8Array> {
-  const encoded = canonicalGroupSecurityStoreSnapshot(snapshot);
+  const encoded = canonicalGroupSecurityStoreSnapshot(snapshot, key);
   const subtle = globalThis.crypto?.subtle;
   const digest = subtle?.digest;
   if (typeof digest !== 'function') {
@@ -138,36 +144,40 @@ export async function groupSecurityStoreSnapshotCommitment(
 /** Strictly validate and detach one complete bounded store snapshot. */
 export function validateAndCloneGroupStateStoreSnapshot(
   snapshot: GroupStateStoreSnapshot,
+  key: GroupStateStoreKey,
 ): GroupStateStoreSnapshot {
-  return canonicalSnapshot(snapshot).snapshot;
+  return canonicalSnapshot(snapshot, key).snapshot;
 }
 
 /** Canonical binary input for the external rollback-anchor commitment. */
 export function canonicalGroupSecurityStoreSnapshot(
   snapshotValue: GroupStateStoreSnapshot,
+  key: GroupStateStoreKey,
 ): Uint8Array {
-  return canonicalSnapshot(snapshotValue).encoded;
+  return canonicalSnapshot(snapshotValue, key).encoded;
 }
 
 function canonicalSnapshot(
   snapshotValue: GroupStateStoreSnapshot,
+  key: GroupStateStoreKey,
 ): {
   readonly encoded: Uint8Array;
   readonly snapshot: GroupStateStoreSnapshot;
 } {
+  const stableKey = cloneGroupStateStoreKey(key);
   const budget = new ByteBudget(
     MAX_CANONICAL_SNAPSHOT_BYTES,
     'canonical group-state snapshot',
   );
   budget.claim(DOMAIN.byteLength + 8);
-  const snapshot = snapshotObject(snapshotValue);
+  const record = snapshotObject(snapshotValue);
   const revision = safeInteger(
-    dataProperty(snapshot, 'revision'),
+    dataProperty(record, 'revision'),
     'store revision',
     1,
   );
 
-  const encryptedStateValue = optionalDataProperty(snapshot, 'encryptedState');
+  const encryptedStateValue = optionalDataProperty(record, 'encryptedState');
   budget.claim(1);
   let encryptedState: Uint8Array | undefined;
   if (encryptedStateValue !== undefined) {
@@ -180,42 +190,26 @@ function canonicalSnapshot(
 
   budget.claim(4);
   const pending = canonicalPending(
-    dataProperty(snapshot, 'pendingKeyPackages'),
+    dataProperty(record, 'pendingKeyPackages'),
     budget,
   );
   budget.claim(4);
   const consumed = canonicalConsumed(
-    dataProperty(snapshot, 'consumedKeyPackageRefs'),
+    dataProperty(record, 'consumedKeyPackageRefs'),
     budget,
-  );
-  const pendingReferences = new Set(
-    pending.map((entry) => byteKey(entry.reference)),
   );
   budget.claim(4);
   const pendingRequests = canonicalPendingRequests(
-    dataProperty(snapshot, 'pendingKeyPackageRequests'),
-    pendingReferences,
+    dataProperty(record, 'pendingKeyPackageRequests'),
     budget,
   );
-  if (pendingRequests.length !== pendingReferences.size) {
-    throw new Error(
-      'every pending KeyPackage must have exactly one pending request binding',
-    );
-  }
-  for (const reference of consumed) {
-    if (pendingReferences.has(byteKey(reference))) {
-      throw new Error(
-        'KeyPackage reference cannot be both pending and consumed',
-      );
-    }
-  }
   budget.claim(4);
-  const outbox = canonicalOutbox(dataProperty(snapshot, 'outbox'), budget);
+  const outbox = canonicalOutbox(dataProperty(record, 'outbox'), budget);
   budget.claim(4);
-  const replay = canonicalReplay(dataProperty(snapshot, 'replay'), budget);
+  const replay = canonicalReplay(dataProperty(record, 'replay'), budget);
   budget.claim(1);
   const fork = canonicalFork(
-    optionalDataProperty(snapshot, 'forkEvidence'),
+    optionalDataProperty(record, 'forkEvidence'),
     budget,
   );
 
@@ -296,50 +290,49 @@ function canonicalSnapshot(
   if (encoded.byteLength !== budget.used) {
     throw new Error('canonical group-state snapshot accounting mismatch');
   }
-  return {
-    encoded,
-    snapshot: {
-      revision,
-      encryptedState:
-        encryptedState === undefined
+  const snapshot: GroupStateStoreSnapshot = {
+    revision,
+    encryptedState:
+      encryptedState === undefined
+        ? undefined
+        : Reflect.apply(
+            encryptedGroupStateDeserialize,
+            EncryptedGroupState,
+            [encryptedState],
+          ) as EncryptedGroupState,
+    pendingKeyPackages: pending.map(
+      (entry) =>
+        Reflect.apply(
+          encryptedKeyPackageStateDeserialize,
+          EncryptedKeyPackageState,
+          [entry.serialized],
+        ) as EncryptedKeyPackageState,
+    ),
+    pendingKeyPackageRequests: pendingRequests.map((request) => ({
+      operationId: copyBytes(request.operationId),
+      requestCommitment: copyBytes(request.requestCommitment),
+      keyPackageReference: copyBytes(request.keyPackageReference),
+    })),
+    consumedKeyPackageRefs: consumed.map(copyBytes),
+    outbox: outbox.map((entry) => ({
+      ...entry,
+      id: copyBytes(entry.id),
+      payload: copyBytes(entry.payload),
+    })),
+    replay: replay.map((entry) => ({
+      ...entry,
+      recordId: copyBytes(entry.recordId),
+      operationId:
+        entry.operationId === undefined
           ? undefined
-          : Reflect.apply(
-              encryptedGroupStateDeserialize,
-              EncryptedGroupState,
-              [encryptedState],
-            ) as EncryptedGroupState,
-      pendingKeyPackages: pending.map(
-        (entry) =>
-          Reflect.apply(
-            encryptedKeyPackageStateDeserialize,
-            EncryptedKeyPackageState,
-            [entry.serialized],
-          ) as EncryptedKeyPackageState,
-      ),
-      pendingKeyPackageRequests: pendingRequests.map((request) => ({
-        operationId: copyBytes(request.operationId),
-        requestCommitment: copyBytes(request.requestCommitment),
-        keyPackageReference: copyBytes(request.keyPackageReference),
-      })),
-      consumedKeyPackageRefs: consumed.map(copyBytes),
-      outbox: outbox.map((entry) => ({
-        ...entry,
-        id: copyBytes(entry.id),
-        payload: copyBytes(entry.payload),
-      })),
-      replay: replay.map((entry) => ({
-        ...entry,
-        recordId: copyBytes(entry.recordId),
-        operationId:
-          entry.operationId === undefined
-            ? undefined
-            : copyBytes(entry.operationId),
-        controlRecord: copyBytes(entry.controlRecord),
-      })),
-      forkEvidence:
-        fork === undefined ? undefined : cloneForkEvidence(fork.evidence),
-    },
+          : copyBytes(entry.operationId),
+      controlRecord: copyBytes(entry.controlRecord),
+    })),
+    forkEvidence:
+      fork === undefined ? undefined : cloneForkEvidence(fork.evidence),
   };
+  validateGroupStateStoreSnapshotSemantics(snapshot, stableKey);
+  return { encoded, snapshot };
 }
 
 interface CanonicalPending {
@@ -380,16 +373,11 @@ function canonicalPending(
     canonical.push({ reference, serialized });
   }
   canonical.sort((left, right) => compareBytes(left.reference, right.reference));
-  rejectDuplicateKeys(
-    canonical.map((entry) => entry.reference),
-    'pending KeyPackage reference',
-  );
   return canonical;
 }
 
 function canonicalPendingRequests(
   value: unknown,
-  pendingReferences: ReadonlySet<string>,
   budget: ByteBudget,
 ): GroupStatePendingKeyPackageRequest[] {
   const snapshots = strictArray(
@@ -424,26 +412,10 @@ function canonicalPendingRequests(
       budget,
       2,
     );
-    if (!pendingReferences.has(byteKey(keyPackageReference))) {
-      throw new Error(
-        `pending KeyPackage request ${index} references missing state`,
-      );
-    }
     return { operationId, requestCommitment, keyPackageReference };
   });
   snapshots.sort((left, right) =>
     compareBytes(left.operationId, right.operationId),
-  );
-  rejectDuplicateKeys(
-    snapshots.map((entry) => entry.operationId),
-    'pending KeyPackage request operationId',
-  );
-  const requestedReferences = snapshots
-    .map((entry) => entry.keyPackageReference)
-    .sort(compareBytes);
-  rejectDuplicateKeys(
-    requestedReferences,
-    'pending KeyPackage request reference',
   );
   return snapshots;
 }
@@ -471,7 +443,6 @@ function canonicalConsumed(
     );
   }
   entries.sort(compareBytes);
-  rejectDuplicateKeys(entries, 'consumed KeyPackage reference');
   return entries;
 }
 
@@ -490,7 +461,6 @@ function canonicalOutbox(
     createdAt: entry.createdAt,
   }));
   entries.sort((left, right) => compareBytes(left.id, right.id));
-  rejectDuplicateKeys(entries.map((entry) => entry.id), 'outbox id');
   return entries;
 }
 
@@ -563,12 +533,6 @@ function canonicalReplay(
     controlRecord: copyByteView(entry.controlRecord),
   }));
   entries.sort((left, right) => compareBytes(left.recordId, right.recordId));
-  rejectDuplicateKeys(entries.map((entry) => entry.recordId), 'replay recordId');
-  const operations = entries
-    .map((entry) => entry.operationId)
-    .filter((entry): entry is Uint8Array => entry !== undefined)
-    .sort(compareBytes);
-  rejectDuplicateKeys(operations, 'replay operationId');
   return entries;
 }
 
@@ -703,9 +667,6 @@ function canonicalFork(
     secondRecordId: copyByteView(secondRecordId),
     secondControlRecord: copyByteView(secondControlRecord),
   };
-  if (equalBytes(cloned.firstRecordId, cloned.secondRecordId)) {
-    throw new Error('fork evidence record IDs must differ');
-  }
   const ordered =
     compareBytes(cloned.firstRecordId, cloned.secondRecordId) <= 0
       ? [
@@ -1108,14 +1069,6 @@ function u64Value(value: unknown, field: string): bigint {
   return value;
 }
 
-function rejectDuplicateKeys(values: ReadonlyArray<Uint8Array>, field: string): void {
-  for (let index = 1; index < values.length; index++) {
-    if (equalBytes(values[index - 1], values[index])) {
-      throw new Error(`${field} is duplicated`);
-    }
-  }
-}
-
 function bytes32(value: Uint8Array): Uint8Array {
   if (value.byteLength > 0xffffffff) {
     throw new Error('value does not fit in u32');
@@ -1158,12 +1111,6 @@ function asciiBytes(value: string): Uint8Array {
     output[index] = code;
   }
   return output;
-}
-
-function byteKey(value: Uint8Array): string {
-  let result = '';
-  for (const byte of value) result += byte.toString(16).padStart(2, '0');
-  return result;
 }
 
 function compareBytes(left: Uint8Array, right: Uint8Array): number {
