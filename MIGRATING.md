@@ -74,7 +74,8 @@ Before upgrading a deployment:
 4. When using a custom prefix, add it to each relay's `TOPIC_ALLOWLIST`. When
    also customizing `pubsubDocumentPublishPath`, set the relay's
    `DOCUMENT_PUBLISH_PATH` to the same value, list it in `EXTRA_TOPICS`, or add
-   it to `TOPIC_ALLOWLIST`.
+   it to `TOPIC_ALLOWLIST`. An allowlist entry ending in `/` is a namespace
+   prefix; an entry without a trailing slash matches one exact topic.
 5. Resume writers only after all participating peers use the same runtime and
    topics.
 

@@ -62,6 +62,17 @@ describe('AutoTopicRegistry', () => {
       '/documents',
       '/peerborne/documents/v3',
     ])
+    expect(
+      topics.subscriptionChanged(
+        'peer-b',
+        '/peerborne/documents/v30',
+        true,
+      ),
+    ).toEqual({
+      action: 'skip',
+      topic: '/peerborne/documents/v30',
+      reason: 'NotInAllowlist',
+    })
   })
 
   it('reclaims the last topics held by a disconnected peer', () => {
