@@ -216,6 +216,103 @@ describe('load security state commitment', () => {
     expect(captured).toEqual(commitments());
   });
 
+  test('rejects accessor-backed resolver tuples without invoking getters', async () => {
+    const accessor = commitments();
+    let getterCalls = 0;
+    Object.defineProperty(accessor, 'groupId', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return 'group-1';
+      },
+    });
+
+    await expect(
+      captureTrustedLoadSecurityCommitments('/docs/example', async () =>
+        accessor,
+      ),
+    ).rejects.toThrow(/invalid tuple/);
+    expect(getterCalls).toBe(0);
+  });
+
+  test('captures each resolver tuple descriptor once without property reads', async () => {
+    const mutable = commitments();
+    const descriptorReads = new Map<PropertyKey, number>();
+    let propertyReads = 0;
+    let groupReads = 0;
+    const proxied = new Proxy(mutable, {
+      get(target, property, receiver) {
+        if (property === 'then') return undefined;
+        propertyReads += 1;
+        if (property === 'groupId') {
+          groupReads += 1;
+          return groupReads === 1 ? 'group-1' : 'substituted-group';
+        }
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        descriptorReads.set(
+          property,
+          (descriptorReads.get(property) ?? 0) + 1,
+        );
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const captured = await captureTrustedLoadSecurityCommitments(
+      '/docs/example',
+      async () => proxied,
+    );
+    expect(propertyReads).toBe(0);
+    for (const field of Reflect.ownKeys(mutable)) {
+      expect(descriptorReads.get(field)).toBe(1);
+    }
+
+    mutable.groupId = 'mutated-group';
+    mutable.epoch = 999n;
+    mutable.controlHead.fill(8);
+    mutable.treeHash.fill(8);
+    mutable.confirmedTranscriptHash.fill(8);
+    expect(captured).toEqual(commitments());
+  });
+
+  test('ignores unknown resolver fields without invoking them', async () => {
+    const extended = { ...commitments(), extra: true } as Record<
+      PropertyKey,
+      unknown
+    >;
+    let unknownGetterCalls = 0;
+    Object.defineProperties(extended, {
+      hidden: { value: true },
+      accessor: {
+        enumerable: true,
+        get() {
+          unknownGetterCalls += 1;
+          return true;
+        },
+      },
+    });
+    Object.defineProperty(extended, Symbol('unknown'), {
+      get() {
+        unknownGetterCalls += 1;
+        return true;
+      },
+    });
+    const proxied = new Proxy(extended, {
+      ownKeys() {
+        throw new Error('unknown fields must not be enumerated');
+      },
+    });
+
+    const captured = await captureTrustedLoadSecurityCommitments(
+      '/docs/example',
+      async () => proxied,
+    );
+    expect(captured).toEqual(commitments());
+    expect(Reflect.ownKeys(captured)).toHaveLength(6);
+    expect(unknownGetterCalls).toBe(0);
+  });
+
   test('fails closed when the local resolver is missing, undefined, invalid, or rejects', async () => {
     await expect(
       captureTrustedLoadSecurityCommitments('/doc', undefined),

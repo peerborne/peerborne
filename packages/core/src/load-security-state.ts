@@ -10,6 +10,16 @@ export const MAX_LOAD_SECURITY_FRONTIER_ENTRIES = 4096;
 export const MAX_LOAD_SECURITY_FRONTIER_ENTRY_BYTES = 1024;
 export const MAX_LOAD_SECURITY_EPOCH = (1n << 64n) - 1n;
 
+const LOAD_SECURITY_COMMITMENT_FIELDS = [
+  'version',
+  'controlHead',
+  'groupId',
+  'epoch',
+  'treeHash',
+  'confirmedTranscriptHash',
+] as const;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
 export interface LoadSecurityCommitments {
   version: typeof LOAD_SECURITY_STATE_VERSION;
   controlHead: Uint8Array;
@@ -112,20 +122,63 @@ export function validateLoadSecurityCommitments(
   requireHash('confirmedTranscriptHash', commitments.confirmedTranscriptHash);
 }
 
-/** Return a defensive byte-for-byte copy of a validated commitment tuple. */
+/**
+ * Return a defensive copy of the six known own-data tuple fields. Unknown
+ * top-level fields are ignored for forward compatibility.
+ */
 export function cloneLoadSecurityCommitments(
   commitments: LoadSecurityCommitments,
 ): LoadSecurityCommitments {
-  validateLoadSecurityCommitments(commitments);
-  return {
-    ...commitments,
-    controlHead: requireHash('controlHead', commitments.controlHead),
-    treeHash: requireHash('treeHash', commitments.treeHash),
+  const tuple = snapshotLoadSecurityCommitmentFields(commitments);
+  const snapshot: LoadSecurityCommitments = {
+    version: tuple.version as typeof LOAD_SECURITY_STATE_VERSION,
+    controlHead: requireHash('controlHead', tuple.controlHead),
+    groupId: tuple.groupId as string,
+    epoch: tuple.epoch as bigint,
+    treeHash: requireHash('treeHash', tuple.treeHash),
     confirmedTranscriptHash: requireHash(
       'confirmedTranscriptHash',
-      commitments.confirmedTranscriptHash,
+      tuple.confirmedTranscriptHash,
     ),
   };
+  validateLoadSecurityCommitments(snapshot);
+  return snapshot;
+}
+
+function snapshotLoadSecurityCommitmentFields(
+  value: unknown,
+): Record<(typeof LOAD_SECURITY_COMMITMENT_FIELDS)[number], unknown> {
+  if (value === null || typeof value !== 'object') {
+    throw new TypeError('load security commitments must be an object');
+  }
+  const snapshot = {} as Record<
+    (typeof LOAD_SECURITY_COMMITMENT_FIELDS)[number],
+    unknown
+  >;
+  for (const field of LOAD_SECURITY_COMMITMENT_FIELDS) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Reflect.apply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        field,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(
+        'load security commitments must expose stable own data properties',
+      );
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(
+        `load security commitments ${field} must be an enumerable own data property`,
+      );
+    }
+    snapshot[field] = descriptor.value;
+  }
+  return snapshot;
 }
 
 /**
