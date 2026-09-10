@@ -21,6 +21,7 @@ export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 
 /** Default topic prefixes accepted by the public relay. */
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
+  '/peerborne/document/v3/',
   '/document/',
   '/documents',
 ]

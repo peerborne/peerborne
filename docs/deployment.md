@@ -107,7 +107,7 @@ All configuration is done through environment variables on the relay process.
 | `RELAY_IDENTITY_KEY_PATH` | `./relay-identity.key` | App-managed protobuf libp2p private-key file. The standard image sets `/shared/relay-identity.key` |
 | `DOCUMENT_PUBLISH_PATH` | `/documents` | Topic for document publish notifications |
 | `EXTRA_TOPICS` | (unset) | Comma-separated additional topics to subscribe |
-| `TOPIC_ALLOWLIST` | `/document/,/documents` | Comma-separated topic prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
+| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/,/document/,/documents` | Comma-separated topic prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
 | `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer |
@@ -136,7 +136,13 @@ automatically unsubscribes. The relay tracks subscriptions by peer, cleans them
 on disconnect, and periodically reconciles its bounded dynamic-topic set with
 GossipSub as a backstop for missed unsubscribe events.
 
-The safe default accepts the current `/document/` and `/documents` namespaces.
+The safe default admits the current `/peerborne/document/v3/` document
+namespace, legacy `/document/`, and `/documents` publish notifications. The
+relay treats them as distinct GossipSub topics and does not translate, mirror,
+or bridge messages between them. Retaining the legacy prefix lets separately
+coordinated old and new fleets share a relay; it does not make their document
+wire formats compatible. See [Migrating to Peerborne](../MIGRATING.md#document-gossipsub-v3-namespace)
+before changing a running fleet.
 Keep both `MAX_AUTO_TOPICS` and `MAX_AUTO_TOPICS_PER_PEER` at reasonable limits
 for your deployment. The global cap bounds total dynamic state; the per-peer cap
 prevents one connected peer from consuming that allowance. The GossipSub byte
@@ -419,7 +425,7 @@ spec:
               name: tcp
           env:
             - name: TOPIC_ALLOWLIST
-              value: "/document/,/documents"
+              value: "/peerborne/document/v3/,/document/,/documents"
             - name: MAX_AUTO_TOPICS
               value: "5000"
             - name: MAX_AUTO_TOPICS_PER_PEER
