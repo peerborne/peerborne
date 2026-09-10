@@ -107,7 +107,7 @@ All configuration is done through environment variables on the relay process.
 | `RELAY_IDENTITY_KEY_PATH` | `./relay-identity.key` | App-managed protobuf libp2p private-key file. The standard image sets `/shared/relay-identity.key` |
 | `DOCUMENT_PUBLISH_PATH` | `/peerborne/documents/v3` | Topic for document publish notifications |
 | `EXTRA_TOPICS` | (unset) | Comma-separated additional topics to subscribe |
-| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents` | Comma-separated topic prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
+| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
 | `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer |
@@ -140,6 +140,10 @@ The safe default admits the current `/peerborne/document/v3/` document and
 `/peerborne/documents/v3` publish-notification namespaces plus legacy
 `/document/` and `/documents`. The relay treats them as distinct GossipSub
 topics and does not translate, mirror, or bridge messages between them.
+Allowlist entries ending in `/` match a namespace prefix; entries without a
+trailing slash match one exact topic. This keeps `/peerborne/documents/v3`
+from also admitting lookalike future-version names such as
+`/peerborne/documents/v30`.
 Retaining the legacy prefixes lets separately coordinated old and new fleets
 share a relay; it does not make their document wire formats compatible. A
 custom client topic must also be added to every relay's `TOPIC_ALLOWLIST`, or
@@ -531,8 +535,8 @@ public peer ID; private identity bytes and relayed payloads are never logged.
 - The relay must be subscribed to the same topics as the peers. Verify
   auto-subscribe is working by checking relay logs for
   `Auto-subscribed to a dynamic topic`.
-- If `TOPIC_ALLOWLIST` is set, confirm the document topics match one of the
-  allowed prefixes.
+- If `TOPIC_ALLOWLIST` is set, confirm each document topic matches an exact
+  entry or a slash-terminated namespace prefix.
 
 **EADDRINUSE on startup**
 - Another process is using port 9001 or 9002. Change ports via `WS_PORT` /

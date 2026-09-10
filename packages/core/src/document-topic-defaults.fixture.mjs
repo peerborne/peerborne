@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import 'fake-indexeddb/auto';
 import {
   DEFAULT_DOCUMENT_PUBLISH_PATH,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,

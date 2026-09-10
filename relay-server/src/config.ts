@@ -19,7 +19,7 @@ export const DEFAULT_MAX_AUTO_TOPICS_PER_PEER = 32
 /** Default GossipSub topic-name byte budget for each connected peer. */
 export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 
-/** Default topic prefixes accepted by the public relay. */
+/** Default exact topics and slash-terminated prefixes accepted by the relay. */
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
   '/peerborne/document/v3/',
   '/peerborne/documents/v3',
@@ -100,7 +100,7 @@ export interface RelayConfig {
   /** File containing the protobuf-serialized libp2p private key. */
   readonly identityKeyPath: string
   /**
-   * Topic-prefix allowlist, or null for explicitly configured open mode.
+   * Exact-topic/slash-terminated-prefix allowlist, or null for open mode.
    */
   readonly topicAllowlist: string[] | null
   /** Hard cap on number of auto-subscribed topics. */

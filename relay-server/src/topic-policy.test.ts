@@ -108,6 +108,29 @@ describe('shouldAutoSubscribe', () => {
       })
       expect(decision).toEqual({ action: 'subscribe' })
     })
+
+    it('treats entries without a trailing slash as exact topics', () => {
+      const input = {
+        allowlist: ['/peerborne/documents/v3', '/documents'],
+        maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+        autoTopicCount: 0,
+        isTracked: neverTracked,
+      }
+
+      expect(
+        shouldAutoSubscribe('/peerborne/documents/v3', input),
+      ).toEqual({ action: 'subscribe' })
+      expect(shouldAutoSubscribe('/documents', input)).toEqual({
+        action: 'subscribe',
+      })
+      expect(
+        shouldAutoSubscribe('/peerborne/documents/v30', input),
+      ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+      expect(shouldAutoSubscribe('/documents-v2', input)).toEqual({
+        action: 'skip',
+        reason: 'NotInAllowlist',
+      })
+    })
   })
 
   describe('cap enforcement', () => {

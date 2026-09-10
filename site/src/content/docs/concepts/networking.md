@@ -51,8 +51,9 @@ instead of legacy `/documents`. A custom or empty `pubsubDocumentPrefix` opts
 out of that default separation; all peers using it must be upgraded together,
 and every relay must add it to `TOPIC_ALLOWLIST`. A custom
 `pubsubDocumentPublishPath` must match the relay's `DOCUMENT_PUBLISH_PATH` or
-`EXTRA_TOPICS`, or match its allowlist. Relays do not bridge legacy and v3
-topics.
+`EXTRA_TOPICS`, or match its allowlist. Allowlist entries ending in `/` are
+namespace prefixes; entries without a trailing slash match one exact topic.
+Relays do not bridge legacy and v3 topics.
 
 Topic names are public routing labels, not authenticated version negotiation,
 authorization, or wire validation. Application URLs such as `/document/:id`

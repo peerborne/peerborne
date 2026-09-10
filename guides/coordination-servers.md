@@ -235,7 +235,7 @@ The relay server reads the following environment variables:
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
 | `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/peerborne/documents/v3` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents` |
+| `TOPIC_ALLOWLIST` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
 | `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
@@ -257,6 +257,9 @@ those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions
 `MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
 `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
 the relay's application-level registry receives subscription events.
+Allowlist entries ending in `/` match a namespace prefix. Entries without a
+trailing slash match one exact topic, so `/peerborne/documents/v3` does not
+also admit `/peerborne/documents/v30`.
 The v3 document and publish-notification topics are separate from their legacy
 counterparts; the relay does not bridge them. Coordinate every peer on a custom
 prefix before an upgrade because mixed runtime versions on one topic are
