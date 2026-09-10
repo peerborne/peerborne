@@ -101,17 +101,15 @@ describe('YjsJSONSerializer load security state', () => {
     );
   });
 
-  test('accepts legacy depth 513 beyond the V4 manifest policy', () => {
+  test('rejects depth beyond the shared change-tree bound', () => {
     const serializer = new YjsJSONSerializer();
     const legacy = changeChain<Uint8Array>(MAX_MERKLE_DAG_DEPTH + 1);
-    expect(
-      serializer.deserializeSyncMessage(
-        serializer.serializeSyncMessage({
-          documentId: '/doc',
-          changes: legacy,
-        }),
-      ).changes,
-    ).toBeDefined();
+    expect(() =>
+      serializer.serializeSyncMessage({
+        documentId: '/doc',
+        changes: legacy,
+      }),
+    ).toThrow(/maximum depth/);
   });
 
   test('preserves non-schema nested field order across re-encoding', () => {
