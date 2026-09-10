@@ -10,6 +10,12 @@ export {
 export { LRUCache } from './lru-cache.js';
 export { TIPS_HASH_LENGTH } from './tips-hash.js';
 export { SubtleCrypto } from './auth-subtlecrypto.js';
+export { copyUnsharedUint8Array } from './utils.js';
+export {
+  computeKeychainStateCommitment,
+  MAX_KEYCHAIN_EPOCHS,
+} from './keychain.js';
+export { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 export {
   deserializeInitialLoadChallengeFromWire,
   serializeInitialLoadChallengeForWire,

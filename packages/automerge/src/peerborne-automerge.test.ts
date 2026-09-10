@@ -1,7 +1,6 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
 import { snapshotDeepEnumerableData } from '@peerborne/core';
-import { YjsKeychain } from '../../yjs/src/peerborne-yjs.js';
 import {
   Change as BinaryChange,
   clone as automergeClone,
@@ -369,17 +368,29 @@ function appendTestKeychainEntry(
   });
 }
 
+const KEYCHAIN_COMMITMENT_GOLDENS = [
+  'afa90588687d49cacdf36100e04468733207c5544dabe98108d6b572a2fa4d1f',
+  'bd87e8f14d8d98a4862512d74e47b1406b7f57773dc1f619551b7f47c49ce50f',
+  '52fba32ca5e4a5f95c53a5dd845a138e0f9e6b79cf4071131a5c581839255ce6',
+] as const;
+
+const commitmentHex = (commitment: Uint8Array): string =>
+  Array.from(commitment, (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  );
+
 describe('AutomergeKeychain', () => {
-  test('state commitment matches Yjs for the same ordered logical keys', async () => {
-    const automerge = new AutomergeKeychain();
-    const yjs = new YjsKeychain();
-    expect(await automerge.stateCommitment()).toEqual(
-      await yjs.stateCommitment(),
+  test('state commitment matches the cross-adapter golden vectors', async () => {
+    const keychain = new AutomergeKeychain();
+    expect(commitmentHex(await keychain.stateCommitment())).toBe(
+      KEYCHAIN_COMMITMENT_GOLDENS[0],
     );
-    for (const [idFill, keyFill] of [
+    const entries = [
       [0x11, 0xaa],
       [0x22, 0xbb],
-    ] as const) {
+    ] as const;
+    for (let index = 0; index < entries.length; index++) {
+      const [idFill, keyFill] = entries[index];
       const id = new Uint8Array(32).fill(idFill);
       const key = await crypto.subtle.importKey(
         'raw',
@@ -388,13 +399,11 @@ describe('AutomergeKeychain', () => {
         true,
         ['encrypt', 'decrypt'],
       );
-      await automerge.addEpochKey(id, key);
-      await yjs.addEpochKey(id, key);
+      await keychain.addEpochKey(id, key);
+      expect(commitmentHex(await keychain.stateCommitment())).toBe(
+        KEYCHAIN_COMMITMENT_GOLDENS[index + 1],
+      );
     }
-
-    expect(await automerge.stateCommitment()).toEqual(
-      await yjs.stateCommitment(),
-    );
   });
 
   test('add() returns [keyIDBytes, CryptoKey, changes]', async () => {
