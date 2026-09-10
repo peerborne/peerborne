@@ -69,7 +69,7 @@ class PendingWelcomesHarness {
   pendingWelcomes = new Map<
     string,
     {
-      payload: Uint8Array;
+      message: CRDTSyncMessage<ChangesType, PublicKey>;
       bufferedAtMs: number;
     }
   >();
@@ -127,13 +127,13 @@ class PendingWelcomesHarness {
     const epochId = message.welcomeEpochId;
     if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = hex(epochId);
-    if (this.pendingWelcomes.has(key)) return;
+    this.pendingWelcomes.delete(key);
     if (this.pendingWelcomes.size >= PENDING_WELCOMES_MAX_ENTRIES) {
       const oldestKey = this.pendingWelcomes.keys().next().value;
       if (oldestKey !== undefined) this.pendingWelcomes.delete(oldestKey);
     }
     this.pendingWelcomes.set(key, {
-      payload: stubSerializer.serializeSyncMessage(message),
+      message,
       bufferedAtMs: this.nowMs,
     });
   }
@@ -148,10 +148,9 @@ class PendingWelcomesHarness {
         this.pendingWelcomes.delete(key);
         continue;
       }
-      const accepted = await this.evaluateAndApply(
-        stubSerializer.deserializeSyncMessage(entry.payload),
-        { fromBuffer: true },
-      );
+      const accepted = await this.evaluateAndApply(entry.message, {
+        fromBuffer: true,
+      });
       if (accepted) this.pendingWelcomes.delete(key);
     }
   }
@@ -264,12 +263,37 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(1);
   });
 
+  test('refreshes an authenticated duplicate before insertion-order eviction', async () => {
+    const h = new PendingWelcomesHarness();
+    h.isReader = false;
+    for (let epoch = 1; epoch <= PENDING_WELCOMES_MAX_ENTRIES; epoch++) {
+      h.nowMs = epoch;
+      await h.evaluateAndApply(welcomeFor(epoch), { fromBuffer: false });
+    }
+
+    const refreshedKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(1));
+    h.nowMs = 100;
+    await h.evaluateAndApply(welcomeFor(1), { fromBuffer: false });
+    expect(h.pendingWelcomes.get(refreshedKey)?.bufferedAtMs).toBe(100);
+
+    await h.evaluateAndApply(
+      welcomeFor(PENDING_WELCOMES_MAX_ENTRIES + 1),
+      { fromBuffer: false },
+    );
+
+    const formerlySecondOldest = hex(
+      new Uint8Array(EPOCH_ID_LENGTH).fill(2),
+    );
+    expect(h.pendingWelcomes.has(refreshedKey)).toBe(true);
+    expect(h.pendingWelcomes.has(formerlySecondOldest)).toBe(false);
+  });
+
   test('unsigned and truthy-nonboolean forged duplicates cannot replace a valid buffered Welcome', async () => {
     const h = new PendingWelcomesHarness();
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
-    const originalPayload = new Uint8Array(
-      h.pendingWelcomes.get(key)!.payload,
+    const originalPayload = stubSerializer.serializeSyncMessage(
+      h.pendingWelcomes.get(key)!.message,
     );
 
     const unsigned = welcomeFor(7);
@@ -281,18 +305,27 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.evaluateAndApply(forged, { fromBuffer: false });
 
     expect(h.pendingWelcomes.size).toBe(1);
-    expect(h.pendingWelcomes.get(key)!.payload).toEqual(originalPayload);
+    expect(
+      stubSerializer.serializeSyncMessage(
+        h.pendingWelcomes.get(key)!.message,
+      ),
+    ).toEqual(originalPayload);
   });
 
-  test('retains a detached canonical copy of an authenticated Welcome', async () => {
+  test('buffers the authenticated detached Welcome when the input mutates during validation', async () => {
     const h = new PendingWelcomesHarness();
     const message = welcomeFor(7);
-    await h.evaluateAndApply(message, { fromBuffer: false });
+    const pending = h.evaluateAndApply(message, { fromBuffer: false });
+    message.welcomeEpochId!.fill(9);
     message.eciesSealed![0] = 0xff;
+    await pending;
 
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
-    const retained = stubSerializer.deserializeSyncMessage(
-      h.pendingWelcomes.get(key)!.payload,
+    const mutatedKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(9));
+    const retained = h.pendingWelcomes.get(key)!.message;
+    expect(h.pendingWelcomes.has(mutatedKey)).toBe(false);
+    expect(retained.welcomeEpochId).toEqual(
+      new Uint8Array(EPOCH_ID_LENGTH).fill(7),
     );
     expect(retained.eciesSealed).toEqual(new Uint8Array([1, 2, 3]));
   });
