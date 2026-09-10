@@ -263,10 +263,13 @@ export interface PeerborneConfig {
    * Prefix to apply to document pubsub topics.
    *
    * Defaults to {@link DEFAULT_DOCUMENT_TOPIC_PREFIX} to namespace document
-   * traffic on the pubsub mesh and avoid collisions with other topic types.
+   * traffic on the pubsub mesh and isolate the current wire generation from
+   * older peers.
    *
    * Set to an empty string (`''`) to disable prefixing; topic strings
-   * will be the bare document path.
+   * will be the bare document path. Custom and empty prefixes are protocol
+   * compatibility boundaries: every peer sharing one must be upgraded
+   * together.
    *
    * @default DEFAULT_DOCUMENT_TOPIC_PREFIX
    */

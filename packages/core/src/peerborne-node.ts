@@ -60,6 +60,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 import { createNodeHeliaStores } from './node-stores.js';
+import { DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
 
 /**
  * Default config for Node.js environments.
@@ -144,7 +145,7 @@ export const defaultNodeConfig = (
         connectionGater: { denyDialMultiaddr: async () => false },
       },
     },
-    pubsubDocumentPrefix: '/document/',
+    pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
     pubsubDocumentPublishPath: '/documents',
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
