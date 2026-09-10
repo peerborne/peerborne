@@ -570,6 +570,7 @@ describe('AutomergeKeychainProvider', () => {
 
 describe('AutomergeJSONSerializer', () => {
   const serializer = new AutomergeJSONSerializer();
+  const SHALLOW_HISTORY_NODE_COUNT = 4_096;
 
   function nestedTree(depth: number): CRDTChangeNode<BinaryChange[]> {
     const root: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
@@ -579,6 +580,16 @@ describe('AutomergeJSONSerializer', () => {
       cursor.children = { [`cid-${index}`]: child };
       cursor = child;
     }
+    return root;
+  }
+
+  function shallowTree(nodeCount: number): CRDTChangeNode<BinaryChange[]> {
+    const root: CRDTChangeNode<BinaryChange[]> = { kind: 'document' };
+    const children: Record<string, CRDTChangeNode<BinaryChange[]>> = {};
+    for (let index = 1; index < nodeCount; index++) {
+      children[`cid-${index}`] = { kind: 'document' };
+    }
+    root.children = children;
     return root;
   }
 
@@ -612,19 +623,55 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
+    const genericSerialize = jest.spyOn(serializer, 'serialize');
     const wire = serializer.serializeSyncMessage({
       documentId: 'maximum-depth',
       changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
     });
     const restored = serializer.deserializeSyncMessage(wire);
 
-    expect(() => serializer.serializeSyncMessage(restored)).not.toThrow();
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(genericSerialize).not.toHaveBeenCalled();
+    genericSerialize.mockRestore();
     expect(() =>
       serializer.serializeSyncMessage({
         documentId: 'over-maximum-depth',
         changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
       }),
     ).toThrow(/maximum depth/);
+  });
+
+  test('round-trips 4096 shallow history nodes with stable wire bytes', () => {
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wide-history',
+      changes: shallowTree(SHALLOW_HISTORY_NODE_COUNT),
+    });
+    const restored = serializer.deserializeSyncMessage(wire);
+
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(
+      Object.keys(
+        restored.changes!.children as Record<
+          string,
+          CRDTChangeNode<BinaryChange[]>
+        >,
+      ),
+    ).toHaveLength(SHALLOW_HISTORY_NODE_COUNT - 1);
+  });
+
+  test('preserves the existing sync-message wire bytes', () => {
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wire-compatibility',
+      changes: {
+        kind: 'document',
+        change: [new Uint8Array([1, 2])],
+        children: { cid: { kind: 'writer' } },
+      },
+    });
+
+    expect(new TextDecoder().decode(wire)).toBe(
+      '{"documentId":"wire-compatibility","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
+    );
   });
 
   test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
