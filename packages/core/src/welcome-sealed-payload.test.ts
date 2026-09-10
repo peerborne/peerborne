@@ -107,6 +107,131 @@ describe('welcome-sealed-payload V2 boundary', () => {
     ).toThrow(/publicKey.*65 bytes/);
   });
 
+  test('preserves and requires the exact runtime V2 version', () => {
+    expect(serializeBeeKEMWelcomeV2ForWire(beekemWelcome).version).toBe(2);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        version: 1,
+      } as unknown as typeof beekemWelcome),
+    ).toThrow(/version.*must be 2/);
+  });
+
+  test('uses intrinsic byte lengths instead of shadowed properties', () => {
+    const shadowedPublicKey = new Uint8Array([1]);
+    Object.defineProperty(shadowedPublicKey, 'length', { value: 65 });
+    const shadowedTreeHash = new Uint8Array([2]);
+    Object.defineProperty(shadowedTreeHash, 'byteLength', { value: 32 });
+
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        pathKeys: [
+          { ...beekemWelcome.pathKeys[0], publicKey: shadowedPublicKey },
+        ],
+      }),
+    ).toThrow(/pathKeys\[0\]\.publicKey.*65/);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        treeHash: shadowedTreeHash,
+      }),
+    ).toThrow(/treeHash.*32/);
+  });
+
+  test('rejects byte lookalikes and SharedArrayBuffer-backed views', () => {
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        treeHash: {
+          length: 32,
+          byteLength: 32,
+          buffer: new ArrayBuffer(32),
+        } as unknown as Uint8Array,
+      }),
+    ).toThrow(/treeHash.*Uint8Array/);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      expect(() =>
+        serializeBeeKEMWelcomeV2ForWire({
+          ...beekemWelcome,
+          pathKeys: [
+            {
+              ...beekemWelcome.pathKeys[0],
+              publicKey: new Uint8Array(new SharedArrayBuffer(65)),
+            },
+          ],
+        }),
+      ).toThrow(/publicKey.*unshared/);
+    }
+  });
+
+  test('rejects oversized path arrays before reading their entries', () => {
+    let entryReads = 0;
+    const oversizedPath = new Array(65);
+    Object.defineProperty(oversizedPath, '0', {
+      enumerable: true,
+      get() {
+        entryReads++;
+        throw new Error('must not read an oversized path array');
+      },
+    });
+
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        pathKeys: oversizedPath,
+      }),
+    ).toThrow(/pathKeys has invalid length/);
+    expect(entryReads).toBe(0);
+  });
+
+  test('detaches keychain bytes using their intrinsic length', () => {
+    const shadowedKeychain = new Uint8Array([7]);
+    Object.defineProperty(shadowedKeychain, 'length', { value: 4 });
+
+    const encoded = encodeWelcomeSealedPayloadV2({
+      keychainChanges: shadowedKeychain,
+      beekemWelcome,
+    });
+    expect(decodeWelcomeSealedPayloadV2(encoded).keychainChanges).toEqual(
+      new Uint8Array([7]),
+    );
+  });
+
+  test('rejects non-genuine and shared keychain byte views', () => {
+    expect(() =>
+      encodeWelcomeSealedPayloadV2({
+        keychainChanges: {
+          length: 3,
+          byteLength: 3,
+          0: 1,
+          1: 2,
+          2: 3,
+        } as unknown as Uint8Array,
+        beekemWelcome,
+      }),
+    ).toThrow(/keychainChanges.*unshared Uint8Array/);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      expect(() =>
+        encodeWelcomeSealedPayloadV2({
+          keychainChanges: new Uint8Array(new SharedArrayBuffer(3)),
+          beekemWelcome,
+        }),
+      ).toThrow(/keychainChanges.*unshared Uint8Array/);
+    }
+  });
+
+  test('rejects oversized keychain bytes before Base64 encoding', () => {
+    expect(() =>
+      encodeWelcomeSealedPayloadV2({
+        keychainChanges: new Uint8Array(10 * 1024 * 1024 + 1),
+        beekemWelcome,
+      }),
+    ).toThrow(/keychainChanges.*no larger than/);
+  });
+
   test.each([
     ['missing bk', { k: Base64.fromUint8Array(keychainChanges) }],
     [
