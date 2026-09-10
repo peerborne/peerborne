@@ -8,7 +8,10 @@ import {
 } from './invitation-catch-up.js';
 import { MAX_INVITATION_MESSAGE_BYTES } from './invitation-wire.js';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
-import { MAX_CHANGE_TREE_NODES } from './change-tree-walk.js';
+import {
+  MAX_CHANGE_TREE_DEPTH,
+  MAX_CHANGE_TREE_NODES,
+} from './change-tree-walk.js';
 import { readUint8Iterable } from './utils.js';
 
 describe('invitation catch-up', () => {
@@ -21,6 +24,15 @@ describe('invitation catch-up', () => {
       cursor = child;
     }
     return root;
+  }
+
+  function overNodeBudgetTree() {
+    const children: Record<string, { kind: typeof crdtDocumentChangeNode }> =
+      {};
+    for (let index = 0; index < MAX_CHANGE_TREE_NODES; index++) {
+      children[`cid-${index}`] = { kind: crdtDocumentChangeNode };
+    }
+    return { kind: crdtDocumentChangeNode, children };
   }
 
   test('requires every advertised bootstrap and catch-up CID', () => {
@@ -201,14 +213,14 @@ describe('invitation catch-up', () => {
     ]);
   });
 
-  test('collects a deep invitation tree without recursive stack growth', () => {
+  test('collects a maximum-depth invitation tree without recursive stack growth', () => {
     expect(
       collectInvitationCidsToInstall(
         'root-cid',
-        deepTree(10_000),
+        deepTree(MAX_CHANGE_TREE_DEPTH),
         new Set(),
       ),
-    ).toHaveLength(10_000);
+    ).toHaveLength(MAX_CHANGE_TREE_DEPTH);
   });
 
   test('rejects an over-budget invitation tree before sync begins', async () => {
@@ -218,7 +230,7 @@ describe('invitation catch-up', () => {
         {
           documentId: '/oversized-invitation',
           changeId: 'root-cid',
-          changes: deepTree(MAX_CHANGE_TREE_NODES + 1),
+          changes: overNodeBudgetTree(),
         },
         new Set(),
         sync,

@@ -68,6 +68,56 @@ function captureFailureLogs() {
 }
 
 describe('concrete inbound handler log redaction', () => {
+  test('observes and redacts rejected pubsub receive work', async () => {
+    const addEventListener = jest.fn();
+    const subscribe = jest.fn();
+    const document = fakeDocument({
+      _invitationBootstrapReady: true,
+      _hashes: new Set(),
+      _computeTopic: () => '/topic',
+      _keychainProvider: { keyIDLength: 1 },
+      _authProvider: { nonceBits: 1 },
+      _decryptBlock: async () => new Uint8Array([9]),
+      _syncMessageSerializer: {
+        deserializeSyncMessage: () => {
+          throw new RangeError(privateFailure);
+        },
+      },
+      swarm: {
+        config: {},
+        registerDocument: jest.fn(),
+        heliaNode: {
+          libp2p: {
+            services: {
+              pubsub: { addEventListener, subscribe },
+            },
+          },
+        },
+      },
+    });
+    const logs = captureFailureLogs();
+
+    try {
+      await document.open();
+      document._pubsubHandler({
+        detail: {
+          data: new Uint8Array([1, 2, 3]),
+          type: 'unsigned',
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(logs.error).toHaveBeenCalledWith(
+        'Inbound sync message handling failed',
+      );
+      expect(logs.text()).not.toContain(privateFailure);
+      expect(logs.text()).not.toContain(privatePath);
+    } finally {
+      logs.restore();
+    }
+  });
+
   test('write authorization requires an explicit boolean true', async () => {
     const document = fakeDocument({
       _writers: {

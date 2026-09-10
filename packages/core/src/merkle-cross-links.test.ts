@@ -704,6 +704,30 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
     expect(merged.filter(([cid]) => cid === 'SHARED')).toHaveLength(1);
   });
 
+  test('accepts one maximum-sized repeated byte payload within the comparison budget', () => {
+    const first = new Uint8Array(16 * 1024 * 1024);
+    const second = new Uint8Array(first.byteLength);
+
+    expect(() =>
+      mergeRemoteSyncTree(
+        'ROOT',
+        byteAliasTree(first, second),
+        undefined,
+        new Set(),
+      ),
+    ).not.toThrow();
+
+    const oversized = new Uint8Array(first.byteLength + 1);
+    expect(() =>
+      mergeRemoteSyncTree(
+        'ROOT',
+        byteAliasTree(oversized, oversized),
+        undefined,
+        new Set(),
+      ),
+    ).toThrow(/conflicting descriptions.*SHARED/);
+  });
+
   test('accepts a repeated Uint8Array array payload by object identity', () => {
     const changes = [new Uint8Array([1]), new Uint8Array([2, 3])];
 
