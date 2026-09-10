@@ -382,7 +382,11 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
   }
 
   serialize(message: unknown): string {
-    return JSON.stringify(message) as string;
+    const serialized = JSON.stringify(message);
+    if (serialized === undefined) {
+      throw new TypeError('Top-level value is not JSON-serializable');
+    }
+    return serialized;
   }
 
   /**
