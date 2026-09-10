@@ -33,9 +33,13 @@ import {
   serializeBeeKEMWelcomeForWire,
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  assertSharedProtocolRequestSize,
+  copyUnsharedUint8Array,
+} from './utils.js';
 
 const MAX_V2_KEYCHAIN_CHANGES_BYTES = 10 * 1024 * 1024;
+const V2_ENVELOPE_FIXED_JSON_BYTES = '{"k":"","bk":'.length + '}'.length;
 
 /** Parsed shape of the sealed-payload envelope. */
 export interface WelcomeSealedPayload {
@@ -90,11 +94,27 @@ export function encodeWelcomeSealedPayloadV2(
   const beekemWelcome = serializeBeeKEMWelcomeV2ForWire(
     raw.beekemWelcome as BeeKEMWelcomeV2,
   );
+  const beekemWelcomeJson = JSON.stringify(beekemWelcome);
+  const projectedEnvelopeBytes =
+    V2_ENVELOPE_FIXED_JSON_BYTES +
+    Math.ceil(keychainChanges.byteLength / 3) * 4 +
+    beekemWelcomeJson.length;
+  // The v2 shape contains only ASCII JSON. Check the exact final plaintext
+  // length before allocating the potentially large keychain Base64 string.
+  assertSharedProtocolRequestSize(
+    projectedEnvelopeBytes,
+    'BeeKEM Welcome v2 sealed payload',
+  );
   const envelope: { k: string; bk: SerializedBeeKEMWelcomeV2 } = {
     k: Base64.fromUint8Array(keychainChanges),
     bk: beekemWelcome,
   };
-  return new TextEncoder().encode(JSON.stringify(envelope));
+  const encoded = new TextEncoder().encode(JSON.stringify(envelope));
+  assertSharedProtocolRequestSize(
+    encoded.byteLength,
+    'BeeKEM Welcome v2 sealed payload',
+  );
+  return encoded;
 }
 
 /**

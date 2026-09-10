@@ -438,5 +438,10 @@ export type {
   ACLState,
   SerializePublicKey,
 } from './acl-chain.js';
-export { copyUnsharedUint8Array, snapshotDeepEnumerableData } from './utils.js';
+export {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+  assertSharedProtocolRequestSize,
+  copyUnsharedUint8Array,
+  snapshotDeepEnumerableData,
+} from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';

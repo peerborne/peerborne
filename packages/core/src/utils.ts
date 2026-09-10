@@ -8,6 +8,24 @@ export interface BufferListLike {
   slice(start?: number, end?: number): Uint8Array;
 }
 
+/** Maximum complete request accepted by shared protocol handlers. */
+export const MAX_SHARED_PROTOCOL_REQUEST_BYTES = 10 * 1024 * 1024;
+
+/** Reject an outbound frame that the matching inbound handler cannot read. */
+export function assertSharedProtocolRequestSize(
+  byteLength: number,
+  context = 'Shared protocol request',
+): void {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+    throw new RangeError(`${context} has an invalid byte length`);
+  }
+  if (byteLength > MAX_SHARED_PROTOCOL_REQUEST_BYTES) {
+    throw new RangeError(
+      `${context} exceeds ${MAX_SHARED_PROTOCOL_REQUEST_BYTES} bytes`,
+    );
+  }
+}
+
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(
   typedArrayPrototype,
