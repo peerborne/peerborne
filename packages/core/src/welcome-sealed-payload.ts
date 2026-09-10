@@ -33,6 +33,9 @@ import {
   serializeBeeKEMWelcomeForWire,
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
+import { copyUnsharedUint8Array } from './utils.js';
+
+const MAX_V2_KEYCHAIN_CHANGES_BYTES = 10 * 1024 * 1024;
 
 /** Parsed shape of the sealed-payload envelope. */
 export interface WelcomeSealedPayload {
@@ -70,9 +73,26 @@ export function encodeWelcomeSealedPayload(
 export function encodeWelcomeSealedPayloadV2(
   payload: WelcomeSealedPayloadV2,
 ): Uint8Array {
+  const raw = snapshotV2Payload(payload);
+  let keychainChanges: Uint8Array;
+  try {
+    keychainChanges = copyUnsharedUint8Array(
+      raw.keychainChanges,
+      0,
+      MAX_V2_KEYCHAIN_CHANGES_BYTES,
+      'welcome-sealed-payload v2 keychainChanges',
+    );
+  } catch {
+    throw new Error(
+      `welcome-sealed-payload v2: 'keychainChanges' must be an unshared Uint8Array no larger than ${MAX_V2_KEYCHAIN_CHANGES_BYTES} bytes`,
+    );
+  }
+  const beekemWelcome = serializeBeeKEMWelcomeV2ForWire(
+    raw.beekemWelcome as BeeKEMWelcomeV2,
+  );
   const envelope: { k: string; bk: SerializedBeeKEMWelcomeV2 } = {
-    k: Base64.fromUint8Array(payload.keychainChanges),
-    bk: serializeBeeKEMWelcomeV2ForWire(payload.beekemWelcome),
+    k: Base64.fromUint8Array(keychainChanges),
+    bk: beekemWelcome,
   };
   return new TextEncoder().encode(JSON.stringify(envelope));
 }
@@ -233,6 +253,50 @@ function parseV2Envelope(bytes: Uint8Array): Record<string, unknown> {
     );
   }
   return parsed as Record<string, unknown>;
+}
+
+function snapshotV2Payload(value: unknown): Record<string, unknown> {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value)
+  ) {
+    throw new Error(
+      'welcome-sealed-payload v2: payload must be a plain object',
+    );
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(
+      'welcome-sealed-payload v2: payload must be a plain object',
+    );
+  }
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length !== 2 ||
+    !keys.includes('keychainChanges') ||
+    !keys.includes('beekemWelcome') ||
+    keys.some((key) => typeof key !== 'string')
+  ) {
+    throw new Error(
+      "welcome-sealed-payload v2: exact fields 'keychainChanges' and 'beekemWelcome' are required",
+    );
+  }
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  for (const key of ['keychainChanges', 'beekemWelcome']) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+      descriptor.enumerable !== true
+    ) {
+      throw new Error(
+        `welcome-sealed-payload v2: field '${key}' must be an own enumerable data property`,
+      );
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
 }
 
 function describe(value: unknown): string {
