@@ -1800,7 +1800,7 @@ describe('GroupSecurityCoordinator', () => {
       epoch: 0n,
       controlHead: snapshot.replay[0].recordId,
       storeCommitment:
-        await groupSecurityStoreSnapshotCommitment(snapshot),
+        await groupSecurityStoreSnapshotCommitment(snapshot, storeKey),
       forkPoison: undefined,
     });
   });
@@ -2412,7 +2412,7 @@ describe('GroupSecurityCoordinator', () => {
       epoch: 1n,
       controlHead: snapshot.replay.at(-1)!.recordId,
       storeCommitment:
-        await groupSecurityStoreSnapshotCommitment(snapshot),
+        await groupSecurityStoreSnapshotCommitment(snapshot, storeKey),
       forkPoison: undefined,
     });
 
@@ -2884,7 +2884,10 @@ describe('GroupSecurityCoordinator', () => {
       epoch: 0n,
       controlHead: id(0x88),
       storeCommitment:
-        await groupSecurityStoreSnapshotCommitment(anchoredSnapshot),
+        await groupSecurityStoreSnapshotCommitment(
+          anchoredSnapshot,
+          storeKey,
+        ),
       forkPoison: undefined,
     });
     const anchoredProvider = new ContractTestProvider();
@@ -3759,7 +3762,7 @@ describe('GroupSecurityCoordinator', () => {
       epoch: 3n,
       controlHead: after.replay.at(-1)!.recordId,
       storeCommitment:
-        await groupSecurityStoreSnapshotCommitment(after),
+        await groupSecurityStoreSnapshotCommitment(after, storeKey),
     });
   });
 
@@ -4328,7 +4331,7 @@ describe('GroupSecurityCoordinator', () => {
     const anchor = (await value.rollbackAnchor.load(storeKey))!;
     expect(anchor.revision).toBe(snapshot.revision);
     expect(anchor.storeCommitment).toEqual(
-      await groupSecurityStoreSnapshotCommitment(snapshot),
+      await groupSecurityStoreSnapshotCommitment(snapshot, storeKey),
     );
     const restored = await GroupSecurityCoordinator.restore(
       config(cloneContextWithProvider(value)),
@@ -5058,7 +5061,7 @@ async function advanceAnchorForUnchangedSecurityHead(
       epoch: current.epoch,
       controlHead: current.controlHead,
       storeCommitment:
-        await groupSecurityStoreSnapshotCommitment(snapshot),
+        await groupSecurityStoreSnapshotCommitment(snapshot, storeKey),
       forkPoison: undefined,
     }))
   ) {
