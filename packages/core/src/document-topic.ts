@@ -1,17 +1,20 @@
-/** Default topic prefix for document pubsub topics. */
-export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/document/';
+/** Default topic prefix for predecessor-bound document pubsub messages. */
+export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
 /**
  * Builds a pubsub topic string for a given document path by prepending
  * the configured topic prefix. This separates document pubsub traffic
  * from other topics on the same network.
  *
- * The default prefix is `'/document/'`, which namespaces document traffic
- * on the pubsub mesh. Pass an empty string to disable prefixing (the topic
- * will be the bare document path).
+ * The default prefix is `'/peerborne/document/v3/'`, which isolates the
+ * current wire generation from peers using older document envelopes. A
+ * custom prefix is a protocol compatibility boundary: every peer sharing it
+ * must be upgraded together. Pass an empty string to disable prefixing (the
+ * topic will be the bare document path).
  *
  * @param documentPath - The path identifying the document.
- * @param topicPrefix - Prefix to prepend (defaults to `'/document/'`).
+ * @param topicPrefix - Prefix to prepend (defaults to
+ *   `'/peerborne/document/v3/'`).
  * @returns The full pubsub topic string.
  */
 export function documentTopic(

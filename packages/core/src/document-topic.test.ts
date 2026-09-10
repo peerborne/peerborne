@@ -2,16 +2,23 @@ import { describe, expect, test } from '@jest/globals';
 import { documentTopic, DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
 
 describe('documentTopic', () => {
-  test('uses /document/ prefix by default', () => {
-    expect(documentTopic('my-doc')).toBe('/document/my-doc');
+  test('uses the v3 document prefix by default', () => {
+    expect(documentTopic('my-doc')).toBe('/peerborne/document/v3/my-doc');
   });
 
   test('default prefix matches DEFAULT_DOCUMENT_TOPIC_PREFIX', () => {
-    expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/document/');
+    expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/peerborne/document/v3/');
   });
 
   test('avoids double slash with default prefix and leading-slash path', () => {
-    expect(documentTopic('/my-doc')).toBe('/document/my-doc');
+    expect(documentTopic('/my-doc')).toBe('/peerborne/document/v3/my-doc');
+  });
+
+  test('keeps an explicitly configured legacy prefix isolated from v3', () => {
+    expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
+    expect(documentTopic('my-doc', '/document/')).not.toBe(
+      documentTopic('my-doc'),
+    );
   });
 
   test('returns bare path when using explicit empty prefix', () => {
@@ -50,11 +57,11 @@ describe('documentTopic', () => {
     expect(documentTopic('/my-doc', '/docs')).toBe('/docs/my-doc');
   });
 
-  test('applies /document/ prefix when explicitly provided', () => {
+  test('applies the legacy /document/ prefix when explicitly provided', () => {
     expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
   });
 
-  test('applies /document/ prefix and avoids double slash', () => {
+  test('applies the legacy /document/ prefix and avoids double slash', () => {
     expect(documentTopic('/my-doc', '/document/')).toBe('/document/my-doc');
   });
 
