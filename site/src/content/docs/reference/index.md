@@ -16,4 +16,13 @@ The package API reference is generated from source doc comments on every site bu
 
 The core package also exposes `./browser-primitives` as a targeted subpath for light browser consumers that do not import the full libp2p/Helia stack. That subpath is part of the generated API reference on every site build.
 
+## Security design decisions
+
+The security ADRs distinguish proposed architecture and focused primitive
+evidence from supported end-to-end capability:
+
+- [MLS document security architecture](./security-design/0001-mls-document-security-architecture/)
+- [MLS implementation dependency](./security-design/0002-mls-implementation-dependency/)
+- [Zero-knowledge membership proofs](./security-design/0003-zero-knowledge-membership-proofs/)
+
 If a doc comment is missing, wrong, or unclear, improve it through a [contribution](../community/contributing/).
