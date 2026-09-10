@@ -37,6 +37,33 @@ describe('AutoTopicRegistry', () => {
     ])
   })
 
+  it('tracks v3 and legacy publish notifications as distinct topics', () => {
+    const topics = new AutoTopicRegistry({
+      permanentTopics: [],
+      allowlist: ['/peerborne/documents/v3', '/documents'],
+      maxAutoTopics: 2,
+      maxAutoTopicsPerPeer: 2,
+    })
+
+    expect(
+      topics.subscriptionChanged(
+        'peer-a',
+        '/peerborne/documents/v3',
+        true,
+      ),
+    ).toEqual({
+      action: 'subscribe',
+      topic: '/peerborne/documents/v3',
+    })
+    expect(
+      topics.subscriptionChanged('peer-a', '/documents', true),
+    ).toEqual({ action: 'subscribe', topic: '/documents' })
+    expect([...topics.topics()].sort()).toEqual([
+      '/documents',
+      '/peerborne/documents/v3',
+    ])
+  })
+
   it('reclaims the last topics held by a disconnected peer', () => {
     const topics = registry()
     expect(topics.subscriptionChanged('peer-a', '/document/a', true)).toEqual({

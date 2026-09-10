@@ -44,11 +44,19 @@ Document updates are announced and delivered via **GossipSub** — a pubsub prot
 // Changes published to this topic reach all subscribed peers.
 ```
 
-The versioned default prevents older peers from sharing incompatible document
-envelopes on one topic. A custom or empty `pubsubDocumentPrefix` opts out of
-that default isolation; all peers using it must be upgraded together. Relays do
-not bridge the legacy and v3 namespaces. Application URLs such as
-`/document/:id` are unrelated and do not change.
+The versioned default keeps default-configured older peers from sharing one
+topic with incompatible document envelopes. Publish notifications used by
+custom pinning integrations likewise default to `/peerborne/documents/v3`
+instead of legacy `/documents`. A custom or empty `pubsubDocumentPrefix` opts
+out of that default separation; all peers using it must be upgraded together,
+and every relay must add it to `TOPIC_ALLOWLIST`. A custom
+`pubsubDocumentPublishPath` must match the relay's `DOCUMENT_PUBLISH_PATH` or
+`EXTRA_TOPICS`, or match its allowlist. Relays do not bridge legacy and v3
+topics.
+
+Topic names are public routing labels, not authenticated version negotiation,
+authorization, or wire validation. Application URLs such as `/document/:id`
+are unrelated and do not change.
 
 GossipSub is **best-effort**:
 

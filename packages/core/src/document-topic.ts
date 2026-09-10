@@ -1,16 +1,28 @@
 /** Default topic prefix for predecessor-bound document pubsub messages. */
 export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
+/** Default topic for version-bound document publish notifications. */
+export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/peerborne/documents/v3';
+
+/** Returns a fresh copy of the shared browser and Node document-topic defaults. */
+export function defaultDocumentPubsubConfig() {
+  return {
+    pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
+    pubsubDocumentPublishPath: DEFAULT_DOCUMENT_PUBLISH_PATH,
+  } as const;
+}
+
 /**
  * Builds a pubsub topic string for a given document path by prepending
  * the configured topic prefix. This separates document pubsub traffic
  * from other topics on the same network.
  *
- * The default prefix is `'/peerborne/document/v3/'`, which isolates the
- * current wire generation from peers using older document envelopes. A
- * custom prefix is a protocol compatibility boundary: every peer sharing it
- * must be upgraded together. Pass an empty string to disable prefixing (the
- * topic will be the bare document path).
+ * The default prefix is `'/peerborne/document/v3/'`, which keeps
+ * default-configured peers using older document envelopes on a different
+ * topic. Topic names are routing labels, not authenticated version
+ * negotiation. A custom prefix is a protocol compatibility boundary: every
+ * peer sharing it must be upgraded together. Pass an empty string to disable
+ * prefixing (the topic will be the bare document path).
  *
  * @param documentPath - The path identifying the document.
  * @param topicPrefix - Prefix to prepend (defaults to
