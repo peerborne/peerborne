@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll } from '@jest/globals';
+import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { Doc, encodeStateAsUpdateV2 } from 'yjs';
 import {
   type CRDTChangeNode,
@@ -569,6 +569,8 @@ describe('YjsKeychain', () => {
 });
 
 describe('YjsJSONSerializer', () => {
+  const SHALLOW_HISTORY_NODE_COUNT = 4_096;
+
   function nestedTree(depth: number): CRDTChangeNode<Uint8Array> {
     const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
     let cursor = root;
@@ -577,6 +579,16 @@ describe('YjsJSONSerializer', () => {
       cursor.children = { [`cid-${index}`]: child };
       cursor = child;
     }
+    return root;
+  }
+
+  function shallowTree(nodeCount: number): CRDTChangeNode<Uint8Array> {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    const children: Record<string, CRDTChangeNode<Uint8Array>> = {};
+    for (let index = 1; index < nodeCount; index++) {
+      children[`cid-${index}`] = { kind: 'document' };
+    }
+    root.children = children;
     return root;
   }
 
@@ -639,19 +651,57 @@ describe('YjsJSONSerializer', () => {
 
   test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
     const serializer = new YjsJSONSerializer();
+    const genericSerialize = jest.spyOn(serializer, 'serialize');
     const wire = serializer.serializeSyncMessage({
       documentId: 'maximum-depth',
       changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
     });
     const restored = serializer.deserializeSyncMessage(wire);
 
-    expect(() => serializer.serializeSyncMessage(restored)).not.toThrow();
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(genericSerialize).not.toHaveBeenCalled();
+    genericSerialize.mockRestore();
     expect(() =>
       serializer.serializeSyncMessage({
         documentId: 'over-maximum-depth',
         changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
       }),
     ).toThrow(/maximum depth/);
+  });
+
+  test('round-trips 4096 shallow history nodes with stable wire bytes', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wide-history',
+      changes: shallowTree(SHALLOW_HISTORY_NODE_COUNT),
+    });
+    const restored = serializer.deserializeSyncMessage(wire);
+
+    expect(serializer.serializeSyncMessage(restored)).toEqual(wire);
+    expect(
+      Object.keys(
+        restored.changes!.children as Record<
+          string,
+          CRDTChangeNode<Uint8Array>
+        >,
+      ),
+    ).toHaveLength(SHALLOW_HISTORY_NODE_COUNT - 1);
+  });
+
+  test('preserves the existing sync-message wire bytes', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = serializer.serializeSyncMessage({
+      documentId: 'wire-compatibility',
+      changes: {
+        kind: 'document',
+        change: new Uint8Array([1, 2]),
+        children: { cid: { kind: 'writer' } },
+      },
+    });
+
+    expect(new TextDecoder().decode(wire)).toBe(
+      '{"documentId":"wire-compatibility","changes":{"kind":"document","change":"AQI=","children":{"cid":{"kind":"writer"}}}}',
+    );
   });
 
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
