@@ -672,7 +672,7 @@ export class GroupSecurityCoordinator {
           outbox: snapshot?.outbox ?? [],
           replay: snapshot?.replay ?? [],
           forkEvidence: snapshot?.forkEvidence,
-        });
+        }, this.storeKey);
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
       await this.store.transaction(this.storeKey, async (transaction) => {
@@ -737,7 +737,7 @@ export class GroupSecurityCoordinator {
           );
         }
         const transactionCommitment =
-          await groupStateTransactionCommitment(transaction);
+          await groupStateTransactionCommitment(transaction, this.storeKey);
         if (!equalBytes(transactionCommitment, expectedPendingCommitment)) {
           fail(
             'store-conflict',
@@ -766,7 +766,10 @@ export class GroupSecurityCoordinator {
         );
       }
       const committedCommitment =
-        await groupSecurityStoreSnapshotCommitment(committedSnapshot);
+        await groupSecurityStoreSnapshotCommitment(
+          committedSnapshot,
+          this.storeKey,
+        );
       if (!equalBytes(committedCommitment, intendedStoreCommitment)) {
         fail(
           'store-conflict',
@@ -956,7 +959,10 @@ export class GroupSecurityCoordinator {
         forkEvidence: snapshot?.forkEvidence,
       };
       const expectedJoinCommitment =
-        await groupSecurityStoreSnapshotCommitment(expectedJoinSnapshot);
+        await groupSecurityStoreSnapshotCommitment(
+          expectedJoinSnapshot,
+          this.storeKey,
+        );
       firstAnchorCandidate = rollbackAnchorValue(
         baseRevision + 1,
         joinedState,
@@ -1041,7 +1047,10 @@ export class GroupSecurityCoordinator {
               transaction.outbox,
             );
             const transactionCommitment =
-              await groupStateTransactionCommitment(transaction);
+              await groupStateTransactionCommitment(
+                transaction,
+                this.storeKey,
+              );
             if (!equalBytes(transactionCommitment, expectedJoinCommitment)) {
               fail(
                 'store-conflict',
@@ -1178,7 +1187,7 @@ export class GroupSecurityCoordinator {
           outbox: snapshot.outbox,
           replay: projectedReplay,
           forkEvidence: snapshot.forkEvidence,
-        });
+        }, this.storeKey);
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
       let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
@@ -1215,7 +1224,10 @@ export class GroupSecurityCoordinator {
               transaction.outbox,
             );
             const transactionCommitment =
-              await groupStateTransactionCommitment(transaction);
+              await groupStateTransactionCommitment(
+                transaction,
+                this.storeKey,
+              );
             if (!equalBytes(transactionCommitment, expectedPrunedCommitment)) {
               fail(
                 'store-conflict',
@@ -1416,7 +1428,7 @@ export class GroupSecurityCoordinator {
           },
         ],
         forkEvidence: existing?.forkEvidence,
-      });
+      }, this.storeKey);
     const firstAnchorCandidate = rollbackAnchorValue(
       baseRevision + 1,
       state,
@@ -1464,7 +1476,10 @@ export class GroupSecurityCoordinator {
               transaction.outbox,
             );
             const transactionCommitment =
-              await groupStateTransactionCommitment(transaction);
+              await groupStateTransactionCommitment(
+                transaction,
+                this.storeKey,
+              );
             if (!equalBytes(transactionCommitment, expectedBootstrapCommitment)) {
               fail(
                 'store-conflict',
@@ -1741,7 +1756,7 @@ export class GroupSecurityCoordinator {
           (entry) => !expectedPruneSet.has(toHex(entry.recordId)),
         ),
         forkEvidence: baseSnapshot.forkEvidence,
-      });
+      }, this.storeKey);
     let transactionInvoked = false;
     let intendedStoreCommitment: Uint8Array | undefined;
     let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
@@ -1781,7 +1796,10 @@ export class GroupSecurityCoordinator {
             transaction.outbox,
           );
           const transactionCommitment =
-            await groupStateTransactionCommitment(transaction);
+            await groupStateTransactionCommitment(
+              transaction,
+              this.storeKey,
+            );
           if (!equalBytes(transactionCommitment, expectedTransitionCommitment)) {
             fail(
               'store-conflict',
@@ -1870,7 +1888,7 @@ export class GroupSecurityCoordinator {
         snapshot.revision,
         winnerView.publicState,
         winnerView.headRecordId,
-        await groupSecurityStoreSnapshotCommitment(snapshot),
+        await groupSecurityStoreSnapshotCommitment(snapshot, this.storeKey),
       );
     } catch (error) {
       return this.persistReconciliationAmbiguity(
@@ -2137,7 +2155,7 @@ export class GroupSecurityCoordinator {
               !expectedAckPruneSet.has(toHex(candidate.recordId)),
           ),
           forkEvidence: ackBaseSnapshot.forkEvidence,
-        });
+        }, this.storeKey);
 
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
@@ -2176,7 +2194,10 @@ export class GroupSecurityCoordinator {
               transaction.outbox,
             );
             const transactionCommitment =
-              await groupStateTransactionCommitment(transaction);
+              await groupStateTransactionCommitment(
+                transaction,
+                this.storeKey,
+              );
             if (!equalBytes(transactionCommitment, expectedAckCommitment)) {
               fail(
                 'store-conflict',
@@ -3186,7 +3207,10 @@ export class GroupSecurityCoordinator {
             transaction.baseRevision,
           );
           const baseCommitment =
-            await groupSecurityStoreSnapshotCommitment(baseSnapshot);
+            await groupSecurityStoreSnapshotCommitment(
+              baseSnapshot,
+              this.storeKey,
+            );
           if (!equalBytes(baseCommitment, poisonedAnchor.storeCommitment)) {
             fail(
               'rollback-detected',
@@ -3681,7 +3705,10 @@ export class GroupSecurityCoordinator {
   ): Promise<GroupSecurityRollbackAnchorValue> {
     let storeCommitment: Uint8Array;
     try {
-      storeCommitment = await groupSecurityStoreSnapshotCommitment(snapshot);
+      storeCommitment = await groupSecurityStoreSnapshotCommitment(
+        snapshot,
+        this.storeKey,
+      );
     } catch (error) {
       fail(
         'rollback-detected',
@@ -3775,7 +3802,10 @@ export class GroupSecurityCoordinator {
     }
     let storeCommitment: Uint8Array;
     try {
-      storeCommitment = await groupSecurityStoreSnapshotCommitment(snapshot);
+      storeCommitment = await groupSecurityStoreSnapshotCommitment(
+        snapshot,
+        this.storeKey,
+      );
     } catch (error) {
       fail(
         'rollback-detected',
@@ -3820,7 +3850,7 @@ export class GroupSecurityCoordinator {
         );
       }
       const storeCommitment =
-        await groupSecurityStoreSnapshotCommitment(snapshot);
+        await groupSecurityStoreSnapshotCommitment(snapshot, this.storeKey);
       if (!equalBytes(storeCommitment, expected.storeCommitment)) {
         throw new Error(
           'committed group-state snapshot has a different commitment',
@@ -3867,7 +3897,7 @@ export class GroupSecurityCoordinator {
       }
       assertSamePublicState(snapshot.encryptedState.state, expectedState);
       const actualStoreCommitment =
-        await groupSecurityStoreSnapshotCommitment(snapshot);
+        await groupSecurityStoreSnapshotCommitment(snapshot, this.storeKey);
       if (!equalBytes(actualStoreCommitment, intendedStoreCommitment)) {
         throw new Error(
           'committed group-state snapshot differs from the intended transaction',
@@ -3935,7 +3965,10 @@ export class GroupSecurityCoordinator {
       snapshot.encryptedState.state,
       expectedView.publicState,
     );
-    const commitment = await groupSecurityStoreSnapshotCommitment(snapshot);
+    const commitment = await groupSecurityStoreSnapshotCommitment(
+      snapshot,
+      this.storeKey,
+    );
     if (!equalBytes(commitment, expectedAnchor.storeCommitment)) {
       fail(
         'rollback-detected',
@@ -3969,7 +4002,7 @@ export class GroupSecurityCoordinator {
     const loaded = await this.store.load(this.storeKey);
     if (loaded === undefined) return undefined;
     try {
-      return validateAndCloneGroupStateStoreSnapshot(loaded);
+      return validateAndCloneGroupStateStoreSnapshot(loaded, this.storeKey);
     } catch (error) {
       fail(
         'malformed-state',
@@ -4099,6 +4132,7 @@ function rollbackAnchorValue(
 
 async function groupStateTransactionCommitment(
   transaction: GroupStateStoreTransaction,
+  storeKey: GroupStateStoreKey,
 ): Promise<Uint8Array> {
   const baseRevision = transaction.baseRevision;
   if (baseRevision === Number.MAX_SAFE_INTEGER) {
@@ -4106,6 +4140,7 @@ async function groupStateTransactionCommitment(
   }
   return groupSecurityStoreSnapshotCommitment(
     groupStateTransactionSnapshot(transaction, baseRevision + 1),
+    storeKey,
   );
 }
 
