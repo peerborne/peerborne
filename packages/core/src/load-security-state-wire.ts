@@ -4,6 +4,7 @@ import {
   LOAD_SECURITY_STATE_VERSION,
   LoadSecurityCommitments,
   MAX_LOAD_SECURITY_EPOCH,
+  cloneLoadSecurityCommitments,
   validateLoadSecurityCommitments,
 } from './load-security-state.js';
 import { snapshotEnumerableOwnDataObject } from './utils.js';
@@ -69,15 +70,15 @@ function requireExactObject(value: unknown): Record<string, unknown> {
 export function serializeLoadSecurityCommitmentsForWire(
   commitments: LoadSecurityCommitments,
 ): LoadSecurityCommitmentsWire {
-  validateLoadSecurityCommitments(commitments);
+  const snapshot = cloneLoadSecurityCommitments(commitments);
   return {
     version: LOAD_SECURITY_STATE_VERSION,
-    controlHead: Base64.fromUint8Array(commitments.controlHead),
-    groupId: commitments.groupId,
-    epoch: commitments.epoch.toString(10),
-    treeHash: Base64.fromUint8Array(commitments.treeHash),
+    controlHead: Base64.fromUint8Array(snapshot.controlHead),
+    groupId: snapshot.groupId,
+    epoch: snapshot.epoch.toString(10),
+    treeHash: Base64.fromUint8Array(snapshot.treeHash),
     confirmedTranscriptHash: Base64.fromUint8Array(
-      commitments.confirmedTranscriptHash,
+      snapshot.confirmedTranscriptHash,
     ),
   };
 }

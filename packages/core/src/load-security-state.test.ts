@@ -83,6 +83,137 @@ describe('load security state commitment', () => {
     ).toThrow(/32-byte/);
   });
 
+  test('requires plain records with enumerable own data fields', () => {
+    const arrayRecord = Object.assign([], commitments());
+    class CommitmentRecord {
+      version = commitments().version;
+      controlHead = commitments().controlHead;
+      groupId = commitments().groupId;
+      epoch = commitments().epoch;
+      treeHash = commitments().treeHash;
+      confirmedTranscriptHash = commitments().confirmedTranscriptHash;
+    }
+    const accessorRecord = commitments();
+    let getterCalls = 0;
+    Object.defineProperty(accessorRecord, 'epoch', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return 42n;
+      },
+    });
+
+    expect(() =>
+      validateLoadSecurityCommitments(
+        arrayRecord as unknown as LoadSecurityCommitments,
+      ),
+    ).toThrow(/plain record/);
+    expect(() =>
+      validateLoadSecurityCommitments(
+        new CommitmentRecord() as LoadSecurityCommitments,
+      ),
+    ).toThrow(/plain record/);
+    expect(() => validateLoadSecurityCommitments(accessorRecord)).toThrow(
+      /own data property/,
+    );
+    expect(getterCalls).toBe(0);
+
+    expect(() =>
+      validateLoadSecurityCommitments(
+        Object.assign(Object.create(null), commitments()),
+      ),
+    ).not.toThrow();
+    const crossRealm = runInNewContext('Object.assign({}, tuple)', {
+      tuple: commitments(),
+    }) as LoadSecurityCommitments;
+    expect(() => validateLoadSecurityCommitments(crossRealm)).not.toThrow();
+  });
+
+  test('does not invoke attacker coercion while rejecting an unsupported version', () => {
+    let coercions = 0;
+    const version = {
+      [Symbol.toPrimitive]() {
+        coercions++;
+        throw new Error('attacker-controlled coercion');
+      },
+    };
+
+    expect(() =>
+      validateLoadSecurityCommitments(
+        commitments({ version: version as unknown as 1 }),
+      ),
+    ).toThrow(/unsupported load security version/);
+    expect(coercions).toBe(0);
+  });
+
+  test('uses captured intrinsic dispatch after Reflect.apply is replaced', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Reflect, 'apply')!;
+    let cloned: LoadSecurityCommitments | undefined;
+    let failure: unknown;
+    try {
+      Object.defineProperty(Reflect, 'apply', {
+        ...descriptor,
+        value: () => {
+          throw new Error('poisoned Reflect.apply');
+        },
+      });
+      cloned = cloneLoadSecurityCommitments(commitments());
+    } catch (error) {
+      failure = error;
+    } finally {
+      Object.defineProperty(Reflect, 'apply', descriptor);
+    }
+
+    expect(failure).toBeUndefined();
+    expect(cloned).toEqual(commitments());
+  });
+
+  test('does not consult inherited record or frontier element setters', () => {
+    const tuple = commitments();
+    const fullState = state();
+    const objectDescriptor = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'groupId',
+    );
+    const arrayDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, '0');
+    let setterCalls = 0;
+    let cloned: LoadSecurityCommitments | undefined;
+    let failure: unknown;
+    try {
+      Object.defineProperty(Object.prototype, 'groupId', {
+        configurable: true,
+        set() {
+          setterCalls++;
+        },
+      });
+      Object.defineProperty(Array.prototype, '0', {
+        configurable: true,
+        set() {
+          setterCalls++;
+        },
+      });
+      cloned = cloneLoadSecurityCommitments(tuple);
+      validateLoadSecurityState(fullState);
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (arrayDescriptor === undefined) {
+        delete (Array.prototype as unknown as Record<string, unknown>)['0'];
+      } else {
+        Object.defineProperty(Array.prototype, '0', arrayDescriptor);
+      }
+      if (objectDescriptor === undefined) {
+        delete (Object.prototype as Record<string, unknown>).groupId;
+      } else {
+        Object.defineProperty(Object.prototype, 'groupId', objectDescriptor);
+      }
+    }
+
+    expect(failure).toBeUndefined();
+    expect(setterCalls).toBe(0);
+    expect(cloned).toEqual(tuple);
+  });
+
   test('accepts genuine cross-realm hashes and snapshots their intrinsic bytes', () => {
     const crossRealmHash = (fill: number) => {
       const value = runInNewContext(
@@ -197,6 +328,75 @@ describe('load security state commitment', () => {
     ).toBe(false);
   });
 
+  test('compares descriptor snapshots without rereading Proxy properties', () => {
+    const target = commitments({ groupId: 'attacker-group' });
+    let propertyReads = 0;
+    const candidate = new Proxy(target, {
+      get(object, property, receiver) {
+        propertyReads++;
+        if (property === 'groupId') return 'group-1';
+        return Reflect.get(object, property, receiver);
+      },
+    });
+
+    expect(loadSecurityCommitmentsEqual(commitments(), candidate)).toBe(false);
+    expect(propertyReads).toBe(0);
+  });
+
+  test('encodes a detached state and frontier without Proxy property reads', () => {
+    const original = state();
+    let stateReads = 0;
+    let frontierReads = 0;
+    const frontier = new Proxy([...original.frontier], {
+      get() {
+        frontierReads++;
+        throw new Error('frontier property read must not run');
+      },
+    });
+    const proxied = new Proxy({ ...original, frontier }, {
+      get() {
+        stateReads++;
+        throw new Error('state property read must not run');
+      },
+    });
+
+    expect(encodeLoadSecurityState(proxied)).toEqual(
+      encodeLoadSecurityState(original),
+    );
+    expect(stateReads).toBe(0);
+    expect(frontierReads).toBe(0);
+  });
+
+  test('rejects state and frontier accessors without invoking them', () => {
+    const accessorState = state();
+    const accessorFrontier = [...accessorState.frontier];
+    let stateGetterCalls = 0;
+    let frontierGetterCalls = 0;
+    Object.defineProperty(accessorState, 'documentId', {
+      enumerable: true,
+      get() {
+        stateGetterCalls++;
+        return '/docs/example';
+      },
+    });
+    Object.defineProperty(accessorFrontier, '0', {
+      enumerable: true,
+      get() {
+        frontierGetterCalls++;
+        return 'bafy-z';
+      },
+    });
+
+    expect(() => validateLoadSecurityState(accessorState)).toThrow(
+      /own data property/,
+    );
+    expect(() =>
+      validateLoadSecurityState(state({ frontier: accessorFrontier })),
+    ).toThrow(/own data entries/);
+    expect(stateGetterCalls).toBe(0);
+    expect(frontierGetterCalls).toBe(0);
+  });
+
   test('captures one defensive resolver snapshot for the entire load', async () => {
     const mutable = commitments();
     const resolver = jest.fn(async () => mutable);
@@ -214,6 +414,103 @@ describe('load security state commitment', () => {
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(resolver).toHaveBeenCalledWith('/docs/example');
     expect(captured).toEqual(commitments());
+  });
+
+  test('rejects accessor-backed resolver tuples without invoking getters', async () => {
+    const accessor = commitments();
+    let getterCalls = 0;
+    Object.defineProperty(accessor, 'groupId', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return 'group-1';
+      },
+    });
+
+    await expect(
+      captureTrustedLoadSecurityCommitments('/docs/example', async () =>
+        accessor,
+      ),
+    ).rejects.toThrow(/invalid tuple/);
+    expect(getterCalls).toBe(0);
+  });
+
+  test('captures each resolver tuple descriptor once without property reads', async () => {
+    const mutable = commitments();
+    const descriptorReads = new Map<PropertyKey, number>();
+    let propertyReads = 0;
+    let groupReads = 0;
+    const proxied = new Proxy(mutable, {
+      get(target, property, receiver) {
+        if (property === 'then') return undefined;
+        propertyReads += 1;
+        if (property === 'groupId') {
+          groupReads += 1;
+          return groupReads === 1 ? 'group-1' : 'substituted-group';
+        }
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        descriptorReads.set(
+          property,
+          (descriptorReads.get(property) ?? 0) + 1,
+        );
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const captured = await captureTrustedLoadSecurityCommitments(
+      '/docs/example',
+      async () => proxied,
+    );
+    expect(propertyReads).toBe(0);
+    for (const field of Reflect.ownKeys(mutable)) {
+      expect(descriptorReads.get(field)).toBe(1);
+    }
+
+    mutable.groupId = 'mutated-group';
+    mutable.epoch = 999n;
+    mutable.controlHead.fill(8);
+    mutable.treeHash.fill(8);
+    mutable.confirmedTranscriptHash.fill(8);
+    expect(captured).toEqual(commitments());
+  });
+
+  test('ignores unknown resolver fields without invoking them', async () => {
+    const extended = { ...commitments(), extra: true } as Record<
+      PropertyKey,
+      unknown
+    >;
+    let unknownGetterCalls = 0;
+    Object.defineProperties(extended, {
+      hidden: { value: true },
+      accessor: {
+        enumerable: true,
+        get() {
+          unknownGetterCalls += 1;
+          return true;
+        },
+      },
+    });
+    Object.defineProperty(extended, Symbol('unknown'), {
+      get() {
+        unknownGetterCalls += 1;
+        return true;
+      },
+    });
+    const proxied = new Proxy(extended, {
+      ownKeys() {
+        throw new Error('unknown fields must not be enumerated');
+      },
+    });
+
+    const captured = await captureTrustedLoadSecurityCommitments(
+      '/docs/example',
+      async () => proxied,
+    );
+    expect(captured).toEqual(commitments());
+    expect(Reflect.ownKeys(captured)).toHaveLength(6);
+    expect(unknownGetterCalls).toBe(0);
   });
 
   test('fails closed when the local resolver is missing, undefined, invalid, or rejects', async () => {
