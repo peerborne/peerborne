@@ -349,28 +349,28 @@ export class GroupSecurityCoordinator {
   private readonly now: () => number;
 
   private constructor(config: GroupSecurityCoordinatorConfig) {
-    validateCoordinatorConfig(config);
-    this.provider = config.provider;
-    this.store = config.store;
-    this.storeKey = cloneStoreKey(config.storeKey);
-    this.rollbackAnchor = config.rollbackAnchor;
-    this.protector = config.protector;
-    this.actorId = new Uint8Array(config.actorId);
-    this.signControlRecord = config.signControlRecord;
-    this.verifyControlSignature = config.verifyControlSignature;
-    this.authorizeControl = config.authorizeControl;
-    this.outboxCodec = config.outboxCodec;
+    const snapshot = snapshotCoordinatorConfig(config);
+    this.provider = snapshot.provider;
+    this.store = snapshot.store;
+    this.storeKey = snapshot.storeKey;
+    this.rollbackAnchor = snapshot.rollbackAnchor;
+    this.protector = snapshot.protector;
+    this.actorId = snapshot.actorId;
+    this.signControlRecord = snapshot.signControlRecord;
+    this.verifyControlSignature = snapshot.verifyControlSignature;
+    this.authorizeControl = snapshot.authorizeControl;
+    this.outboxCodec = snapshot.outboxCodec;
     this.maxOutboxEntries =
-      config.maxOutboxEntries ?? DEFAULT_GROUP_SECURITY_MAX_OUTBOX_ENTRIES;
+      snapshot.maxOutboxEntries ?? DEFAULT_GROUP_SECURITY_MAX_OUTBOX_ENTRIES;
     this.maxReplayEntries =
-      config.maxReplayEntries ?? DEFAULT_GROUP_SECURITY_MAX_REPLAY_ENTRIES;
+      snapshot.maxReplayEntries ?? DEFAULT_GROUP_SECURITY_MAX_REPLAY_ENTRIES;
     this.replayWindowEpochs =
-      config.replayWindowEpochs ??
+      snapshot.replayWindowEpochs ??
       DEFAULT_GROUP_SECURITY_REPLAY_WINDOW_EPOCHS;
     this.outboxDeliveryTimeoutMs =
-      config.outboxDeliveryTimeoutMs ??
+      snapshot.outboxDeliveryTimeoutMs ??
       DEFAULT_GROUP_SECURITY_OUTBOX_DELIVERY_TIMEOUT_MS;
-    this.now = config.now ?? Date.now;
+    this.now = snapshot.now ?? Date.now;
   }
 
   /** Claims exclusive ownership of `config.provider` after a successful restore. */
@@ -4372,6 +4372,80 @@ function replayWindowFloor(currentEpoch: bigint, window: bigint): bigint {
 function authorizationAnchorFloor(currentEpoch: bigint, window: bigint): bigint {
   const floor = replayWindowFloor(currentEpoch, window);
   return floor === 0n ? 0n : floor - 1n;
+}
+
+function snapshotCoordinatorConfig(
+  config: GroupSecurityCoordinatorConfig,
+): GroupSecurityCoordinatorConfig {
+  const raw = exactOwnDataValues(
+    config,
+    [
+      'provider',
+      'store',
+      'storeKey',
+      'rollbackAnchor',
+      'protector',
+      'actorId',
+      'signControlRecord',
+      'verifyControlSignature',
+      'authorizeControl',
+      'outboxCodec',
+    ],
+    'group-security coordinator config',
+    [
+      'maxOutboxEntries',
+      'maxReplayEntries',
+      'replayWindowEpochs',
+      'outboxDeliveryTimeoutMs',
+      'now',
+    ],
+    true,
+  );
+  const rawConfig = raw as unknown as GroupSecurityCoordinatorConfig;
+  const rawStoreKey = exactOwnDataValues(
+    rawConfig.storeKey,
+    ['protocol', 'groupId'],
+    'group-security coordinator store key',
+    [],
+    true,
+  ) as unknown as GroupStateStoreKey;
+  const rawProtocol = exactOwnDataValues(
+    rawStoreKey.protocol,
+    ['id', 'version'],
+    'group-security coordinator protocol',
+    [],
+    true,
+  ) as unknown as GroupSecurityProtocol;
+  validateBytes(
+    rawStoreKey.groupId,
+    'groupId',
+    1,
+    MAX_GROUP_ID_BYTES,
+  );
+  validateIdentity(rawConfig.actorId, 'actorId');
+  const snapshot: GroupSecurityCoordinatorConfig = {
+    ...rawConfig,
+    storeKey: {
+      protocol: {
+        id: rawProtocol.id,
+        version: rawProtocol.version,
+      },
+      groupId: copyControlRecordBytes(
+        rawStoreKey.groupId,
+        'groupId',
+        1,
+        MAX_GROUP_ID_BYTES,
+      ),
+    },
+    actorId: copyControlRecordBytes(
+      rawConfig.actorId,
+      'actorId',
+      1,
+      MAX_IDENTITY_BYTES,
+    ),
+  };
+  validateCoordinatorConfig(snapshot);
+  return snapshot;
 }
 
 function validateCoordinatorConfig(config: GroupSecurityCoordinatorConfig): void {

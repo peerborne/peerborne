@@ -1133,6 +1133,130 @@ function cloneInvitation(
 }
 
 describe('GroupSecurityCoordinator', () => {
+  test('rejects accessor-backed config without invoking getters', async () => {
+    const value = await context();
+    let providerGetterCalls = 0;
+    const accessorConfig = { ...config(value) };
+    Object.defineProperty(accessorConfig, 'provider', {
+      enumerable: true,
+      get() {
+        providerGetterCalls += 1;
+        return value.provider;
+      },
+    });
+
+    await expect(
+      GroupSecurityCoordinator.bootstrap(
+        accessorConfig,
+        createGroupInput,
+        { operationId: id(1), subjectId: value.identities.actorId },
+      ),
+    ).rejects.toThrow(/own data properties/);
+    expect(providerGetterCalls).toBe(0);
+    expect(value.provider.createGroupCalls).toBe(0);
+  });
+
+  test('uses one own-data config snapshot when a Proxy swaps field reads', async () => {
+    const value = await context();
+    const substitutedProvider = new ContractTestProvider();
+    const mutableActorId = new Uint8Array(value.identities.actorId);
+    const mutableProtocol = { ...protocol };
+    const protocolDescriptorReads = new Map<PropertyKey, number>();
+    const storeKeyDescriptorReads = new Map<PropertyKey, number>();
+    const configDescriptorReads = new Map<PropertyKey, number>();
+    const mutableStoreKey = {
+      protocol: new Proxy(mutableProtocol, {
+        get() {
+          throw new Error('protocol fields must use descriptor snapshots');
+        },
+        getOwnPropertyDescriptor(target, property) {
+          protocolDescriptorReads.set(
+            property,
+            (protocolDescriptorReads.get(property) ?? 0) + 1,
+          );
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      }),
+      groupId: new Uint8Array(groupId),
+    };
+    let providerReads = 0;
+    const target = {
+      ...config(value),
+      actorId: mutableActorId,
+      storeKey: new Proxy(mutableStoreKey, {
+        get() {
+          throw new Error('store-key fields must use descriptor snapshots');
+        },
+        getOwnPropertyDescriptor(current, property) {
+          storeKeyDescriptorReads.set(
+            property,
+            (storeKeyDescriptorReads.get(property) ?? 0) + 1,
+          );
+          return Reflect.getOwnPropertyDescriptor(current, property);
+        },
+      }),
+    };
+    let configReads = 0;
+    const proxiedConfig = new Proxy(target, {
+      get(current, property, receiver) {
+        configReads += 1;
+        if (property === 'provider') {
+          providerReads += 1;
+          return providerReads === 1
+            ? value.provider
+            : substitutedProvider;
+        }
+        return Reflect.get(current, property, receiver);
+      },
+      getOwnPropertyDescriptor(current, property) {
+        configDescriptorReads.set(
+          property,
+          (configDescriptorReads.get(property) ?? 0) + 1,
+        );
+        return Reflect.getOwnPropertyDescriptor(current, property);
+      },
+    });
+
+    const coordinator = await GroupSecurityCoordinator.bootstrap(
+      proxiedConfig,
+      createGroupInput,
+      { operationId: id(1), subjectId: value.identities.actorId },
+    );
+
+    expect(coordinator.publicState.groupId).toEqual(groupId);
+    expect(configReads).toBe(0);
+    expect(providerReads).toBe(0);
+    expect(value.provider.createGroupCalls).toBe(1);
+    expect(substitutedProvider.createGroupCalls).toBe(0);
+    for (const property of Reflect.ownKeys(target)) {
+      expect(configDescriptorReads.get(property)).toBe(1);
+    }
+    for (const property of Reflect.ownKeys(mutableStoreKey)) {
+      expect(storeKeyDescriptorReads.get(property)).toBe(1);
+    }
+    for (const property of Reflect.ownKeys(mutableProtocol)) {
+      expect(protocolDescriptorReads.get(property)).toBe(1);
+    }
+
+    Object.defineProperties(target, {
+      maxOutboxEntries: { enumerable: true, value: 1 },
+      provider: { enumerable: true, value: substitutedProvider },
+    });
+    mutableActorId.fill(0);
+    mutableStoreKey.groupId.fill(0);
+    mutableProtocol.id = 'mutated.protocol';
+    const captured = coordinator as unknown as {
+      actorId: Uint8Array;
+      maxOutboxEntries: number;
+      provider: GroupSecurityProvider;
+      storeKey: GroupStateStoreKey;
+    };
+    expect(captured.actorId).toEqual(value.identities.actorId);
+    expect(captured.maxOutboxEntries).toBe(8);
+    expect(captured.provider).toBe(value.provider);
+    expect(captured.storeKey).toEqual(storeKey);
+  });
+
   test('accepts genuine cross-realm Uint8Array configuration bytes', async () => {
     const value = await context();
     const crossRealmGroupId = runInNewContext(
