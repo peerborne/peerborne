@@ -233,9 +233,9 @@ The relay server reads the following environment variables:
 | `TCP_PORT` | TCP listen port | `9002` |
 | `WS_LISTEN` | Full WebSocket listen multiaddr | `/ip4/0.0.0.0/tcp/${WS_PORT}/ws` |
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
-| `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/documents` |
+| `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/peerborne/documents/v3` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,/document/,/documents` |
+| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
 | `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
@@ -257,9 +257,13 @@ those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions
 `MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
 `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
 the relay's application-level registry receives subscription events.
-The v3 and legacy document prefixes are separate migration namespaces; the
-relay does not bridge them. Coordinate every peer on a custom prefix before an
-upgrade because mixed runtime versions on one topic are unsupported.
+The v3 document and publish-notification topics are separate from their legacy
+counterparts; the relay does not bridge them. Coordinate every peer on a custom
+prefix before an upgrade because mixed runtime versions on one topic are
+unsupported, and add every custom topic prefix to the relay's
+`TOPIC_ALLOWLIST`. A custom publish-notification topic may instead be set as
+`DOCUMENT_PUBLISH_PATH` or listed in `EXTRA_TOPICS`. Topic names are routing
+labels, not authentication or wire validation.
 
 The relay-info.json output path is determined automatically: `/shared/relay-info.json` if the `/shared` directory exists (Docker volume), otherwise `./relay-info.json` in the working directory.
 
@@ -617,12 +621,11 @@ Override relay defaults by adding entries to `[env]` in `fly.toml`:
 
 ```toml
 [env]
-  TOPIC_ALLOWLIST  = "/peerborne/document/v3/,/document/,/documents"
+  TOPIC_ALLOWLIST  = "/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents"
   MAX_AUTO_TOPICS  = "500"
   MAX_AUTO_TOPICS_PER_PEER = "32"
   GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"
   MAX_CONNECTIONS  = "256"
-  EXTRA_TOPICS     = "/documents"
 ```
 
 For secrets (e.g. future auth tokens), use `fly secrets set` instead:
@@ -774,7 +777,7 @@ localStorage.setItem('debug', 'libp2p:*')
    ```text
    PeerId: 12D3KooW...
    Multiaddrs: [ '/ip4/0.0.0.0/tcp/9001/ws/p2p/12D3KooW...' ]
-   Subscribed to topics: swarmdb._peer-discovery._p2p._pubsub /documents
+   Subscribed to configured relay topics { seedTopicCount: 2, extraTopicCount: 0 }
    ```
 
 2. **Check relay-info.json:**

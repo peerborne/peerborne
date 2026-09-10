@@ -1,4 +1,8 @@
-import { DEFAULT_MAX_AUTO_TOPICS, PUBSUB_PEER_DISCOVERY_TOPIC } from './config.js'
+import {
+  DEFAULT_MAX_AUTO_TOPICS,
+  DEFAULT_TOPIC_ALLOWLIST,
+  PUBSUB_PEER_DISCOVERY_TOPIC,
+} from './config.js'
 import { shouldAutoSubscribe } from './topic-policy.js'
 
 const neverTracked = () => false
@@ -59,6 +63,28 @@ describe('shouldAutoSubscribe', () => {
         isTracked: neverTracked,
       })
       expect(decision).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+    })
+
+    it('requires an explicit allowlist entry for a custom document prefix', () => {
+      const topic = '/acme/document/v3/example'
+      const input = {
+        maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+        autoTopicCount: 0,
+        isTracked: neverTracked,
+      }
+
+      expect(
+        shouldAutoSubscribe(topic, {
+          ...input,
+          allowlist: DEFAULT_TOPIC_ALLOWLIST,
+        }),
+      ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+      expect(
+        shouldAutoSubscribe(topic, {
+          ...input,
+          allowlist: [...DEFAULT_TOPIC_ALLOWLIST, '/acme/document/v3/'],
+        }),
+      ).toEqual({ action: 'subscribe' })
     })
 
     it('rejects when the allowlist is empty (effectively closed mode)', () => {

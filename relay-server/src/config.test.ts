@@ -39,9 +39,12 @@ describe('loadConfig', () => {
       expect(cfg.topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
       expect(cfg.topicAllowlist).toEqual([
         '/peerborne/document/v3/',
+        '/peerborne/documents/v3',
         '/document/',
         '/documents',
       ])
+      expect(cfg.documentPublishPath).toBe('/peerborne/documents/v3')
+      expect(cfg.topicAllowlist).toContain(DEFAULT_DOCUMENT_PUBLISH_PATH)
       expect(cfg.maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
       expect(cfg.maxAutoTopicsPerPeer).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
       expect(cfg.gossipsubMaxTopicBytesPerPeer).toBe(
@@ -146,9 +149,15 @@ describe('loadConfig', () => {
     it('splits multiple comma-separated values', () => {
       expect(
         loadConfig({
-          TOPIC_ALLOWLIST: '/peerborne/document/v3/,/document/,/documents',
+          TOPIC_ALLOWLIST:
+            '/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents',
         }).topicAllowlist,
-      ).toEqual(['/peerborne/document/v3/', '/document/', '/documents'])
+      ).toEqual([
+        '/peerborne/document/v3/',
+        '/peerborne/documents/v3',
+        '/document/',
+        '/documents',
+      ])
     })
 
     it('trims surrounding whitespace from each segment', () => {

@@ -40,7 +40,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
-- **Custom document topics require coordinated upgrades.** The versioned default isolates the current document wire generation. A custom or empty topic prefix can mix incompatible peers; every participant sharing it must be upgraded together, and relays do not bridge topic versions.
+- **Custom document topics require coordinated upgrades.** The versioned defaults keep honest, default-configured runtime generations on separate document and publish-notification topics. A custom or empty topic can mix incompatible peers; every participant sharing it must be upgraded together, and the topic must be added to each relay's allowlist. Topic names are routing labels, not authenticated version negotiation or authorization, and relays do not bridge topic versions.
 - **Many transports lack document-path evidence in CI.** The current cross-NAT
   proof verifies invitation acceptance, initial document-history load, and live
   post-join convergence through Circuit Relay. Transport-specific Peerborne

@@ -22,6 +22,7 @@ export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 /** Default topic prefixes accepted by the public relay. */
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
   '/peerborne/document/v3/',
+  '/peerborne/documents/v3',
   '/document/',
   '/documents',
 ]
@@ -66,7 +67,7 @@ export const DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS = 8
 export const DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS = 8
 
 /** Default document publish path (matches peerborne-config.ts default). */
-export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/documents'
+export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/peerborne/documents/v3'
 
 /**
  * Topic prefixes that are treated as system/internal and should never be
