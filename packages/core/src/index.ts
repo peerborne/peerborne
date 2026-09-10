@@ -25,12 +25,22 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { CRDTProvider } from './crdt-provider.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
-import { JSONSerializer, validateChangeBlockMetadata } from './json-serializer.js';
+import {
+  JSONSerializer,
+  validateChangeBlockMetadata,
+} from './json-serializer.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { ACL } from './acl.js';
-import { Keychain, keychainHistorySinceOrFull } from './keychain.js';
+import {
+  Keychain,
+  TransactionalKeychain,
+  PreparedKeychainEpoch,
+  PreparedKeychainMerge,
+  isTransactionalKeychain,
+  keychainHistorySinceOrFull,
+} from './keychain.js';
 import {
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -91,10 +101,7 @@ import {
   serializeUCAN,
   deserializeUCAN,
 } from './ucan.js';
-import {
-  UCANACL,
-  UCANACLProvider,
-} from './ucan-acl.js';
+import { UCANACL, UCANACLProvider } from './ucan-acl.js';
 import {
   ACLChain,
   canonicalEntryPayload,
@@ -104,7 +111,9 @@ import { NetworkStats } from './network-stats.js';
 import { LRUCache } from './lru-cache.js';
 import {
   beekemPathUpdateV1,
+  beekemPathUpdateV2,
   beekemWelcomeV1,
+  beekemWelcomeV2,
   bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
@@ -120,8 +129,22 @@ import {
   SerializedPathNodeUpdate,
   SerializedPathUpdate,
   deserializePathUpdateFromWire,
+  deserializePathUpdateV2FromWire,
   serializePathUpdateForWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
+import {
+  deserializeBeeKEMWelcomeFromWire,
+  deserializeBeeKEMWelcomeV2FromWire,
+  serializeBeeKEMWelcomeForWire,
+  serializeBeeKEMWelcomeV2ForWire,
+} from './beekem-welcome-wire.js';
+import {
+  decodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayloadV2,
+  encodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
+} from './welcome-sealed-payload.js';
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   decideLoadQuorum,
@@ -130,7 +153,10 @@ import {
   LoadQuorumFailedError,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
-import { documentTopic, DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
+import {
+  documentTopic,
+  DEFAULT_DOCUMENT_TOPIC_PREFIX,
+} from './document-topic.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
 import {
@@ -194,6 +220,10 @@ export {
   MembershipProposal,
   GroupKeyProvider,
   Keychain,
+  TransactionalKeychain,
+  PreparedKeychainEpoch,
+  PreparedKeychainMerge,
+  isTransactionalKeychain,
   keychainHistorySinceOrFull,
   KeychainProvider,
   requireDeserializePublicKey,
@@ -234,7 +264,9 @@ export {
   // Wire protocols
   bloomFilterUpdateV1,
   beekemWelcomeV1,
+  beekemWelcomeV2,
   beekemPathUpdateV1,
+  beekemPathUpdateV2,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
@@ -246,6 +278,16 @@ export {
   // BeeKEM PathUpdate wire serialization
   serializePathUpdateForWire,
   deserializePathUpdateFromWire,
+  serializePathUpdateV2ForWire,
+  deserializePathUpdateV2FromWire,
+  serializeBeeKEMWelcomeForWire,
+  deserializeBeeKEMWelcomeFromWire,
+  serializeBeeKEMWelcomeV2ForWire,
+  deserializeBeeKEMWelcomeV2FromWire,
+  encodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
+  decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
   tipsHash,
   tipsHashToHex,
@@ -288,7 +330,26 @@ export type {
   CRDTWriterChangeNode,
   CRDTReaderChangeNode,
 } from './crdt-change-node.js';
-export type { SerializedPathUpdate, SerializedPathNodeUpdate } from './path-update-wire.js';
+export type {
+  SerializedPathUpdate,
+  SerializedPathNodeUpdate,
+} from './path-update-wire.js';
+export type {
+  SerializedEncryptedPathKeyBundle,
+  SerializedPathNodeUpdateV2,
+  SerializedPathTreeNodePublicKey,
+  SerializedPathUpdateV2,
+} from './path-update-wire.js';
+export type {
+  SerializedBeeKEMWelcome,
+  SerializedBeeKEMWelcomeV2,
+  SerializedWelcomeNodePublicKey,
+  SerializedWelcomePathNodeUpdate,
+} from './beekem-welcome-wire.js';
+export type {
+  WelcomeSealedPayload,
+  WelcomeSealedPayloadV2,
+} from './welcome-sealed-payload.js';
 export type { DocumentCapability } from './capabilities.js';
 export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
@@ -377,5 +438,10 @@ export type {
   ACLState,
   SerializePublicKey,
 } from './acl-chain.js';
-export { copyUnsharedUint8Array, snapshotDeepEnumerableData } from './utils.js';
+export {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+  assertSharedProtocolRequestSize,
+  copyUnsharedUint8Array,
+  snapshotDeepEnumerableData,
+} from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';

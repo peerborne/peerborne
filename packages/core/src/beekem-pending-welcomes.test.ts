@@ -4,6 +4,7 @@ import {
   evaluateBeeKEMWelcome,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 
 /**
@@ -30,10 +31,24 @@ type PublicKey = { id: string };
 
 const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
   serializeSyncMessage(message: CRDTSyncMessage<ChangesType, PublicKey>) {
-    return new TextEncoder().encode(JSON.stringify(message));
+    return new TextEncoder().encode(
+      JSON.stringify(message, (_key, value) =>
+        value instanceof Uint8Array
+          ? { __testBytes: Array.from(value) }
+          : value,
+      ),
+    );
   },
-  deserializeSyncMessage(_data: Uint8Array) {
-    throw new Error('not used in evaluation');
+  deserializeSyncMessage(data: Uint8Array) {
+    return JSON.parse(
+      new TextDecoder().decode(data),
+      (_key, value) =>
+        value &&
+        typeof value === 'object' &&
+        Array.isArray(value.__testBytes)
+          ? new Uint8Array(value.__testBytes)
+          : value,
+    ) as CRDTSyncMessage<ChangesType, PublicKey>;
   },
 } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
 
@@ -54,7 +69,7 @@ class PendingWelcomesHarness {
   pendingWelcomes = new Map<
     string,
     {
-      message: CRDTSyncMessage<ChangesType, PublicKey>;
+      payload: Uint8Array;
       bufferedAtMs: number;
     }
   >();
@@ -63,6 +78,7 @@ class PendingWelcomesHarness {
   nowMs = 0;
   /** Whether the local user is currently in the readers ACL. */
   isReader = false;
+  signatureResult: unknown = true;
 
   private depsFor(): WelcomeValidationDeps<ChangesType, PublicKey> {
     return {
@@ -73,7 +89,8 @@ class PendingWelcomesHarness {
       // Welcomes are unconditionally writer-authenticated; the test
       // messages below always carry a `signature` field so this stub
       // verifier just returns `true` for any signed payload.
-      verifyWriterSignature: async () => true,
+      verifyWriterSignature: async () =>
+        this.signatureResult as boolean,
       syncMessageSerializer: stubSerializer,
     };
   }
@@ -92,14 +109,14 @@ class PendingWelcomesHarness {
         decision.kind === 'drop-unauthorized' &&
         decision.reason === 'not-in-readers-acl' &&
         !opts.fromBuffer &&
-        message.welcomeEpochId &&
-        message.welcomeEpochId.length > 0
+        decision.message?.welcomeEpochId !== undefined &&
+        decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
       ) {
-        this.bufferPendingWelcome(message);
+        this.bufferPendingWelcome(decision.message);
       }
       return false;
     }
-    this.appliedEpochs.push(message.welcomeEpochId as Uint8Array);
+    this.appliedEpochs.push(decision.message.welcomeEpochId as Uint8Array);
     return true;
   }
 
@@ -108,14 +125,17 @@ class PendingWelcomesHarness {
     message: CRDTSyncMessage<ChangesType, PublicKey>,
   ): void {
     const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.length === 0) return;
+    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = hex(epochId);
-    this.pendingWelcomes.delete(key);
+    if (this.pendingWelcomes.has(key)) return;
     if (this.pendingWelcomes.size >= PENDING_WELCOMES_MAX_ENTRIES) {
       const oldestKey = this.pendingWelcomes.keys().next().value;
       if (oldestKey !== undefined) this.pendingWelcomes.delete(oldestKey);
     }
-    this.pendingWelcomes.set(key, { message, bufferedAtMs: this.nowMs });
+    this.pendingWelcomes.set(key, {
+      payload: stubSerializer.serializeSyncMessage(message),
+      bufferedAtMs: this.nowMs,
+    });
   }
 
   /** Mirror of `_drainPendingWelcomes`. */
@@ -128,9 +148,10 @@ class PendingWelcomesHarness {
         this.pendingWelcomes.delete(key);
         continue;
       }
-      const accepted = await this.evaluateAndApply(entry.message, {
-        fromBuffer: true,
-      });
+      const accepted = await this.evaluateAndApply(
+        stubSerializer.deserializeSyncMessage(entry.payload),
+        { fromBuffer: true },
+      );
       if (accepted) this.pendingWelcomes.delete(key);
     }
   }
@@ -148,7 +169,7 @@ function welcomeFor(
 ): CRDTSyncMessage<ChangesType, PublicKey> {
   return {
     documentId: '/doc/welcome',
-    welcomeEpochId: new Uint8Array(32).fill(epochByte),
+    welcomeEpochId: new Uint8Array(EPOCH_ID_LENGTH).fill(epochByte),
     welcomeRecipient: recipient,
     // Recipient KEM binding + sealed payload presence are both
     // structurally required by the validator post-encryption. The
@@ -192,7 +213,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(0);
     expect(h.appliedEpochs).toHaveLength(1);
     expect(Array.from(h.appliedEpochs[0])).toEqual(
-      Array.from(new Uint8Array(32).fill(7)),
+      Array.from(new Uint8Array(EPOCH_ID_LENGTH).fill(7)),
     );
   });
 
@@ -221,6 +242,19 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(0);
   });
 
+  test.each([EPOCH_ID_LENGTH - 1, EPOCH_ID_LENGTH + 1])(
+    'does NOT buffer a Welcome with a %i-byte epoch id',
+    async (length) => {
+      const h = new PendingWelcomesHarness();
+      const message = welcomeFor(7);
+      message.welcomeEpochId = new Uint8Array(length).fill(7);
+
+      await h.evaluateAndApply(message, { fromBuffer: false });
+
+      expect(h.pendingWelcomes.size).toBe(0);
+    },
+  );
+
   test('coalesces duplicate Welcomes for the same epoch into a single entry', async () => {
     const h = new PendingWelcomesHarness();
     h.isReader = false;
@@ -228,6 +262,39 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     expect(h.pendingWelcomes.size).toBe(1);
+  });
+
+  test('unsigned and truthy-nonboolean forged duplicates cannot replace a valid buffered Welcome', async () => {
+    const h = new PendingWelcomesHarness();
+    await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
+    const originalPayload = new Uint8Array(
+      h.pendingWelcomes.get(key)!.payload,
+    );
+
+    const unsigned = welcomeFor(7);
+    delete unsigned.signature;
+    await h.evaluateAndApply(unsigned, { fromBuffer: false });
+    h.signatureResult = {};
+    const forged = welcomeFor(7);
+    forged.eciesSealed = new Uint8Array([9, 9, 9]);
+    await h.evaluateAndApply(forged, { fromBuffer: false });
+
+    expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.get(key)!.payload).toEqual(originalPayload);
+  });
+
+  test('retains a detached canonical copy of an authenticated Welcome', async () => {
+    const h = new PendingWelcomesHarness();
+    const message = welcomeFor(7);
+    await h.evaluateAndApply(message, { fromBuffer: false });
+    message.eciesSealed![0] = 0xff;
+
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
+    const retained = stubSerializer.deserializeSyncMessage(
+      h.pendingWelcomes.get(key)!.payload,
+    );
+    expect(retained.eciesSealed).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   test('evicts the oldest entry when the buffer is at capacity', async () => {
@@ -239,7 +306,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     }
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
     // The oldest entry corresponds to epoch byte 1.
-    const oldestKey = hex(new Uint8Array(32).fill(1));
+    const oldestKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(1));
     expect(h.pendingWelcomes.has(oldestKey)).toBe(true);
 
     // One more push -- the oldest must be evicted, the newest must
@@ -250,7 +317,9 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
     expect(h.pendingWelcomes.has(oldestKey)).toBe(false);
     const newestKey = hex(
-      new Uint8Array(32).fill(PENDING_WELCOMES_MAX_ENTRIES + 1),
+      new Uint8Array(EPOCH_ID_LENGTH).fill(
+        PENDING_WELCOMES_MAX_ENTRIES + 1,
+      ),
     );
     expect(h.pendingWelcomes.has(newestKey)).toBe(true);
   });

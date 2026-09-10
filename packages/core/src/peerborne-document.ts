@@ -10,6 +10,7 @@ import { Libp2p } from 'libp2p';
 import { Peerborne, MAX_DOCUMENT_PATH_LENGTH } from './peerborne.js';
 import type { CreateInvitationOptions } from './peerborne.js';
 import {
+  assertSharedProtocolRequestSize,
   concatUint8Arrays,
   firstTrue,
   readUint8Iterable,
@@ -80,6 +81,7 @@ import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
@@ -5820,6 +5822,10 @@ export class PeerborneDocument<
       keychainChanges: keychainPlaintextBytes,
       beekemWelcome,
     });
+    assertSharedProtocolRequestSize(
+      sealedPayloadBytes.byteLength,
+      'BeeKEM Welcome sealed payload',
+    );
 
     // Seal the envelope to the recipient's ECDH public key. Only the
     // recipient holding the matching ECDH private key can recover the
@@ -5860,7 +5866,15 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
+    assertSharedProtocolRequestSize(
+      pathHeader.byteLength + pathBytes.byteLength + serialized.byteLength,
+      'BeeKEM Welcome shared protocol request',
+    );
     const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
+    assertSharedProtocolRequestSize(
+      payload.byteLength,
+      'BeeKEM Welcome shared protocol request',
+    );
 
     // Best-effort fan-out to all connected peers. Each peer will either
     // process the Welcome (if it identifies as the new reader) or drop it.
@@ -6005,8 +6019,8 @@ export class PeerborneDocument<
           if (
             decision.reason === 'not-in-readers-acl' &&
             !opts.fromBuffer &&
-            message.welcomeEpochId &&
-            message.welcomeEpochId.length > 0
+            decision.message?.welcomeEpochId !== undefined &&
+            decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
           ) {
             const buffered = await runSharedProtocolMutation(
               admission,
@@ -6032,6 +6046,10 @@ export class PeerborneDocument<
           return false;
       }
     }
+
+    // Continue only with the detached canonical message whose exact bytes the
+    // validator authenticated, never the caller-owned serializer result.
+    message = decision.message;
 
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
@@ -6234,7 +6252,7 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
   ): void {
     const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.length === 0) return;
+    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = this._hexEncode(epochId);
     // Refresh recency for duplicate Welcomes: delete-then-set so the
     // Map iteration order puts this entry at the back, matching the
@@ -7070,7 +7088,15 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
+    assertSharedProtocolRequestSize(
+      pathHeader.byteLength + pathBytes.byteLength + serialized.byteLength,
+      'BeeKEM PathUpdate shared protocol request',
+    );
     const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
+    assertSharedProtocolRequestSize(
+      payload.byteLength,
+      'BeeKEM PathUpdate shared protocol request',
+    );
 
     const peers =
       this.swarm.heliaNode.libp2p
@@ -7330,7 +7356,25 @@ export class PeerborneDocument<
     pathHeader[2] = (pathBytes.length >> 8) & 0xff;
     pathHeader[3] = pathBytes.length & 0xff;
 
-    const v2Payload = concatUint8Arrays(pathHeader, pathBytes, previousKeyID, nonce, data);
+    assertSharedProtocolRequestSize(
+      pathHeader.byteLength +
+        pathBytes.byteLength +
+        previousKeyID.byteLength +
+        nonce.byteLength +
+        data.byteLength,
+      'Document key-update shared protocol request',
+    );
+    const v2Payload = concatUint8Arrays(
+      pathHeader,
+      pathBytes,
+      previousKeyID,
+      nonce,
+      data,
+    );
+    assertSharedProtocolRequestSize(
+      v2Payload.byteLength,
+      'Document key-update shared protocol request',
+    );
 
     // WARNING: If some peers fail to receive this update, they will be unable
     // to decrypt future messages encrypted with the new key. They will need to

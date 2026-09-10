@@ -82,9 +82,10 @@ export interface GroupKeyProvider {
   removeMember(memberPublicKey: CryptoKey): Promise<GroupKeyAgreementOutput>;
 
   /**
-   * Perform a key update (periodic rotation for post-compromise security).
+   * Perform a periodic key rotation.
    * Generates fresh DH key pairs along the path from the caller's leaf
-   * to the root of the ratchet tree.
+   * to the root of the ratchet tree. This interface alone does not establish
+   * post-compromise security, secret erasure, or a recovery guarantee.
    *
    * @returns The group key agreement output with the new group secret.
    */

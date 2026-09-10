@@ -56,6 +56,7 @@ import {
   tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readFirstDeserializable,
   readPathPrefixedProtocolHeader,
 } from './utils.js';
@@ -115,9 +116,6 @@ import type {
 
 /** Maximum allowed document path length in key-update V2 wire format. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
-
-/** Maximum allowed request size for shared protocol handlers (10 MB). */
-const MAX_REQUEST_SIZE = 10 * 1024 * 1024;
 
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_SHARED_PROTOCOL_REQUEST_TIMEOUT_MS = 5000;
@@ -958,7 +956,7 @@ export class Peerborne<
                   source,
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
                 ),
               requestTimeoutMs,
@@ -1012,7 +1010,7 @@ export class Peerborne<
                   source,
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
                 ),
               requestTimeoutMs,
@@ -1080,7 +1078,7 @@ export class Peerborne<
                   source,
                   this._documentRegistry,
                   'key-update',
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   MAX_DOCUMENT_PATH_LENGTH,
                 ),
               requestTimeoutMs,
@@ -1137,7 +1135,7 @@ export class Peerborne<
                   source,
                   this._documentRegistry,
                   'beekem-welcome',
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   MAX_DOCUMENT_PATH_LENGTH,
                 ),
               requestTimeoutMs,
@@ -1198,7 +1196,7 @@ export class Peerborne<
                   source,
                   this._documentRegistry,
                   'beekem-pathupdate',
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   MAX_DOCUMENT_PATH_LENGTH,
                 ),
               requestTimeoutMs,
@@ -1255,7 +1253,7 @@ export class Peerborne<
                   source,
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
-                  MAX_REQUEST_SIZE,
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
                 ),
               requestTimeoutMs,
