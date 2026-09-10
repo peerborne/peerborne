@@ -1,5 +1,4 @@
 import { chromium, expect, test, type Browser, type Page } from '@playwright/test';
-import { webcrypto } from 'node:crypto';
 
 const endpoints = [
   process.env.BROWSER_A_WS ?? 'ws://127.0.0.1:3101/',
@@ -17,17 +16,6 @@ async function waitForDocument(page: Page, path: string, key: string, value: unk
 }
 
 test('distinct identities accept an invitation and converge bidirectionally across NAT', async () => {
-  const identities = await Promise.all([0, 1].map(async () => {
-    const pair = await webcrypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
-    ) as CryptoKeyPair;
-    return {
-      privateKey: await webcrypto.subtle.exportKey('jwk', pair.privateKey),
-      publicKey: await webcrypto.subtle.exportKey('jwk', pair.publicKey),
-    };
-  }));
-  expect(identities[0].publicKey.x).not.toBe(identities[1].publicKey.x);
-
   const browsers: Browser[] = [];
   try {
     browsers.push(await chromium.connect(endpoints[0]));
@@ -39,10 +27,6 @@ test('distinct identities accept an invitation and converge bidirectionally acro
       page.on('console', (message) => diagnostics[index].push(`console:${message.type()}: ${message.text()}`));
       page.on('pageerror', (error) => diagnostics[index].push(`pageerror: ${error.message}`));
     });
-    await Promise.all(pages.map((page, index) => page.addInitScript(
-      (injected) => { (window as any).__PEERBORNE_TEST_IDENTITY__ = injected; },
-      identities[index],
-    )));
     await Promise.all(pages.map((page) => page.goto('http://localhost:8080')));
     try {
       await Promise.all(pages.map(async (page) => {
@@ -60,6 +44,19 @@ test('distinct identities accept an invitation and converge bidirectionally acro
         (messages, index) => `browser ${index + 1}:\n${messages.join('\n')}`,
       ).join('\n')}\n${String(error)}`);
     }
+
+    const identityFingerprints = await Promise.all(
+      pages.map((page) =>
+        page.evaluate(() =>
+          (window as any).__PEERBORNE_TEST__.identityFingerprint(),
+        ),
+      ),
+    );
+    expect(identityFingerprints).toEqual([
+      expect.stringMatching(/^[0-9a-f]{64}$/u),
+      expect.stringMatching(/^[0-9a-f]{64}$/u),
+    ]);
+    expect(identityFingerprints[0]).not.toBe(identityFingerprints[1]);
 
     await Promise.all(pages.map((page) => expect.poll(
       () => page.evaluate(() => (window as any).__PEERBORNE_TEST__.circuitAddress()),
