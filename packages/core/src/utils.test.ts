@@ -261,6 +261,28 @@ describe('copyUnsharedUint8Array', () => {
     );
   });
 
+  test('uses captured intrinsic dispatch after Reflect.apply is replaced', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Reflect, 'apply')!;
+    let copied: Uint8Array | undefined;
+    let failure: unknown;
+    try {
+      Object.defineProperty(Reflect, 'apply', {
+        ...descriptor,
+        value: () => {
+          throw new Error('poisoned Reflect.apply');
+        },
+      });
+      copied = copyUnsharedUint8Array(new Uint8Array([1, 2, 3]), 3, 3);
+    } catch (error) {
+      failure = error;
+    } finally {
+      Object.defineProperty(Reflect, 'apply', descriptor);
+    }
+
+    expect(failure).toBeUndefined();
+    expect(copied).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
   test('rejects SharedArrayBuffer-backed bytes', () => {
     if (typeof SharedArrayBuffer === 'undefined') return;
     expect(() =>
