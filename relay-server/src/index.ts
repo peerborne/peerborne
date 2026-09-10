@@ -83,8 +83,10 @@ async function main() {
     }
 
     // Auto-subscribe to document topics as peers join them. The safe default
-    // allows only /document/ and /documents. Set TOPIC_ALLOWLIST=* explicitly
-    // to allow every non-system topic.
+    // admits the v3 document and publish-notification namespaces plus the
+    // separate legacy /document/ and /documents migration namespaces. It
+    // does not bridge those topics.
+    // Set TOPIC_ALLOWLIST=* explicitly to allow every non-system topic.
     const permanentTopics = new Set<string>([
       peerDiscoveryTopic,
       documentPublishPath,

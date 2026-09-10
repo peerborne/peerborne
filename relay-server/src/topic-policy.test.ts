@@ -1,4 +1,8 @@
-import { DEFAULT_MAX_AUTO_TOPICS, PUBSUB_PEER_DISCOVERY_TOPIC } from './config.js'
+import {
+  DEFAULT_MAX_AUTO_TOPICS,
+  DEFAULT_TOPIC_ALLOWLIST,
+  PUBSUB_PEER_DISCOVERY_TOPIC,
+} from './config.js'
 import { shouldAutoSubscribe } from './topic-policy.js'
 
 const neverTracked = () => false
@@ -61,6 +65,28 @@ describe('shouldAutoSubscribe', () => {
       expect(decision).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
     })
 
+    it('requires an explicit allowlist entry for a custom document prefix', () => {
+      const topic = '/acme/document/v3/example'
+      const input = {
+        maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+        autoTopicCount: 0,
+        isTracked: neverTracked,
+      }
+
+      expect(
+        shouldAutoSubscribe(topic, {
+          ...input,
+          allowlist: DEFAULT_TOPIC_ALLOWLIST,
+        }),
+      ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+      expect(
+        shouldAutoSubscribe(topic, {
+          ...input,
+          allowlist: [...DEFAULT_TOPIC_ALLOWLIST, '/acme/document/v3/'],
+        }),
+      ).toEqual({ action: 'subscribe' })
+    })
+
     it('rejects when the allowlist is empty (effectively closed mode)', () => {
       // Note: loadConfig collapses an empty allowlist to null, but the
       // policy fn must still handle an explicit empty list as "closed".
@@ -81,6 +107,29 @@ describe('shouldAutoSubscribe', () => {
         isTracked: neverTracked,
       })
       expect(decision).toEqual({ action: 'subscribe' })
+    })
+
+    it('treats entries without a trailing slash as exact topics', () => {
+      const input = {
+        allowlist: ['/peerborne/documents/v3', '/documents'],
+        maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+        autoTopicCount: 0,
+        isTracked: neverTracked,
+      }
+
+      expect(
+        shouldAutoSubscribe('/peerborne/documents/v3', input),
+      ).toEqual({ action: 'subscribe' })
+      expect(shouldAutoSubscribe('/documents', input)).toEqual({
+        action: 'subscribe',
+      })
+      expect(
+        shouldAutoSubscribe('/peerborne/documents/v30', input),
+      ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+      expect(shouldAutoSubscribe('/documents-v2', input)).toEqual({
+        action: 'skip',
+        reason: 'NotInAllowlist',
+      })
     })
   })
 
