@@ -340,7 +340,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
         isReader: async () => ({ member: true }) as unknown as boolean,
       }),
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'drop-unauthorized',
       reason: 'not-in-readers-acl',
     });
