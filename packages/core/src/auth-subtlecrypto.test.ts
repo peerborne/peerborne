@@ -1,7 +1,26 @@
-import { beforeAll, describe, expect, test } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, test } from '@jest/globals';
+import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import type { AesAlgorithmName } from './auth-provider.js';
 import { importSymmetricKey } from './utils.js';
+
+const nativeCryptoDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  'crypto',
+);
+
+// These legacy negative fixtures expect mismatched ECDSA key usages to fail at
+// sign/verify time; native Web Crypto correctly rejects them during import.
+beforeAll(() => {
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: new PeculiarCrypto(),
+  });
+});
+
+afterAll(() => {
+  Object.defineProperty(globalThis, 'crypto', nativeCryptoDescriptor!);
+});
 
 const auth = new SubtleCrypto();
 
