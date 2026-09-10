@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import type { CRDTChangeNode } from './crdt-change-node.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
 import {
@@ -162,6 +163,179 @@ describe('loadResponseManifestHash', () => {
     });
     expect(first).not.toEqual(absent);
     expect(second).not.toEqual(first);
+  });
+
+  test('snapshots snapshot and keychain bytes before the first digest yields', async () => {
+    const stateBytes = new Uint8Array([1, 2, 3]);
+    const keychainChangesBytes = new Uint8Array([4, 5, 6]);
+    const pending = hash({
+      snapshot: {
+        stateBytes,
+        lastChangeNodeCID: 'SNAP',
+        compactedCount: 1,
+        timestamp: 2,
+      },
+      keychainChangesBytes,
+    });
+
+    stateBytes.fill(9);
+    keychainChangesBytes.fill(9);
+
+    await expect(pending).resolves.toEqual(
+      await hash({
+        snapshot: {
+          stateBytes: new Uint8Array([1, 2, 3]),
+          lastChangeNodeCID: 'SNAP',
+          compactedCount: 1,
+          timestamp: 2,
+        },
+        keychainChangesBytes: new Uint8Array([4, 5, 6]),
+      }),
+    );
+  });
+
+  test('uses own descriptor snapshots without Proxy property reads', async () => {
+    const stable = {
+      snapshot: {
+        stateBytes: new Uint8Array([1, 2, 3]),
+        lastChangeNodeCID: 'SNAP',
+        compactedCount: 1,
+        timestamp: 2,
+      },
+      keychainChangesBytes: new Uint8Array([4, 5, 6]),
+    };
+    let inputReads = 0;
+    let snapshotReads = 0;
+    const snapshot = new Proxy(stable.snapshot, {
+      get() {
+        snapshotReads++;
+        throw new Error('snapshot property read must not run');
+      },
+    });
+    const input = new Proxy({ ...stable, snapshot, serializeChange }, {
+      get() {
+        inputReads++;
+        throw new Error('input property read must not run');
+      },
+    });
+
+    await expect(loadResponseManifestHash(input)).resolves.toEqual(
+      await hash(stable),
+    );
+    expect(inputReads).toBe(0);
+    expect(snapshotReads).toBe(0);
+  });
+
+  test('does not consult an inherited setter while capturing input fields', async () => {
+    const input = {
+      serializeChange,
+      snapshot: {
+        stateBytes: new Uint8Array([1, 2, 3]),
+        lastChangeNodeCID: 'SNAP',
+        compactedCount: 1,
+        timestamp: 2,
+      },
+    };
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'snapshot',
+    );
+    let setterCalls = 0;
+    let pending: Promise<Uint8Array> | undefined;
+    try {
+      Object.defineProperty(Object.prototype, 'snapshot', {
+        configurable: true,
+        set() {
+          setterCalls++;
+        },
+      });
+      pending = loadResponseManifestHash(input);
+    } finally {
+      if (descriptor === undefined) {
+        delete (Object.prototype as Record<string, unknown>).snapshot;
+      } else {
+        Object.defineProperty(Object.prototype, 'snapshot', descriptor);
+      }
+    }
+
+    expect(setterCalls).toBe(0);
+    await expect(pending).resolves.toEqual(
+      await loadResponseManifestHash(input),
+    );
+  });
+
+  test('rejects accessors that could synthesize a mixed-time manifest', async () => {
+    const stateBytes = new Uint8Array([1]);
+    const keychainChangesBytes = new Uint8Array([4]);
+    let getterCalls = 0;
+    const snapshot = {
+      stateBytes,
+      compactedCount: 1,
+      timestamp: 2,
+    } as Record<string, unknown>;
+    Object.defineProperty(snapshot, 'lastChangeNodeCID', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        stateBytes[0] = 9;
+        return 'SNAP';
+      },
+    });
+    const input = { snapshot, serializeChange } as Record<string, unknown>;
+    Object.defineProperty(input, 'keychainChangesBytes', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        keychainChangesBytes[0] = 9;
+        return keychainChangesBytes;
+      },
+    });
+
+    await expect(
+      loadResponseManifestHash(
+        input as unknown as Parameters<typeof loadResponseManifestHash>[0],
+      ),
+    ).rejects.toThrow(/own data property/);
+    expect(getterCalls).toBe(0);
+    expect(stateBytes).toEqual(new Uint8Array([1]));
+    expect(keychainChangesBytes).toEqual(new Uint8Array([4]));
+
+    await expect(
+      hash({
+        snapshot:
+          snapshot as unknown as Parameters<typeof hash>[0]['snapshot'],
+      }),
+    ).rejects.toThrow(/own data property/);
+    expect(getterCalls).toBe(0);
+  });
+
+  test('accepts cross-realm payload bytes but rejects shared backing', async () => {
+    const crossRealm = runInNewContext(
+      'new Uint8Array([1, 2, 3])',
+    ) as Uint8Array;
+    expect(crossRealm instanceof Uint8Array).toBe(false);
+    const crossRealmInput = runInNewContext(
+      `({
+        snapshot: {
+          stateBytes: bytes,
+          lastChangeNodeCID: 'SNAP',
+          compactedCount: 1,
+          timestamp: 2,
+        },
+        keychainChangesBytes: bytes,
+      })`,
+      { bytes: crossRealm },
+    ) as Parameters<typeof loadResponseManifestHash>[0];
+    await expect(
+      loadResponseManifestHash(crossRealmInput),
+    ).resolves.toHaveLength(32);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(3));
+      await expect(hash({ keychainChangesBytes: shared })).rejects.toThrow(
+        /unshared Uint8Array/,
+      );
+    }
   });
 
   test('rejects a lone surrogate before UTF-8 canonicalization', async () => {

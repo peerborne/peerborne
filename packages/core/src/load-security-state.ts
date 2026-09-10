@@ -10,6 +10,43 @@ export const MAX_LOAD_SECURITY_FRONTIER_ENTRIES = 4096;
 export const MAX_LOAD_SECURITY_FRONTIER_ENTRY_BYTES = 1024;
 export const MAX_LOAD_SECURITY_EPOCH = (1n << 64n) - 1n;
 
+const LOAD_SECURITY_COMMITMENT_FIELDS = [
+  'version',
+  'controlHead',
+  'groupId',
+  'epoch',
+  'treeHash',
+  'confirmedTranscriptHash',
+] as const;
+const LOAD_SECURITY_STATE_FIELDS = [
+  ...LOAD_SECURITY_COMMITMENT_FIELDS,
+  'documentId',
+  'frontier',
+] as const;
+const objectCreate = Object.create;
+const objectDefineProperty = Object.defineProperty;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const arrayIsArray = Array.isArray;
+const reflectApply = Reflect.apply;
+
+function defineEnumerableDataProperty(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  reflectApply(objectDefineProperty, Object, [
+    target,
+    key,
+    {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    },
+  ]);
+}
+
 export interface LoadSecurityCommitments {
   version: typeof LOAD_SECURITY_STATE_VERSION;
   controlHead: Uint8Array;
@@ -89,43 +126,121 @@ function requireHash(name: string, value: unknown): Uint8Array {
 export function validateLoadSecurityCommitments(
   commitments: LoadSecurityCommitments,
 ): void {
-  if (commitments === null || typeof commitments !== 'object') {
-    throw new TypeError('load security commitments must be an object');
+  validateAndCloneLoadSecurityCommitments(commitments);
+}
+
+function validateAndCloneCommitmentFields(
+  tuple: Record<(typeof LOAD_SECURITY_COMMITMENT_FIELDS)[number], unknown>,
+): LoadSecurityCommitments {
+  if (tuple.version !== LOAD_SECURITY_STATE_VERSION) {
+    throw new RangeError('unsupported load security version');
   }
-  if (commitments.version !== LOAD_SECURITY_STATE_VERSION) {
-    throw new RangeError(`unsupported load security version: ${String(commitments.version)}`);
-  }
-  requireHash('controlHead', commitments.controlHead);
-  requirePlainString(
+  const controlHead = requireHash('controlHead', tuple.controlHead);
+  const groupId = requirePlainString(
     'groupId',
-    commitments.groupId,
+    tuple.groupId,
     MAX_LOAD_SECURITY_GROUP_ID_BYTES,
   );
   if (
-    typeof commitments.epoch !== 'bigint' ||
-    commitments.epoch < 0n ||
-    commitments.epoch > MAX_LOAD_SECURITY_EPOCH
+    typeof tuple.epoch !== 'bigint' ||
+    tuple.epoch < 0n ||
+    tuple.epoch > MAX_LOAD_SECURITY_EPOCH
   ) {
     throw new RangeError('epoch must be an unsigned 64-bit bigint');
   }
-  requireHash('treeHash', commitments.treeHash);
-  requireHash('confirmedTranscriptHash', commitments.confirmedTranscriptHash);
+  return {
+    version: LOAD_SECURITY_STATE_VERSION,
+    controlHead,
+    groupId,
+    epoch: tuple.epoch,
+    treeHash: requireHash('treeHash', tuple.treeHash),
+    confirmedTranscriptHash: requireHash(
+      'confirmedTranscriptHash',
+      tuple.confirmedTranscriptHash,
+    ),
+  };
 }
 
-/** Return a defensive byte-for-byte copy of a validated commitment tuple. */
+function validateAndCloneLoadSecurityCommitments(
+  value: unknown,
+): LoadSecurityCommitments {
+  return validateAndCloneCommitmentFields(
+    snapshotLoadSecurityOwnDataFields(
+      value,
+      LOAD_SECURITY_COMMITMENT_FIELDS,
+      'load security commitments',
+    ),
+  );
+}
+
+/**
+ * Return a defensive copy of the six known own-data tuple fields. Unknown
+ * top-level fields are ignored for forward compatibility.
+ */
 export function cloneLoadSecurityCommitments(
   commitments: LoadSecurityCommitments,
 ): LoadSecurityCommitments {
-  validateLoadSecurityCommitments(commitments);
-  return {
-    ...commitments,
-    controlHead: requireHash('controlHead', commitments.controlHead),
-    treeHash: requireHash('treeHash', commitments.treeHash),
-    confirmedTranscriptHash: requireHash(
-      'confirmedTranscriptHash',
-      commitments.confirmedTranscriptHash,
-    ),
-  };
+  return validateAndCloneLoadSecurityCommitments(commitments);
+}
+
+function snapshotLoadSecurityOwnDataFields<Fields extends readonly string[]>(
+  value: unknown,
+  fields: Fields,
+  label: string,
+): Record<Fields[number], unknown> {
+  if (value === null || typeof value !== 'object') {
+    throw new TypeError(`${label} must be an object`);
+  }
+  let prototype: object | null;
+  let prototypeParent: object | null = null;
+  let isArray: boolean;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
+      | object
+      | null;
+    if (prototype !== null) {
+      prototypeParent = reflectApply(objectGetPrototypeOf, Object, [
+        prototype,
+      ]) as object | null;
+    }
+  } catch {
+    throw new TypeError(`${label} must be a plain record`);
+  }
+  // A realm's ordinary Object.prototype has a null parent. This accepts
+  // ordinary cross-realm and null-prototype records. Only the captured own
+  // fields are consumed, so inherited properties never become tuple data.
+  if (isArray || (prototype !== null && prototypeParent !== null)) {
+    throw new TypeError(`${label} must be a plain record`);
+  }
+  const snapshot = reflectApply(objectCreate, Object, [null]) as Record<
+    Fields[number],
+    unknown
+  >;
+  for (const field of fields) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        field,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(
+        `${label} must expose stable own data properties`,
+      );
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(
+        `${label} ${field} must be an enumerable own data property`,
+      );
+    }
+    defineEnumerableDataProperty(snapshot, field, descriptor.value);
+  }
+  return snapshot;
 }
 
 /**
@@ -185,71 +300,112 @@ export function loadSecurityCommitmentsEqual(
   candidate: LoadSecurityCommitments | undefined,
 ): boolean {
   if (trusted === undefined || candidate === undefined) return false;
-  let trustedControlHead: Uint8Array;
-  let trustedTreeHash: Uint8Array;
-  let trustedTranscriptHash: Uint8Array;
-  let candidateControlHead: Uint8Array;
-  let candidateTreeHash: Uint8Array;
-  let candidateTranscriptHash: Uint8Array;
+  let trustedSnapshot: LoadSecurityCommitments;
+  let candidateSnapshot: LoadSecurityCommitments;
   try {
-    validateLoadSecurityCommitments(trusted);
-    validateLoadSecurityCommitments(candidate);
-    trustedControlHead = requireHash('controlHead', trusted.controlHead);
-    trustedTreeHash = requireHash('treeHash', trusted.treeHash);
-    trustedTranscriptHash = requireHash(
-      'confirmedTranscriptHash',
-      trusted.confirmedTranscriptHash,
-    );
-    candidateControlHead = requireHash('controlHead', candidate.controlHead);
-    candidateTreeHash = requireHash('treeHash', candidate.treeHash);
-    candidateTranscriptHash = requireHash(
-      'confirmedTranscriptHash',
-      candidate.confirmedTranscriptHash,
-    );
+    trustedSnapshot = validateAndCloneLoadSecurityCommitments(trusted);
+    candidateSnapshot = validateAndCloneLoadSecurityCommitments(candidate);
   } catch {
     return false;
   }
 
   let difference = 0;
-  difference |= Number(trusted.version !== candidate.version);
-  difference |= Number(trusted.groupId !== candidate.groupId);
-  difference |= Number(trusted.epoch !== candidate.epoch);
+  difference |= Number(trustedSnapshot.version !== candidateSnapshot.version);
+  difference |= Number(trustedSnapshot.groupId !== candidateSnapshot.groupId);
+  difference |= Number(trustedSnapshot.epoch !== candidateSnapshot.epoch);
   for (let index = 0; index < LOAD_SECURITY_HASH_LENGTH; index++) {
-    difference |= trustedControlHead[index] ^ candidateControlHead[index];
-    difference |= trustedTreeHash[index] ^ candidateTreeHash[index];
     difference |=
-      trustedTranscriptHash[index] ^ candidateTranscriptHash[index];
+      trustedSnapshot.controlHead[index] ^ candidateSnapshot.controlHead[index];
+    difference |=
+      trustedSnapshot.treeHash[index] ^ candidateSnapshot.treeHash[index];
+    difference |=
+      trustedSnapshot.confirmedTranscriptHash[index] ^
+      candidateSnapshot.confirmedTranscriptHash[index];
   }
   return difference === 0;
 }
 
-export function validateLoadSecurityState(state: LoadSecurityState): void {
-  validateLoadSecurityCommitments(state);
-  requirePlainString(
-    'documentId',
-    state.documentId,
-    MAX_LOAD_SECURITY_DOCUMENT_ID_BYTES,
-  );
-  if (!Array.isArray(state.frontier)) {
+function snapshotLoadSecurityFrontier(value: unknown): string[] {
+  let isArray: boolean;
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    lengthDescriptor = isArray
+      ? (reflectApply(objectGetOwnPropertyDescriptor, Object, [
+          value,
+          'length',
+        ]) as PropertyDescriptor | undefined)
+      : undefined;
+  } catch {
+    throw new TypeError('frontier must be a stable array of CID strings');
+  }
+  const length =
+    lengthDescriptor !== undefined && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : undefined;
+  if (!isArray || !Number.isSafeInteger(length) || (length as number) < 0) {
     throw new TypeError('frontier must be an array of CID strings');
   }
-  if (state.frontier.length > MAX_LOAD_SECURITY_FRONTIER_ENTRIES) {
+  if ((length as number) > MAX_LOAD_SECURITY_FRONTIER_ENTRIES) {
     throw new RangeError(
       `frontier exceeds ${MAX_LOAD_SECURITY_FRONTIER_ENTRIES} entries`,
     );
   }
+
+  const snapshot = new Array<string>(length as number);
   const seen = new Set<string>();
-  for (const entry of state.frontier) {
-    requirePlainString(
+  for (let index = 0; index < snapshot.length; index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        String(index),
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError('frontier must expose stable own data entries');
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(
+        'frontier must contain only enumerable own data entries',
+      );
+    }
+    const entry = requirePlainString(
       'frontier entry',
-      entry,
+      descriptor.value,
       MAX_LOAD_SECURITY_FRONTIER_ENTRY_BYTES,
     );
     if (seen.has(entry)) {
       throw new Error(`frontier contains duplicate entry: ${entry}`);
     }
     seen.add(entry);
+    defineEnumerableDataProperty(snapshot, String(index), entry);
   }
+  return snapshot;
+}
+
+function validateAndCloneLoadSecurityState(value: unknown): LoadSecurityState {
+  const fields = snapshotLoadSecurityOwnDataFields(
+    value,
+    LOAD_SECURITY_STATE_FIELDS,
+    'load security state',
+  );
+  return {
+    ...validateAndCloneCommitmentFields(fields),
+    documentId: requirePlainString(
+      'documentId',
+      fields.documentId,
+      MAX_LOAD_SECURITY_DOCUMENT_ID_BYTES,
+    ),
+    frontier: snapshotLoadSecurityFrontier(fields.frontier),
+  };
+}
+
+export function validateLoadSecurityState(state: LoadSecurityState): void {
+  validateAndCloneLoadSecurityState(state);
 }
 
 function uint32(value: number): Uint8Array {
@@ -282,19 +438,17 @@ function concatenate(parts: readonly Uint8Array[]): Uint8Array {
 
 /** Canonical, domain-separated encoding used for quorum advertisements. */
 export function encodeLoadSecurityState(state: LoadSecurityState): Uint8Array {
-  validateLoadSecurityState(state);
-  const controlHead = requireHash('controlHead', state.controlHead);
-  const treeHash = requireHash('treeHash', state.treeHash);
-  const confirmedTranscriptHash = requireHash(
-    'confirmedTranscriptHash',
-    state.confirmedTranscriptHash,
-  );
-  const frontier = [...state.frontier].sort();
+  const snapshot = validateAndCloneLoadSecurityState(state);
+  const frontier = [...snapshot.frontier].sort();
   const parts: Uint8Array[] = [encodeUtf8(LOAD_SECURITY_STATE_DOMAIN)];
-  parts.push(...lengthPrefixed(encodeUtf8(state.documentId)));
-  parts.push(...lengthPrefixed(encodeUtf8(state.groupId)));
-  parts.push(uint64(state.epoch));
-  parts.push(controlHead, treeHash, confirmedTranscriptHash);
+  parts.push(...lengthPrefixed(encodeUtf8(snapshot.documentId)));
+  parts.push(...lengthPrefixed(encodeUtf8(snapshot.groupId)));
+  parts.push(uint64(snapshot.epoch));
+  parts.push(
+    snapshot.controlHead,
+    snapshot.treeHash,
+    snapshot.confirmedTranscriptHash,
+  );
   parts.push(uint32(frontier.length));
   for (const entry of frontier) {
     parts.push(...lengthPrefixed(encodeUtf8(entry)));
