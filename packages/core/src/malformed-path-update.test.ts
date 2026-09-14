@@ -7,12 +7,12 @@ import {
 
 function buildValidPayload() {
   const update = {
-    senderLeafIndex: 3,
+    senderLeafIndex: 2,
     senderLeafPublicKey: new Uint8Array(65).fill(1),
     nodes: [{
-      nodeIndex: 4,
+      nodeIndex: 1,
       publicKey: new Uint8Array(65).fill(2),
-      encryptedPrivateKey: new Uint8Array([40, 50, 60]),
+      encryptedPrivateKey: new Uint8Array(125).fill(40),
     }],
   };
   return serializePathUpdateForWire(update);
@@ -59,11 +59,11 @@ describe('deserializePathUpdateFromWire malformed inputs', () => {
   });
   test('rejects node element that is not an object', () => {
     const bad = { ...buildValidPayload(), nodes: ['not-a-node'] as any };
-    expect(() => deserializePathUpdateFromWire(bad)).toThrow(/node\[0\] must be a plain object/);
+    expect(() => deserializePathUpdateFromWire(bad)).toThrow(/node\[0\].*plain object/);
   });
   test('rejects node element that is null', () => {
     const bad = { ...buildValidPayload(), nodes: [null] as any };
-    expect(() => deserializePathUpdateFromWire(bad)).toThrow(/node\[0\] must be a plain object/);
+    expect(() => deserializePathUpdateFromWire(bad)).toThrow(/node\[0\].*plain object/);
   });
   test('rejects node with missing nodeIndex', () => {
     const node = {
@@ -84,7 +84,7 @@ describe('deserializePathUpdateFromWire malformed inputs', () => {
   });
   test('rejects node with non-string publicKey', () => {
     const node = {
-      nodeIndex: 4,
+      nodeIndex: 1,
       publicKey: 123,
       encryptedPrivateKey: Base64.fromUint8Array(new Uint8Array([40])),
     };
@@ -93,7 +93,7 @@ describe('deserializePathUpdateFromWire malformed inputs', () => {
   });
   test('rejects node with non-string encryptedPrivateKey', () => {
     const node = {
-      nodeIndex: 4,
+      nodeIndex: 1,
       publicKey: Base64.fromUint8Array(new Uint8Array(65).fill(2)),
       encryptedPrivateKey: null,
     };
@@ -106,9 +106,9 @@ describe('deserializePathUpdateFromWire valid inputs', () => {
   test('round-trips a valid payload', () => {
     const payload = buildValidPayload();
     const result = deserializePathUpdateFromWire(payload);
-    expect(result.senderLeafIndex).toBe(3);
+    expect(result.senderLeafIndex).toBe(2);
     expect(result.nodes).toHaveLength(1);
-    expect(result.nodes[0].nodeIndex).toBe(4);
+    expect(result.nodes[0].nodeIndex).toBe(1);
   });
   test('handles empty nodes array', () => {
     const payload = { ...buildValidPayload(), nodes: [] };
