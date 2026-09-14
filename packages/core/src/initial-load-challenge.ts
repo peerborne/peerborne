@@ -5,6 +5,9 @@ const INITIAL_LOAD_REQUEST_DOMAIN = 'peerborne/initial-load-request/v4\0';
 
 export const INITIAL_LOAD_CHALLENGE_LENGTH = 32;
 export const MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES = 4096;
+const INITIAL_LOAD_CHALLENGE_BASE64_LENGTH =
+  Math.ceil(INITIAL_LOAD_CHALLENGE_LENGTH / 3) * 4;
+const INITIAL_LOAD_CHALLENGE_BASE64_PATTERN = /^[A-Za-z0-9+/]{43}=$/;
 
 function snapshotInitialLoadChallenge(challenge: unknown): Uint8Array {
   try {
@@ -133,6 +136,14 @@ export function deserializeInitialLoadChallengeFromWire(
 ): Uint8Array {
   if (typeof value !== 'string') {
     throw new TypeError('initial-load challenge wire value must be a string');
+  }
+  if (
+    value.length !== INITIAL_LOAD_CHALLENGE_BASE64_LENGTH ||
+    !INITIAL_LOAD_CHALLENGE_BASE64_PATTERN.test(value)
+  ) {
+    throw new TypeError(
+      `initial-load challenge wire value must use canonical fixed-width base64 for a ${INITIAL_LOAD_CHALLENGE_LENGTH}-byte challenge`,
+    );
   }
   const decoded = Base64.toUint8Array(value);
   const challenge = snapshotInitialLoadChallenge(decoded);
