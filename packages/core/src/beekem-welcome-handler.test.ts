@@ -95,6 +95,35 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     expect(result).toEqual({ kind: 'drop-malformed', reason: 'wrong-document' });
   });
 
+  test.each([
+    ['ordinary keychain changes', { keychainChanges: new Uint8Array([1]) }],
+    [
+      'PathUpdate fields',
+      {
+        pathUpdate: {} as never,
+        pathUpdateEpochId: new Uint8Array(32),
+      },
+    ],
+    ['load-control fields', { tips: ['cid'] }],
+  ])('drops cross-context %s before authorization', async (_label, extra) => {
+    const verifyWriterSignature = async () => {
+      throw new Error('must not verify a cross-context Welcome');
+    };
+    const isReader = async () => {
+      throw new Error('must not authorize a cross-context Welcome');
+    };
+
+    const result = await evaluateBeeKEMWelcome(
+      { ...baseAcceptableMessage(), ...extra },
+      makeDeps({ verifyWriterSignature, isReader }),
+    );
+
+    expect(result).toEqual({
+      kind: 'drop-malformed',
+      reason: 'unexpected-cross-protocol-field',
+    });
+  });
+
   test('routes and verifies only the exact detached codec snapshot', async () => {
     const target = {
       ...baseAcceptableMessage(),
@@ -154,9 +183,42 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       ),
     ).resolves.toEqual({
       kind: 'drop-malformed',
-      reason: 'invalid-welcome-encoding',
+      reason: 'unexpected-cross-protocol-field',
     });
     expect(getterCalls).toBe(0);
+  });
+
+  test('keeps accepted state disjoint from serializer aliases', async () => {
+    const base = baseAcceptableMessage();
+    let unsignedSerializationCount = 0;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ) {
+        const bytes = stubSerializer.serializeSyncMessage(message);
+        if (message.signature === undefined) {
+          unsignedSerializationCount += 1;
+          if (unsignedSerializationCount === 2) {
+            message.welcomeEpochId!.fill(9);
+          }
+        }
+        return bytes;
+      },
+      deserializeSyncMessage:
+        stubSerializer.deserializeSyncMessage.bind(stubSerializer),
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      base,
+      makeDeps({ syncMessageSerializer: serializer }),
+    );
+
+    expect(result.kind).toBe('accept');
+    if (result.kind === 'accept') {
+      expect(result.message.welcomeEpochId).toEqual(
+        new Uint8Array(32).fill(7),
+      );
+    }
   });
 
   test.each([undefined, ''])(
