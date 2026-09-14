@@ -1,8 +1,11 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import {
+  MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
   identifyInitialLoadSigner,
   verifyInitialLoadAuthentication,
 } from './initial-load-auth.js';
+import type { InitialLoadAuthenticationOptions } from './initial-load-auth.js';
 import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
 
 const payload = new Uint8Array([1]);
@@ -104,6 +107,39 @@ describe('verifyInitialLoadAuthentication', () => {
     ).resolves.toBe(false);
   });
 
+  test('rejects empty signed bytes before verification', async () => {
+    let verifierCalls = 0;
+    await expect(
+      verifyInitialLoadAuthentication({
+        strict: true,
+        signingEnabled: true,
+        payload: new Uint8Array(),
+        signature,
+        existingWriterKeys: ['writer'],
+        trustedBootstrapWriterKeys: [],
+        verify: async () => {
+          verifierCalls++;
+          return true;
+        },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      verifyInitialLoadAuthentication({
+        strict: true,
+        signingEnabled: true,
+        payload,
+        signature: new Uint8Array(),
+        existingWriterKeys: ['writer'],
+        trustedBootstrapWriterKeys: [],
+        verify: async () => {
+          verifierCalls++;
+          return true;
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(verifierCalls).toBe(0);
+  });
+
   test('does not fall back to bootstrap keys once an existing ACL is trusted', async () => {
     await expect(
       verifyInitialLoadAuthentication({
@@ -185,6 +221,130 @@ describe('verifyInitialLoadAuthentication', () => {
         },
       }),
     ).rejects.toThrow(/exceeds/);
+    expect(verifierCalls).toBe(0);
+  });
+
+  test('captures the verifier and gives each key isolated signed bytes', async () => {
+    const mutablePayload = new Uint8Array([1, 2, 3]);
+    const mutableSignature = new Uint8Array([4, 5, 6]);
+    const seen: Array<{
+      key: string;
+      payload: number[];
+      signature: number[];
+    }> = [];
+    let options: InitialLoadAuthenticationOptions<string>;
+    const originalVerify = async (
+      receivedPayload: Uint8Array,
+      key: string,
+      receivedSignature: Uint8Array,
+    ): Promise<boolean> => {
+      seen.push({
+        key,
+        payload: Array.from(receivedPayload),
+        signature: Array.from(receivedSignature),
+      });
+      receivedPayload.fill(0xaa);
+      receivedSignature.fill(0xbb);
+      if (key === 'writer-a') {
+        mutablePayload.fill(0xcc);
+        mutableSignature.fill(0xdd);
+        options.verify = async () => false;
+      }
+      return key === 'writer-b';
+    };
+    options = {
+      strict: true,
+      signingEnabled: true,
+      payload: mutablePayload,
+      signature: mutableSignature,
+      existingWriterKeys: ['writer-a', 'writer-b'],
+      trustedBootstrapWriterKeys: [],
+      verify: originalVerify,
+    };
+
+    await expect(identifyInitialLoadSigner(options)).resolves.toEqual({
+      publicKey: 'writer-b',
+      keyIndex: 1,
+    });
+    expect(seen).toEqual([
+      { key: 'writer-a', payload: [1, 2, 3], signature: [4, 5, 6] },
+      { key: 'writer-b', payload: [1, 2, 3], signature: [4, 5, 6] },
+    ]);
+  });
+
+  test('accepts genuine cross-realm payload and signature bytes', async () => {
+    const crossRealmPayload = runInNewContext(
+      'new Uint8Array([1, 2, 3])',
+    ) as Uint8Array;
+    const crossRealmSignature = runInNewContext(
+      'new Uint8Array([4, 5, 6])',
+    ) as Uint8Array;
+    expect(crossRealmPayload instanceof Uint8Array).toBe(false);
+    expect(crossRealmSignature instanceof Uint8Array).toBe(false);
+
+    await expect(
+      verifyInitialLoadAuthentication({
+        strict: true,
+        signingEnabled: true,
+        payload: crossRealmPayload,
+        signature: crossRealmSignature,
+        existingWriterKeys: ['writer'],
+        trustedBootstrapWriterKeys: [],
+        verify: async (receivedPayload, _key, receivedSignature) => {
+          expect(receivedPayload).not.toBe(crossRealmPayload);
+          expect(receivedSignature).not.toBe(crossRealmSignature);
+          expect(receivedPayload).toEqual(new Uint8Array([1, 2, 3]));
+          expect(receivedSignature).toEqual(new Uint8Array([4, 5, 6]));
+          return true;
+        },
+      }),
+    ).resolves.toBe(true);
+  });
+
+  test.each(['payload', 'signature'] as const)(
+    'rejects SharedArrayBuffer-backed %s bytes before verification',
+    async (field) => {
+      if (typeof SharedArrayBuffer === 'undefined') return;
+      let verifierCalls = 0;
+      const shared = new Uint8Array(new SharedArrayBuffer(3));
+      const options = {
+        strict: true,
+        signingEnabled: true,
+        payload: field === 'payload' ? shared : payload,
+        signature: field === 'signature' ? shared : signature,
+        existingWriterKeys: ['writer'],
+        trustedBootstrapWriterKeys: [],
+        verify: async () => {
+          verifierCalls++;
+          return true;
+        },
+      };
+
+      await expect(verifyInitialLoadAuthentication(options)).resolves.toBe(
+        false,
+      );
+      expect(verifierCalls).toBe(0);
+    },
+  );
+
+  test('rejects an oversized signature before verification', async () => {
+    let verifierCalls = 0;
+    await expect(
+      verifyInitialLoadAuthentication({
+        strict: true,
+        signingEnabled: true,
+        payload,
+        signature: new Uint8Array(
+          MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES + 1,
+        ),
+        existingWriterKeys: ['writer'],
+        trustedBootstrapWriterKeys: [],
+        verify: async () => {
+          verifierCalls++;
+          return true;
+        },
+      }),
+    ).resolves.toBe(false);
     expect(verifierCalls).toBe(0);
   });
 
