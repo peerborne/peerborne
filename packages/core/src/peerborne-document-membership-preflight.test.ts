@@ -48,6 +48,10 @@ describe('reader membership preflight', () => {
     const document = fakeDocument({
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
+      _beekem: {
+        memberCount: 1,
+        hasLiveLeafWithPublicKey: jest.fn(async () => false),
+      },
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
@@ -80,6 +84,10 @@ describe('reader membership preflight', () => {
     const document = fakeDocument({
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
+      _beekem: {
+        memberCount: 1,
+        hasLiveLeafWithPublicKey: jest.fn(async () => false),
+      },
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
@@ -117,6 +125,10 @@ describe('reader membership preflight', () => {
     const document = fakeDocument({
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
+      _beekem: {
+        memberCount: 1,
+        hasLiveLeafWithPublicKey: jest.fn(async () => false),
+      },
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
@@ -170,5 +182,135 @@ describe('reader membership preflight', () => {
     expect(makeChange).not.toHaveBeenCalled();
     expect(registerBeeKEMReader).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
+  });
+
+  test('rejects a KEM key already owned by a live leaf before ACL mutation', async () => {
+    const readerKemPublicKey = await validKemPublicKey();
+    const add = jest.fn();
+    const makeChange = jest.fn();
+    const keychainChangesForWelcome = jest.fn();
+    const registerBeeKEMReader = jest.fn();
+    const hasLiveLeafWithPublicKey = jest.fn(async () => true);
+    const document = fakeDocument({
+      _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+      _beekemInitialized: true,
+      _beekem: { memberCount: 1, hasLiveLeafWithPublicKey },
+      _readers: {
+        check: jest.fn(async () => false),
+        users: jest.fn(async () => []),
+        add,
+      },
+      _keychainChangesForWelcome: keychainChangesForWelcome,
+      _makeChange: makeChange,
+      _registerBeeKEMReader: registerBeeKEMReader,
+      _sendBeeKEMWelcome: jest.fn(),
+    });
+
+    await expect(
+      document.addReader({ reader: true }, readerKemPublicKey),
+    ).rejects.toThrow(/already owned by a live BeeKEM leaf/);
+
+    expect(hasLiveLeafWithPublicKey).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+    );
+    expect(keychainChangesForWelcome).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    expect(makeChange).not.toHaveBeenCalled();
+    expect(registerBeeKEMReader).not.toHaveBeenCalled();
+  });
+
+  test('rejects the future founder leaf key before initializing or mutating ACL state', async () => {
+    const founderKemPublicKey = await validKemPublicKey();
+    const add = jest.fn();
+    const makeChange = jest.fn();
+    const initializeBeeKEMAsFounder = jest.fn();
+    const document = fakeDocument({
+      _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+      _beekemInitialized: false,
+      _createdLocally: true,
+      _kemKeyPair: {},
+      _kemPublicKeyRaw: new Uint8Array(founderKemPublicKey),
+      _readers: {
+        check: jest.fn(async () => false),
+        users: jest.fn(async () => []),
+        add,
+      },
+      _keychainChangesForWelcome: jest.fn(),
+      _makeChange: makeChange,
+      _initializeBeeKEMAsFounder: initializeBeeKEMAsFounder,
+      _registerBeeKEMReader: jest.fn(),
+      _sendBeeKEMWelcome: jest.fn(),
+    });
+
+    await expect(
+      document.addReader({ reader: true }, founderKemPublicKey),
+    ).rejects.toThrow(/matches the founder's BeeKEM leaf/);
+
+    expect(add).not.toHaveBeenCalled();
+    expect(makeChange).not.toHaveBeenCalled();
+    expect(initializeBeeKEMAsFounder).not.toHaveBeenCalled();
+    expect(document._keychainChangesForWelcome).not.toHaveBeenCalled();
+  });
+
+  test('allows an exact reader retry only when its cached leaf matches the live tree', async () => {
+    const readerKemPublicKey = await validKemPublicKey();
+    const welcome = { generation: 1 };
+    const findLeafByPublicKey = jest.fn(async () => 2);
+    const addMember = jest.fn();
+    const document = fakeDocument({
+      _authProvider: {
+        serializePublicKey: jest.fn(async () => 'reader'),
+      },
+      _beekemInitialized: true,
+      _beekem: { findLeafByPublicKey, addMember },
+      _readerKemPublicKeys: new Map([
+        ['reader', new Uint8Array(readerKemPublicKey)],
+      ]),
+      _readerLeafIndices: new Map([['reader', 2]]),
+      _beekemWelcomeByLeaf: new Map([[2, welcome]]),
+    });
+
+    await expect(
+      document._registerBeeKEMReader(
+        { reader: true },
+        new Uint8Array(readerKemPublicKey),
+      ),
+    ).resolves.toBe(welcome);
+
+    expect(findLeafByPublicKey).toHaveBeenCalledWith(expect.any(Uint8Array));
+    expect(addMember).not.toHaveBeenCalled();
+  });
+
+  test('rejects a cached reader leaf that no longer matches the live tree', async () => {
+    const readerKemPublicKey = await validKemPublicKey();
+    const addMember = jest.fn();
+    const document = fakeDocument({
+      _authProvider: {
+        serializePublicKey: jest.fn(async () => 'reader'),
+      },
+      _beekemInitialized: true,
+      _beekem: {
+        findLeafByPublicKey: jest.fn(async () => 4),
+        addMember,
+      },
+      _readerKemPublicKeys: new Map([
+        ['reader', new Uint8Array(readerKemPublicKey)],
+      ]),
+      _readerLeafIndices: new Map([['reader', 2]]),
+      _beekemWelcomeByLeaf: new Map([[2, { generation: 1 }]]),
+    });
+
+    await expect(
+      document._registerBeeKEMReader(
+        { reader: true },
+        new Uint8Array(readerKemPublicKey),
+      ),
+    ).rejects.toThrow(/cached reader leaf does not match the unique live/);
+
+    expect(addMember).not.toHaveBeenCalled();
+    expect(document._readerLeafIndices.get('reader')).toBe(2);
+    expect(document._readerKemPublicKeys.get('reader')).toEqual(
+      readerKemPublicKey,
+    );
   });
 });

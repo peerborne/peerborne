@@ -157,11 +157,20 @@ function publicationHarness(
   const document = fakeDocument({
     documentPath: '/writer-publication',
     _document: { stable: true },
+    _userPublicKey: 'owner',
     _writers: writers,
     _readers: {
-      check: jest.fn(async () => false),
+      check: jest.fn(async (publicKey: string) => publicKey === 'candidate'),
       users: jest.fn(async () => []),
     },
+    _beekemInitialized: true,
+    _beekem: {
+      findLeafByPublicKey: jest.fn(async () => 2),
+    },
+    _readerKemPublicKeys: new Map([
+      ['candidate', new Uint8Array(65).fill(7)],
+    ]),
+    _readerLeafIndices: new Map([['candidate', 2]]),
     _mutationQueue: new InvitationMembershipQueue(),
     _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
     _writerMutationsInFlight: 0,
@@ -182,6 +191,8 @@ function publicationHarness(
     },
     _keychain: keychain,
     _authProvider: {
+      serializePublicKey: jest.fn(async (publicKey: string) => publicKey),
+      deserializePublicKey: jest.fn(async (serialized: string) => serialized),
       encrypt: jest.fn(async () => ({
         nonce: new Uint8Array([4]),
         data: new Uint8Array([5]),
@@ -294,8 +305,8 @@ describe('writer ACL publication boundary', () => {
     expect(childCids(serializedMessages[1])).not.toContain(
       'rejected-remove-cid',
     );
-    expect(keychain.add).toHaveBeenCalledTimes(1);
-    expect(distributeKeyUpdate).toHaveBeenCalledTimes(1);
+    expect(keychain.add).not.toHaveBeenCalled();
+    expect(distributeKeyUpdate).not.toHaveBeenCalled();
   });
 
   test('an out-of-queue remote writer merge fails closed during publication and can be retried', async () => {
