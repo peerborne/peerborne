@@ -2,9 +2,11 @@ import { tipsHash } from './tips-hash.js';
 import {
   LOAD_SECURITY_HASH_LENGTH,
   LoadSecurityCommitments,
+  cloneLoadSecurityCommitments,
   loadSecurityStateHash,
   loadSecurityStateHashToHex,
 } from './load-security-state.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
 const SECURITY_LOAD_ADVERTISEMENT_DOMAIN =
   'peerborne/security-load-advertisement/v2\0';
@@ -57,16 +59,22 @@ export async function loadAdvertisementHash(
     }
     return tipsHash(frontier);
   }
-  if (
-    !(responseManifestHash instanceof Uint8Array) ||
-    responseManifestHash.length !== LOAD_SECURITY_HASH_LENGTH
-  ) {
+  let manifestHashSnapshot: Uint8Array;
+  try {
+    manifestHashSnapshot = copyUnsharedUint8Array(
+      responseManifestHash,
+      LOAD_SECURITY_HASH_LENGTH,
+      LOAD_SECURITY_HASH_LENGTH,
+      'V4 response manifest hash',
+    );
+  } catch {
     throw new TypeError(
       `V4 load advertisements require a ${LOAD_SECURITY_HASH_LENGTH}-byte response manifest hash`,
     );
   }
+  const commitmentSnapshot = cloneLoadSecurityCommitments(commitments);
   const securityStateHash = await loadSecurityStateHash({
-    ...commitments,
+    ...commitmentSnapshot,
     documentId,
     frontier,
   });
@@ -75,7 +83,7 @@ export async function loadAdvertisementHash(
     concatenate([
       encodeUtf8(SECURITY_LOAD_ADVERTISEMENT_DOMAIN),
       securityStateHash,
-      responseManifestHash,
+      manifestHashSnapshot,
     ]) as Uint8Array<ArrayBuffer>,
   );
   return new Uint8Array(digest);
