@@ -168,9 +168,10 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * redact retained CRDT operations encrypted during that epoch.
    *
    * The returned value MUST be safe to regenerate and replay without creating
-   * a second logical keychain entry. Implementations whose CRDT operation
-   * history cannot represent the isolated current key replay-safely MUST
-   * reject instead of synthesizing a fresh actor/client operation.
+   * a second logical keychain entry. A provider may synthesize a standalone
+   * actor/client operation only when its merge boundary validates the exact
+   * key tuple and treats regenerated copies as the same logical entry.
+   * Implementations without that semantic deduplication MUST reject.
    *
    * @return A replay-safe block of change(s) containing only the current key.
    */
