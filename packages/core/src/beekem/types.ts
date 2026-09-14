@@ -137,8 +137,8 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
 /**
  * V2 wire-codec leaf bound.
  *
- * The conservative limit bounds decoded work and keeps a largest-shape V2
- * PathUpdate below the document protocol's 10 MiB frame limit. State engines
- * that emit V2 values MUST enforce the same bound before serialization.
+ * The conservative limit bounds tree traversal and per-update structural
+ * work. Transport senders separately enforce the document protocol's frame
+ * limit on the complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;

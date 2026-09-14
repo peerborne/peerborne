@@ -34,6 +34,7 @@ import {
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
 import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   assertSharedProtocolRequestSize,
   copyUnsharedUint8Array,
 } from './utils.js';
@@ -187,7 +188,20 @@ export function decodeWelcomeSealedPayload(
 export function decodeWelcomeSealedPayloadV2(
   bytes: Uint8Array,
 ): WelcomeSealedPayloadV2 {
-  const raw = parseV2Envelope(bytes);
+  let plaintext: Uint8Array;
+  try {
+    plaintext = copyUnsharedUint8Array(
+      bytes,
+      0,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      'welcome-sealed-payload v2 plaintext',
+    );
+  } catch {
+    throw new Error(
+      `welcome-sealed-payload v2: plaintext must be an unshared Uint8Array no larger than ${MAX_SHARED_PROTOCOL_REQUEST_BYTES} bytes`,
+    );
+  }
+  const raw = parseV2Envelope(plaintext);
   const keys = Object.keys(raw);
   if (
     keys.length !== 2 ||

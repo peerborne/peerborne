@@ -24,10 +24,8 @@ import {
   PathUpdateV2,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
-import {
-  assertSharedProtocolRequestSize,
-  copyUnsharedUint8Array,
-} from './utils.js';
+import * as TreeMath from './beekem/tree-math.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
@@ -115,6 +113,14 @@ export function serializePathUpdateForWire(
   };
 }
 
+/**
+ * Encode the nested v2 PathUpdate value.
+ *
+ * This codec cannot enforce the shared-protocol request limit because the
+ * signed sync-message fields and path framing are added by its caller. The
+ * transport sender must enforce that limit on the complete serialized frame;
+ * this boundary independently caps arrays, work, and decoded byte material.
+ */
 export function serializePathUpdateV2ForWire(
   update: PathUpdateV2,
 ): SerializedPathUpdateV2 {
@@ -377,12 +383,6 @@ export function serializePathUpdateV2ForWire(
     })),
     treeHash: Base64.fromUint8Array(treeHash),
   };
-  // Every field in this shape is ASCII JSON. Its string length is therefore
-  // the exact UTF-8 byte length and can be checked without another large copy.
-  assertSharedProtocolRequestSize(
-    JSON.stringify(wire).length,
-    'BeeKEM PathUpdate v2 wire payload',
-  );
   // Keep the outbound boundary fail-closed even if runtime validation and the
   // canonical wire decoder evolve independently.
   deserializePathUpdateV2FromWire(wire);
@@ -787,6 +787,14 @@ export function deserializePathUpdateV2FromWire(
     throw new Error('Invalid PathUpdateV2: treeHash must decode to 32 bytes');
   }
 
+  validateV2TreeSemantics(
+    raw.numLeaves as number,
+    raw.senderLeafIndex as number,
+    senderLeafPublicKey,
+    nodes,
+    treeNodePublicKeys,
+  );
+
   return {
     version: 2,
     generation: raw.generation as number,
@@ -798,6 +806,101 @@ export function deserializePathUpdateV2FromWire(
     treeNodePublicKeys,
     treeHash,
   };
+}
+
+function validateV2TreeSemantics(
+  numLeaves: number,
+  senderLeafIndex: number,
+  senderLeafPublicKey: Uint8Array,
+  nodes: readonly PathNodeUpdateV2[],
+  treeNodePublicKeys: readonly WelcomeNodePublicKey[],
+): void {
+  const directPath = TreeMath.directPath(senderLeafIndex, numLeaves);
+  if (
+    nodes.length !== directPath.length ||
+    nodes.some((node, offset) => node.nodeIndex !== directPath[offset])
+  ) {
+    throw new Error(
+      'Invalid PathUpdateV2: nodes must equal the sender direct path in leaf-to-root order',
+    );
+  }
+
+  const publicKeysByNode = new Map<number, Uint8Array | null>(
+    treeNodePublicKeys.map((node) => [node.nodeIndex, node.publicKey]),
+  );
+  const snapshotSenderKey = publicKeysByNode.get(senderLeafIndex);
+  if (
+    snapshotSenderKey === undefined ||
+    snapshotSenderKey === null ||
+    !bytesEqual(snapshotSenderKey, senderLeafPublicKey)
+  ) {
+    throw new Error(
+      'Invalid PathUpdateV2: senderLeafPublicKey does not match the tree snapshot',
+    );
+  }
+
+  const copath = TreeMath.copath(senderLeafIndex, numLeaves);
+  for (let offset = 0; offset < nodes.length; offset++) {
+    const node = nodes[offset]!;
+    const snapshotPathKey = publicKeysByNode.get(node.nodeIndex);
+    if (
+      snapshotPathKey === undefined ||
+      snapshotPathKey === null ||
+      !bytesEqual(snapshotPathKey, node.publicKey)
+    ) {
+      throw new Error(
+        `Invalid PathUpdateV2: node[${offset}].publicKey does not match the tree snapshot`,
+      );
+    }
+
+    const expectedRecipients = new Set(
+      resolveSnapshotNode(copath[offset]!, numLeaves, publicKeysByNode),
+    );
+    if (
+      node.encryptedPathKeyBundles.length !== expectedRecipients.size ||
+      node.encryptedPathKeyBundles.some(
+        (bundle) => !expectedRecipients.has(bundle.recipientNodeIndex),
+      )
+    ) {
+      throw new Error(
+        `Invalid PathUpdateV2: node[${offset}] bundle recipients do not match its copath resolution`,
+      );
+    }
+  }
+}
+
+function resolveSnapshotNode(
+  nodeIndex: number,
+  numLeaves: number,
+  publicKeysByNode: ReadonlyMap<number, Uint8Array | null>,
+): number[] {
+  const publicKey = publicKeysByNode.get(nodeIndex);
+  if (publicKey === undefined) {
+    throw new Error(
+      `Invalid PathUpdateV2: tree snapshot is missing node ${nodeIndex}`,
+    );
+  }
+  if (publicKey !== null) return [nodeIndex];
+  if (TreeMath.isLeaf(nodeIndex)) return [];
+  return [
+    ...resolveSnapshotNode(
+      TreeMath.left(nodeIndex),
+      numLeaves,
+      publicKeysByNode,
+    ),
+    ...resolveSnapshotNode(
+      TreeMath.right(nodeIndex, numLeaves),
+      numLeaves,
+      publicKeysByNode,
+    ),
+  ];
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return (
+    left.byteLength === right.byteLength &&
+    left.every((byte, offset) => byte === right[offset])
+  );
 }
 
 interface V2DecodeBudget {
