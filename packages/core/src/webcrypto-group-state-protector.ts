@@ -38,6 +38,7 @@ const cryptoKeyAccessors =
           ?.get,
       };
 const intrinsicStructuredClone = globalThis.structuredClone;
+const providerGeneratedKeyToken = {};
 
 interface CapturedProtectorCrypto {
   readonly cryptoReceiver: Crypto;
@@ -51,7 +52,14 @@ interface CapturedGenerationCrypto extends CapturedProtectorCrypto {
   readonly generateKey: Function;
 }
 
-/** AES-256-GCM implementation of the encrypted provider-state boundary. */
+/**
+ * AES-256-GCM implementation of the encrypted provider-state boundary.
+ *
+ * Direct construction requires a host-native `CryptoKey` so the protector can
+ * detach it with `structuredClone`. Use `generate()` with an alternate Web
+ * Crypto implementation; generated keys remain owned by that trusted provider
+ * and are never exposed by the protector.
+ */
 export class WebCryptoGroupStateProtector implements GroupStateProtector {
   readonly algorithm = WEBCRYPTO_GROUP_STATE_ALGORITHM;
   readonly keyId: string;
@@ -62,9 +70,18 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
     keyId: string,
     key: CryptoKey,
     cryptoProvider?: Crypto,
+  );
+  constructor(
+    keyId: string,
+    key: CryptoKey,
+    cryptoProvider?: Crypto,
+    generatedKeyToken?: object,
   ) {
     validateKeyId(keyId);
-    const keySnapshot = snapshotProtectorKey(key);
+    const keySnapshot =
+      generatedKeyToken === providerGeneratedKeyToken
+        ? acceptProviderGeneratedProtectorKey(key)
+        : snapshotProtectorKey(key);
     this.keyId = keyId;
     this.#key = keySnapshot;
     this.#crypto = captureProtectorCrypto(
@@ -89,10 +106,17 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
         ['encrypt', 'decrypt'],
       ],
     )) as CryptoKey;
-    return new WebCryptoGroupStateProtector(
+    const InternalProtector = WebCryptoGroupStateProtector as unknown as new (
+      keyId: string,
+      key: CryptoKey,
+      cryptoProvider: Crypto,
+      generatedKeyToken: object,
+    ) => WebCryptoGroupStateProtector;
+    return new InternalProtector(
       keyId,
       key,
       providerFromCapturedCrypto(captured),
+      providerGeneratedKeyToken,
     );
   }
 
@@ -100,11 +124,11 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
     plaintext: Uint8Array,
     associatedData: Uint8Array,
   ): Promise<GroupStateCiphertext> {
-    const plaintextSnapshot = snapshotBytes(plaintext, 'plaintext', 1);
+    const plaintextSnapshot = snapshotBytes(plaintext, 'plaintext', 0);
     const associatedDataSnapshot = snapshotBytes(
       associatedData,
       'associatedData',
-      1,
+      0,
     );
     const nonce = snapshotBytes(
       Reflect.apply(
@@ -147,7 +171,7 @@ export class WebCryptoGroupStateProtector implements GroupStateProtector {
     const associatedDataSnapshot = snapshotBytes(
       associatedData,
       'associatedData',
-      1,
+      0,
     );
     const { nonce: nonceSnapshot, ciphertext: ciphertextSnapshot } =
       snapshotSealedCiphertext(sealed);
@@ -226,7 +250,7 @@ function snapshotSealedCiphertext(
     ciphertext: snapshotBytes(
       ciphertext.value,
       'ciphertext',
-      WEBCRYPTO_GROUP_STATE_TAG_LENGTH + 1,
+      WEBCRYPTO_GROUP_STATE_TAG_LENGTH,
     ),
   };
 }
@@ -315,6 +339,91 @@ function snapshotProtectorKey(key: unknown): CryptoKey {
   } catch {
     throw invalidProtectorKey();
   }
+}
+
+function acceptProviderGeneratedProtectorKey(key: unknown): CryptoKey {
+  try {
+    if (key === null || typeof key !== 'object') {
+      throw invalidProtectorKey();
+    }
+    if (isHostCryptoKey(key)) return snapshotProtectorKey(key);
+
+    const descriptors = Reflect.apply(
+      objectGetOwnPropertyDescriptors,
+      Object,
+      [key],
+    ) as PropertyDescriptorMap;
+    const type = stableDataValue(descriptors.type);
+    const extractable = stableDataValue(descriptors.extractable);
+    const algorithm = stableDataValue(descriptors.algorithm);
+    const usages = stableDataValue(descriptors.usages);
+    if (
+      type !== 'secret' ||
+      extractable !== false ||
+      algorithm === null ||
+      typeof algorithm !== 'object' ||
+      !Array.isArray(usages)
+    ) {
+      throw invalidProtectorKey();
+    }
+
+    const algorithmDescriptors = Reflect.apply(
+      objectGetOwnPropertyDescriptors,
+      Object,
+      [algorithm],
+    ) as PropertyDescriptorMap;
+    const usageDescriptors = Reflect.apply(
+      objectGetOwnPropertyDescriptors,
+      Object,
+      [usages],
+    ) as unknown as PropertyDescriptorMap;
+    const usageLength = ownDataValue(usageDescriptors.length);
+    const firstUsage = ownDataValue(usageDescriptors[0]);
+    const secondUsage = ownDataValue(usageDescriptors[1]);
+    if (
+      ownDataValue(algorithmDescriptors.name) !== 'AES-GCM' ||
+      ownDataValue(algorithmDescriptors.length) !== 256 ||
+      usageLength !== 2 ||
+      !(
+        (firstUsage === 'encrypt' && secondUsage === 'decrypt') ||
+        (firstUsage === 'decrypt' && secondUsage === 'encrypt')
+      )
+    ) {
+      throw invalidProtectorKey();
+    }
+    return key as CryptoKey;
+  } catch {
+    throw invalidProtectorKey();
+  }
+}
+
+function isHostCryptoKey(key: object): boolean {
+  if (cryptoKeyAccessors?.type === undefined) return false;
+  try {
+    Reflect.apply(cryptoKeyAccessors.type, key, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stableDataValue(descriptor: PropertyDescriptor | undefined): unknown {
+  if (
+    descriptor === undefined ||
+    descriptor.configurable !== false ||
+    descriptor.writable !== false ||
+    !('value' in descriptor)
+  ) {
+    throw invalidProtectorKey();
+  }
+  return descriptor.value;
+}
+
+function ownDataValue(descriptor: PropertyDescriptor | undefined): unknown {
+  if (descriptor === undefined || !('value' in descriptor)) {
+    throw invalidProtectorKey();
+  }
+  return descriptor.value;
 }
 
 function invalidProtectorKey(): Error {
