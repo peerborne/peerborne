@@ -101,6 +101,27 @@ describe('YjsJSONSerializer load security state', () => {
     );
   });
 
+  test('rejects reordered security commitments before signed re-encoding', () => {
+    const serializer = new YjsJSONSerializer();
+    const digest = Buffer.from(new Uint8Array(32)).toString('base64');
+    const wire = new TextEncoder().encode(
+      JSON.stringify({
+        documentId: '/doc',
+        loadSecurityState: {
+          groupId: 'group',
+          version: 1,
+          controlHead: digest,
+          epoch: '0',
+          treeHash: digest,
+          confirmedTranscriptHash: digest,
+        },
+      }),
+    );
+    expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+      /canonical order/,
+    );
+  });
+
   test('rejects depth beyond the shared change-tree bound', () => {
     const serializer = new YjsJSONSerializer();
     const legacy = changeChain<Uint8Array>(MAX_MERKLE_DAG_DEPTH + 1);
