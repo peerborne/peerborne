@@ -2,6 +2,7 @@ import { assertWellFormedUtf16 } from './internal/utf16.js';
 import {
   ACL,
   ACLOperationInProgressError,
+  PreparedACLChange,
   PreparedACLRemoval,
 } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
@@ -850,6 +851,18 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           snapshot.keyBase64,
           'ACL addition',
         );
+        const prepareAdd = this._backing.prepareAdd;
+        if (typeof prepareAdd === 'function') {
+          const prepared = await this._prepareBackingAddition(
+            snapshot.publicKey,
+            snapshot.keyBase64,
+            prepareAdd,
+            true,
+            preservePriorEntry,
+          );
+          prepared.commit();
+          return prepared.changes;
+        }
         let metadataRevision!: object;
         const changes = await this._runBackingMutation(() => {
           if (!preservePriorEntry) {
@@ -866,6 +879,82 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       },
       (snapshot) => this._reservePendingAddition(snapshot.keyBase64),
     );
+  }
+
+  async prepareAdd(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareAdd = this._backing.prepareAdd;
+    if (typeof prepareAdd !== 'function') {
+      throw new Error('Backing ACL does not support staged addition');
+    }
+    const snapshot = await this._snapshotPublicKey(
+      publicKey,
+      'Prepared ACL addition',
+    );
+    return this._prepareBackingAddition(
+      snapshot.publicKey,
+      snapshot.keyBase64,
+      prepareAdd,
+    );
+  }
+
+  private async _prepareBackingAddition(
+    publicKey: PublicKey,
+    keyBase64: string,
+    prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
+    allowActiveMutation = false,
+    preservePriorEntry?: boolean,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    preservePriorEntry ??= await this._hasStablePriorEntry(
+      publicKey,
+      keyBase64,
+      'Prepared ACL addition',
+    );
+    const metadataRevision = this._metadataRevision;
+    const backingRevision = this._backingRevision;
+    const prepared = await prepareAdd.call(this._backing, publicKey);
+    this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
+    if (this._backingRevision !== backingRevision) {
+      throw new Error(
+        'Prepared ACL addition became stale after backing ACL changed',
+      );
+    }
+    let committed = false;
+    return {
+      changes: prepared.changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        if (
+          !allowActiveMutation &&
+          this._hasMembershipMutationInFlight()
+        ) {
+          throw new Error(
+            'Prepared ACL addition cannot commit during an active membership mutation',
+          );
+        }
+        this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
+        if (this._backingRevision !== backingRevision) {
+          throw new Error(
+            'Prepared ACL addition became stale after backing ACL changed',
+          );
+        }
+        try {
+          if (!preservePriorEntry) {
+            this._quarantineAddition(keyBase64);
+          }
+          prepared.commit();
+        } finally {
+          this._markBackingMutation();
+        }
+        this._revokedKeys.delete(keyBase64);
+        this._failedAdditions.delete(keyBase64);
+        this._markMetadataMutation();
+        committed = true;
+      },
+    };
   }
 
   async remove(publicKey: PublicKey): Promise<ChangesType> {
