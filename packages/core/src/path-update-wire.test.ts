@@ -7,7 +7,6 @@ import {
   serializePathUpdateForWire,
   serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -34,13 +33,67 @@ function validPathUpdateV2(): PathUpdateV2 {
       },
     ],
     treeNodePublicKeys: [
-      { nodeIndex: 0, publicKey: new Uint8Array(65).fill(6) },
-      { nodeIndex: 1, publicKey: new Uint8Array(65).fill(7) },
+      { nodeIndex: 0, publicKey: new Uint8Array(65).fill(2) },
+      { nodeIndex: 1, publicKey: new Uint8Array(65).fill(3) },
       { nodeIndex: 2, publicKey: new Uint8Array(65).fill(8) },
     ],
     treeHash: new Uint8Array(32).fill(9),
   };
 }
+
+function validFourLeafPathUpdateV2(): PathUpdateV2 {
+  const publicKey = (fill: number) => new Uint8Array(65).fill(fill);
+  return {
+    version: 2,
+    generation: 7,
+    parentTreeHash: new Uint8Array(32).fill(1),
+    numLeaves: 4,
+    senderLeafIndex: 0,
+    senderLeafPublicKey: publicKey(10),
+    nodes: [
+      {
+        nodeIndex: 1,
+        publicKey: publicKey(11),
+        encryptedPrivateKey: new Uint8Array([31]),
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 2, ciphertext: new Uint8Array([41]) },
+        ],
+      },
+      {
+        nodeIndex: 3,
+        publicKey: publicKey(13),
+        encryptedPrivateKey: new Uint8Array([33]),
+        encryptedPathKeyBundles: [
+          { recipientNodeIndex: 4, ciphertext: new Uint8Array([44]) },
+          { recipientNodeIndex: 6, ciphertext: new Uint8Array([46]) },
+        ],
+      },
+    ],
+    treeNodePublicKeys: [
+      { nodeIndex: 0, publicKey: publicKey(10) },
+      { nodeIndex: 1, publicKey: publicKey(11) },
+      { nodeIndex: 2, publicKey: publicKey(12) },
+      { nodeIndex: 3, publicKey: publicKey(13) },
+      { nodeIndex: 4, publicKey: publicKey(14) },
+      { nodeIndex: 5, publicKey: null },
+      { nodeIndex: 6, publicKey: publicKey(16) },
+    ],
+    treeHash: new Uint8Array(32).fill(9),
+  };
+}
+
+type SerializedV2 = ReturnType<typeof serializePathUpdateV2ForWire>;
+const malformedMultiLeafPaths: Array<
+  [string, (wire: SerializedV2) => SerializedV2['nodes']]
+> = [
+  ['empty', () => []],
+  ['truncated before the root', (wire) => [wire.nodes[0]]],
+  ['reordered', (wire) => [wire.nodes[1], wire.nodes[0]]],
+  [
+    'unrelated',
+    (wire) => [{ ...wire.nodes[0], nodeIndex: 5 }, wire.nodes[1]],
+  ],
+];
 
 describe('path-update-wire', () => {
   test('round-trips a real PathUpdate produced by BeeKEM.update', async () => {
@@ -238,54 +291,112 @@ describe('path-update-wire V2 outbound boundary', () => {
     expect(bundleReads).toBe(0);
   });
 
-  test('rejects Base64 expansion past the shared-protocol frame cap', () => {
-    const maximumCiphertextBytes = 64 * (4096 + 8) + 4096;
-    const fixedCiphertextCount = 29;
-    const makeUpdate = (tailLength: number): PathUpdateV2 => ({
+  test('accepts an empty direct path only for a single-leaf tree', () => {
+    const senderLeafPublicKey = new Uint8Array(65).fill(12);
+    const update: PathUpdateV2 = {
       ...validPathUpdateV2(),
-      numLeaves: 32,
-      nodes: [
-        {
-          nodeIndex: 1,
-          publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array(0),
-          encryptedPathKeyBundles: [
-            ...Array.from({ length: fixedCiphertextCount }, (_, index) => ({
-              recipientNodeIndex: index,
-              ciphertext: new Uint8Array(maximumCiphertextBytes),
-            })),
-            {
-              recipientNodeIndex: fixedCiphertextCount,
-              ciphertext: new Uint8Array(tailLength),
-            },
-          ],
-        },
+      numLeaves: 1,
+      senderLeafPublicKey,
+      nodes: [],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: senderLeafPublicKey },
       ],
-      treeNodePublicKeys: Array.from({ length: 63 }, (_, nodeIndex) => ({
-        nodeIndex,
-        publicKey: new Uint8Array(65),
-      })),
-    });
+    };
 
-    const baselineWire = serializePathUpdateV2ForWire(makeUpdate(1));
-    const baselineBytes = JSON.stringify(baselineWire).length;
-    const remainingBase64Quartets = Math.floor(
-      (MAX_SHARED_PROTOCOL_REQUEST_BYTES - baselineBytes) / 4,
-    );
-    const boundaryTailLength = 3 * (1 + remainingBase64Quartets);
-    expect(boundaryTailLength).toBeLessThan(maximumCiphertextBytes);
+    expect(
+      deserializePathUpdateV2FromWire(serializePathUpdateV2ForWire(update)),
+    ).toEqual(update);
+  });
 
-    const boundaryWire = serializePathUpdateV2ForWire(
-      makeUpdate(boundaryTailLength),
-    );
-    const boundaryBytes = JSON.stringify(boundaryWire).length;
-    expect(boundaryBytes).toBeLessThanOrEqual(
-      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-    );
-    expect(MAX_SHARED_PROTOCOL_REQUEST_BYTES - boundaryBytes).toBeLessThan(4);
+  test.each(malformedMultiLeafPaths)(
+    'rejects a %s multi-leaf update path',
+    (_name, mutate) => {
+      const wire = serializePathUpdateV2ForWire(validFourLeafPathUpdateV2());
+      expect(() =>
+        deserializePathUpdateV2FromWire({ ...wire, nodes: mutate(wire) }),
+      ).toThrow(/nodes must equal the sender direct path/);
+    },
+  );
 
+  test('rejects generations outside the unsigned 32-bit wire range', () => {
+    const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
     expect(() =>
-      serializePathUpdateV2ForWire(makeUpdate(boundaryTailLength + 1)),
-    ).toThrow(/PathUpdate v2 wire payload exceeds/);
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        generation: 0x1_0000_0000,
+      }),
+    ).toThrow(/generation exceeds 2\^32-1/);
+  });
+
+  test('binds the sender and updated path keys to the full tree snapshot', () => {
+    const wire = serializePathUpdateV2ForWire(validFourLeafPathUpdateV2());
+    const senderMismatch = wire.treeNodePublicKeys.map((node) =>
+      node.nodeIndex === 0
+        ? { ...node, publicKey: wire.treeNodePublicKeys[2].publicKey }
+        : node,
+    );
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        treeNodePublicKeys: senderMismatch,
+      }),
+    ).toThrow(/senderLeafPublicKey does not match the tree snapshot/);
+
+    const pathMismatch = wire.treeNodePublicKeys.map((node) =>
+      node.nodeIndex === 3
+        ? { ...node, publicKey: wire.treeNodePublicKeys[4].publicKey }
+        : node,
+    );
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        treeNodePublicKeys: pathMismatch,
+      }),
+    ).toThrow(/node\[1\].publicKey does not match the tree snapshot/);
+  });
+
+  test('requires each bundle set to equal its copath snapshot resolution', () => {
+    const wire = serializePathUpdateV2ForWire(validFourLeafPathUpdateV2());
+    const rootNode = wire.nodes[1];
+    const missingRecipient = [
+      wire.nodes[0],
+      {
+        ...rootNode,
+        encryptedPathKeyBundles: [rootNode.encryptedPathKeyBundles[0]],
+      },
+    ];
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        nodes: missingRecipient,
+      }),
+    ).toThrow(/bundle recipients do not match its copath resolution/);
+
+    const blankRootRecipient = [
+      wire.nodes[0],
+      {
+        ...rootNode,
+        encryptedPathKeyBundles: [
+          {
+            ...rootNode.encryptedPathKeyBundles[0],
+            recipientNodeIndex: 5,
+          },
+          rootNode.encryptedPathKeyBundles[1],
+        ],
+      },
+    ];
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        nodes: blankRootRecipient,
+      }),
+    ).toThrow(/bundle recipients do not match its copath resolution/);
+
+    const invalidOutbound = validFourLeafPathUpdateV2();
+    invalidOutbound.nodes[1].encryptedPathKeyBundles =
+      invalidOutbound.nodes[1].encryptedPathKeyBundles.slice(0, 1);
+    expect(() => serializePathUpdateV2ForWire(invalidOutbound)).toThrow(
+      /bundle recipients do not match its copath resolution/,
+    );
   });
 });

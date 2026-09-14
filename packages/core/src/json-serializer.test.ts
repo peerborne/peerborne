@@ -460,6 +460,22 @@ describe('stack-safe JSON serialization', () => {
     expect(() => jsonSerializer.serialize(cyclic)).toThrow(/circular/i);
   });
 
+  test('matches native boxed-primitive hooks on the signed sync wire', () => {
+    const boxedNumber = new Number(3);
+    Object.defineProperty(boxedNumber, Symbol.toPrimitive, {
+      value: () => 4,
+    });
+    const boxedString = new String('a');
+    boxedString.toString = () => 'b';
+
+    for (const extension of [boxedNumber, boxedString]) {
+      const message = { documentId: '/doc', extension } as any;
+      expect(
+        jsonSerializer.decode(jsonSerializer.serializeSyncMessage(message)),
+      ).toBe(JSON.stringify(message));
+    }
+  });
+
   test.each([undefined, () => undefined, Symbol('unsupported')])(
     'rejects a top-level value that JSON.stringify omits',
     (value) => {
