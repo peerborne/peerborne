@@ -663,6 +663,234 @@ describe('UCANACL', () => {
     await expect(acl.add('key2')).resolves.toBe('add-changes');
   });
 
+  test('add commits a staged backing addition when available', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    await expect(acl.add('key1')).resolves.toBe('staged-changes');
+
+    expect(backing.prepareAdd).toHaveBeenCalledWith('key1');
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
+  test('prepareAdd delegates without committing backing membership', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(prepared.changes).toBe('staged-changes');
+    expect(commit).not.toHaveBeenCalled();
+    prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('staged reauthorization clears a tombstone only after commit', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+
+    prepared.commit();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(await acl.check('key1', '/doc/read')).toBe(true);
+  });
+
+  test('an in-flight staged add cannot clear a newer removal tombstone', async () => {
+    let resolvePreparation!: (prepared: {
+      changes: string;
+      commit(): void;
+    }) => void;
+    const pendingPreparation = new Promise<{
+      changes: string;
+      commit(): void;
+    }>((resolve) => {
+      resolvePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const preparationWasStarted = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(() => {
+      preparationStarted();
+      return pendingPreparation;
+    });
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+
+    const addition = acl.prepareAdd('key1');
+    await preparationWasStarted;
+    await acl.remove('key1');
+    resolvePreparation({ changes: 'add-changes', commit });
+
+    await expect(addition).rejects.toThrow(/Prepared ACL addition became stale/);
+    expect(commit).not.toHaveBeenCalled();
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
+  test('prepareAdd cannot commit during another member mutation', async () => {
+    const members = new Set(['user-b']);
+    const addCommit = jest.fn(() => {
+      members.add('user-a');
+    });
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: addCommit,
+    }));
+    let removalStarted!: () => void;
+    const removalWasStarted = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let resolveRemoval!: (prepared: {
+      changes: string;
+      commit(): void;
+    }) => void;
+    const pendingRemoval = new Promise<{
+      changes: string;
+      commit(): void;
+    }>((resolve) => {
+      resolveRemoval = resolve;
+    });
+    backing.prepareRemove = jest.fn(() => {
+      removalStarted();
+      return pendingRemoval;
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const prepared = await acl.prepareAdd('user-a');
+    const removal = acl.remove('user-b');
+    await removalWasStarted;
+
+    expect(() => prepared.commit()).toThrow(/active membership mutation/);
+    expect(addCommit).not.toHaveBeenCalled();
+
+    resolveRemoval({
+      changes: 'remove-changes',
+      commit: () => {
+        members.delete('user-b');
+      },
+    });
+    await expect(removal).resolves.toBe('remove-changes');
+
+    const replacement = await acl.prepareAdd('user-a');
+    replacement.commit();
+    expect(addCommit).toHaveBeenCalledTimes(1);
+    expect(await acl.check('user-a')).toBe(true);
+    expect(await acl.check('user-a', '/doc/write')).toBe(true);
+    expect(await acl.check('user-b')).toBe(false);
+    expect(await acl.users()).toEqual(['user-a']);
+  });
+
+  test('prepareAdd cannot commit while another identity codec is pending', async () => {
+    let resolveSerialization!: (serialized: string) => void;
+    const pendingSerialization = new Promise<string>((resolve) => {
+      resolveSerialization = resolve;
+    });
+    const serialize = jest.fn((key: string) =>
+      key === 'user-b'
+        ? pendingSerialization
+        : Promise.resolve(`serialized:${key}`),
+    );
+    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const members = new Set(['user-b']);
+    const addCommit = jest.fn(() => {
+      members.add('user-a');
+    });
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: addCommit,
+    }));
+    backing.remove.mockImplementation(async (key: string) => {
+      members.delete(key);
+      return 'remove-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const prepared = await orderedAcl.prepareAdd('user-a');
+    const removal = orderedAcl.remove('user-b');
+
+    expect(() => prepared.commit()).toThrow(/active membership mutation/);
+    expect(addCommit).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    resolveSerialization('serialized:user-b');
+    await expect(removal).resolves.toBe('remove-changes');
+
+    const replacement = await orderedAcl.prepareAdd('user-a');
+    replacement.commit();
+    expect(addCommit).toHaveBeenCalledTimes(1);
+    expect(await orderedAcl.check('user-a')).toBe(true);
+    expect(await orderedAcl.check('user-a', '/doc/write')).toBe(true);
+    expect(await orderedAcl.check('user-b')).toBe(false);
+    expect(await orderedAcl.users()).toEqual(['user-a']);
+  });
+
+  test('prepareAdd passes a detached identity to the backing ACL', async () => {
+    const callerIdentity = { id: 'user-a' };
+    const serialize = jest.fn((key: { id: string }) => {
+      const capturedId = key.id;
+      return Promise.resolve(`serialized:${capturedId}`);
+    });
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice('serialized:'.length),
+    }));
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit,
+    }));
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const preparation = objectAcl.prepareAdd(callerIdentity);
+    callerIdentity.id = 'user-b';
+    const prepared = await preparation;
+    prepared.commit();
+
+    expect(backing.prepareAdd).toHaveBeenCalledWith({ id: 'user-a' });
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a rejected staged reauthorization preserves its tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit: () => {
+        throw new Error('stale backing ACL');
+      },
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(() => prepared.commit()).toThrow('stale backing ACL');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
+  test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      'Backing ACL does not support staged addition',
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');
