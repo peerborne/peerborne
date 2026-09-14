@@ -107,4 +107,36 @@ describe('reader membership preflight', () => {
       new Uint8Array([1, 2, 3]),
     );
   });
+
+  test('rejects base64-expanded Welcome capacity before mutation', async () => {
+    const readerKemPublicKey = await validKemPublicKey();
+    const add = jest.fn();
+    const makeChange = jest.fn();
+    const registerBeeKEMReader = jest.fn();
+    const sendBeeKEMWelcome = jest.fn();
+    const document = fakeDocument({
+      _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+      _beekemInitialized: true,
+      _readers: {
+        check: jest.fn(async () => false),
+        users: jest.fn(async () => []),
+        add,
+      },
+      _changesSerializer: {
+        serializeChanges: jest.fn(() => new Uint8Array(900 * 1024)),
+      },
+      _keychainChangesForWelcome: jest.fn(async () => ({ key: true })),
+      _makeChange: makeChange,
+      _registerBeeKEMReader: registerBeeKEMReader,
+      _sendBeeKEMWelcome: sendBeeKEMWelcome,
+    });
+
+    await expect(
+      document.addReader({ reader: true }, readerKemPublicKey),
+    ).rejects.toThrow(/too large before onboarding/);
+    expect(add).not.toHaveBeenCalled();
+    expect(makeChange).not.toHaveBeenCalled();
+    expect(registerBeeKEMReader).not.toHaveBeenCalled();
+    expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
+  });
 });

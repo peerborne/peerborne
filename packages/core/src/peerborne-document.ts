@@ -5170,6 +5170,14 @@ export class PeerborneDocument<
         'BeeKEM Welcome keychain preflight',
       );
       preparedWelcomeKeychain = new Uint8Array(serializedKeychain);
+      const envelopeWithoutBeeKEM = encodeWelcomeSealedPayload({
+        keychainChanges: preparedWelcomeKeychain,
+        beekemWelcome: null,
+      });
+      assertProjectedInitialInvitationWelcomeCapacity(
+        envelopeWithoutBeeKEM.byteLength,
+        this.documentPath,
+      );
     }
     if (!alreadyReader) {
       // Send change over network.
