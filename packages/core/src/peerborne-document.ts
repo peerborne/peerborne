@@ -1743,9 +1743,8 @@ export class PeerborneDocument<
 
   /**
    * Sign a sync message as a writer **regardless of the swarm-wide
-   * `enableSigning` config**. Used exclusively by paths that always
-   * require writer-auth (currently BeeKEM Welcomes); see
-   * `_signWelcomeAsWriter` below.
+   * `enableSigning` config**. Used exclusively by membership-control paths
+   * that always require writer authentication.
    *
    * SECURITY: callers that go through `_signAsWriter` should keep doing
    * so -- it preserves the existing `enableSigning` toggle for normal
@@ -1778,11 +1777,11 @@ export class PeerborneDocument<
   }
 
   /**
-   * Verify a writer signature on a BeeKEM Welcome. Unlike
+   * Verify a writer signature on a membership-control message. Unlike
    * `_verifyWriterSignature`, this is NOT gated on the swarm-wide
-   * `enableSigning` config -- Welcomes are always writer-authenticated.
+   * `enableSigning` config.
    */
-  private async _verifyWelcomeWriterSignature(
+  private async _verifyMembershipWriterSignature(
     raw: Uint8Array,
     signature: string,
   ): Promise<boolean> {
@@ -6292,7 +6291,15 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
-      const message = this._syncMessageSerializer.deserializeSyncMessage(payload);
+      const stablePayload = copyUnsharedUint8Array(
+        payload,
+        1,
+        MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+        'BeeKEM Welcome message',
+      );
+      const message = this._syncMessageSerializer.deserializeSyncMessage(
+        stablePayload,
+      );
       await this._evaluateAndApplyBeeKEMWelcome(
         message,
         { fromBuffer: false },
@@ -6342,6 +6349,7 @@ export class PeerborneDocument<
       throw err;
     });
     const localSerializedPublicKey = await this._serializedUserPublicKey;
+    const writerKeysVersion = this._writerKeysVersion;
     const decision = await evaluateBeeKEMWelcome(message, {
       documentPath: this.documentPath,
       localUserPublicKey: this._userPublicKey,
@@ -6351,10 +6359,11 @@ export class PeerborneDocument<
       // swarm-wide `enableSigning` toggle -- wire the unconditional
       // verifier so the validator can't be downgraded by config.
       verifyWriterSignature: (raw, signature) =>
-        this._verifyWelcomeWriterSignature(raw, signature),
+        this._verifyMembershipWriterSignature(raw, signature),
       syncMessageSerializer: this._syncMessageSerializer,
     });
     if (!isSharedProtocolHandlerActive(admission)) return false;
+    if (this._writerKeysVersion !== writerKeysVersion) return false;
 
     if (decision.kind !== 'accept') {
       switch (decision.kind) {
@@ -6540,6 +6549,9 @@ export class PeerborneDocument<
       const committed = await runSharedProtocolMutation(
         admission,
         async () => {
+          if (this._writerKeysVersion !== writerKeysVersion) {
+            throw new Error('Writer ACL changed before Welcome commit');
+          }
           // Merge before recording the invitation epoch so a concurrent
           // Welcome cannot leave an anchor for a key that was not installed.
           this._keychain.merge(keychainPlaintext);
@@ -7526,7 +7538,16 @@ export class PeerborneDocument<
     try {
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(payload);
+        const stablePayload = copyUnsharedUint8Array(
+          payload,
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'BeeKEM PathUpdate message',
+        );
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(stablePayload),
+          'beekem-path-update-v1',
+        );
       } catch {
         console.warn('Dropping malformed BeeKEM PathUpdate');
         return;
@@ -7534,22 +7555,8 @@ export class PeerborneDocument<
 
       // Defense-in-depth against misrouted payloads (the shared
       // handler already routes by document path).
-      if (message.documentId && message.documentId !== this.documentPath) {
+      if (message.documentId !== this.documentPath) {
         console.warn('Ignoring BeeKEM PathUpdate for the wrong document');
-        return;
-      }
-
-      // Writer signature is mandatory.
-      if (!message.signature) {
-        console.warn('Dropping BeeKEM PathUpdate without a signature');
-        return;
-      }
-      const { signature, ...messageWithoutSignature } = message;
-      const raw = this._syncMessageSerializer.serializeSyncMessage(
-        messageWithoutSignature,
-      );
-      if ((await this._verifyWelcomeWriterSignature(raw, signature)) !== true) {
-        console.warn('Dropping BeeKEM PathUpdate with an invalid signature');
         return;
       }
 
@@ -7557,7 +7564,15 @@ export class PeerborneDocument<
         console.warn('Dropping BeeKEM PathUpdate without an update payload');
         return;
       }
-      if (!message.pathUpdateEpochId) {
+      let senderEpochId32: Uint8Array;
+      try {
+        senderEpochId32 = copyUnsharedUint8Array(
+          message.pathUpdateEpochId,
+          EPOCH_ID_LENGTH,
+          EPOCH_ID_LENGTH,
+          'BeeKEM PathUpdate epoch ID',
+        );
+      } catch {
         console.warn('Dropping BeeKEM PathUpdate without an epoch ID');
         return;
       }
@@ -7567,6 +7582,62 @@ export class PeerborneDocument<
         pathUpdate = deserializePathUpdateFromWire(message.pathUpdate);
       } catch {
         console.warn('Dropping malformed BeeKEM PathUpdate payload');
+        return;
+      }
+
+      // Writer signature is mandatory.
+      if (!message.signature) {
+        console.warn('Dropping BeeKEM PathUpdate without a signature');
+        return;
+      }
+      const signature = message.signature;
+      let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
+      let raw: Uint8Array;
+      try {
+        const verificationMessage = snapshotSyncMessageForContext<
+          ChangesType,
+          PublicKey
+        >(message, 'beekem-path-update-v1');
+        const { signature: _signature, ...unsigned } = verificationMessage;
+        messageWithoutSignature = unsigned;
+        raw = copyUnsharedUint8Array(
+          this._syncMessageSerializer.serializeSyncMessage(
+            messageWithoutSignature,
+          ),
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'Unsigned BeeKEM PathUpdate message',
+        );
+      } catch {
+        console.warn('Dropping malformed BeeKEM PathUpdate');
+        return;
+      }
+      const writerKeysVersion = this._writerKeysVersion;
+      if (
+        (await this._verifyMembershipWriterSignature(raw, signature)) !== true
+      ) {
+        console.warn('Dropping BeeKEM PathUpdate with an invalid signature');
+        return;
+      }
+      let rawAfterVerification: Uint8Array;
+      try {
+        rawAfterVerification = copyUnsharedUint8Array(
+          this._syncMessageSerializer.serializeSyncMessage(
+            messageWithoutSignature,
+          ),
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'Unsigned BeeKEM PathUpdate message',
+        );
+      } catch {
+        console.warn('Dropping BeeKEM PathUpdate changed during verification');
+        return;
+      }
+      if (
+        !constantTimeEqual(raw, rawAfterVerification) ||
+        this._writerKeysVersion !== writerKeysVersion
+      ) {
+        console.warn('Dropping BeeKEM PathUpdate changed during verification');
         return;
       }
 
@@ -7604,6 +7675,10 @@ export class PeerborneDocument<
         );
         return;
       }
+      if (this._writerKeysVersion !== writerKeysVersion) {
+        console.warn('Dropping BeeKEM PathUpdate after writer ACL changed');
+        return;
+      }
 
       // Validate the sender's epoch ID against our locally-derived
       // value. The wire carries the FULL 32-byte HKDF output and the
@@ -7612,17 +7687,23 @@ export class PeerborneDocument<
       // byte-identical to what both ends will key on for future
       // encrypted-block lookups.
       const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
-      const senderEpochId32 = message.pathUpdateEpochId;
       if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
         console.warn('Dropping BeeKEM PathUpdate with a mismatched epoch ID');
         return;
       }
 
       const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
+      if (this._writerKeysVersion !== writerKeysVersion) {
+        console.warn('Dropping BeeKEM PathUpdate after writer ACL changed');
+        return;
+      }
       try {
         const committed = await runSharedProtocolMutation(
           admission,
           async () => {
+            if (this._writerKeysVersion !== writerKeysVersion) {
+              throw new Error('Writer ACL changed before PathUpdate commit');
+            }
             await this._keychain.addEpochKey(
               localEpochId32,
               newKey as unknown as DocumentKey,
@@ -7674,8 +7755,11 @@ export class PeerborneDocument<
       keychainChanges,
     };
 
-    // Sign the key update message.
-    keyUpdateMessage.signature = await this._signAsWriter(keyUpdateMessage);
+    // Legacy key updates always require writer authentication, independent of
+    // the ordinary document-change signing toggle.
+    keyUpdateMessage.signature = await this._signAsWriterUnconditional(
+      keyUpdateMessage,
+    );
 
     const serialized =
       this._syncMessageSerializer.serializeSyncMessage(keyUpdateMessage);
@@ -7763,26 +7847,55 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
+      const keyIDLength = this._keychainProvider.keyIDLength;
+      const nonceLength = this._authProvider.nonceBits;
+      if (
+        !Number.isSafeInteger(keyIDLength) ||
+        keyIDLength <= 0 ||
+        !Number.isSafeInteger(nonceLength) ||
+        nonceLength <= 0 ||
+        !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
+        keyIDLength + nonceLength + 1 > MAX_SHARED_PROTOCOL_REQUEST_BYTES
+      ) {
+        console.warn('Dropping key-update request with invalid framing widths');
+        return;
+      }
+      let stablePayload: Uint8Array;
+      try {
+        stablePayload = copyUnsharedUint8Array(
+          payload,
+          keyIDLength + nonceLength + 1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'Document key-update payload',
+        );
+      } catch {
+        console.warn('Dropping malformed key-update request framing');
+        return;
+      }
+
       // Decrypt the key update message.
-      const blockKeyID = payload.slice(
-        0,
-        this._keychainProvider.keyIDLength,
+      const blockKeyID = stablePayload.slice(0, keyIDLength);
+      const blockNonce = stablePayload.slice(
+        keyIDLength,
+        keyIDLength + nonceLength,
       );
-      const blockNonce = payload.slice(
-        this._keychainProvider.keyIDLength,
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
-      );
-      const blockData = payload.slice(
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
-      );
+      const blockData = stablePayload.slice(keyIDLength + nonceLength);
 
       let rawContent: Uint8Array | undefined;
       try {
-        rawContent = await this._decryptBlock(
+        const decrypted = await this._decryptBlock(
           blockKeyID,
           blockNonce,
           blockData,
         );
+        if (decrypted !== undefined) {
+          rawContent = copyUnsharedUint8Array(
+            decrypted,
+            1,
+            MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+            'Decrypted document key-update message',
+          );
+        }
       } catch {
         console.warn('Failed to decrypt shared key-update request');
         return;
@@ -7794,50 +7907,100 @@ export class PeerborneDocument<
       }
       if (!isSharedProtocolHandlerActive(admission)) return;
 
-      const message =
-        this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      try {
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+          'key-update-v2',
+        );
+      } catch {
+        console.warn('Dropping malformed or cross-context key-update request');
+        return;
+      }
 
       // The shared V2 key-update handler already routes by the
       // length-prefixed document-path header and drops invalid headers;
       // this check is kept as a defense-in-depth guard against malformed
       // or misrouted messages.
-      if (message.documentId && message.documentId !== this.documentPath) {
+      if (message.documentId !== this.documentPath) {
         console.warn('Ignoring key-update for the wrong document');
         return;
       }
 
-      // Verify the sender is an authorized writer.
-      if (this._isSigningEnabled()) {
-        if (message.signature) {
-          const { signature, ...messageWithoutSignature } = message;
-          const raw =
-            this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
-            );
-          if ((await this._verifyWriterSignature(raw, signature)) !== true) {
-            console.warn('Dropping key-update with an invalid signature');
-            return;
-          }
-        } else {
-          console.warn('Dropping unsigned key-update request');
-          return;
-        }
+      if (message.keychainChanges == null) {
+        console.warn('Dropping key-update without keychain changes');
+        return;
+      }
+
+      if (!message.signature) {
+        console.warn('Dropping unsigned key-update request');
+        return;
+      }
+      const signature = message.signature;
+      let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
+      let raw: Uint8Array;
+      try {
+        const verificationMessage = snapshotSyncMessageForContext<
+          ChangesType,
+          PublicKey
+        >(message, 'key-update-v2');
+        const { signature: _signature, ...unsigned } = verificationMessage;
+        messageWithoutSignature = unsigned;
+        raw = copyUnsharedUint8Array(
+          this._syncMessageSerializer.serializeSyncMessage(
+            messageWithoutSignature,
+          ),
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'Unsigned received key-update message',
+        );
+      } catch {
+        console.warn('Dropping malformed key-update request');
+        return;
+      }
+      const writerKeysVersion = this._writerKeysVersion;
+      if (
+        (await this._verifyMembershipWriterSignature(raw, signature)) !== true
+      ) {
+        console.warn('Dropping key-update with an invalid signature');
+        return;
+      }
+      let rawAfterVerification: Uint8Array;
+      try {
+        rawAfterVerification = copyUnsharedUint8Array(
+          this._syncMessageSerializer.serializeSyncMessage(
+            messageWithoutSignature,
+          ),
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'Unsigned received key-update message',
+        );
+      } catch {
+        console.warn('Dropping key-update that changed during verification');
+        return;
+      }
+      if (
+        !constantTimeEqual(raw, rawAfterVerification) ||
+        this._writerKeysVersion !== writerKeysVersion
+      ) {
+        console.warn('Dropping key-update that changed during verification');
+        return;
       }
 
       console.log('Received shared key-update request');
 
       // Merge keychain changes.
-      if (message.keychainChanges) {
-        try {
-          const committed = await runSharedProtocolMutation(
-            admission,
-            () => this._keychain.merge(message.keychainChanges!),
-          );
-          if (!committed.admitted) return;
-          console.log('Updated keychain via shared key-update protocol');
-        } catch {
-          console.error('Failed to merge shared key-update changes');
-        }
+      try {
+        const committed = await runSharedProtocolMutation(admission, () => {
+          if (this._writerKeysVersion !== writerKeysVersion) {
+            throw new Error('Writer ACL changed before key-update commit');
+          }
+          this._keychain.merge(message.keychainChanges!);
+        });
+        if (!committed.admitted) return;
+        console.log('Updated keychain via shared key-update protocol');
+      } catch {
+        console.error('Failed to merge shared key-update changes');
       }
     } catch {
       console.error('Shared key-update request handling failed');
