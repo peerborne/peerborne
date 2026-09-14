@@ -48,6 +48,39 @@ function fakeDocument(fields: Record<string, unknown>): any {
 }
 
 describe('document load response boundaries', () => {
+  test('rejects a cross-context load response before sync', async () => {
+    const syncValidatedProtocolMessage = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/doc',
+      swarm: { config: { loadQuorumTimeoutMs: 1000 } },
+      _keychainProvider: { keyIDLength: 1 },
+      _authProvider: {
+        nonceBits: 1,
+        decrypt: jest.fn(async () => new Uint8Array([9])),
+      },
+      _keychain: { getKey: jest.fn(() => ({})) },
+      _syncMessageSerializer: {
+        deserializeSyncMessage: jest.fn(() => ({
+          documentId: '/doc',
+          signatureContext: 'invitation-bootstrap-v1',
+        })),
+      },
+      _syncValidatedProtocolMessage: syncValidatedProtocolMessage,
+    });
+    const stream = {
+      sink: jest.fn(async () => undefined),
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+      abort: jest.fn(),
+    };
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/signatureContext/);
+    expect(syncValidatedProtocolMessage).not.toHaveBeenCalled();
+  });
+
   test('bounds ordinary document responses before deserialization', async () => {
     const abort = jest.fn();
     const document = fakeDocument({
@@ -186,5 +219,45 @@ describe('document load response boundaries', () => {
       expect.objectContaining({ message: 'tip-advertise probe completed' }),
     );
     expect(rawStream.closeRead).not.toHaveBeenCalled();
+  });
+
+  test('treats a cross-context tip advertisement as a non-vote', async () => {
+    const verify = jest.fn();
+    const rawStream = {
+      send: jest.fn(() => true),
+      onDrain: jest.fn(async () => undefined),
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+      abort: jest.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield new Uint8Array([1, 2, 3]);
+      },
+    };
+    const document = fakeDocument({
+      documentPath: '/doc',
+      swarm: {
+        heliaNode: {
+          libp2p: { dialProtocol: jest.fn(async () => rawStream) },
+        },
+      },
+      _keychainProvider: { keyIDLength: 1 },
+      _authProvider: {
+        nonceBits: 1,
+        decrypt: jest.fn(async () => new Uint8Array([9])),
+        verify,
+      },
+      _keychain: { getKey: jest.fn(() => ({})) },
+      _syncMessageSerializer: {
+        deserializeSyncMessage: jest.fn(() => ({
+          documentId: '/doc',
+          signatureContext: 'load-response-v3',
+        })),
+      },
+    });
+
+    await expect(
+      document._probeTipAdvertise({}, new Uint8Array([1])),
+    ).resolves.toBeNull();
+    expect(verify).not.toHaveBeenCalled();
   });
 });

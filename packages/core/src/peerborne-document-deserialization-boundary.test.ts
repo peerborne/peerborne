@@ -52,7 +52,8 @@ function fakeDocument(fields: Record<string, unknown>): any {
 
 const documentPath = '/detached-load';
 
-function loadHarness(message: any) {
+function loadHarness(message: any, context = 'load-response-v3') {
+  message.signatureContext = context;
   const verify = jest.fn(async () => true);
   const sync = jest.fn(async () => true);
   const document = fakeDocument({
@@ -99,7 +100,7 @@ async function invitationHarness(message: any) {
     }),
     recipient.publicKey,
   );
-  const { document, verify } = loadHarness(message);
+  const { document, verify } = loadHarness(message, 'invitation-bootstrap-v1');
   const epoch = new Uint8Array([1]);
   Object.assign(document, {
     _hashes: new Set(),
@@ -227,7 +228,7 @@ describe('deserialized load message boundaries', () => {
       const { document, bundle, verify } = await invitationHarness(message);
       await expect(
         document.acceptInvitationBootstrap(bundle, 'issuer', 'reader', '/founder'),
-      ).rejects.toThrow(/data propert/);
+      ).rejects.toThrow(/invalid wire context/);
       expect(getter).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
     },
