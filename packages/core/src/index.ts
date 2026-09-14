@@ -38,6 +38,7 @@ import { KeychainProvider } from './keychain-provider.js';
 import {
   ACL,
   ACLOperationInProgressError,
+  PreparedACLRemoval,
   retryACLConflict,
 } from './acl.js';
 import {
@@ -199,6 +200,7 @@ export * from './webcrypto-group-state-protector.js';
 export {
   ACL,
   ACLOperationInProgressError,
+  PreparedACLRemoval,
   retryACLConflict,
   ACLProvider,
   SubtleCrypto,

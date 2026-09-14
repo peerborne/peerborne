@@ -2,6 +2,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -540,28 +541,62 @@ export class YjsACLProvider implements ACLProvider<Uint8Array, CryptoKey> {
 }
 
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
-  private readonly _acl = new Doc();
+  private _acl = new Doc();
+  private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     const hash = await serializeKey(publicKey);
     const beforeSV = encodeStateVector(this._acl);
     this._acl.getMap('users').set(hash, true);
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
+    this._revision++;
+    return changes;
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
+    const prepared = await this.prepareRemove(publicKey);
+    prepared.commit();
+    return prepared.changes;
+  }
+  async prepareRemove(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLRemoval<Uint8Array>> {
     const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    if (this._acl.getMap('users').has(hash)) {
-      this._acl.getMap('users').delete(hash);
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc();
+    applyUpdateV2(staged, encodeStateAsUpdateV2(base));
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    const beforeSV = encodeStateVector(staged);
+    if (hadMember) {
+      stagedUsers.delete(hash);
     }
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    const changes = new Uint8Array(privateChanges);
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while removal was staged');
+        }
+        committed = true;
+        if (!hadMember) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
   }
   current(): Uint8Array {
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
     applyUpdateV2(this._acl, change);
+    this._revision++;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
     const hash = await serializeKey(publicKey);
