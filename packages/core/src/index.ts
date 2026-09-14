@@ -337,6 +337,8 @@ export type {
   LoadResponseManifestSnapshot,
 } from './load-response-manifest.js';
 export {
+  MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+  MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
   identifyInitialLoadSigner,
   verifyInitialLoadAuthentication,
 } from './initial-load-auth.js';
