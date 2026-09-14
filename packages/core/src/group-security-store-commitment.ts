@@ -667,6 +667,9 @@ function canonicalFork(
     secondRecordId: copyByteView(secondRecordId),
     secondControlRecord: copyByteView(secondControlRecord),
   };
+  if (equalBytes(cloned.firstRecordId, cloned.secondRecordId)) {
+    throw new Error('fork record IDs must be distinct');
+  }
   const ordered =
     compareBytes(cloned.firstRecordId, cloned.secondRecordId) <= 0
       ? [

@@ -474,7 +474,7 @@ function cloneForkPoison(
   if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
     throw new Error('rollback anchor fork epoch must be unsigned 64-bit');
   }
-  return {
+  const forkPoison = {
     epoch,
     parentRecordId: cloneExactBytes(
       dataProperty(snapshot, 'parentRecordId'),
@@ -497,6 +497,10 @@ function cloneForkPoison(
       FORK_EVIDENCE_HASH_LENGTH,
     ),
   };
+  if (equalBytes(forkPoison.firstRecordId, forkPoison.secondRecordId)) {
+    throw new Error('rollback anchor fork record IDs must be distinct');
+  }
+  return forkPoison;
 }
 
 function optionalForkPoisonEqual(
