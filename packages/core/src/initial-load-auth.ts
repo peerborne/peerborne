@@ -1,0 +1,238 @@
+import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
+import { copyUnsharedUint8Array } from './utils.js';
+
+export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
+export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
+
+const arrayIsArray = Array.isArray;
+const objectDefineProperty = Object.defineProperty;
+const objectFreeze = Object.freeze;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const reflectApply = Reflect.apply;
+
+export interface InitialLoadAuthenticationOptions<PublicKey> {
+  strict: boolean;
+  signingEnabled: boolean;
+  payload: Uint8Array;
+  signature?: Uint8Array;
+  existingWriterKeys: readonly PublicKey[];
+  trustedBootstrapWriterKeys: readonly PublicKey[];
+  verify: (
+    payload: Uint8Array,
+    publicKey: PublicKey,
+    signature: Uint8Array,
+  ) => Promise<boolean>;
+}
+
+export interface IdentifiedInitialLoadSigner<PublicKey> {
+  readonly publicKey: PublicKey;
+  readonly keyIndex: number;
+}
+
+function selectedTrustKeys<PublicKey>(
+  existingWriterKeysValue: readonly PublicKey[],
+  trustedBootstrapWriterKeysValue: readonly PublicKey[],
+): readonly PublicKey[] {
+  const existingWriterKeys = snapshotTrustKeys(
+    existingWriterKeysValue,
+    'existing writer keys',
+  );
+  return existingWriterKeys.length > 0
+    ? existingWriterKeys
+    : snapshotTrustKeys(
+        trustedBootstrapWriterKeysValue,
+        'trusted bootstrap writer keys',
+      );
+}
+
+function snapshotTrustKeys<PublicKey>(
+  value: readonly PublicKey[],
+  field: string,
+): readonly PublicKey[] {
+  let isArray: boolean;
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    lengthDescriptor = isArray
+      ? (reflectApply(objectGetOwnPropertyDescriptor, Object, [
+          value,
+          'length',
+        ]) as PropertyDescriptor | undefined)
+      : undefined;
+  } catch {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  const length =
+    lengthDescriptor !== undefined && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : undefined;
+  if (!isArray || !Number.isSafeInteger(length) || (length as number) < 0) {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  if ((length as number) > MAX_INITIAL_LOAD_SIGNER_AUTHORITIES) {
+    throw new RangeError(
+      `${field} exceeds ${MAX_INITIAL_LOAD_SIGNER_AUTHORITIES} entries`,
+    );
+  }
+
+  const snapshot = new Array<PublicKey>(length as number);
+  for (let index = 0; index < snapshot.length; index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        String(index),
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${field} must expose stable own data entries`);
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(`${field} must contain only own data entries`);
+    }
+    reflectApply(objectDefineProperty, Object, [
+      snapshot,
+      String(index),
+      {
+        configurable: true,
+        enumerable: true,
+        value: descriptor.value,
+        writable: true,
+      },
+    ]);
+  }
+  return reflectApply(objectFreeze, Object, [snapshot]) as readonly PublicKey[];
+}
+
+interface InitialLoadVerificationInputs<PublicKey> {
+  readonly payload: Uint8Array;
+  readonly signature: Uint8Array;
+  readonly verify: InitialLoadAuthenticationOptions<PublicKey>['verify'];
+}
+
+function captureVerificationInputs<PublicKey>(
+  payloadValue: unknown,
+  signatureValue: unknown,
+  verifyValue: unknown,
+): InitialLoadVerificationInputs<PublicKey> | undefined {
+  if (typeof verifyValue !== 'function') return undefined;
+  try {
+    return {
+      payload: copyUnsharedUint8Array(
+        payloadValue,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+        'initial-load authentication payload',
+      ),
+      signature: copyUnsharedUint8Array(
+        signatureValue,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+        'initial-load authentication signature',
+      ),
+      verify: verifyValue as InitialLoadAuthenticationOptions<PublicKey>['verify'],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function verifiedSignerIndexes<PublicKey>(
+  keys: readonly PublicKey[],
+  inputs: InitialLoadVerificationInputs<PublicKey>,
+): Promise<number[]> {
+  const indexes: number[] = [];
+  for (let index = 0; index < keys.length; index++) {
+    try {
+      const payload = copyUnsharedUint8Array(
+        inputs.payload,
+        inputs.payload.byteLength,
+        inputs.payload.byteLength,
+        'initial-load authentication payload',
+      );
+      const signature = copyUnsharedUint8Array(
+        inputs.signature,
+        inputs.signature.byteLength,
+        inputs.signature.byteLength,
+        'initial-load authentication signature',
+      );
+      const verified = await reflectApply(inputs.verify, undefined, [
+        payload,
+        keys[index],
+        signature,
+      ]);
+      if (verified === true) indexes.push(index);
+    } catch {
+      // One malformed key or verifier failure is not evidence about the rest.
+    }
+  }
+  return indexes;
+}
+
+/**
+ * Identify the unique trusted signing key that authenticated an envelope.
+ * Ambiguous signatures that verify under more than one distinct trust entry
+ * fail closed; callers cannot safely attribute such a vote to one authority.
+ */
+export async function identifyInitialLoadSigner<PublicKey>(
+  options: InitialLoadAuthenticationOptions<PublicKey>,
+): Promise<IdentifiedInitialLoadSigner<PublicKey> | null> {
+  const signingEnabled = options.signingEnabled;
+  const existingWriterKeys = options.existingWriterKeys;
+  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
+  const keys = selectedTrustKeys(
+    existingWriterKeys,
+    trustedBootstrapWriterKeys,
+  );
+  if (!signingEnabled) return null;
+  const payload = options.payload;
+  const signature = options.signature;
+  const verify = options.verify;
+  const inputs = captureVerificationInputs<PublicKey>(
+    payload,
+    signature,
+    verify,
+  );
+  if (inputs === undefined) return null;
+  const indexes = await verifiedSignerIndexes(keys, inputs);
+  if (indexes.length !== 1) return null;
+  const keyIndex = indexes[0];
+  return { publicKey: keys[keyIndex], keyIndex };
+}
+
+/**
+ * Authenticate a first-load envelope without trusting writer keys carried by
+ * that same envelope. Existing ACL writers take precedence; an empty ACL can
+ * only bootstrap from application-pinned writer keys in strict mode.
+ */
+export async function verifyInitialLoadAuthentication<PublicKey>(
+  options: InitialLoadAuthenticationOptions<PublicKey>,
+): Promise<boolean> {
+  const signingEnabled = options.signingEnabled;
+  const strict = options.strict;
+  if (!signingEnabled) {
+    return !strict;
+  }
+  const existingWriterKeys = options.existingWriterKeys;
+  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
+  const keys = selectedTrustKeys(
+    existingWriterKeys,
+    trustedBootstrapWriterKeys,
+  );
+  if (keys.length === 0) {
+    return !strict;
+  }
+  const payload = options.payload;
+  const signature = options.signature;
+  const verify = options.verify;
+  const inputs = captureVerificationInputs<PublicKey>(
+    payload,
+    signature,
+    verify,
+  );
+  if (inputs === undefined) return false;
+  return (await verifiedSignerIndexes(keys, inputs)).length > 0;
+}
