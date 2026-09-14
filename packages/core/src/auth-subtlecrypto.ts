@@ -126,7 +126,9 @@ export class SubtleCrypto
       case 'AES-CBC':
         return 16;
       default:
-        throw new Error(`Unsupported encryption algorithm: ${this._encryptionAlgorithmName}`);
+        throw new Error(
+          `Unsupported encryption algorithm: ${this._encryptionAlgorithmName}`,
+        );
     }
   }
 
@@ -135,7 +137,9 @@ export class SubtleCrypto
    * Supports AES-GCM (iv), AES-CTR (counter), and AES-CBC (iv).
    * Normalizes BufferSource values to Uint8Array.
    */
-  private _extractNonce(params: AesGcmParams | AesCtrParams | AesCbcParams): Uint8Array {
+  private _extractNonce(
+    params: AesGcmParams | AesCtrParams | AesCbcParams,
+  ): Uint8Array {
     let raw: BufferSource | undefined;
     if ('iv' in params) {
       raw = params.iv;
@@ -143,7 +147,9 @@ export class SubtleCrypto
       raw = params.counter;
     }
     if (!raw) {
-      throw new Error(`Cannot extract nonce from algorithm: ${(params as any).name}`);
+      throw new Error(
+        `Cannot extract nonce from algorithm: ${(params as any).name}`,
+      );
     }
     // Normalize BufferSource to Uint8Array, respecting byteOffset/byteLength for views.
     if (raw instanceof Uint8Array) return raw;
@@ -157,18 +163,24 @@ export class SubtleCrypto
    *
    * @param nonce - If provided, used as the IV/counter. Otherwise a random one is generated.
    */
-  _encryptionAlgorithmParams(nonce?: Uint8Array): AesGcmParams | AesCtrParams | AesCbcParams {
+  _encryptionAlgorithmParams(
+    nonce?: Uint8Array,
+  ): AesGcmParams | AesCtrParams | AesCbcParams {
     switch (this._encryptionAlgorithmName) {
       case 'AES-GCM': {
         if (nonce && nonce.length !== 12) {
-          throw new Error(`AES-GCM nonce must be 12 bytes, got ${nonce.length}`);
+          throw new Error(
+            `AES-GCM nonce must be 12 bytes, got ${nonce.length}`,
+          );
         }
         const iv = nonce ?? crypto.getRandomValues(new Uint8Array(12));
         return { name: 'AES-GCM', iv: iv as Uint8Array<ArrayBuffer> };
       }
       case 'AES-CTR': {
         if (nonce && nonce.length !== 16) {
-          throw new Error(`AES-CTR counter must be 16 bytes, got ${nonce.length}`);
+          throw new Error(
+            `AES-CTR counter must be 16 bytes, got ${nonce.length}`,
+          );
         }
         // length: 32 splits the 128-bit counter block into a 96-bit per-message
         // nonce (upper bits) and a 32-bit counter (lower bits). When we
@@ -185,7 +197,11 @@ export class SubtleCrypto
           counter = new Uint8Array(16);
           crypto.getRandomValues(counter.subarray(0, 12));
         }
-        return { name: 'AES-CTR', counter: counter as Uint8Array<ArrayBuffer>, length: 32 };
+        return {
+          name: 'AES-CTR',
+          counter: counter as Uint8Array<ArrayBuffer>,
+          length: 32,
+        };
       }
       case 'AES-CBC': {
         if (nonce && nonce.length !== 16) {
@@ -195,7 +211,9 @@ export class SubtleCrypto
         return { name: 'AES-CBC', iv: iv as Uint8Array<ArrayBuffer> };
       }
       default:
-        throw new Error(`Unsupported encryption algorithm: ${this._encryptionAlgorithmName}`);
+        throw new Error(
+          `Unsupported encryption algorithm: ${this._encryptionAlgorithmName}`,
+        );
     }
   }
 
@@ -211,7 +229,7 @@ export class SubtleCrypto
     if (!documentKey.extractable) {
       throw new Error(
         'Cannot derive HMAC key: the document encryption key must be extractable. ' +
-        'Ensure the key was created with extractable: true.',
+          'Ensure the key was created with extractable: true.',
       );
     }
     const rawBytes = await crypto.subtle.exportKey('raw', documentKey);
@@ -227,7 +245,9 @@ export class SubtleCrypto
         name: 'HKDF',
         hash: 'SHA-256',
         salt: new ArrayBuffer(0),
-        info: new TextEncoder().encode(`hmac-auth-${this._encryptionAlgorithmName.toLowerCase()}`),
+        info: new TextEncoder().encode(
+          `hmac-auth-${this._encryptionAlgorithmName.toLowerCase()}`,
+        ),
       },
       hkdfKey,
       { name: 'HMAC', hash: 'SHA-256', length: 256 },
@@ -250,7 +270,11 @@ export class SubtleCrypto
     privateKey: CryptoKey,
   ): Promise<Uint8Array> {
     return new Uint8Array(
-      await crypto.subtle.sign(this.signingAlgorithm, privateKey, data as Uint8Array<ArrayBuffer>),
+      await crypto.subtle.sign(
+        this.signingAlgorithm,
+        privateKey,
+        data as Uint8Array<ArrayBuffer>,
+      ),
     );
   }
 
@@ -369,7 +393,9 @@ export class SubtleCrypto
         macInput as Uint8Array<ArrayBuffer>,
       );
       if (!valid) {
-        throw new Error('HMAC verification failed — ciphertext may be tampered');
+        throw new Error(
+          'HMAC verification failed — ciphertext may be tampered',
+        );
       }
 
       return new Uint8Array(
@@ -382,18 +408,13 @@ export class SubtleCrypto
     }
 
     // AES-GCM path — authentication is built into the algorithm.
-    try {
-      return new Uint8Array(
-        await crypto.subtle.decrypt(
-          this._encryptionAlgorithmParams(nonce),
-          documentKey,
-          data as Uint8Array<ArrayBuffer>,
-        ),
-      );
-    } catch (err) {
-      console.error('Failed to decrypt data:', err);
-      throw err;
-    }
+    return new Uint8Array(
+      await crypto.subtle.decrypt(
+        this._encryptionAlgorithmParams(nonce),
+        documentKey,
+        data as Uint8Array<ArrayBuffer>,
+      ),
+    );
   }
 
   /**
@@ -425,7 +446,11 @@ export class SubtleCrypto
       const nonce = this._extractNonce(algorithmParams);
       const macInput = concatUint8Arrays(nonce, ciphertext);
       const tag = new Uint8Array(
-        await crypto.subtle.sign('HMAC', hmacKey, macInput as Uint8Array<ArrayBuffer>),
+        await crypto.subtle.sign(
+          'HMAC',
+          hmacKey,
+          macInput as Uint8Array<ArrayBuffer>,
+        ),
       );
       return {
         data: concatUint8Arrays(ciphertext, tag),

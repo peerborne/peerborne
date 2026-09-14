@@ -157,7 +157,7 @@ export async function validateUCANChain(
 
   // Verify signature
   const issuerKey = await resolvePublicKey(ucan.issuer);
-  if (!await verifyUCANSignature(ucan, issuerKey)) {
+  if ((await verifyUCANSignature(ucan, issuerKey)) !== true) {
     return { valid: false, error: 'Invalid UCAN signature' };
   }
 
@@ -193,7 +193,7 @@ export async function validateUCANChain(
 
     // Recursively validate proof with decremented depth and shared visited set
     const proofResult = await validateUCANChain(proof, rootPublicKey, resolvePublicKey, maxDepth - 1, visited);
-    if (!proofResult.valid) {
+    if (proofResult.valid !== true) {
       return proofResult;
     }
   }

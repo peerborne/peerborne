@@ -3,7 +3,10 @@ import { ChangesSerializer } from './changes-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { CRDTSyncMessage } from './crdt-sync-message.js';
-import { LoadMessageSerializer } from './load-request-serializer.js';
+import {
+  LoadMessageSerializer,
+  LoadRequestCompletionDetector,
+} from './load-request-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 
 /**
@@ -11,6 +14,72 @@ import { SyncMessageSerializer } from './sync-message-serializer.js';
  * to prevent prototype pollution attacks.
  */
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const INVALID_SERIALIZED_JSON = 'Invalid serialized JSON';
+
+function isJSONWhitespace(byte: number): boolean {
+  return byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
+}
+
+/**
+ * Scan top-level JSON-object framing one byte at a time. JSON.parse remains
+ * responsible for syntax and schema validation; this scanner only identifies
+ * the first point at which parsing cannot be an incomplete-input retry. UTF-8
+ * bytes above ASCII cannot affect JSON structural delimiters.
+ */
+function createJSONObjectCompletionDetector(): LoadRequestCompletionDetector {
+  let started = false;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let complete = false;
+
+  return (chunk: Uint8Array): boolean => {
+    for (const byte of chunk) {
+      if (complete) {
+        if (!isJSONWhitespace(byte)) {
+          throw new SyntaxError('Unexpected data after JSON load request');
+        }
+        continue;
+      }
+
+      if (!started) {
+        if (isJSONWhitespace(byte)) continue;
+        if (byte !== 0x7b) {
+          throw new SyntaxError('JSON load request must be an object');
+        }
+        started = true;
+        depth = 1;
+        continue;
+      }
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (byte === 0x5c) {
+          escaped = true;
+        } else if (byte === 0x22) {
+          inString = false;
+        } else if (byte < 0x20) {
+          throw new SyntaxError('Unescaped control byte in JSON string');
+        }
+        continue;
+      }
+
+      if (byte === 0x22) {
+        inString = true;
+      } else if (byte === 0x7b || byte === 0x5b) {
+        depth++;
+      } else if (byte === 0x7d || byte === 0x5d) {
+        depth--;
+        if (depth < 0) {
+          throw new SyntaxError('Unexpected JSON closing delimiter');
+        }
+        complete = depth === 0;
+      }
+    }
+    return complete;
+  };
+}
 
 /**
  * Validate and sanitize keyID and blindIndexTokens fields from a deserialized
@@ -64,15 +133,19 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     SyncMessageSerializer<ChangesType, PublicKey>,
     LoadMessageSerializer
 {
+  createLoadRequestCompletionDetector(): LoadRequestCompletionDetector {
+    return createJSONObjectCompletionDetector();
+  }
+
   serialize(message: unknown): string {
     return JSON.stringify(message);
   }
   deserialize(message: string): unknown {
     try {
       return JSON.parse(message);
-    } catch (err) {
-      console.error('Failed to parse serialized message', err);
-      throw err;
+    } catch {
+      console.error(INVALID_SERIALIZED_JSON);
+      throw new SyntaxError(INVALID_SERIALIZED_JSON);
     }
   }
 

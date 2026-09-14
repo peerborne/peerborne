@@ -233,7 +233,7 @@ describe('validateDocumentPath control flow', () => {
       } catch (err) {
         throw err instanceof Error ? err : new Error(String(err));
       }
-      if (!allowed) {
+      if (allowed !== true) {
         throw new Error(
           `Document path "${documentPath}" is not allowed for the current user`,
         );
@@ -250,6 +250,15 @@ describe('validateDocumentPath control flow', () => {
     const validateFn = (_path: string, _key: unknown) => false;
     await expect(runValidation(validateFn, '/docs/blocked', 'key123')).rejects.toThrow(
       'Document path "/docs/blocked" is not allowed for the current user',
+    );
+  });
+
+  test('should reject a truthy non-boolean validation result', async () => {
+    const validateFn = () => ({ allowed: true }) as unknown as boolean;
+    await expect(
+      runValidation(validateFn, '/docs/not-explicitly-allowed', 'key123'),
+    ).rejects.toThrow(
+      'Document path "/docs/not-explicitly-allowed" is not allowed for the current user',
     );
   });
 
@@ -315,7 +324,9 @@ describe('getReaders() dedup logic', () => {
 
     // Replicate getReaders() dedup: filter writers already in readers via check()
     const checkResults = await Promise.all(writerKeys.map(readersCheck));
-    const filteredWriters = writerKeys.filter((_, i) => !checkResults[i]);
+    const filteredWriters = writerKeys.filter(
+      (_, i) => checkResults[i] !== true,
+    );
     const combined = [...readerKeys, ...filteredWriters];
 
     // sharedKey from writers should be filtered out; writerOnlyKey should remain
@@ -326,6 +337,18 @@ describe('getReaders() dedup logic', () => {
     // Verify sharedKey appears exactly once
     const sharedFP = await fingerprint(sharedKey.publicKey);
     expect(combinedFPs.filter(fp => fp === sharedFP)).toHaveLength(1);
+  });
+
+  test('does not treat a truthy non-boolean check result as membership', async () => {
+    const reader = { id: 'reader' };
+    const writer = { id: 'writer' };
+    const checkResults = [
+      ({ member: true }) as unknown as boolean,
+    ];
+    const filteredWriters = [writer].filter(
+      (_, index) => checkResults[index] !== true,
+    );
+    expect([reader, ...filteredWriters]).toEqual([reader, writer]);
   });
 });
 
