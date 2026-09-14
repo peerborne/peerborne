@@ -880,7 +880,7 @@ function snapshotAppliedGroupMembershipDelta(
   const values = strictArraySnapshot(
     deltaValues.changes,
     'applied membership delta changes',
-    1,
+    0,
     MAX_MEMBERSHIP_CHANGES,
   );
   const changes: AppliedGroupMembershipChange[] = new Array(values.length);
