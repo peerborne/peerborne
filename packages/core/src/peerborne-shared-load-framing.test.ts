@@ -402,6 +402,7 @@ describe('shared protocol request boundaries', () => {
           }),
         );
         expect(resource.inboundQuota).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
       } finally {
         releaseCommit.resolve();
         warn.mockRestore();
@@ -414,8 +415,10 @@ describe('shared protocol request boundaries', () => {
     jest.useFakeTimers();
     const commitStarted = Promise.withResolvers<void>();
     const { peerborne, handlers } = await registerHandlers(undefined, 25);
+    let capturedAdmission: any;
     const documentHandler = jest.fn(
       async (_payload: Uint8Array, admission: any) => {
+        capturedAdmission = admission;
         await admission.runMutation(async () => {
           commitStarted.resolve();
           await new Promise<void>(() => {});
@@ -453,6 +456,7 @@ describe('shared protocol request boundaries', () => {
         }),
       );
       expect(resource.inboundQuota).toBe(0);
+      expect(capturedAdmission._quiescentWaiters).toHaveLength(0);
       expect(jest.getTimerCount()).toBe(0);
     } finally {
       warn.mockRestore();

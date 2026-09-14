@@ -194,10 +194,21 @@ class SharedProtocolHandlerAdmissionController
     }
   }
 
-  public whenMutationsQuiesce(): Promise<void> {
+  public whenMutationsQuiesceOrTimeout(timeoutMs: number): Promise<void> {
     if (this._mutationCount === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      this._quiescentWaiters.push(resolve);
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== undefined) clearTimeout(timeout);
+        const waiterIndex = this._quiescentWaiters.indexOf(finish);
+        if (waiterIndex !== -1) this._quiescentWaiters.splice(waiterIndex, 1);
+        resolve();
+      };
+      this._quiescentWaiters.push(finish);
+      timeout = setTimeout(finish, timeoutMs);
     });
   }
 }
@@ -377,10 +388,7 @@ async function runSharedProtocolHandlerPhase(
     throw err;
   } finally {
     admission.expire();
-    await boundedSharedProtocolCleanup(
-      () => admission.whenMutationsQuiesce(),
-      timeoutMs,
-    );
+    await admission.whenMutationsQuiesceOrTimeout(timeoutMs);
     await abortSharedProtocolStream(stream, timeoutMs, classification);
   }
 }
