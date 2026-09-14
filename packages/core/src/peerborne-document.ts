@@ -98,6 +98,7 @@ import {
   loadChangeBlock as lazyLoadChangeBlock,
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
+import type { PreparedACLChange } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrFull } from './keychain.js';
@@ -186,6 +187,13 @@ interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
   readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
   readonly serializedBootstrapBaselineBytes: number;
   readonly welcomeWithoutBeeKEMBytes: number;
+}
+
+interface PostPublishCommit {
+  /** User-facing operation name used when reporting a handler failure. */
+  readonly operation: string;
+  /** Synchronous commit for state whose change was just published. */
+  readonly commit: () => void;
 }
 
 /**
@@ -370,7 +378,7 @@ export class PeerborneDocument<
   // Document-scoped (not per-DAG-node): every signature check needs the current
   // trusted writer set, so a single lazy cache is sufficient. Invalidated by
   // bumping `_writerKeysVersion` whenever `_writers` is mutated via
-  // `_mergeWriters` / `_addWriter` / `_removeWriter`. All ACL mutations must
+  // `_mergeWriters` / `_publishPreparedWriterChange`. All ACL mutations must
   // go through those helpers. The version counter is what makes invalidation
   // race-safe: `_getWriterKeys` captures the version before awaiting and only
   // commits the result if the version is still current, so an in-flight fetch
@@ -381,15 +389,17 @@ export class PeerborneDocument<
   // later signature verification.
   private _cachedWriterKeys: ReadonlyArray<PublicKey> | null = null;
   private _writerKeysVersion = 0;
-  // Counter of in-flight `_writers` mutations (add/remove/merge). Some ACL
-  // implementations (e.g. UCANACL.remove, YjsACL.remove) mutate their
-  // backing state *before* their returned Promise resolves, so during the
-  // mutation window `_writers.users()` may already reflect the new state
-  // even though the helper has not yet reached its post-await invalidation
-  // line. While this counter is nonzero, `_getWriterKeys` bypasses the
-  // cache entirely and always re-fetches, so a signature check that races
-  // a mutation cannot observe the stale pre-mutation list.
+  // Counter of in-flight `_writers` mutations. Staged local publications keep
+  // it nonzero from before publication through commit and handler delivery;
+  // remote merges bracket their synchronous mutation with the same guard.
+  // `_getWriterKeys` bypasses the cache throughout either window, so a
+  // signature check cannot observe a cached pre-mutation list.
   private _writerMutationsInFlight = 0;
+  // A staged writer delta has been prepared and is awaiting its publication
+  // commit point. Normal inbound sync is serialized behind this interval by
+  // `_mutationQueue`; `_mergeWriters` also rejects any accidental out-of-queue
+  // interleaving so a published delta cannot fail its local stale-base commit.
+  private _writerPublicationsInFlight = 0;
 
   // List of document encryption keys. Lower index numbers mean more recent.
   // Since the document is created from change history, all keys are needed.
@@ -1019,13 +1029,53 @@ export class PeerborneDocument<
       );
     }
   }
-  private async _fireLocalUpdateHandlers(hashes: string[]) {
+  private async _fireLocalUpdateHandlers(
+    hashes: string[],
+    postPublishOperation?: string,
+  ) {
     for (const handler of Object.values(this._localHandlers)) {
-      handler(
+      const result = (handler as (
+        current: DocType,
+        readers: PublicKey[],
+        writers: PublicKey[],
+        hashes: string[],
+      ) => unknown)(
         this.document,
         await this.getReaders(),
         await this.getWriters(),
         hashes,
+      );
+      if (result !== undefined) {
+        void Promise.resolve(result).catch((error) => {
+          this._reportLocalUpdateHandlerFailure(
+            error,
+            postPublishOperation,
+            true,
+          );
+        });
+      }
+    }
+  }
+
+  private _reportLocalUpdateHandlerFailure(
+    error: unknown,
+    postPublishOperation?: string,
+    asynchronous = false,
+  ): void {
+    if (postPublishOperation) {
+      console.error(
+        `[${this.documentPath}] ${postPublishOperation}: a local update ` +
+          `handler failed after the ACL change was published and committed. ` +
+          `The handler failure is not a retryable ACL publication failure.`,
+        error,
+      );
+      return;
+    }
+    if (asynchronous) {
+      console.error(
+        `[${this.documentPath}] an asynchronous local update handler failed ` +
+          'after the change was published.',
+        error,
       );
     }
   }
@@ -1548,8 +1598,9 @@ export class PeerborneDocument<
   /**
    * Returns the current list of authorized writer public keys, populating
    * the document-scoped cache on miss. Callers must not mutate the result.
-   * The cache is invalidated by `_mergeWriters`, `_addWriter`, and
-   * `_removeWriter` -- the only sanctioned mutation paths for `_writers`.
+   * The cache is invalidated by `_mergeWriters` and
+   * `_publishPreparedWriterChange` -- the only sanctioned mutation paths for
+   * `_writers`.
    *
    * Race-safety has two layers:
    *  - Mutation-in-flight bypass: while `_writerMutationsInFlight > 0`,
@@ -1637,6 +1688,13 @@ export class PeerborneDocument<
 
   /** Apply a writer ACL change and invalidate the cached key list. */
   private _mergeWriters(changes: ChangesType): void {
+    if (this._writerPublicationsInFlight > 0) {
+      throw new Error(
+        `Cannot merge a remote writer ACL change for ${this.documentPath} ` +
+          'while a staged local writer publication is in flight. Retry the ' +
+          'sync through the document membership queue.',
+      );
+    }
     // Synchronous mutation: increment-mutate-decrement around the
     // `merge()` call so any concurrent `_getWriterKeys` running on
     // another microtask sees the in-flight flag. Both invalidations
@@ -1651,14 +1709,48 @@ export class PeerborneDocument<
     }
   }
 
-  /** Add a writer and invalidate the cached key list. */
-  private async _addWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() => this._writers.add(publicKey));
+  /** Stage a writer addition without changing live authorization. */
+  private async _prepareWriterAdd(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareAdd = this._writers.prepareAdd;
+    if (typeof prepareAdd !== 'function') {
+      throw new Error(
+        'Writer ACL does not support the staged additions required for safe publication',
+      );
+    }
+    return prepareAdd.call(this._writers, publicKey);
   }
 
-  /** Remove a writer and invalidate the cached key list. */
-  private async _removeWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() => this._writers.remove(publicKey));
+  /** Stage a writer removal without changing live authorization. */
+  private async _prepareWriterRemove(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareRemove = this._writers.prepareRemove;
+    if (typeof prepareRemove !== 'function') {
+      throw new Error(
+        'Writer ACL does not support the staged removals required for safe publication',
+      );
+    }
+    return prepareRemove.call(this._writers, publicKey);
+  }
+
+  /** Publish a staged writer change, then commit it before local handlers run. */
+  private async _publishPreparedWriterChange(
+    prepared: PreparedACLChange<ChangesType>,
+    operation: string,
+  ): Promise<void> {
+    this._writerPublicationsInFlight++;
+    try {
+      await this._runWriterMutation(() =>
+        this._makeChange(prepared.changes, crdtWriterChangeNode, {
+          operation,
+          commit: () => prepared.commit(),
+        }),
+      );
+    } finally {
+      this._writerPublicationsInFlight--;
+    }
   }
 
   private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
@@ -1801,90 +1893,148 @@ export class PeerborneDocument<
   private async _makeChange(
     changes: ChangesType,
     kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
+    postPublishCommit?: PostPublishCommit,
   ) {
-    // Store changes in blockstore.
-    const hash = await this._putBlock(changes);
-    this._hashes.add(hash);
+    // A staged ACL change does not mutate live authorization until publication
+    // resolves. Every caller supplying `postPublishCommit` owns the shared
+    // membership queue, so supported remote sync cannot interleave with these
+    // snapshots. A rejected publication therefore restores exactly this call's
+    // DAG bookkeeping and cannot be attached as an ancestor or cross-link by a
+    // later message. The encrypted block itself may remain orphaned in the
+    // content-addressed blockstore, but no in-memory DAG root points to it.
+    // GossipSub does not expose an acknowledgement that distinguishes
+    // "rejected before send" from "accepted by the transport, then rejected
+    // locally." In that narrow delivery-ambiguous case a remote peer may have
+    // applied a delta that this sender rolls back; a later sync/load must
+    // reconcile it. This boundary prevents deterministic local reattachment,
+    // not a distributed publish transaction.
+    const lastSyncMessageBefore = this._lastSyncMessage;
+    const recentTipsBefore = postPublishCommit
+      ? [...this._recentTips]
+      : undefined;
+    const newlyReferencedAncestors: string[] = [];
+    let hash = '';
+    let hashWasKnown = false;
+    let publicationResolved = false;
+    try {
+      // Store changes in blockstore.
+      hash = await this._putBlock(changes);
+      hashWasKnown = this._hashes.has(hash);
+      this._hashes.add(hash);
 
-    // Send new message.
-    let updateMessage = this._createSyncMessage();
-    const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
-    const primaryParentId = updateMessage.changeId;
-    if (primaryParentId && updateMessage.changes) {
-      // Primary back-pointer: include the previous head's subtree inline so
-      // peers can apply our change without an extra round-trip for the parent.
-      changeNode.children = {};
-      changeNode.children[primaryParentId] = updateMessage.changes;
+      // Send new message.
+      const updateMessage = this._createSyncMessage();
+      const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
+      const primaryParentId = updateMessage.changeId;
+      if (primaryParentId && updateMessage.changes) {
+        // Primary back-pointer: include the previous head's subtree inline so
+        // peers can apply our change without an extra round-trip for the parent.
+        changeNode.children = {};
+        changeNode.children[primaryParentId] = updateMessage.changes;
 
-      // Cross-links (Merkle CRDT paper §VI.B.e): additionally reference other
-      // recent tips so a peer who missed an intermediate message can still
-      // discover the missing CID via a later message. Cross-link entries
-      // are emitted as *deferred* nodes (no `change` payload, no `children`)
-      // -- they carry only the CID + kind. Receivers that don't already have
-      // the block trigger a blockstore fetch in `_syncDocumentChanges`.
-      // Receivers that already have the block treat the entry as a no-op
-      // (deduplicated via `_hashes`).
-      const crossLinkTips = selectCrossLinks(
-        this._recentTips,
-        primaryParentId,
-        hash,
-        MAX_CROSS_LINKS,
+        // Cross-links (Merkle CRDT paper §VI.B.e): additionally reference other
+        // recent tips so a peer who missed an intermediate message can still
+        // discover the missing CID via a later message. Cross-link entries
+        // are emitted as *deferred* nodes (no `change` payload, no `children`)
+        // -- they carry only the CID + kind. Receivers that don't already have
+        // the block trigger a blockstore fetch in `_syncDocumentChanges`.
+        // Receivers that already have the block treat the entry as a no-op
+        // (deduplicated via `_hashes`).
+        const crossLinkTips = selectCrossLinks(
+          this._recentTips,
+          primaryParentId,
+          hash,
+          MAX_CROSS_LINKS,
+        );
+        for (const tip of crossLinkTips) {
+          // Skip if the tip is already a direct child of the new change node.
+          if (changeNode.children[tip.cid]) continue;
+          // Deferred leaf: no `change` payload, no `children`. Receivers fetch
+          // the block from Helia if they don't already have it.
+          changeNode.children[tip.cid] = { kind: tip.kind };
+        }
+      }
+      updateMessage.changeId = hash;
+      updateMessage.changes = changeNode;
+
+      // Record every CID this new change references as a parent / cross-link
+      // target. The primary parent and all cross-link tips become *referenced
+      // ancestors* and drop out of `_currentFrontier()`. Walks just the new
+      // `changeNode` (not the full inherited subtree below it) because the
+      // inherited subtree's ancestor relationships were already recorded
+      // when each of those nodes was created or applied.
+      if (changeNode.children) {
+        for (const childCid of Object.keys(changeNode.children)) {
+          if (!this._referencedAncestors.has(childCid)) {
+            newlyReferencedAncestors.push(childCid);
+          }
+          this._referencedAncestors.add(childCid);
+        }
+      }
+
+      // Track this new tip for future cross-linking. The primary parent is
+      // also retained -- it's the immediate predecessor of *this* tip and may
+      // still be useful as a cross-link target for the *next* change if a
+      // later remote sync arrives in between.
+      this._trackTip(hash, kind);
+
+      // Sign new message.
+      updateMessage.signature = await this._signAsWriter(updateMessage);
+
+      this._lastSyncMessage = updateMessage;
+      const serializedUpdate =
+        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
+
+      // Encrypt sync message.
+      const [documentKeyID, documentKey] = await this._keychain.current();
+      if (!documentKey) {
+        throw new Error(`Document ${this.documentPath} has an empty keychain!`);
+      }
+      const { nonce, data } = await this._authProvider.encrypt(
+        serializedUpdate,
+        documentKey,
       );
-      for (const tip of crossLinkTips) {
-        // Skip if the tip is already a direct child of the new change node.
-        if (changeNode.children[tip.cid]) continue;
-        // Deferred leaf: no `change` payload, no `children`. Receivers fetch
-        // the block from Helia if they don't already have it.
-        changeNode.children[tip.cid] = { kind: tip.kind };
+      if (!nonce) {
+        throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
-    }
-    updateMessage.changeId = hash;
-    updateMessage.changes = changeNode;
+      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+        this._topic,
+        concatUint8Arrays(documentKeyID, nonce, data),
+      );
+      publicationResolved = true;
 
-    // Record every CID this new change references as a parent / cross-link
-    // target. The primary parent and all cross-link tips become *referenced
-    // ancestors* and drop out of `_currentFrontier()`. Walks just the new
-    // `changeNode` (not the full inherited subtree below it) because the
-    // inherited subtree's ancestor relationships were already recorded
-    // when each of those nodes was created or applied.
-    if (changeNode.children) {
-      for (const childCid of Object.keys(changeNode.children)) {
-        this._referencedAncestors.add(childCid);
+      // This is the sole live-authorization commit point for staged writer
+      // changes: publication has resolved, but no local observer has run yet.
+      postPublishCommit?.commit();
+    } catch (error) {
+      if (postPublishCommit && !publicationResolved) {
+        if (hash && !hashWasKnown) {
+          this._hashes.delete(hash);
+        }
+        for (const childCid of newlyReferencedAncestors) {
+          this._referencedAncestors.delete(childCid);
+        }
+        this._recentTips = recentTipsBefore!;
+        this._lastSyncMessage = lastSyncMessageBefore;
       }
+      throw error;
     }
 
-    // Track this new tip for future cross-linking. The primary parent is
-    // also retained -- it's the immediate predecessor of *this* tip and may
-    // still be useful as a cross-link target for the *next* change if a
-    // later remote sync arrives in between.
-    this._trackTip(hash, kind);
-
-    // Sign new message.
-    updateMessage.signature = await this._signAsWriter(updateMessage);
-
-    this._lastSyncMessage = updateMessage;
-    const serializedUpdate =
-      this._syncMessageSerializer.serializeSyncMessage(updateMessage);
-
-    // Encrypt sync message.
-    const [documentKeyID, documentKey] = await this._keychain.current();
-    if (!documentKey) {
-      throw new Error(`Document ${this.documentPath} has an empty keychain!`);
+    // Fire change handlers. Once the staged commit above succeeds, handler
+    // failures are observer failures rather than retryable ACL publication
+    // failures. Report them, but preserve the successful membership result.
+    try {
+      await this._fireLocalUpdateHandlers(
+        [hash],
+        postPublishCommit?.operation,
+      );
+    } catch (error) {
+      if (!postPublishCommit) throw error;
+      this._reportLocalUpdateHandlerFailure(
+        error,
+        postPublishCommit.operation,
+      );
     }
-    const { nonce, data } = await this._authProvider.encrypt(
-      serializedUpdate,
-      documentKey,
-    );
-    if (!nonce) {
-      throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
-    }
-    await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-      this._topic,
-      concatUint8Arrays(documentKeyID, nonce, data),
-    );
-
-    // Fire change handlers.
-    await this._fireLocalUpdateHandlers([hash]);
 
     // Track document changes for compaction.
     if (kind === crdtDocumentChangeNode) {
@@ -4227,19 +4377,27 @@ export class PeerborneDocument<
       }
 
       if (!isExisting) {
-        this._createdLocally = true;
-        // Add current user as a writer.
-        const founderWriterChanges = await this._addWriter(this._userPublicKey);
+        await this._mutationQueue.run(async () => {
+          this._createdLocally = true;
+          // Stage the current user as the founder writer. Live authorization is
+          // installed only after the replicated ACL change is published.
+          const founderWriter = await this._prepareWriterAdd(
+            this._userPublicKey,
+          );
 
-        // Add initial document key.
-        console.log(`Adding a key to ${this.documentPath}`);
-        await this._keychain.add();
+          // Add initial document key.
+          console.log(`Adding a key to ${this.documentPath}`);
+          await this._keychain.add();
 
-        // The founder ACL must be part of the replicated change DAG. Keeping
-        // it only in the creator's in-memory ACL lets first-load peers decrypt
-        // document state but leaves them unable to authenticate later writer
-        // updates (or write as the same restored identity).
-        await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+          // The founder ACL must be part of the replicated change DAG. Keeping
+          // it only in the creator's in-memory ACL lets first-load peers decrypt
+          // document state but leaves them unable to authenticate later writer
+          // updates (or write as the same restored identity).
+          await this._publishPreparedWriterChange(
+            founderWriter,
+            'open founder writer',
+          );
+        });
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -4934,6 +5092,11 @@ export class PeerborneDocument<
   /**
    * Add a new user as a valid writer. Users are identified by their public keys
    *
+   * The local ACL commits only after GossipSub publication resolves. A rejected
+   * publish rolls back local DAG bookkeeping, but transport rejection is
+   * delivery-ambiguous: a remote peer may already have received the delta.
+   * This is a local publication boundary, not a distributed transaction.
+   *
    * @param writer User's public key
    */
   public async addWriter(writer: PublicKey) {
@@ -4951,15 +5114,20 @@ export class PeerborneDocument<
       return;
     }
 
-    // Construct a new writer ACL change.
+    // Construct a detached writer ACL change. The invitation admission guard
+    // runs immediately before the first live/DAG mutation, not during staging.
+    const prepared = await this._prepareWriterAdd(writer);
     beginMutation?.();
-    const changes = await this._addWriter(writer);
-
-    await this._makeChange(changes, crdtWriterChangeNode);
+    await this._publishPreparedWriterChange(prepared, 'addWriter');
   }
 
   /**
    * Remove a user as a valid writer. Users are identified by their public keys
+   *
+   * The local ACL commits only after GossipSub publication resolves. A rejected
+   * publish rolls back local DAG bookkeeping, but transport rejection is
+   * delivery-ambiguous: a remote peer may already have received the delta.
+   * This is a local publication boundary, not a distributed transaction.
    *
    * @param writer User's public key
    */
@@ -4975,10 +5143,9 @@ export class PeerborneDocument<
       return;
     }
 
-    // Construct a new writer ACL change.
-    const changes = await this._removeWriter(writer);
-
-    await this._makeChange(changes, crdtWriterChangeNode);
+    // Keep live authorization unchanged until the ACL delta is published.
+    const prepared = await this._prepareWriterRemove(writer);
+    await this._publishPreparedWriterChange(prepared, 'removeWriter');
 
     // Save the current (soon-to-be-previous) key before rotation.
     // This key is what peers currently have and can use to decrypt the update.
