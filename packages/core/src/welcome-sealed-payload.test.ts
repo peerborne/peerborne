@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import { Base64 } from 'js-base64';
 import {
   encodeWelcomeSealedPayload,
@@ -6,7 +6,10 @@ import {
   decodeWelcomeSealedPayload,
   decodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload';
-import { serializeBeeKEMWelcomeV2ForWire } from './beekem-welcome-wire.js';
+import {
+  deserializeBeeKEMWelcomeV2FromWire,
+  serializeBeeKEMWelcomeV2ForWire,
+} from './beekem-welcome-wire.js';
 import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 describe('welcome-sealed-payload round-trip', () => {
@@ -187,6 +190,56 @@ describe('welcome-sealed-payload V2 boundary', () => {
     expect(entryReads).toBe(0);
   });
 
+  test('requires every Welcome path key from the new leaf through the root', () => {
+    const publicKey = (fill: number) => new Uint8Array(65).fill(fill);
+    const completeWelcome = {
+      ...beekemWelcome,
+      numLeaves: 4,
+      leafIndex: 6,
+      pathKeys: [
+        {
+          nodeIndex: 5,
+          publicKey: publicKey(5),
+          encryptedPrivateKey: new Uint8Array([15]),
+        },
+        {
+          nodeIndex: 3,
+          publicKey: publicKey(3),
+          encryptedPrivateKey: new Uint8Array([13]),
+        },
+      ],
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: publicKey(10) },
+        { nodeIndex: 1, publicKey: publicKey(11) },
+        { nodeIndex: 2, publicKey: publicKey(12) },
+        { nodeIndex: 4, publicKey: publicKey(14) },
+      ],
+    };
+    const completeWire = serializeBeeKEMWelcomeV2ForWire(completeWelcome);
+    const nonContiguousWire = {
+      ...completeWire,
+      pathKeys: [completeWire.pathKeys[1]],
+      treeNodePublicKeys: [
+        ...completeWire.treeNodePublicKeys,
+        { nodeIndex: 5, publicKey: null },
+      ],
+    };
+
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire(nonContiguousWire),
+    ).toThrow(/non-contiguous/);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...completeWelcome,
+        pathKeys: [completeWelcome.pathKeys[1]],
+        treeNodePublicKeys: [
+          ...completeWelcome.treeNodePublicKeys,
+          { nodeIndex: 5, publicKey: null },
+        ],
+      }),
+    ).toThrow(/non-contiguous/);
+  });
+
   test('detaches keychain bytes using their intrinsic length', () => {
     const shadowedKeychain = new Uint8Array([7]);
     Object.defineProperty(shadowedKeychain, 'length', { value: 4 });
@@ -198,6 +251,59 @@ describe('welcome-sealed-payload V2 boundary', () => {
     expect(decodeWelcomeSealedPayloadV2(encoded).keychainChanges).toEqual(
       new Uint8Array([7]),
     );
+  });
+
+  test('detaches V2 plaintext before handing it to the parser', () => {
+    const encoded = encodeWelcomeSealedPayloadV2({
+      keychainChanges,
+      beekemWelcome,
+    });
+    const nativeDecode = TextDecoder.prototype.decode;
+    let parserInput: AllowSharedBufferSource | undefined;
+    const decodeSpy = jest
+      .spyOn(TextDecoder.prototype, 'decode')
+      .mockImplementation(function (
+        this: TextDecoder,
+        input?: AllowSharedBufferSource,
+        options?: TextDecodeOptions,
+      ) {
+        parserInput = input;
+        encoded.fill(0);
+        return Reflect.apply(nativeDecode, this, [input, options]);
+      });
+
+    try {
+      expect(decodeWelcomeSealedPayloadV2(encoded)).toEqual({
+        keychainChanges,
+        beekemWelcome,
+      });
+      expect(parserInput).not.toBe(encoded);
+    } finally {
+      decodeSpy.mockRestore();
+    }
+  });
+
+  test('rejects oversized or shared V2 plaintext before parsing', () => {
+    const decodeSpy = jest.spyOn(TextDecoder.prototype, 'decode');
+    try {
+      expect(() =>
+        decodeWelcomeSealedPayloadV2(
+          new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES + 1),
+        ),
+      ).toThrow(/plaintext must be an unshared Uint8Array no larger than/);
+      expect(decodeSpy).not.toHaveBeenCalled();
+
+      if (typeof SharedArrayBuffer !== 'undefined') {
+        expect(() =>
+          decodeWelcomeSealedPayloadV2(
+            new Uint8Array(new SharedArrayBuffer(1)),
+          ),
+        ).toThrow(/plaintext must be an unshared Uint8Array/);
+        expect(decodeSpy).not.toHaveBeenCalled();
+      }
+    } finally {
+      decodeSpy.mockRestore();
+    }
   });
 
   test('rejects non-genuine and shared keychain byte views', () => {
