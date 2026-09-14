@@ -1926,6 +1926,28 @@ describe('YjsJSONSerializer', () => {
     );
   });
 
+  test('deserializeSyncMessage preserves an exact signature context', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = buildWire({
+      documentId: 'doc',
+      signatureContext: 'invitation-bootstrap-v1',
+    });
+    expect(serializer.deserializeSyncMessage(wire).signatureContext).toBe(
+      'invitation-bootstrap-v1',
+    );
+  });
+
+  test.each([7, 'load-response-v3 ', 'LOAD-RESPONSE-V3'])(
+    'deserializeSyncMessage rejects noncanonical signature context %#',
+    (signatureContext) => {
+      const serializer = new YjsJSONSerializer();
+      const wire = buildWire({ documentId: 'doc', signatureContext });
+      expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+        /signatureContext.*supported exact tag/,
+      );
+    },
+  );
+
   test('deserializeSyncMessage rejects non-string keychainChanges', () => {
     const serializer = new YjsJSONSerializer();
     const wire = buildWire({ documentId: 'doc', keychainChanges: [1, 2, 3] });

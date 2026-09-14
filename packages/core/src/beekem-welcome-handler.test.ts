@@ -75,6 +75,7 @@ function makeDeps(
 function baseAcceptableMessage(): CRDTSyncMessage<ChangesType, PublicKey> {
   return {
     documentId: '/doc/welcome',
+    signatureContext: 'beekem-welcome-v1',
     welcomeEpochId: new Uint8Array(32).fill(7),
     welcomeRecipient: 'my-pubkey',
     welcomeRecipientKemPublicKey: new Uint8Array(65).fill(4),
@@ -642,6 +643,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
   test('gate ordering: missing welcomeEpochId takes precedence over missing welcomeRecipient', async () => {
     const msg: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: '/doc/welcome',
+      signatureContext: 'beekem-welcome-v1',
       // Both welcomeEpochId and welcomeRecipient are missing. The
       // epoch-id gate runs first so the reported reason is the
       // epoch-id one, matching the production handler's order.

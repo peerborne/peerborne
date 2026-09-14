@@ -1,4 +1,7 @@
-import type { CRDTSyncMessage } from './crdt-sync-message.js';
+import type {
+  CRDTSyncMessage,
+  SyncMessageSignatureContext,
+} from './crdt-sync-message.js';
 import {
   MAX_CHANGE_TREE_DEPTH,
   MAX_CHANGE_TREE_EDGES,
@@ -26,87 +29,96 @@ const syncMessageSnapshotLimits = {
   maxValueBytes: 2 * MAX_SHARED_PROTOCOL_REQUEST_BYTES,
 } as const;
 
-export type SyncMessageContext =
-  | 'ordinary-sync-v1'
-  | 'document-publish-v1'
-  | 'load-response-v3'
-  | 'load-response-v4'
-  | 'tip-advertisement-v1'
-  | 'security-advertisement-v1'
-  | 'invitation-bootstrap-v1'
-  | 'beekem-welcome-v1'
-  | 'beekem-path-update-v1'
-  | 'key-update-v2';
+export type SyncMessageContext = SyncMessageSignatureContext;
 
-const allowedFields: Readonly<Record<SyncMessageContext, ReadonlySet<string>>> =
-  {
-    'ordinary-sync-v1': new Set([
-      'documentId',
-      'changeId',
-      'changes',
-      'snapshot',
-      'signature',
-    ]),
-    'document-publish-v1': new Set([
-      'documentId',
-      'changeId',
-      'changes',
-      'signature',
-    ]),
-    'load-response-v3': new Set([
-      'documentId',
-      'changeId',
-      'changes',
-      'snapshot',
-      'keychainChanges',
-      'tips',
-      'signature',
-    ]),
-    'load-response-v4': new Set([
-      'documentId',
-      'changeId',
-      'changes',
-      'snapshot',
-      'keychainChanges',
-      'tipsHash',
-      'tips',
-      'loadSecurityState',
-      'loadChallenge',
-      'signature',
-    ]),
-    'tip-advertisement-v1': new Set(['documentId', 'tipsHash', 'signature']),
-    'security-advertisement-v1': new Set([
-      'documentId',
-      'tipsHash',
-      'loadSecurityState',
-      'loadChallenge',
-      'signature',
-    ]),
-    'invitation-bootstrap-v1': new Set([
-      'documentId',
-      'changeId',
-      'changes',
-      'snapshot',
-      'keychainChanges',
-      'tips',
-      'signature',
-    ]),
-    'beekem-welcome-v1': new Set([
-      'documentId',
-      'welcomeEpochId',
-      'welcomeRecipient',
-      'welcomeRecipientKemPublicKey',
-      'eciesSealed',
-      'signature',
-    ]),
-    'beekem-path-update-v1': new Set([
-      'documentId',
-      'pathUpdate',
-      'pathUpdateEpochId',
-      'signature',
-    ]),
-    'key-update-v2': new Set(['documentId', 'keychainChanges', 'signature']),
-  };
+const allowedFields: Readonly<
+  Record<SyncMessageContext, ReadonlySet<string>>
+> = {
+  'ordinary-sync-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'changeId',
+    'changes',
+    'snapshot',
+    'signature',
+  ]),
+  'document-publish-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'changeId',
+    'changes',
+    'signature',
+  ]),
+  'load-response-v3': new Set([
+    'documentId',
+    'signatureContext',
+    'changeId',
+    'changes',
+    'snapshot',
+    'keychainChanges',
+    'tips',
+    'signature',
+  ]),
+  'load-response-v4': new Set([
+    'documentId',
+    'signatureContext',
+    'changeId',
+    'changes',
+    'snapshot',
+    'keychainChanges',
+    'tipsHash',
+    'tips',
+    'loadSecurityState',
+    'loadChallenge',
+    'signature',
+  ]),
+  'tip-advertisement-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'tipsHash',
+    'signature',
+  ]),
+  'security-advertisement-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'tipsHash',
+    'loadSecurityState',
+    'loadChallenge',
+    'signature',
+  ]),
+  'invitation-bootstrap-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'changeId',
+    'changes',
+    'snapshot',
+    'keychainChanges',
+    'tips',
+    'signature',
+  ]),
+  'beekem-welcome-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'welcomeEpochId',
+    'welcomeRecipient',
+    'welcomeRecipientKemPublicKey',
+    'eciesSealed',
+    'signature',
+  ]),
+  'beekem-path-update-v1': new Set([
+    'documentId',
+    'signatureContext',
+    'pathUpdate',
+    'pathUpdateEpochId',
+    'signature',
+  ]),
+  'key-update-v2': new Set([
+    'documentId',
+    'signatureContext',
+    'keychainChanges',
+    'signature',
+  ]),
+};
 
 /**
  * Deeply detach a deserialized sync message and reject fields owned by another
@@ -133,6 +145,11 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
         `${context} message contains unexpected field '${field}'`,
       );
     }
+  }
+  if (message.signatureContext !== context) {
+    throw new TypeError(
+      `${context} message must declare signatureContext '${context}'`,
+    );
   }
 
   return snapshotDeepEnumerableData(

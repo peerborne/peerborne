@@ -87,7 +87,11 @@ describe('ordinary sync-message context confinement', () => {
     });
 
     await expect(
-      document.sync({ documentId: documentPath, ...extra }),
+      document.sync({
+        documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        ...extra,
+      }),
     ).resolves.toBe(false);
     expect(verify).not.toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
@@ -108,6 +112,7 @@ describe('ordinary sync-message context confinement', () => {
       await expect(
         document.sync({
           documentId,
+          signatureContext: 'ordinary-sync-v1',
           changes: { kind: 'document' },
           signature: 'AQ==',
         }),
@@ -131,6 +136,7 @@ describe('ordinary sync-message context confinement', () => {
       (document.sync as (...args: any[]) => Promise<boolean>)(
         {
           documentId: documentPath,
+          signatureContext: 'ordinary-sync-v1',
           changes: { kind: 'document' },
           signature: 'AQ==',
         },
@@ -161,6 +167,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes,
         signature: 'AQ==',
@@ -198,6 +205,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes: { kind: 'document', change: { value: 1 } },
         signature: 'AQ==',
@@ -229,6 +237,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes: { kind: 'document', change: { value: 1 } },
         signature: 'AQ==',
@@ -277,6 +286,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         keychainChanges: { delta: 1 },
         signature: 'AQ==',
       }),
@@ -287,6 +297,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: '/another-document',
+        signatureContext: 'ordinary-sync-v1',
         changes: { kind: 'document' },
         signature: 'AQ==',
       }),
@@ -336,6 +347,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         keychainChanges: { delta: 1 },
       }),
     );
@@ -352,6 +364,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: '/another-document',
+        signatureContext: 'ordinary-sync-v1',
         changes: { kind: 'document' },
       }),
     );
