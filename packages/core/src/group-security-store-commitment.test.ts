@@ -322,6 +322,14 @@ describe('group-security store snapshot commitment', () => {
       groupSecurityStoreSnapshotCommitment(overlap),
     ).rejects.toThrow(/both pending and consumed/);
 
+    const nonFork = cloneSnapshot(await fixture());
+    nonFork.forkEvidence!.secondRecordId = new Uint8Array(
+      nonFork.forkEvidence!.firstRecordId,
+    );
+    await expect(
+      groupSecurityStoreSnapshotCommitment(nonFork),
+    ).rejects.toThrow(/fork record IDs must be distinct/);
+
     const extra = {
       ...(await fixture()),
       ignoredSecurityMetadata: true,
