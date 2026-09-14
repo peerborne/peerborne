@@ -22,6 +22,7 @@ describe('document publish message boundary', () => {
   test('ignores another topic before deserialization', () => {
     const { serializer, deserialize } = serializerReturning({
       documentId: '/doc',
+      signatureContext: 'document-publish-v1',
     });
 
     expect(
@@ -41,7 +42,10 @@ describe('document publish message boundary', () => {
     ['empty', ''],
     ['overlong UTF-8', `/${'😀'.repeat(1024)}`],
   ])('rejects a %s document ID', (_label, documentId) => {
-    const { serializer } = serializerReturning({ documentId });
+    const { serializer } = serializerReturning({
+      documentId,
+      signatureContext: 'document-publish-v1',
+    });
 
     expect(() =>
       decodeDocumentPublishMessage(
@@ -56,6 +60,7 @@ describe('document publish message boundary', () => {
   test('rejects specialized fields before returning a document route', () => {
     const { serializer } = serializerReturning({
       documentId: '/doc',
+      signatureContext: 'document-publish-v1',
       keychainChanges: {},
     });
 
@@ -73,6 +78,7 @@ describe('document publish message boundary', () => {
     const changes = { kind: 'document', change: { value: 1 } };
     const { serializer } = serializerReturning({
       documentId: '/doc',
+      signatureContext: 'document-publish-v1',
       changes,
     });
 
@@ -86,6 +92,7 @@ describe('document publish message boundary', () => {
 
     expect(message).toEqual({
       documentId: '/doc',
+      signatureContext: 'document-publish-v1',
       changes: { kind: 'document', change: { value: 1 } },
     });
   });

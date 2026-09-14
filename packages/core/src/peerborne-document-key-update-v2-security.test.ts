@@ -54,6 +54,7 @@ function encryptedPayload(): Uint8Array {
 function receiverHarness(
   message: Record<string, unknown> = {
     documentId: documentPath,
+    signatureContext: 'key-update-v2',
     keychainChanges: { delta: 1 },
     signature: 'AQ==',
   },
@@ -114,6 +115,7 @@ describe('legacy document key-update V2 admission', () => {
   test('rejects an unsigned update without mutation', async () => {
     const harness = receiverHarness({
       documentId: documentPath,
+      signatureContext: 'key-update-v2',
       keychainChanges: { delta: 1 },
     });
 
@@ -126,6 +128,7 @@ describe('legacy document key-update V2 admission', () => {
   test('rejects an update without keychain changes', async () => {
     const harness = receiverHarness({
       documentId: documentPath,
+      signatureContext: 'key-update-v2',
       signature: 'AQ==',
     });
 
@@ -140,6 +143,7 @@ describe('legacy document key-update V2 admission', () => {
     async (documentId) => {
       const harness = receiverHarness({
         documentId,
+        signatureContext: 'key-update-v2',
         keychainChanges: { delta: 1 },
         signature: 'AQ==',
       });
@@ -158,6 +162,7 @@ describe('legacy document key-update V2 admission', () => {
   ])('rejects a cross-context %s before verification', async (_label, extra) => {
     const harness = receiverHarness({
       documentId: documentPath,
+      signatureContext: 'key-update-v2',
       keychainChanges: { delta: 1 },
       signature: 'AQ==',
       ...extra,
@@ -216,6 +221,7 @@ describe('legacy document key-update V2 admission', () => {
     const harness = receiverHarness();
     const decoded = {
       documentId: documentPath,
+      signatureContext: 'key-update-v2',
       keychainChanges: { delta: 1 },
       signature: 'AQ==',
     };
@@ -240,6 +246,7 @@ describe('legacy document key-update V2 admission', () => {
     const harness = receiverHarness();
     const decoded = {
       documentId: documentPath,
+      signatureContext: 'key-update-v2',
       keychainChanges: { delta: 1 },
       signature: 'AQ==',
     };
