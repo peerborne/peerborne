@@ -567,9 +567,14 @@ describe('applied membership delta commitment', () => {
     expect(new TextDecoder().decode(
       canonicalAppliedGroupMembershipDelta(delta),
     )).toContain('group-security-applied-membership-delta/v1');
-    expect(() =>
-      canonicalAppliedGroupMembershipDelta({ changes: [] }),
-    ).toThrow(/change count/);
+    const empty = canonicalAppliedGroupMembershipDelta({ changes: [] });
+    expect(new TextDecoder().decode(empty)).toContain(
+      'group-security-applied-membership-delta/v1',
+    );
+    expect(empty.slice(-2)).toEqual(new Uint8Array([0, 0]));
+    await expect(
+      appliedGroupMembershipDeltaHash({ changes: [] }),
+    ).resolves.toHaveLength(32);
     expect(() =>
       canonicalAppliedGroupMembershipDelta({
         changes: [

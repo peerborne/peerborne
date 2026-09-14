@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 import { runInNewContext } from 'node:vm';
 
 import {
@@ -22,6 +23,67 @@ describe('WebCryptoGroupStateProtector', () => {
     await expect(
       protector.open(first, new Uint8Array([5, 6, 8])),
     ).rejects.toBeDefined();
+  });
+
+  test('round-trips empty plaintext and associated data', async () => {
+    const protector = await WebCryptoGroupStateProtector.generate('key-1');
+    const sealed = await protector.seal(new Uint8Array(), new Uint8Array());
+
+    expect(sealed.ciphertext).toHaveLength(16);
+    await expect(
+      protector.open(sealed, new Uint8Array()),
+    ).resolves.toEqual(new Uint8Array());
+  });
+
+  test('generates provider-owned keys with an alternate Web Crypto implementation', async () => {
+    const alternateProvider = new PeculiarCrypto();
+    const cryptoProvider = alternateProvider as unknown as Crypto;
+    const protector = await WebCryptoGroupStateProtector.generate(
+      'peculiar-key',
+      cryptoProvider,
+    );
+    const plaintext = new Uint8Array([1, 2, 3]);
+    const associatedData = new Uint8Array([4, 5]);
+    const sealed = await protector.seal(plaintext, associatedData);
+
+    await expect(protector.open(sealed, associatedData)).resolves.toEqual(
+      plaintext,
+    );
+
+    const externallyOwnedKey = await alternateProvider.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    expect(
+      () =>
+        new WebCryptoGroupStateProtector(
+          'peculiar-external-key',
+          externallyOwnedKey as unknown as CryptoKey,
+          cryptoProvider,
+        ),
+    ).toThrow(/non-extractable 256-bit AES-GCM key/);
+
+    const extractableKey = await alternateProvider.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await expect(
+      WebCryptoGroupStateProtector.generate('peculiar-extractable-key', {
+        getRandomValues:
+          alternateProvider.getRandomValues.bind(alternateProvider),
+        subtle: {
+          generateKey: async () => extractableKey,
+          encrypt: alternateProvider.subtle.encrypt.bind(
+            alternateProvider.subtle,
+          ),
+          decrypt: alternateProvider.subtle.decrypt.bind(
+            alternateProvider.subtle,
+          ),
+        },
+      } as unknown as Crypto),
+    ).rejects.toThrow(/non-extractable 256-bit AES-GCM key/);
   });
 
   test('rejects ciphertext and nonce tampering', async () => {
