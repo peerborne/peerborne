@@ -139,4 +139,36 @@ describe('reader membership preflight', () => {
     expect(registerBeeKEMReader).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
   });
+
+  test('rejects an unsupported replacement before ACL or BeeKEM mutation', async () => {
+    const readerKemPublicKey = await validKemPublicKey();
+    const add = jest.fn();
+    const makeChange = jest.fn();
+    const keychainChangesForWelcome = jest.fn();
+    const registerBeeKEMReader = jest.fn();
+    const sendBeeKEMWelcome = jest.fn();
+    const document = fakeDocument({
+      _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+      _beekemInitialized: true,
+      _beekem: { memberCount: 2 },
+      _readers: {
+        check: jest.fn(async () => false),
+        users: jest.fn(async () => []),
+        add,
+      },
+      _keychainChangesForWelcome: keychainChangesForWelcome,
+      _makeChange: makeChange,
+      _registerBeeKEMReader: registerBeeKEMReader,
+      _sendBeeKEMWelcome: sendBeeKEMWelcome,
+    });
+
+    await expect(
+      document.addReader({ replacement: true }, readerKemPublicKey),
+    ).rejects.toThrow(/replacement readers are not supported/);
+    expect(keychainChangesForWelcome).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    expect(makeChange).not.toHaveBeenCalled();
+    expect(registerBeeKEMReader).not.toHaveBeenCalled();
+    expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
+  });
 });
