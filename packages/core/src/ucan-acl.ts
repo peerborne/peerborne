@@ -21,30 +21,56 @@ export interface UCANACLEntry {
   revoked: boolean;
 }
 
+function copyUCAN(ucan: UCAN): UCAN {
+  return {
+    ...ucan,
+    capabilities: ucan.capabilities.map(({ resource, ability }) => ({
+      resource,
+      ability,
+    })),
+    proofs: [...ucan.proofs],
+  };
+}
+
+function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
+  return {
+    ...entry,
+    ucan: copyUCAN(entry.ucan),
+    capabilities: [...entry.capabilities],
+    epochId: entry.epochId && new Uint8Array(entry.epochId),
+  };
+}
+
 /**
  * UCAN-based ACL with fine-grained capability support.
  *
- * Conflict resolution follows p2panda's "strong removal" pattern:
- * - Concurrent mutual revocations: both parties are removed (safety-first)
- * - Concurrent grant + revoke of the same user: revoke wins
- * - Concurrent grants by different admins: both apply (CRDT merge)
- *
- * All access to the backing ACL should go through UCANACL methods to keep
- * state consistent between the entries map, revoked set, and backing ACL.
+ * Capability metadata and local revocation tombstones are process-local; only
+ * membership in the backing ACL is replicated. Capability checks therefore
+ * require current backing membership first, so a remote removal takes effect
+ * locally even while a stale metadata entry remains cached. A later remote
+ * re-add can reactivate that cached metadata, so this wrapper does not provide
+ * distributed strong-removal semantics by itself.
  */
 export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicKey> {
   private _entries: Map<string, UCANACLEntry> = new Map(); // publicKeyBase64 -> entry
   private _revokedKeys: Set<string> = new Set(); // set of revoked public key base64 strings
+  private _pendingGrants: Set<string> = new Set();
 
-  // Private backing ACL -- all access must go through UCANACL methods
-  // to keep _entries, _revokedKeys, and the backing ACL in sync.
+  // Private backing ACL so membership checks cannot bypass the wrapper's
+  // capability and local-revocation gates.
   constructor(
     private readonly _backing: ACL<ChangesType, PublicKey>,
     private readonly _serializePublicKey: (key: PublicKey) => Promise<string>,
   ) {}
 
   async add(publicKey: PublicKey): Promise<ChangesType> {
-    return this._backing.add(publicKey);
+    const keyBase64 = await this._serializePublicKey(publicKey);
+    const changes = await this._backing.add(publicKey);
+    // A successful local add is an explicit reauthorization. Clear a local
+    // tombstone only after backing membership exists; failed adds must remain
+    // revoked.
+    this._revokedKeys.delete(keyBase64);
+    return changes;
   }
 
   async remove(publicKey: PublicKey): Promise<ChangesType> {
@@ -113,6 +139,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
     const keyBase64 = await this._serializePublicKey(publicKey);
 
+    if ((await this._backing.check(publicKey)) !== true) {
+      return false;
+    }
+
+    if (this._pendingGrants.has(keyBase64)) {
+      return false;
+    }
+
     // Check if revoked
     if (this._revokedKeys.has(keyBase64)) {
       return false;
@@ -120,8 +154,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
     const entry = this._entries.get(keyBase64);
     if (!entry) {
-      // Fall back to backing ACL for basic membership check
-      return (await this._backing.check(publicKey)) === true;
+      // Backwards compatibility for members added through the basic ACL API.
+      return true;
     }
 
     // Check if any held capability implies the required one
@@ -157,26 +191,41 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     proofs: string[] = [],
     epochId?: Uint8Array,
   ): Promise<ChangesType> {
+    const stableProofs = [...proofs];
+    const stableEpochId = epochId && new Uint8Array(epochId);
     const keyBase64 = await this._serializePublicKey(publicKey);
 
-    const ucan = await createUCAN(
-      issuerPrivateKey,
-      issuerPublicKeyBase64,
-      keyBase64,
-      [{ resource: documentId, ability: capability }],
-      proofs,
-    );
+    if (this._pendingGrants.has(keyBase64)) {
+      throw new Error('A capability grant for this user is already in progress');
+    }
+    this._pendingGrants.add(keyBase64);
 
-    this._entries.set(keyBase64, {
-      publicKeyBase64: keyBase64,
-      ucan,
-      capabilities: [capability],
-      grantedBy: issuerPublicKeyBase64,
-      epochId,
-      revoked: false,
-    });
+    try {
+      const ucan = await createUCAN(
+        issuerPrivateKey,
+        issuerPublicKeyBase64,
+        keyBase64,
+        [{ resource: documentId, ability: capability }],
+        stableProofs,
+      );
+      const entry = copyUCANEntry({
+        publicKeyBase64: keyBase64,
+        ucan,
+        capabilities: [capability],
+        grantedBy: issuerPublicKeyBase64,
+        epochId: stableEpochId,
+        revoked: false,
+      });
+      const changes = await this._backing.add(publicKey);
 
-    return this._backing.add(publicKey);
+      // Install the capability and clear a previous local revocation only
+      // after the backing membership mutation succeeds.
+      this._revokedKeys.delete(keyBase64);
+      this._entries.set(keyBase64, entry);
+      return changes;
+    } finally {
+      this._pendingGrants.delete(keyBase64);
+    }
   }
 
   /**
@@ -191,7 +240,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
    */
   async getEntry(publicKey: PublicKey): Promise<UCANACLEntry | undefined> {
     const keyBase64 = await this._serializePublicKey(publicKey);
-    return this._entries.get(keyBase64);
+    const entry = this._entries.get(keyBase64);
+    return entry && copyUCANEntry(entry);
   }
 }
 

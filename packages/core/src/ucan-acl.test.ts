@@ -62,6 +62,28 @@ describe('UCANACL', () => {
     expect(result).toBe('changes');
   });
 
+  test('a successful local add clears a prior revocation tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+
+    await acl.add('key1');
+
+    expect(await acl.check('key1', '/doc/read')).toBe(true);
+  });
+
+  test('a failed local add preserves a prior revocation tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockRejectedValue(new Error('backing add failed'));
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+
+    await expect(acl.add('key1')).rejects.toThrow('backing add failed');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');
@@ -78,6 +100,7 @@ describe('UCANACL', () => {
     const commit = jest.fn();
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
     backing.prepareRemove = jest.fn(async () => ({
       changes: 'remove-changes',
       commit,
@@ -111,6 +134,7 @@ describe('UCANACL', () => {
     });
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
     backing.prepareRemove = jest.fn(async () => ({
       changes: 'remove-changes',
       commit: () => {
@@ -147,6 +171,7 @@ describe('UCANACL', () => {
     });
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
     backing.remove.mockRejectedValue(new Error('legacy removal failed'));
     await acl.grant(
       'user1',
@@ -194,6 +219,7 @@ describe('UCANACL', () => {
     });
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('changes');
+    backing.check.mockResolvedValue(true);
 
     await (acl.grant as any)('user1', '/doc/write', 'doc-1', {} as CryptoKey, 'issuer');
 
@@ -203,6 +229,123 @@ describe('UCANACL', () => {
     expect(readResult).toBe(true);
     const adminResult = await acl.check('user1', '/doc/admin');
     expect(adminResult).toBe(false);
+  });
+
+  test('grant stays unavailable until the backing ACL addition succeeds', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    let resolveAdd!: (changes: string) => void;
+    const addPending = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockReturnValue(addPending);
+    // Model a backing ACL that mutates membership before its Promise settles.
+    backing.check.mockResolvedValue(true);
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/read',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).rejects.toThrow('already in progress');
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+    expect(await acl.getEntry('user1')).toBeUndefined();
+
+    resolveAdd('changes');
+    await expect(grant).resolves.toBe('changes');
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('a rejected backing ACL addition does not install a capability', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockRejectedValue(new Error('backing add failed'));
+    backing.check.mockResolvedValue(false);
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).rejects.toThrow('backing add failed');
+
+    expect(await acl.getEntry('user1')).toBeUndefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+  });
+
+  test('a successful grant clears a prior revocation tombstone', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('user1');
+
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('a remote backing removal disables a cached capability entry', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    let isMember = true;
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('changes');
+    backing.check.mockImplementation(async () => isMember);
+    backing.merge.mockImplementation(() => {
+      isMember = false;
+    });
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+
+    acl.merge('remote-removal');
+
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
   });
 
   test('users without capability delegates to backing ACL', async () => {
@@ -223,7 +366,8 @@ describe('UCANACL', () => {
     await (acl.grant as any)('user1', '/doc/write', 'doc-1', {} as CryptoKey, 'issuer-b64', []);
     const entry = await acl.getEntry('user1');
     expect(entry).toBeDefined();
-    expect(entry!.ucan).toBe(fakeUcan);
+    expect(entry!.ucan).toEqual(fakeUcan);
+    expect(entry!.ucan).not.toBe(fakeUcan);
     expect(entry!.capabilities).toEqual(['/doc/write']);
     expect(entry!.revoked).toBe(false);
   });
@@ -241,6 +385,60 @@ describe('UCANACL', () => {
     await (acl.grant as any)('user2', '/doc/admin', 'doc-1', {} as CryptoKey, 'issuer-b64', [], epochId);
     const entry = await acl.getEntry('user2');
     expect(entry!.epochId).toEqual(epochId);
+  });
+
+  test('grant storage and getEntry results are detached from mutable input', async () => {
+    const tokenCapabilities = [
+      { resource: 'doc-1', ability: '/doc/write' },
+    ];
+    const proofs = ['proof-1'];
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: tokenCapabilities,
+      proofs,
+    });
+    const epochId = new Uint8Array([10, 20, 30]);
+    let resolveAdd!: (changes: string) => void;
+    const addPending = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockReturnValue(addPending);
+    backing.check.mockResolvedValue(true);
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+      proofs,
+      epochId,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    tokenCapabilities[0]!.ability = '/doc/admin';
+    proofs.push('proof-2');
+    epochId[0] = 255;
+    resolveAdd('changes');
+    await grant;
+
+    const first = await acl.getEntry('user1');
+    first!.capabilities[0] = '/doc/admin';
+    first!.ucan.capabilities[0]!.ability = '/doc/admin';
+    first!.ucan.proofs.push('proof-3');
+    first!.epochId![1] = 255;
+
+    const second = await acl.getEntry('user1');
+    expect(second!.capabilities).toEqual(['/doc/write']);
+    expect(second!.ucan.capabilities).toEqual([
+      { resource: 'doc-1', ability: '/doc/write' },
+    ]);
+    expect(second!.ucan.proofs).toEqual(['proof-1']);
+    expect(second!.epochId).toEqual(new Uint8Array([10, 20, 30]));
+    expect(await acl.check('user1', '/doc/admin')).toBe(false);
   });
 
   test('revoke delegates to remove', async () => {
