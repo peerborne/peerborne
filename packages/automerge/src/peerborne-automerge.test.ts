@@ -5,6 +5,7 @@ import {
   Change as BinaryChange,
   clone as automergeClone,
   change as automergeChange,
+  decodeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
@@ -554,7 +555,7 @@ describe('AutomergeKeychain', () => {
     expect(result).toBeUndefined();
   });
 
-  test('currentKeyChange() reuses replay-safe history for a one-key keychain', async () => {
+  test('currentKeyChange() is stable for a one-key keychain', async () => {
     const source = new AutomergeKeychain();
     const [id] = await source.add();
 
@@ -572,16 +573,141 @@ describe('AutomergeKeychain', () => {
     expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
   });
 
-  test('currentKeyChange() rejects a later key rather than synthesizing a fresh actor', async () => {
+  test('currentKeyChange() exports a stable replay-safe current key after rotation', async () => {
     const source = new AutomergeKeychain();
-    await source.add();
-    await source.add();
+    const [oldID] = await source.add();
+    const [currentID, currentKey] = await source.add();
     const before = source.history().map((entry) => Array.from(entry));
 
-    await expect(source.currentKeyChange()).rejects.toThrow(
-      'Automerge cannot export the current key replay-safely',
-    );
+    const first = await source.currentKeyChange();
+    const repeated = await source.currentKeyChange();
+    const restored = new AutomergeKeychain();
+    restored.merge(source.history());
+    const afterRestore = await restored.currentKeyChange();
+    const equivalent = new AutomergeKeychain();
+    await equivalent.addEpochKey(currentID, currentKey);
+
+    expect(repeated).toEqual(first);
+    expect(afterRestore).toEqual(first);
+    expect(await equivalent.currentKeyChange()).toEqual(first);
+    const freshReceiver = new AutomergeKeychain();
+    freshReceiver.merge(first);
+    freshReceiver.merge(repeated);
+    freshReceiver.merge(afterRestore);
+    const freshKeys = await freshReceiver.keys();
+    expect(freshKeys.map(([keyID]) => keyID)).toEqual([currentID]);
+    await expect(
+      crypto.subtle.exportKey('raw', freshKeys[0][1]),
+    ).resolves.toEqual(await crypto.subtle.exportKey('raw', currentKey));
+
+    const establishedReceiver = new AutomergeKeychain();
+    establishedReceiver.merge(source.history());
+    establishedReceiver.merge(first);
+    expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
+      oldID,
+      currentID,
+    ]);
     expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
+  });
+
+  test('projection actor identity binds the complete key tuple', async () => {
+    const id = new Uint8Array(32).fill(0x4a);
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const first = new AutomergeKeychain();
+    const second = new AutomergeKeychain();
+    await first.addEpochKey(id, firstKey);
+    await second.addEpochKey(id, secondKey);
+
+    const firstProjection = await first.currentKeyChange();
+    const secondProjection = await second.currentKeyChange();
+    expect(decodeChange(firstProjection[1]).actor).not.toBe(
+      decodeChange(secondProjection[1]).actor,
+    );
+    expect(firstProjection).not.toEqual(secondProjection);
+
+    const retainedKeys: ArrayBuffer[] = [];
+    for (const [accepted, conflicting] of [
+      [firstProjection, secondProjection],
+      [secondProjection, firstProjection],
+    ] as const) {
+      const receiver = new AutomergeKeychain();
+      receiver.merge(accepted);
+      const before = receiver.history().map((change) => Array.from(change));
+      expect(() => receiver.merge(conflicting)).toThrow(
+        'Standalone keychain history is not an append-only view',
+      );
+      expect(receiver.history().map((change) => Array.from(change))).toEqual(
+        before,
+      );
+      retainedKeys.push(
+        await crypto.subtle.exportKey('raw', (await receiver.current())[1]),
+      );
+    }
+    expect(new Uint8Array(retainedKeys[0])).not.toEqual(
+      new Uint8Array(retainedKeys[1]),
+    );
+  });
+
+  test('a current-only receiver can apply the next predecessor-bound rotation', async () => {
+    const source = new AutomergeKeychain();
+    await source.add();
+    const [currentID] = await source.add();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const next = await source.prepareKey();
+    const nextID = new Uint8Array(next.keyId);
+    const distributed = next.currentKeyChange!;
+    next.commit();
+    const prepared = receiver.prepareAppend(distributed, {
+      expectedPreviousKeyId: currentID,
+      expectedNewKeyId: nextID,
+    });
+    await prepared.hydrateKeys();
+    prepared.commit();
+
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([
+      currentID,
+      nextID,
+    ]);
+    expect((await receiver.current())[0]).toEqual(nextID);
+    expect(receiver.getKey(nextID)).toBeDefined();
+  });
+
+  test('a receiver that misses a rotation rejects the later successor without mutation', async () => {
+    const source = new AutomergeKeychain();
+    const [initialID] = await source.add();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const missed = await source.prepareKey();
+    const missedID = new Uint8Array(missed.keyId);
+    missed.commit();
+    const later = await source.prepareKey();
+    const laterID = new Uint8Array(later.keyId);
+    const laterProjection = later.currentKeyChange!;
+    later.commit();
+    const before = receiver.history().map((change) => Array.from(change));
+
+    expect(() =>
+      receiver.prepareAppend(laterProjection, {
+        expectedPreviousKeyId: missedID,
+        expectedNewKeyId: laterID,
+      }),
+    ).toThrow(/predecessor does not match current key/);
+    expect(receiver.history().map((change) => Array.from(change))).toEqual(
+      before,
+    );
+    expect((await receiver.current())[0]).toEqual(initialID);
   });
 
   test('historySince() reuses replay-safe history at the first key', async () => {

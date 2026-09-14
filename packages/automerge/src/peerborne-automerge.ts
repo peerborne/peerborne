@@ -304,6 +304,8 @@ function cacheKeyToKeyId(cacheKey: string): Uint8Array {
  * peers do not trust each other's actor IDs.
  */
 const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
+const KEYCHAIN_PROJECTION_ACTOR_DOMAIN =
+  'peerborne:automerge-keychain-projection:v1\0';
 
 /**
  * Build a fresh keychain document. The seed change (creating the empty
@@ -313,7 +315,7 @@ const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
  * operations let actual keychain histories merge without a root-array actor
  * conflict; filtered exports must still preserve their existing operation IDs.
  */
-function newKeychainDoc(): AutomergeKeychainDoc {
+function newKeychainDoc(actor?: string): AutomergeKeychainDoc {
   const seeded = change(
     init<{ keys: [string, string][] }>(KEYCHAIN_SEED_ACTOR),
     { time: 0 },
@@ -322,10 +324,28 @@ function newKeychainDoc(): AutomergeKeychainDoc {
     },
   );
   // clone() with no actor argument assigns a random per-instance actor.
-  return clone(seeded);
+  return actor === undefined ? clone(seeded) : clone(seeded, actor);
 }
 
 type CanonicalKeychainEntry = readonly [string, string];
+
+async function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+): Promise<BinaryChange[]> {
+  const identity = new TextEncoder().encode(
+    `${KEYCHAIN_PROJECTION_ACTOR_DOMAIN}${JSON.stringify(entry)}`,
+  );
+  const actor = toHex(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', identity)),
+  );
+  const projection = change(newKeychainDoc(actor), { time: 0 }, (doc) => {
+    doc.keys.push([entry[0], entry[1]]);
+  });
+  validateAutomergeKeychain(projection);
+  return getAllChanges(projection).map(
+    (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+  );
+}
 
 function assertAesGcmDocumentKey(key: CryptoKey): void {
   try {
@@ -804,15 +824,10 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const changes = getChanges(base, keychainNew);
     const history = getAllChanges(keychainNew);
-    // This exact projection is safe to cache and replay because retries reuse
-    // its existing actor operation. It must not be regenerated later from a
-    // multi-key live history under a fresh actor.
-    const projectionBase = newKeychainDoc();
-    const projection = change(projectionBase, (doc) => {
-      doc.keys.push([epochIdHex, serialized]);
-    });
-    validateAutomergeKeychain(projection);
-    const currentKeyChange = getAllChanges(projection);
+    const currentKeyChange = await currentKeyProjection([
+      epochIdHex,
+      serialized,
+    ]);
     let committed = false;
     return {
       changes: changes.map(
@@ -821,9 +836,7 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
       history: history.map(
         (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
       ),
-      currentKeyChange: currentKeyChange.map(
-        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
-      ),
+      currentKeyChange,
       commit: () => {
         if (committed) {
           throw new Error('Prepared epoch key was already committed');
@@ -1085,17 +1098,12 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<BinaryChange[]> {
-    validateAutomergeKeychain(this._keychain);
-    if (this._keychain.keys.length === 0) {
+    const entries = validateAutomergeKeychain(this._keychain);
+    if (entries.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (this._keychain.keys.length !== 1) {
-      throw new Error(
-        'Automerge cannot export the current key replay-safely',
-      );
-    }
-    return this.history();
+    return currentKeyProjection(entries[entries.length - 1]);
   }
 
   /**
