@@ -1,9 +1,11 @@
 import { describe, expect, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
+import * as TreeMath from './beekem/tree-math.js';
 import {
   deserializeBeeKEMWelcomeFromWire,
   serializeBeeKEMWelcomeForWire,
 } from './beekem-welcome-wire.js';
+import { MAX_BEEKEM_TREE_LEAVES } from './beekem/types.js';
 import {
   decodeWelcomeSealedPayload,
   encodeWelcomeSealedPayload,
@@ -116,14 +118,319 @@ describe('beekem-welcome-wire', () => {
         treeHash: 42,
       }),
     ).toThrow(/treeHash/);
+    const malformedPath = serializeBeeKEMWelcomeForWire({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: -1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array([1]),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+    expect(() => deserializeBeeKEMWelcomeFromWire(malformedPath)).toThrow(
+      /pathKeys\[0\]\.nodeIndex.*non-negative/,
+    );
+  });
+
+  test(
+    'round-trips and applies real trees across non-power-of-two growth',
+    async () => {
+      let inviter = new BeeKEM();
+      const inviterKeys = await generateECDHKeyPair();
+      await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
+
+      for (let leafCount = 2; leafCount <= 12; leafCount++) {
+        const memberKeys = await generateECDHKeyPair();
+        const { welcome, rootSecret } = await inviter.addMember(
+          memberKeys.publicKey,
+        );
+        const restored = deserializeBeeKEMWelcomeFromWire(
+          JSON.parse(JSON.stringify(serializeBeeKEMWelcomeForWire(welcome))),
+        );
+        const joined = new BeeKEM();
+        const joinedRoot = await joined.processWelcome(
+          restored,
+          memberKeys.privateKey,
+          memberKeys.publicKey,
+        );
+
+        expect(joined.memberCount).toBe(leafCount);
+        expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(
+          true,
+        );
+        inviter = joined;
+      }
+    },
+  );
+
+  test('accepts the fixed legacy topology for a six-leaf tree', () => {
+    const pathKeys = [9, 7].map((nodeIndex) => ({
+      nodeIndex,
+      publicKey: new Uint8Array(65).fill(nodeIndex),
+      encryptedPrivateKey: new Uint8Array([nodeIndex]),
+    }));
+    const treeNodePublicKeys = [0, 1, 2, 3, 4, 5, 6, 8].map(
+      (nodeIndex) => ({
+        nodeIndex,
+        publicKey:
+          nodeIndex === 3 ? null : new Uint8Array(65).fill(nodeIndex + 1),
+      }),
+    );
+
+    const restored = deserializeBeeKEMWelcomeFromWire(
+      serializeBeeKEMWelcomeForWire({
+        leafIndex: 10,
+        pathKeys,
+        treeNodePublicKeys,
+        treeHash: new Uint8Array(32).fill(42),
+      }),
+    );
+
+    expect(restored.leafIndex).toBe(10);
+    expect(restored.pathKeys.map((node) => node.nodeIndex)).toEqual([9, 7]);
+    expect(restored.treeNodePublicKeys.map((node) => node.nodeIndex)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 8,
+    ]);
+  });
+
+  test(
+    'round-trips and applies a real Welcome containing blanked nodes',
+    async () => {
+      let inviter = new BeeKEM();
+      const inviterKeys = await generateECDHKeyPair();
+      await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
+
+      for (let leafCount = 2; leafCount <= 5; leafCount++) {
+        const memberKeys = await generateECDHKeyPair();
+        const { welcome } = await inviter.addMember(memberKeys.publicKey);
+        const joined = new BeeKEM();
+        await joined.processWelcome(
+          welcome,
+          memberKeys.privateKey,
+          memberKeys.publicKey,
+        );
+        inviter = joined;
+      }
+
+      await inviter.removeMember(0);
+      inviter.compact();
+
+      const memberKeys = await generateECDHKeyPair();
+      const { welcome, rootSecret } = await inviter.addMember(
+        memberKeys.publicKey,
+      );
+      const wire = serializeBeeKEMWelcomeForWire(welcome);
+      expect(
+        wire.treeNodePublicKeys.some((node) => node.publicKey === null),
+      ).toBe(true);
+
+      const restored = deserializeBeeKEMWelcomeFromWire(
+        JSON.parse(JSON.stringify(wire)),
+      );
+      const joined = new BeeKEM();
+      const joinedRoot = await joined.processWelcome(
+        restored,
+        memberKeys.privateKey,
+        memberKeys.publicKey,
+      );
+      expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(true);
+    },
+  );
+
+  test('rejects over-capacity arrays before reading their elements', () => {
+    let getterCalls = 0;
+    const pathKeys = new Array(65);
+    Object.defineProperty(pathKeys, '0', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return null;
+      },
+    });
+
     expect(() =>
       deserializeBeeKEMWelcomeFromWire({
-        leafIndex: 0,
-        pathKeys: [{ nodeIndex: -1, publicKey: '', encryptedPrivateKey: '' }],
+        leafIndex: 2,
+        pathKeys,
         treeNodePublicKeys: [],
         treeHash: '',
       }),
-    ).toThrow(/pathKeys\[0\]\.nodeIndex.*non-negative/);
+    ).toThrow(/pathKeys has invalid length/);
+    expect(getterCalls).toBe(0);
+  });
+
+  test('rejects a tree array beyond the global BeeKEM bound', () => {
+    expect(() =>
+      deserializeBeeKEMWelcomeFromWire({
+        leafIndex: 2,
+        pathKeys: [null],
+        treeNodePublicKeys: new Array(2 * MAX_BEEKEM_TREE_LEAVES - 2),
+        treeHash: '',
+      }),
+    ).toThrow(/supported tree width/);
+  });
+
+  test('rejects oversized encrypted path material before base64 decoding', () => {
+    const oversizedCiphertext = Buffer.alloc(300_000).toString('base64');
+    const wire = serializeBeeKEMWelcomeForWire({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array([1]),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+    wire.pathKeys[0].encryptedPrivateKey = oversizedCiphertext;
+
+    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(
+      /encryptedPrivateKey exceeds the encoded size limit/,
+    );
+  });
+
+  test('rejects non-canonical base64 and invalid fixed-width fields', () => {
+    const createWire = () =>
+      serializeBeeKEMWelcomeForWire({
+        leafIndex: 2,
+        pathKeys: [
+          {
+            nodeIndex: 1,
+            publicKey: new Uint8Array(65),
+            encryptedPrivateKey: new Uint8Array([1]),
+          },
+        ],
+        treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+        treeHash: new Uint8Array(32),
+      });
+
+    const unpadded = createWire();
+    unpadded.pathKeys[0].publicKey = unpadded.pathKeys[0].publicKey.replace(
+      /=+$/,
+      '',
+    );
+    expect(() => deserializeBeeKEMWelcomeFromWire(unpadded)).toThrow(
+      /publicKey must use canonical padded base64/,
+    );
+
+    const shortPublicKey = createWire();
+    shortPublicKey.pathKeys[0].publicKey = Buffer.alloc(64).toString('base64');
+    expect(() => deserializeBeeKEMWelcomeFromWire(shortPublicKey)).toThrow(
+      /publicKey must decode to 65 bytes/,
+    );
+
+    const shortTreeHash = createWire();
+    shortTreeHash.treeHash = Buffer.alloc(31).toString('base64');
+    expect(() => deserializeBeeKEMWelcomeFromWire(shortTreeHash)).toThrow(
+      /treeHash must decode to 32 bytes/,
+    );
+  });
+
+  test('enforces the aggregate decoded-byte budget across valid fields', () => {
+    const numLeaves = MAX_BEEKEM_TREE_LEAVES;
+    const treeWidth = 2 * numLeaves - 1;
+    const leafIndex = TreeMath.leafToNodeIndex(numLeaves - 1);
+    const directPath = TreeMath.directPath(leafIndex, numLeaves);
+    const excluded = new Set([leafIndex, ...directPath]);
+    const publicKey = Buffer.alloc(65).toString('base64');
+    const maximumCiphertext = Buffer.alloc(
+      64 * (4096 + 8) + 4096,
+    ).toString('base64');
+
+    expect(() =>
+      deserializeBeeKEMWelcomeFromWire({
+        leafIndex,
+        pathKeys: directPath.map((nodeIndex) => ({
+          nodeIndex,
+          publicKey,
+          encryptedPrivateKey: maximumCiphertext,
+        })),
+        treeNodePublicKeys: Array.from(
+          { length: treeWidth },
+          (_, nodeIndex) =>
+            excluded.has(nodeIndex) ? null : { nodeIndex, publicKey },
+        ).filter((node) => node !== null),
+        treeHash: Buffer.alloc(32).toString('base64'),
+      }),
+    ).toThrow(/aggregate decoded-byte budget exceeded/);
+  });
+
+  test('rejects sparse arrays, extra fields, and accessors without invoking them', () => {
+    const sparse = serializeBeeKEMWelcomeForWire({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array([1]),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+    sparse.pathKeys = new Array(1);
+    expect(() => deserializeBeeKEMWelcomeFromWire(sparse)).toThrow(
+      /dense array/,
+    );
+
+    const extra = { ...sparse, pathKeys: [], unexpected: true };
+    expect(() => deserializeBeeKEMWelcomeFromWire(extra)).toThrow(
+      /unexpected field/,
+    );
+
+    let getterCalls = 0;
+    const accessor = serializeBeeKEMWelcomeForWire({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array([1]),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+    Object.defineProperty(accessor, 'leafIndex', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return 2;
+      },
+    });
+    expect(() => deserializeBeeKEMWelcomeFromWire(accessor)).toThrow(
+      /own enumerable data property/,
+    );
+    expect(getterCalls).toBe(0);
+
+    const nestedAccessor = serializeBeeKEMWelcomeForWire({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array([1]),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+    Object.defineProperty(nestedAccessor.pathKeys[0], 'publicKey', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return '';
+      },
+    });
+    expect(() => deserializeBeeKEMWelcomeFromWire(nestedAccessor)).toThrow(
+      /own enumerable data property/,
+    );
+    expect(getterCalls).toBe(0);
   });
 });
 
