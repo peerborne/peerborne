@@ -450,6 +450,26 @@ describe('V4 load-security state JSON boundary', () => {
       /loadSecurityState/,
     );
   });
+
+  test('rejects reordered commitments before signed re-encoding', () => {
+    const digest = Buffer.from(new Uint8Array(32)).toString('base64');
+    const wire = new TextEncoder().encode(
+      JSON.stringify({
+        documentId: '/doc',
+        loadSecurityState: {
+          groupId: 'group',
+          version: 1,
+          controlHead: digest,
+          epoch: '0',
+          treeHash: digest,
+          confirmedTranscriptHash: digest,
+        },
+      }),
+    );
+    expect(() => jsonSerializer.deserializeSyncMessage(wire)).toThrow(
+      /canonical order/,
+    );
+  });
 });
 
 describe('stack-safe JSON serialization', () => {

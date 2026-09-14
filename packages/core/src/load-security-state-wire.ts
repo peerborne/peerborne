@@ -26,6 +26,9 @@ const WIRE_KEYS = [
   'treeHash',
   'confirmedTranscriptHash',
 ] as const;
+const WIRE_KEYS_DESCRIPTION =
+  'version, controlHead, groupId, epoch, treeHash, confirmedTranscriptHash';
+const reflectOwnKeys = Reflect.ownKeys;
 
 function canonicalBase64(name: string, value: unknown): Uint8Array {
   if (
@@ -54,14 +57,14 @@ function requireExactObject(value: unknown): Record<string, unknown> {
     value,
     'loadSecurityState',
   );
-  const keys = Reflect.ownKeys(record);
-  const expected = new Set<string>(WIRE_KEYS);
-  if (
-    keys.length !== expected.size ||
-    keys.some((key) => typeof key !== 'string' || !expected.has(key))
-  ) {
+  const keys = reflectOwnKeys(record);
+  let canonicalOrder = keys.length === WIRE_KEYS.length;
+  for (let index = 0; canonicalOrder && index < keys.length; index++) {
+    canonicalOrder = keys[index] === WIRE_KEYS[index];
+  }
+  if (!canonicalOrder) {
     throw new TypeError(
-      `loadSecurityState must contain exactly: ${WIRE_KEYS.join(', ')}`,
+      `loadSecurityState must contain exactly these fields in canonical order: ${WIRE_KEYS_DESCRIPTION}`,
     );
   }
   return record;
