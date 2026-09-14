@@ -2072,6 +2072,15 @@ describe('collectAllCidsInTree (post-sync verification basis)', () => {
     ]);
   });
 
+  test.each([null, false, 0])(
+    'rejects a present malformed tree instead of treating %p as absent',
+    (root) => {
+      expect(() =>
+        collectAllCidsInTree('root-cid', root as never),
+      ).toThrow(/node must be an object/);
+    },
+  );
+
   test('stops at a deferred children sentinel (cannot enumerate descendants)', () => {
     const tree: CRDTChangeNode<Changes> = {
       kind: crdtDocumentChangeNode,

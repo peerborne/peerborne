@@ -105,6 +105,40 @@ describe('bounded iterative change-tree consumers', () => {
     expect(Object.isFrozen(snapshotChildren.child)).toBe(true);
   });
 
+  test.each([null, [], 7])(
+    'rejects malformed children at a stop boundary: %p',
+    (children) => {
+      const root = {
+        kind: crdtDocumentChangeNode,
+        children,
+      } as unknown as Node;
+
+      expect(() =>
+        collectBoundedChangeTree('boundary', root, {
+          stopBelowNodeIds: new Set(['boundary']),
+        }),
+      ).toThrow(/children must be an object/);
+    },
+  );
+
+  test('snapshots a stop-boundary children map without invoking accessors', () => {
+    const getter = jest.fn(() => ({ kind: crdtDocumentChangeNode }));
+    const children = {};
+    Object.defineProperty(children, 'child', {
+      enumerable: true,
+      get: getter,
+    });
+
+    expect(() =>
+      collectBoundedChangeTree(
+        'boundary',
+        { kind: crdtDocumentChangeNode, children },
+        { stopBelowNodeIds: new Set(['boundary']) },
+      ),
+    ).toThrow(/data properties/);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   test('rejects a tree over the aggregate node budget', () => {
     expect(() =>
       collectBoundedChangeTree('root', overNodeBudgetTree()),
@@ -372,6 +406,41 @@ describe('bounded iterative change-tree consumers', () => {
       expect(document._documentChangeCount).toBe(7);
       expect(document._changesSinceSnapshot).toBe(3);
       expect(document._latestSnapshot).toBeUndefined();
+    },
+  );
+
+  test.each([
+    ['missing root CID', { kind: crdtDocumentChangeNode }],
+    ['null tree', null],
+    ['false tree', false],
+    ['numeric tree', 0],
+  ] as const)(
+    'rejects a present %s before keychain or ACL mutation',
+    async (_caseName, changes) => {
+      const mergeKeychain = jest.fn();
+      const mergeReaders = jest.fn();
+      const mergeWriters = jest.fn();
+      const document = fakeDocument({
+        documentPath: '/missing-root-preflight',
+        _isSigningEnabled: () => false,
+        _keychain: { merge: mergeKeychain },
+        _mergeReaders: mergeReaders,
+        _mergeWriters: mergeWriters,
+      });
+
+      await expect(
+        document._syncUnlocked(
+          {
+            documentId: '/missing-root-preflight',
+            changes,
+            keychainChanges: new Uint8Array([9]),
+          },
+          false,
+        ),
+      ).rejects.toThrow();
+      expect(mergeKeychain).not.toHaveBeenCalled();
+      expect(mergeReaders).not.toHaveBeenCalled();
+      expect(mergeWriters).not.toHaveBeenCalled();
     },
   );
 

@@ -158,9 +158,9 @@ class SharedProtocolRequestTimeoutError extends Error {}
 class SharedProtocolHandlerTimeoutError extends Error {}
 
 /**
- * Stop admitting commits at the deadline and keep the stream owned until
- * every commit admitted before that cutoff has settled. Cooperative callers
- * must await all mutation work from the callback they pass to `runMutation`.
+ * Stop admitting commits at the deadline. Cooperative callers must await all
+ * mutation work from the callback they pass to `runMutation`; the shared
+ * handler gives admitted work one bounded grace period before stream reset.
  */
 class SharedProtocolHandlerAdmissionController
   implements SharedProtocolHandlerAdmission
@@ -262,9 +262,7 @@ async function withSharedProtocolHandlerDeadline<T>(
     timeout = setTimeout(() => {
       timedOut = true;
       admission.expire();
-      void admission.whenMutationsQuiesce().then(() => {
-        reject(new SharedProtocolHandlerTimeoutError());
-      });
+      reject(new SharedProtocolHandlerTimeoutError());
     }, timeoutMs);
   });
   try {
@@ -345,12 +343,12 @@ async function abortRejectedSharedProtocolStream(
  * Apply a deadline to all work after request framing, including provider
  * calls, backpressure, and the write-side close that flushes a response. At
  * the deadline, new state commits are denied; a commit already admitted is
- * allowed to settle before timeout is reported or the stream is reset, so the
- * configured interval is an admission cutoff rather than an interruption of
- * an in-flight commit. A completed response is reset only after its close
- * resolves; every other outcome gets its own fixed reset classification. Full
- * reset, rather than read half-close, releases the inbound stream slot when
- * the remote withholds its FIN.
+ * given one bounded grace period to settle before the stream is reset, so a
+ * hung provider cannot retain an inbound stream slot indefinitely. A
+ * completed response is reset only after its close resolves; every other
+ * outcome gets its own fixed reset classification. Full reset, rather than
+ * read half-close, releases the inbound stream slot when the remote withholds
+ * its FIN.
  */
 async function runSharedProtocolHandlerPhase(
   stream: ProtocolStream,
@@ -379,7 +377,10 @@ async function runSharedProtocolHandlerPhase(
     throw err;
   } finally {
     admission.expire();
-    await admission.whenMutationsQuiesce();
+    await boundedSharedProtocolCleanup(
+      () => admission.whenMutationsQuiesce(),
+      timeoutMs,
+    );
     await abortSharedProtocolStream(stream, timeoutMs, classification);
   }
 }

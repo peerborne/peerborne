@@ -89,7 +89,7 @@ export function collectInvitationCidsToInstall<ChangesType>(
   provenSnapshotBoundaries: ReadonlySet<string>,
 ): string[] {
   const required = new Set<string>();
-  if (!root) {
+  if (root === undefined) {
     if (rootId !== undefined) required.add(rootId);
     return [...required];
   }
