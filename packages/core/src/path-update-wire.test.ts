@@ -14,6 +14,20 @@ async function generateECDHKeyPair(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(ECDH_ALGO, true, ['deriveBits']);
 }
 
+function validPathUpdateV1() {
+  return {
+    senderLeafIndex: 0,
+    senderLeafPublicKey: new Uint8Array(65).fill(1),
+    nodes: [
+      {
+        nodeIndex: 1,
+        publicKey: new Uint8Array(65).fill(2),
+        encryptedPrivateKey: new Uint8Array(125).fill(3),
+      },
+    ],
+  };
+}
+
 function validPathUpdateV2(): PathUpdateV2 {
   return {
     version: 2,
@@ -186,6 +200,245 @@ describe('path-update-wire', () => {
         nodes: [{ nodeIndex: 'not-int', publicKey: '', encryptedPrivateKey: '' }],
       }),
     ).toThrow(/node\[0\].nodeIndex/);
+  });
+
+  test('rejects oversized node arrays before reading their entries', () => {
+    let nodeReads = 0;
+    const oversizedNodes = new Array(14);
+    Object.defineProperty(oversizedNodes, '0', {
+      enumerable: true,
+      get() {
+        nodeReads++;
+        throw new Error('must not read an oversized node array');
+      },
+    });
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+
+    expect(() =>
+      deserializePathUpdateFromWire({ ...wire, nodes: oversizedNodes }),
+    ).toThrow(/nodes exceeds 13 entries/);
+    expect(nodeReads).toBe(0);
+  });
+
+  test.each([
+    ['unsafe sender leaf', { senderLeafIndex: Number.MAX_SAFE_INTEGER + 1 }],
+    ['odd sender leaf', { senderLeafIndex: 1 }],
+    ['out-of-range sender leaf', { senderLeafIndex: 16_384 }],
+  ])('rejects an invalid %s index', (_label, patch) => {
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+    expect(() =>
+      deserializePathUpdateFromWire({ ...wire, ...patch }),
+    ).toThrow(/senderLeafIndex.*supported leaf/);
+  });
+
+  test.each([
+    ['unsafe', Number.MAX_SAFE_INTEGER + 1],
+    ['leaf', 2],
+    ['out-of-range', 16_383],
+  ])('rejects an %s path-node index', (_label, nodeIndex) => {
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        nodes: [{ ...wire.nodes[0], nodeIndex }],
+      }),
+    ).toThrow(/node\[0\].nodeIndex.*supported internal node/);
+  });
+
+  test('rejects duplicate path-node indices', () => {
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        nodes: [wire.nodes[0], { ...wire.nodes[0] }],
+      }),
+    ).toThrow(/unique supported internal node/);
+  });
+
+  test('bounds every decoded key and ciphertext field', () => {
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+    const shortKey = Buffer.from(new Uint8Array(64)).toString('base64');
+    const oversizedCiphertext = Buffer.from(
+      new Uint8Array(4097),
+    ).toString('base64');
+
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        senderLeafPublicKey: shortKey,
+      }),
+    ).toThrow(/senderLeafPublicKey.*65 bytes/);
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        nodes: [{ ...wire.nodes[0], publicKey: shortKey }],
+      }),
+    ).toThrow(/node\[0\].publicKey.*65 bytes/);
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        nodes: [
+          {
+            ...wire.nodes[0],
+            encryptedPrivateKey: oversizedCiphertext,
+          },
+        ],
+      }),
+    ).toThrow(/encryptedPrivateKey.*0\.\.4096 bytes/);
+  });
+
+  test.each([1, 124])(
+    'rejects a nonempty %i-byte ciphertext below the ECIES framing minimum',
+    (length) => {
+      const wire = serializePathUpdateForWire(validPathUpdateV1());
+      expect(() =>
+        deserializePathUpdateFromWire({
+          ...wire,
+          nodes: [
+            {
+              ...wire.nodes[0],
+              encryptedPrivateKey: Buffer.from(
+                new Uint8Array(length),
+              ).toString('base64'),
+            },
+          ],
+        }),
+      ).toThrow(/encryptedPrivateKey.*empty or 125\.\.4096 bytes/);
+    },
+  );
+
+  test.each([0, 125, 4096])(
+    'accepts the %i-byte ciphertext boundary',
+    (length) => {
+      const wire = serializePathUpdateForWire(validPathUpdateV1());
+      expect(
+        deserializePathUpdateFromWire({
+          ...wire,
+          nodes: [
+            {
+              ...wire.nodes[0],
+              encryptedPrivateKey: Buffer.from(
+                new Uint8Array(length),
+              ).toString('base64'),
+            },
+          ],
+        }).nodes[0].encryptedPrivateKey,
+      ).toHaveLength(length);
+    },
+  );
+
+  test('requires exact objects and canonical padded base64', () => {
+    const wire = serializePathUpdateForWire(validPathUpdateV1());
+    expect(() =>
+      deserializePathUpdateFromWire({ ...wire, version: undefined }),
+    ).toThrow(/unexpected field 'version'/);
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        senderLeafPublicKey: wire.senderLeafPublicKey.replace(/=+$/, ''),
+      }),
+    ).toThrow(/canonical padded base64/);
+    expect(() =>
+      deserializePathUpdateFromWire({
+        ...wire,
+        nodes: [{ ...wire.nodes[0], unexpected: true }],
+      }),
+    ).toThrow(/unexpected field 'unexpected'/);
+  });
+});
+
+describe('path-update-wire V1 outbound boundary', () => {
+  test('validates and detaches every runtime byte field', () => {
+    const update = validPathUpdateV1();
+    const wire = serializePathUpdateForWire(update);
+    update.senderLeafPublicKey.fill(9);
+    update.nodes[0].publicKey.fill(9);
+    update.nodes[0].encryptedPrivateKey.fill(9);
+
+    const restored = deserializePathUpdateFromWire(wire);
+    expect(restored.senderLeafPublicKey).toEqual(new Uint8Array(65).fill(1));
+    expect(restored.nodes[0].publicKey).toEqual(new Uint8Array(65).fill(2));
+    expect(restored.nodes[0].encryptedPrivateKey).toEqual(
+      new Uint8Array(125).fill(3),
+    );
+  });
+
+  test('rejects malformed runtime byte fields instead of normalizing them', () => {
+    expect(() =>
+      serializePathUpdateForWire({
+        ...validPathUpdateV1(),
+        senderLeafPublicKey: new Uint8Array(64),
+      }),
+    ).toThrow(/senderLeafPublicKey.*65/);
+    expect(() =>
+      serializePathUpdateForWire({
+        ...validPathUpdateV1(),
+        nodes: [
+          {
+            ...validPathUpdateV1().nodes[0],
+            encryptedPrivateKey: new Uint8Array(124),
+          },
+        ],
+      }),
+    ).toThrow(/encryptedPrivateKey.*empty or 125\.\.4096/);
+    expect(() =>
+      serializePathUpdateForWire({
+        ...validPathUpdateV1(),
+        senderLeafPublicKey: {
+          byteLength: 65,
+          buffer: new ArrayBuffer(65),
+        } as unknown as Uint8Array,
+      }),
+    ).toThrow(/senderLeafPublicKey.*Uint8Array/);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      expect(() =>
+        serializePathUpdateForWire({
+          ...validPathUpdateV1(),
+          senderLeafPublicKey: new Uint8Array(new SharedArrayBuffer(65)),
+        }),
+      ).toThrow(/senderLeafPublicKey.*unshared/);
+    }
+  });
+
+  test('rejects oversized arrays before consulting their entries', () => {
+    let nodeReads = 0;
+    const nodes = new Array(14);
+    Object.defineProperty(nodes, '0', {
+      enumerable: true,
+      get() {
+        nodeReads++;
+        throw new Error('must not read an oversized node array');
+      },
+    });
+
+    expect(() =>
+      serializePathUpdateForWire({
+        ...validPathUpdateV1(),
+        nodes,
+      }),
+    ).toThrow(/nodes exceeds 13 entries/);
+    expect(nodeReads).toBe(0);
+  });
+
+  test('requires exact own enumerable data properties', () => {
+    expect(() =>
+      serializePathUpdateForWire({
+        ...validPathUpdateV1(),
+        unexpected: undefined,
+      } as unknown as ReturnType<typeof validPathUpdateV1>),
+    ).toThrow(/unexpected field 'unexpected'/);
+
+    const update = validPathUpdateV1();
+    Object.defineProperty(update.nodes[0], 'publicKey', {
+      enumerable: true,
+      get() {
+        return new Uint8Array(65);
+      },
+    });
+    expect(() => serializePathUpdateForWire(update)).toThrow(
+      /publicKey.*own enumerable data property/,
+    );
   });
 });
 
