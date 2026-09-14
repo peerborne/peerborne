@@ -25,6 +25,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation/storage pipeline and the GossipSub publish call, not remote receipt.
 - **No durable reconnect-and-replay guarantee.** Libp2p may redial keep-alive peers, and an explicit load or later sync history may catch a peer up, but Peerborne does not durably guarantee connection restoration or replay of every missed update.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
+- **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key; it needs another recipient-bound Welcome or an explicit out-of-band recovery path.
 - **Browser restart recovery not verified.** IndexedDB persists blocks locally, but complete browser restart → reopen → verify document state is not proven in CI.
 - **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no application-facing key backup or recovery service.
 
