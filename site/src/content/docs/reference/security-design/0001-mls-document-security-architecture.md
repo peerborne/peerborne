@@ -6,7 +6,7 @@ description: Proposed control-plane, persistence, key-derivation, compatibility,
 - Status: Proposed
 - Date: 2026-08-21
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
-- Follow-up evaluation: [ADR 0002](../0002-mls-implementation-dependency/)
+- Follow-up evaluations: ADR 0002 and ADR 0003
 
 ## Context
 
@@ -493,5 +493,3 @@ adversarial tests are all part of the security boundary.
 
 - [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)
 - [RFC 9750: The Messaging Layer Security Architecture](https://www.rfc-editor.org/rfc/rfc9750.html)
-- [ADR 0002: MLS implementation dependency](../0002-mls-implementation-dependency/)
-- [ADR 0003: Zero-knowledge membership proofs](../0003-zero-knowledge-membership-proofs/)
