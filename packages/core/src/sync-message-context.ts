@@ -1,4 +1,7 @@
-import type { CRDTSyncMessage } from './crdt-sync-message.js';
+import type {
+  CRDTSyncMessage,
+  SyncMessageSignatureContext,
+} from './crdt-sync-message.js';
 import {
   MAX_CHANGE_TREE_DEPTH,
   MAX_CHANGE_TREE_EDGES,
@@ -27,23 +30,14 @@ const syncMessageSnapshotLimits = {
   maxValueBytes: 2 * MAX_SHARED_PROTOCOL_REQUEST_BYTES,
 } as const;
 
-export type SyncMessageContext =
-  | 'ordinary-sync-v1'
-  | 'document-publish-v1'
-  | 'load-response-v3'
-  | 'load-response-v4'
-  | 'tip-advertisement-v1'
-  | 'security-advertisement-v1'
-  | 'invitation-bootstrap-v1'
-  | 'beekem-welcome-v1'
-  | 'beekem-path-update-v1'
-  | 'key-update-v2';
+export type SyncMessageContext = SyncMessageSignatureContext;
 
 const allowedFields: Readonly<
   Record<SyncMessageContext, ReadonlySet<string>>
 > = {
   'ordinary-sync-v1': new Set([
     'documentId',
+    'signatureContext',
     'changeId',
     'changes',
     'snapshot',
@@ -51,12 +45,14 @@ const allowedFields: Readonly<
   ]),
   'document-publish-v1': new Set([
     'documentId',
+    'signatureContext',
     'changeId',
     'changes',
     'signature',
   ]),
   'load-response-v3': new Set([
     'documentId',
+    'signatureContext',
     'changeId',
     'changes',
     'snapshot',
@@ -66,6 +62,7 @@ const allowedFields: Readonly<
   ]),
   'load-response-v4': new Set([
     'documentId',
+    'signatureContext',
     'changeId',
     'changes',
     'snapshot',
@@ -78,11 +75,13 @@ const allowedFields: Readonly<
   ]),
   'tip-advertisement-v1': new Set([
     'documentId',
+    'signatureContext',
     'tipsHash',
     'signature',
   ]),
   'security-advertisement-v1': new Set([
     'documentId',
+    'signatureContext',
     'tipsHash',
     'loadSecurityState',
     'loadChallenge',
@@ -90,6 +89,7 @@ const allowedFields: Readonly<
   ]),
   'invitation-bootstrap-v1': new Set([
     'documentId',
+    'signatureContext',
     'changeId',
     'changes',
     'snapshot',
@@ -99,6 +99,7 @@ const allowedFields: Readonly<
   ]),
   'beekem-welcome-v1': new Set([
     'documentId',
+    'signatureContext',
     'welcomeEpochId',
     'welcomeRecipient',
     'welcomeRecipientKemPublicKey',
@@ -107,12 +108,14 @@ const allowedFields: Readonly<
   ]),
   'beekem-path-update-v1': new Set([
     'documentId',
+    'signatureContext',
     'pathUpdate',
     'pathUpdateEpochId',
     'signature',
   ]),
   'key-update-v2': new Set([
     'documentId',
+    'signatureContext',
     'keychainChanges',
     'signature',
   ]),
@@ -143,6 +146,11 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
         `${context} message contains unexpected field '${field}'`,
       );
     }
+  }
+  if (message.signatureContext !== context) {
+    throw new TypeError(
+      `${context} message must declare signatureContext '${context}'`,
+    );
   }
 
   return snapshotDeepEnumerableData(
