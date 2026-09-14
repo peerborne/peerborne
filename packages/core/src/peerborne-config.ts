@@ -273,7 +273,11 @@ export interface PeerborneConfig {
   pubsubDocumentPrefix: string;
 
   /**
-   * Prefix to apply to Libp2p PubSub topics for documents.
+   * GossipSub topic retained for legacy document-publish V1 messages.
+   *
+   * The current document-publish V1 payload is not an authenticated remote
+   * pinning request. `PeerborneNode` does not subscribe to this topic or
+   * perform any document, subscription, or pinning effect from it.
    */
   pubsubDocumentPublishPath: string;
 
