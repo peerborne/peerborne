@@ -72,4 +72,19 @@ describe('LRUCache', () => {
     expect(cache.get('a')).toBeUndefined();
     expect(cache.size).toBe(2);
   });
+
+  test('clone preserves recency while isolating later writes', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.get('a');
+
+    const copy = cache.clone();
+    copy.set('c', 3);
+
+    expect(copy.get('a')).toBe(1);
+    expect(copy.get('b')).toBeUndefined();
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('c')).toBeUndefined();
+  });
 });

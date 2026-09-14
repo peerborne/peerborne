@@ -101,6 +101,39 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
   ): Promise<PreparedACLChange<ChangesType>> {
     const prepared = await prepareAdd.call(this._backing, publicKey);
+    if (typeof prepared.claimCommit === 'function') {
+      let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+      const claimCommit = () => {
+        if (state !== 'prepared') {
+          throw new Error(
+            'Prepared ACL addition was already committed or claimed',
+          );
+        }
+        const committedRevocations = new Set(this._revokedKeys);
+        committedRevocations.delete(keyBase64);
+        const backingClaim = prepared.claimCommit!();
+        const finalizeBacking = backingClaim?.finalize;
+        if (typeof finalizeBacking !== 'function') {
+          throw new Error(
+            'Backing ACL commit claim returned an invalid finalizer',
+          );
+        }
+        state = 'claimed';
+        return {
+          finalize: () => {
+            if (state === 'committed') return;
+            finalizeBacking.call(backingClaim);
+            this._revokedKeys = committedRevocations;
+            state = 'committed';
+          },
+        };
+      };
+      return {
+        changes: prepared.changes,
+        claimCommit,
+        commit: () => claimCommit().finalize(),
+      };
+    }
     let committed = false;
     return {
       changes: prepared.changes,
@@ -151,6 +184,42 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
   ): Promise<PreparedACLChange<ChangesType>> {
     const prepared = await prepareRemove.call(this._backing, publicKey);
+    if (typeof prepared.claimCommit === 'function') {
+      let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+      const claimCommit = () => {
+        if (state !== 'prepared') {
+          throw new Error(
+            'Prepared ACL removal was already committed or claimed',
+          );
+        }
+        const committedRevocations = new Set(this._revokedKeys);
+        committedRevocations.add(keyBase64);
+        const committedEntries = new Map(this._entries);
+        committedEntries.delete(keyBase64);
+        const backingClaim = prepared.claimCommit!();
+        const finalizeBacking = backingClaim?.finalize;
+        if (typeof finalizeBacking !== 'function') {
+          throw new Error(
+            'Backing ACL commit claim returned an invalid finalizer',
+          );
+        }
+        state = 'claimed';
+        return {
+          finalize: () => {
+            if (state === 'committed') return;
+            finalizeBacking.call(backingClaim);
+            this._revokedKeys = committedRevocations;
+            this._entries = committedEntries;
+            state = 'committed';
+          },
+        };
+      };
+      return {
+        changes: prepared.changes,
+        claimCommit,
+        commit: () => claimCommit().finalize(),
+      };
+    }
     let committed = false;
     return {
       changes: prepared.changes,

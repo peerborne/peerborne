@@ -333,6 +333,32 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('prepareRemove() claim leaves membership live until an idempotent finalize', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    const claim = prepared.claimCommit!();
+    expect(await acl.check(key1)).toBe(true);
+    expect(() => prepared.commit()).toThrow(/already committed or claimed/);
+
+    claim.finalize();
+    claim.finalize();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('an abandoned removal claim leaves a fresh staging attempt usable', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const abandoned = await acl.prepareRemove(key1);
+
+    abandoned.claimCommit!();
+    const retry = await acl.prepareRemove(key1);
+    retry.claimCommit!().finalize();
+
+    expect(await acl.check(key1)).toBe(false);
+  });
+
   test('prepareRemove() rejects a stale commit before changing membership', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -912,6 +938,60 @@ describe('YjsKeychain', () => {
     expect(keys).toHaveLength(1);
     expect(keys[0][0]).toEqual(epochId);
     expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('prepareEpochKey() claim leaves history and cache live until finalize', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const historyBefore = keychain.history();
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+
+    const claim = prepared.claimCommit!();
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(keychain.getKey(epochId)).toBeUndefined();
+
+    claim.finalize();
+    claim.finalize();
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('an abandoned epoch claim leaves a fresh staging attempt usable', async () => {
+    const keychain = new YjsKeychain();
+    const abandonedEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const abandonedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const abandoned = await keychain.prepareEpochKey(
+      abandonedEpochId,
+      abandonedKey,
+    );
+
+    abandoned.claimCommit!();
+    const committedEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const committedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const retry = await keychain.prepareEpochKey(
+      committedEpochId,
+      committedKey,
+    );
+    retry.claimCommit!().finalize();
+
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([
+      committedEpochId,
+    ]);
+    expect(keychain.getKey(abandonedEpochId)).toBeUndefined();
+    expect(keychain.getKey(committedEpochId)).toBe(committedKey);
   });
 
   test('prepareEpochKey() exposes an exact replay-safe current projection', async () => {

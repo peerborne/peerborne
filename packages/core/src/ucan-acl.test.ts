@@ -113,6 +113,21 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  test('prepareAdd rejects a malformed backing claim before finalization', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      claimCommit: () => ({}),
+      commit,
+    }));
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(() => prepared.claimCommit()).toThrow(
+      'Backing ACL commit claim returned an invalid finalizer',
+    );
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   test('staged reauthorization clears a tombstone only after commit', async () => {
     backing.remove.mockResolvedValue('remove-changes');
     backing.check.mockResolvedValue(true);
@@ -223,6 +238,74 @@ describe('UCANACL', () => {
 
     expect(() => prepared.commit()).toThrow('stale backing ACL');
 
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('prepareRemove composes a backing claim without exposing partial UCAN state', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    let isMember = true;
+    const finalize = jest.fn(() => {
+      isMember = false;
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockImplementation(async () => isMember);
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      claimCommit: () => ({ finalize }),
+      commit: finalize,
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    const prepared = await acl.prepareRemove('user1');
+
+    const claim = prepared.claimCommit();
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+
+    claim.finalize();
+    claim.finalize();
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(await acl.getEntry('user1')).toBeUndefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+  });
+
+  test('prepareRemove rejects a malformed backing claim without changing UCAN state', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      claimCommit: () => ({}),
+      commit: jest.fn(),
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    const prepared = await acl.prepareRemove('user1');
+
+    expect(() => prepared.claimCommit()).toThrow(
+      'Backing ACL commit claim returned an invalid finalizer',
+    );
     expect(await acl.getEntry('user1')).toBeDefined();
     expect(await acl.check('user1', '/doc/write')).toBe(true);
   });

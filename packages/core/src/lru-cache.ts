@@ -41,6 +41,15 @@ export class LRUCache<K, V> {
     return this._map.has(key);
   }
 
+  /** Create an independent cache with the same values and recency order. */
+  clone(): LRUCache<K, V> {
+    const copy = new LRUCache<K, V>(this._maxSize);
+    for (const [key, value] of this._map) {
+      copy._map.set(key, value);
+    }
+    return copy;
+  }
+
   get size(): number {
     return this._map.size;
   }

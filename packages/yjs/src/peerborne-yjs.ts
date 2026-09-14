@@ -592,21 +592,32 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
     const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const changes = new Uint8Array(privateChanges);
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared ACL addition was already committed or claimed',
+        );
+      }
+      if (this._revision !== baseRevision || this._acl !== base) {
+        throw new Error('ACL changed while addition was staged');
+      }
+      state = 'claimed';
+      return {
+        finalize: () => {
+          if (state === 'committed') return;
+          if (!hadMember) {
+            this._acl = staged;
+            this._revision = baseRevision + 1;
+          }
+          state = 'committed';
+        },
+      };
+    };
     return {
       changes,
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared ACL addition was already committed');
-        }
-        if (this._revision !== baseRevision || this._acl !== base) {
-          throw new Error('ACL changed while addition was staged');
-        }
-        committed = true;
-        if (hadMember) return;
-        this._acl = staged;
-        this._revision++;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
@@ -630,21 +641,32 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
     const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const changes = new Uint8Array(privateChanges);
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared ACL removal was already committed or claimed',
+        );
+      }
+      if (this._revision !== baseRevision || this._acl !== base) {
+        throw new Error('ACL changed while removal was staged');
+      }
+      state = 'claimed';
+      return {
+        finalize: () => {
+          if (state === 'committed') return;
+          if (hadMember) {
+            this._acl = staged;
+            this._revision = baseRevision + 1;
+          }
+          state = 'committed';
+        },
+      };
+    };
     return {
       changes,
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared ACL removal was already committed');
-        }
-        if (this._revision !== baseRevision || this._acl !== base) {
-          throw new Error('ACL changed while removal was staged');
-        }
-        committed = true;
-        if (!hadMember) return;
-        this._acl = staged;
-        this._revision++;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
   current(): Uint8Array {
@@ -1025,7 +1047,7 @@ function yjsKeychainStateCommitment(
  * mechanism.
  */
 export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
-  private readonly _keyCache = new LRUCache<string, CryptoKey>(
+  private _keyCache = new LRUCache<string, CryptoKey>(
     MAX_KEYCHAIN_EPOCHS,
   );
   private _keychain = new Doc();
@@ -1129,23 +1151,35 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
       .push([[epochIdHex, serialized]]);
     validateYjsKeychain(currentProjection);
     const currentKeyChange = encodeStateAsUpdateV2(currentProjection);
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared epoch key was already committed or claimed',
+        );
+      }
+      if (this._revision !== baseRevision) {
+        throw new Error('Keychain changed while epoch key was staged');
+      }
+      const committedKeyCache = this._keyCache.clone();
+      committedKeyCache.set(epochIdHex, key);
+      state = 'claimed';
+      return {
+        finalize: () => {
+          if (state === 'committed') return;
+          this._keyCache = committedKeyCache;
+          this._keychain = staged;
+          this._revision = baseRevision + 1;
+          state = 'committed';
+        },
+      };
+    };
     return {
       changes: new Uint8Array(commitChanges),
       history: new Uint8Array(history),
       currentKeyChange: new Uint8Array(currentKeyChange),
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared epoch key was already committed');
-        }
-        if (this._revision !== baseRevision) {
-          throw new Error('Keychain changed while epoch key was staged');
-        }
-        this._keyCache.set(epochIdHex, key);
-        this._keychain = staged;
-        this._revision++;
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
 
