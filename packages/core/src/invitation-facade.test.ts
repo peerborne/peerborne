@@ -376,4 +376,51 @@ describe('public invitation facade', () => {
     expect(capturedKem?.publicKey).toBe(firstPublic);
     expect(Object.isFrozen(capturedKem)).toBe(true);
   });
+
+  test('discards a failed reserved candidate so the same invitation can retry', async () => {
+    const peerborne = createFacade();
+    const offer = invitationOffer(93, '/retry-after-bootstrap-rejection');
+    const firstCandidate = { id: 'first-candidate' };
+    const secondCandidate = { id: 'second-candidate' };
+    const doc = jest
+      .fn()
+      .mockReturnValueOnce(firstCandidate)
+      .mockReturnValueOnce(secondCandidate);
+    (peerborne as any).doc = doc;
+    const acceptOffer = jest.fn(
+      async (
+        acceptedOffer: InvitationOfferV1,
+        _kemKeyPair: CryptoKeyPair,
+        candidate: unknown,
+      ) => {
+        expect(
+          peerborne.isPendingInvitationDocument(
+            acceptedOffer.documentId,
+            candidate,
+          ),
+        ).toBe(true);
+        if (candidate === firstCandidate) {
+          throw new Error('bootstrap has wrong signature context');
+        }
+        return candidate;
+      },
+    );
+    (peerborne as any)._acceptInvitationOffer = acceptOffer;
+    const kemKeyPair = {
+      privateKey: { id: 'kem-private' },
+      publicKey: { id: 'kem-public' },
+    } as unknown as CryptoKeyPair;
+
+    await expect(
+      peerborne.acceptInvitation(offer, kemKeyPair),
+    ).rejects.toThrow('wrong signature context');
+    expect((peerborne as any)._pendingInvitationDocuments.size).toBe(0);
+
+    await expect(
+      peerborne.acceptInvitation(offer, kemKeyPair),
+    ).resolves.toBe(secondCandidate);
+    expect(doc).toHaveBeenCalledTimes(2);
+    expect(acceptOffer).toHaveBeenCalledTimes(2);
+    expect((peerborne as any)._pendingInvitationDocuments.size).toBe(0);
+  });
 });

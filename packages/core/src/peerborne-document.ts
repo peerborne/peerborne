@@ -17,6 +17,7 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
+  snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
@@ -106,7 +107,10 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { keychainHistorySinceOrFull } from './keychain.js';
+import {
+  keychainHistorySinceOrFull,
+  type Keychain,
+} from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { Base64 } from 'js-base64';
@@ -2340,6 +2344,10 @@ export class PeerborneDocument<
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      assertSharedProtocolRequestSize(
+        assembled.byteLength,
+        'Encrypted document-load response',
+      );
       console.log('Sending encrypted shared doc-load response');
 
       if (!isSharedProtocolHandlerActive(admission)) return;
@@ -2467,6 +2475,10 @@ export class PeerborneDocument<
         throw new Error(`Failed to encrypt snapshot response! Nonce cannot be empty`);
       }
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      assertSharedProtocolRequestSize(
+        assembled.byteLength,
+        'Encrypted snapshot-load response',
+      );
       console.log('Sending encrypted shared snapshot-load response');
 
       if (!isSharedProtocolHandlerActive(admission)) return;
@@ -2746,8 +2758,18 @@ export class PeerborneDocument<
     requireCompleteCids = false,
     configuredResponseTimeoutMs?: number,
   ): Promise<boolean> {
-    const responseLimit =
+    const requestedResponseLimit =
       maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE;
+    if (
+      !Number.isSafeInteger(requestedResponseLimit) ||
+      requestedResponseLimit <= 0
+    ) {
+      return false;
+    }
+    const responseLimit = Math.min(
+      requestedResponseLimit,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
     const responseTimeoutMs = documentLoadResponseTimeoutMs(
       configuredResponseTimeoutMs ?? this.swarm.config?.loadQuorumTimeoutMs,
     );
@@ -2805,7 +2827,22 @@ export class PeerborneDocument<
         // Decrypt the response. Extract the keyID from the header and
         // look it up in the keychain. Responses shorter than the encryption
         // header are treated as malformed and rejected.
-        const headerLength = this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+        const keyIDLength = this._keychainProvider.keyIDLength;
+        const nonceLength = this._authProvider.nonceBits;
+        if (
+          !Number.isSafeInteger(keyIDLength) ||
+          keyIDLength <= 0 ||
+          !Number.isSafeInteger(nonceLength) ||
+          nonceLength <= 0 ||
+          !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
+          keyIDLength + nonceLength + 1 > responseLimit
+        ) {
+          console.warn(
+            `Load response for ${this.documentPath}: invalid provider framing widths`,
+          );
+          return false;
+        }
+        const headerLength = keyIDLength + nonceLength;
         let rawContent: Uint8Array;
         if (assembled.length <= headerLength) {
           // Too short to contain a valid encrypted payload -- reject.
@@ -2815,10 +2852,10 @@ export class PeerborneDocument<
           return false;
         }
 
-        const blockKeyID = assembled.slice(0, this._keychainProvider.keyIDLength);
+        const blockKeyID = assembled.slice(0, keyIDLength);
         const key = this._keychain.getKey(blockKeyID);
         if (key) {
-          const blockNonce = assembled.slice(this._keychainProvider.keyIDLength, headerLength);
+          const blockNonce = assembled.slice(keyIDLength, headerLength);
           const blockData = assembled.slice(headerLength);
           const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
           if (!decrypted) {
@@ -2826,7 +2863,19 @@ export class PeerborneDocument<
               `Failed to decrypt load response for ${this.documentPath}`,
             );
           }
-          rawContent = decrypted;
+          try {
+            rawContent = copyUnsharedUint8Array(
+              decrypted,
+              1,
+              responseLimit,
+              'Load response plaintext',
+            );
+          } catch {
+            console.warn(
+              `Load response for ${this.documentPath}: malformed plaintext, skipping peer`,
+            );
+            return false;
+          }
         } else {
           // KeyID not recognized -- peer sent encrypted data with a key we
           // don't have. Fail and let the caller try the next peer.
@@ -2836,19 +2885,41 @@ export class PeerborneDocument<
           return false;
         }
 
-        const message = snapshotSyncMessageForContext<
-          ChangesType,
-          PublicKey
-        >(
-          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-          'load-response-v3',
-        );
+        let message: CRDTSyncMessage<ChangesType, PublicKey>;
+        try {
+          message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+            'load-response-v3',
+          );
+        } catch {
+          console.warn(
+            `Load response for ${this.documentPath}: malformed or cross-context message, skipping peer`,
+          );
+          return false;
+        }
         if (message.documentId !== this.documentPath) {
           console.warn(
             `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
           );
           return false;
         }
+        if (
+          !Array.isArray(message.tips) ||
+          message.tips.some((tip) => typeof tip !== 'string')
+        ) {
+          console.warn(
+            `Load response for ${this.documentPath}: missing required v3 tips, skipping peer`,
+          );
+          if (expectedTipsHashHex !== null) {
+            throw new _QuorumBindCheckFailedError(
+              '(missing tips)',
+              'Quorum frontier binding: responder omitted required valid `tips` ' +
+                'attestation on a v3 load response.',
+            );
+          }
+          return false;
+        }
+        const loadWriterKeysVersion = this._writerKeysVersion;
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the
         // existing trusted writer set BEFORE sync() mutates state. This
@@ -2872,10 +2943,33 @@ export class PeerborneDocument<
               );
               return false;
             }
-            const { signature, ...messageWithoutSignature } = message;
-            const raw = this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
-            );
+            let messageWithoutSignature: CRDTSyncMessage<
+              ChangesType,
+              PublicKey
+            >;
+            let raw: Uint8Array;
+            try {
+              const verificationMessage = snapshotSyncMessageForContext<
+                ChangesType,
+                PublicKey
+              >(message, 'load-response-v3');
+              const { signature: _signature, ...unsigned } =
+                verificationMessage;
+              messageWithoutSignature = unsigned;
+              raw = copyUnsharedUint8Array(
+                this._syncMessageSerializer.serializeSyncMessage(
+                  messageWithoutSignature,
+                ),
+                1,
+                responseLimit,
+                'Unsigned load response',
+              );
+            } catch {
+              console.warn(
+                `Load response for ${this.documentPath}: malformed signed content, skipping peer`,
+              );
+              return false;
+            }
             // Mirror `_verifyWriterSignature`: a malformed/non-string signature
             // can cause `js-base64` to throw. Treat decode failure as a
             // verification failure for this peer (skip and let the caller try
@@ -2884,7 +2978,7 @@ export class PeerborneDocument<
             // catch{}, which would hide the malformed input entirely.
             let signatureBytes: Uint8Array;
             try {
-              signatureBytes = this._deserializeSignature(signature);
+              signatureBytes = this._deserializeSignature(message.signature);
             } catch {
               console.warn(
                 `Load response for ${this.documentPath}: malformed signature, skipping peer`,
@@ -2895,17 +2989,43 @@ export class PeerborneDocument<
               requiredResponseSigner === undefined
                 ? await firstTrue(
                     preLoadWriters.map((writerKey) =>
-                      this._authProvider.verify(raw, writerKey, signatureBytes),
+                      this._authProvider.verify(
+                        new Uint8Array(raw),
+                        writerKey,
+                        new Uint8Array(signatureBytes),
+                      ),
                     ),
                   )
                 : await this._authProvider.verify(
-                    raw,
+                    new Uint8Array(raw),
                     requiredResponseSigner,
-                    signatureBytes,
+                    new Uint8Array(signatureBytes),
                   );
             if (verified !== true) {
               console.warn(
                 `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
+              );
+              return false;
+            }
+            let rawAfterVerification: Uint8Array;
+            try {
+              rawAfterVerification = copyUnsharedUint8Array(
+                this._syncMessageSerializer.serializeSyncMessage(
+                  messageWithoutSignature,
+                ),
+                1,
+                responseLimit,
+                'Unsigned load response',
+              );
+            } catch {
+              console.warn(
+                `Load response for ${this.documentPath}: changed during verification, skipping peer`,
+              );
+              return false;
+            }
+            if (!constantTimeEqual(raw, rawAfterVerification)) {
+              console.warn(
+                `Load response for ${this.documentPath}: changed during verification, skipping peer`,
               );
               return false;
             }
@@ -2933,8 +3053,7 @@ export class PeerborneDocument<
         // of what was actually served. We then hash that frontier and
         // compare to `winningHashHex`.
         //
-        // We additionally REQUIRE `message.tips` on every v3 quorum-
-        // enabled load response.
+        // We additionally REQUIRE `message.tips` on every v3 load response.
         // The v3 load-response contract mandates the responder commit
         // to an explicit frontier attestation; a responder that omits
         // `tips` is recorded as a per-peer bind failure so the loader
@@ -2982,33 +3101,6 @@ export class PeerborneDocument<
               servedHex,
               `Quorum frontier binding mismatch (served payload): expected ` +
                 `${expectedTipsHashHex.slice(0, 12)}... got ${servedHex.slice(0, 12)}...`,
-            );
-          }
-          // Protocol compliance: under the v3 load-response contract,
-          // a quorum-enabled load REQUIRES `message.tips` to be present
-          // on the response so the responder commits to an explicit
-          // frontier attestation alongside the served payload. The
-          // structural-frontier check above is the primary defense; this
-          // explicit `Array.isArray(message.tips)` guard ensures a v3
-          // responder that omits `tips` is recorded as a per-peer bind
-          // failure (so the loader retries the NEXT agreeing peer)
-          // rather than silently passing on the structural-hash check
-          // alone. Without this guard, a responder could violate the
-          // protocol contract — and a defense-in-depth check that
-          // catches contradictions between `tips` and the served payload
-          // would never run because the `Array.isArray` branch would
-          // simply skip.
-          if (!Array.isArray(message.tips)) {
-            console.warn(
-              `[${this.documentPath}] Quorum frontier binding FAILED: ` +
-                `quorum-enabled load response omitted required \`tips\` ` +
-                `attestation (v3 protocol violation). Recording peer as ` +
-                `bind-failed; loader will try the next agreeing peer.`,
-            );
-            throw new _QuorumBindCheckFailedError(
-              '(missing tips)',
-              `Quorum frontier binding: responder omitted required \`tips\` ` +
-                `attestation on v3 quorum-enabled load response.`,
             );
           }
           // Defense-in-depth: the responder-supplied `tips` must hash
@@ -3219,6 +3311,7 @@ export class PeerborneDocument<
           const syncResult = await this._syncValidatedProtocolMessage(
             message,
             'load-response-v3',
+            loadWriterKeysVersion,
           );
           if (syncResult !== true) {
             console.warn(
@@ -3272,6 +3365,7 @@ export class PeerborneDocument<
                 this._syncValidatedProtocolMessage(
                   message,
                   'load-response-v3',
+                  loadWriterKeysVersion,
                 ),
               'catch-up',
               {
@@ -3286,6 +3380,7 @@ export class PeerborneDocument<
           : await this._syncValidatedProtocolMessage(
               message,
               'load-response-v3',
+              loadWriterKeysVersion,
             );
         if (syncResult !== true) {
           console.warn(
@@ -3420,12 +3515,24 @@ export class PeerborneDocument<
       if (assembled.length === 1 && assembled[0] === 0xff) {
         return 'unknown-doc';
       }
-      const headerLength = this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+      const keyIDLength = this._keychainProvider.keyIDLength;
+      const nonceLength = this._authProvider.nonceBits;
+      if (
+        !Number.isSafeInteger(keyIDLength) ||
+        keyIDLength <= 0 ||
+        !Number.isSafeInteger(nonceLength) ||
+        nonceLength <= 0 ||
+        !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
+        keyIDLength + nonceLength + 1 > MAX_TIP_ADVERTISE_RESPONSE_SIZE
+      ) {
+        return null;
+      }
+      const headerLength = keyIDLength + nonceLength;
       if (assembled.length <= headerLength) {
         // Too short to be a valid encrypted payload.
         return null;
       }
-      const blockKeyID = assembled.slice(0, this._keychainProvider.keyIDLength);
+      const blockKeyID = assembled.slice(0, keyIDLength);
       const key = this._keychain.getKey(blockKeyID);
       if (!key) {
         // Responder used a key we don't have. Treat as non-vote rather than
@@ -3434,16 +3541,27 @@ export class PeerborneDocument<
         // load that follows will still gate trust on the actual state.
         return null;
       }
-      const blockNonce = assembled.slice(this._keychainProvider.keyIDLength, headerLength);
+      const blockNonce = assembled.slice(keyIDLength, headerLength);
       const blockData = assembled.slice(headerLength);
       const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
       if (!decrypted) {
         return null;
       }
+      let stablePlaintext: Uint8Array;
+      try {
+        stablePlaintext = copyUnsharedUint8Array(
+          decrypted,
+          1,
+          MAX_TIP_ADVERTISE_RESPONSE_SIZE,
+          'Tip advertisement plaintext',
+        );
+      } catch {
+        return null;
+      }
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
         message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
-          this._syncMessageSerializer.deserializeSyncMessage(decrypted),
+          this._syncMessageSerializer.deserializeSyncMessage(stablePlaintext),
           'tip-advertisement-v1',
         );
       } catch {
@@ -3452,6 +3570,21 @@ export class PeerborneDocument<
       if (message.documentId !== this.documentPath) {
         return null;
       }
+      let stableTipsHash: Uint8Array;
+      try {
+        stableTipsHash = copyUnsharedUint8Array(
+          message.tipsHash,
+          TIPS_HASH_LENGTH,
+          TIPS_HASH_LENGTH,
+          'Tip advertisement hash',
+        );
+      } catch {
+        return null;
+      }
+      if (this._writerMutationsInFlight !== 0) {
+        return null;
+      }
+      const writerKeysVersion = this._writerKeysVersion;
       // Verify the writer signature on the advertisement when possible.
       // On first load (_writers empty) we cannot verify -- trust falls
       // back to the encryption envelope (only a peer that already holds
@@ -3460,32 +3593,81 @@ export class PeerborneDocument<
       // bootstrapping behaviour of `_sendLoadRequestAndSync`.
       if (this._isSigningEnabled()) {
         const preLoadWriters = await this._getWriterKeys();
+        if (
+          this._writerKeysVersion !== writerKeysVersion ||
+          this._writerMutationsInFlight !== 0
+        ) {
+          return null;
+        }
         if (preLoadWriters.length > 0) {
           if (!message.signature) {
             return null;
           }
-          const { signature, ...messageWithoutSignature } = message;
-          const raw = this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          );
+          let messageWithoutSignature: CRDTSyncMessage<
+            ChangesType,
+            PublicKey
+          >;
+          let raw: Uint8Array;
+          try {
+            const verificationMessage = snapshotSyncMessageForContext<
+              ChangesType,
+              PublicKey
+            >(message, 'tip-advertisement-v1');
+            const { signature: _signature, ...unsigned } =
+              verificationMessage;
+            messageWithoutSignature = unsigned;
+            raw = copyUnsharedUint8Array(
+              this._syncMessageSerializer.serializeSyncMessage(
+                messageWithoutSignature,
+              ),
+              1,
+              MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+              'Unsigned tip advertisement',
+            );
+          } catch {
+            return null;
+          }
           let signatureBytes: Uint8Array;
           try {
-            signatureBytes = this._deserializeSignature(signature);
+            signatureBytes = this._deserializeSignature(message.signature);
           } catch {
             return null;
           }
           const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(raw, writerKey, signatureBytes),
+            this._authProvider.verify(
+              new Uint8Array(raw),
+              writerKey,
+              new Uint8Array(signatureBytes),
+            ),
           );
           if ((await firstTrue(verifyTasks)) !== true) {
             return null;
           }
+          let rawAfterVerification: Uint8Array;
+          try {
+            rawAfterVerification = copyUnsharedUint8Array(
+              this._syncMessageSerializer.serializeSyncMessage(
+                messageWithoutSignature,
+              ),
+              1,
+              MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+              'Unsigned tip advertisement',
+            );
+          } catch {
+            return null;
+          }
+          if (!constantTimeEqual(raw, rawAfterVerification)) {
+            return null;
+          }
         }
       }
-      if (!(message.tipsHash instanceof Uint8Array) || message.tipsHash.length !== TIPS_HASH_LENGTH) {
+      if (
+        this._writerKeysVersion !== writerKeysVersion ||
+        this._writerMutationsInFlight !== 0
+      ) {
         return null;
       }
-      return message.tipsHash;
+      return stableTipsHash;
     } catch {
       return null;
     } finally {
@@ -4302,19 +4484,23 @@ export class PeerborneDocument<
       }
 
       if (!isExisting) {
-        this._createdLocally = true;
-        // Add current user as a writer.
-        const founderWriterChanges = await this._addWriter(this._userPublicKey);
+        await this._mutationQueue.run(async () => {
+          this._createdLocally = true;
+          // Add current user as a writer.
+          const founderWriterChanges = await this._addWriter(
+            this._userPublicKey,
+          );
 
-        // Add initial document key.
-        console.log(`Adding a key to ${this.documentPath}`);
-        await this._keychain.add();
+          // Add initial document key.
+          console.log(`Adding a key to ${this.documentPath}`);
+          await this._keychain.add();
 
-        // The founder ACL must be part of the replicated change DAG. Keeping
-        // it only in the creator's in-memory ACL lets first-load peers decrypt
-        // document state but leaves them unable to authenticate later writer
-        // updates (or write as the same restored identity).
-        await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+          // The founder ACL must be part of the replicated change DAG. Keeping
+          // it only in the creator's in-memory ACL lets first-load peers decrypt
+          // document state but leaves them unable to authenticate later writer
+          // updates (or write as the same restored identity).
+          await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+        });
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -4397,10 +4583,70 @@ export class PeerborneDocument<
       SyncMessageContext,
       'load-response-v3' | 'invitation-bootstrap-v1'
     >,
+    expectedWriterKeysVersion?: number,
   ): Promise<boolean> {
-    return this._mutationQueue.run(() =>
-      this._syncUnlocked(message, false, context),
-    );
+    return this._mutationQueue.run(async () => {
+      if (
+        expectedWriterKeysVersion !== undefined &&
+        (this._writerKeysVersion !== expectedWriterKeysVersion ||
+          this._writerMutationsInFlight !== 0)
+      ) {
+        return false;
+      }
+      return await this._syncUnlocked(message, false, context);
+    });
+  }
+
+  /** Activate key state only on Peerborne's reserved invitation candidate. */
+  private async _syncInvitationBootstrapWithKeychain(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    invitationKeychain: Keychain<ChangesType, DocumentKey>,
+    beekem: BeeKEM,
+  ): Promise<boolean> {
+    return this._mutationQueue.run(async () => {
+      if (
+        !this.swarm.isPendingInvitationDocument(this.documentPath, this) ||
+        this._hashes.size > 0 ||
+        this._subscribed
+      ) {
+        return false;
+      }
+      const previousKeychain = this._keychain;
+      this._keychain = invitationKeychain;
+      try {
+        const snapshotBoundaryBeforeSync =
+          this._latestSnapshot?.lastChangeNodeCID;
+        const synced = await syncInvitationMessageCompletely(
+          message,
+          this._hashes,
+          () =>
+            this._syncUnlocked(
+              message,
+              false,
+              'invitation-bootstrap-v1',
+            ),
+          'bootstrap',
+          {
+            provenSnapshotBoundariesBeforeSync:
+              snapshotBoundaryBeforeSync === undefined
+                ? undefined
+                : new Set([snapshotBoundaryBeforeSync]),
+            isSnapshotApplied: () =>
+              this._latestSnapshot === message.snapshot,
+          },
+        );
+        if (!synced) {
+          this._keychain = previousKeychain;
+          return false;
+        }
+        this._beekem = beekem;
+        this._beekemInitialized = true;
+        return true;
+      } catch (error) {
+        this._keychain = previousKeychain;
+        throw error;
+      }
+    });
   }
 
   /** Apply a sync message after any required membership-queue admission. */
@@ -5772,7 +6018,10 @@ export class PeerborneDocument<
    *
    * The outer invitation acceptance must be verified against
    * `issuerPublicKey` before this method is called. This method independently
-   * verifies the enclosed bootstrap signature against that exact key.
+   * verifies the enclosed bootstrap signature against that exact key. It may
+   * only run on the reserved candidate created by `Peerborne.acceptInvitation`;
+   * failures discard that unexposed instance rather than returning partial
+   * provider state to application code.
    *
    * @internal
    */
@@ -5782,6 +6031,11 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     founderAddress: string,
   ): Promise<void> {
+    if (!this.swarm.isPendingInvitationDocument(this.documentPath, this)) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires Peerborne's reserved candidate`,
+      );
+    }
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
     }
@@ -5790,24 +6044,85 @@ export class PeerborneDocument<
         `Invitation bootstrap for ${this.documentPath} requires a fresh document instance`,
       );
     }
-    if (!this._kemKeyPair || !this._kemPublicKeyRaw) {
+    const kemKeyPair = this._kemKeyPair;
+    if (!kemKeyPair || !this._kemPublicKeyRaw) {
       throw new Error(
         `Invitation bootstrap for ${this.documentPath} requires a KEM key pair ` +
           'installed via setKemKeyPair',
       );
     }
-    if (bundle.welcomeEpochId.byteLength !== this._keychainProvider.keyIDLength) {
+    const keyIDLength = this._keychainProvider.keyIDLength;
+    const nonceLength = this._authProvider.nonceBits;
+    if (
+      !Number.isSafeInteger(keyIDLength) ||
+      keyIDLength <= 0 ||
+      !Number.isSafeInteger(nonceLength) ||
+      nonceLength <= 0 ||
+      !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
+      keyIDLength + nonceLength + 1 > MAX_INVITATION_MESSAGE_BYTES
+    ) {
       throw new Error(
-        `Invitation welcome epoch must be ${this._keychainProvider.keyIDLength} bytes`,
+        'Invitation bootstrap has invalid provider framing widths',
       );
     }
+    const invitationKeychain = this._keychainProvider.initialize();
+    if (invitationKeychain === this._keychain) {
+      throw new Error(
+        'Invitation bootstrap requires an isolated keychain instance',
+      );
+    }
+    const prepareMerge = invitationKeychain.prepareMerge;
+    if (typeof prepareMerge !== 'function') {
+      throw new Error(
+        'Invitation bootstrap requires transactional keychain merge support',
+      );
+    }
+
+    let stableBundle: InvitationBootstrapBundle;
+    try {
+      const bundleSnapshot = snapshotEnumerableOwnDataObject<
+        InvitationBootstrapBundle
+      >(bundle, 'Invitation bootstrap bundle');
+      const bundleFields = Reflect.ownKeys(bundleSnapshot);
+      if (
+        bundleFields.length !== 3 ||
+        !bundleFields.includes('welcomeEpochId') ||
+        !bundleFields.includes('sealedWelcome') ||
+        !bundleFields.includes('encryptedBootstrap')
+      ) {
+        throw new TypeError('Invitation bootstrap bundle has unexpected fields');
+      }
+      stableBundle = {
+        welcomeEpochId: copyUnsharedUint8Array(
+          bundleSnapshot.welcomeEpochId,
+          keyIDLength,
+          keyIDLength,
+          'Invitation welcome epoch',
+        ),
+        sealedWelcome: copyUnsharedUint8Array(
+          bundleSnapshot.sealedWelcome,
+          1,
+          MAX_INVITATION_MESSAGE_BYTES,
+          'Invitation sealed Welcome',
+        ),
+        encryptedBootstrap: copyUnsharedUint8Array(
+          bundleSnapshot.encryptedBootstrap,
+          keyIDLength + nonceLength + 1,
+          MAX_INVITATION_MESSAGE_BYTES,
+          'Invitation encrypted bootstrap',
+        ),
+      };
+    } catch {
+      throw new Error('Invitation bootstrap bundle is malformed');
+    }
+    bundle = stableBundle;
 
     let welcomeEnvelope;
     try {
       welcomeEnvelope = decodeWelcomeSealedPayload(
         await eciesOpen(
           bundle.sealedWelcome,
-          this._kemKeyPair.privateKey,
+          kemKeyPair.privateKey,
         ),
       );
     } catch {
@@ -5825,8 +6140,8 @@ export class PeerborneDocument<
     try {
       await beekem.processWelcome(
         welcomeEnvelope.beekemWelcome,
-        this._kemKeyPair.privateKey,
-        this._kemKeyPair.publicKey,
+        kemKeyPair.privateKey,
+        kemKeyPair.publicKey,
       );
     } catch {
       throw new Error('Invitation BeeKEM bootstrap could not be processed');
@@ -5840,46 +6155,54 @@ export class PeerborneDocument<
     const keychainChanges = this._changesSerializer.deserializeChanges(
       welcomeEnvelope.keychainChanges,
     );
-    this._keychain.merge(keychainChanges);
-    const hydratedKeys = await this._keychain.keys();
-    const epochPresent = hydratedKeys.some(([keyId]) =>
+    const preparedKeychain = prepareMerge.call(
+      invitationKeychain,
+      keychainChanges,
+    );
+    await preparedKeychain.hydrateKeys();
+    const stagedCurrentKeyId = preparedKeychain.currentKeyId;
+    const epochPresent = preparedKeychain.keyIds.some((keyId) =>
       constantTimeEqual(keyId, bundle.welcomeEpochId),
     );
-    if (!epochPresent || !this._keychain.getKey(bundle.welcomeEpochId)) {
-      throw new Error('Invitation Welcome did not install its advertised epoch key');
+    if (
+      !epochPresent ||
+      stagedCurrentKeyId === undefined ||
+      !constantTimeEqual(stagedCurrentKeyId, bundle.welcomeEpochId) ||
+      !preparedKeychain.getKey(bundle.welcomeEpochId)
+    ) {
+      throw new Error(
+        'Invitation Welcome did not install its advertised epoch as the current key',
+      );
     }
 
-    this._beekem = beekem;
-    this._beekemInitialized = true;
-
-    const headerLength =
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+    const headerLength = keyIDLength + nonceLength;
     if (bundle.encryptedBootstrap.byteLength <= headerLength) {
       throw new Error('Invitation encrypted bootstrap is truncated');
     }
     const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
       0,
-      this._keychainProvider.keyIDLength,
+      keyIDLength,
     );
     assertInvitationBootstrapEpochBinding(
       bundle.welcomeEpochId,
       bootstrapKeyId,
     );
-    const bootstrapKey = this._keychain.getKey(bootstrapKeyId);
+    const bootstrapKey = preparedKeychain.getKey(bootstrapKeyId);
     if (!bootstrapKey) {
       throw new Error('Invitation encrypted bootstrap uses an unknown key');
     }
     const nonce = bundle.encryptedBootstrap.subarray(
-      this._keychainProvider.keyIDLength,
+      keyIDLength,
       headerLength,
     );
     const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
     let bootstrapPlaintext: Uint8Array;
     try {
-      bootstrapPlaintext = await this._authProvider.decrypt(
-        ciphertext,
-        bootstrapKey,
-        nonce,
+      bootstrapPlaintext = copyUnsharedUint8Array(
+        await this._authProvider.decrypt(ciphertext, bootstrapKey, nonce),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'Invitation bootstrap plaintext',
       );
     } catch {
       throw new Error('Invitation encrypted bootstrap could not be decrypted');
@@ -5897,62 +6220,121 @@ export class PeerborneDocument<
         'invitation-bootstrap-v1',
       );
     } catch {
-      throw new Error('Invitation bootstrap has an invalid wire context');
+      throw new Error(
+        'Invitation bootstrap contains malformed or cross-context fields',
+      );
     }
     if (bootstrapMessage.documentId !== this.documentPath) {
       throw new Error('Invitation bootstrap document binding does not match');
     }
+    if (
+      !Array.isArray(bootstrapMessage.tips) ||
+      bootstrapMessage.tips.some((tip) => typeof tip !== 'string')
+    ) {
+      throw new Error('Invitation bootstrap is missing required tips');
+    }
     if (!bootstrapMessage.signature) {
       throw new Error('Invitation bootstrap is missing its issuer signature');
     }
-    const { signature, ...unsignedBootstrap } = bootstrapMessage;
+    let signature: string;
+    let unsignedBootstrap: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      const verificationMessage = snapshotSyncMessageForContext<
+        ChangesType,
+        PublicKey
+      >(bootstrapMessage, 'invitation-bootstrap-v1');
+      const { signature: verificationSignature, ...unsigned } =
+        verificationMessage;
+      if (!verificationSignature) {
+        throw new TypeError('Invitation bootstrap signature is missing');
+      }
+      signature = verificationSignature;
+      unsignedBootstrap = unsigned;
+    } catch {
+      throw new Error('Invitation bootstrap signature is malformed');
+    }
     let signatureBytes: Uint8Array;
     try {
       signatureBytes = this._deserializeSignature(signature);
     } catch {
       throw new Error('Invitation bootstrap signature is malformed');
     }
-    const signedBytes =
-      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
+    let signedBytes: Uint8Array;
+    try {
+      signedBytes = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'Unsigned invitation bootstrap',
+      );
+    } catch {
+      throw new Error('Invitation bootstrap signed content is malformed');
+    }
     if (
       (await this._authProvider.verify(
-        signedBytes,
+        new Uint8Array(signedBytes),
         issuerPublicKey,
-        signatureBytes,
+        new Uint8Array(signatureBytes),
       )) !== true
     ) {
       throw new Error('Invitation bootstrap signature does not match the offer issuer');
     }
-
-    if (
-      !(await syncInvitationMessageCompletely(
-        bootstrapMessage,
-        this._hashes,
-        () =>
-          this._syncValidatedProtocolMessage(
-            bootstrapMessage,
-            'invitation-bootstrap-v1',
-          ),
-        'bootstrap',
-        {
-          provenSnapshotBoundariesBeforeSync:
-            this._latestSnapshot?.lastChangeNodeCID === undefined
-              ? undefined
-              : new Set([
-                  this._latestSnapshot.lastChangeNodeCID,
-                ]),
-          isSnapshotApplied: () =>
-            this._latestSnapshot === bootstrapMessage.snapshot,
-        },
-      ))
-    ) {
-      throw new Error('Invitation bootstrap state was rejected');
-    }
-    await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
-
-    this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
-    this._invitationBootstrapReady = true;
+    let signedBytesAfterVerification: Uint8Array;
     try {
+      signedBytesAfterVerification = copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap),
+        1,
+        MAX_INVITATION_MESSAGE_BYTES,
+        'Unsigned invitation bootstrap',
+      );
+    } catch {
+      throw new Error('Invitation bootstrap changed during verification');
+    }
+    if (!constantTimeEqual(signedBytes, signedBytesAfterVerification)) {
+      throw new Error('Invitation bootstrap changed during verification');
+    }
+
+    const messageToApply = snapshotSyncMessageForContext<
+      ChangesType,
+      PublicKey
+    >(bootstrapMessage, 'invitation-bootstrap-v1');
+    // The sealed Welcome is the authoritative keychain bootstrap and was
+    // staged above. Do not merge the duplicate message field through the live
+    // sync path, where a later failure could strand a partially-installed
+    // keychain. The field remains covered by the verified issuer signature.
+    delete messageToApply.keychainChanges;
+    if (messageToApply.changes) {
+      // Reject malformed/over-budget trees before activating staged key state.
+      this._collectACLFromTree(
+        messageToApply.changes,
+        messageToApply.changeId,
+      );
+    }
+
+    // This method is reachable only on Peerborne's reserved, unexposed
+    // invitation candidate. Provider CRDTs and ACLs may mutate in place, so
+    // failure atomicity comes from discarding that whole candidate rather than
+    // pretending its internal references can be rolled back. Keep compaction
+    // disabled until issuer-pinned catch-up and the final topology check have
+    // completed; a rejected candidate must not publish or garbage-collect a
+    // snapshot before Peerborne drops it.
+    const compactionWasInProgress = this._compactionInProgress;
+    this._compactionInProgress = true;
+    try {
+      preparedKeychain.commit();
+      if (
+        !(await this._syncInvitationBootstrapWithKeychain(
+          messageToApply,
+          invitationKeychain,
+          beekem,
+        ))
+      ) {
+        throw new Error('Invitation bootstrap state was rejected');
+      }
+      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+
+      this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
+      this._invitationBootstrapReady = true;
       const existing = await this.open();
       if (!existing) {
         throw new Error('Invitation bootstrap attempted to create a new document');
@@ -5970,6 +6352,8 @@ export class PeerborneDocument<
       this._invitationBootstrapReady = false;
       await this.close().catch(() => {});
       throw error;
+    } finally {
+      this._compactionInProgress = compactionWasInProgress;
     }
   }
 
