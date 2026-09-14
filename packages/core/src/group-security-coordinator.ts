@@ -391,7 +391,10 @@ export class GroupSecurityCoordinator {
     control: GroupSecurityBootstrapControlInput,
   ): Promise<GroupSecurityCoordinator> {
     const coordinator = new GroupSecurityCoordinator(config);
-    const groupInputSnapshot = cloneCreateGroupInput(groupInput);
+    const groupInputSnapshot = cloneCreateGroupInput(
+      groupInput,
+      coordinator.storeKey,
+    );
     const controlSnapshot = cloneBootstrapControlInput(control);
     return withProviderLifecycle(coordinator.provider, true, async () => {
       await coordinator.bootstrapInternal(groupInputSnapshot, controlSnapshot);
@@ -468,6 +471,10 @@ export class GroupSecurityCoordinator {
   ): Promise<GroupSecurityTransitionResult> {
     try {
       this.assertUsable();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    try {
       const controlSnapshot = snapshotControlRecord(
         controlRecord,
         'incoming control record',
@@ -2759,19 +2766,21 @@ export class GroupSecurityCoordinator {
       ) {
         fail('malformed-state', 'persisted control record belongs elsewhere');
       }
-      if (record.action !== 'create') {
-        try {
+      try {
+        if (record.action === 'create') {
+          validateGenesisControlPayload(record, this.storeKey);
+        } else {
           commitmentsById.set(
             toHex(entry.recordId),
             parseControlBinding(record),
           );
-        } catch (error) {
-          fail(
-            'malformed-state',
-            'persisted control binding is malformed',
-            error,
-          );
         }
+      } catch (error) {
+        fail(
+          'malformed-state',
+          'persisted control semantics are malformed',
+          error,
+        );
       }
       await this.verifyControlSignatureOnly(record);
 
@@ -4319,15 +4328,7 @@ function parseControlBinding(
     throw new Error('control binding is missing its canonical commit');
   }
   if (commit === undefined) {
-    if (
-      encodedCommit.byteLength < COMMIT_DOMAIN.byteLength ||
-      !equalBytes(
-        encodedCommit.subarray(0, COMMIT_DOMAIN.byteLength),
-        COMMIT_DOMAIN,
-      )
-    ) {
-      throw new Error('control binding has an invalid commit domain');
-    }
+    validateEmbeddedControlCommit(record, encodedCommit);
   } else if (!equalBytes(encodedCommit, canonicalGroupSecurityCommit(commit))) {
     throw new Error('control binding does not match the supplied commit');
   }
@@ -4337,6 +4338,100 @@ function parseControlBinding(
     appliedMembershipDeltaHash,
     welcomeSetHash,
   };
+}
+
+function validateEmbeddedControlCommit(
+  record: MembershipControlRecord,
+  encodedCommit: Uint8Array,
+): void {
+  if (
+    encodedCommit.byteLength < COMMIT_DOMAIN.byteLength ||
+    !equalBytes(
+      encodedCommit.subarray(0, COMMIT_DOMAIN.byteLength),
+      COMMIT_DOMAIN,
+    )
+  ) {
+    throw new Error('control binding has an invalid commit domain');
+  }
+  let offset = COMMIT_DOMAIN.byteLength;
+  const protocolId = readBoundedBytes16(
+    encodedCommit,
+    offset,
+    'commit protocol.id',
+    1,
+    128,
+  );
+  offset = protocolId.nextOffset;
+  if (offset + 2 > encodedCommit.byteLength) {
+    throw new Error('control binding commit is truncated at protocol.version');
+  }
+  const protocolVersion = new DataView(
+    encodedCommit.buffer,
+    encodedCommit.byteOffset + offset,
+    2,
+  ).getUint16(0, false);
+  offset += 2;
+  const group = readBoundedBytes16(
+    encodedCommit,
+    offset,
+    'commit groupId',
+    1,
+    MAX_GROUP_ID_BYTES,
+  );
+  offset = group.nextOffset;
+  if (offset + 16 > encodedCommit.byteLength) {
+    throw new Error('control binding commit is truncated at its epochs');
+  }
+  const epochs = new DataView(
+    encodedCommit.buffer,
+    encodedCommit.byteOffset + offset,
+    16,
+  );
+  const priorEpoch = epochs.getBigUint64(0, false);
+  const epoch = epochs.getBigUint64(8, false);
+  offset += 16;
+  if (offset + 4 > encodedCommit.byteLength) {
+    throw new Error('control binding commit is truncated at payload length');
+  }
+  const payloadLength = new DataView(
+    encodedCommit.buffer,
+    encodedCommit.byteOffset + offset,
+    4,
+  ).getUint32(0, false);
+  offset += 4;
+  if (
+    payloadLength < 1 ||
+    payloadLength > MAX_PROTOCOL_PAYLOAD_BYTES ||
+    offset + payloadLength !== encodedCommit.byteLength
+  ) {
+    throw new Error('control binding commit has an invalid payload length');
+  }
+  const expectedProtocolId = new TextEncoder().encode(record.protocol.id);
+  if (
+    !equalBytes(protocolId.value, expectedProtocolId) ||
+    protocolVersion !== record.protocol.version ||
+    !equalBytes(group.value, record.groupId) ||
+    epoch !== record.epoch ||
+    epoch === 0n ||
+    priorEpoch + 1n !== epoch
+  ) {
+    throw new Error('control binding commit metadata does not match control');
+  }
+  const payload = new Uint8Array(encodedCommit.subarray(offset));
+  if (
+    !equalBytes(
+      encodedCommit,
+      canonicalGroupSecurityCommit({
+        protocol: { ...record.protocol },
+        groupId: group.value,
+        priorEpoch,
+        epoch,
+        payload,
+      }),
+    )
+  ) {
+    throw new Error('control binding commit is not canonical');
+  }
 }
 
 function readBoundedBytes16(
@@ -5110,7 +5205,10 @@ function copyControlRecordBytes(
   }
 }
 
-function cloneCreateGroupInput(input: CreateGroupInput): CreateGroupInput {
+function cloneCreateGroupInput(
+  input: CreateGroupInput,
+  storeKey: GroupStateStoreKey,
+): CreateGroupInput {
   const snapshot = exactOwnDataValues(
     input,
     ['groupId', 'creatorMemberId', 'credential'],
@@ -5124,6 +5222,9 @@ function cloneCreateGroupInput(input: CreateGroupInput): CreateGroupInput {
     1,
     MAX_GROUP_ID_BYTES,
   );
+  if (!equalBytes(groupId, storeKey.groupId)) {
+    fail('group-mismatch', 'create-group input is bound to another group');
+  }
   const creatorMemberId = copyControlRecordBytes(
     snapshot.creatorMemberId,
     'create-group creatorMemberId',

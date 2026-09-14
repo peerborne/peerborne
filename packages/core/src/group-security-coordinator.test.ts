@@ -28,6 +28,7 @@ import {
   GroupSecurityOutboxCodec,
   CreatePendingKeyPackageInput,
   GROUP_SECURITY_OUTBOX_KIND,
+  canonicalGroupSecurityCommit,
   canonicalGroupSecurityState,
 } from './group-security-coordinator.js';
 import {
@@ -51,6 +52,7 @@ import {
   MembershipControlRecord,
   MembershipControlSignatureVerifier,
   MembershipControlSigner,
+  UnsignedMembershipControlRecord,
   deserializeMembershipControlRecord,
   membershipControlRecordId,
   serializeMembershipControlRecord,
@@ -817,6 +819,22 @@ class StaticSnapshotStore implements DurableGroupStateStore {
   }
 }
 
+class StaticRollbackAnchor implements DurableGroupSecurityRollbackAnchor {
+  constructor(private readonly value: GroupSecurityRollbackAnchorValue) {}
+
+  async load(): Promise<GroupSecurityRollbackAnchorValue> {
+    return this.value;
+  }
+
+  async advance(): Promise<boolean> {
+    throw new Error('unexpected advance against static rollback anchor');
+  }
+
+  async poison(): Promise<GroupSecurityRollbackAnchorValue> {
+    throw new Error('unexpected poison against static rollback anchor');
+  }
+}
+
 class ReconciliationLoadFailureStore implements DurableGroupStateStore {
   private remainingFailedLoads = 0;
   private releaseTransaction!: () => void;
@@ -1480,6 +1498,22 @@ describe('GroupSecurityCoordinator', () => {
     );
     expect(value.provider.clearCalls).toBe(0);
     expect(value.provider.exportStateCalls).toBe(0);
+    expect(await value.store.load(storeKey)).toBeUndefined();
+  });
+
+  test('rejects a bootstrap group mismatch before consulting the provider lifecycle', async () => {
+    const value = await context();
+
+    await expect(
+      GroupSecurityCoordinator.bootstrap(
+        config(value),
+        { ...createGroupInput, groupId: new Uint8Array([0xff]) },
+        { operationId: id(1), subjectId: value.identities.actorId },
+      ),
+    ).rejects.toMatchObject({ code: 'group-mismatch' });
+    expect(value.provider.hasActiveGroupCalls).toBe(0);
+    expect(value.provider.createGroupCalls).toBe(0);
+    expect(value.provider.clearCalls).toBe(0);
     expect(await value.store.load(storeKey)).toBeUndefined();
   });
 
@@ -2944,6 +2978,110 @@ describe('GroupSecurityCoordinator', () => {
     const latest = first.authorization.calls.at(-1)!;
     expect(latest.previousRecord?.epoch).toBe(1n);
     expect(latest.previousRecordId).toEqual(latest.record.parentRecordId);
+  });
+
+  test('rejects a signed non-head genesis with a noncanonical payload before provider import', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    await flushAndCollect(coordinator);
+    await createTransition(coordinator, control(2));
+    await flushAndCollect(coordinator);
+    const original = (await value.store.load(storeKey))!;
+    const rewritten = await rewriteSignedReplayChain(
+      original,
+      value.identities,
+      (record) => {
+        if (record.action !== 'create') return record;
+        const payload = new Uint8Array(record.controlPayload.byteLength + 1);
+        payload.set(record.controlPayload);
+        payload[payload.byteLength - 1] = 0xee;
+        return { ...record, controlPayload: payload };
+      },
+    );
+    const provider = new ContractTestProvider();
+
+    await expect(
+      restoreFromSignedSnapshot(value, provider, rewritten),
+    ).rejects.toMatchObject({ code: 'malformed-state' });
+    expect(provider.importCalls).toBe(0);
+  });
+
+  test('rejects signed non-head controls with truncated or mismatched embedded commits before provider import', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    await flushAndCollect(coordinator);
+    await createTransition(coordinator, control(2));
+    const [epochOne] = await flushAndCollect(coordinator);
+    await createTransition(coordinator, control(3));
+    await flushAndCollect(coordinator);
+    const original = (await value.store.load(storeKey))!;
+    const canonicalCommit = canonicalGroupSecurityCommit(epochOne.commit!);
+    const commitDomainLength = new TextEncoder().encode(
+      'peerborne/group-security-commit/v1\0',
+    ).byteLength;
+    const rewritten = await rewriteSignedReplayChain(
+      original,
+      value.identities,
+      (record) => {
+        if (record.epoch !== 1n) return record;
+        const prefixLength =
+          record.controlPayload.byteLength - canonicalCommit.byteLength;
+        const payload = new Uint8Array(prefixLength + commitDomainLength);
+        payload.set(record.controlPayload.subarray(0, payload.byteLength));
+        return { ...record, controlPayload: payload };
+      },
+    );
+    const provider = new ContractTestProvider();
+
+    await expect(
+      restoreFromSignedSnapshot(value, provider, rewritten),
+    ).rejects.toMatchObject({ code: 'malformed-state' });
+    expect(provider.importCalls).toBe(0);
+
+    const mismatchedGroupId = new Uint8Array(epochOne.commit!.groupId);
+    mismatchedGroupId[0] ^= 0xff;
+    const mismatchedCommit = canonicalGroupSecurityCommit({
+      ...epochOne.commit!,
+      groupId: mismatchedGroupId,
+    });
+    const mismatched = await rewriteSignedReplayChain(
+      original,
+      value.identities,
+      (record) => {
+        if (record.epoch !== 1n) return record;
+        const prefixLength =
+          record.controlPayload.byteLength - canonicalCommit.byteLength;
+        const payload = new Uint8Array(
+          prefixLength + mismatchedCommit.byteLength,
+        );
+        payload.set(record.controlPayload.subarray(0, prefixLength));
+        payload.set(mismatchedCommit, prefixLength);
+        return { ...record, controlPayload: payload };
+      },
+    );
+    const mismatchedProvider = new ContractTestProvider();
+
+    await expect(
+      restoreFromSignedSnapshot(value, mismatchedProvider, mismatched),
+    ).rejects.toMatchObject({ code: 'malformed-state' });
+    expect(mismatchedProvider.importCalls).toBe(0);
+  });
+
+  test('preserves lifecycle errors when applyCommit receives malformed attachments', async () => {
+    const value = await context();
+    const rollbackAnchor = new ControlledRollbackAnchor();
+    value.rollbackAnchor = rollbackAnchor;
+    const coordinator = await bootstrap(value);
+    await flushAndCollect(coordinator);
+    rollbackAnchor.rejectNextAdvance = true;
+    await expect(
+      createTransition(coordinator, control(2)),
+    ).rejects.toMatchObject({ code: 'rollback-failed' });
+
+    await expect(
+      coordinator.applyCommit(undefined as never, undefined as never),
+    ).rejects.toMatchObject({ code: 'poisoned' });
+    expect(value.provider.applyCommitCalls).toBe(0);
   });
 
   test('retires a restoring provider when state advances or poisons during import', async () => {
@@ -5091,6 +5229,84 @@ async function replaceReplayHead(
       controlRecord: serializeMembershipControlRecord(changed),
     });
   });
+}
+
+interface RewrittenSignedSnapshot {
+  readonly snapshot: GroupStateStoreSnapshot;
+  readonly headRecordId: Uint8Array;
+}
+
+async function rewriteSignedReplayChain(
+  snapshot: GroupStateStoreSnapshot,
+  identities: TestIdentities,
+  mutate: (
+    record: UnsignedMembershipControlRecord,
+  ) => UnsignedMembershipControlRecord,
+): Promise<RewrittenSignedSnapshot> {
+  const ordered = [...snapshot.replay].sort((left, right) =>
+    left.epoch < right.epoch ? -1 : left.epoch > right.epoch ? 1 : 0,
+  );
+  const replay: GroupStateStoreSnapshot['replay'][number][] = [];
+  let parentRecordId: Uint8Array | undefined;
+  for (const entry of ordered) {
+    const persisted = deserializeMembershipControlRecord(entry.controlRecord);
+    const { signature: _signature, ...unsigned } = persisted;
+    const relinked = mutate({
+      ...unsigned,
+      parentRecordId:
+        persisted.action === 'create'
+          ? undefined
+          : new Uint8Array(parentRecordId!),
+    });
+    const record = await signMembershipControlRecord(
+      relinked,
+      identities.sign,
+    );
+    const recordId = await membershipControlRecordId(record);
+    replay.push({
+      recordId,
+      operationId: new Uint8Array(record.operationId),
+      epoch: record.epoch,
+      controlRecord: serializeMembershipControlRecord(record),
+    });
+    parentRecordId = recordId;
+  }
+  if (parentRecordId === undefined) {
+    throw new Error('test replay rewrite requires at least one record');
+  }
+  return {
+    snapshot: { ...snapshot, replay },
+    headRecordId: new Uint8Array(parentRecordId),
+  };
+}
+
+async function restoreFromSignedSnapshot(
+  value: TestContext,
+  provider: ContractTestProvider,
+  rewritten: RewrittenSignedSnapshot,
+): Promise<GroupSecurityCoordinator> {
+  const encryptedState = rewritten.snapshot.encryptedState;
+  if (encryptedState === undefined) {
+    throw new Error('test restore snapshot requires encrypted state');
+  }
+  const rollbackAnchor = new StaticRollbackAnchor({
+    revision: rewritten.snapshot.revision,
+    epoch: encryptedState.state.epoch,
+    controlHead: rewritten.headRecordId,
+    storeCommitment: await groupSecurityStoreSnapshotCommitment(
+      rewritten.snapshot,
+      storeKey,
+    ),
+    forkPoison: undefined,
+  });
+  return GroupSecurityCoordinator.restore(
+    config({
+      ...value,
+      provider,
+      store: new StaticSnapshotStore(rewritten.snapshot),
+      rollbackAnchor,
+    }),
+  );
 }
 
 function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
