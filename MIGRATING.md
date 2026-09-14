@@ -71,7 +71,11 @@ Before upgrading a deployment:
 1. Stop writers or otherwise coordinate the whole document fleet.
 2. Upgrade every application peer and relay that serves the deployment.
 3. Use the new default, or assign a fresh versioned custom prefix.
-4. When using a custom prefix, add it to each relay's `TOPIC_ALLOWLIST`. When
+4. When using a non-empty custom prefix, add its slash-terminated document
+   namespace to each relay's `TOPIC_ALLOWLIST`: for example, configure
+   `/acme/v3/` when `pubsubDocumentPrefix` is `/acme/v3` or `/acme/v3/`.
+   With an empty prefix, allow each concrete bare document topic or explicitly
+   use the relay's unrestricted `*` mode; there is no prefix entry to add. When
    also customizing `pubsubDocumentPublishPath`, set the relay's
    `DOCUMENT_PUBLISH_PATH` to the same value, list it in `EXTRA_TOPICS`, or add
    it to `TOPIC_ALLOWLIST`. An allowlist entry ending in `/` is a namespace
