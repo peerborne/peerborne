@@ -1,6 +1,10 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { deserializeBeeKEMWelcomeFromWire, serializeBeeKEMWelcomeForWire } from './beekem-welcome-wire';
+import {
+  deserializeBeeKEMWelcomeFromWire,
+  serializeBeeKEMWelcomeForWire,
+} from './beekem-welcome-wire';
+import * as TreeMath from './beekem/tree-math.js';
 
 describe('beekem-welcome-wire fuzz', () => {
   test('deserialize never throws unexpectedly on random objects', () => {
@@ -11,7 +15,7 @@ describe('beekem-welcome-wire fuzz', () => {
         } catch (err) {
           if (err instanceof Error) {
             expect(err.message).toMatch(
-              /expected a plain object|leafIndex|'pathKeys' must be an array|'treeNodePublicKeys' must be an array|'treeHash' must be a base64|must be a plain object|nodeIndex|must be a base64 string|invalid base64/i,
+              /Invalid BeeKEMWelcome|BeeKEMWelcome wire/i,
             );
           }
         }
@@ -23,24 +27,29 @@ describe('beekem-welcome-wire fuzz', () => {
   test('round-trip for any valid shape', () => {
     fc.assert(
       fc.property(
-        fc.nat(100),
-        fc.uint8Array({ minLength: 1, maxLength: 32 }),
-        fc.array(
-          fc.record({
-            nodeIndex: fc.nat(200),
-            publicKey: fc.uint8Array({ minLength: 1, maxLength: 65 }),
-            encryptedPrivateKey: fc.uint8Array({ minLength: 1, maxLength: 128 }),
-          }),
-          { minLength: 0, maxLength: 10 },
-        ),
-        fc.array(
-          fc.oneof(
-            fc.record({ nodeIndex: fc.nat(200), publicKey: fc.uint8Array({ minLength: 1, maxLength: 65 }) }),
-            fc.record({ nodeIndex: fc.nat(200), publicKey: fc.constant(null) }),
-          ),
-          { minLength: 0, maxLength: 10 },
-        ),
-        (leafIndex, treeHash, pathKeys, treeNodePublicKeys) => {
+        fc.integer({ min: 2, max: 64 }),
+        fc.uint8Array({ minLength: 32, maxLength: 32 }),
+        (numLeaves, treeHash) => {
+          const leafIndex = TreeMath.leafToNodeIndex(numLeaves - 1);
+          const directPath = TreeMath.directPath(leafIndex, numLeaves);
+          const pathKeys = directPath.map((nodeIndex, index) => ({
+            nodeIndex,
+            publicKey: new Uint8Array(65).fill((index % 254) + 1),
+            encryptedPrivateKey: new Uint8Array([(index % 254) + 1]),
+          }));
+          const covered = new Set([leafIndex, ...directPath]);
+          const treeNodePublicKeys = Array.from(
+            { length: 2 * numLeaves - 1 },
+            (_, nodeIndex) => nodeIndex,
+          )
+            .filter((nodeIndex) => !covered.has(nodeIndex))
+            .map((nodeIndex) => ({
+              nodeIndex,
+              publicKey:
+                nodeIndex % 3 === 0
+                  ? null
+                  : new Uint8Array(65).fill((nodeIndex % 254) + 1),
+            }));
           const welcome = { leafIndex, pathKeys, treeNodePublicKeys, treeHash };
           const wire = serializeBeeKEMWelcomeForWire(welcome);
           const result = deserializeBeeKEMWelcomeFromWire(wire);
