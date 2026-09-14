@@ -520,6 +520,77 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       expectBytesEqual(restoredChild.change!, new Uint8Array([2]));
     });
 
+    test('detaches aliased Automerge payloads before decoder callbacks run', () => {
+      const sharedChange = ['01'];
+      const wire: CRDTChangeNodeWire<string[]> = {
+        kind: 'document',
+        change: sharedChange,
+        children: {
+          child: { kind: 'writer', change: sharedChange },
+        },
+      };
+      const decodedInputs: string[][] = [];
+
+      const restored = deserializeChangeNodeFromJSON(wire, (value) => {
+        decodedInputs.push(value);
+        const original = value[0]!;
+        value[0] = 'ff';
+        return original;
+      });
+      const restoredChild = (
+        restored.children as Record<string, CRDTChangeNode<string>>
+      ).child;
+
+      expect(restored.change).toBe('01');
+      expect(restoredChild.change).toBe('01');
+      expect(decodedInputs[0]).not.toBe(decodedInputs[1]);
+      expect(sharedChange).toEqual(['01']);
+    });
+
+    test('rejects payload accessors without invoking them or the decoder', () => {
+      let getterCalls = 0;
+      const change = new Array<string>(1);
+      Object.defineProperty(change, '0', {
+        enumerable: true,
+        get: () => {
+          getterCalls++;
+          return '01';
+        },
+      });
+      const decoder = jest.fn((value: string[]) => value);
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          { kind: 'document', change },
+          decoder,
+        ),
+      ).toThrow(/own data elements/);
+      expect(getterCalls).toBe(0);
+      expect(decoder).not.toHaveBeenCalled();
+    });
+
+    test('applies one aggregate byte budget across all change payloads', () => {
+      const oneMiB = 'x'.repeat(1024 * 1024);
+      const decoder = jest.fn((value: string[]) => value);
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          {
+            kind: 'document',
+            change: new Array(17).fill(oneMiB),
+            children: {
+              child: {
+                kind: 'writer',
+                change: new Array(17).fill(oneMiB),
+              },
+            },
+          },
+          decoder,
+        ),
+      ).toThrow(/67108864 detached value bytes/);
+      expect(decoder).not.toHaveBeenCalled();
+    });
+
     test('throws when "kind" is an unknown string', () => {
       const malformed: CRDTChangeNodeWire<string> = {
         kind: 'evil' as unknown as 'document',

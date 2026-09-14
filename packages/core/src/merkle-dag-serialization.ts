@@ -13,7 +13,23 @@ import {
   MAX_CHANGE_TREE_NODES,
   snapshotBoundedChangeTree,
 } from './change-tree-walk.js';
-import { snapshotEnumerableOwnDataObject } from './utils.js';
+import {
+  snapshotDeepEnumerableData,
+  snapshotEnumerableOwnDataObject,
+} from './utils.js';
+
+/**
+ * Bound all detached change payloads as one value. The synthetic outer array
+ * accounts for one property per changed node; the remaining object/property
+ * budget is shared by every payload rather than reset for each tree node.
+ */
+const MERKLE_DAG_CHANGE_SNAPSHOT_LIMITS = {
+  maxDepth: MAX_CHANGE_TREE_NODES,
+  maxObjects: MAX_CHANGE_TREE_NODES + MAX_CHANGE_TREE_EDGES + 1,
+  maxProperties: MAX_CHANGE_TREE_NODES + MAX_CHANGE_TREE_EDGES,
+  maxArrayLength: MAX_CHANGE_TREE_NODES + MAX_CHANGE_TREE_EDGES,
+  maxValueBytes: 64 * 1024 * 1024,
+};
 
 // Allow-list of `kind` discriminants accepted from peer wire messages.
 //
@@ -224,6 +240,8 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
   let root!: CRDTChangeNode<TOut>;
   const active = new WeakSet<object>();
   const pending: Task[] = [{ phase: 'enter', source: node, depth: 1 }];
+  const changeTargets: CRDTChangeNode<TOut>[] = [];
+  const wireChanges: TIn[] = [];
   let nodeCount = 0;
   let edgeCount = 0;
   while (pending.length > 0) {
@@ -340,7 +358,11 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
           break;
         case 'change':
           if (wireChange !== undefined) {
-            result.change = wireChange as unknown as TOut;
+            // Define the field now to preserve signed JSON field order, but do
+            // not retain the caller's mutable payload on the result tree.
+            result.change = undefined as unknown as TOut;
+            changeTargets.push(result);
+            wireChanges.push(wireChange);
           }
           break;
         case 'children':
@@ -387,25 +409,18 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
     }
   }
 
-  // Run provider decoding only after the complete wire topology has been
-  // validated and detached. A decoder callback therefore cannot mutate a
-  // not-yet-validated node through an alias into the caller's input graph.
-  const decodePending: CRDTChangeNode<TOut>[] = [root];
-  while (decodePending.length > 0) {
-    const current = decodePending.pop()!;
-    if (current.change !== undefined) {
-      current.change = decodeLeaf(current.change as unknown as TIn);
-    }
-    if (
-      current.children === undefined ||
-      current.children === crdtChangeNodeDeferred
-    ) {
-      continue;
-    }
-    const children = Object.values(current.children);
-    for (let index = children.length - 1; index >= 0; index--) {
-      decodePending.push(children[index]!);
-    }
+  // Run provider decoding only after the complete wire topology and all leaf
+  // payloads have been validated and detached. Snapshotting one synthetic
+  // array applies a single aggregate allocation/work budget to the whole DAG,
+  // while the deep snapshot's independent alias copies prevent one decoder
+  // callback from mutating a later Automerge `string[]` payload.
+  const detachedChanges = snapshotDeepEnumerableData(
+    wireChanges,
+    'merkle-dag change payloads',
+    MERKLE_DAG_CHANGE_SNAPSHOT_LIMITS,
+  );
+  for (let index = 0; index < detachedChanges.length; index++) {
+    changeTargets[index]!.change = decodeLeaf(detachedChanges[index]!);
   }
   return root;
 }
