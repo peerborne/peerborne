@@ -128,12 +128,18 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
   value: unknown,
   context: SyncMessageContext,
 ): CRDTSyncMessage<ChangesType, PublicKey> {
+  const allowed = allowedFields[context];
+  let maxRootKeyBytes = 0;
+  for (const field of allowed) maxRootKeyBytes += field.length * 2;
   const message = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
     value,
     `${context} message`,
+    {
+      maxProperties: allowed.size,
+      maxKeyBytes: maxRootKeyBytes,
+    },
   );
   const fields = reflectOwnKeys(message);
-  const allowed = allowedFields[context];
   for (const field of fields) {
     if (typeof field !== 'string') {
       throw new TypeError(`${context} message contains a symbol field`);
