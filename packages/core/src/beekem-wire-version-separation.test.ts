@@ -19,7 +19,7 @@ const welcomeV1 = (): BeeKEMWelcome => ({
 
 const pathUpdateV1 = (): PathUpdate => ({
   senderLeafIndex: 0,
-  senderLeafPublicKey: bytes,
+  senderLeafPublicKey: new Uint8Array(65).fill(1),
   nodes: [],
 });
 

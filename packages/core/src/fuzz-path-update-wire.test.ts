@@ -11,7 +11,7 @@ describe('path-update-wire fuzz', () => {
         } catch (err) {
           if (err instanceof Error) {
             expect(err.message).toMatch(
-              /expected a plain object|senderLeafIndex|senderLeafPublicKey|'nodes' must be an array|must be a plain object|nodeIndex|must be a base64 string|invalid base64/i,
+              /Invalid PathUpdate|path-update wire/i,
             );
           }
         }
@@ -23,15 +23,22 @@ describe('path-update-wire fuzz', () => {
   test('round-trip for any valid shape', () => {
     fc.assert(
       fc.property(
-        fc.nat(100),
-        fc.uint8Array({ minLength: 1, maxLength: 65 }),
-        fc.array(
+        fc.nat(8191).map((leafPosition) => leafPosition * 2),
+        fc.uint8Array({ minLength: 65, maxLength: 65 }),
+        fc.uniqueArray(
           fc.record({
-            nodeIndex: fc.nat(200),
-            publicKey: fc.uint8Array({ minLength: 1, maxLength: 65 }),
-            encryptedPrivateKey: fc.uint8Array({ minLength: 1, maxLength: 128 }),
+            nodeIndex: fc.nat(8190).map((position) => position * 2 + 1),
+            publicKey: fc.uint8Array({ minLength: 65, maxLength: 65 }),
+            encryptedPrivateKey: fc.oneof(
+              fc.constant(new Uint8Array(0)),
+              fc.uint8Array({ minLength: 125, maxLength: 128 }),
+            ),
           }),
-          { minLength: 0, maxLength: 20 },
+          {
+            minLength: 0,
+            maxLength: 13,
+            selector: (node) => node.nodeIndex,
+          },
         ),
         (senderLeafIndex, senderLeafPublicKey, nodes) => {
           const update = { senderLeafIndex, senderLeafPublicKey, nodes };
