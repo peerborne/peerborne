@@ -168,11 +168,11 @@ export function serializeBeeKEMWelcomeV2ForWire(
     const pathOffset = directPath.indexOf(nodeIndex);
     if (
       nodeIndex >= treeWidth ||
-      pathOffset <= previousPathOffset ||
+      pathOffset !== previousPathOffset + 1 ||
       covered.has(nodeIndex)
     ) {
       throw new Error(
-        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, or out-of-order nodeIndex`,
+        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, out-of-order, or non-contiguous nodeIndex`,
       );
     }
     previousPathOffset = pathOffset;
@@ -517,11 +517,11 @@ export function deserializeBeeKEMWelcomeV2FromWire(
     const pathOffset = directPath.indexOf(nodeIndex);
     if (
       nodeIndex >= treeWidth ||
-      pathOffset <= previousPathOffset ||
+      pathOffset !== previousPathOffset + 1 ||
       covered.has(nodeIndex)
     ) {
       throw new Error(
-        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, or out-of-order nodeIndex`,
+        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, out-of-order, or non-contiguous nodeIndex`,
       );
     }
     previousPathOffset = pathOffset;
