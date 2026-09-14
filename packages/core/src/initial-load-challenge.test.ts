@@ -110,6 +110,12 @@ describe('V4 initial-load challenge', () => {
     expect(() =>
       deserializeInitialLoadChallengeFromWire(wire.replace(/=$/, '')),
     ).toThrow(/canonical base64|32-byte/);
+    expect(() =>
+      deserializeInitialLoadChallengeFromWire('A'.repeat(1024 * 1024)),
+    ).toThrow(/fixed-width base64/);
+    expect(() =>
+      deserializeInitialLoadChallengeFromWire(`${'A'.repeat(43)}!`),
+    ).toThrow(/fixed-width base64/);
   });
 
   test('signature payload binds document, nonce, boundaries, and rejects lone surrogates', () => {

@@ -131,6 +131,77 @@ describe('loadResponseManifestHash', () => {
     );
   });
 
+  test('accepts cross-realm serialized changes and rejects shared backing', async () => {
+    const crossRealm = runInNewContext(
+      'new Uint8Array([1, 2, 3])',
+    ) as Uint8Array;
+    expect(crossRealm instanceof Uint8Array).toBe(false);
+    await expect(
+      hash({
+        changeId: 'ROOT',
+        changes: node({ change: { value: 1 } }),
+        serializeChange: () => crossRealm,
+      }),
+    ).resolves.toHaveLength(32);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      await expect(
+        hash({
+          changeId: 'ROOT',
+          changes: node({ change: { value: 1 } }),
+          serializeChange: () =>
+            new Uint8Array(new SharedArrayBuffer(3)),
+        }),
+      ).rejects.toThrow(/unshared Uint8Array/);
+    }
+  });
+
+  test('snapshots the complete tree before a serializer can mutate it', async () => {
+    const originalChild = node({ kind: 'reader', keyID: 'epoch-a' });
+    const originalRoot = node({
+      change: { trigger: true },
+      children: { CHILD: originalChild },
+    });
+    const actual = await hash({
+      changeId: 'ROOT',
+      changes: originalRoot,
+      serializeChange: () => {
+        originalChild.kind = 'writer';
+        originalChild.keyID = 'attacker';
+        originalRoot.children = { ATTACKER: node() };
+        return new Uint8Array([7]);
+      },
+    });
+
+    await expect(
+      hash({
+        changeId: 'ROOT',
+        changes: node({
+          change: { trigger: true },
+          children: { CHILD: node({ kind: 'reader', keyID: 'epoch-a' }) },
+        }),
+        serializeChange: () => new Uint8Array([7]),
+      }),
+    ).resolves.toEqual(actual);
+  });
+
+  test('rejects change-tree accessors without invoking them', async () => {
+    let getterCalls = 0;
+    const changes = node();
+    Object.defineProperty(changes, 'children', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return { ATTACKER: node() };
+      },
+    });
+
+    await expect(hash({ changeId: 'ROOT', changes })).rejects.toThrow(
+      /data properties/,
+    );
+    expect(getterCalls).toBe(0);
+  });
+
   test('binds snapshot bytes and every applied snapshot metadata field', async () => {
     const baseline = {
       snapshot: {

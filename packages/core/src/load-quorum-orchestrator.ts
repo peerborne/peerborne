@@ -100,7 +100,9 @@ function normalizeLoadQuorumProbeResult(
   } catch {
     return { kind: 'non-vote' };
   }
-  if (typeof signerAuthority !== 'string') return { kind: 'non-vote' };
+  if (typeof signerAuthority !== 'string' || signerAuthority.length === 0) {
+    return { kind: 'non-vote' };
+  }
   const hash = snapshotVoteHash(hashValue);
   return hash === undefined
     ? { kind: 'non-vote' }
