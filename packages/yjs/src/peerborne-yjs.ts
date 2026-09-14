@@ -2,7 +2,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
-  PreparedACLRemoval,
+  PreparedACLChange,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -643,25 +643,48 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
-      this._assertComplete('add an ACL member');
-      const hash = await serializeKey(publicKey);
-      assertCanonicalP384PublicKeyEncoding(hash);
-      this._assertComplete('add an ACL member');
-      const base = this._acl;
-      const staged = new Doc({ gc: false });
-      applyUpdateV2(
-        staged,
-        snapshotBoundedYjsACLState(base, 'add an ACL member'),
-      );
-      staged.clientID = base.clientID;
-      const beforeSV = encodeStateVector(staged);
-      staged.getMap('users').set(hash, true);
-      const changes = encodeStateAsUpdateV2(staged, beforeSV);
-      snapshotBoundedYjsACLState(staged, 'add an ACL member');
-      this._acl = staged;
-      this._revision++;
-      return changes;
+      const prepared = await this.prepareAdd(publicKey);
+      prepared.commit();
+      return prepared.changes;
     });
+  }
+  async prepareAdd(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLChange<Uint8Array>> {
+    const hash = await serializeKey(publicKey);
+    assertCanonicalP384PublicKeyEncoding(hash);
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc({ gc: false });
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'stage an ACL addition'),
+    );
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    const beforeSV = encodeStateVector(staged);
+    if (!hadMember) {
+      stagedUsers.set(hash, true);
+    }
+    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    snapshotBoundedYjsACLState(staged, 'stage an ACL addition');
+    const changes = new Uint8Array(privateChanges);
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while addition was staged');
+        }
+        committed = true;
+        if (hadMember) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {

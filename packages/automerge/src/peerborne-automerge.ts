@@ -20,7 +20,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
-  PreparedACLRemoval,
+  PreparedACLChange,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -459,23 +459,51 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
 
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
-      this._assertComplete('add an ACL member');
-      const hash = await serializeKey(publicKey);
-      assertCanonicalP384PublicKeyEncoding(hash);
-      const aclNew = change(this._acl, (doc) => {
-        if (!doc.users) {
-          doc.users = {};
-        }
-        doc.users[hash] = true;
-      });
-      const aclChanges = getChanges(this._acl, aclNew);
-      const accounting = this._prepareChangeAccounting(aclChanges);
-      assertAutomergeACLResourceLimits(aclNew, 'add an ACL member');
-      this._acl = aclNew;
-      this._commitChangeAccounting(accounting);
-      if (aclChanges.length > 0) this._revision++;
-      return aclChanges;
+      const prepared = await this.prepareAdd(publicKey);
+      prepared.commit();
+      return prepared.changes;
     });
+  }
+  async prepareAdd(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLChange<BinaryChange[]>> {
+    this._assertComplete('add an ACL member');
+    const hash = await serializeKey(publicKey);
+    assertCanonicalP384PublicKeyEncoding(hash);
+    this._assertComplete('add an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    assertAutomergeACLResourceLimits(base, 'stage an ACL addition');
+    const stagedBase = clone(base);
+    const staged = change(stagedBase, (doc) => {
+      if (!doc.users) {
+        doc.users = {};
+      }
+      doc.users[hash] = true;
+    });
+    const privateChanges = getChanges(base, staged);
+    const accounting = this._prepareChangeAccounting(privateChanges);
+    assertAutomergeACLResourceLimits(staged, 'stage an ACL addition');
+    const changes = privateChanges.map(
+      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+    );
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while addition was staged');
+        }
+        committed = true;
+        if (privateChanges.length === 0) return;
+        this._acl = staged;
+        this._commitChangeAccounting(accounting);
+        this._revision++;
+      },
+    };
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
@@ -486,7 +514,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
   async prepareRemove(
     publicKey: CryptoKey,
-  ): Promise<PreparedACLRemoval<BinaryChange[]>> {
+  ): Promise<PreparedACLChange<BinaryChange[]>> {
     this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
     assertCanonicalP384PublicKeyEncoding(hash);
