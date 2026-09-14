@@ -13,6 +13,7 @@ import {
   MAX_CHANGE_TREE_NODES,
   snapshotBoundedChangeTree,
 } from './change-tree-walk.js';
+import { snapshotEnumerableOwnDataObject } from './utils.js';
 
 // Allow-list of `kind` discriminants accepted from peer wire messages.
 //
@@ -265,52 +266,63 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
       throw new TypeError('merkle-dag tree must not contain object cycles');
     }
     active.add(source);
-    if (!Object.prototype.hasOwnProperty.call(source, 'kind')) {
+    const sourceSnapshot = snapshotEnumerableOwnDataObject<
+      Record<string, unknown>
+    >(source, 'merkle-dag node');
+    if (!Object.prototype.hasOwnProperty.call(sourceSnapshot, 'kind')) {
       throw new Error(
         'Invalid merkle-dag node: "kind" must be an own property',
       );
     }
-    if (!isValidChangeNodeKind(source.kind)) {
+    const kind = sourceSnapshot.kind;
+    const keyID = sourceSnapshot.keyID;
+    const wireChange = sourceSnapshot.change as TIn | undefined;
+    const wireChildren = sourceSnapshot.children;
+    if (!isValidChangeNodeKind(kind)) {
       throw new Error(
         `Invalid merkle-dag node: "kind" must be one of ${Array.from(
           VALID_CHANGE_NODE_KINDS,
         )
           .map((kind) => JSON.stringify(kind))
-          .join(', ')} (got ${JSON.stringify(source.kind)})`,
+          .join(', ')} (got ${JSON.stringify(kind)})`,
       );
     }
-    if (source.keyID !== undefined && typeof source.keyID !== 'string') {
+    if (keyID !== undefined && typeof keyID !== 'string') {
       throw new Error(
         `Invalid merkle-dag node: "keyID" must be a string when present (got ${describeValue(
-          source.keyID,
+          keyID,
         )})`,
       );
     }
 
-    const change =
-      source.change !== undefined ? decodeLeaf(source.change) : undefined;
     let decodedChildren:
       | { [hash: string]: CRDTChangeNode<TOut> }
       | CRDTChangeNodeDeferred
       | undefined;
+    let stableChildren:
+      | Record<string, CRDTChangeNodeWire<TIn>>
+      | undefined;
     if (
-      source.children !== undefined &&
-      source.children !== crdtChangeNodeDeferred
+      wireChildren !== undefined &&
+      wireChildren !== crdtChangeNodeDeferred
     ) {
       if (
-        typeof source.children !== 'object' ||
-        source.children === null ||
-        Array.isArray(source.children)
+        typeof wireChildren !== 'object' ||
+        wireChildren === null ||
+        Array.isArray(wireChildren)
       ) {
         throw new Error(
           'Invalid merkle-dag node: "children" must be an object keyed by hash',
         );
       }
+      stableChildren = snapshotEnumerableOwnDataObject<
+        Record<string, CRDTChangeNodeWire<TIn>>
+      >(wireChildren, 'merkle-dag children');
       decodedChildren = Object.create(null) as {
         [hash: string]: CRDTChangeNode<TOut>;
       };
-    } else if (source.children !== undefined) {
-      decodedChildren = source.children;
+    } else if (wireChildren !== undefined) {
+      decodedChildren = wireChildren;
     }
 
     // Keep the relative insertion order of every recognized wire field. The
@@ -318,16 +330,18 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
     // a valid node in schema order would make a deserialize/serialize round trip
     // unverifiable. Unknown fields are still dropped.
     const result = {} as CRDTChangeNode<TOut>;
-    for (const field of Object.keys(source)) {
+    for (const field of Object.keys(sourceSnapshot)) {
       switch (field) {
         case 'kind':
-          result.kind = source.kind;
+          result.kind = kind;
           break;
         case 'keyID':
-          if (source.keyID !== undefined) result.keyID = source.keyID;
+          if (keyID !== undefined) result.keyID = keyID;
           break;
         case 'change':
-          if (change !== undefined) result.change = change;
+          if (wireChange !== undefined) {
+            result.change = wireChange as unknown as TOut;
+          }
           break;
         case 'children':
           if (decodedChildren !== undefined) {
@@ -337,15 +351,12 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
       }
     }
 
-    if (
-      source.children !== undefined &&
-      source.children !== crdtChangeNodeDeferred
-    ) {
+    if (stableChildren !== undefined) {
       const children = decodedChildren as {
         [hash: string]: CRDTChangeNode<TOut>;
       };
       pending.push({ phase: 'leave', source });
-      const entries = Object.entries(source.children);
+      const entries = Object.entries(stableChildren);
       edgeCount += entries.length;
       if (
         !Number.isSafeInteger(edgeCount) ||
@@ -373,6 +384,27 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
       root = result;
     } else {
       parent[hash!] = result;
+    }
+  }
+
+  // Run provider decoding only after the complete wire topology has been
+  // validated and detached. A decoder callback therefore cannot mutate a
+  // not-yet-validated node through an alias into the caller's input graph.
+  const decodePending: CRDTChangeNode<TOut>[] = [root];
+  while (decodePending.length > 0) {
+    const current = decodePending.pop()!;
+    if (current.change !== undefined) {
+      current.change = decodeLeaf(current.change as unknown as TIn);
+    }
+    if (
+      current.children === undefined ||
+      current.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
+    const children = Object.values(current.children);
+    for (let index = children.length - 1; index >= 0; index--) {
+      decodePending.push(children[index]!);
     }
   }
   return root;

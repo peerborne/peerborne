@@ -171,13 +171,6 @@ function collectBoundedChangeTreeInternal<ChangesType>(
       if (nodeSnapshot !== undefined) Object.freeze(nodeSnapshot);
       continue;
     }
-    if (nodeId !== undefined && options.stopBelowNodeIds?.has(nodeId)) {
-      if (nodeSnapshot !== undefined) {
-        nodeSnapshot.children = crdtChangeNodeDeferred;
-        Object.freeze(nodeSnapshot);
-      }
-      continue;
-    }
     if (
       children === null ||
       typeof children !== 'object' ||
@@ -195,6 +188,13 @@ function collectBoundedChangeTreeInternal<ChangesType>(
       throw new RangeError(
         `change tree exceeds ${MAX_CHANGE_TREE_EDGES} edges`,
       );
+    }
+    if (nodeId !== undefined && options.stopBelowNodeIds?.has(nodeId)) {
+      if (nodeSnapshot !== undefined) {
+        nodeSnapshot.children = crdtChangeNodeDeferred;
+        Object.freeze(nodeSnapshot);
+      }
+      continue;
     }
     const childrenSnapshot:
       | Record<string, CRDTChangeNode<ChangesType>>

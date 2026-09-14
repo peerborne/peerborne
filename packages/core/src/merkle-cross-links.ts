@@ -3,6 +3,7 @@ import {
   CRDTChangeNodeKind,
   crdtChangeNodeDeferred,
 } from './crdt-change-node.js';
+import { collectBoundedChangeTree } from './change-tree-walk.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 /**
@@ -821,30 +822,11 @@ export function collectAllCidsInTree<ChangesType>(
   rootId: string | undefined,
   root: CRDTChangeNode<ChangesType> | undefined,
 ): string[] {
-  if (!root) return rootId ? [rootId] : [];
+  if (root === undefined) return rootId ? [rootId] : [];
   const cids = new Set<string>();
-  const walked = new Set<string>();
-  const pending: Array<
-    readonly [string | undefined, CRDTChangeNode<ChangesType>]
-  > = [[rootId, root]];
-  while (pending.length > 0) {
-    const [nodeId, node] = pending.pop()!;
+  for (const { nodeId } of collectBoundedChangeTree(rootId, root)) {
     if (nodeId !== undefined) {
       cids.add(nodeId);
-    }
-    if (
-      node.children === undefined ||
-      node.children === crdtChangeNodeDeferred
-    ) {
-      continue;
-    }
-    if (nodeId !== undefined) {
-      if (walked.has(nodeId)) continue;
-      walked.add(nodeId);
-    }
-    const entries = Object.entries(node.children);
-    for (let index = entries.length - 1; index >= 0; index--) {
-      pending.push(entries[index]!);
     }
   }
   return [...cids];

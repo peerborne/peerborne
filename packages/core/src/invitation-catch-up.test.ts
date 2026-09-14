@@ -106,6 +106,27 @@ describe('invitation catch-up', () => {
     },
   );
 
+  test.each([null, false, 0])(
+    'rejects a present malformed invitation tree before sync: %p',
+    async (changes) => {
+      const sync = jest.fn(async () => true);
+
+      await expect(
+        syncInvitationMessageCompletely(
+          {
+            documentId: '/malformed-invitation-tree',
+            changeId: 'root-cid',
+            changes: changes as never,
+          },
+          new Set(),
+          sync,
+          'catch-up',
+        ),
+      ).rejects.toThrow(/node must be an object/);
+      expect(sync).not.toHaveBeenCalled();
+    },
+  );
+
   test('accepts CIDs retrieved by sync or installed by bootstrap', async () => {
     const message = {
       documentId: '/invitation-completeness',
@@ -211,6 +232,19 @@ describe('invitation catch-up', () => {
       'post-snapshot-head',
       'missing-post-snapshot',
     ]);
+  });
+
+  test('rejects malformed children on an applied snapshot boundary', () => {
+    expect(() =>
+      collectInvitationCidsToInstall(
+        'snapshot-boundary',
+        {
+          kind: crdtDocumentChangeNode,
+          children: null,
+        } as never,
+        new Set(['snapshot-boundary']),
+      ),
+    ).toThrow(/children must be an object/);
   });
 
   test('collects a maximum-depth invitation tree without recursive stack growth', () => {

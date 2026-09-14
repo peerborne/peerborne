@@ -436,8 +436,88 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
 
       expect(() =>
         deserializeChangeNodeFromJSON(malformed, decodeBytes),
-      ).toThrow(/"kind" must be an own property/);
+      ).toThrow(/plain object/);
       expect(inheritedReads).toBe(0);
+    });
+
+    test('rejects own accessors without invoking them', () => {
+      let reads = 0;
+      const malformed = { change: '01' } as Record<string, unknown>;
+      Object.defineProperty(malformed, 'kind', {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return 'document';
+        },
+      });
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          malformed as CRDTChangeNodeWire<string>,
+          decodeBytes,
+        ),
+      ).toThrow(/data properties/);
+      expect(reads).toBe(0);
+    });
+
+    test('decodes only from one descriptor snapshot of each node', () => {
+      let propertyReads = 0;
+      const source = new Proxy(
+        { kind: 'document' as const, change: '01' },
+        {
+          get(target, property, receiver) {
+            propertyReads += 1;
+            return Reflect.get(target, property, receiver);
+          },
+        },
+      );
+
+      const restored = deserializeChangeNodeFromJSON(source, decodeBytes);
+      expect(restored.kind).toBe('document');
+      expectBytesEqual(restored.change!, new Uint8Array([1]));
+      expect(propertyReads).toBe(0);
+    });
+
+    test('rejects children-map accessors without invoking them', () => {
+      let reads = 0;
+      const children = {};
+      Object.defineProperty(children, 'child', {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return { kind: 'document' };
+        },
+      });
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          { kind: 'document', children } as CRDTChangeNodeWire<string>,
+          decodeBytes,
+        ),
+      ).toThrow(/data properties/);
+      expect(reads).toBe(0);
+    });
+
+    test('snapshots every node before a decoder callback can mutate input', () => {
+      const child: CRDTChangeNodeWire<string> = {
+        kind: 'writer',
+        change: '02',
+      };
+      const wire: CRDTChangeNodeWire<string> = {
+        kind: 'document',
+        change: '01',
+        children: { child },
+      };
+
+      const restored = deserializeChangeNodeFromJSON(wire, (value) => {
+        if (value === '01') child.kind = 'reader';
+        return decodeBytes(value);
+      });
+      const restoredChild = (
+        restored.children as Record<string, CRDTChangeNode<Uint8Array>>
+      ).child;
+      expect(restoredChild.kind).toBe('writer');
+      expectBytesEqual(restoredChild.change!, new Uint8Array([2]));
     });
 
     test('throws when "kind" is an unknown string', () => {

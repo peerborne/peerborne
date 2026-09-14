@@ -15,7 +15,7 @@ import {
   readUint8Iterable,
   shuffleArray,
 } from './utils.js';
-import { wrapStream } from './stream-adapter.js';
+import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
 import { AuthProvider, requireSerializePublicKey } from './auth-provider.js';
 import {
@@ -84,6 +84,7 @@ import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
   dedupePeersByPeerId,
+  LOAD_QUORUM_TIMEOUT_MS_MAX,
   LoadQuorumFailedError,
 } from './load-quorum.js';
 import { runLoadQuorum } from './load-quorum-orchestrator.js';
@@ -141,6 +142,7 @@ import {
 } from './invitation-capacity.js';
 import {
   assertInitialInvitationHistoryVisibility,
+  INVITATION_STREAM_TIMEOUT_MS,
   type HistoryVisibility,
 } from './invitation-policy.js';
 import {
@@ -269,6 +271,21 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
  * force the loader to buffer before being rejected as a non-vote.
  */
 const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
+
+/** Bound ordinary encrypted snapshot/document responses before decoding. */
+export const MAX_DOCUMENT_LOAD_RESPONSE_SIZE = 10 * 1024 * 1024;
+
+/** Match the default per-peer load-quorum probe budget. */
+const DEFAULT_DOCUMENT_LOAD_RESPONSE_TIMEOUT_MS = 5000;
+
+function documentLoadResponseTimeoutMs(configured: unknown): number {
+  return typeof configured === 'number' &&
+    Number.isSafeInteger(configured) &&
+    configured >= 1 &&
+    configured <= LOAD_QUORUM_TIMEOUT_MS_MAX
+    ? configured
+    : DEFAULT_DOCUMENT_LOAD_RESPONSE_TIMEOUT_MS;
+}
 
 /**
  * Bound on the number of parallel Helia `blockstore.get(cid)` fetches
@@ -2708,18 +2725,64 @@ export class PeerborneDocument<
    *   `false` return value (by trying the next available peer) and thrown errors.
    */
   private async _sendLoadRequestAndSync(
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> },
+    stream: Pick<DuplexStream, 'sink' | 'source' | 'abort'>,
     serializedRequest: Uint8Array,
     expectedTipsHashHex: string | null = null,
     requiredResponseSigner?: PublicKey,
     maxResponseBytes?: number,
     requireCompleteCids = false,
+    configuredResponseTimeoutMs?: number,
   ): Promise<boolean> {
-    await pipe([serializedRequest], stream.sink);
+    const responseLimit =
+      maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE;
+    const responseTimeoutMs = documentLoadResponseTimeoutMs(
+      configuredResponseTimeoutMs ?? this.swarm.config?.loadQuorumTimeoutMs,
+    );
+    let responseDeadline: ReturnType<typeof setTimeout> | undefined;
+    const clearResponseDeadline = (): void => {
+      if (responseDeadline !== undefined) {
+        clearTimeout(responseDeadline);
+        responseDeadline = undefined;
+      }
+    };
+    let responseAborted = false;
+    const abortResponse = (error: Error): void => {
+      if (responseAborted) return;
+      responseAborted = true;
+      try {
+        stream.abort(error);
+      } catch {
+        // The stream may already have been reset by the transport.
+      }
+    };
+    const deadline = new Promise<never>((_resolve, reject) => {
+      responseDeadline = setTimeout(() => {
+        const error = new Error('Document load response deadline exceeded');
+        abortResponse(error);
+        reject(error);
+      }, responseTimeoutMs);
+    });
+    try {
+      await Promise.race([pipe([serializedRequest], stream.sink), deadline]);
+    } catch (error) {
+      clearResponseDeadline();
+      throw error;
+    }
     return await pipe(
       stream.source,
       async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-        const assembled = await readUint8Iterable(source, maxResponseBytes);
+        let assembled: Uint8Array;
+        const readResponse = readUint8Iterable(source, responseLimit).catch(
+          (error) => {
+            abortResponse(new Error('Document load response rejected'));
+            throw error;
+          },
+        );
+        try {
+          assembled = await Promise.race([readResponse, deadline]);
+        } finally {
+          clearResponseDeadline();
+        }
 
         // Empty response means the peer couldn't serve this request.
         if (assembled.length === 0) {
@@ -3251,12 +3314,28 @@ export class PeerborneDocument<
     try {
       rawStream = await this.libp2p.dialProtocol(peer, [tipAdvertiseV1], {
         runOnLimitedConnection: true,
+        signal,
       });
       stream = wrapStream(rawStream);
     } catch {
       // Peer doesn't support tip-advertise or dial failed -- treat as non-vote.
       return null;
     }
+    let streamAborted = false;
+    const abortStream = (message: string): void => {
+      if (streamAborted) return;
+      streamAborted = true;
+      try {
+        rawStream.abort(new Error(message));
+      } catch {
+        void Promise.resolve()
+          .then(() => rawStream.close())
+          .catch(() => undefined);
+        void Promise.resolve()
+          .then(() => rawStream.closeRead())
+          .catch(() => undefined);
+      }
+    };
     // Abort handler: tear down the v3 stream bidirectionally so a timed-out
     // probe doesn't strand the libp2p resource. `abort()` is the v3 full
     // teardown ("close stream for reading and writing"); `close()` would
@@ -3264,20 +3343,10 @@ export class PeerborneDocument<
     // attaching handles the race where the signal fired between dial and
     // listener attach. The handler also resolves `pipe()` / read promises
     // below with `AbortError`, which we swallow in the outer catch.
-    const onAbort = () => {
-      try {
-        rawStream.abort(new Error('tip-advertise probe aborted'));
-      } catch {
-        // Already torn down -- nothing to do.
-      }
-    };
+    const onAbort = () => abortStream('tip-advertise probe aborted');
     if (signal) {
       if (signal.aborted) {
-        try {
-          rawStream.abort(new Error('tip-advertise probe aborted'));
-        } catch {
-          /* already torn down */
-        }
+        abortStream('tip-advertise probe aborted');
         return null;
       }
       signal.addEventListener('abort', onAbort, { once: true });
@@ -3387,21 +3456,13 @@ export class PeerborneDocument<
     } catch {
       return null;
     } finally {
-      // Always detach the abort listener and release the libp2p stream.
-      // The normal success path drops through to here after `return` runs,
-      // so we still need to close the stream to release per-connection
-      // stream quota (the response read consumed the read side but the
-      // write side is half-open until close() runs). On the abort path
-      // `rawStream.abort()` has already been called by `onAbort`; calling
-      // `close()` again is a no-op the libp2p impls tolerate.
+      // Always detach the listener and reset both directions. A completion
+      // detector or malformed response can return before the remote sends
+      // FIN, and `close()` alone only half-closes the write side.
       if (signal) {
         signal.removeEventListener('abort', onAbort);
       }
-      try {
-        await rawStream.close();
-      } catch {
-        /* already torn down */
-      }
+      abortStream('tip-advertise probe completed');
     }
   }
 
@@ -3498,6 +3559,7 @@ export class PeerborneDocument<
           issuerPublicKey,
           MAX_INVITATION_MESSAGE_BYTES,
           true,
+          INVITATION_STREAM_TIMEOUT_MS,
         ),
     );
   }
@@ -4277,9 +4339,20 @@ export class PeerborneDocument<
     // Validate and collect the complete ACL pre-pass before any keychain, ACL,
     // snapshot, or document mutation. This makes malformed/over-budget change
     // trees all-or-nothing at the sync boundary.
-    const changeTreePreflight = message.changes
-      ? this._collectACLFromTree(message.changes, message.changeId)
-      : undefined;
+    let changeTreePreflight:
+      | ReturnType<typeof this._collectACLFromTree>
+      | undefined;
+    const incomingChanges = message.changes;
+    const incomingChangeId = message.changeId;
+    if (incomingChanges !== undefined) {
+      if (incomingChangeId === undefined) {
+        throw new TypeError('Change tree is missing its root CID');
+      }
+      changeTreePreflight = this._collectACLFromTree(
+        incomingChanges,
+        incomingChangeId,
+      );
+    }
 
     // Update/replace list of document keys (if provided).
     if (message.keychainChanges) {

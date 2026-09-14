@@ -410,6 +410,56 @@ describe('shared protocol request boundaries', () => {
     },
   );
 
+  test('bounds quiescence when an admitted mutation never settles', async () => {
+    jest.useFakeTimers();
+    const commitStarted = Promise.withResolvers<void>();
+    const { peerborne, handlers } = await registerHandlers(undefined, 25);
+    const documentHandler = jest.fn(
+      async (_payload: Uint8Array, admission: any) => {
+        await admission.runMutation(async () => {
+          commitStarted.resolve();
+          await new Promise<void>(() => {});
+        });
+      },
+    );
+    (peerborne as any)._documentRegistry.set('/registered', {
+      handleKeyUpdateRequestData: documentHandler,
+    });
+    const { resource, stream } = streamFromChunks(
+      [pathPrefixedMessage('/registered')],
+      { endAfterChunks: true },
+    );
+    const warn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      let settled = false;
+      const result = handlers.get(documentKeyUpdateV2)!(stream).then(() => {
+        settled = true;
+      });
+      await commitStarted.promise;
+
+      await jest.advanceTimersByTimeAsync(25);
+      expect(settled).toBe(false);
+      expect(stream.abort).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(25);
+      await result;
+      expect(settled).toBe(true);
+      expect(stream.abort).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Shared protocol handler timed out',
+        }),
+      );
+      expect(resource.inboundQuota).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   test.each(jsonProtocols)(
     'aborts a %s stream after a fragmented deserialization failure',
     async (handlerName, protocol) => {
