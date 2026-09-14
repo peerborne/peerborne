@@ -23,6 +23,7 @@ import {
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
+  isSyncMessageSignatureContext,
   describeValue,
   deserializeChangeNodeFromJSON,
   deserializeInitialLoadChallengeFromWire,
@@ -1334,6 +1335,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
     }
     const raw = decoded as {
       documentId?: unknown;
+      signatureContext?: unknown;
       changeId?: unknown;
       changes?: unknown;
       keychainChanges?: unknown;
@@ -1359,6 +1361,16 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       throw new Error(
         `Invalid sync message: 'documentId' must be a string (got ${describeValue(
           raw.documentId,
+        )})`,
+      );
+    }
+    if (
+      raw.signatureContext !== undefined &&
+      !isSyncMessageSignatureContext(raw.signatureContext)
+    ) {
+      throw new Error(
+        `Invalid sync message: 'signatureContext' is not a supported exact tag (got ${describeValue(
+          raw.signatureContext,
         )})`,
       );
     }
@@ -1567,6 +1579,10 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       switch (field) {
         case 'documentId':
           result.documentId = raw.documentId;
+          break;
+        case 'signatureContext':
+          if (raw.signatureContext !== undefined)
+            result.signatureContext = raw.signatureContext;
           break;
         case 'changeId':
           if (raw.changeId !== undefined)

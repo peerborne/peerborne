@@ -46,6 +46,7 @@ function fakeDocument(fields: Record<string, unknown>): any {
 function validMessage(epochId: Uint8Array) {
   return {
     documentId: documentPath,
+    signatureContext: 'beekem-path-update-v1' as const,
     pathUpdate: {
       senderLeafIndex: 0,
       senderLeafPublicKey: 'AQ==',
