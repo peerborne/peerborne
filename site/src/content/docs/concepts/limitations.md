@@ -59,11 +59,11 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   role first. There is no selective cancellation API; a short expiry is the
   only non-disruptive way to limit an unclaimed link. Closing the founder
   document or stopping its node makes all of its offers unavailable.
-- **Initial invitations support founder plus one active collaborator.** A
+- **Reader onboarding supports founder plus one active collaborator.** A
   second active reader is rejected because add-side BeeKEM PathUpdate delivery
-  for larger groups is not implemented or verified. The bounded invitation
-  path supports the first collaborator and exact retries for that identity,
-  not a replacement invitation after revocation.
+  for larger groups is not implemented or verified. Both `addReader` and the
+  bounded invitation path support the first collaborator and exact retries for
+  that identity, not a replacement after revocation.
 - **Initial invitations are founder-process only.** A replica that loaded the
   document later cannot issue an offer, even if its signing identity is a
   writer. Founder and recipient identities must be distinct.

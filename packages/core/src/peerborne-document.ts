@@ -5027,6 +5027,10 @@ export class PeerborneDocument<
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
+   * The initial release supports the first reader plus exact retries for that
+   * identity. After `removeReader` advances the BeeKEM tree, adding a
+   * replacement is rejected before ACL or BeeKEM state changes.
+   *
    * CONFIDENTIALITY: the Welcome's keychain delta is sealed with ECIES
    * (P-256 ECDH + AES-256-GCM) under `readerKemPublicKey`, so only the
    * intended recipient can decrypt it. The recipient binding
@@ -5149,8 +5153,14 @@ export class PeerborneDocument<
         `[${this.documentPath}] addReader: the initial release supports ` +
           `one active collaborator per document (founder plus one reader). ` +
           `Adding another reader would require an add-side BeeKEM PathUpdate ` +
-          `that is not implemented yet. Remove the current reader before ` +
-          `inviting a replacement.`,
+          `that is not implemented yet.`,
+      );
+    }
+    if (!alreadyReader && (this._beekem?.memberCount ?? 0) > 1) {
+      throw new Error(
+        `[${this.documentPath}] addReader: replacement readers are not ` +
+          `supported after BeeKEM membership has advanced. Create a new ` +
+          `document instead of reusing the revoked membership tree.`,
       );
     }
 
