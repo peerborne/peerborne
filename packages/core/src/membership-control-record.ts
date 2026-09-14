@@ -69,7 +69,8 @@ const typedArrayByteLengthGetter = typedArrayByteLength;
 const typedArrayByteOffsetGetter = typedArrayByteOffset;
 const typedArrayBufferGetter = typedArrayBuffer;
 const typedArrayTagGetter = typedArrayTag;
-const canonicalProtocolIdPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
+const canonicalProtocolIdPattern =
+  /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(?![\s\S])/;
 
 export type MembershipControlAction = 'create' | 'add' | 'remove' | 'update';
 
