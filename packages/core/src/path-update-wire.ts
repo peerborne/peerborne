@@ -25,8 +25,19 @@ import {
   WelcomeNodePublicKey,
 } from './beekem/types.js';
 import * as TreeMath from './beekem/tree-math.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  assertSharedProtocolRequestSize,
+  copyUnsharedUint8Array,
+} from './utils.js';
 
+// A left-balanced tree with the shared 8,192-leaf ceiling has at most 13
+// internal nodes on a leaf-to-root direct path.
+const MAX_V1_PATH_NODES = 13;
+const MAX_V1_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
+// ECIES framing is salt (32) + ephemeral P-256 key (65) + nonce (12) +
+// AES-GCM tag (16). An empty value is separately valid for a blank copath.
+const MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES = 125;
+const MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES = 4096;
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 8 * 1024 * 1024;
@@ -81,36 +92,106 @@ export interface SerializedPathUpdateV2 {
 export function serializePathUpdateForWire(
   update: PathUpdate,
 ): SerializedPathUpdate {
-  for (const field of [
+  const v2OnlyFields = [
     'version',
     'generation',
     'parentTreeHash',
     'numLeaves',
     'treeNodePublicKeys',
     'treeHash',
-  ]) {
-    if (Reflect.has(update, field)) {
+  ] as const;
+  const raw = snapshotPlainObject(
+    update,
+    [
+      'senderLeafIndex',
+      'senderLeafPublicKey',
+      'nodes',
+      ...v2OnlyFields,
+    ],
+    'Invalid PathUpdate',
+  );
+  for (const field of v2OnlyFields) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
       throw new Error(
         `Cannot serialize PathUpdate with v2-only field '${field}' as v1`,
       );
     }
   }
-  for (const node of update.nodes) {
-    if (Reflect.has(node, 'encryptedPathKeyBundles')) {
+  const senderLeafIndex = requireV1SenderLeafIndex(raw.senderLeafIndex);
+  if (!Array.isArray(raw.nodes)) {
+    throw new Error(
+      `Invalid PathUpdate: 'nodes' must be an array (got ${describe(raw.nodes)})`,
+    );
+  }
+  const rawNodes = snapshotBoundedArray(
+    raw.nodes,
+    MAX_V1_PATH_NODES,
+    'Invalid PathUpdate: nodes',
+  );
+  const nodeIndices = new Set<number>();
+  const detachedNodes = rawNodes.map((value, nodeOffset) => {
+    const node = snapshotPlainObject(
+      value,
+      [
+        'nodeIndex',
+        'publicKey',
+        'encryptedPrivateKey',
+        'encryptedPathKeyBundles',
+      ],
+      `Invalid PathUpdate: node[${nodeOffset}]`,
+    );
+    if (Object.prototype.hasOwnProperty.call(node, 'encryptedPathKeyBundles')) {
       throw new Error(
         "Cannot serialize PathUpdate with v2-only field 'encryptedPathKeyBundles' as v1",
       );
     }
-  }
-  return {
-    senderLeafIndex: update.senderLeafIndex,
-    senderLeafPublicKey: Base64.fromUint8Array(update.senderLeafPublicKey),
-    nodes: update.nodes.map((n) => ({
-      nodeIndex: n.nodeIndex,
-      publicKey: Base64.fromUint8Array(n.publicKey),
-      encryptedPrivateKey: Base64.fromUint8Array(n.encryptedPrivateKey),
+    const nodeIndex = requireV1PathNodeIndex(
+      node.nodeIndex,
+      nodeOffset,
+      nodeIndices,
+    );
+    const encryptedPrivateKey = snapshotRuntimeV1Bytes(
+      node.encryptedPrivateKey,
+      0,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+      `node[${nodeOffset}].encryptedPrivateKey`,
+    );
+    requireV1CiphertextLength(
+      encryptedPrivateKey.byteLength,
+      `node[${nodeOffset}].encryptedPrivateKey`,
+    );
+    return {
+      nodeIndex,
+      publicKey: snapshotRuntimeV1Bytes(
+        node.publicKey,
+        65,
+        65,
+        `node[${nodeOffset}].publicKey`,
+      ),
+      encryptedPrivateKey,
+    };
+  });
+  const senderLeafPublicKey = snapshotRuntimeV1Bytes(
+    raw.senderLeafPublicKey,
+    65,
+    65,
+    'senderLeafPublicKey',
+  );
+  const wire: SerializedPathUpdate = {
+    senderLeafIndex,
+    senderLeafPublicKey: Base64.fromUint8Array(senderLeafPublicKey),
+    nodes: detachedNodes.map((node) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey: Base64.fromUint8Array(node.publicKey),
+      encryptedPrivateKey: Base64.fromUint8Array(node.encryptedPrivateKey),
     })),
   };
+  assertSharedProtocolRequestSize(
+    JSON.stringify(wire).length,
+    'BeeKEM PathUpdate v1 wire payload',
+  );
+  deserializePathUpdateFromWire(wire);
+  return wire;
 }
 
 /**
@@ -401,37 +482,13 @@ export function serializePathUpdateV2ForWire(
 export function deserializePathUpdateFromWire(
   wire: unknown,
 ): PathUpdate {
-  if (typeof wire !== 'object' || wire === null || Array.isArray(wire)) {
-    throw new Error(
-      `Invalid PathUpdate: expected a plain object, got ${describe(wire)}`,
-    );
-  }
-  const raw = wire as Record<string, unknown>;
+  const raw = snapshotPlainObject(
+    wire,
+    ['senderLeafIndex', 'senderLeafPublicKey', 'nodes'],
+    'Invalid PathUpdate',
+  );
 
-  for (const field of [
-    'version',
-    'generation',
-    'parentTreeHash',
-    'numLeaves',
-    'treeNodePublicKeys',
-    'treeHash',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(raw, field)) {
-      throw new Error(
-        `Invalid PathUpdate v1: v2-only field '${field}' is not allowed`,
-      );
-    }
-  }
-
-  if (
-    typeof raw.senderLeafIndex !== 'number' ||
-    !Number.isInteger(raw.senderLeafIndex) ||
-    raw.senderLeafIndex < 0
-  ) {
-    throw new Error(
-      `Invalid PathUpdate: 'senderLeafIndex' must be a non-negative integer (got ${describe(raw.senderLeafIndex)})`,
-    );
-  }
+  const senderLeafIndex = requireV1SenderLeafIndex(raw.senderLeafIndex);
   if (typeof raw.senderLeafPublicKey !== 'string') {
     throw new Error(
       `Invalid PathUpdate: 'senderLeafPublicKey' must be a base64 string (got ${describe(raw.senderLeafPublicKey)})`,
@@ -443,27 +500,23 @@ export function deserializePathUpdateFromWire(
     );
   }
 
-  const nodes: PathNodeUpdate[] = raw.nodes.map((n, i) => {
-    if (typeof n !== 'object' || n === null || Array.isArray(n)) {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}] must be a plain object, got ${describe(n)}`,
-      );
-    }
-    const nn = n as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(nn, 'encryptedPathKeyBundles')) {
-      throw new Error(
-        "Invalid PathUpdate v1: v2-only field 'encryptedPathKeyBundles' is not allowed",
-      );
-    }
-    if (
-      typeof nn.nodeIndex !== 'number' ||
-      !Number.isInteger(nn.nodeIndex) ||
-      nn.nodeIndex < 0
-    ) {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}].nodeIndex must be a non-negative integer (got ${describe(nn.nodeIndex)})`,
-      );
-    }
+  const rawNodes = snapshotBoundedArray(
+    raw.nodes,
+    MAX_V1_PATH_NODES,
+    'Invalid PathUpdate: nodes',
+  );
+  const nodeIndices = new Set<number>();
+  const nodes: PathNodeUpdate[] = rawNodes.map((n, i) => {
+    const nn = snapshotPlainObject(
+      n,
+      ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
+      `Invalid PathUpdate: node[${i}]`,
+    );
+    const nodeIndex = requireV1PathNodeIndex(
+      nn.nodeIndex,
+      i,
+      nodeIndices,
+    );
     if (typeof nn.publicKey !== 'string') {
       throw new Error(
         `Invalid PathUpdate: node[${i}].publicKey must be a base64 string (got ${describe(nn.publicKey)})`,
@@ -474,21 +527,35 @@ export function deserializePathUpdateFromWire(
         `Invalid PathUpdate: node[${i}].encryptedPrivateKey must be a base64 string (got ${describe(nn.encryptedPrivateKey)})`,
       );
     }
+    const encryptedPrivateKey = decodeCanonicalV1Base64(
+      nn.encryptedPrivateKey,
+      `node[${i}].encryptedPrivateKey`,
+      0,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+    );
+    requireV1CiphertextLength(
+      encryptedPrivateKey.byteLength,
+      `node[${i}].encryptedPrivateKey`,
+    );
     return {
-      nodeIndex: nn.nodeIndex,
-      publicKey: decodeBase64(nn.publicKey, `node[${i}].publicKey`),
-      encryptedPrivateKey: decodeBase64(
-        nn.encryptedPrivateKey,
-        `node[${i}].encryptedPrivateKey`,
+      nodeIndex,
+      publicKey: decodeCanonicalV1Base64(
+        nn.publicKey,
+        `node[${i}].publicKey`,
+        65,
+        65,
       ),
+      encryptedPrivateKey,
     };
   });
 
   return {
-    senderLeafIndex: raw.senderLeafIndex,
-    senderLeafPublicKey: decodeBase64(
+    senderLeafIndex,
+    senderLeafPublicKey: decodeCanonicalV1Base64(
       raw.senderLeafPublicKey,
       'senderLeafPublicKey',
+      65,
+      65,
     ),
     nodes,
   };
@@ -908,6 +975,77 @@ interface V2DecodeBudget {
   workItems: number;
 }
 
+function requireV1SenderLeafIndex(value: unknown): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value >= MAX_V1_TREE_WIDTH ||
+    (value & 1) !== 0
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: 'senderLeafIndex' must identify a supported leaf (got ${describe(value)})`,
+    );
+  }
+  return value;
+}
+
+function requireV1PathNodeIndex(
+  value: unknown,
+  nodeOffset: number,
+  seen: Set<number>,
+): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value >= MAX_V1_TREE_WIDTH ||
+    (value & 1) === 0 ||
+    seen.has(value)
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: node[${nodeOffset}].nodeIndex must identify a unique supported internal node (got ${describe(value)})`,
+    );
+  }
+  seen.add(value);
+  return value;
+}
+
+function requireV1CiphertextLength(
+  byteLength: number,
+  fieldName: string,
+): void {
+  if (
+    byteLength !== 0 &&
+    (byteLength < MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES ||
+      byteLength > MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES)
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' must be empty or ${MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES}..${MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES} bytes`,
+    );
+  }
+}
+
+function snapshotRuntimeV1Bytes(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  fieldName: string,
+): Uint8Array {
+  try {
+    return copyUnsharedUint8Array(
+      value,
+      minimumLength,
+      maximumLength,
+      `PathUpdate.${fieldName}`,
+    );
+  } catch {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' must be an unshared Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
+    );
+  }
+}
+
 function createV2DecodeBudget(): V2DecodeBudget {
   return { decodedBytes: 0, workItems: 0 };
 }
@@ -955,7 +1093,7 @@ function snapshotBoundedArray(
   value: unknown[],
   maxLength: number,
   context: string,
-  budget: V2DecodeBudget,
+  budget?: V2DecodeBudget,
   maxLengthError = `${context} exceeds ${maxLength} entries`,
 ): unknown[] {
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
@@ -971,7 +1109,7 @@ function snapshotBoundedArray(
   if (length > maxLength) {
     throw new Error(maxLengthError);
   }
-  reserveV2Work(budget, length, context);
+  if (budget !== undefined) reserveV2Work(budget, length, context);
   const keys = Reflect.ownKeys(value);
   if (keys.length !== length + 1) {
     throw new Error(`${context} must be a dense array without extra properties`);
@@ -1092,6 +1230,49 @@ function decodeBase64(value: string, fieldName: string): Uint8Array {
       { cause: err },
     );
   }
+}
+
+function decodeCanonicalV1Base64(
+  value: string,
+  fieldName: string,
+  minimumBytes: number,
+  maximumBytes: number,
+): Uint8Array {
+  const maximumEncodedLength = Math.ceil(maximumBytes / 3) * 4;
+  if (value.length > maximumEncodedLength) {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' exceeds ${maximumBytes} decoded bytes`,
+    );
+  }
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' must use canonical padded base64`,
+    );
+  }
+  const decoded = decodeBase64(value, fieldName);
+  if (
+    decoded.byteLength < minimumBytes ||
+    decoded.byteLength > maximumBytes
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' must decode to ${
+        minimumBytes === maximumBytes
+          ? `${minimumBytes}`
+          : `${minimumBytes}..${maximumBytes}`
+      } bytes`,
+    );
+  }
+  if (Base64.fromUint8Array(decoded) !== value) {
+    throw new Error(
+      `Invalid PathUpdate: '${fieldName}' must use canonical padded base64`,
+    );
+  }
+  return decoded;
 }
 
 function decodeCanonicalBase64(

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { Base64 } from 'js-base64';
 import { deriveEpochIdFromRootSecret } from './derive-doc-key.js';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
@@ -49,7 +50,9 @@ function validMessage(epochId: Uint8Array) {
     signatureContext: 'beekem-path-update-v1' as const,
     pathUpdate: {
       senderLeafIndex: 0,
-      senderLeafPublicKey: 'AQ==',
+      senderLeafPublicKey: Base64.fromUint8Array(
+        new Uint8Array(65).fill(1),
+      ),
       nodes: [],
     },
     pathUpdateEpochId: epochId,
@@ -189,7 +192,7 @@ describe('BeeKEM PathUpdate context confinement', () => {
 
     expect(harness.processPathUpdate).toHaveBeenCalledWith({
       senderLeafIndex: 0,
-      senderLeafPublicKey: new Uint8Array([1]),
+      senderLeafPublicKey: new Uint8Array(65).fill(1),
       nodes: [],
     });
     expect(harness.addEpochKey).toHaveBeenCalledWith(
@@ -223,7 +226,7 @@ describe('BeeKEM PathUpdate context confinement', () => {
 
     expect(harness.processPathUpdate).toHaveBeenCalledWith({
       senderLeafIndex: 0,
-      senderLeafPublicKey: new Uint8Array([1]),
+      senderLeafPublicKey: new Uint8Array(65).fill(1),
       nodes: [],
     });
     expect(harness.addEpochKey).toHaveBeenCalledTimes(1);
