@@ -375,6 +375,7 @@ describe('bounded iterative change-tree consumers', () => {
         document._syncUnlocked(
           {
             documentId: '/cid-preflight',
+            signatureContext: 'load-response-v3',
             changeId,
             changes,
             keychainChanges: new Uint8Array([9]),
@@ -433,6 +434,7 @@ describe('bounded iterative change-tree consumers', () => {
         document._syncUnlocked(
           {
             documentId: '/missing-root-preflight',
+            signatureContext: 'load-response-v3',
             changes,
             keychainChanges: new Uint8Array([9]),
           },
