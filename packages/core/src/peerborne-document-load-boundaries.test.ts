@@ -77,7 +77,7 @@ describe('document load response boundaries', () => {
 
     await expect(
       document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).rejects.toThrow(/signatureContext/);
+    ).resolves.toBe(false);
     expect(syncValidatedProtocolMessage).not.toHaveBeenCalled();
   });
 
