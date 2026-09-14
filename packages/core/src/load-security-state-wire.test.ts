@@ -78,6 +78,21 @@ describe('load security state wire codec', () => {
     expect(() => deserializeLoadSecurityCommitmentsFromWire(missing)).toThrow(/exactly/);
   });
 
+  test('rejects non-canonical field order before signed re-encoding', () => {
+    const wire = serializeLoadSecurityCommitmentsForWire(commitments());
+    const reordered = {
+      groupId: wire.groupId,
+      version: wire.version,
+      controlHead: wire.controlHead,
+      epoch: wire.epoch,
+      treeHash: wire.treeHash,
+      confirmedTranscriptHash: wire.confirmedTranscriptHash,
+    };
+    expect(() =>
+      deserializeLoadSecurityCommitmentsFromWire(reordered),
+    ).toThrow(/canonical order/);
+  });
+
   test('rejects symbol and non-enumerable own fields', () => {
     const symbolField = serializeLoadSecurityCommitmentsForWire(commitments());
     Object.defineProperty(symbolField, Symbol('extra'), {
