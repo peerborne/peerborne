@@ -22,10 +22,7 @@ function tagged<T extends Record<string, unknown>>(
 describe('sync message wire-context separation', () => {
   test.each([
     ['ordinary-sync-v1', { documentId: '/doc', changes: {}, signature: 'sig' }],
-    [
-      'document-publish-v1',
-      { documentId: '/doc', changes: {}, signature: 'sig' },
-    ],
+    ['document-publish-v1', { documentId: '/doc' }],
     [
       'load-response-v3',
       {
@@ -165,6 +162,8 @@ describe('sync message wire-context separation', () => {
     ['ordinary-sync-v1', { tipsHash: new Uint8Array(32) }],
     ['document-publish-v1', { snapshot: {} }],
     ['document-publish-v1', { keychainChanges: {} }],
+    ['document-publish-v1', { changes: {} }],
+    ['document-publish-v1', { signature: 'sig' }],
     ['load-response-v3', { tipsHash: new Uint8Array(32) }],
     ['load-response-v3', { loadSecurityState: {} }],
     ['load-response-v4', { welcomeEpochId: new Uint8Array(32) }],
