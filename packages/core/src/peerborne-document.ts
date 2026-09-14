@@ -448,9 +448,9 @@ export class PeerborneDocument<
   // encrypted to this public key (see `_sendBeeKEMWelcome`); the recipient
   // opens it with the matching private key (see
   // `_evaluateAndApplyBeeKEMWelcome`). When `undefined`, sealed Welcomes
-  // addressed to us cannot be opened and are dropped (the recipient must
-  // fall back to a fresh document load against an authorized peer). The
-  // application is responsible for plumbing in a stable KEM key pair via
+  // addressed to us cannot be opened and are dropped (the recipient needs a
+  // fresh Welcome after installing its KEM key pair). The application is
+  // responsible for plumbing in a stable KEM key pair via
   // `setKemKeyPair` and sharing the matching raw public key with inviters
   // out-of-band so they can pass it to `addReader`.
   private _kemKeyPair: CryptoKeyPair | undefined;
@@ -620,8 +620,8 @@ export class PeerborneDocument<
   // tree on a peer that has not gone through either path: a
   // freshly-initialized tree would produce a different root secret
   // than the writer's, and the epoch-ID mismatch gate would drop the
-  // PathUpdate anyway. Surface that as a clean drop-with-warning so a
-  // future fresh document-load can recover keychain state.
+  // PathUpdate anyway. Surface that as a clean drop-with-warning; recovery
+  // requires a valid Welcome or another explicit key-recovery path.
   private _beekem: BeeKEM | null = null;
   private _beekemInitPromise: Promise<BeeKEM> | null = null;
   // Local membership changes, ACL-bearing remote sync, and invitation
@@ -673,9 +673,9 @@ export class PeerborneDocument<
   //
   // In-memory only; on writer restart this map is empty and a
   // re-emit attempt will see the cache miss and the no-op early-out
-  // in `_registerBeeKEMReader`. Recipients in that state should
-  // recover via a fresh document load (which delivers keychain state
-  // via the existing sealed-Welcome envelope or the load response).
+  // in `_registerBeeKEMReader`. Recipients in that state need a new
+  // recipient-bound Welcome or another explicit recovery path; a normal load
+  // response cannot bootstrap a peer that lacks the current document key.
   private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcome>();
 
   /**
@@ -1916,23 +1916,23 @@ export class PeerborneDocument<
         return this._keychain.history();
       case 'since_invited':
         if (this._invitationEpoch === undefined) {
-          // No recorded invitation epoch (founding member, or a node
-          // that joined before Welcome wiring landed). Default to the
-          // narrowest key-distribution interpretation -- the current key only -- so a
-          // missing boundary cannot silently widen the disclosure
-          // window. Future rotations propagate via key-update.
+          // No recorded invitation epoch (founding member, or a node that
+          // joined before Welcome wiring landed). Request the narrowest
+          // distribution interpretation. The provider rejects if its CRDT
+          // cannot represent the isolated current key replay-safely.
           return await this._keychain.currentKeyChange();
         }
-        // `historySince` is optional on the Keychain interface for
-        // backwards compatibility; fall back to full history when the
-        // active provider has not implemented it (matches the
-        // documented "boundary unknown" recovery path).
+        // `historySince` is optional on the Keychain interface for source
+        // compatibility. The helper rejects when the provider omits it because
+        // core cannot assume a freshly synthesized current-key delta is safe to
+        // regenerate or replay.
         return await keychainHistorySinceOrFull(this._keychain)(
           this._invitationEpoch,
         );
       case 'current_only':
       default:
-        // Only send the current key. This does not redact retained CRDT history.
+        // Request only the current key. Providers reject when their CRDT cannot
+        // represent that isolated change replay-safely.
         return await this._keychain.currentKeyChange();
     }
   }
@@ -1944,16 +1944,18 @@ export class PeerborneDocument<
    * The visibility computation here is from the **recipient's**
    * perspective, not the inviter's:
    *
-   * - `current_only`: send only the current key. Identical to the load
-   *   response path; this does not redact retained CRDT history.
-   * - `since_invited`: send only the current key. From the recipient's
+   * - `current_only`: request only the current key. Providers reject when
+   *   their CRDT cannot export it replay-safely. This does not redact retained
+   *   CRDT history.
+   * - `since_invited`: request only the current key. From the recipient's
    *   perspective, "since I was invited" is the current epoch
    *   (`welcomeEpochId`) onward, so the Welcome itself should carry
    *   exactly the current key (subsequent rotations arrive via the
    *   key-update protocol). Using `_keychainChangesForVisibility()` here
    *   would instead leak the *inviter's* post-invite slice (or, for
-   *   founders, the full history), violating the recipient's intended
-   *   join boundary.
+   *   founders, the full history), violating the recipient's intended join
+   *   boundary. Providers reject when they cannot make this isolated export
+   *   replay-safe.
    * - `full_history`: send the full keychain so the recipient can audit
    *   or replay all prior blocks (matches the inviter-side visibility
    *   semantics).
@@ -5025,6 +5027,10 @@ export class PeerborneDocument<
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
+   * The initial release supports the first reader plus exact retries for that
+   * identity. After `removeReader` advances the BeeKEM tree, adding a
+   * replacement is rejected before ACL or BeeKEM state changes.
+   *
    * CONFIDENTIALITY: the Welcome's keychain delta is sealed with ECIES
    * (P-256 ECDH + AES-256-GCM) under `readerKemPublicKey`, so only the
    * intended recipient can decrypt it. The recipient binding
@@ -5037,11 +5043,11 @@ export class PeerborneDocument<
    *   ECDH public key (65 bytes) of the reader's KEM key pair. The
    *   reader must hold the matching private key (see
    *   `setKemKeyPair`). When this is `undefined`, the readers-ACL
-   *   update is still broadcast but **no Welcome is sent**: the new
-   *   reader can join the document but must recover keychain state
-   *   via a fresh document load against an authorized peer. (The
-   *   library refuses to broadcast an un-sealed Welcome to all peers
-   *   because that would leak document key material in plaintext.)
+   *   update is still broadcast but **no Welcome is sent**. The caller must
+   *   later re-invoke `addReader` with the recipient KEM key or arrange an
+   *   explicit key-recovery path; an ordinary load cannot bootstrap a peer
+   *   that lacks the current document key. (The library refuses to broadcast
+   *   an un-sealed Welcome because that would leak key material.)
    * @returns The BeeKEM Welcome used for this reader, or `null` when no
    *   recipient KEM key was supplied or recoverable.
    */
@@ -5147,8 +5153,40 @@ export class PeerborneDocument<
         `[${this.documentPath}] addReader: the initial release supports ` +
           `one active collaborator per document (founder plus one reader). ` +
           `Adding another reader would require an add-side BeeKEM PathUpdate ` +
-          `that is not implemented yet. Remove the current reader before ` +
-          `inviting a replacement.`,
+          `that is not implemented yet.`,
+      );
+    }
+    if (!alreadyReader && (this._beekem?.memberCount ?? 0) > 1) {
+      throw new Error(
+        `[${this.documentPath}] addReader: replacement readers are not ` +
+          `supported after BeeKEM membership has advanced. Create a new ` +
+          `document instead of reusing the revoked membership tree.`,
+      );
+    }
+
+    // Freeze the visibility-filtered keychain payload before changing the ACL
+    // or BeeKEM tree. Some providers cannot safely project an isolated current
+    // key once the keychain has more than one epoch; discovering that only
+    // while sending the Welcome would leave an authorized reader without key
+    // material. Invitation bootstrap performs its own complete capacity
+    // preflight and suppresses this legacy fan-out.
+    let preparedWelcomeKeychain: Uint8Array | undefined;
+    if (broadcastWelcome && validatedReaderKemPublicKey) {
+      const keychainChanges = await this._keychainChangesForWelcome();
+      const serializedKeychain =
+        this._changesSerializer.serializeChanges(keychainChanges);
+      assertSharedProtocolRequestSize(
+        serializedKeychain.byteLength,
+        'BeeKEM Welcome keychain preflight',
+      );
+      preparedWelcomeKeychain = new Uint8Array(serializedKeychain);
+      const envelopeWithoutBeeKEM = encodeWelcomeSealedPayload({
+        keychainChanges: preparedWelcomeKeychain,
+        beekemWelcome: null,
+      });
+      assertProjectedInitialInvitationWelcomeCapacity(
+        envelopeWithoutBeeKEM.byteLength,
+        this.documentPath,
       );
     }
     if (!alreadyReader) {
@@ -5189,9 +5227,8 @@ export class PeerborneDocument<
     // NEXT `removeReader` rotation would silently lock them out
     // (their leaf has no key material to derive the new root from).
     // The ACL change has already been broadcast and the caller can
-    // retry once the underlying issue is fixed (e.g. by re-invoking
-    // `addReader` with the same KEM public key, or by recovering
-    // BeeKEM state via `setKemKeyPair` + a fresh document load).
+    // retry once the underlying issue is fixed, for example by re-invoking
+    // `addReader` with the same KEM public key.
     let beekemWelcomeForJoiner: BeeKEMWelcome | null = null;
     if (validatedReaderKemPublicKey) {
       beekemWelcomeForJoiner = await this._registerBeeKEMReader(
@@ -5212,10 +5249,10 @@ export class PeerborneDocument<
             `has been added to the readers ACL, but to deliver the document ` +
             `key the caller must either (a) re-invoke \`addReader(reader, ` +
             `readerKemPublicKey)\` once the recipient's raw SEC1 P-256 ECDH ` +
-            `public key is available, or (b) have the recipient perform a ` +
-            `fresh document load against an authorized peer to recover ` +
-            `keychain state.`,
-        );
+            `public key is available, or arrange another explicit ` +
+            `key-recovery path. An ordinary document load cannot bootstrap ` +
+            `a recipient that lacks the current document key.`,
+          );
       }
       return null;
     }
@@ -5228,17 +5265,22 @@ export class PeerborneDocument<
       return beekemWelcomeForJoiner;
     }
 
+    if (!preparedWelcomeKeychain) {
+      throw new Error('BeeKEM Welcome keychain preflight was not completed');
+    }
+
     // Send a BeeKEM Welcome with the visibility-filtered epoch keys + BeeKEM
     // bootstrap so the new reader can decrypt eligible epochs and apply future
     // PathUpdates. This does not redact retained operations within an epoch.
-    // Failures are logged but do not abort -- the ACL change has
-    // already been broadcast and the reader can also recover via a
-    // fresh document load.
+    // Failures are logged but do not abort because the ACL change has already
+    // been broadcast. Recovery requires another recipient-bound Welcome or an
+    // explicit key-recovery path; ordinary load responses use the current key.
     try {
       await this._sendBeeKEMWelcome(
         reader,
         validatedReaderKemPublicKey,
         beekemWelcomeForJoiner,
+        preparedWelcomeKeychain,
       );
     } catch (err) {
       console.warn(
@@ -5817,6 +5859,7 @@ export class PeerborneDocument<
     reader: PublicKey,
     readerKemPublicKey: Uint8Array,
     beekemWelcome: BeeKEMWelcome | null,
+    keychainPlaintextBytes: Uint8Array,
   ): Promise<void> {
     // Validate the recipient KEM public key length up front so a
     // malformed caller fails fast at the call site rather than deep
@@ -5874,10 +5917,6 @@ export class PeerborneDocument<
     // latter would, in `since_invited` mode, leak the inviter's
     // post-invite slice (or, for founders, the full history) to a
     // reader whose invitation epoch starts at this moment.
-    const keychainPlaintext = await this._keychainChangesForWelcome();
-    const keychainPlaintextBytes =
-      this._changesSerializer.serializeChanges(keychainPlaintext);
-
     // Build the structured sealed-payload envelope. The plaintext
     // inside `eciesSealed` is now a JSON envelope carrying both the
     // keychain delta and (when available) the BeeKEM `Welcome` the
@@ -6128,8 +6167,8 @@ export class PeerborneDocument<
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
     // that addresses us by identity and KEM public key cannot be
-    // applied. Drop in that case -- the recipient must recover via a
-    // fresh document load against an authorized peer.
+    // applied. Drop in that case; the recipient must install its KEM key pair
+    // and obtain a fresh Welcome or use another explicit recovery path.
     //
     // Defense in depth: if the writer-signed `welcomeRecipientKemPublicKey`
     // does NOT match the local installed KEM public key, the writer
@@ -6210,8 +6249,8 @@ export class PeerborneDocument<
         // BeeKEM bootstrap failure is non-fatal at this layer: the
         // keychain delta can still let the joiner decrypt CURRENT document
         // traffic. They will, however, be unable to apply future PathUpdates
-        // and may need a fresh Welcome / document load to recover ratchet
-        // state on the next rotation. Surface a warning so this is visible.
+        // and need a fresh Welcome to recover ratchet state before the next
+        // rotation. Surface a warning so this is visible.
         console.warn(
           'BeeKEM Welcome bootstrap failed; a fresh Welcome is required',
         );
