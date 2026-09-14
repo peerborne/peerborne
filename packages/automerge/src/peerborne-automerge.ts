@@ -19,6 +19,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -130,6 +131,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // histories produced by older random-seed releases apply without a
   // competing root assignment.
   private _acl: AutomergeACLDoc = init();
+  private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
 
   private _assertComplete(operation: string): void {
@@ -153,22 +155,48 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     });
     const aclChanges = getChanges(this._acl, aclNew);
     this._acl = aclNew;
+    if (aclChanges.length > 0) this._revision++;
     return aclChanges;
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
+    const prepared = await this.prepareRemove(publicKey);
+    prepared.commit();
+    return prepared.changes;
+  }
+  async prepareRemove(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLRemoval<BinaryChange[]>> {
     this._assertComplete('remove an ACL member');
-    if (!this._acl.users) {
-      return [];
-    }
     const hash = await serializeKey(publicKey);
-    const aclNew = change(this._acl, (doc) => {
+    this._assertComplete('remove an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const stagedBase = clone(base);
+    const staged = change(stagedBase, (doc) => {
       if (doc.users?.[hash] !== undefined) {
         delete doc.users[hash];
       }
     });
-    const aclChanges = getChanges(this._acl, aclNew);
-    this._acl = aclNew;
-    return aclChanges;
+    const privateChanges = getChanges(base, staged);
+    const changes = privateChanges.map(
+      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+    );
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while removal was staged');
+        }
+        committed = true;
+        if (privateChanges.length === 0) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
   }
   current(): BinaryChange[] {
     this._assertComplete('read the current ACL history');
@@ -177,6 +205,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   merge(change: BinaryChange[]): void {
     const [doc] = applyChanges(this._acl, change);
     this._acl = doc;
+    this._revision++;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
   // The capability parameter is accepted for interface compatibility but ignored here;

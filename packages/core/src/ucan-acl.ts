@@ -1,4 +1,8 @@
-import { ACL, ACLOperationInProgressError } from './acl.js';
+import {
+  ACL,
+  ACLOperationInProgressError,
+  PreparedACLRemoval,
+} from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
@@ -689,18 +693,100 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._startMembershipMutation(
       publicKey,
       'ACL removal',
-      async (snapshot) => {
-        const changes = await this._runBackingMutation(() =>
-          this._backing.remove(snapshot.publicKey),
-        );
-        this._revokedKeys.add(snapshot.keyBase64);
-        this._failedAdditions.delete(snapshot.keyBase64);
-        this._entries.delete(snapshot.keyBase64);
-        this._markMetadataMutation();
-        return changes;
-      },
+      (snapshot) => this._removeSnapshot(snapshot),
       (snapshot) => this._reservePendingRemoval(snapshot.keyBase64),
     );
+  }
+
+  private async _removeSnapshot(snapshot: {
+    publicKey: PublicKey;
+    keyBase64: string;
+  }): Promise<ChangesType> {
+    const prepareRemove = this._backing.prepareRemove;
+    if (typeof prepareRemove === 'function') {
+      const prepared = await this._prepareBackingRemoval(
+        snapshot.publicKey,
+        snapshot.keyBase64,
+        prepareRemove,
+        true,
+      );
+      prepared.commit();
+      return prepared.changes;
+    }
+
+    const changes = await this._runBackingMutation(() =>
+      this._backing.remove(snapshot.publicKey),
+    );
+    this._revokedKeys.add(snapshot.keyBase64);
+    this._failedAdditions.delete(snapshot.keyBase64);
+    this._entries.delete(snapshot.keyBase64);
+    this._markMetadataMutation();
+    return changes;
+  }
+
+  async prepareRemove(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLRemoval<ChangesType>> {
+    const prepareRemove = this._backing.prepareRemove;
+    if (typeof prepareRemove !== 'function') {
+      throw new Error('Backing ACL does not support staged removal');
+    }
+    const snapshot = await this._snapshotPublicKey(
+      publicKey,
+      'Prepared ACL removal',
+    );
+    return this._prepareBackingRemoval(
+      snapshot.publicKey,
+      snapshot.keyBase64,
+      prepareRemove,
+    );
+  }
+
+  private async _prepareBackingRemoval(
+    publicKey: PublicKey,
+    keyBase64: string,
+    prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
+    allowActiveMutation = false,
+  ): Promise<PreparedACLRemoval<ChangesType>> {
+    const metadataRevision = this._metadataRevision;
+    const backingRevision = this._backingRevision;
+    const prepared = await prepareRemove.call(this._backing, publicKey);
+    this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
+    if (this._backingRevision !== backingRevision) {
+      throw new Error(
+        'Prepared ACL removal became stale after backing ACL changed',
+      );
+    }
+    let committed = false;
+    return {
+      changes: prepared.changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        if (!allowActiveMutation) {
+          this._assertPublicOperationAvailable(
+            'Prepared ACL removal commit',
+          );
+        }
+        this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
+        if (this._backingRevision !== backingRevision) {
+          throw new Error(
+            'Prepared ACL removal became stale after backing ACL changed',
+          );
+        }
+        try {
+          prepared.commit();
+        } finally {
+          this._markBackingMutation();
+        }
+        this._revokedKeys.add(keyBase64);
+        this._failedAdditions.delete(keyBase64);
+        this._entries.delete(keyBase64);
+        this._markMetadataMutation();
+        committed = true;
+      },
+    };
   }
 
   current(): ChangesType {
