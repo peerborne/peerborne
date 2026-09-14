@@ -387,6 +387,7 @@ describe('bounded iterative change-tree consumers', () => {
             },
           },
           false,
+          'load-response-v3',
         ),
       ).rejects.toThrow(/canonical CID/);
 
@@ -436,6 +437,7 @@ describe('bounded iterative change-tree consumers', () => {
             keychainChanges: new Uint8Array([9]),
           },
           false,
+          'load-response-v3',
         ),
       ).rejects.toThrow();
       expect(mergeKeychain).not.toHaveBeenCalled();
