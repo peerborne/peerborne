@@ -68,6 +68,60 @@ function captureFailureLogs() {
 }
 
 describe('concrete inbound handler log redaction', () => {
+  test('does not amplify an unknown-key pubsub message into a document load', async () => {
+    const addEventListener = jest.fn();
+    const subscribe = jest.fn();
+    const load = jest.fn(async () => true);
+    const deserializeSyncMessage = jest.fn();
+    const document = fakeDocument({
+      _invitationBootstrapReady: true,
+      _hashes: new Set(),
+      _computeTopic: () => '/topic',
+      _keychainProvider: { keyIDLength: 1 },
+      _authProvider: { nonceBits: 1 },
+      _decryptBlock: async () => undefined,
+      _syncMessageSerializer: { deserializeSyncMessage },
+      load,
+      swarm: {
+        config: {},
+        registerDocument: jest.fn(),
+        heliaNode: {
+          libp2p: {
+            services: {
+              pubsub: { addEventListener, subscribe },
+            },
+          },
+        },
+      },
+    });
+    const logs = captureFailureLogs();
+
+    try {
+      await document.open();
+      document._pubsubHandler({
+        detail: {
+          data: new Uint8Array([1, 2, 3]),
+          topic: '/topic',
+          type: 'signed',
+          from: { toString: () => 'untrusted-sender' },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(load).not.toHaveBeenCalled();
+      expect(deserializeSyncMessage).not.toHaveBeenCalled();
+      expect(logs.warn).toHaveBeenCalledWith(
+        'Dropping an incoming document message whose key is not in the ' +
+          'local keychain; explicit recipient-bound recovery or ' +
+          're-invitation is required',
+      );
+      expect(logs.text()).not.toContain(privatePath);
+    } finally {
+      logs.restore();
+    }
+  });
+
   test('observes and redacts rejected pubsub receive work', async () => {
     const addEventListener = jest.fn();
     const subscribe = jest.fn();
