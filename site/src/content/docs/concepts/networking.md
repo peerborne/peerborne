@@ -49,7 +49,11 @@ topic with incompatible document envelopes. Publish notifications used by
 custom pinning integrations likewise default to `/peerborne/documents/v3`
 instead of legacy `/documents`. A custom or empty `pubsubDocumentPrefix` opts
 out of that default separation; all peers using it must be upgraded together,
-and every relay must add it to `TOPIC_ALLOWLIST`. A custom
+and every relay must allow the resulting topics. For a non-empty custom prefix,
+add its slash-terminated namespace to `TOPIC_ALLOWLIST` (for example,
+`/acme/v3/` for either `/acme/v3` or `/acme/v3/`). With an empty prefix, allow
+each concrete bare document topic or explicitly use unrestricted `*` mode;
+there is no prefix entry to add. A custom
 `pubsubDocumentPublishPath` must match the relay's `DOCUMENT_PUBLISH_PATH` or
 `EXTRA_TOPICS`, or match its allowlist. Allowlist entries ending in `/` are
 namespace prefixes; entries without a trailing slash match one exact topic.
