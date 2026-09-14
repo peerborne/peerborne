@@ -1,4 +1,8 @@
 import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
+import { copyUnsharedUint8Array } from './utils.js';
+
+export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
+export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
 
 const arrayIsArray = Array.isArray;
 const objectDefineProperty = Object.defineProperty;
@@ -26,16 +30,17 @@ export interface IdentifiedInitialLoadSigner<PublicKey> {
 }
 
 function selectedTrustKeys<PublicKey>(
-  options: InitialLoadAuthenticationOptions<PublicKey>,
+  existingWriterKeysValue: readonly PublicKey[],
+  trustedBootstrapWriterKeysValue: readonly PublicKey[],
 ): readonly PublicKey[] {
   const existingWriterKeys = snapshotTrustKeys(
-    options.existingWriterKeys,
+    existingWriterKeysValue,
     'existing writer keys',
   );
   return existingWriterKeys.length > 0
     ? existingWriterKeys
     : snapshotTrustKeys(
-        options.trustedBootstrapWriterKeys,
+        trustedBootstrapWriterKeysValue,
         'trusted bootstrap writer keys',
       );
 }
@@ -102,28 +107,66 @@ function snapshotTrustKeys<PublicKey>(
   return reflectApply(objectFreeze, Object, [snapshot]) as readonly PublicKey[];
 }
 
-async function verifiedSignerIndexes<PublicKey>(
-  options: InitialLoadAuthenticationOptions<PublicKey>,
-  keys: readonly PublicKey[],
-): Promise<number[]> {
-  if (
-    !options.signingEnabled ||
-    !(options.signature instanceof Uint8Array)
-  ) {
-    return [];
-  }
-  const results = await Promise.allSettled(
-    keys.map((key) =>
-      Promise.resolve().then(() =>
-        options.verify(options.payload, key, options.signature!),
+interface InitialLoadVerificationInputs<PublicKey> {
+  readonly payload: Uint8Array;
+  readonly signature: Uint8Array;
+  readonly verify: InitialLoadAuthenticationOptions<PublicKey>['verify'];
+}
+
+function captureVerificationInputs<PublicKey>(
+  payloadValue: unknown,
+  signatureValue: unknown,
+  verifyValue: unknown,
+): InitialLoadVerificationInputs<PublicKey> | undefined {
+  if (typeof verifyValue !== 'function') return undefined;
+  try {
+    return {
+      payload: copyUnsharedUint8Array(
+        payloadValue,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+        'initial-load authentication payload',
       ),
-    ),
-  );
+      signature: copyUnsharedUint8Array(
+        signatureValue,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+        'initial-load authentication signature',
+      ),
+      verify: verifyValue as InitialLoadAuthenticationOptions<PublicKey>['verify'],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function verifiedSignerIndexes<PublicKey>(
+  keys: readonly PublicKey[],
+  inputs: InitialLoadVerificationInputs<PublicKey>,
+): Promise<number[]> {
   const indexes: number[] = [];
-  for (let index = 0; index < results.length; index++) {
-    const result = results[index];
-    if (result.status === 'fulfilled' && result.value === true) {
-      indexes.push(index);
+  for (let index = 0; index < keys.length; index++) {
+    try {
+      const payload = copyUnsharedUint8Array(
+        inputs.payload,
+        inputs.payload.byteLength,
+        inputs.payload.byteLength,
+        'initial-load authentication payload',
+      );
+      const signature = copyUnsharedUint8Array(
+        inputs.signature,
+        inputs.signature.byteLength,
+        inputs.signature.byteLength,
+        'initial-load authentication signature',
+      );
+      const verified = await reflectApply(inputs.verify, undefined, [
+        payload,
+        keys[index],
+        signature,
+      ]);
+      if (verified === true) indexes.push(index);
+    } catch {
+      // One malformed key or verifier failure is not evidence about the rest.
     }
   }
   return indexes;
@@ -137,8 +180,24 @@ async function verifiedSignerIndexes<PublicKey>(
 export async function identifyInitialLoadSigner<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<IdentifiedInitialLoadSigner<PublicKey> | null> {
-  const keys = selectedTrustKeys(options);
-  const indexes = await verifiedSignerIndexes(options, keys);
+  const signingEnabled = options.signingEnabled;
+  const existingWriterKeys = options.existingWriterKeys;
+  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
+  const keys = selectedTrustKeys(
+    existingWriterKeys,
+    trustedBootstrapWriterKeys,
+  );
+  if (!signingEnabled) return null;
+  const payload = options.payload;
+  const signature = options.signature;
+  const verify = options.verify;
+  const inputs = captureVerificationInputs<PublicKey>(
+    payload,
+    signature,
+    verify,
+  );
+  if (inputs === undefined) return null;
+  const indexes = await verifiedSignerIndexes(keys, inputs);
   if (indexes.length !== 1) return null;
   const keyIndex = indexes[0];
   return { publicKey: keys[keyIndex], keyIndex };
@@ -152,15 +211,28 @@ export async function identifyInitialLoadSigner<PublicKey>(
 export async function verifyInitialLoadAuthentication<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<boolean> {
-  if (!options.signingEnabled) {
-    return !options.strict;
+  const signingEnabled = options.signingEnabled;
+  const strict = options.strict;
+  if (!signingEnabled) {
+    return !strict;
   }
-  const keys = selectedTrustKeys(options);
+  const existingWriterKeys = options.existingWriterKeys;
+  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
+  const keys = selectedTrustKeys(
+    existingWriterKeys,
+    trustedBootstrapWriterKeys,
+  );
   if (keys.length === 0) {
-    return !options.strict;
+    return !strict;
   }
-  if (!(options.signature instanceof Uint8Array)) {
-    return false;
-  }
-  return (await verifiedSignerIndexes(options, keys)).length > 0;
+  const payload = options.payload;
+  const signature = options.signature;
+  const verify = options.verify;
+  const inputs = captureVerificationInputs<PublicKey>(
+    payload,
+    signature,
+    verify,
+  );
+  if (inputs === undefined) return false;
+  return (await verifiedSignerIndexes(keys, inputs)).length > 0;
 }
