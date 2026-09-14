@@ -572,35 +572,15 @@ describe('AutomergeKeychain', () => {
     expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
   });
 
-  test('currentKeyChange() exports a replay-safe current key after rotation', async () => {
+  test('currentKeyChange() rejects a later key rather than synthesizing a fresh actor', async () => {
     const source = new AutomergeKeychain();
-    const [oldID] = await source.add();
-    const [currentID, currentKey] = await source.add();
+    await source.add();
+    await source.add();
     const before = source.history().map((entry) => Array.from(entry));
 
-    const first = await source.currentKeyChange();
-    const repeated = await source.currentKeyChange();
-    const restored = new AutomergeKeychain();
-    restored.merge(source.history());
-    const afterRestore = await restored.currentKeyChange();
-
-    const freshReceiver = new AutomergeKeychain();
-    freshReceiver.merge(first);
-    freshReceiver.merge(repeated);
-    freshReceiver.merge(afterRestore);
-    const freshKeys = await freshReceiver.keys();
-    expect(freshKeys.map(([keyID]) => keyID)).toEqual([currentID]);
-    await expect(
-      crypto.subtle.exportKey('raw', freshKeys[0][1]),
-    ).resolves.toEqual(await crypto.subtle.exportKey('raw', currentKey));
-
-    const establishedReceiver = new AutomergeKeychain();
-    establishedReceiver.merge(source.history());
-    establishedReceiver.merge(first);
-    expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
-      oldID,
-      currentID,
-    ]);
+    await expect(source.currentKeyChange()).rejects.toThrow(
+      'Automerge cannot export the current key replay-safely',
+    );
     expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
   });
 

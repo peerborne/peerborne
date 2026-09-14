@@ -310,10 +310,8 @@ const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
  * `keys` array) is written under {@link KEYCHAIN_SEED_ACTOR} so it is
  * identical across all keychain instances; the returned document then
  * uses a random per-instance actor for any subsequent changes. Shared seed
- * operations let actual keychain histories and standalone current-key
- * projections merge without a root-array actor conflict. The keychain merge
- * boundary deduplicates regenerated standalone projections by their exact
- * logical key tuple rather than trusting their random actor operation IDs.
+ * operations let actual keychain histories merge without a root-array actor
+ * conflict; filtered exports must still preserve their existing operation IDs.
  */
 function newKeychainDoc(): AutomergeKeychainDoc {
   const seeded = change(
@@ -1075,22 +1073,17 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<BinaryChange[]> {
-    const entries = validateAutomergeKeychain(this._keychain);
-    if (entries.length === 0) {
+    validateAutomergeKeychain(this._keychain);
+    if (this._keychain.keys.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (entries.length === 1) {
-      return this.history();
+    if (this._keychain.keys.length !== 1) {
+      throw new Error(
+        'Automerge cannot export the current key replay-safely',
+      );
     }
-    const [keyID, serialized] = entries[entries.length - 1];
-    const projection = change(newKeychainDoc(), (doc) => {
-      doc.keys.push([keyID, serialized]);
-    });
-    validateAutomergeKeychain(projection);
-    return getAllChanges(projection).map(
-      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
-    );
+    return this.history();
   }
 
   /**
