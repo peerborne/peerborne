@@ -212,6 +212,17 @@ await document.removeReader(revokedPeerSigningPublicKey);
 ```
 `removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
 
+The bundled Yjs and Automerge providers compose the local reader-ACL removal,
+epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through
+prevalidated commit claims. A failed local claim leaves those live states on
+the old epoch for an explicit retry. This is not a distributed transaction:
+GossipSub publication may already have reached another replica before a local
+publication failure is observed, so retries and later synchronization can
+still be required. Custom ACL and keychain providers that omit the commit-claim
+capability or return a malformed claim are rejected before publication. A
+callable finalizer is a trusted provider boundary: core cannot roll back a
+custom finalizer that violates the contract by mutating early or throwing.
+
 ### Limitations of revocation
 
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.

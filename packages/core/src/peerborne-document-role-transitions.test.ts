@@ -53,9 +53,16 @@ function fakeDocument(options: {
   const readerCheck = jest.fn(async (key: Identity) => readerIds.has(key.id));
   const writerCheck = jest.fn(async (key: Identity) => writerIds.has(key.id));
   const mergeReaders = jest.fn();
+  const readerRemovalFinalize = jest.fn((key: Identity) =>
+    readerIds.delete(key.id),
+  );
+  const readerRemovalClaim = jest.fn((key: Identity) => ({
+    finalize: () => readerRemovalFinalize(key),
+  }));
   const prepareReaderRemove = jest.fn(async (key: Identity) => ({
     changes: { removedReader: key.id },
-    commit: () => readerIds.delete(key.id),
+    claimCommit: () => readerRemovalClaim(key),
+    commit: () => readerRemovalClaim(key).finalize(),
   }));
   const prepareWriterAdd = jest.fn(async (key: Identity) => ({
     changes: { addedWriter: key.id },
@@ -90,18 +97,19 @@ function fakeDocument(options: {
     async (
       prepared: { changes: unknown; commit(): void },
       _operation: string,
-      afterCommit: () => void,
+      commit: () => void,
     ) => {
       await makeChange(prepared.changes);
-      prepared.commit();
-      afterCommit();
+      commit();
     },
   );
   const epochKeyCommit = jest.fn();
+  const epochKeyClaim = jest.fn(() => ({ finalize: epochKeyCommit }));
   const prepareEpochKey = jest.fn(async () => ({
     changes: {},
     history: {},
-    commit: epochKeyCommit,
+    claimCommit: epochKeyClaim,
+    commit: () => epochKeyClaim().finalize(),
   }));
   const readerKemPublicKeys = new Map<string, Uint8Array>();
   if (options.recordedKemPublicKey) {
@@ -174,6 +182,8 @@ function fakeDocument(options: {
       writerCheck,
       mergeReaders,
       prepareReaderRemove,
+      readerRemovalClaim,
+      readerRemovalFinalize,
       prepareWriterAdd,
       prepareWriterRemove,
       findLeafByPublicKey,
@@ -185,6 +195,7 @@ function fakeDocument(options: {
       publishPreparedWriterChange,
       publishPreparedReaderChange,
       prepareEpochKey,
+      epochKeyClaim,
       epochKeyCommit,
       serializePublicKey,
       deserializePublicKey,
@@ -551,11 +562,25 @@ describe('writer and reader removal ordering', () => {
     expect(document._beekem).toBe(originalBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
     expect(document._readerLeafIndices.get('target')).toBe(2);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(true);
+    expect(document._testState.readerRemovalClaim).toHaveBeenCalledTimes(1);
+    expect(document._testState.epochKeyClaim).toHaveBeenCalledTimes(1);
+    expect(document._testState.readerRemovalFinalize).not.toHaveBeenCalled();
     expect(document._testState.epochKeyCommit).not.toHaveBeenCalled();
     expect(document._distributeBeeKEMPathUpdate).not.toHaveBeenCalled();
+
+    await expect(document.removeReader(targetUser)).resolves.toBeUndefined();
+    expect(document._testState.readerIds.has('target')).toBe(false);
+    expect(document._beekem).toBe(document._testState.stagedBeeKEM);
+    expect(document._testState.readerRemovalFinalize).toHaveBeenCalledTimes(1);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(false);
+    expect(document._testState.readerRemovalClaim).toHaveBeenCalledTimes(2);
+    expect(document._testState.epochKeyClaim).toHaveBeenCalledTimes(2);
+    expect(document._testState.epochKeyCommit).toHaveBeenCalledTimes(1);
+    expect(document._distributeBeeKEMPathUpdate).toHaveBeenCalledTimes(1);
   });
 
-  test('keeps the live tree and identity binding when staged key commit fails', async () => {
+  test('keeps ACL, key, tree, and identity binding atomic when the epoch claim fails, then retries', async () => {
     const document = fakeDocument({
       readers: ['target'],
       liveLeafIndex: 2,
@@ -563,18 +588,128 @@ describe('writer and reader removal ordering', () => {
       cachedLeafIndex: 2,
     });
     const originalBeeKEM = document._beekem;
-    document._testState.epochKeyCommit.mockImplementationOnce(() => {
-      throw new Error('key commit failed');
+    document._testState.epochKeyClaim.mockImplementationOnce(() => {
+      throw new Error('key claim failed');
     });
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
-      'key commit failed',
+      'key claim failed',
     );
 
-    expect(document._testState.readerIds.has('target')).toBe(false);
+    expect(document._testState.readerIds.has('target')).toBe(true);
     expect(document._beekem).toBe(originalBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
     expect(document._readerLeafIndices.get('target')).toBe(2);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(true);
+    expect(document._testState.readerRemovalClaim).toHaveBeenCalledTimes(1);
+    expect(document._testState.readerRemovalFinalize).not.toHaveBeenCalled();
+    expect(document._testState.epochKeyCommit).not.toHaveBeenCalled();
+    expect(document._testState.makeChange).not.toHaveBeenCalled();
+    expect(document._distributeBeeKEMPathUpdate).not.toHaveBeenCalled();
+
+    await expect(document.removeReader(targetUser)).resolves.toBeUndefined();
+    expect(document._testState.readerIds.has('target')).toBe(false);
+    expect(document._beekem).toBe(document._testState.stagedBeeKEM);
+    expect(document._readerKemPublicKeys.has('target')).toBe(false);
+    expect(document._readerLeafIndices.has('target')).toBe(false);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(false);
+    expect(document._testState.readerRemovalFinalize).toHaveBeenCalledTimes(1);
+    expect(document._testState.epochKeyCommit).toHaveBeenCalledTimes(1);
+    expect(document._distributeBeeKEMPathUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps all live state unchanged when the reader claim fails before the epoch claim', async () => {
+    const document = fakeDocument({
+      readers: ['target'],
+      liveLeafIndex: 2,
+      recordedKemPublicKey: kemPublicKey(),
+      cachedLeafIndex: 2,
+    });
+    const originalBeeKEM = document._beekem;
+    document._testState.readerRemovalClaim.mockImplementationOnce(() => {
+      throw new Error('reader claim failed');
+    });
+
+    await expect(document.removeReader(targetUser)).rejects.toThrow(
+      'reader claim failed',
+    );
+
+    expect(document._testState.readerIds.has('target')).toBe(true);
+    expect(document._beekem).toBe(originalBeeKEM);
+    expect(document._readerKemPublicKeys.has('target')).toBe(true);
+    expect(document._readerLeafIndices.get('target')).toBe(2);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(true);
+    expect(document._testState.epochKeyClaim).not.toHaveBeenCalled();
+    expect(document._testState.readerRemovalFinalize).not.toHaveBeenCalled();
+    expect(document._testState.epochKeyCommit).not.toHaveBeenCalled();
+    expect(document._testState.makeChange).not.toHaveBeenCalled();
+    expect(document._distributeBeeKEMPathUpdate).not.toHaveBeenCalled();
+  });
+
+  test('claims both providers before publication and either finalizer', async () => {
+    const document = fakeDocument({
+      readers: ['target'],
+      liveLeafIndex: 2,
+      recordedKemPublicKey: kemPublicKey(),
+      cachedLeafIndex: 2,
+    });
+    const order: string[] = [];
+    document._testState.readerRemovalClaim.mockImplementationOnce(
+      (key: Identity) => {
+        order.push('reader-claim');
+        return {
+          finalize: () => {
+            order.push('reader-finalize');
+            document._testState.readerIds.delete(key.id);
+          },
+        };
+      },
+    );
+    document._testState.epochKeyClaim.mockImplementationOnce(() => {
+      order.push('epoch-claim');
+      return {
+        finalize: () => {
+          order.push('epoch-finalize');
+        },
+      };
+    });
+    document._testState.makeChange.mockImplementationOnce(async () => {
+      order.push('publish');
+    });
+
+    await document.removeReader(targetUser);
+
+    expect(order).toEqual([
+      'reader-claim',
+      'epoch-claim',
+      'publish',
+      'reader-finalize',
+      'epoch-finalize',
+    ]);
+  });
+
+  test('rejects malformed claims before either provider finalizes', async () => {
+    const document = fakeDocument({
+      readers: ['target'],
+      liveLeafIndex: 2,
+      recordedKemPublicKey: kemPublicKey(),
+      cachedLeafIndex: 2,
+    });
+    const originalBeeKEM = document._beekem;
+    document._testState.epochKeyClaim.mockReturnValueOnce({});
+
+    await expect(document.removeReader(targetUser)).rejects.toThrow(
+      /commit claim returned an invalid finalizer/,
+    );
+
+    expect(document._testState.readerIds.has('target')).toBe(true);
+    expect(document._testState.readerRemovalFinalize).not.toHaveBeenCalled();
+    expect(document._testState.epochKeyCommit).not.toHaveBeenCalled();
+    expect(document._testState.makeChange).not.toHaveBeenCalled();
+    expect(document._beekem).toBe(originalBeeKEM);
+    expect(document._readerKemPublicKeys.has('target')).toBe(true);
+    expect(document._readerLeafIndices.get('target')).toBe(2);
+    expect(document._beekemWelcomeByLeaf.has(2)).toBe(true);
     expect(document._distributeBeeKEMPathUpdate).not.toHaveBeenCalled();
   });
 
@@ -598,6 +733,52 @@ describe('writer and reader removal ordering', () => {
     expect(document._beekem).toBe(document._testState.liveBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
     expect(document._readerLeafIndices.get('target')).toBe(2);
+  });
+
+  test('fails closed before publication when a custom reader ACL cannot claim a composed commit', async () => {
+    const document = fakeDocument({
+      readers: ['target'],
+      liveLeafIndex: 2,
+      recordedKemPublicKey: kemPublicKey(),
+      cachedLeafIndex: 2,
+    });
+    document._readers.prepareRemove = jest.fn(async () => ({
+      changes: { removedReader: 'target' },
+      commit: () => document._testState.readerIds.delete('target'),
+    }));
+
+    await expect(document.removeReader(targetUser)).rejects.toThrow(
+      /ACL and keychain must support composed commit claims/,
+    );
+
+    expect(document._testState.readerIds.has('target')).toBe(true);
+    expect(document._testState.makeChange).not.toHaveBeenCalled();
+    expect(document._testState.epochKeyClaim).not.toHaveBeenCalled();
+    expect(document._beekem).toBe(document._testState.liveBeeKEM);
+  });
+
+  test('fails closed before publication when a custom keychain cannot claim a composed commit', async () => {
+    const document = fakeDocument({
+      readers: ['target'],
+      liveLeafIndex: 2,
+      recordedKemPublicKey: kemPublicKey(),
+      cachedLeafIndex: 2,
+    });
+    document._testState.prepareEpochKey.mockResolvedValueOnce({
+      changes: {},
+      history: {},
+      commit: document._testState.epochKeyCommit,
+    });
+
+    await expect(document.removeReader(targetUser)).rejects.toThrow(
+      /ACL and keychain must support composed commit claims/,
+    );
+
+    expect(document._testState.readerIds.has('target')).toBe(true);
+    expect(document._testState.makeChange).not.toHaveBeenCalled();
+    expect(document._testState.readerRemovalClaim).not.toHaveBeenCalled();
+    expect(document._testState.epochKeyCommit).not.toHaveBeenCalled();
+    expect(document._beekem).toBe(document._testState.liveBeeKEM);
   });
 
   test('rejects an out-of-queue reader merge while staged publication is active', () => {

@@ -1780,20 +1780,17 @@ export class PeerborneDocument<
     }
   }
 
-  /** Publish a staged reader change, then commit it before local handlers run. */
+  /** Publish a staged reader change, then run its composed local commit. */
   private async _publishPreparedReaderChange(
     prepared: PreparedACLChange<ChangesType>,
     operation: string,
-    afterCommit: () => void,
+    commit: () => void,
   ): Promise<void> {
     this._readerPublicationsInFlight++;
     try {
       await this._makeChange(prepared.changes, crdtReaderChangeNode, {
         operation,
-        commit: () => {
-          prepared.commit();
-          afterCommit();
-        },
+        commit,
       });
     } finally {
       this._readerPublicationsInFlight--;
@@ -2082,7 +2079,7 @@ export class PeerborneDocument<
       );
       publicationResolved = true;
 
-      // This is the sole live-authorization commit point for staged writer
+      // This is the sole live-authorization commit point for staged ACL
       // changes: publication has resolved, but no local observer has run yet.
       postPublishCommit?.commit();
     } catch (error) {
@@ -6910,13 +6907,15 @@ export class PeerborneDocument<
    * the previous document key. An already-absent ACL row does not suppress a
    * still-live leaf: the cryptographic removal proceeds.
    *
-   * The new local epoch key is staged before publication and committed before
-   * the staged tree replaces live state. If that synchronous commit rejects,
-   * the old tree and identity binding remain available so the ACL-absent retry
-   * path can finish revocation. PathUpdate delivery remains best effort; a
-   * surviving member that misses it needs an explicit
-   * recipient-bound recovery or re-invitation, because ordinary load responses
-   * are encrypted under the unknown new key.
+   * The new local epoch key is staged before publication. When an ACL removal
+   * is also required, both providers must support revision claims: every
+   * fallible claim completes before publication and before either provider
+   * mutates, then nonthrowing finalizers install ACL, keychain, tree, and cache
+   * state in one synchronous turn after publication. A failed claim or
+   * publication leaves all live local security state unchanged for a fresh
+   * retry. PathUpdate delivery remains best effort; a surviving member that
+   * misses it needs an explicit recipient-bound recovery or re-invitation,
+   * because ordinary load responses are encrypted under the unknown new key.
    *
    * These are cooperative local-API invariants. Incoming raw ACL CRDT deltas
    * are not yet validated against replicated identity/KEM transition records;
@@ -7072,28 +7071,72 @@ export class PeerborneDocument<
       newKey as unknown as DocumentKey,
     );
 
-    const commitBeeKEMRemoval = () => {
-      // Provider commits are synchronous and must throw before mutation on a
-      // revision conflict. Commit the key first so a failure leaves the old
-      // tree and identity binding intact for the ACL-absent retry path.
-      preparedEpochKey.commit();
+    // Allocate every document-owned replacement before publication. The
+    // post-publication commit path performs only provider finalizers and
+    // reference swaps; it does not allocate or invoke caller-owned data.
+    const committedReaderLeafIndices = new Map(this._readerLeafIndices);
+    committedReaderLeafIndices.delete(serializedReader);
+    const committedReaderKemPublicKeys = new Map(this._readerKemPublicKeys);
+    committedReaderKemPublicKeys.delete(serializedReader);
+    const committedWelcomes = new Map(this._beekemWelcomeByLeaf);
+    committedWelcomes.delete(leafIndex);
+    const installBeeKEMRemoval = () => {
       this._beekem = stagedBeeKEM;
-      this._readerLeafIndices.delete(serializedReader);
-      this._readerKemPublicKeys.delete(serializedReader);
-      this._beekemWelcomeByLeaf.delete(leafIndex);
+      this._readerLeafIndices = committedReaderLeafIndices;
+      this._readerKemPublicKeys = committedReaderKemPublicKeys;
+      this._beekemWelcomeByLeaf = committedWelcomes;
     };
 
     if (preparedReaderRemoval) {
+      const claimReaderCommit = preparedReaderRemoval.claimCommit;
+      const claimEpochCommit = preparedEpochKey.claimCommit;
+      if (
+        typeof claimReaderCommit !== 'function' ||
+        typeof claimEpochCommit !== 'function'
+      ) {
+        throw new Error(
+          `Cannot remove reader from "${this.documentPath}": the ACL and ` +
+            `keychain must support composed commit claims.`,
+        );
+      }
+      // Claims perform every fallible revision/single-use check without live
+      // mutation. Resolve and validate both before publishing the ACL delta.
+      // If the second claim or publication rejects, discarding the claims
+      // leaves both providers and the document on their original state; a
+      // retry stages fresh objects. The membership queue and the in-flight
+      // reader guard prevent supported mutations from invalidating the
+      // claimed revisions while publication is pending.
+      const readerCommit = claimReaderCommit.call(preparedReaderRemoval);
+      const epochCommit = claimEpochCommit.call(preparedEpochKey);
+      const finalizeReader = readerCommit?.finalize;
+      const finalizeEpoch = epochCommit?.finalize;
+      if (
+        typeof finalizeReader !== 'function' ||
+        typeof finalizeEpoch !== 'function'
+      ) {
+        throw new Error(
+          `Cannot remove reader from "${this.documentPath}": an ACL ` +
+            `or keychain commit claim returned an invalid finalizer.`,
+        );
+      }
       await this._publishPreparedReaderChange(
         preparedReaderRemoval,
         'removeReader',
-        commitBeeKEMRemoval,
+        () => {
+          // Contract-compliant finalizers are synchronous, idempotent, and
+          // nonthrowing reference swaps, so no observer can see only a prefix.
+          finalizeReader.call(readerCommit);
+          finalizeEpoch.call(epochCommit);
+          installBeeKEMRemoval();
+        },
       );
     } else {
       // The replicated ACL row is already absent, but the live BeeKEM leaf is
       // still cryptographic membership. Rotate it instead of reporting a false
-      // idempotent success.
-      commitBeeKEMRemoval();
+      // idempotent success. This path has only one fallible provider commit, so
+      // its existing throw-before-mutation contract is sufficient.
+      preparedEpochKey.commit();
+      installBeeKEMRemoval();
     }
 
     // Broadcast the PathUpdate to every connected peer. Carries
