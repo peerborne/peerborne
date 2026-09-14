@@ -92,9 +92,9 @@ If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open sour
 | **Required?** | **Optional** but strongly recommended for production |
 | **Protocol** | IPFS Bitswap (built into Helia) |
 
-Peerborne's Node-only `PeerborneNode` includes the listener side of a pinning flow, but the normal document commit path does not publish the announcements that activate it. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
+Peerborne's Node-only `PeerborneNode` does not subscribe to the legacy document-publish topic because its V1 envelope cannot authenticate or authorize a pin request. The normal document commit path also has no authenticated publisher. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
 
-Self-hosted pinning therefore requires application-specific publication, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
+Self-hosted pinning therefore requires a new domain-separated, writer-authorized, replay-protected protocol plus application-specific local pin policy, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
 
 ### 1.6 DHT Bootstrap Node
 
@@ -233,7 +233,7 @@ The relay server reads the following environment variables:
 | `TCP_PORT` | TCP listen port | `9002` |
 | `WS_LISTEN` | Full WebSocket listen multiaddr | `/ip4/0.0.0.0/tcp/${WS_PORT}/ws` |
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
-| `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/documents` |
+| `DOCUMENT_PUBLISH_PATH` | Legacy relay topic identifier; current `PeerborneNode` does not subscribe because V1 cannot authorize pin requests | `/documents` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
 | `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/document/,/documents` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
