@@ -1,4 +1,4 @@
-import { ACL } from './acl.js';
+import { ACL, PreparedACLRemoval } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
@@ -49,9 +49,53 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   async remove(publicKey: PublicKey): Promise<ChangesType> {
     const keyBase64 = await this._serializePublicKey(publicKey);
+    const prepareRemove = this._backing.prepareRemove;
+    if (typeof prepareRemove === 'function') {
+      const prepared = await this._prepareBackingRemoval(
+        publicKey,
+        keyBase64,
+        prepareRemove,
+      );
+      prepared.commit();
+      return prepared.changes;
+    }
+
+    const changes = await this._backing.remove(publicKey);
     this._revokedKeys.add(keyBase64);
     this._entries.delete(keyBase64);
-    return this._backing.remove(publicKey);
+    return changes;
+  }
+
+  async prepareRemove(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLRemoval<ChangesType>> {
+    const prepareRemove = this._backing.prepareRemove;
+    if (typeof prepareRemove !== 'function') {
+      throw new Error('Backing ACL does not support staged removal');
+    }
+    const keyBase64 = await this._serializePublicKey(publicKey);
+    return this._prepareBackingRemoval(publicKey, keyBase64, prepareRemove);
+  }
+
+  private async _prepareBackingRemoval(
+    publicKey: PublicKey,
+    keyBase64: string,
+    prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
+  ): Promise<PreparedACLRemoval<ChangesType>> {
+    const prepared = await prepareRemove.call(this._backing, publicKey);
+    let committed = false;
+    return {
+      changes: prepared.changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        prepared.commit();
+        this._revokedKeys.add(keyBase64);
+        this._entries.delete(keyBase64);
+        committed = true;
+      },
+    };
   }
 
   current(): ChangesType {

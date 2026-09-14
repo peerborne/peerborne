@@ -69,6 +69,101 @@ describe('UCANACL', () => {
     expect(hasAccess).toBe(false);
   });
 
+  test('prepareRemove leaves UCAN state unchanged until backing commit', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    const commit = jest.fn();
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('add-changes');
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit,
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    const prepared = await acl.prepareRemove('user1');
+
+    expect(prepared.changes).toBe('remove-changes');
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+
+    prepared.commit();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(await acl.getEntry('user1')).toBeUndefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+  });
+
+  test('prepareRemove leaves UCAN state unchanged when backing commit rejects', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('add-changes');
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit: () => {
+        throw new Error('stale backing ACL');
+      },
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    const prepared = await acl.prepareRemove('user1');
+
+    expect(() => prepared.commit()).toThrow('stale backing ACL');
+
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('prepareRemove fails closed when the backing ACL lacks staging', async () => {
+    await expect(acl.prepareRemove('user1')).rejects.toThrow(
+      'Backing ACL does not support staged removal',
+    );
+    expect(backing.remove).not.toHaveBeenCalled();
+  });
+
+  test('legacy backing removal failure leaves UCAN state unchanged', async () => {
+    const fakeUcan = makeFakeUcan({
+      issuer: 'issuer',
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockResolvedValue('add-changes');
+    backing.remove.mockRejectedValue(new Error('legacy removal failed'));
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    await expect(acl.remove('user1')).rejects.toThrow(
+      'legacy removal failed',
+    );
+
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
   test('current delegates to backing ACL', () => {
     backing.current.mockReturnValue('current-state');
     expect(acl.current()).toBe('current-state');

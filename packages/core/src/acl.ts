@@ -23,6 +23,23 @@ export interface ACL<ChangesType, PublicKey> {
   remove(publicKey: PublicKey): Promise<ChangesType>;
 
   /**
+   * Stage a user removal without mutating the live ACL.
+   *
+   * Callers can finish fallible publication work before invoking the
+   * synchronous commit. Implementations MUST detach `changes` from both the
+   * caller and the private staged state, reject a repeated or stale commit
+   * before mutation, and either apply the staged state completely or throw
+   * before changing live membership.
+   *
+   * Optional for backwards compatibility. Workflows that require
+   * publication-before-commit semantics must feature-detect this method and
+   * fail closed when it is absent.
+   */
+  prepareRemove?(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLRemoval<ChangesType>>;
+
+  /**
    * Gets a block of change(s) describing the current state of the ACL.
    *
    * @return A block of change(s) describing the whole ACL.
@@ -53,4 +70,12 @@ export interface ACL<ChangesType, PublicKey> {
    * @param capability Optional capability to filter users by.
    */
   users(capability?: string): Promise<PublicKey[]>;
+}
+
+/** A detached ACL removal that has not yet changed live membership. */
+export interface PreparedACLRemoval<ChangesType> {
+  /** Changes suitable for publication to an ACL with the same base state. */
+  readonly changes: ChangesType;
+  /** Synchronous, single-use, stale-base-checked live-state commit. */
+  commit(): void;
 }

@@ -213,6 +213,74 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('prepareRemove() stages detached changes without changing live membership', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    await acl.add(key2);
+    const before = acl.current();
+
+    const prepared = await acl.prepareRemove(key1);
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(2);
+
+    const receiver = new YjsACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('prepareRemove() commit is single-use', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    prepared.commit();
+
+    expect(() => prepared.commit()).toThrow(
+      'Prepared ACL removal was already committed',
+    );
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('prepareRemove() rejects a stale commit before changing membership', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+    const concurrentChanges = await acl.add(key2);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+
+    const receiver = new YjsACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    receiver.merge(concurrentChanges);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('prepareRemove() commits private state after returned changes are mutated', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    expect(await acl.check(key1)).toBe(false);
+  });
+
   test('check() returns false for unknown key', async () => {
     const acl = new YjsACL();
     expect(await acl.check(key1)).toBe(false);
