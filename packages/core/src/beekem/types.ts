@@ -135,11 +135,11 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
 }
 
 /**
- * BeeKEM tree leaf bound.
+ * BeeKEM tree-size ceiling.
  *
  * The conservative limit bounds traversal and structural work in the legacy
- * wire/runtime boundaries and the v2 codecs. Transport senders separately
- * enforce the document protocol's frame limit on the complete signed and
- * framed request.
+ * Welcome and PathUpdate wire/runtime boundaries and the v2 codecs. Transport
+ * senders separately enforce the document protocol's frame limit on the
+ * complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
