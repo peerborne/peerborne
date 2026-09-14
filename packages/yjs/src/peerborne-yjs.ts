@@ -1321,21 +1321,16 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<Uint8Array> {
-    const entries = validateYjsKeychain(this._keychain);
-    if (entries.length === 0) {
+    validateYjsKeychain(this._keychain);
+    const yarr = this._keychain.getArray<[string, string]>('keys');
+    if (yarr.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (entries.length === 1) {
-      return this.history();
+    if (yarr.length !== 1) {
+      throw new Error('Yjs cannot export the current key replay-safely');
     }
-    const [keyID, serialized] = entries[entries.length - 1];
-    const projection = new Doc();
-    projection
-      .getArray<[string, string]>('keys')
-      .push([[keyID, serialized]]);
-    validateYjsKeychain(projection);
-    return new Uint8Array(encodeStateAsUpdateV2(projection));
+    return this.history();
   }
 
   /**

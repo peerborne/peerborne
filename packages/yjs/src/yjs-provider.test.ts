@@ -423,35 +423,15 @@ describe('YjsKeychain', () => {
     expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
   });
 
-  test('currentKeyChange() exports a replay-safe current key after rotation', async () => {
+  test('currentKeyChange() rejects a later key rather than synthesizing a fresh client', async () => {
     const source = new YjsKeychain();
-    const [oldID] = await source.add();
-    const [currentID, currentKey] = await source.add();
+    await source.add();
+    await source.add();
     const before = source.history();
 
-    const first = await source.currentKeyChange();
-    const repeated = await source.currentKeyChange();
-    const restored = new YjsKeychain();
-    restored.merge(source.history());
-    const afterRestore = await restored.currentKeyChange();
-
-    const freshReceiver = new YjsKeychain();
-    freshReceiver.merge(first);
-    freshReceiver.merge(repeated);
-    freshReceiver.merge(afterRestore);
-    const freshKeys = await freshReceiver.keys();
-    expect(freshKeys.map(([keyID]) => keyID)).toEqual([currentID]);
-    await expect(
-      crypto.subtle.exportKey('raw', freshKeys[0][1]),
-    ).resolves.toEqual(await crypto.subtle.exportKey('raw', currentKey));
-
-    const establishedReceiver = new YjsKeychain();
-    establishedReceiver.merge(source.history());
-    establishedReceiver.merge(first);
-    expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
-      oldID,
-      currentID,
-    ]);
+    await expect(source.currentKeyChange()).rejects.toThrow(
+      'Yjs cannot export the current key replay-safely',
+    );
     expect(source.history()).toEqual(before);
   });
 
@@ -1374,40 +1354,24 @@ describe('YjsKeychain', () => {
     void id3;
   });
 
-  test('since_invited visibility falls back to a replay-safe current projection when invitation epoch is unset', async () => {
+  test('since_invited visibility rejects an unsafe current-only projection when invitation epoch is unset', async () => {
     const sender = new YjsKeychain();
     const [id1] = await sender.add();
     const [id2] = await sender.add();
     void id1;
-    const changes = await keychainChangesForVisibility(
-      sender,
-      'since_invited',
-      undefined,
-    );
-    const receiver = new YjsKeychain();
-    receiver.merge(changes);
-    expect((await receiver.keys()).map(([id]) => id)).toEqual([id2]);
+    await expect(
+      keychainChangesForVisibility(sender, 'since_invited', undefined),
+    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
+    void id2;
   });
 
-  test('current_only visibility returns only the current key after rotation', async () => {
+  test('current_only visibility rejects an unsafe multi-key projection', async () => {
     const sender = new YjsKeychain();
-    const [oldID] = await sender.add();
-    const [currentID] = await sender.add();
-    void oldID;
-    const first = await keychainChangesForVisibility(
-      sender,
-      'current_only',
-      undefined,
-    );
-    const repeated = await keychainChangesForVisibility(
-      sender,
-      'current_only',
-      undefined,
-    );
-    const receiver = new YjsKeychain();
-    receiver.merge(first);
-    receiver.merge(repeated);
-    expect((await receiver.keys()).map(([id]) => id)).toEqual([currentID]);
+    await sender.add();
+    await sender.add();
+    await expect(
+      keychainChangesForVisibility(sender, 'current_only', undefined),
+    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
   });
 
   test('full_history visibility returns all keys', async () => {
