@@ -6,6 +6,7 @@ import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
+import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
@@ -213,11 +214,10 @@ function describeNode<ChangesType>(
         'load response manifest requires serializeChange for inline changes',
       );
     }
-    const serialized = serializeChange(node.change);
-    if (!(serialized instanceof Uint8Array)) {
-      throw new TypeError('serializeChange must return a Uint8Array');
-    }
-    inlineChangeBytes = new Uint8Array(serialized);
+    inlineChangeBytes = snapshotPayloadBytes(
+      'inline changes',
+      serializeChange(node.change),
+    );
   }
   let childrenMode: 0 | 1 | 2 = 0;
   let childIds: string[] = [];
@@ -463,6 +463,24 @@ export async function loadResponseManifestHash<ChangesType>(
       'load response manifest cannot name a change root without a tree',
     );
   }
+  let changesSnapshot: Readonly<CRDTChangeNode<ChangesType>> | undefined;
+  try {
+    changesSnapshot =
+      changes === undefined
+        ? undefined
+        : snapshotBoundedChangeTree(changeId, changes).root;
+  } catch (cause) {
+    if (
+      cause instanceof RangeError &&
+      cause.message ===
+        `change tree exceeds maximum depth ${MAX_MERKLE_DAG_DEPTH}`
+    ) {
+      throw new RangeError(
+        `load response manifest exceeds ${MAX_MERKLE_DAG_DEPTH} tree depth`,
+      );
+    }
+    throw cause;
+  }
 
   const records = new Map<string, NodeRecord>();
   const visiting = new Set<string>();
@@ -613,10 +631,10 @@ export async function loadResponseManifestHash<ChangesType>(
   };
 
   let anonymousRoot: NodeDescriptor | undefined;
-  if (changes !== undefined) {
+  if (changesSnapshot !== undefined) {
     if (changeId === undefined) {
       accountOccurrence();
-      anonymousRoot = describeNode(changes, serializeChange);
+      anonymousRoot = describeNode(changesSnapshot, serializeChange);
       accountDescriptor(anonymousRoot);
       edgeCount += anonymousRoot.childIds.length;
       if (edgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
@@ -625,24 +643,24 @@ export async function loadResponseManifestHash<ChangesType>(
         );
       }
       if (
-        changes.children !== undefined &&
-        changes.children !== crdtChangeNodeDeferred
+        changesSnapshot.children !== undefined &&
+        changesSnapshot.children !== crdtChangeNodeDeferred
       ) {
         for (const childId of anonymousRoot.childIds) {
           // The anonymous root itself occupies depth one.
-          walkNamed(childId, changes.children[childId]!, 2);
+          walkNamed(childId, changesSnapshot.children[childId]!, 2);
         }
       }
     } else {
       walkNamed(
         requireString('change root CID', changeId),
-        changes,
+        changesSnapshot,
       );
     }
   }
 
   const parts: Uint8Array[] = [encodeUtf8(LOAD_RESPONSE_MANIFEST_DOMAIN)];
-  if (changes === undefined) {
+  if (changesSnapshot === undefined) {
     parts.push(uint8(0));
   } else if (changeId === undefined) {
     parts.push(uint8(1), ...descriptorParts(anonymousRoot!));
