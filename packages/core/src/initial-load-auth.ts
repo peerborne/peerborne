@@ -1,3 +1,11 @@
+import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
+
+const arrayIsArray = Array.isArray;
+const objectDefineProperty = Object.defineProperty;
+const objectFreeze = Object.freeze;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const reflectApply = Reflect.apply;
+
 export interface InitialLoadAuthenticationOptions<PublicKey> {
   strict: boolean;
   signingEnabled: boolean;
@@ -20,13 +28,83 @@ export interface IdentifiedInitialLoadSigner<PublicKey> {
 function selectedTrustKeys<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): readonly PublicKey[] {
-  return options.existingWriterKeys.length > 0
-    ? options.existingWriterKeys
-    : options.trustedBootstrapWriterKeys;
+  const existingWriterKeys = snapshotTrustKeys(
+    options.existingWriterKeys,
+    'existing writer keys',
+  );
+  return existingWriterKeys.length > 0
+    ? existingWriterKeys
+    : snapshotTrustKeys(
+        options.trustedBootstrapWriterKeys,
+        'trusted bootstrap writer keys',
+      );
+}
+
+function snapshotTrustKeys<PublicKey>(
+  value: readonly PublicKey[],
+  field: string,
+): readonly PublicKey[] {
+  let isArray: boolean;
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    lengthDescriptor = isArray
+      ? (reflectApply(objectGetOwnPropertyDescriptor, Object, [
+          value,
+          'length',
+        ]) as PropertyDescriptor | undefined)
+      : undefined;
+  } catch {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  const length =
+    lengthDescriptor !== undefined && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : undefined;
+  if (!isArray || !Number.isSafeInteger(length) || (length as number) < 0) {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  if ((length as number) > MAX_INITIAL_LOAD_SIGNER_AUTHORITIES) {
+    throw new RangeError(
+      `${field} exceeds ${MAX_INITIAL_LOAD_SIGNER_AUTHORITIES} entries`,
+    );
+  }
+
+  const snapshot = new Array<PublicKey>(length as number);
+  for (let index = 0; index < snapshot.length; index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        String(index),
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${field} must expose stable own data entries`);
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(`${field} must contain only own data entries`);
+    }
+    reflectApply(objectDefineProperty, Object, [
+      snapshot,
+      String(index),
+      {
+        configurable: true,
+        enumerable: true,
+        value: descriptor.value,
+        writable: true,
+      },
+    ]);
+  }
+  return reflectApply(objectFreeze, Object, [snapshot]) as readonly PublicKey[];
 }
 
 async function verifiedSignerIndexes<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
+  keys: readonly PublicKey[],
 ): Promise<number[]> {
   if (
     !options.signingEnabled ||
@@ -34,7 +112,6 @@ async function verifiedSignerIndexes<PublicKey>(
   ) {
     return [];
   }
-  const keys = selectedTrustKeys(options);
   const results = await Promise.allSettled(
     keys.map((key) =>
       Promise.resolve().then(() =>
@@ -61,7 +138,7 @@ export async function identifyInitialLoadSigner<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<IdentifiedInitialLoadSigner<PublicKey> | null> {
   const keys = selectedTrustKeys(options);
-  const indexes = await verifiedSignerIndexes(options);
+  const indexes = await verifiedSignerIndexes(options, keys);
   if (indexes.length !== 1) return null;
   const keyIndex = indexes[0];
   return { publicKey: keys[keyIndex], keyIndex };
@@ -85,5 +162,5 @@ export async function verifyInitialLoadAuthentication<PublicKey>(
   if (!(options.signature instanceof Uint8Array)) {
     return false;
   }
-  return (await verifiedSignerIndexes(options)).length > 0;
+  return (await verifiedSignerIndexes(options, keys)).length > 0;
 }

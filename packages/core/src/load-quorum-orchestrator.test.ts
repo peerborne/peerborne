@@ -685,6 +685,28 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
   });
 
+  test.each([
+    ['single-peer', ['p1'], { enabled: true, k: 1, allowSinglePeer: true }],
+    ['K-of-Q', ['p1', 'p2', 'p3'], { enabled: true, k: 3, q: 2 }],
+  ] as const)(
+    '%s rejects an empty signer authority as a non-vote',
+    async (_path, peers, config) => {
+      const error = await runLoadQuorum({
+        peers,
+        peerIdOf,
+        probeFn: async () => ({ hash: HASH_X, signerAuthority: '' }),
+        documentPath: '/empty-signer-authority',
+        config,
+      }).catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(LoadQuorumFailedError);
+      expect(error).toMatchObject({
+        reason: 'insufficient-responses',
+        respondingCount: 0,
+      });
+    },
+  );
+
   test('single-peer fallback DENIED when allowSinglePeer=false (default)', async () => {
     // The orchestrator must refuse to run quorum against a single peer
     // unless the caller opts in. This protects against silently degrading
