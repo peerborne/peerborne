@@ -57,6 +57,11 @@ import {
 } from './sync-message-context.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
 import {
+  PendingWelcomeBuffer,
+  PENDING_WELCOME_MAX_BODY_BYTES,
+  PENDING_WELCOMES_TTL_MS,
+} from './pending-welcome-buffer.js';
+import {
   snapshotKemKeyPair,
   validateAndExportKemKeyPair,
 } from './kem-key-pair.js';
@@ -427,11 +432,13 @@ export class PeerborneDocument<
   // Welcomes after every readers-ACL `merge` (`_drainPendingWelcomesUnlocked`).
   //
   // Bounding:
-  //  - `_PENDING_WELCOMES_MAX_ENTRIES` (16): caps memory usage so a
-  //    flood of misaddressed or hostile Welcomes cannot grow the buffer
-  //    without bound. Older entries are evicted in insertion order
-  //    (Map iteration order) when the bound is reached.
-  //  - `_PENDING_WELCOMES_TTL_MS` (5 min): caps how long any Welcome
+  //  - each canonical serialized body is capped at 1 MiB and the buffer
+  //    retains at most 4 MiB total, so the 10 MiB shared-protocol request
+  //    ceiling cannot be multiplied by the entry count;
+  //  - `PENDING_WELCOMES_MAX_ENTRIES` (16) separately bounds bookkeeping;
+  //    older entries are evicted in insertion order when either bound is
+  //    reached;
+  //  - `PENDING_WELCOMES_TTL_MS` (5 min): caps how long any Welcome
   //    sits unresolved. Entries past their TTL are discarded on the
   //    next drain attempt. Five minutes is well above the worst-case
   //    GossipSub mesh propagation we observe in `e2e/integration/`
@@ -443,12 +450,7 @@ export class PeerborneDocument<
   // `Uint8Array`), chosen so the buffer's identity matches the
   // canonical epoch identifier used elsewhere in the receive path and
   // so duplicate Welcomes (same epoch) coalesce automatically.
-  private _pendingWelcomes = new Map<
-    string,
-    { message: CRDTSyncMessage<ChangesType, PublicKey>; bufferedAtMs: number }
-  >();
-  private static readonly _PENDING_WELCOMES_MAX_ENTRIES = 16;
-  private static readonly _PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
+  private _pendingWelcomes = new PendingWelcomeBuffer();
 
   // Recipient-side ECIES (P-256 ECDH) key pair for opening BeeKEM Welcome
   // sealed payloads. The inviter sends `eciesSealed` -- the keychain delta
@@ -6513,10 +6515,11 @@ export class PeerborneDocument<
    * Buffer a Welcome that was dropped solely because the local user is
    * not yet in the readers ACL. The entry is keyed by
    * `hex(welcomeEpochId)` so duplicate Welcomes for the same epoch
-   * coalesce automatically. Bounded by
-   * `_PENDING_WELCOMES_MAX_ENTRIES` (oldest evicted in insertion
-   * order); replayed by `_drainPendingWelcomesUnlocked()` after the next
-   * readers-ACL merge.
+   * coalesce automatically. The canonical serialized body is capped at
+   * `PENDING_WELCOME_MAX_BODY_BYTES`; retained bodies are bounded by both
+   * entry count and `PENDING_WELCOMES_MAX_RETAINED_BYTES`, with oldest-first
+   * eviction. Buffered bytes are replayed by `_drainPendingWelcomesUnlocked()`
+   * after the next readers-ACL merge.
    *
    * Idempotent and safe to call repeatedly with the same epoch ID --
    * the buffer is conceptually a set keyed on epoch ID, with
@@ -6530,30 +6533,31 @@ export class PeerborneDocument<
     const epochId = message.welcomeEpochId;
     if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = this._hexEncode(epochId);
-    // Refresh recency for duplicate Welcomes: delete-then-set so the
-    // Map iteration order puts this entry at the back, matching the
-    // intent of insertion-order eviction.
-    this._pendingWelcomes.delete(key);
-
-    // Bound: if at capacity, evict the oldest entry (first in Map
-    // iteration order).
-    if (
-      this._pendingWelcomes.size >=
-      PeerborneDocument._PENDING_WELCOMES_MAX_ENTRIES
-    ) {
-      const oldestKey = this._pendingWelcomes.keys().next().value;
-      if (oldestKey !== undefined) {
-        this._pendingWelcomes.delete(oldestKey);
+    try {
+      // Retain bytes rather than the decoded object graph. This makes byte
+      // accounting exact, prevents aliases from changing parked state, and
+      // forces every replay through deserialization and writer authentication.
+      const result = this._pendingWelcomes.storeMessage(
+        key,
+        message,
+        this._syncMessageSerializer,
+        this._now(),
+      );
+      if (result.evictedKeys.length > 0) {
         console.warn(
-          'Pending BeeKEM Welcome buffer is full; evicting its oldest entry',
+          'Pending BeeKEM Welcome buffer reached its count or byte limit; ' +
+            `evicting ${result.evictedKeys.length} oldest entr${
+              result.evictedKeys.length === 1 ? 'y' : 'ies'
+            }`,
         );
       }
+    } catch {
+      console.warn(
+        'Dropping authenticated BeeKEM Welcome that cannot fit the pending ' +
+          `buffer's ${PENDING_WELCOME_MAX_BODY_BYTES}-byte body limit`,
+      );
+      return;
     }
-
-    this._pendingWelcomes.set(key, {
-      message,
-      bufferedAtMs: this._now(),
-    });
     console.log('Buffered BeeKEM Welcome pending readers-ACL update');
   }
 
@@ -6562,7 +6566,7 @@ export class PeerborneDocument<
    * readers ACL. Called after every readers-ACL `merge` so a Welcome
    * that arrived ahead of the ACL update on this node is unblocked as
    * soon as the ACL catches up. Also discards entries past their TTL
-   * (`_PENDING_WELCOMES_TTL_MS`) so the buffer cannot retain stale
+   * (`PENDING_WELCOMES_TTL_MS`) so the buffer cannot retain stale
    * Welcomes indefinitely.
    *
    * Each accepted Welcome is removed from the buffer; entries that
@@ -6575,22 +6579,36 @@ export class PeerborneDocument<
   private async _drainPendingWelcomesUnlocked(): Promise<void> {
     if (this._pendingWelcomes.size === 0) return;
     const now = this._now();
-    // Iterate over a snapshot of entries because we mutate the Map
-    // during iteration (delete on accept / TTL).
-    const entries = Array.from(this._pendingWelcomes.entries());
-    for (const [key, entry] of entries) {
-      if (now - entry.bufferedAtMs > PeerborneDocument._PENDING_WELCOMES_TTL_MS) {
+    // Iterate over a key snapshot because replay deletes accepted/expired
+    // entries. `get` returns one detached body at a time, keeping retained
+    // storage immutable without duplicating the whole aggregate budget.
+    const keys = this._pendingWelcomes.keysSnapshot();
+    for (const key of keys) {
+      const entry = this._pendingWelcomes.get(key);
+      if (entry === undefined) continue;
+      if (now - entry.bufferedAtMs > PENDING_WELCOMES_TTL_MS) {
         this._pendingWelcomes.delete(key);
         console.warn(
           `Discarding stale buffered BeeKEM Welcome for ${this.documentPath} ` +
             `(age=${now - entry.bufferedAtMs}ms ` +
-            `exceeds TTL=${PeerborneDocument._PENDING_WELCOMES_TTL_MS}ms)`,
+            `exceeds TTL=${PENDING_WELCOMES_TTL_MS}ms)`,
         );
         continue;
       }
-      const accepted = await this._evaluateAndApplyBeeKEMWelcome(entry.message, {
-        fromBuffer: true,
-      });
+      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      try {
+        message = this._syncMessageSerializer.deserializeSyncMessage(
+          entry.body,
+        );
+      } catch {
+        this._pendingWelcomes.delete(key);
+        console.warn('Discarding undecodable buffered BeeKEM Welcome');
+        continue;
+      }
+      const accepted = await this._evaluateAndApplyBeeKEMWelcome(
+        message,
+        { fromBuffer: true },
+      );
       if (accepted) {
         this._pendingWelcomes.delete(key);
         console.log(
@@ -6639,6 +6657,11 @@ export class PeerborneDocument<
    */
   public get pendingWelcomesCount(): number {
     return this._pendingWelcomes.size;
+  }
+
+  /** Exact number of serialized Welcome bytes retained by the buffer. */
+  public get pendingWelcomesRetainedBytes(): number {
+    return this._pendingWelcomes.retainedBytes;
   }
 
   /**
