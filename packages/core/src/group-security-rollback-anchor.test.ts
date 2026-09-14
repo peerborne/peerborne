@@ -184,6 +184,28 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
     ).rejects.toThrow(/terminal/);
   });
 
+  test('rejects authenticated fork poison without two distinct records', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    await anchor.advance(key, undefined, {
+      revision: 1,
+      epoch: 0n,
+      controlHead: head(1),
+      storeCommitment: commitment(1),
+      forkPoison: undefined,
+    });
+
+    await expect(
+      anchor.poison(key, {
+        epoch: 0n,
+        parentRecordId: head(2),
+        firstRecordId: head(3),
+        secondRecordId: head(3),
+        evidenceHash: commitment(4),
+      }),
+    ).rejects.toThrow(/record IDs must be distinct/);
+    expect((await anchor.load(key))?.forkPoison).toBeUndefined();
+  });
+
   test('atomically poisons the latest value after queued active advances', async () => {
     const anchor = new InMemoryGroupSecurityRollbackAnchor();
     const values = [1, 2, 3, 4].map((revision) => ({
