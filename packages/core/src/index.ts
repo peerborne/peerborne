@@ -144,6 +144,9 @@ export * from './invitation-wire.js';
 export * from './invitation-replay-guard.js';
 export * from './ecies.js';
 export * from './welcome-sealed-payload.js';
+export * from './group-security-provider.js';
+export * from './membership-control-record.js';
+export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
