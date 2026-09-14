@@ -117,6 +117,32 @@ describe('membership control records', () => {
     ).toThrow(/invalid length/);
   });
 
+  test.each(['\n', '\r', '\u2028', '\u2029'])(
+    'rejects a protocol ID with trailing line terminator %p',
+    (terminator) => {
+      expect(() =>
+        canonicalMembershipControlPayload({
+          ...unsigned(0n, 1),
+          protocol: { id: `control.test${terminator}`, version: 1 },
+        }),
+      ).toThrow(/canonical protocol identifier/);
+    },
+  );
+
+  test('rejects a decoded protocol ID with a trailing line terminator', async () => {
+    const identity = await HmacIdentity.create();
+    const malformed = new Uint8Array(
+      serializeMembershipControlRecord(
+        await signMembershipControlRecord(unsigned(0n, 1), identity.sign),
+      ),
+    );
+    const protocolOffset = 8 + 2 + 2;
+    malformed[protocolOffset + protocol.id.length - 1] = 0x0a;
+    expect(() => deserializeMembershipControlRecord(malformed)).toThrow(
+      /canonical protocol identifier/,
+    );
+  });
+
   test('record identity covers canonical content but not signature bytes', async () => {
     const identity = await HmacIdentity.create();
     const record = await signMembershipControlRecord(
