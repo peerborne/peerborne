@@ -32,7 +32,11 @@ import {
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { ACL, PreparedACLRemoval } from './acl.js';
+import {
+  ACL,
+  PreparedACLChange,
+  PreparedACLRemoval,
+} from './acl.js';
 import {
   Keychain,
   TransactionalKeychain,
@@ -185,6 +189,7 @@ export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
+  PreparedACLChange,
   PreparedACLRemoval,
   ACLProvider,
   SubtleCrypto,

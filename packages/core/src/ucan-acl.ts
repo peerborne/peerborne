@@ -1,4 +1,4 @@
-import { ACL, PreparedACLRemoval } from './acl.js';
+import { ACL, PreparedACLChange } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
@@ -65,12 +65,54 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   async add(publicKey: PublicKey): Promise<ChangesType> {
     const keyBase64 = await this._serializePublicKey(publicKey);
-    const changes = await this._backing.add(publicKey);
+    const prepareAdd = this._backing.prepareAdd;
+    let changes: ChangesType;
+    if (typeof prepareAdd === 'function') {
+      const prepared = await this._prepareBackingAddition(
+        publicKey,
+        keyBase64,
+        prepareAdd,
+      );
+      prepared.commit();
+      return prepared.changes;
+    }
+    changes = await this._backing.add(publicKey);
     // A successful local add is an explicit reauthorization. Clear a local
     // tombstone only after backing membership exists; failed adds must remain
     // revoked.
     this._revokedKeys.delete(keyBase64);
     return changes;
+  }
+
+  async prepareAdd(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareAdd = this._backing.prepareAdd;
+    if (typeof prepareAdd !== 'function') {
+      throw new Error('Backing ACL does not support staged addition');
+    }
+    const keyBase64 = await this._serializePublicKey(publicKey);
+    return this._prepareBackingAddition(publicKey, keyBase64, prepareAdd);
+  }
+
+  private async _prepareBackingAddition(
+    publicKey: PublicKey,
+    keyBase64: string,
+    prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepared = await prepareAdd.call(this._backing, publicKey);
+    let committed = false;
+    return {
+      changes: prepared.changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        prepared.commit();
+        this._revokedKeys.delete(keyBase64);
+        committed = true;
+      },
+    };
   }
 
   async remove(publicKey: PublicKey): Promise<ChangesType> {
@@ -94,7 +136,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   async prepareRemove(
     publicKey: PublicKey,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     const prepareRemove = this._backing.prepareRemove;
     if (typeof prepareRemove !== 'function') {
       throw new Error('Backing ACL does not support staged removal');
@@ -107,7 +149,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     publicKey: PublicKey,
     keyBase64: string,
     prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     const prepared = await prepareRemove.call(this._backing, publicKey);
     let committed = false;
     return {

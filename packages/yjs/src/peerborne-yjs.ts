@@ -2,7 +2,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
-  PreparedACLRemoval,
+  PreparedACLChange,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -572,12 +572,42 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
+    const prepared = await this.prepareAdd(publicKey);
+    prepared.commit();
+    return prepared.changes;
+  }
+  async prepareAdd(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLChange<Uint8Array>> {
     const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    this._acl.getMap('users').set(hash, true);
-    const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
-    this._revision++;
-    return changes;
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc();
+    applyUpdateV2(staged, encodeStateAsUpdateV2(base));
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    const beforeSV = encodeStateVector(staged);
+    if (!hadMember) {
+      stagedUsers.set(hash, true);
+    }
+    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    const changes = new Uint8Array(privateChanges);
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while addition was staged');
+        }
+        committed = true;
+        if (hadMember) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
     const prepared = await this.prepareRemove(publicKey);
@@ -586,7 +616,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
   async prepareRemove(
     publicKey: CryptoKey,
-  ): Promise<PreparedACLRemoval<Uint8Array>> {
+  ): Promise<PreparedACLChange<Uint8Array>> {
     const hash = await serializeKey(publicKey);
     const baseRevision = this._revision;
     const base = this._acl;

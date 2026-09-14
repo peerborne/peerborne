@@ -84,6 +84,77 @@ describe('UCANACL', () => {
     expect(await acl.check('key1', '/doc/read')).toBe(false);
   });
 
+  test('add commits a staged backing addition when available', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    await expect(acl.add('key1')).resolves.toBe('staged-changes');
+
+    expect(backing.prepareAdd).toHaveBeenCalledWith('key1');
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
+  test('prepareAdd delegates without committing backing membership', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(prepared.changes).toBe('staged-changes');
+    expect(commit).not.toHaveBeenCalled();
+    prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('staged reauthorization clears a tombstone only after commit', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+
+    prepared.commit();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(await acl.check('key1', '/doc/read')).toBe(true);
+  });
+
+  test('a rejected staged reauthorization preserves its tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit: () => {
+        throw new Error('stale backing ACL');
+      },
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(() => prepared.commit()).toThrow('stale backing ACL');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
+  test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      'Backing ACL does not support staged addition',
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');

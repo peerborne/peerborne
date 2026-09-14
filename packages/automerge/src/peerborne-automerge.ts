@@ -19,7 +19,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
-  PreparedACLRemoval,
+  PreparedACLChange,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -145,18 +145,45 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
+    const prepared = await this.prepareAdd(publicKey);
+    prepared.commit();
+    return prepared.changes;
+  }
+  async prepareAdd(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLChange<BinaryChange[]>> {
     this._assertComplete('add an ACL member');
     const hash = await serializeKey(publicKey);
-    const aclNew = change(this._acl, (doc) => {
+    this._assertComplete('add an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const stagedBase = clone(base);
+    const staged = change(stagedBase, (doc) => {
       if (!doc.users) {
         doc.users = {};
       }
       doc.users[hash] = true;
     });
-    const aclChanges = getChanges(this._acl, aclNew);
-    this._acl = aclNew;
-    if (aclChanges.length > 0) this._revision++;
-    return aclChanges;
+    const privateChanges = getChanges(base, staged);
+    const changes = privateChanges.map(
+      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+    );
+    let committed = false;
+    return {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL addition was already committed');
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while addition was staged');
+        }
+        committed = true;
+        if (privateChanges.length === 0) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
     const prepared = await this.prepareRemove(publicKey);
@@ -165,7 +192,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
   async prepareRemove(
     publicKey: CryptoKey,
-  ): Promise<PreparedACLRemoval<BinaryChange[]>> {
+  ): Promise<PreparedACLChange<BinaryChange[]>> {
     this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
     this._assertComplete('remove an ACL member');
