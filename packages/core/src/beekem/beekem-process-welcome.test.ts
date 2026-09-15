@@ -5,6 +5,7 @@ import {
   MAX_BEEKEM_TREE_LEAVES,
 } from './types.js';
 import { generateEciesKeyPair } from '../ecies.js';
+import { MAX_V1_PATH_NODES } from './path-update-limits.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 const P256_PRIME =
@@ -234,6 +235,24 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
         recipientKeys.publicKey,
       ),
     ).rejects.toThrow(/supported tree width/);
+    expect(getterCalls).toBe(0);
+    await expectTargetPristine(target);
+
+    const oversizedPath = new Array(MAX_V1_PATH_NODES + 1);
+    Object.defineProperty(oversizedPath, '0', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return null;
+      },
+    });
+    await expect(
+      target.processWelcome(
+        { ...copyWelcome(welcome), pathKeys: oversizedPath },
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow(/pathKeys has invalid length/);
     expect(getterCalls).toBe(0);
     await expectTargetPristine(target);
   });
