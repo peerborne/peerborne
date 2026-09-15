@@ -208,10 +208,7 @@ function requireDetachedBytes(
   return value;
 }
 
-function snapshotPathUpdateForTree(
-  update: PathUpdate,
-  numLeaves: number,
-): PathUpdate {
+function snapshotPathUpdate(update: PathUpdate): PathUpdate {
   let detached: unknown;
   try {
     detached = snapshotDeepEnumerableData(update, 'PathUpdate', {
@@ -232,16 +229,16 @@ function snapshotPathUpdateForTree(
     ['senderLeafIndex', 'senderLeafPublicKey', 'nodes'],
     'Invalid PathUpdate',
   );
-  const treeWidth = 2 * numLeaves - 1;
+  const maximumTreeWidth = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
   if (
     typeof raw.senderLeafIndex !== 'number' ||
     !Number.isSafeInteger(raw.senderLeafIndex) ||
     raw.senderLeafIndex < 0 ||
-    raw.senderLeafIndex >= treeWidth ||
+    raw.senderLeafIndex >= maximumTreeWidth ||
     !TreeMath.isLeaf(raw.senderLeafIndex)
   ) {
     throw new Error(
-      "Invalid PathUpdate: 'senderLeafIndex' must identify a leaf in the current tree",
+      "Invalid PathUpdate: 'senderLeafIndex' must identify a bounded tree leaf",
     );
   }
   const senderLeafIndex = raw.senderLeafIndex;
@@ -255,21 +252,21 @@ function snapshotPathUpdateForTree(
     throw new Error("Invalid PathUpdate: 'nodes' must be an array");
   }
 
-  const expectedPath = TreeMath.directPath(senderLeafIndex, numLeaves);
-  if (raw.nodes.length !== expectedPath.length) {
-    throw new Error(
-      'Invalid PathUpdate: nodes must exactly match the sender direct path',
-    );
-  }
   const nodes: PathNodeUpdate[] = raw.nodes.map((value, index) => {
     const node = requireExactDataFields(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `Invalid PathUpdate: node[${index}]`,
     );
-    if (node.nodeIndex !== expectedPath[index]) {
+    if (
+      typeof node.nodeIndex !== 'number' ||
+      !Number.isSafeInteger(node.nodeIndex) ||
+      node.nodeIndex < 0 ||
+      node.nodeIndex >= maximumTreeWidth ||
+      TreeMath.isLeaf(node.nodeIndex)
+    ) {
       throw new Error(
-        'Invalid PathUpdate: nodes must exactly match the sender direct path',
+        `Invalid PathUpdate: 'node[${index}].nodeIndex' must identify a bounded internal tree node`,
       );
     }
     const encryptedPrivateKey = requireDetachedBytes(
@@ -287,7 +284,7 @@ function snapshotPathUpdateForTree(
       );
     }
     return {
-      nodeIndex: expectedPath[index],
+      nodeIndex: node.nodeIndex,
       publicKey: requireDetachedBytes(
         node.publicKey,
         65,
@@ -299,6 +296,35 @@ function snapshotPathUpdateForTree(
   });
 
   return { senderLeafIndex, senderLeafPublicKey, nodes };
+}
+
+function snapshotPathUpdateForTree(
+  update: PathUpdate,
+  numLeaves: number,
+): PathUpdate {
+  const detached = snapshotPathUpdate(update);
+  const treeWidth = 2 * numLeaves - 1;
+  if (detached.senderLeafIndex >= treeWidth) {
+    throw new Error(
+      "Invalid PathUpdate: 'senderLeafIndex' must identify a leaf in the current tree",
+    );
+  }
+
+  const expectedPath = TreeMath.directPath(
+    detached.senderLeafIndex,
+    numLeaves,
+  );
+  if (
+    detached.nodes.length !== expectedPath.length ||
+    detached.nodes.some(
+      (node, index) => node.nodeIndex !== expectedPath[index],
+    )
+  ) {
+    throw new Error(
+      'Invalid PathUpdate: nodes must exactly match the sender direct path',
+    );
+  }
+  return detached;
 }
 
 /**
@@ -597,23 +623,24 @@ export class BeeKEM {
 
   /**
    * Process a path update from another member.
-   * Validates and detaches the exact current-tree path before crypto, then
-   * derives the new root on a staged tree and commits only on success.
+   * Detaches the update at admission, validates it against the tree when its
+   * reserved turn begins, and commits a staged tree only on success.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
     this._assertInitializedForMutation('process a PathUpdate');
-    if (this._pendingMutations !== 0) {
-      throw new Error(
-        'Cannot process path update during another BeeKEM mutation',
-      );
-    }
+    const validateAgainstCurrentTree = this._pendingMutations === 0;
     const runReservedMutation = this._reserveMutation();
     try {
-      this._assertPathUpdateState();
-      const detachedUpdate = snapshotPathUpdateForTree(
-        update,
-        this._numLeaves,
-      );
+      let detachedUpdate: PathUpdate;
+      if (validateAgainstCurrentTree) {
+        this._assertPathUpdateState();
+        detachedUpdate = snapshotPathUpdateForTree(
+          update,
+          this._numLeaves,
+        );
+      } else {
+        detachedUpdate = snapshotPathUpdate(update);
+      }
       return runReservedMutation(() =>
         this._processPathUpdate(detachedUpdate),
       );
