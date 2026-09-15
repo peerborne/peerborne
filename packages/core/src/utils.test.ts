@@ -386,6 +386,88 @@ describe('snapshotDeepEnumerableData', () => {
     expect(ownKeysCalls).toBe(0);
     expect(entryDescriptorCalls).toBe(0);
   });
+
+  test('bounds array Proxy entry work by the reported length', () => {
+    let ownKeysCalls = 0;
+    let lengthDescriptorCalls = 0;
+    let entryDescriptorCalls = 0;
+    const values = new Proxy(new Array(100_000).fill(7), {
+      ownKeys() {
+        ownKeysCalls++;
+        return ['0', '1', 'length'];
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'length') {
+          lengthDescriptorCalls++;
+          return {
+            ...Reflect.getOwnPropertyDescriptor(target, property)!,
+            value: 2,
+          };
+        }
+        entryDescriptorCalls++;
+        if (entryDescriptorCalls > 2) {
+          throw new Error('array work exceeded the reported length');
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const snapshot = snapshotDeepEnumerableData({ values }, 'bounded', {
+      maxDepth: 8,
+      maxObjects: 16,
+      maxProperties: 16,
+      maxArrayLength: 8,
+      maxValueBytes: 64,
+    });
+
+    expect(snapshot).toEqual({ values: [7, 7] });
+    expect(ownKeysCalls).toBe(1);
+    expect(lengthDescriptorCalls).toBe(2);
+    expect(entryDescriptorCalls).toBe(2);
+  });
+
+  test('rejects an array Proxy whose reported length changes during detachment', () => {
+    let lengthDescriptorCalls = 0;
+    const values = new Proxy([1, 2], {
+      getOwnPropertyDescriptor(target, property) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        if (property !== 'length') return descriptor;
+        lengthDescriptorCalls++;
+        return {
+          ...descriptor!,
+          value: lengthDescriptorCalls === 1 ? 2 : 1,
+        };
+      },
+    });
+
+    expect(() =>
+      snapshotDeepEnumerableData({ values }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 16,
+        maxProperties: 16,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/invalid array/);
+    expect(lengthDescriptorCalls).toBe(2);
+  });
+
+  test('rejects extra array properties without invoking accessors', () => {
+    let extraReads = 0;
+    const values = [1, 2] as number[] & { extra?: string };
+    Object.defineProperty(values, 'extra', {
+      enumerable: true,
+      get() {
+        extraReads++;
+        return 'rejected';
+      },
+    });
+
+    expect(() => snapshotDeepEnumerableData({ values })).toThrow(
+      /dense data arrays/,
+    );
+    expect(extraReads).toBe(0);
+  });
 });
 
 describe('concatUint8Arrays', () => {

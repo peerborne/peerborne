@@ -43,12 +43,14 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
 const uint8ArrayConstructor = Uint8Array;
+const arrayConstructor = Array;
 const arrayIsArray = Array.isArray;
 const numberIsSafeInteger = Number.isSafeInteger;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
+const reflectHas = Reflect.has;
 const reflectOwnKeys = Reflect.ownKeys;
 const intrinsicStructuredClone = globalThis.structuredClone;
 const cryptoKeyTypeGetter =
@@ -339,16 +341,27 @@ export function isNativeCryptoKey(value: unknown): boolean {
   }
 }
 
+export interface DeepDataSnapshotOptions {
+  /**
+   * Reject these properties whether they are own or inherited. This is for
+   * versioned runtime boundaries that must not erase newer-version markers
+   * while converting an input to an own-data snapshot.
+   */
+  readonly forbiddenFields?: readonly string[];
+  /** Retain native CryptoKey objects by reference instead of rejecting them. */
+  readonly retainCryptoKeys?: boolean;
+}
+
 /**
  * Iteratively detach an untrusted codec/provider value without invoking own
- * accessors or reading an own property more than once. Plain records retain
- * their descriptor order, arrays must be dense own-data arrays, genuine
- * unshared Uint8Arrays are copied through captured intrinsics, and CryptoKeys
- * are cloned as immutable platform values. Cycles, exotic objects, symbols,
- * accessors, sparse arrays, SAB views, and values exceeding the aggregate
- * work/allocation limits are rejected. Repeated aliases are copied
- * independently so a later mutation through one consumer cannot change
- * another authenticated field.
+ * accessors. Plain records retain their descriptor order and each field is
+ * read once; arrays must be dense own-data arrays whose bounded length stays
+ * stable while their elements are read; genuine unshared Uint8Arrays are
+ * copied through captured intrinsics, and CryptoKeys are cloned as immutable
+ * platform values. Cycles, exotic objects, symbols, accessors, sparse arrays,
+ * SAB views, and values exceeding the aggregate work/allocation limits are
+ * rejected. Repeated aliases are copied independently so a later mutation
+ * through one consumer cannot change another authenticated field.
  */
 export function snapshotDeepEnumerableData<T>(
   value: T,
@@ -364,7 +377,7 @@ export function snapshotDeepEnumerableData<T>(
     maxArrayLength: 65_536,
     maxValueBytes: 64 * 1024 * 1024,
   },
-  options: { retainCryptoKeys?: boolean } = {},
+  options: DeepDataSnapshotOptions = {},
 ): T {
   for (const [name, limit] of Object.entries(limits)) {
     if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -432,7 +445,7 @@ export function snapshotDeepEnumerableData<T>(
     } else if (target.kind === 'array') {
       defineEnumerableDataProperty(
         target.parent,
-        String(target.index),
+        `${target.index}`,
         candidate,
       );
     } else {
@@ -526,26 +539,30 @@ export function snapshotDeepEnumerableData<T>(
     }
 
     if (isArray) {
-      let lengthDescriptor: PropertyDescriptor | undefined;
-      try {
-        lengthDescriptor = reflectApply(
-          objectGetOwnPropertyDescriptor,
-          Object,
-          [objectCandidate, 'length'],
-        ) as PropertyDescriptor | undefined;
-      } catch {
-        throw new TypeError(`${field} contains an unstable array`);
-      }
-      if (
-        lengthDescriptor === undefined ||
-        !('value' in lengthDescriptor) ||
-        !Number.isSafeInteger(lengthDescriptor.value) ||
-        lengthDescriptor.value < 0 ||
-        lengthDescriptor.value > limits.maxArrayLength
-      ) {
-        throw new TypeError(`${field} contains an invalid array`);
-      }
-      const length = lengthDescriptor.value as number;
+      const readLength = (): number => {
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = reflectApply(
+            objectGetOwnPropertyDescriptor,
+            Object,
+            [objectCandidate, 'length'],
+          ) as PropertyDescriptor | undefined;
+        } catch {
+          throw new TypeError(`${field} contains an unstable array`);
+        }
+        if (
+          descriptor === undefined ||
+          !('value' in descriptor) ||
+          !Number.isSafeInteger(descriptor.value) ||
+          descriptor.value < 0 ||
+          descriptor.value > limits.maxArrayLength
+        ) {
+          throw new TypeError(`${field} contains an invalid array`);
+        }
+        return descriptor.value as number;
+      };
+
+      const length = readLength();
       let keys: (string | symbol)[];
       try {
         keys = reflectOwnKeys(objectCandidate);
@@ -559,21 +576,21 @@ export function snapshotDeepEnumerableData<T>(
       // bounds their descriptor work without charging them as value bytes.
       accountProperties(length);
       for (let index = 0; index < length; index++) {
-        if (keys[index] !== String(index)) {
+        if (keys[index] !== `${index}`) {
           throw new TypeError(`${field} arrays must be dense data arrays`);
         }
       }
       if (keys[length] !== 'length') {
         throw new TypeError(`${field} arrays must be dense data arrays`);
       }
-      const copy = new Array<unknown>(length);
+      const copy = new arrayConstructor<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
         let descriptor: PropertyDescriptor | undefined;
         try {
           descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
             objectCandidate,
-            String(index),
+            `${index}`,
           ]) as PropertyDescriptor | undefined;
         } catch {
           throw new TypeError(`${field} contains an unstable array`);
@@ -594,6 +611,9 @@ export function snapshotDeepEnumerableData<T>(
           target: { kind: 'array', parent: copy, index },
         });
       }
+      if (readLength() !== length) {
+        throw new TypeError(`${field} contains an invalid array`);
+      }
       assign(target, copy);
       active.add(objectCandidate);
       pending.push({ kind: 'leave', candidate: objectCandidate });
@@ -601,6 +621,27 @@ export function snapshotDeepEnumerableData<T>(
         pending.push(children[index]!);
       }
       continue;
+    }
+
+    const forbiddenFields = options.forbiddenFields;
+    if (forbiddenFields !== undefined) {
+      for (let index = 0; index < forbiddenFields.length; index++) {
+        const forbiddenField = forbiddenFields[index]!;
+        let present: boolean;
+        try {
+          present = reflectApply(reflectHas, Reflect, [
+            objectCandidate,
+            forbiddenField,
+          ]) as boolean;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (present) {
+          throw new TypeError(
+            `${field} contains forbidden field '${forbiddenField}'`,
+          );
+        }
+      }
     }
 
     if (prototype !== objectPrototype && prototype !== null) {

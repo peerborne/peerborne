@@ -22,6 +22,15 @@ import {
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
 const ECDH_ALGO = { name: 'ECDH', namedCurve: ECDH_CURVE };
+const V1_PATH_UPDATE_FORBIDDEN_FIELDS = [
+  'version',
+  'generation',
+  'parentTreeHash',
+  'numLeaves',
+  'treeNodePublicKeys',
+  'treeHash',
+  'encryptedPathKeyBundles',
+] as const;
 
 /** Cast Uint8Array to ArrayBuffer for WebCrypto API compatibility. */
 function toBuffer(data: Uint8Array): ArrayBuffer {
@@ -210,13 +219,18 @@ function requireDetachedBytes(
 function snapshotPathUpdate(update: PathUpdate): PathUpdate {
   let detached: unknown;
   try {
-    detached = snapshotDeepEnumerableData(update, 'PathUpdate', {
-      maxDepth: 3,
-      maxObjects: 64,
-      maxProperties: 64,
-      maxArrayLength: MAX_V1_PATH_NODES,
-      maxValueBytes: MAX_V1_PATH_UPDATE_BYTES,
-    });
+    detached = snapshotDeepEnumerableData(
+      update,
+      'PathUpdate',
+      {
+        maxDepth: 3,
+        maxObjects: 64,
+        maxProperties: 64,
+        maxArrayLength: MAX_V1_PATH_NODES,
+        maxValueBytes: MAX_V1_PATH_UPDATE_BYTES,
+      },
+      { forbiddenFields: V1_PATH_UPDATE_FORBIDDEN_FIELDS },
+    );
   } catch (error) {
     throw new Error('Invalid PathUpdate: could not safely detach input', {
       cause: error,
