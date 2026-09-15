@@ -1286,6 +1286,217 @@ describe('UCANACL', () => {
     expect(backing.add).toHaveBeenCalledWith('user2');
   });
 
+  test('discovers missing staging without invoking Proxy get or has traps', async () => {
+    const target = makeMockAcl();
+    const members = new Set<string>();
+    const touched: PropertyKey[] = [];
+    target.remove.mockImplementation(async (key: string) => {
+      members.delete(key);
+      return 'legacy-removal';
+    });
+    const proxied = new Proxy(target, {
+      get(proxyTarget, property, receiver) {
+        if (property === 'prepareRemove') {
+          touched.push(property);
+          members.add('attacker');
+        }
+        return Reflect.get(proxyTarget, property, receiver);
+      },
+      has(proxyTarget, property) {
+        if (property === 'prepareRemove') {
+          touched.push(property);
+          members.add('attacker');
+        }
+        return Reflect.has(proxyTarget, property);
+      },
+    });
+    const proxiedAcl = new UCANACLImpl(
+      proxied,
+      jest.fn(async (key: string) => key),
+    );
+
+    await expect(proxiedAcl.remove('user1')).resolves.toBe('legacy-removal');
+
+    expect(touched).toEqual([]);
+    expect(members.has('attacker')).toBe(false);
+    expect(target.remove).toHaveBeenCalledWith('user1');
+  });
+
+  test('treats an explicit undefined staging data property as absent', async () => {
+    Object.defineProperty(backing, 'prepareRemove', {
+      configurable: true,
+      value: undefined,
+    });
+    backing.remove.mockResolvedValue('legacy-removal');
+
+    await expect(acl.remove('user1')).resolves.toBe('legacy-removal');
+
+    expect(backing.remove).toHaveBeenCalledWith('user1');
+  });
+
+  test('rejects an accessor-backed staging capability without falling back', async () => {
+    let getterCalled = false;
+    Object.defineProperty(backing, 'prepareRemove', {
+      configurable: true,
+      get() {
+        getterCalled = true;
+        return undefined;
+      },
+    });
+    backing.remove.mockResolvedValue('legacy-removal');
+
+    await expect(acl.remove('user1')).rejects.toThrow(
+      'Backing ACL prepareRemove must be a data property',
+    );
+
+    expect(getterCalled).toBe(false);
+    expect(backing.remove).not.toHaveBeenCalled();
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects backing capability-lookup reentry and poisons later operations', async () => {
+    let guardedAcl: any;
+    const proxied = new Proxy(backing, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'prepareRemove') {
+          guardedAcl.current();
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    guardedAcl = new UCANACLImpl(
+      proxied,
+      jest.fn(async (key: string) => key),
+    );
+
+    await expect(guardedAcl.prepareRemove('user1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+
+    expect(backing.current).not.toHaveBeenCalled();
+    await expect(guardedAcl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('poisons a prepared-result descriptor trap that mutates then throws', async () => {
+    const members = new Set<string>();
+    const returned = new Proxy(
+      {
+        changes: 'remove-changes',
+        commit: jest.fn(),
+      },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === 'changes') {
+            members.add('attacker');
+            throw new Error('prepared capture failed');
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+    backing.prepareRemove = jest.fn(async () => returned);
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+
+    await expect(acl.prepareRemove('user1')).rejects.toThrow(
+      'prepared capture failed',
+    );
+
+    expect(members.has('attacker')).toBe(true);
+    await expect(acl.check('attacker', '/doc/admin')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    expect(backing.check).not.toHaveBeenCalled();
+  });
+
+  test('rejects prepared-result capture reentry and poisons later operations', async () => {
+    const target = {
+      changes: 'remove-changes',
+      commit: jest.fn(),
+    };
+    const returned = new Proxy(target, {
+      getOwnPropertyDescriptor(proxyTarget, property) {
+        if (property === 'commit') {
+          acl.current();
+        }
+        return Reflect.getOwnPropertyDescriptor(proxyTarget, property);
+      },
+    });
+    backing.prepareRemove = jest.fn(async () => returned);
+
+    await expect(acl.prepareRemove('user1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+
+    expect(backing.current).not.toHaveBeenCalled();
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects accessor-backed prepared fields without invoking them', async () => {
+    let changesGetterCalled = false;
+    backing.prepareRemove = jest.fn(async () => ({
+      get changes() {
+        changesGetterCalled = true;
+        return 'remove-changes';
+      },
+      commit: jest.fn(),
+    }));
+
+    await expect(acl.prepareRemove('user1')).rejects.toThrow(
+      'Backing ACL prepared-removal changes must be a data property',
+    );
+
+    expect(changesGetterCalled).toBe(false);
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('captures stable prepared fields and preserves the commit receiver', async () => {
+    let commitReceiver: unknown;
+    const originalCommit = jest.fn(function (this: unknown) {
+      commitReceiver = this;
+    });
+    const replacementCommit = jest.fn();
+    const target = {
+      changes: 'remove-changes',
+      commit: originalCommit,
+    };
+    const touched: PropertyKey[] = [];
+    const returned = new Proxy(target, {
+      get(proxyTarget, property, receiver) {
+        if (property === 'changes' || property === 'commit') {
+          touched.push(property);
+        }
+        return Reflect.get(proxyTarget, property, receiver);
+      },
+      has(proxyTarget, property) {
+        if (property === 'changes' || property === 'commit') {
+          touched.push(property);
+        }
+        return Reflect.has(proxyTarget, property);
+      },
+    });
+    backing.prepareRemove = jest.fn(async () => returned);
+
+    const prepared = await acl.prepareRemove('user1');
+    target.changes = 'replaced-changes';
+    target.commit = replacementCommit;
+
+    expect(prepared.changes).toBe('remove-changes');
+    prepared.commit();
+
+    expect(touched).toEqual([]);
+    expect(originalCommit).toHaveBeenCalledTimes(1);
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(commitReceiver).toBe(returned);
+  });
+
   test('rejects delayed backing preparation recursion without hanging', async () => {
     const commit = jest.fn();
     backing.prepareRemove = jest
