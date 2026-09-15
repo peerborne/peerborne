@@ -10,6 +10,7 @@ import {
 } from './types.js';
 import * as TreeMath from './tree-math.js';
 import { eciesSeal, eciesOpen } from '../ecies.js';
+import { snapshotBeeKEMWelcomeForProcessing } from '../beekem-welcome-wire.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
@@ -39,6 +40,7 @@ export class BeeKEM {
   private _nodes: Map<number, TreeNode> = new Map();
   private _numLeaves: number = 0;
   private _myLeafIndex: number = -1;
+  private _welcomeAttemptRevision = 0n;
 
   /** @internal Create a detached copy for validating before commit. */
   clone(): BeeKEM {
@@ -336,44 +338,42 @@ export class BeeKEM {
 
   /**
    * Process a welcome message to join an existing group.
+   * Requires a fresh BeeKEM instance; replacement and re-invitation must use a
+   * new instance so a replayed legacy Welcome cannot roll back live tree state.
    */
   async processWelcome(
     welcome: BeeKEMWelcome,
     privateKey: CryptoKey,
     publicKey: CryptoKey,
   ): Promise<Uint8Array> {
-    this._myLeafIndex = welcome.leafIndex;
-
-    // Derive numLeaves conservatively from the leaf index and the max
-    // path key node indices. The leaf index gives us a lower bound;
-    // internal node indices on the path may imply a larger tree.
-    const leafBasedCount =
-      TreeMath.nodeToLeafIndex(welcome.leafIndex) + 1;
-    let maxFromPath = leafBasedCount;
-    for (const pk of welcome.pathKeys) {
-      // Each internal node index implies a minimum tree width
-      const implied =
-        TreeMath.nodeToLeafIndex(
-          pk.nodeIndex % 2 === 0 ? pk.nodeIndex : pk.nodeIndex + 1,
-        ) + 1;
-      if (implied > maxFromPath) maxFromPath = implied;
+    if (!this._isFreshWelcomeTarget()) {
+      throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
     }
-    this._numLeaves = Math.max(this._numLeaves, maxFromPath);
+
+    // This public method can be called without passing through the strict wire
+    // decoder. Snapshot and bound the complete legacy tree synchronously
+    // before the first WebCrypto await so caller mutation cannot change what
+    // is authenticated or installed while processing is in flight.
+    const validated = snapshotBeeKEMWelcomeForProcessing(welcome);
+    const attemptRevision = ++this._welcomeAttemptRevision;
+    const staged = new BeeKEM();
+    staged._myLeafIndex = validated.welcome.leafIndex;
+    staged._numLeaves = validated.numLeaves;
 
     // Set up our leaf node
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: welcome.leafIndex,
+      index: validated.welcome.leafIndex,
       publicKey,
       privateKey,
     };
-    this._nodes.set(welcome.leafIndex, myLeaf);
+    staged._nodes.set(validated.welcome.leafIndex, myLeaf);
 
     // Decrypt path keys using our private key for the first one,
     // then derive the rest up the tree
     let currentPrivateKey = privateKey;
 
-    for (const pathKey of welcome.pathKeys) {
+    for (const pathKey of validated.welcome.pathKeys) {
       const nodePublicKey = await crypto.subtle.importKey(
         'raw',
         toBuffer(pathKey.publicKey),
@@ -383,7 +383,7 @@ export class BeeKEM {
       );
 
       // Decrypt the private key for this node
-      const nodePrivateKey = await this._decryptNodeKey(
+      const nodePrivateKey = await staged._decryptNodeKey(
         pathKey.encryptedPrivateKey,
         currentPrivateKey,
       );
@@ -394,14 +394,14 @@ export class BeeKEM {
         publicKey: nodePublicKey,
         privateKey: nodePrivateKey,
       };
-      this._nodes.set(pathKey.nodeIndex, node);
+      staged._nodes.set(pathKey.nodeIndex, node);
 
       // Use this node's private key to decrypt the next level
       currentPrivateKey = nodePrivateKey;
     }
 
     // Install all tree node public keys so we have the full tree state
-    for (const nodeEntry of welcome.treeNodePublicKeys) {
+    for (const nodeEntry of validated.welcome.treeNodePublicKeys) {
       if (nodeEntry.publicKey) {
         const pubKey = await crypto.subtle.importKey(
           'raw',
@@ -414,28 +414,43 @@ export class BeeKEM {
         const node: TreeNode = isLeaf
           ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: pubKey }
           : { type: 'internal', index: nodeEntry.nodeIndex, publicKey: pubKey };
-        this._nodes.set(nodeEntry.nodeIndex, node);
+        staged._nodes.set(nodeEntry.nodeIndex, node);
       } else {
         const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
         const node: TreeNode = isLeaf
           ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: null }
           : { type: 'internal', index: nodeEntry.nodeIndex, publicKey: null };
-        this._nodes.set(nodeEntry.nodeIndex, node);
+        staged._nodes.set(nodeEntry.nodeIndex, node);
       }
     }
 
     // Verify tree hash matches the sender's snapshot
-    const computedHash = await this._computeTreeHash();
+    const computedHash = await staged._computeTreeHash();
     if (
-      computedHash.byteLength !== welcome.treeHash.byteLength ||
-      !computedHash.every((b, i) => b === welcome.treeHash[i])
+      computedHash.byteLength !== validated.welcome.treeHash.byteLength ||
+      !computedHash.every((b, i) => b === validated.welcome.treeHash[i])
     ) {
       throw new Error(
         'Welcome tree hash mismatch: reconstructed tree does not match sender state',
       );
     }
 
-    return this.getRootSecret();
+    // Root-key export and hashing are part of validation. Commit only after
+    // they succeed so every malformed-input or WebCrypto failure leaves the
+    // receiver's prior tree intact and a retry starts from that exact state.
+    const rootSecret = await staged.getRootSecret();
+    if (
+      attemptRevision !== this._welcomeAttemptRevision ||
+      !this._isFreshWelcomeTarget()
+    ) {
+      throw new Error(
+        'Cannot process Welcome: the attempt was superseded or receiver state changed',
+      );
+    }
+    this._nodes = staged._nodes;
+    this._numLeaves = staged._numLeaves;
+    this._myLeafIndex = staged._myLeafIndex;
+    return rootSecret;
   }
 
   /**
@@ -577,6 +592,14 @@ export class BeeKEM {
   }
 
   // ---- Private helpers ----
+
+  private _isFreshWelcomeTarget(): boolean {
+    return (
+      this._nodes.size === 0 &&
+      this._numLeaves === 0 &&
+      this._myLeafIndex === -1
+    );
+  }
 
   /**
    * Generate fresh key pairs along our direct path and encrypt each
