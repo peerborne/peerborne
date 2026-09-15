@@ -41,6 +41,8 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
   };
 }
 
+const MAX_STABLE_USER_LISTING_ATTEMPTS = 3;
+
 /**
  * UCAN-based ACL with fine-grained capability support.
  *
@@ -60,6 +62,11 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
  * calls could derive changes from the same document-wide baseline. Identity
  * codecs start eagerly, but invocation-order admission and backing execution
  * are global, so a slow earlier codec or backing call delays later mutations.
+ * A failed backing addition quarantines an identity from basic-membership
+ * fallback until an explicit addition succeeds. A previously granted UCAN is
+ * preserved only when stable backing membership was proven before the failed
+ * attempt. A failed opaque merge poisons the instance because its affected
+ * identities cannot be recovered from the generic ACL contract.
  *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
@@ -73,11 +80,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _revokedKeys: Set<string> = new Set(); // set of revoked public key base64 strings
   private _metadataRevision: object = {};
   private _backingRevision: object = {};
+  private _failedAdditions: Set<string> = new Set();
+  private _pendingAdditions: Map<string, number> = new Map();
   private _pendingGrants: Set<string> = new Set();
   private _pendingRemovals: Map<string, number> = new Map();
   private _membershipMutationTail: Promise<void> = Promise.resolve();
   private _membershipAdmissionTail: Promise<void> = Promise.resolve();
   private _pendingMembershipMutations = 0;
+  private _mergePoisoned = false;
 
   // Private backing ACL so membership checks cannot bypass the wrapper's
   // capability and local-revocation gates.
@@ -161,6 +171,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       keyBase64: string;
     }) => (() => void) | undefined,
   ): Promise<T> {
+    this._assertHealthy(operationName);
     const snapshot = this._snapshotPublicKey(publicKey, operationName);
     void snapshot.catch(() => undefined);
     const previousAdmission = this._membershipAdmissionTail;
@@ -177,6 +188,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       let releaseReservation: (() => void) | undefined;
       try {
         const stableSnapshot = await snapshot;
+        this._assertHealthy(operationName);
         releaseReservation = reserve?.(stableSnapshot);
         queued = this._runMembershipMutation(
           () => operation(stableSnapshot),
@@ -200,6 +212,50 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   private _markBackingMutation(): void {
     this._backingRevision = {};
+  }
+
+  private _assertHealthy(operation: string): void {
+    if (this._mergePoisoned) {
+      throw new Error(
+        `${operation} is unavailable because a failed ACL merge may have ` +
+          'partially changed backing membership',
+      );
+    }
+  }
+
+  private _quarantineAddition(keyBase64: string): void {
+    this._failedAdditions.add(keyBase64);
+    this._markMetadataMutation();
+  }
+
+  private async _hasStablePriorEntry(
+    publicKey: PublicKey,
+    keyBase64: string,
+    operation: string,
+  ): Promise<boolean> {
+    const entry = this._entries.get(keyBase64);
+    if (
+      !entry ||
+      this._pendingRemovals.has(keyBase64) ||
+      this._revokedKeys.has(keyBase64) ||
+      this._failedAdditions.has(keyBase64)
+    ) {
+      return false;
+    }
+
+    const metadataRevision = this._metadataRevision;
+    const backingRevision = this._backingRevision;
+    const isMember = (await this._backing.check(publicKey)) === true;
+    this._assertHealthy(operation);
+    return (
+      isMember &&
+      this._metadataRevision === metadataRevision &&
+      this._backingRevision === backingRevision &&
+      this._entries.get(keyBase64) === entry &&
+      !this._pendingRemovals.has(keyBase64) &&
+      !this._revokedKeys.has(keyBase64) &&
+      !this._failedAdditions.has(keyBase64)
+    );
   }
 
   private async _runBackingMutation<T>(
@@ -229,6 +285,21 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     };
   }
 
+  private _reservePendingAddition(keyBase64: string): () => void {
+    this._pendingAdditions.set(
+      keyBase64,
+      (this._pendingAdditions.get(keyBase64) ?? 0) + 1,
+    );
+    return () => {
+      const remaining = (this._pendingAdditions.get(keyBase64) ?? 1) - 1;
+      if (remaining === 0) {
+        this._pendingAdditions.delete(keyBase64);
+      } else {
+        this._pendingAdditions.set(keyBase64, remaining);
+      }
+    };
+  }
+
   private _assertMetadataRevision(
     expected: object,
     operation: string,
@@ -246,19 +317,27 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): boolean {
     if (
       this._pendingRemovals.has(keyBase64) ||
-      this._pendingGrants.has(keyBase64) ||
       this._revokedKeys.has(keyBase64)
     ) {
       return false;
     }
-    if (!capability) {
-      return true;
+    if (this._failedAdditions.has(keyBase64)) {
+      return false;
     }
     const entry = this._entries.get(keyBase64);
-    return (
-      entry === undefined ||
-      entry.capabilities.some((held) => capabilityImplies(held, capability))
-    );
+    if (entry) {
+      return (
+        capability === undefined ||
+        entry.capabilities.some((held) => capabilityImplies(held, capability))
+      );
+    }
+    if (
+      this._pendingAdditions.has(keyBase64) ||
+      this._pendingGrants.has(keyBase64)
+    ) {
+      return false;
+    }
+    return true;
   }
 
   async add(publicKey: PublicKey): Promise<ChangesType> {
@@ -266,18 +345,25 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'ACL addition',
       async (snapshot) => {
+        const preservePriorEntry = await this._hasStablePriorEntry(
+          snapshot.publicKey,
+          snapshot.keyBase64,
+          'ACL addition',
+        );
+        if (!preservePriorEntry) {
+          this._quarantineAddition(snapshot.keyBase64);
+        }
         const metadataRevision = this._metadataRevision;
         const changes = await this._runBackingMutation(() =>
           this._backing.add(snapshot.publicKey),
         );
-        this._assertMetadataRevision(
-          metadataRevision,
-          'ACL addition',
-        );
+        this._assertMetadataRevision(metadataRevision, 'ACL addition');
         this._revokedKeys.delete(snapshot.keyBase64);
+        this._failedAdditions.delete(snapshot.keyBase64);
         this._markMetadataMutation();
         return changes;
       },
+      (snapshot) => this._reservePendingAddition(snapshot.keyBase64),
     );
   }
 
@@ -290,6 +376,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           this._backing.remove(snapshot.publicKey),
         );
         this._revokedKeys.add(snapshot.keyBase64);
+        this._failedAdditions.delete(snapshot.keyBase64);
         this._entries.delete(snapshot.keyBase64);
         this._markMetadataMutation();
         return changes;
@@ -299,6 +386,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   }
 
   current(): ChangesType {
+    this._assertHealthy('ACL current-state read');
+    if (this._failedAdditions.size !== 0) {
+      throw new Error(
+        'ACL current-state read is unavailable while an unproven backing addition is quarantined',
+      );
+    }
     return this._backing.current();
   }
 
@@ -308,6 +401,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
    * settles when this method rejects.
    */
   merge(changes: ChangesType): void {
+    this._assertHealthy('ACL merge');
     if (this._pendingMembershipMutations !== 0) {
       throw new Error(
         'Cannot merge ACL changes while a local membership mutation is pending',
@@ -315,13 +409,18 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
     try {
       this._backing.merge(changes);
+    } catch (error) {
+      this._mergePoisoned = true;
+      throw error;
     } finally {
       this._markBackingMutation();
     }
   }
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
+    this._assertHealthy('ACL check');
     const snapshot = await this._snapshotPublicKey(publicKey, 'ACL check');
+    this._assertHealthy('ACL check');
 
     if (this._pendingRemovals.has(snapshot.keyBase64)) {
       return false;
@@ -332,6 +431,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       return false;
     }
 
+    this._assertHealthy('ACL check');
     if (this._backingRevision !== backingRevision) {
       return false;
     }
@@ -340,22 +440,41 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   }
 
   async users(capability?: string): Promise<PublicKey[]> {
-    const backingRevision = this._backingRevision;
-    const allUsers = await this._backing.users();
-    if (this._backingRevision !== backingRevision) {
-      return [];
+    for (
+      let attempt = 0;
+      attempt < MAX_STABLE_USER_LISTING_ATTEMPTS;
+      attempt++
+    ) {
+      this._assertHealthy('ACL listing');
+      const backingRevision = this._backingRevision;
+      const metadataRevision = this._metadataRevision;
+      const allUsers = await this._backing.users();
+      this._assertHealthy('ACL listing');
+      if (
+        this._backingRevision !== backingRevision ||
+        this._metadataRevision !== metadataRevision
+      ) {
+        continue;
+      }
+      const snapshots = await Promise.all(
+        allUsers.map((user) => this._snapshotPublicKey(user, 'ACL listing')),
+      );
+      this._assertHealthy('ACL listing');
+      if (
+        this._backingRevision !== backingRevision ||
+        this._metadataRevision !== metadataRevision
+      ) {
+        continue;
+      }
+      return snapshots
+        .filter(({ keyBase64 }) =>
+          this._isLocallyAuthorized(keyBase64, capability),
+        )
+        .map(({ publicKey }) => publicKey);
     }
-    const snapshots = await Promise.all(
-      allUsers.map((user) => this._snapshotPublicKey(user, 'ACL listing')),
+    throw new Error(
+      `ACL listing remained stale after ${MAX_STABLE_USER_LISTING_ATTEMPTS} attempts`,
     );
-    if (this._backingRevision !== backingRevision) {
-      return [];
-    }
-    return snapshots
-      .filter(({ keyBase64 }) =>
-        this._isLocallyAuthorized(keyBase64, capability),
-      )
-      .map(({ publicKey }) => publicKey);
   }
 
   /**
@@ -376,7 +495,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Capability grant',
       async (snapshot) => {
-        const metadataRevision = this._metadataRevision;
         const ucan = await createUCAN(
           issuerPrivateKey,
           issuerPublicKeyBase64,
@@ -392,14 +510,24 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           epochId: stableEpochId,
           revoked: false,
         });
+        const preservePriorEntry = await this._hasStablePriorEntry(
+          snapshot.publicKey,
+          snapshot.keyBase64,
+          'Capability grant',
+        );
+        if (!preservePriorEntry) {
+          this._quarantineAddition(snapshot.keyBase64);
+        }
+        const additionMetadataRevision = this._metadataRevision;
         const changes = await this._runBackingMutation(() =>
           this._backing.add(snapshot.publicKey),
         );
         this._assertMetadataRevision(
-          metadataRevision,
+          additionMetadataRevision,
           'Capability grant',
         );
         this._revokedKeys.delete(snapshot.keyBase64);
+        this._failedAdditions.delete(snapshot.keyBase64);
         this._entries.set(snapshot.keyBase64, entry);
         this._markMetadataMutation();
         return changes;
@@ -427,7 +555,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
    * Get the ACL entry for a specific user.
    */
   async getEntry(publicKey: PublicKey): Promise<UCANACLEntry | undefined> {
+    this._assertHealthy('ACL entry lookup');
     const keyBase64 = await this._serializePublicKey(publicKey);
+    this._assertHealthy('ACL entry lookup');
     if (typeof keyBase64 !== 'string' || keyBase64.length === 0) {
       throw new TypeError(
         'ACL lookup requires a non-empty canonical public-key encoding',
