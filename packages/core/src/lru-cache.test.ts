@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import { LRUCache } from './lru-cache.js';
 
 describe('LRUCache', () => {
@@ -70,6 +70,130 @@ describe('LRUCache', () => {
     cache.set('b', 2);
     cache.set('c', 3); // effective maxSize=2, evicts 'a'
     expect(cache.get('a')).toBeUndefined();
+    expect(cache.size).toBe(2);
+  });
+
+  test('prepared set stays hidden and finalizes without touching Map', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    const finalize = cache.prepareSet('b', 2);
+    expect(cache.has('b')).toBe(false);
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.size).toBe(1);
+
+    const backing = (
+      cache as unknown as { _map: Map<string, number> }
+    )._map;
+    const set = jest.spyOn(backing, 'set').mockImplementation(() => {
+      throw new Error('Map insertion must not run during finalization');
+    });
+
+    expect(() => finalize()).not.toThrow();
+    finalize();
+
+    expect(set).not.toHaveBeenCalled();
+    expect(cache.has('b')).toBe(true);
+    expect(cache.get('b')).toBe(2);
+    expect(cache.size).toBe(2);
+    set.mockRestore();
+  });
+
+  test('prepared set preserves writes made before finalization', () => {
+    const cache = new LRUCache<string, number>(3);
+    cache.set('a', 1);
+    const finalize = cache.prepareSet('b', 2);
+
+    cache.set('c', 3);
+    finalize();
+
+    expect(cache.get('a')).toBe(1);
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('c')).toBe(3);
+    expect(cache.size).toBe(3);
+  });
+
+  test('abandoning a prepared set leaves membership and recency unchanged', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.get('a');
+
+    cache.prepareSet('c', 3);
+    cache.set('d', 4);
+
+    expect(cache.get('a')).toBe(1);
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('c')).toBeUndefined();
+    expect(cache.get('d')).toBe(4);
+    expect(cache.size).toBe(2);
+  });
+
+  test('prepared set preserves the cache bound and LRU eviction', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    const finalize = cache.prepareSet('c', 3);
+
+    expect(cache.size).toBe(2);
+    expect(cache.has('a')).toBe(true);
+    expect(cache.has('c')).toBe(false);
+
+    finalize();
+
+    expect(cache.size).toBe(2);
+    expect(cache.has('a')).toBe(false);
+    expect(cache.has('b')).toBe(true);
+    expect(cache.has('c')).toBe(true);
+    expect(cache.get('a')).toBeUndefined();
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('c')).toBe(3);
+  });
+
+  test('prepared set uses current recency after intervening writes', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    const finalize = cache.prepareSet('c', 3);
+
+    cache.set('d', 4);
+    finalize();
+
+    expect(cache.size).toBe(2);
+    expect(cache.has('c')).toBe(true);
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('c')).toBe(3);
+    expect(cache.get('d')).toBe(4);
+  });
+
+  test('prepared set uses current recency after intervening reads', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    const finalize = cache.prepareSet('c', 3);
+
+    expect(cache.get('a')).toBe(1);
+    finalize();
+
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('a')).toBe(1);
+    expect(cache.get('c')).toBe(3);
+    expect(cache.size).toBe(2);
+  });
+
+  test('prepared replacement refreshes recency without evicting an entry', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    const finalize = cache.prepareSet('a', 10);
+
+    finalize();
+    expect(cache.get('a')).toBe(10);
+    expect(cache.size).toBe(2);
+    cache.set('c', 3);
+
+    expect(cache.get('a')).toBe(10);
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('c')).toBe(3);
     expect(cache.size).toBe(2);
   });
 });
