@@ -12,6 +12,7 @@ export { TIPS_HASH_LENGTH } from './tips-hash.js';
 export { SubtleCrypto } from './auth-subtlecrypto.js';
 export { copyUnsharedUint8Array } from './utils.js';
 export { isSyncMessageSignatureContext } from './crdt-sync-message.js';
+export { assertCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
 export {
   computeKeychainStateCommitment,
   MAX_KEYCHAIN_EPOCHS,
