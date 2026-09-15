@@ -6,6 +6,7 @@ import {
   serializeBeeKEMWelcomeForWire,
   serializeBeeKEMWelcomeV2ForWire,
   deserializeBeeKEMWelcomeV2FromWire,
+  snapshotBeeKEMWelcomeForProcessing,
 } from './beekem-welcome-wire.js';
 import { MAX_BEEKEM_TREE_LEAVES } from './beekem/types.js';
 import {
@@ -291,6 +292,95 @@ describe('beekem-welcome-wire', () => {
     ]);
   });
 
+  test('keeps runtime and wire legacy topology validation in lockstep', () => {
+    const makeWelcome = () => ({
+      leafIndex: 10,
+      pathKeys: [9, 7].map((nodeIndex) => ({
+        nodeIndex,
+        publicKey: new Uint8Array(65).fill(nodeIndex),
+        encryptedPrivateKey: new Uint8Array(125).fill(nodeIndex),
+      })),
+      treeNodePublicKeys: [0, 1, 2, 3, 4, 5, 6, 8].map((nodeIndex) => ({
+        nodeIndex,
+        publicKey:
+          nodeIndex === 3 ? null : new Uint8Array(65).fill(nodeIndex + 1),
+      })),
+      treeHash: new Uint8Array(32).fill(42),
+    });
+    type StructuralWelcome = {
+      pathKeys: Array<{ nodeIndex: number }>;
+      treeNodePublicKeys: Array<{ nodeIndex: number }>;
+    };
+    const malformed: Array<{
+      mutate: (welcome: StructuralWelcome) => void;
+      error: RegExp;
+    }> = [
+      {
+        mutate: (welcome) => welcome.pathKeys.pop(),
+        error: /complete direct path/,
+      },
+      {
+        mutate: (welcome) => welcome.pathKeys.reverse(),
+        error: /out-of-order/,
+      },
+      {
+        mutate: (welcome) => {
+          welcome.pathKeys[1].nodeIndex = welcome.pathKeys[0].nodeIndex;
+        },
+        error: /duplicate|out-of-order/,
+      },
+      {
+        mutate: (welcome) => {
+          welcome.treeNodePublicKeys.push({
+            nodeIndex: welcome.treeNodePublicKeys[0].nodeIndex,
+          });
+        },
+        error: /tree width/,
+      },
+      {
+        mutate: (welcome) => {
+          welcome.treeNodePublicKeys[0].nodeIndex = 11;
+        },
+        error: /out-of-range/,
+      },
+    ];
+
+    const source = makeWelcome();
+    const runtime = snapshotBeeKEMWelcomeForProcessing(source);
+    const wire = serializeBeeKEMWelcomeForWire(source);
+    const decoded = deserializeBeeKEMWelcomeFromWire(wire);
+    expect(runtime.numLeaves).toBe(6);
+    expect(runtime.welcome).toEqual(decoded);
+    expect(runtime.welcome.pathKeys[0].publicKey).not.toBe(
+      source.pathKeys[0].publicKey,
+    );
+
+    for (const { mutate, error } of malformed) {
+      const processingInput = makeWelcome();
+      mutate(processingInput);
+      expect(() =>
+        snapshotBeeKEMWelcomeForProcessing(processingInput),
+      ).toThrow(error);
+
+      const serializationInput = makeWelcome();
+      mutate(serializationInput);
+      expect(() => serializeBeeKEMWelcomeForWire(serializationInput)).toThrow(
+        error,
+      );
+
+      const wireInput = serializeBeeKEMWelcomeForWire(makeWelcome());
+      mutate(wireInput);
+      expect(() => deserializeBeeKEMWelcomeFromWire(wireInput)).toThrow(error);
+    }
+
+    expect(() => snapshotBeeKEMWelcomeForProcessing(wire)).toThrow(
+      /unshared Uint8Array/,
+    );
+    expect(() => deserializeBeeKEMWelcomeFromWire(source)).toThrow(
+      /base64 string/,
+    );
+  });
+
   test('rejects incomplete, reordered, duplicate, and out-of-range topology', () => {
     const welcome = {
       leafIndex: 10,
@@ -323,8 +413,8 @@ describe('beekem-welcome-wire', () => {
       serializeBeeKEMWelcomeForWire({
         ...welcome,
         treeNodePublicKeys: [
-          ...welcome.treeNodePublicKeys,
-          welcome.treeNodePublicKeys[0],
+          welcome.treeNodePublicKeys[1],
+          ...welcome.treeNodePublicKeys.slice(1),
         ],
       }),
     ).toThrow(/duplicate/);
