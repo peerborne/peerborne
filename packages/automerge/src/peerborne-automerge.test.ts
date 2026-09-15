@@ -82,6 +82,16 @@ type AutomergeACLShape = {
   users?: Record<string, true>;
 };
 
+function deterministicSerializedP384Keys(count: number): string[] {
+  const ecdh = createECDH('secp384r1');
+  return Array.from({ length: count }, (_, index) => {
+    const scalar = Buffer.alloc(48);
+    scalar.writeUInt32BE(index + 1, 44);
+    ecdh.setPrivateKey(scalar);
+    return ecdh.getPublicKey().toString('base64');
+  });
+}
+
 // ─── AutomergeProvider ──────────────────────────────────────────────
 
 interface TestDoc {
@@ -339,6 +349,130 @@ describe('AutomergeACL', () => {
       expect(await receiver.check(key2)).toBe(true);
     }
   });
+
+  test(
+    'canonical root seed preserves the 4,096-member change capacity',
+    async () => {
+      const serializedMembers = deterministicSerializedP384Keys(
+        MAX_AUTOMERGE_ACL_MEMBERS - 1,
+      );
+      const [lastMember, rejectedMember] = await Promise.all([
+        serializeKey(key1),
+        serializeKey(key2),
+      ]);
+      expect(
+        new Set([...serializedMembers, lastMember, rejectedMember]).size,
+      ).toBe(MAX_AUTOMERGE_ACL_MEMBERS + 1);
+
+      const bootstrapKey = await deserializeKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        ['verify'],
+      )(serializedMembers[0]!);
+      const bootstrap = new AutomergeACL();
+      await bootstrap.add(bootstrapKey);
+      const [bootstrapDocument] = applyAutomergeChanges(
+        automergeInit<AutomergeACLShape>(),
+        bootstrap.current(),
+      );
+      let source = automergeClone(bootstrapDocument);
+      for (const serialized of serializedMembers.slice(1)) {
+        source = automergeChange(source, (doc) => {
+          doc.users![serialized] = true;
+        });
+      }
+      const beforeLastMember = getAllAutomergeChanges(source);
+      expect(beforeLastMember).toHaveLength(MAX_AUTOMERGE_ACL_CHANGES);
+
+      const acl = new AutomergeACL();
+      expect(() => acl.merge(beforeLastMember)).not.toThrow();
+      const prepared = await acl.prepareAdd(key1);
+      expect(prepared.changes).toHaveLength(1);
+      prepared.commit();
+
+      const atMemberLimit = acl.current();
+      expect(atMemberLimit).toHaveLength(MAX_AUTOMERGE_ACL_CHANGES + 1);
+      expect(
+        atMemberLimit.reduce(
+          (total, binaryChange) => total + binaryChange.byteLength,
+          0,
+        ),
+      ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_HISTORY_BYTES);
+      expect(
+        atMemberLimit.reduce(
+          (total, binaryChange) =>
+            total + decodeAutomergeChange(binaryChange).ops.length,
+          0,
+        ),
+      ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_OPERATIONS);
+      expect(await acl.check(key1)).toBe(true);
+
+      const receiver = new AutomergeACL();
+      expect(() => receiver.merge(atMemberLimit)).not.toThrow();
+      expect(await receiver.check(key1)).toBe(true);
+
+      const beforeRejectedMember = acl.current();
+      await expect(acl.prepareAdd(key2)).rejects.toThrow(
+        `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      );
+      expect(acl.current()).toEqual(beforeRejectedMember);
+
+      const seedIndex = atMemberLimit.findIndex((binaryChange) => {
+        const decoded = decodeAutomergeChange(binaryChange);
+        return decoded.ops.some(
+          (operation) =>
+            operation.obj === '_root' && operation.key === 'users',
+        );
+      });
+      expect(seedIndex).toBeGreaterThanOrEqual(0);
+      const seed = decodeAutomergeChange(atMemberLimit[seedIndex]!);
+      const malformedSeed = automergeChange(
+        automergeInit<AutomergeACLShape & { padding?: boolean }>({
+          actor: seed.actor,
+        }),
+        { time: seed.time },
+        (doc) => {
+          doc.users = {};
+          doc.padding = true;
+        },
+      );
+      const dependency = automergeChange(
+        automergeInit<{ padding?: boolean }>(),
+        (doc) => {
+          doc.padding = true;
+        },
+      );
+      const dependentSeed = automergeChange(
+        automergeClone(dependency, { actor: seed.actor }),
+        { time: seed.time },
+        (doc: AutomergeACLShape & { padding?: boolean }) => {
+          doc.users = {};
+        },
+      );
+      const dependentSeedChange = getAllAutomergeChanges(dependentSeed).find(
+        (binaryChange) =>
+          decodeAutomergeChange(binaryChange).actor === seed.actor,
+      )!;
+
+      for (const nearSeed of [
+        getAllAutomergeChanges(malformedSeed)[0]!,
+        dependentSeedChange,
+      ]) {
+        const oversizedNearSeedHistory = [
+          nearSeed,
+          ...atMemberLimit.filter((_, index) => index !== seedIndex),
+        ];
+        expect(oversizedNearSeedHistory).toHaveLength(
+          MAX_AUTOMERGE_ACL_CHANGES + 1,
+        );
+        const hostileReceiver = new AutomergeACL();
+        expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
+          `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+        );
+        expect(hostileReceiver.current()).toEqual([]);
+      }
+    },
+    120_000,
+  );
 
   test('blank-base prepared additions share a seed across creation times', async () => {
     const now = jest.spyOn(Date, 'now');
@@ -679,7 +813,7 @@ describe('AutomergeACL', () => {
 
     expect(() =>
       acl.merge(
-        new Array(MAX_AUTOMERGE_ACL_CHANGES + 1) as BinaryChange[],
+        new Array(MAX_AUTOMERGE_ACL_CHANGES + 2) as BinaryChange[],
       ),
     ).toThrow(/change limit/);
     expect(() =>
