@@ -62,6 +62,36 @@ beforeAll(async () => {
   );
 });
 
+async function makeOutOfOrderRemovalUpdates(
+  current: Uint8Array,
+  removedKey: CryptoKey,
+  transientKey: CryptoKey,
+): Promise<{ predecessor: Uint8Array; dependent: Uint8Array }> {
+  const source = new Doc();
+  applyUpdateV2(source, current);
+  const users = source.getMap('users');
+  const [serializedRemovedKey, serializedTransientKey] = await Promise.all([
+    serializeKey(removedKey),
+    serializeKey(transientKey),
+  ]);
+  const updates: Uint8Array[] = [];
+  source.on('updateV2', (update) => {
+    updates.push(new Uint8Array(update));
+  });
+  source.transact(() => {
+    users.delete(serializedRemovedKey);
+    users.set(serializedTransientKey, true);
+  });
+  source.transact(() => {
+    users.delete(serializedTransientKey);
+  });
+  const [predecessor, dependent] = updates;
+  if (!predecessor || !dependent) {
+    throw new Error('Expected two Yjs ACL updates');
+  }
+  return { predecessor, dependent };
+}
+
 describe('YjsProvider', () => {
   test('newDocument returns a valid Yjs Doc', () => {
     const provider = new YjsProvider();
@@ -372,12 +402,137 @@ describe('YjsACL', () => {
     const receiver = new YjsACL();
 
     receiver.merge(dependent);
-    expect(await receiver.check(key1)).toBe(false);
-    expect(await receiver.check(key2)).toBe(false);
+    await expect(receiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(receiver.check(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
 
     receiver.merge(dependency);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('current(), check(), and users() reject a known-incomplete ACL history', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+
+    acl.merge(dependent);
+
+    expect(() => acl.current()).toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(acl.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(acl.users()).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+  });
+
+  test('ACL reads recover after an out-of-order removal predecessor arrives', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+    acl.merge(dependent);
+
+    acl.merge(predecessor);
+
+    expect(acl.current()).toBeInstanceOf(Uint8Array);
+    await expect(acl.check(key1)).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+  });
+
+  test('check() rejects when a merge changes the ACL during key serialization', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const remote = new YjsACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = acl.check(key1);
+      await started;
+      acl.merge(remoteChanges);
+      releaseExport();
+
+      await expect(authorization).rejects.toThrow(
+        'ACL changed while membership was being checked',
+      );
+    } finally {
+      releaseExport();
+      exportSpy.mockRestore();
+    }
+  });
+
+  test('users() rejects when a removal commits during key import', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    let importStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      importStarted = resolve;
+    });
+    let releaseImport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const originalImportKey = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementationOnce(
+        async (format, keyData, algorithm, extractable, keyUsages) => {
+          importStarted();
+          await release;
+          return originalImportKey(
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    try {
+      const listing = acl.users();
+      await started;
+      await acl.remove(key1);
+      releaseImport();
+
+      await expect(listing).rejects.toThrow(
+        'ACL changed while members were being listed',
+      );
+      await expect(acl.check(key1)).resolves.toBe(false);
+    } finally {
+      releaseImport();
+      importSpy.mockRestore();
+    }
   });
 
   test('merge() preserves pending deletes until their dependencies arrive', async () => {
