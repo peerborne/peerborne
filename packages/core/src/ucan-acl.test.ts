@@ -1204,7 +1204,7 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/admin')).toBe(true);
   });
 
-  test('prepareRemove rejects when metadata changes during backing preparation', async () => {
+  test('prepareRemove rejects and retries later metadata changes until preparation settles', async () => {
     const firstUcan = makeFakeUcan({
       audience: 'serialized:user1',
       capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
@@ -1224,13 +1224,20 @@ describe('UCANACL', () => {
     }>((resolve) => {
       resolvePreparation = resolve;
     });
+    let preparationStarted!: () => void;
+    const preparationWasStarted = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
     const commit = jest.fn();
     mockCreateUCAN
       .mockResolvedValueOnce(firstUcan)
       .mockResolvedValueOnce(replacementUcan);
     backing.add.mockResolvedValue('add-changes');
     backing.check.mockResolvedValue(true);
-    backing.prepareRemove = jest.fn(() => pendingPreparation);
+    backing.prepareRemove = jest.fn(() => {
+      preparationStarted();
+      return pendingPreparation;
+    });
     await acl.grant(
       'user1',
       '/doc/read',
@@ -1240,21 +1247,199 @@ describe('UCANACL', () => {
     );
 
     const preparation = acl.prepareRemove('user1');
-    await Promise.resolve();
-    await Promise.resolve();
-    await acl.grant(
-      'user1',
-      '/doc/admin',
-      'doc-1',
-      {} as CryptoKey,
-      'issuer',
+    await preparationWasStarted;
+    const grant = retryACLConflict(() =>
+      acl.grant(
+        'user1',
+        '/doc/admin',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
     );
+    await Promise.resolve();
+    expect(backing.add).toHaveBeenCalledTimes(1);
+    expect(() => acl.merge('remote-changes')).toThrow(
+      ACLOperationInProgressError,
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
     resolvePreparation({ changes: 'remove-changes', commit });
 
-    await expect(preparation).rejects.toThrow(/UCAN metadata changed/);
+    const prepared = await preparation;
+    await expect(grant).resolves.toBe('add-changes');
+    expect(() => prepared.commit()).toThrow(/UCAN metadata changed/);
     expect(commit).not.toHaveBeenCalled();
     expect((await acl.getEntry('user1'))?.ucan.nonce).toBe('nonce-2');
     expect(await acl.check('user1', '/doc/admin')).toBe(true);
+  });
+
+  test('a safe backing preparation rejection does not poison later operations', async () => {
+    backing.prepareRemove = jest.fn(async () => {
+      throw new Error('could not stage removal');
+    });
+    backing.add.mockResolvedValue('add-changes');
+
+    await expect(acl.prepareRemove('user1')).rejects.toThrow(
+      'could not stage removal',
+    );
+    await expect(acl.add('user2')).resolves.toBe('add-changes');
+    expect(backing.add).toHaveBeenCalledWith('user2');
+  });
+
+  test('rejects delayed backing preparation recursion without hanging', async () => {
+    const commit = jest.fn();
+    backing.prepareRemove = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        await Promise.resolve();
+        return acl.prepareRemove('user2');
+      })
+      .mockResolvedValueOnce({
+        changes: 'remove-changes',
+        commit,
+      });
+
+    await expect(
+      settleWithinMicrotasks(acl.prepareRemove('user1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /Backing ACL preparation cannot reenter this UCAN ACL/,
+          ),
+        }),
+      }),
+    );
+    expect(backing.prepareRemove).toHaveBeenCalledTimes(1);
+
+    const prepared = await acl.prepareRemove('user1');
+    prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries a foreign conflict reported by backing preparation', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareRemove = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL preparation',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce({
+        changes: 'remove-changes',
+        commit,
+      });
+    backing.current.mockReturnValue('current-state');
+
+    const preparation = retryACLConflict(() =>
+      acl.prepareRemove('user1'),
+    );
+    expect(await settleWithinMicrotasks(preparation)).toBeUndefined();
+    expect(backing.prepareRemove).toHaveBeenCalledTimes(1);
+
+    settle();
+    const prepared = await preparation;
+    prepared.commit();
+    expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('poisons an asynchronous backing prepared-commit contract violation', async () => {
+    let asynchronousCommit!: Promise<unknown>;
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit: () => {
+        asynchronousCommit = (async () => {
+          await Promise.resolve();
+          return acl.check('user1');
+        })();
+        return asynchronousCommit;
+      },
+    }));
+
+    const prepared = await acl.prepareRemove('user1');
+    expect(() => prepared.commit()).toThrow(
+      'Backing ACL commit must complete synchronously',
+    );
+    await expect(asynchronousCommit).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    await expect(acl.check('user1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    expect(backing.check).not.toHaveBeenCalled();
+  });
+
+  test('poisons a foreign conflict reported by a backing prepared commit', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const commit = jest.fn(() => {
+      throw new ACLOperationInProgressError(
+        'Nested ACL commit',
+        settlement,
+      );
+    });
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit,
+    }));
+    backing.current.mockReturnValue('current-state');
+
+    const prepared = await acl.prepareRemove('user1');
+    await expect(
+      retryACLConflict(() => prepared.commit()),
+    ).rejects.toThrow(
+      /retry conflict after invocation; backing state is uncertain/,
+    );
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+
+    settle();
+    await settlement;
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries a prepared commit after an overlapping read settles', async () => {
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let resolveCheck!: (allowed: boolean) => void;
+    const pendingCheck = new Promise<boolean>((resolve) => {
+      resolveCheck = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit,
+    }));
+    backing.check.mockImplementationOnce(() => {
+      checkStarted();
+      return pendingCheck;
+    });
+
+    const prepared = await acl.prepareRemove('user1');
+    const check = acl.check('user2');
+    await started;
+    const committed = retryACLConflict(() => prepared.commit());
+    expect(await settleWithinMicrotasks(committed)).toBeUndefined();
+    expect(commit).not.toHaveBeenCalled();
+
+    resolveCheck(false);
+    await expect(check).resolves.toBe(false);
+    await expect(committed).resolves.toBeUndefined();
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 
   test('prepareRemove cannot commit during another member mutation', async () => {

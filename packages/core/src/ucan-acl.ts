@@ -551,6 +551,32 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
+  private async _runBackingPreparation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this._assertBackingOperationAvailable('ACL backing preparation');
+    const finishBackingOperation = this._beginBackingOperation();
+    try {
+      return await this._invokeBacking(operation);
+    } catch (error) {
+      if (
+        error instanceof ACLOperationInProgressError &&
+        !this._isForeignOperationConflict(error)
+      ) {
+        throw new Error(
+          'Backing ACL preparation cannot reenter this UCAN ACL while its preparation is unresolved',
+        );
+      }
+      throw error;
+    } finally {
+      // Rotate the revision even though the prepared operation must not change
+      // live membership. This makes a later backing operation stale this
+      // preparation and accounts for opaque private staging on every outcome.
+      this._markBackingMutation();
+      finishBackingOperation();
+    }
+  }
+
   private _runBackingCommit(operation: () => void): void {
     this._assertBackingOperationAvailable('ACL backing commit');
     const finishBackingOperation = this._beginBackingOperation();
@@ -638,20 +664,20 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareRemove(
     publicKey: PublicKey,
   ): Promise<PreparedACLRemoval<ChangesType>> {
-    this._assertPublicOperationAvailable('Prepared ACL removal');
-    const prepareRemove = this._backing.prepareRemove;
-    if (typeof prepareRemove !== 'function') {
-      throw new Error('Backing ACL does not support staged removal');
-    }
-    const snapshot = await this._snapshotPublicKey(
+    return this._startMembershipMutation(
       publicKey,
       'Prepared ACL removal',
-    );
-    this._assertPublicOperationAvailable('Prepared ACL removal');
-    return this._prepareBackingRemoval(
-      snapshot.publicKey,
-      snapshot.keyBase64,
-      prepareRemove,
+      async (snapshot) => {
+        const prepareRemove = this._backing.prepareRemove;
+        if (typeof prepareRemove !== 'function') {
+          throw new Error('Backing ACL does not support staged removal');
+        }
+        return this._prepareBackingRemoval(
+          snapshot.publicKey,
+          snapshot.keyBase64,
+          prepareRemove,
+        );
+      },
     );
   }
 
@@ -662,8 +688,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     allowActiveMutation = false,
   ): Promise<PreparedACLRemoval<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL removal');
+    const prepared = await this._runBackingPreparation(() =>
+      prepareRemove.call(this._backing, publicKey),
+    );
     const backingRevision = this._backingRevision;
-    const prepared = await prepareRemove.call(this._backing, publicKey);
     this._assertBackingOperationAvailable('Prepared ACL removal');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
