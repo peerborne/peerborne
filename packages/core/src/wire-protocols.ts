@@ -256,6 +256,12 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // is the wire-format key-ID prefix); the recipient has no entry for
 // that ID in their local keychain and the decrypt fails.
 //
+// The shipped keychains reject an exact duplicate epoch ID before the
+// handler commits its cloned BeeKEM state. That incidental check can drop an
+// update the receiver already installed, but it does not establish freshness:
+// a previously unseen older update still has a new-to-that-receiver epoch ID
+// and can be accepted out of order because v1 has no parent/generation binding.
+//
 // Recovery is NOT guaranteed by a vanilla `loadDocument` against an
 // arbitrary peer: `handleLoadRequestData` encrypts its response under
 // the responder's `_keychain.current()`, so the recipient can
