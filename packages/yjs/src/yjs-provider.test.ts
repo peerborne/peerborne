@@ -2422,13 +2422,165 @@ describe('YjsKeychain', () => {
     expect(await receiver.keys()).toHaveLength(0);
     expect(receiver.getKey(currentId)).toBeUndefined();
 
-    prepared.commit();
+    const historyBefore = receiver.history();
+    const claim = prepared.claimCommit!();
+    expect(receiver.history()).toEqual(historyBefore);
+    expect(receiver.getKey(firstId)).toBeUndefined();
+    expect(receiver.getKey(currentId)).toBeUndefined();
+    expect(() => prepared.claimCommit!()).toThrow(
+      /already committed or claimed/,
+    );
+    expect(() => prepared.commit()).toThrow(/already committed or claimed/);
+    const cache = (
+      receiver as unknown as {
+        _keyCache: {
+          _setMapEntry(key: string, value: CryptoKey): void;
+        };
+      }
+    )._keyCache;
+    const setMapEntry = jest
+      .spyOn(cache, '_setMapEntry')
+      .mockImplementation(() => {
+        throw new Error('Merge finalization must not perform Map work');
+      });
+    try {
+      expect(claim.finalize()).toBeUndefined();
+      expect(claim.finalize()).toBeUndefined();
+      expect(setMapEntry).not.toHaveBeenCalled();
+    } finally {
+      setMapEntry.mockRestore();
+    }
     expect(receiver.getKey(firstId)).toBe(hydrated[0][1]);
     expect(receiver.getKey(currentId)).toBe(hydrated[1][1]);
     expect((await receiver.current())[0]).toEqual(currentId);
     expect(await receiver.stateCommitment()).toEqual(
       await source.stateCommitment(),
     );
+  });
+
+  test('legacy merge commit ignores an accessor replacing the returned claim method', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+    const hydratedKey = (await prepared.hydrateKeys())[0][1];
+    const replacement = jest.fn(() => {
+      throw new Error('replaceable merge claim was invoked');
+    });
+    Object.defineProperty(prepared, 'claimCommit', {
+      get: replacement,
+    });
+
+    expect(() => prepared.commit()).not.toThrow();
+
+    expect(replacement).not.toHaveBeenCalled();
+    expect((await receiver.current())[0]).toEqual(epochId);
+    expect(receiver.getKey(epochId)).toBe(hydratedKey);
+  });
+
+  test('merge claim rejects in-flight and post-claim hydration', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+    const firstHydration = prepared.hydrateKeys();
+    const concurrentHydration = prepared.hydrateKeys();
+
+    expect(() => prepared.claimCommit!()).toThrow(
+      'key hydration is in progress',
+    );
+    const [first, concurrent] = await Promise.all([
+      firstHydration,
+      concurrentHydration,
+    ]);
+    expect(concurrent[0][1]).toBe(first[0][1]);
+
+    const claim = prepared.claimCommit!();
+    await expect(prepared.hydrateKeys()).rejects.toThrow(
+      /already committed or claimed/,
+    );
+    claim.finalize();
+
+    expect(receiver.getKey(epochId)).toBe(first[0][1]);
+  });
+
+  test('an abandoned merge claim permits replay without exposing its hydrated keys', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const abandoned = receiver.prepareMerge(source.history());
+    const abandonedKey = (await abandoned.hydrateKeys())[0][1];
+
+    abandoned.claimCommit!();
+    expect(receiver.getKey(epochId)).toBeUndefined();
+    expect(await receiver.keys()).toHaveLength(0);
+
+    const replay = receiver.prepareMerge(source.history());
+    const replayKey = (await replay.hydrateKeys())[0][1];
+    replay.claimCommit!().finalize();
+
+    expect(replayKey).not.toBe(abandonedKey);
+    expect(receiver.getKey(epochId)).toBe(replayKey);
+    expect((await receiver.current())[0]).toEqual(epochId);
+  });
+
+  test('merge claim preparation failure leaves staged state retryable', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const prepared = receiver.prepareMerge(source.history());
+    const hydratedKey = (await prepared.hydrateKeys())[0][1];
+    const historyBefore = receiver.history();
+    const cache = (
+      receiver as unknown as {
+        _keyCache: {
+          prepareSetMany(entries: ReadonlyMap<string, CryptoKey>): () => void;
+        };
+      }
+    )._keyCache;
+    const prepareSetMany = jest
+      .spyOn(cache, 'prepareSetMany')
+      .mockImplementationOnce(() => {
+        throw new Error('cache batch preparation failed');
+      });
+
+    expect(() => prepared.claimCommit!()).toThrow(
+      'cache batch preparation failed',
+    );
+    expect(receiver.history()).toEqual(historyBefore);
+    expect(receiver.getKey(epochId)).toBeUndefined();
+
+    prepareSetMany.mockRestore();
+    prepared.claimCommit!().finalize();
+    expect(receiver.getKey(epochId)).toBe(hydratedKey);
+  });
+
+  test('merge claims reject replay revision changes and same-revision base replacement', async () => {
+    const source = new YjsKeychain();
+    const [epochId] = await source.add();
+    const receiver = new YjsKeychain();
+    const staleRevision = receiver.prepareMerge(source.history());
+
+    receiver.prepareMerge(receiver.history()).claimCommit!().finalize();
+
+    expect(() => staleRevision.claimCommit!()).toThrow(
+      'Keychain changed while merge was staged',
+    );
+
+    const replaced = new YjsKeychain();
+    const staleIdentity = replaced.prepareMerge(source.history());
+    await staleIdentity.hydrateKeys();
+    const replacement = new Doc();
+    applyUpdateV2(replacement, replaced.history());
+    Object.defineProperty(replaced, '_keychain', {
+      value: replacement,
+      writable: true,
+    });
+
+    expect(() => staleIdentity.claimCommit!()).toThrow(
+      'Keychain changed while merge was staged',
+    );
+    expect(replaced.getKey(epochId)).toBeUndefined();
   });
 
   test('prepareMerge() accepts cross-realm bytes and rejects shared backing', async () => {
@@ -2607,7 +2759,7 @@ describe('YjsKeychain', () => {
     const appendCommitment = await valid.stateCommitment!();
     previousIntent.fill(0);
     newIntent.fill(0);
-    valid.commit();
+    valid.claimCommit!().finalize();
     expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
     expect(await receiver.stateCommitment()).toEqual(appendCommitment);
 
