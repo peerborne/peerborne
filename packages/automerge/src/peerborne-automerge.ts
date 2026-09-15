@@ -146,6 +146,11 @@ type AutomergeACLChangeRecord = {
   readonly operationCount: number;
 };
 
+type AutomergeACLAdditionActorReservation = {
+  readonly actor: string;
+  release(): void;
+};
+
 type AutomergeACLKeyWrite = {
   readonly changeIndex: number;
   readonly effect: 'add' | 'remove' | 'invalid';
@@ -301,7 +306,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     );
   }
 
-  private _reserveStagedAdditionActor(base: AutomergeACLDoc): string {
+  private _reserveStagedAdditionActor(
+    base: AutomergeACLDoc,
+  ): AutomergeACLAdditionActorReservation {
     if (this._stagedAdditionActors.size >= MAX_AUTOMERGE_ACL_CHANGES) {
       throw new RangeError(
         'Automerge ACL has too many staged addition actors',
@@ -318,7 +325,15 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       const actor = getActorId(clone(base));
       if (!this._stagedAdditionActors.has(actor)) {
         this._stagedAdditionActors.add(actor);
-        return actor;
+        let active = true;
+        return {
+          actor,
+          release: () => {
+            if (!active) return;
+            active = false;
+            this._stagedAdditionActors.delete(actor);
+          },
+        };
       }
     }
   }
@@ -537,50 +552,57 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     assertAutomergeACLResourceLimits(base, 'stage an ACL addition');
     const hadMember = base.users?.[hash] !== undefined;
     const stagingBase = hadMember ? undefined : this._stagedAdditionBase(base);
-    const staged =
-      stagingBase === undefined
-        ? base
-        : change(
-            clone(stagingBase, {
-              actor: this._reserveStagedAdditionActor(stagingBase),
-            }),
-            { time: undefined },
-            (doc) => {
-              doc.users![hash] = true;
-            },
-          );
-    const privateChanges = getChanges(base, staged);
-    const accounting = this._prepareChangeAccounting(privateChanges);
-    assertAutomergeACLResourceLimits(staged, 'stage an ACL addition');
-    const changes = privateChanges.map(
-      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
-    );
-    let committed = false;
-    const prepared: PreparedACLChange<BinaryChange[]> = {
-      changes,
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared ACL addition was already committed');
-        }
-        if (
-          this._pendingMutations !== 0 &&
-          !this._queuedAdditionCommits.has(prepared)
-        ) {
-          throw new Error(
-            'Prepared ACL addition cannot commit during a local ACL mutation',
-          );
-        }
-        if (this._revision !== baseRevision || this._acl !== base) {
-          throw new Error('ACL changed while addition was staged');
-        }
-        committed = true;
-        if (privateChanges.length === 0) return;
-        this._acl = staged;
-        this._commitChangeAccounting(accounting);
-        this._revision++;
-      },
-    };
-    return prepared;
+    let actorReservation: AutomergeACLAdditionActorReservation | undefined;
+    try {
+      const staged =
+        stagingBase === undefined
+          ? base
+          : change(
+              clone(stagingBase, {
+                actor: (actorReservation =
+                  this._reserveStagedAdditionActor(stagingBase)).actor,
+              }),
+              { time: undefined },
+              (doc) => {
+                doc.users![hash] = true;
+              },
+            );
+      const privateChanges = getChanges(base, staged);
+      const accounting = this._prepareChangeAccounting(privateChanges);
+      assertAutomergeACLResourceLimits(staged, 'stage an ACL addition');
+      const changes = privateChanges.map(
+        (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+      );
+      let committed = false;
+      const prepared: PreparedACLChange<BinaryChange[]> = {
+        changes,
+        commit: () => {
+          if (committed) {
+            throw new Error('Prepared ACL addition was already committed');
+          }
+          if (
+            this._pendingMutations !== 0 &&
+            !this._queuedAdditionCommits.has(prepared)
+          ) {
+            throw new Error(
+              'Prepared ACL addition cannot commit during a local ACL mutation',
+            );
+          }
+          if (this._revision !== baseRevision || this._acl !== base) {
+            throw new Error('ACL changed while addition was staged');
+          }
+          committed = true;
+          if (privateChanges.length === 0) return;
+          this._acl = staged;
+          this._commitChangeAccounting(accounting);
+          this._revision++;
+        },
+      };
+      return prepared;
+    } catch (error) {
+      actorReservation?.release();
+      throw error;
+    }
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
