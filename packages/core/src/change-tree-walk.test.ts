@@ -15,6 +15,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import { ACLOperationInProgressError } from './acl.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock(
@@ -286,6 +287,77 @@ describe('bounded iterative change-tree consumers', () => {
     expect(() => document._applyACLFromTree(root)).not.toThrow();
     expect(mergeReaders).toHaveBeenCalledTimes(1);
     expect(mergeWriters).not.toHaveBeenCalled();
+  });
+
+  test('ACL pre-pass waits to retry a conflicted merge before advancing', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeReaders = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ACLOperationInProgressError(
+          'Reader ACL merge',
+          settlement,
+        );
+      })
+      .mockImplementationOnce(() => undefined);
+    const mergeWriters = jest.fn();
+    const document = fakeDocument({
+      _readers: { merge: mergeReaders },
+      _writers: { merge: mergeWriters },
+      _pendingWelcomes: new Map(),
+      _writerMutationsInFlight: 0,
+      _cachedWriterKeys: null,
+      _writerKeysVersion: 0,
+    });
+    const entries = [
+      { kind: crdtReaderChangeNode, change: new Uint8Array([1]) },
+      { kind: crdtWriterChangeNode, change: new Uint8Array([2]) },
+    ];
+
+    const applying = document._applyCollectedACL(entries);
+    await Promise.resolve();
+    expect(mergeReaders).toHaveBeenCalledTimes(1);
+    expect(mergeWriters).not.toHaveBeenCalled();
+
+    settle();
+    await expect(applying).resolves.toBeUndefined();
+    expect(mergeReaders).toHaveBeenCalledTimes(2);
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+  });
+
+  test('writer merge keeps its mutation marker while awaiting retry', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeWriters = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ACLOperationInProgressError(
+          'Writer ACL merge',
+          settlement,
+        );
+      })
+      .mockImplementationOnce(() => undefined);
+    const document = fakeDocument({
+      _writers: { merge: mergeWriters },
+      _writerMutationsInFlight: 0,
+      _cachedWriterKeys: null,
+      _writerKeysVersion: 0,
+    });
+
+    const merging = document._mergeWriters(new Uint8Array([1]));
+    await Promise.resolve();
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._writerMutationsInFlight).toBe(1);
+
+    settle();
+    await expect(merging).resolves.toBeUndefined();
+    expect(mergeWriters).toHaveBeenCalledTimes(2);
+    expect(document._writerMutationsInFlight).toBe(0);
   });
 
   test('pruning leaves an over-budget cached tree untouched', () => {
