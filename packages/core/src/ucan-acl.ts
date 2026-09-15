@@ -74,12 +74,13 @@ interface CachedListingIdentity<PublicKey> {
  * merge cannot create such a tombstone, so this wrapper does not provide
  * distributed strong-removal semantics by itself.
  *
- * Backing membership mutations are globally FIFO, including mutations for
- * different identities. The generic ACL contract exposes one opaque mutable
- * state and does not promise key-isolated commits, so overlapping backing
- * calls could derive changes from the same document-wide baseline. Identity
- * codecs start eagerly, but invocation-order admission and backing execution
- * are global, so a slow earlier codec or backing call delays later mutations.
+ * Backing membership mutations are FIFO across this backing ACL instance,
+ * including mutations for different identities. The generic ACL contract
+ * exposes one opaque mutable state and does not promise key-isolated commits,
+ * so overlapping backing calls could derive changes from the same
+ * document-wide baseline. Identity codecs start eagerly, but invocation-order
+ * admission and backing execution are global to the instance, so a slow
+ * earlier codec or backing call delays later mutations.
  * A backing mutation is hidden from reads while unresolved. Any rejected
  * opaque mutation poisons the instance because the generic ACL contract does
  * not identify which memberships may already have changed. A failed backing
@@ -317,8 +318,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }) => (() => void) | undefined,
   ): Promise<T> {
     this._assertHealthy(operationName);
-    const snapshot = this._snapshotPublicKey(publicKey, operationName);
-    void snapshot.catch(() => undefined);
     const previousAdmission = this._membershipAdmissionTail;
     let releaseAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
@@ -326,6 +325,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     });
     this._membershipAdmissionTail = admission;
     this._pendingMembershipMutations++;
+    // Reserve admission before invoking a caller-supplied codec. A serializer
+    // can execute synchronously before returning its promise and must not be
+    // able to reenter merge ahead of the operation it is serializing.
+    const snapshot = this._snapshotPublicKey(publicKey, operationName);
+    void snapshot.catch(() => undefined);
 
     const mutation = (async () => {
       await previousAdmission;
@@ -750,6 +754,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
  * `PublicKey` is mutable; UCAN metadata transitions fail closed without it.
  */
 export class UCANACLProvider<ChangesType, PublicKey> implements ACLProvider<ChangesType, PublicKey> {
+  private readonly _initializedBackings = new WeakSet<object>();
+
   constructor(
     private readonly _backingAclProvider: ACLProvider<ChangesType, PublicKey>,
     private readonly _serializePublicKey: (key: PublicKey) => Promise<string>,
@@ -760,6 +766,12 @@ export class UCANACLProvider<ChangesType, PublicKey> implements ACLProvider<Chan
 
   initialize(): UCANACL<ChangesType, PublicKey> {
     const backingAcl = this._backingAclProvider.initialize();
+    if (this._initializedBackings.has(backingAcl)) {
+      throw new Error(
+        'Backing ACL provider returned a shared instance; initialize() must return isolated ACL state',
+      );
+    }
+    this._initializedBackings.add(backingAcl);
     return new UCANACL(
       backingAcl,
       this._serializePublicKey,
