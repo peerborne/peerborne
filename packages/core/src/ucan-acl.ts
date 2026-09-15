@@ -47,8 +47,11 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
  * Capability metadata and local revocation tombstones are process-local; only
  * membership in the backing ACL is replicated. Capability checks therefore
  * require current backing membership first, so a remote removal takes effect
- * locally even while a stale metadata entry remains cached. A later remote
- * re-add can reactivate that cached metadata, so this wrapper does not provide
+ * locally even while a stale metadata entry remains cached. Because generic
+ * backing changes do not identify affected users, a remote merge never clears
+ * a local tombstone: a remotely re-added identity stays denied until an
+ * explicit local `add` or `grant`. A removal observed only through a remote
+ * merge cannot create such a tombstone, so this wrapper does not provide
  * distributed strong-removal semantics by itself.
  *
  * The identity serializer must be canonical and collision-free for the
@@ -63,10 +66,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _revokedKeys: Set<string> = new Set(); // set of revoked public key base64 strings
   private _metadataRevisions: Map<string, object> = new Map();
   private _pendingGrants: Set<string> = new Set();
-  private _membershipMutationTails: Map<string, Promise<void>> = new Map();
-  private _activeMembershipMutations: Set<string> = new Set();
+  private _membershipMutationTail: Promise<void> = Promise.resolve();
   private _membershipAdmissionTail: Promise<void> = Promise.resolve();
-  private _pendingMembershipAdmissions = 0;
+  private _pendingMembershipMutations = 0;
 
   // Private backing ACL so membership checks cannot bypass the wrapper's
   // capability and local-revocation gates.
@@ -116,27 +118,23 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return { publicKey: stablePublicKey, keyBase64 };
   }
 
-  /** Keep one identity's backing membership and metadata transitions ordered. */
+  /** Keep all backing membership and metadata transitions ordered. */
   private async _runMembershipMutation<T>(
-    keyBase64: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const previous =
-      this._membershipMutationTails.get(keyBase64) ?? Promise.resolve();
+    const previous = this._membershipMutationTail;
     let release!: () => void;
     const turn = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this._membershipMutationTails.set(keyBase64, turn);
+    this._membershipMutationTail = turn;
     await previous;
-    this._activeMembershipMutations.add(keyBase64);
     try {
       return await operation();
     } finally {
-      this._activeMembershipMutations.delete(keyBase64);
       release();
-      if (this._membershipMutationTails.get(keyBase64) === turn) {
-        this._membershipMutationTails.delete(keyBase64);
+      if (this._membershipMutationTail === turn) {
+        this._membershipMutationTail = Promise.resolve();
       }
     }
   }
@@ -162,9 +160,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       releaseAdmission = resolve;
     });
     this._membershipAdmissionTail = admission;
-    this._pendingMembershipAdmissions++;
+    this._pendingMembershipMutations++;
 
-    return (async () => {
+    const mutation = (async () => {
       await previousAdmission;
       let queued: Promise<T> | undefined;
       let releaseReservation: (() => void) | undefined;
@@ -172,18 +170,19 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         const stableSnapshot = await snapshot;
         releaseReservation = reserve?.(stableSnapshot);
         queued = this._runMembershipMutation(
-          stableSnapshot.keyBase64,
           () => operation(stableSnapshot),
         );
         if (releaseReservation) {
           queued = queued.finally(releaseReservation);
         }
       } finally {
-        this._pendingMembershipAdmissions--;
         releaseAdmission();
       }
       return queued!;
     })();
+    return mutation.finally(() => {
+      this._pendingMembershipMutations--;
+    });
   }
 
   private _markMetadataMutation(keyBase64: string): void {
@@ -241,15 +240,21 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._backing.current();
   }
 
+  /**
+   * Apply remote membership only while no local mutation is admitted or
+   * executing. Callers must retry the same changes after the local operation
+   * settles when this method rejects.
+   */
   merge(changes: ChangesType): void {
+    if (this._pendingMembershipMutations !== 0) {
+      throw new Error(
+        'Cannot merge ACL changes while a local membership mutation is pending',
+      );
+    }
     this._backing.merge(changes);
   }
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
-    if (!capability) {
-      return (await this._backing.check(publicKey)) === true;
-    }
-
     const snapshot = await this._snapshotPublicKey(publicKey, 'ACL check');
 
     if ((await this._backing.check(snapshot.publicKey)) !== true) {
@@ -265,6 +270,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       return false;
     }
 
+    if (!capability) {
+      return true;
+    }
+
     const entry = this._entries.get(snapshot.keyBase64);
     if (!entry) {
       // Backwards compatibility for members added through the basic ACL API.
@@ -278,11 +287,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async users(capability?: string): Promise<PublicKey[]> {
     const allUsers = await this._backing.users();
 
-    if (!capability) {
-      return allUsers;
-    }
-
-    // Filter users by capability
     const filtered: PublicKey[] = [];
     for (const user of allUsers) {
       if ((await this.check(user, capability)) === true) {
