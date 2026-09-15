@@ -105,10 +105,11 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   but this is only an incidental duplicate check: a previously unseen delayed
   writer-signed update can still be accepted out of order and roll a receiver
   back to an earlier root. The state-bound v2 codec is reserved but not wired
-  into the runtime handler. V1 also rejects updates whose first sender/receiver
-  path intersection is below the root because its single ciphertext per level
-  cannot safely distribute the remaining ancestor keys, so some multi-level
-  group rotations fail closed.
+  into the runtime handler. V1 also rejects local rotations when a blank
+  sibling subtree expands to multiple resolution nodes, and receivers reject
+  updates whose first sender/receiver path intersection is below the root.
+  Its single ciphertext per level cannot safely cover either case, so some
+  multi-level group rotations fail closed.
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
 - **UCAN capabilities are standalone.** The UCAN module can issue and verify capability tokens, but the document change path does not check them.
 - **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
