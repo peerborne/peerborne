@@ -1,7 +1,10 @@
 import { copyUnsharedUint8Array } from './utils.js';
 import type { PreparedCommitClaim } from './prepared-commit.js';
 
-/** Maximum retained epochs supported by the built-in keychain adapters. */
+/**
+ * Maximum retained epochs accepted by the built-in adapters and by core
+ * protocol paths that inspect a prepared keychain projection.
+ */
 export const MAX_KEYCHAIN_EPOCHS = 1000;
 
 const KEYCHAIN_STATE_COMMITMENT_DOMAIN = 'peerborne:keychain-state:v1\0';
@@ -211,9 +214,16 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * mutation. It is called at most once, after every asynchronous preparation
    * step has succeeded.
    *
+   * Core transaction wrappers inspect both this capability and the returned
+   * `claimCommit` capability without invoking accessors. Implement them as
+   * ordinary prototype methods or own data-property functions.
+   *
    * The `epochId` width contract is identical to `addEpochKey()`: it must equal
    * `KeychainProvider.keyIDLength`, exactly 32 bytes in the shipped providers,
    * and a mismatch must be rejected before any state is staged or mutated.
+   * The current BeeKEM wire protocols derive and authenticate fixed 32-byte
+   * epoch IDs, so a custom provider with another key-ID width cannot implement
+   * those transitions.
    *
    * @param epochId The full-width epoch identifier.
    * @param key The encryption key for this epoch.
@@ -223,7 +233,15 @@ export interface Keychain<KeychainChange, DocumentKey> {
     key: DocumentKey,
   ): Promise<PreparedKeychainEpoch<KeychainChange>>;
 
-  /** Stage a remote keychain merge for an atomic Welcome state commit. */
+  /**
+   * Stage a remote keychain merge for an atomic Welcome state commit. Exact
+   * unchanged replay MUST succeed and expose the unchanged staged projection;
+   * the receive path uses that replay to repair a missing BeeKEM tree for an
+   * epoch whose keychain state was already installed. Core transaction
+   * wrappers inspect this capability and the prepared `hydrateKeys`, `getKey`,
+   * and `claimCommit` capabilities without invoking accessors. Implement them
+   * as ordinary prototype methods or own data-property functions.
+   */
   prepareMerge?(
     change: KeychainChange,
   ): PreparedKeychainMerge<KeychainChange, DocumentKey>;
@@ -347,14 +365,29 @@ export type KeychainAppendIntent = {
 export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
   /** Detached staged state, retained for diagnostics/tests. */
   readonly changes: KeychainChange;
-  /** Detached key IDs in the staged provider's canonical history order. */
+  /**
+   * Detached key IDs in the staged provider's canonical history order.
+   * Security-sensitive core consumers require a dense ordinary array of at
+   * most `MAX_KEYCHAIN_EPOCHS` own data elements containing genuine unshared
+   * 32-byte IDs; accessor-backed IDs are not invoked.
+   */
   readonly keyIds: readonly Uint8Array[];
-  /** Detached ID of the staged current/final key, or undefined when empty. */
+  /**
+   * Detached ID of the staged current/final key, or undefined when empty.
+   * Security-sensitive core consumers require this to be a data property and
+   * require a genuine unshared 32-byte value for inbound BeeKEM transitions
+   * and a non-empty projection's value to match its final `keyIds` entry.
+   */
   readonly currentKeyId: Uint8Array | undefined;
   /**
    * Validate, import, and hydrate the detached staged keychain. If hydration
    * is started, it must complete before claiming. Hydration started after a
-   * successful claim must reject.
+   * successful claim must reject. Prepared methods
+   * consumed by core transaction wrappers must resolve through data-property
+   * function descriptors rather than accessors. The resolved list must be a
+   * dense ordinary array of own-data two-element arrays `[keyId, key]`, bounded
+   * by `MAX_KEYCHAIN_EPOCHS`; every advertised current epoch must be present
+   * as a genuine unshared 32-byte ID with a non-`undefined` key.
    */
   hydrateKeys(): Promise<[Uint8Array, DocumentKey][]>;
   /** Look up a key hydrated by `hydrateKeys()` without mutating live state. */
