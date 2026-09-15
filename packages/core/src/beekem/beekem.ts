@@ -24,6 +24,58 @@ function toBuffer(data: Uint8Array): ArrayBuffer {
   );
 }
 
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  let difference = a.byteLength ^ b.byteLength;
+  const length = Math.max(a.byteLength, b.byteLength);
+  for (let index = 0; index < length; index++) {
+    difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+async function assertEcdhKeyPairCoherent(
+  publicKey: CryptoKey,
+  privateKey: CryptoKey,
+  probe: CryptoKeyPair,
+  label: string,
+): Promise<void> {
+  let privateSide: Uint8Array;
+  let publicSide: Uint8Array;
+  try {
+    [privateSide, publicSide] = await Promise.all([
+      crypto.subtle
+        .deriveBits(
+          { name: 'ECDH', public: probe.publicKey },
+          privateKey,
+          256,
+        )
+        .then((bits) => new Uint8Array(bits)),
+      crypto.subtle
+        .deriveBits(
+          { name: 'ECDH', public: publicKey },
+          probe.privateKey,
+          256,
+        )
+        .then((bits) => new Uint8Array(bits)),
+    ]);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Cannot process Welcome: ${label} key-pair coherence check failed${detail}`,
+      { cause: error },
+    );
+  }
+
+  const coherent = constantTimeEqual(privateSide, publicSide);
+  privateSide.fill(0);
+  publicSide.fill(0);
+  if (!coherent) {
+    throw new Error(
+      `Cannot process Welcome: ${label} public and private keys do not match`,
+    );
+  }
+}
+
 /**
  * BeeKEM: Binary ratchet tree for decentralized group key agreement.
  *
@@ -350,15 +402,44 @@ export class BeeKEM {
       throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
     }
 
+    // Reserve this attempt before inspecting caller-controlled input. A Proxy
+    // descriptor trap can invoke processWelcome reentrantly; in that case the
+    // nested, later invocation must retain the higher revision and win.
+    const attemptRevision = ++this._welcomeAttemptRevision;
+
     // This public method can be called without passing through the strict wire
     // decoder. Snapshot and bound the complete legacy tree synchronously
     // before the first WebCrypto await so caller mutation cannot change what
     // is authenticated or installed while processing is in flight.
     const validated = snapshotBeeKEMWelcomeForProcessing(welcome);
-    const attemptRevision = ++this._welcomeAttemptRevision;
     const staged = new BeeKEM();
     staged._myLeafIndex = validated.welcome.leafIndex;
     staged._numLeaves = validated.numLeaves;
+
+    // Cross-derive through one ephemeral key pair to prove that every private
+    // key installed below matches its advertised public key. The caller's
+    // private key can remain non-extractable because validation only uses its
+    // deriveBits capability.
+    let coherenceProbe: CryptoKeyPair;
+    try {
+      coherenceProbe = (await crypto.subtle.generateKey(
+        ECDH_ALGO,
+        false,
+        ['deriveBits'],
+      )) as CryptoKeyPair;
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      throw new Error(
+        `Cannot process Welcome: key-pair coherence probe generation failed${detail}`,
+        { cause: error },
+      );
+    }
+    await assertEcdhKeyPairCoherent(
+      publicKey,
+      privateKey,
+      coherenceProbe,
+      `recipient leaf ${validated.welcome.leafIndex}`,
+    );
 
     // Set up our leaf node
     const myLeaf: LeafNode = {
@@ -386,6 +467,12 @@ export class BeeKEM {
       const nodePrivateKey = await staged._decryptNodeKey(
         pathKey.encryptedPrivateKey,
         currentPrivateKey,
+      );
+      await assertEcdhKeyPairCoherent(
+        nodePublicKey,
+        nodePrivateKey,
+        coherenceProbe,
+        `path node ${pathKey.nodeIndex}`,
       );
 
       const node: InternalNode = {
