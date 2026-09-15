@@ -119,10 +119,37 @@ describe('LRUCache', () => {
     cache.get('a');
 
     cache.prepareSet('c', 3);
+    expect(cache.get('c')).toBeUndefined();
+    expect(cache.has('c')).toBe(false);
+    expect(cache.size).toBe(2);
+    expect(cache.get('missing')).toBeUndefined();
+    expect(cache.has('missing')).toBe(false);
     cache.set('d', 4);
 
     expect(cache.get('a')).toBe(1);
     expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('c')).toBeUndefined();
+    expect(cache.get('d')).toBe(4);
+    expect(cache.size).toBe(2);
+  });
+
+  test('later preparation never flushes an abandoned prepared set', () => {
+    const cache = new LRUCache<string, number>(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.get('a');
+
+    cache.prepareSet('c', 3);
+    const finalizeNext = cache.prepareSet('d', 4);
+
+    expect(cache.get('c')).toBeUndefined();
+    expect(cache.has('c')).toBe(false);
+    expect(cache.size).toBe(2);
+
+    finalizeNext();
+
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('a')).toBe(1);
     expect(cache.get('c')).toBeUndefined();
     expect(cache.get('d')).toBe(4);
     expect(cache.size).toBe(2);
