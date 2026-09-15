@@ -144,6 +144,96 @@ export type AutomergeACLDoc = Doc<{
   users?: { [hash: string]: true };
 }>;
 
+// Bound full-history replay below the shared 10 MiB transport ceiling, leaving
+// room for base64 expansion, encryption, and the surrounding sync envelope.
+export const MAX_AUTOMERGE_ACL_CHANGE_BYTES = 1024 * 1024;
+export const MAX_AUTOMERGE_ACL_HISTORY_BYTES = 4 * 1024 * 1024;
+export const MAX_AUTOMERGE_ACL_CHANGES = 4096;
+export const MAX_AUTOMERGE_ACL_OPERATIONS = 8192;
+export const MAX_AUTOMERGE_ACL_MEMBERS = 4096;
+
+type AutomergeACLChangeRecord = {
+  readonly hash: string;
+  readonly byteLength: number;
+  readonly operationCount: number;
+};
+
+function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
+  if (!Array.isArray(changes)) {
+    throw new TypeError('Automerge ACL changes must be an array');
+  }
+  const changeCount = changes.length;
+  if (!Number.isSafeInteger(changeCount) || changeCount < 0) {
+    throw new TypeError('Invalid Automerge ACL change count');
+  }
+  if (changeCount > MAX_AUTOMERGE_ACL_CHANGES) {
+    throw new RangeError(
+      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+    );
+  }
+
+  const stableChanges: BinaryChange[] = [];
+  let totalChangeBytes = 0;
+  for (let index = 0; index < changeCount; index++) {
+    const stableChange = copyUnsharedUint8Array(
+      changes[index],
+      1,
+      MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+      'Automerge ACL change',
+    );
+    if (
+      stableChange.byteLength >
+      MAX_AUTOMERGE_ACL_HISTORY_BYTES - totalChangeBytes
+    ) {
+      throw new RangeError(
+        `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_HISTORY_BYTES}-byte aggregate limit`,
+      );
+    }
+    totalChangeBytes += stableChange.byteLength;
+    stableChanges.push(stableChange as BinaryChange);
+  }
+  return stableChanges;
+}
+
+function assertAutomergeACLResourceLimits(
+  acl: AutomergeACLDoc,
+  operation: string,
+): void {
+  const history = getAllChanges(acl);
+  if (history.length > MAX_AUTOMERGE_ACL_CHANGES) {
+    throw new RangeError(
+      `Cannot ${operation}: Automerge ACL history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+    );
+  }
+  let historyBytes = 0;
+  for (const binaryChange of history) {
+    if (binaryChange.byteLength > MAX_AUTOMERGE_ACL_CHANGE_BYTES) {
+      throw new RangeError(
+        `Cannot ${operation}: Automerge ACL history contains an oversized change`,
+      );
+    }
+    if (
+      binaryChange.byteLength >
+      MAX_AUTOMERGE_ACL_HISTORY_BYTES - historyBytes
+    ) {
+      throw new RangeError(
+        `Cannot ${operation}: Automerge ACL history exceeds the ${MAX_AUTOMERGE_ACL_HISTORY_BYTES}-byte limit`,
+      );
+    }
+    historyBytes += binaryChange.byteLength;
+  }
+  if (save(acl).byteLength > MAX_AUTOMERGE_ACL_HISTORY_BYTES) {
+    throw new RangeError(
+      `Cannot ${operation}: Automerge ACL retained state exceeds the ${MAX_AUTOMERGE_ACL_HISTORY_BYTES}-byte limit`,
+    );
+  }
+  if (Object.keys(acl.users ?? {}).length > MAX_AUTOMERGE_ACL_MEMBERS) {
+    throw new RangeError(
+      `Cannot ${operation}: Automerge ACL exceeds the ${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+    );
+  }
+}
+
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // Start without a local `users` root. The first add creates the map and its
   // membership in one self-contained Automerge change, while complete ACL
@@ -151,6 +241,12 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // competing root assignment.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
+  private readonly _retainedChanges = new Map<
+    string,
+    AutomergeACLChangeRecord
+  >();
+  private _retainedChangeBytes = 0;
+  private _retainedOperations = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
@@ -209,6 +305,68 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
+  private _prepareChangeAccounting(
+    changes: readonly BinaryChange[],
+  ): AutomergeACLChangeRecord[] {
+    const records: AutomergeACLChangeRecord[] = [];
+    const newHashes = new Set<string>();
+    let retainedBytes = this._retainedChangeBytes;
+    let retainedOperations = this._retainedOperations;
+    for (const binaryChange of changes) {
+      const decoded = decodeChange(binaryChange);
+      if (
+        this._retainedChanges.has(decoded.hash) ||
+        newHashes.has(decoded.hash)
+      ) {
+        continue;
+      }
+      const record: AutomergeACLChangeRecord = {
+        hash: decoded.hash,
+        byteLength: binaryChange.byteLength,
+        operationCount: decoded.ops.length,
+      };
+      if (
+        this._retainedChanges.size + records.length + 1 >
+        MAX_AUTOMERGE_ACL_CHANGES
+      ) {
+        throw new RangeError(
+          `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+        );
+      }
+      if (
+        record.byteLength >
+        MAX_AUTOMERGE_ACL_HISTORY_BYTES - retainedBytes
+      ) {
+        throw new RangeError(
+          `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_HISTORY_BYTES}-byte limit`,
+        );
+      }
+      if (
+        record.operationCount >
+        MAX_AUTOMERGE_ACL_OPERATIONS - retainedOperations
+      ) {
+        throw new RangeError(
+          `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_OPERATIONS}-operation limit`,
+        );
+      }
+      newHashes.add(record.hash);
+      records.push(record);
+      retainedBytes += record.byteLength;
+      retainedOperations += record.operationCount;
+    }
+    return records;
+  }
+
+  private _commitChangeAccounting(
+    records: readonly AutomergeACLChangeRecord[],
+  ): void {
+    for (const record of records) {
+      this._retainedChanges.set(record.hash, record);
+      this._retainedChangeBytes += record.byteLength;
+      this._retainedOperations += record.operationCount;
+    }
+  }
+
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
       this._assertComplete('add an ACL member');
@@ -220,7 +378,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         doc.users[hash] = true;
       });
       const aclChanges = getChanges(this._acl, aclNew);
+      const accounting = this._prepareChangeAccounting(aclChanges);
+      assertAutomergeACLResourceLimits(aclNew, 'add an ACL member');
       this._acl = aclNew;
+      this._commitChangeAccounting(accounting);
       if (aclChanges.length > 0) this._revision++;
       return aclChanges;
     });
@@ -240,6 +401,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('remove an ACL member');
     const baseRevision = this._revision;
     const base = this._acl;
+    assertAutomergeACLResourceLimits(base, 'stage an ACL removal');
     const stagedBase = clone(base);
     const staged = change(stagedBase, (doc) => {
       if (doc.users?.[hash] !== undefined) {
@@ -247,6 +409,8 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       }
     });
     const privateChanges = getChanges(base, staged);
+    const accounting = this._prepareChangeAccounting(privateChanges);
+    assertAutomergeACLResourceLimits(staged, 'stage an ACL removal');
     const changes = privateChanges.map(
       (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
     );
@@ -271,6 +435,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         committed = true;
         if (privateChanges.length === 0) return;
         this._acl = staged;
+        this._commitChangeAccounting(accounting);
         this._revision++;
       },
     };
@@ -288,20 +453,22 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     // accessors and Proxy traps can invoke a prepared commit reentrantly; that
     // earlier transition must be included in this merge rather than overwritten
     // by a result derived from a stale document reference.
-    const stableChanges = change.map(
-      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
-    );
+    const stableChanges = copyAutomergeACLChanges(change);
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
     const baseRevision = this._revision;
     const base = this._acl;
+    assertAutomergeACLResourceLimits(base, 'merge ACL changes');
+    const accounting = this._prepareChangeAccounting(stableChanges);
     const [doc] = applyChanges(clone(base), stableChanges);
     this._assertSingleUsersRoot(doc, 'merge ACL changes');
+    assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
     }
     this._acl = doc;
+    this._commitChangeAccounting(accounting);
     this._revision++;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
