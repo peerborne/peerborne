@@ -2,9 +2,11 @@ import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
 import {
   applyUpdateV2,
+  decodeUpdateV2,
   Doc,
   encodeStateAsUpdateV2,
   encodeStateVector,
+  Map as YMap,
 } from 'yjs';
 import {
   MAX_KEYCHAIN_EPOCHS,
@@ -20,6 +22,7 @@ import {
   YjsKeychain,
   YjsKeychainProvider,
   YjsJSONSerializer,
+  MAX_YJS_ACL_STRUCTURES,
   MAX_YJS_ACL_UPDATE_BYTES,
   serializeKey,
   deserializeKey,
@@ -430,6 +433,106 @@ describe('YjsACL', () => {
     expect(await acl.users()).toHaveLength(1);
   });
 
+  test('merge rejects a tombstoned non-P-384 membership key atomically', async () => {
+    const nonP384Point = new Uint8Array(65);
+    nonP384Point[0] = 0x04;
+    const nonP384Key = Buffer.from(nonP384Point).toString('base64');
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc();
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(nonP384Key, true);
+    source.getMap('users').delete(nonP384Key);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(nonP384Key)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects a tombstoned invalid membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc({ gc: false });
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(serialized, true);
+    source.getMap('padding').set('separate-membership-structs', true);
+    source.getMap('users').set(serialized, false);
+    source.getMap('users').delete(serialized);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(serialized)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects a tombstoned structured membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc({ gc: false });
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(serialized, new YMap());
+    source.getMap('users').delete(serialized);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(serialized)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects erased membership history from a gc-enabled peer atomically', async () => {
+    const serialized = await serializeKey(key1);
+    const source = new Doc();
+    source.getMap('users').set(serialized, true);
+    source.getMap('users').delete(serialized);
+    const acl = new YjsACL();
+    await acl.add(key2);
+    const before = acl.current();
+
+    expect(() => acl.merge(encodeStateAsUpdateV2(source))).toThrow(
+      /erased membership value that cannot be authenticated/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('merge accepts a complete non-GC removal history', async () => {
+    const source = new YjsACL();
+    await source.add(key1);
+    await source.remove(key1);
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(source.current())).not.toThrow();
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.users()).toEqual([]);
+  });
+
   test('merge accepts cross-realm updates and rejects byte lookalikes and shared backing', async () => {
     const source = new YjsACL();
     await source.add(key1);
@@ -476,6 +579,24 @@ describe('YjsACL', () => {
     expect(() =>
       acl.merge(new Uint8Array(MAX_YJS_ACL_UPDATE_BYTES + 1)),
     ).toThrow(/invalid length/);
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge bounds coalesced logical structures atomically', () => {
+    const source = new Doc();
+    source
+      .getArray('padding')
+      .insert(0, new Array(MAX_YJS_ACL_STRUCTURES + 1).fill(true));
+    const update = encodeStateAsUpdateV2(source);
+    const decoded = decodeUpdateV2(update);
+    expect(decoded.structs).toHaveLength(1);
+    expect(decoded.structs[0]?.length).toBe(
+      MAX_YJS_ACL_STRUCTURES + 1,
+    );
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    expect(() => acl.merge(update)).toThrow(/structure limit/);
     expect(acl.current()).toEqual(before);
   });
 
