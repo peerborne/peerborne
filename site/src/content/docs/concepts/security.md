@@ -77,7 +77,7 @@ Each document has an access control list with two roles:
 
 ```ts
 // Grant read access (the second argument is the reader's raw
-// SEC1-uncompressed P-256 ECDH public key bytes, optional)
+// SEC1-uncompressed P-256 ECDH public key bytes, optional for ACL-only access)
 await document.addReader(peerSigningPublicKey, readerKemPublicKeyBytes);
 
 // Promote an existing explicit reader to write access
@@ -90,10 +90,15 @@ Before calling `addReader`, a founder node must set its KEM key pair:
 await document.setKemKeyPair(kemKeyPair);
 ```
 
-- **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold.
-- **Writers** sign ordinary sync messages that carry new changes. A new writer must already have an explicit reader row; call `addReader()` before `addWriter()`. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
+- **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold. Calling `addReader()` without a KEM key grants ACL-only reader membership; call it again with the recipient's KEM key to repair onboarding.
+- **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so onboard it with `addReader(peerSigningPublicKey, readerKemPublicKeyBytes)` before promotion. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
 - Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas.
 - **Ordinary document sync/load signing is configurable.** BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
+
+The reader-row and live-leaf promotion checks above are local API guards. An
+incoming raw ACL delta is not yet checked against replicated identity/KEM
+transition records, so this is not an end-to-end membership invariant across
+replicas.
 
 ### Current-writer authorization only
 
@@ -212,6 +217,20 @@ What exists:
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
 `removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
+
+The bundled Yjs and Automerge providers compose the local reader-ACL removal,
+epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through
+prevalidated commit claims. A publication failure after valid claims leaves
+those live states on the old epoch for an explicit retry. This is not a
+distributed transaction: GossipSub publication may already have reached
+another replica before a local publication failure is observed, so retries and
+later synchronization can still be required. Custom ACL and keychain providers
+that omit the commit-claim capability are rejected before claim invocation. A
+claim method and its callable finalizer are trusted provider boundaries: if an
+invoked claim throws, returns an asynchronous or malformed record, or its
+finalizer violates the synchronous nonthrowing contract, core poisons the
+document instance because it cannot prove that custom provider state remained
+unchanged. Discard that instance before continuing.
 
 ### Limitations of revocation
 

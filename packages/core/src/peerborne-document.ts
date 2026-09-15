@@ -108,7 +108,6 @@ import { ACLProvider } from './acl-provider.js';
 import {
   ACLOperationInProgressError,
   retryACLConflict,
-  type PreparedACLChange,
 } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrReject } from './keychain.js';
@@ -263,6 +262,326 @@ export interface InvitationBootstrapBundle {
   encryptedBootstrap: Uint8Array;
 }
 
+const reflectOwnKeys = Reflect.ownKeys;
+const documentReflectApply = Reflect.apply;
+const documentGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const documentGetPrototypeOf = Object.getPrototypeOf;
+const documentObjectConstructor = Object;
+const documentObjectPrototype = Object.prototype;
+const documentFunctionPrototype = Function.prototype;
+const emptyCommitArguments: never[] = [];
+const documentPromiseConstructor = Promise;
+const documentPromisePrototype = Promise.prototype;
+const documentPromiseThen = Promise.prototype.then;
+const documentPromiseSpeciesDescriptor = documentGetOwnPropertyDescriptor(
+  documentPromiseConstructor,
+  Symbol.species,
+);
+const ignoreDocumentPromiseSettlement = (_value: unknown): undefined =>
+  undefined;
+const ignoredDocumentPromiseSettlementArguments = [
+  ignoreDocumentPromiseSettlement,
+  ignoreDocumentPromiseSettlement,
+];
+const MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH = 32;
+
+interface CapturedDataMethod {
+  readonly receiver: object;
+  readonly method: (...args: unknown[]) => unknown;
+}
+
+interface CapturedCommitFinalizer {
+  readonly receiver: object;
+  readonly finalize: (...args: unknown[]) => unknown;
+}
+
+function preparedDataProperty(
+  value: unknown,
+  property: PropertyKey,
+  label: string,
+): { readonly found: boolean; readonly value?: unknown } {
+  if (
+    (typeof value !== 'object' || value === null) &&
+    typeof value !== 'function'
+  ) {
+    throw new TypeError(`${label} must be provided by an object`);
+  }
+
+  let owner: object | null = value as object;
+  const visited = new Set<object>();
+  let depth = 0;
+  while (owner !== null) {
+    if (
+      visited.has(owner) ||
+      depth++ >= MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH
+    ) {
+      throw new TypeError(`${label} has an invalid prototype chain`);
+    }
+    visited.add(owner);
+    const descriptor = documentReflectApply(
+      documentGetOwnPropertyDescriptor,
+      Object,
+      [owner, property],
+    ) as PropertyDescriptor | undefined;
+    if (descriptor !== undefined) {
+      if (!('value' in descriptor)) {
+        throw new TypeError(`${label} must be a data property`);
+      }
+      return { found: true, value: descriptor.value };
+    }
+    owner = documentReflectApply(documentGetPrototypeOf, Object, [owner]) as
+      | object
+      | null;
+  }
+  return { found: false };
+}
+
+function capturePreparedDataMethod(
+  value: unknown,
+  property: PropertyKey,
+  label: string,
+): CapturedDataMethod {
+  const captured = preparedDataProperty(value, property, label);
+  if (!captured.found || typeof captured.value !== 'function') {
+    throw new TypeError(`${label} must be a function`);
+  }
+  return {
+    receiver: value as object,
+    method: captured.value as (...args: unknown[]) => unknown,
+  };
+}
+
+function canSafelyObservePreparedNativePromise(
+  target: object,
+  label: string,
+): boolean {
+  const constructorProperty = preparedDataProperty(
+    target,
+    'constructor',
+    `${label} constructor`,
+  );
+  if (
+    !constructorProperty.found ||
+    constructorProperty.value === undefined
+  ) {
+    return true;
+  }
+  const constructor = constructorProperty.value;
+  if (
+    (typeof constructor !== 'object' || constructor === null) &&
+    typeof constructor !== 'function'
+  ) {
+    return false;
+  }
+  if (constructor === documentPromiseConstructor) {
+    const currentSpeciesDescriptor = documentReflectApply(
+      documentGetOwnPropertyDescriptor,
+      Object,
+      [documentPromiseConstructor, Symbol.species],
+    ) as PropertyDescriptor | undefined;
+    if (
+      currentSpeciesDescriptor !== undefined &&
+      !('value' in currentSpeciesDescriptor)
+    ) {
+      return (
+        documentPromiseSpeciesDescriptor !== undefined &&
+        !('value' in documentPromiseSpeciesDescriptor) &&
+        currentSpeciesDescriptor.get ===
+          documentPromiseSpeciesDescriptor.get &&
+        currentSpeciesDescriptor.set ===
+          documentPromiseSpeciesDescriptor.set
+      );
+    }
+    const species = currentSpeciesDescriptor?.value;
+    return (
+      currentSpeciesDescriptor !== undefined &&
+      (species === undefined ||
+        species === null ||
+        species === documentPromiseConstructor)
+    );
+  }
+  // An arbitrary constructor can be a Proxy whose descriptor trap reports a
+  // harmless species while its ordinary `get` trap throws or mutates state
+  // when Promise.prototype.then performs species lookup. Only trust the
+  // captured intrinsic Object constructor and its pristine prototype chain.
+  if (constructor !== documentObjectConstructor) return false;
+  if (
+    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
+      documentObjectConstructor,
+    ]) !== documentFunctionPrototype ||
+    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
+      documentFunctionPrototype,
+    ]) !== documentObjectPrototype ||
+    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
+      documentObjectPrototype,
+    ]) !== null
+  ) {
+    return false;
+  }
+  for (const owner of [
+    documentObjectConstructor,
+    documentFunctionPrototype,
+    documentObjectPrototype,
+  ]) {
+    const descriptor = documentReflectApply(
+      documentGetOwnPropertyDescriptor,
+      documentObjectConstructor,
+      [owner, Symbol.species],
+    ) as PropertyDescriptor | undefined;
+    if (descriptor === undefined) continue;
+    if (!('value' in descriptor)) return false;
+    return (
+      descriptor.value === undefined ||
+      descriptor.value === null ||
+      descriptor.value === documentPromiseConstructor
+    );
+  }
+  return true;
+}
+
+function observePreparedNativePromiseSettlement(value: object): boolean {
+  try {
+    void documentReflectApply(
+      documentPromiseThen,
+      value,
+      ignoredDocumentPromiseSettlementArguments,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function observeInvalidPreparedNativePromiseReturn(
+  value: object,
+  label: string,
+): void {
+  try {
+    if (canSafelyObservePreparedNativePromise(value, label)) {
+      observePreparedNativePromiseSettlement(value);
+    }
+  } catch {
+    // The caller rejects the result regardless; do not invoke unsafe species
+    // hooks merely to suppress a malicious provider's rejection.
+  }
+}
+
+function invokePreparedCommitClaim(
+  claimCommit: CapturedDataMethod,
+  label: string,
+): CapturedCommitFinalizer {
+  const claim = documentReflectApply(
+    claimCommit.method,
+    claimCommit.receiver,
+    emptyCommitArguments,
+  );
+  if (
+    (typeof claim !== 'object' || claim === null) &&
+    typeof claim !== 'function'
+  ) {
+    throw new TypeError(`${label} returned an invalid claim record`);
+  }
+  let claimPrototype: object | null;
+  try {
+    claimPrototype = documentReflectApply(
+      documentGetPrototypeOf,
+      documentObjectConstructor,
+      [claim],
+    ) as object | null;
+  } catch {
+    throw new TypeError(`${label} returned an invalid claim record`);
+  }
+  if (
+    claimPrototype !== null &&
+    claimPrototype !== documentObjectPrototype &&
+    claimPrototype !== documentPromisePrototype
+  ) {
+    throw new TypeError(
+      `${label} returned an invalid asynchronous result: expected a plain claim record`,
+    );
+  }
+  let thenProperty: { readonly found: boolean; readonly value?: unknown };
+  try {
+    thenProperty = preparedDataProperty(
+      claim,
+      'then',
+      `${label} result then`,
+    );
+  } catch {
+    observeInvalidPreparedNativePromiseReturn(
+      claim,
+      `${label} result`,
+    );
+    throw new TypeError(`${label} returned an invalid asynchronous result`);
+  }
+  let observationIsSafe = false;
+  try {
+    observationIsSafe = canSafelyObservePreparedNativePromise(
+      claim as object,
+      `${label} result`,
+    );
+  } catch {
+    observeInvalidPreparedNativePromiseReturn(
+      claim,
+      `${label} result`,
+    );
+    throw new TypeError(`${label} returned an invalid asynchronous result`);
+  }
+  if (!thenProperty.found && !observationIsSafe) {
+    observeInvalidPreparedNativePromiseReturn(claim, `${label} result`);
+    throw new TypeError(`${label} returned an invalid asynchronous result`);
+  }
+  const isNativePromise = observationIsSafe
+    ? observePreparedNativePromiseSettlement(claim)
+    : false;
+  if (thenProperty.found || isNativePromise) {
+    throw new TypeError(`${label} must complete synchronously`);
+  }
+  if (claimPrototype === documentPromisePrototype) {
+    throw new TypeError(
+      `${label} returned an invalid asynchronous result: expected a plain claim record`,
+    );
+  }
+  const capturedFinalize = preparedDataProperty(
+    claim,
+    'finalize',
+    `${label} finalizer`,
+  );
+  if (
+    !capturedFinalize.found ||
+    typeof capturedFinalize.value !== 'function'
+  ) {
+    throw new TypeError(`${label} returned an invalid finalizer`);
+  }
+  return {
+    receiver: claim,
+    finalize: capturedFinalize.value as (...args: unknown[]) => unknown,
+  };
+}
+
+function finalizePreparedCommitClaim(
+  claim: CapturedCommitFinalizer,
+  label: string,
+): void {
+  const result = documentReflectApply(
+    claim.finalize,
+    claim.receiver,
+    emptyCommitArguments,
+  );
+  if (result !== undefined) {
+    if (
+      (typeof result === 'object' && result !== null) ||
+      typeof result === 'function'
+    ) {
+      observeInvalidPreparedNativePromiseReturn(
+        result,
+        `${label} finalizer result`,
+      );
+    }
+    throw new TypeError(`${label} finalizer must return undefined`);
+  }
+}
+
 
 interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
   readonly keychainChanges: ChangesType;
@@ -276,6 +595,48 @@ interface PostPublishCommit {
   readonly operation: string;
   /** Synchronous commit for state whose change was just published. */
   readonly commit: () => void;
+}
+
+interface CapturedPreparedReaderChange<ChangesType> {
+  readonly changes: ChangesType;
+  readonly claimCommit: CapturedDataMethod;
+}
+
+interface CapturedPreparedWriterChange<ChangesType> {
+  readonly changes: ChangesType;
+  readonly commit: CapturedDataMethod;
+}
+
+interface PreparedBeeKEMReaderRegistration {
+  readonly welcome: BeeKEMWelcome | null;
+  readonly install?: () => void;
+}
+
+function copyBeeKEMWelcome(welcome: BeeKEMWelcome): BeeKEMWelcome {
+  const copy: BeeKEMWelcome = {
+    leafIndex: welcome.leafIndex,
+    pathKeys: welcome.pathKeys.map((node) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey: new Uint8Array(node.publicKey),
+      encryptedPrivateKey: new Uint8Array(node.encryptedPrivateKey),
+    })),
+    treeNodePublicKeys: welcome.treeNodePublicKeys.map((node) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey:
+        node.publicKey === null ? null : new Uint8Array(node.publicKey),
+    })),
+    treeHash: new Uint8Array(welcome.treeHash),
+  };
+  if (Object.prototype.hasOwnProperty.call(welcome, 'generation')) {
+    copy.generation = welcome.generation;
+  }
+  if (Object.prototype.hasOwnProperty.call(welcome, 'numLeaves')) {
+    copy.numLeaves = welcome.numLeaves;
+  }
+  if (Object.prototype.hasOwnProperty.call(welcome, 'version')) {
+    copy.version = welcome.version;
+  }
+  return copy;
 }
 
 /**
@@ -547,6 +908,10 @@ export class PeerborneDocument<
   // `_mutationQueue`; `_mergeWriters` also rejects any accidental out-of-queue
   // interleaving so a published delta cannot fail its local stale-base commit.
   private _writerPublicationsInFlight = 0;
+  // Reader removals use the same publish-before-commit boundary. Supported
+  // inbound ACL merges own `_mutationQueue`; reject an accidental direct merge
+  // while a detached reader delta is awaiting publication.
+  private _readerPublicationsInFlight = 0;
 
   // List of document encryption keys. Lower index numbers mean more recent.
   // Since the document is created from change history, all keys are needed.
@@ -764,11 +1129,9 @@ export class PeerborneDocument<
   //
   // The tree is initialized in one of two ways:
   //
-  //  1. **Founder**: a writer who creates a new document calls
-  //     `_initializeBeeKEMAsFounder()` (driven by `addReader` the first
-  //     time it runs on a fresh document, or eagerly by a future
-  //     "create document" API). This seeds leaf 0 with the local KEM
-  //     key pair from `setKemKeyPair`.
+  //  1. **Founder**: the first `addReader` call prepares a detached tree
+  //     seeded at leaf 0 with the local key pair from `setKemKeyPair`, then
+  //     installs it at the staged reader-ACL publication boundary.
   //
   //  2. **Joiner**: a peer that receives an `eciesSealed` BeeKEM
   //     Welcome from an inviting writer calls `processWelcome` on a
@@ -782,7 +1145,6 @@ export class PeerborneDocument<
   // PathUpdate anyway. Surface that as a clean drop-with-warning; recovery
   // requires a valid Welcome or another explicit key-recovery path.
   private _beekem: BeeKEM | null = null;
-  private _beekemInitPromise: Promise<BeeKEM> | null = null;
   // Local membership changes, ACL-bearing remote sync, and invitation
   // bootstrap construction/application share one queue. This keeps the ACL
   // topology, BeeKEM tree, keychain, and signed bootstrap attestation coherent.
@@ -790,7 +1152,7 @@ export class PeerborneDocument<
   // its bootstrap. Internal helpers called from an admitted operation remain
   // unlocked to avoid reentrant waits on the same queue.
   private _mutationQueue = new InvitationMembershipQueue();
-  // `true` iff `_beekem` was set via `_initializeBeeKEMAsFounder` or
+  // `true` iff `_beekem` was installed by founder onboarding or a verified
   // `processWelcome`. Distinguishes a legitimate local BeeKEM state
   // from "we have never received a Welcome and we are not the
   // founder", which is the gate `handleBeeKEMPathUpdateRequestData`
@@ -820,7 +1182,7 @@ export class PeerborneDocument<
   private _readerKemPublicKeys = new Map<string, Uint8Array>();
 
   // BeeKEM leaf node index -> the `BeeKEMWelcome` produced when that
-  // leaf was first registered via `_registerBeeKEMReader`. Used by
+  // leaf was first registered via `_prepareBeeKEMReaderRegistration`. Used by
   // `addReader` to re-emit a Welcome when a previous invitation was
   // dropped: re-invoking `addReader(reader, kemPub)` for an existing
   // reader is now a re-send, not a silent no-op.
@@ -832,7 +1194,7 @@ export class PeerborneDocument<
   //
   // In-memory only; on writer restart this map is empty and a
   // re-emit attempt will see the cache miss and the no-op early-out
-  // in `_registerBeeKEMReader`. Recipients in that state need a new
+  // in `_prepareBeeKEMReaderRegistration`. Recipients in that state need a new
   // recipient-bound Welcome or another explicit recovery path; a normal load
   // response cannot bootstrap a peer that lacks the current document key.
   private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcome>();
@@ -2345,6 +2707,13 @@ export class PeerborneDocument<
     signal?: AbortSignal,
   ): Promise<void> {
     await retryLoadACLConflict(async () => {
+      if (this._readerPublicationsInFlight > 0) {
+        throw new Error(
+          `Cannot merge a remote reader ACL change for ${this.documentPath} ` +
+            'while a staged local reader publication is in flight. Retry the ' +
+            'sync through the document membership queue.',
+        );
+      }
       assertStillActive?.();
       try {
         // Once an opaque merge starts, abort cannot prove that it stopped mutating.
@@ -2567,36 +2936,215 @@ export class PeerborneDocument<
   /** Stage a writer addition without changing live authorization. */
   private async _prepareWriterAdd(
     publicKey: PublicKey,
-  ): Promise<PreparedACLChange<ChangesType>> {
-    const prepareAdd = this._writers.prepareAdd;
-    if (typeof prepareAdd !== 'function') {
+  ): Promise<CapturedPreparedWriterChange<ChangesType>> {
+    const prepareAdd = preparedDataProperty(
+      this._writers,
+      'prepareAdd',
+      'Writer ACL prepareAdd',
+    );
+    if (!prepareAdd.found || typeof prepareAdd.value !== 'function') {
       throw new Error(
         'Writer ACL does not support the staged additions required for safe publication',
       );
     }
-    return retryACLConflict(() =>
-      prepareAdd.call(this._writers, publicKey),
+    const prepared = await retryACLConflict(() =>
+      documentReflectApply(
+        prepareAdd.value as (...args: unknown[]) => unknown,
+        this._writers,
+        [publicKey],
+      ),
     );
+    return this._capturePreparedWriterChange(prepared, 'addition');
   }
 
   /** Stage a writer removal without changing live authorization. */
   private async _prepareWriterRemove(
     publicKey: PublicKey,
-  ): Promise<PreparedACLChange<ChangesType>> {
-    const prepareRemove = this._writers.prepareRemove;
-    if (typeof prepareRemove !== 'function') {
+  ): Promise<CapturedPreparedWriterChange<ChangesType>> {
+    const prepareRemove = preparedDataProperty(
+      this._writers,
+      'prepareRemove',
+      'Writer ACL prepareRemove',
+    );
+    if (!prepareRemove.found || typeof prepareRemove.value !== 'function') {
       throw new Error(
         'Writer ACL does not support the staged removals required for safe publication',
       );
     }
-    return retryACLConflict(() =>
-      prepareRemove.call(this._writers, publicKey),
+    const prepared = await retryACLConflict(() =>
+      documentReflectApply(
+        prepareRemove.value as (...args: unknown[]) => unknown,
+        this._writers,
+        [publicKey],
+      ),
     );
+    return this._capturePreparedWriterChange(prepared, 'removal');
+  }
+
+  /** Capture a staged writer delta and its synchronous commit by identity. */
+  private _capturePreparedWriterChange(
+    prepared: unknown,
+    changeName: 'addition' | 'removal',
+  ): CapturedPreparedWriterChange<ChangesType> {
+    const changes = preparedDataProperty(
+      prepared,
+      'changes',
+      `Prepared writer ACL ${changeName} changes`,
+    );
+    if (!changes.found) {
+      throw new TypeError(
+        `Prepared writer ACL ${changeName} must provide changes`,
+      );
+    }
+    const commit = capturePreparedDataMethod(
+      prepared,
+      'commit',
+      `Prepared writer ACL ${changeName} commit`,
+    );
+    return {
+      changes: changes.value as ChangesType,
+      commit,
+    };
+  }
+
+  /** Stage and capture a reader addition without changing live authorization. */
+  private async _prepareReaderAdd(
+    publicKey: PublicKey,
+  ): Promise<CapturedPreparedReaderChange<ChangesType>> {
+    const prepareAdd = capturePreparedDataMethod(
+      this._readers,
+      'prepareAdd',
+      'Reader ACL prepareAdd',
+    );
+    const prepared = await retryACLConflict(() =>
+      documentReflectApply(prepareAdd.method, prepareAdd.receiver, [publicKey]),
+    );
+    const changes = preparedDataProperty(
+      prepared,
+      'changes',
+      'Prepared reader ACL changes',
+    );
+    if (!changes.found) {
+      throw new TypeError('Prepared reader ACL change must provide changes');
+    }
+    const claimCommit = preparedDataProperty(
+      prepared,
+      'claimCommit',
+      'Prepared reader ACL claimCommit',
+    );
+    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
+      throw new Error(
+        `Cannot add reader to "${this.documentPath}": the reader ACL ` +
+          'must support commit claims for atomic onboarding.',
+      );
+    }
+    return {
+      changes: changes.value as ChangesType,
+      claimCommit: {
+        receiver: prepared as object,
+        method: claimCommit.value as (...args: unknown[]) => unknown,
+      },
+    };
+  }
+
+  /** Stage and capture a reader removal without changing live authorization. */
+  private async _prepareReaderRemove(
+    publicKey: PublicKey,
+  ): Promise<CapturedPreparedReaderChange<ChangesType>> {
+    const prepareRemove = capturePreparedDataMethod(
+      this._readers,
+      'prepareRemove',
+      'Reader ACL prepareRemove',
+    );
+    const prepared = await retryACLConflict(() =>
+      documentReflectApply(prepareRemove.method, prepareRemove.receiver, [
+        publicKey,
+      ]),
+    );
+    const changes = preparedDataProperty(
+      prepared,
+      'changes',
+      'Prepared reader ACL changes',
+    );
+    if (!changes.found) {
+      throw new TypeError('Prepared reader ACL change must provide changes');
+    }
+    const claimCommit = preparedDataProperty(
+      prepared,
+      'claimCommit',
+      'Prepared reader ACL claimCommit',
+    );
+    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the ACL and ` +
+          'keychain must support composed commit claims.',
+      );
+    }
+    return {
+      changes: changes.value as ChangesType,
+      claimCommit: {
+        receiver: prepared as object,
+        method: claimCommit.value as (...args: unknown[]) => unknown,
+      },
+    };
+  }
+
+  /** Stage and capture the epoch-key side of a reader revocation. */
+  private async _prepareReaderRevocationEpoch(
+    epochId: Uint8Array,
+    documentKey: DocumentKey,
+  ): Promise<CapturedDataMethod> {
+    const prepareProperty = preparedDataProperty(
+      this._keychain,
+      'prepareEpochKey',
+      'Reader revocation keychain prepareEpochKey',
+    );
+    if (!prepareProperty.found || typeof prepareProperty.value !== 'function') {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the keychain ` +
+          'does not support transactional epoch-key staging.',
+      );
+    }
+    const prepared = await documentReflectApply(
+      prepareProperty.value,
+      this._keychain,
+      [epochId, documentKey],
+    );
+    const claimCommit = preparedDataProperty(
+      prepared,
+      'claimCommit',
+      'Prepared reader-revocation epoch claimCommit',
+    );
+    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the ACL and ` +
+          'keychain must support composed commit claims.',
+      );
+    }
+    return {
+      receiver: prepared as object,
+      method: claimCommit.value as (...args: unknown[]) => unknown,
+    };
+  }
+
+  /** Invoke a captured provider claim and fail closed if its state is uncertain. */
+  private _claimPreparedCommit(
+    claimCommit: CapturedDataMethod,
+    label: string,
+  ): CapturedCommitFinalizer {
+    try {
+      return invokePreparedCommitClaim(claimCommit, label);
+    } catch (error) {
+      // Once a custom claim method is invoked it may have mutated provider
+      // state before throwing or returning an invalid asynchronous shape.
+      this._markDocumentStatePoisoned();
+      throw error;
+    }
   }
 
   /** Publish a staged writer change, then commit it before local handlers run. */
   private async _publishPreparedWriterChange(
-    prepared: PreparedACLChange<ChangesType>,
+    prepared: CapturedPreparedWriterChange<ChangesType>,
     operation: string,
   ): Promise<void> {
     this._writerPublicationsInFlight++;
@@ -2605,7 +3153,13 @@ export class PeerborneDocument<
         this._makeChange(prepared.changes, crdtWriterChangeNode, {
           operation,
           commit: () => {
-            prepared.commit();
+            finalizePreparedCommitClaim(
+              {
+                receiver: prepared.commit.receiver,
+                finalize: prepared.commit.method,
+              },
+              'Writer ACL staged commit',
+            );
             // Commit is synchronous, so this version bump is the first
             // observable step after live writer membership changes. Any
             // users() read started against the pre-commit ACL must retry
@@ -2616,6 +3170,23 @@ export class PeerborneDocument<
       );
     } finally {
       this._writerPublicationsInFlight--;
+    }
+  }
+
+  /** Publish a staged reader change, then run its composed local commit. */
+  private async _publishPreparedReaderChange(
+    prepared: CapturedPreparedReaderChange<ChangesType>,
+    operation: string,
+    commit: () => void,
+  ): Promise<void> {
+    this._readerPublicationsInFlight++;
+    try {
+      await this._makeChange(prepared.changes, crdtReaderChangeNode, {
+        operation,
+        commit,
+      });
+    } finally {
+      this._readerPublicationsInFlight--;
     }
   }
 
@@ -6591,7 +7162,14 @@ export class PeerborneDocument<
         (typeof writer !== 'object' || writer === null) &&
         typeof writer !== 'function';
       return this._runStateMutation(() =>
-        this._addWriterUnlocked(writer, undefined, stableIdentity),
+        this._addWriterUnlocked(
+          writer,
+          undefined,
+          stableIdentity,
+          typeof writer === 'string' && writer.length > 0
+            ? writer
+            : undefined,
+        ),
       );
     }
     const snapshot = this._startMembershipPublicKeySnapshot(
@@ -6599,8 +7177,16 @@ export class PeerborneDocument<
       'Writer addition',
     );
     return this._runStateMutation(async () => {
-      const { publicKey: stableWriter } = await snapshot;
-      return this._addWriterUnlocked(stableWriter, undefined, true);
+      const {
+        publicKey: stableWriter,
+        serialized: serializedWriter,
+      } = await snapshot;
+      return this._addWriterUnlocked(
+        stableWriter,
+        undefined,
+        true,
+        serializedWriter,
+      );
     });
   }
 
@@ -6608,21 +7194,39 @@ export class PeerborneDocument<
     stableWriter: PublicKey,
     beginMutation?: () => void,
     stableIdentity = false,
+    serializedWriter?: string,
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
-    // Check that the writer is not already a writer.
-    if (
-      (await retryACLConflict(() =>
-        this._writers.check(stableWriter),
-      )) === true
-    ) {
-      return;
-    }
     if (!stableIdentity) {
       requireSerializePublicKey(this._authProvider, 'Writer addition');
       throw new Error(
         'Writer addition requires a public-key snapshot before it is queued',
+      );
+    }
+
+    if (serializedWriter === undefined) {
+      const serializePublicKey = this._authProvider.serializePublicKey;
+      if (typeof serializePublicKey === 'function') {
+        serializedWriter = await serializePublicKey.call(
+          this._authProvider,
+          stableWriter,
+        );
+      } else if (
+        typeof stableWriter === 'string' &&
+        stableWriter.length > 0
+      ) {
+        serializedWriter = stableWriter;
+      } else {
+        requireSerializePublicKey(this._authProvider, 'Writer promotion');
+      }
+    }
+    if (
+      typeof serializedWriter !== 'string' ||
+      serializedWriter.length === 0
+    ) {
+      throw new TypeError(
+        'Writer promotion requires a non-empty canonical public-key encoding',
       );
     }
     if (
@@ -6631,9 +7235,63 @@ export class PeerborneDocument<
       )) !== true
     ) {
       throw new Error(
-        `Cannot add writer to "${this.documentPath}": the target must ` +
-          'already be explicitly authorized as a reader. Call addReader first.',
+        `Cannot add writer to "${this.documentPath}": the target must first ` +
+          'be added to the explicit readers ACL and have a locally registered ' +
+          'BeeKEM leaf.',
       );
+    }
+
+    if (!this._beekemInitialized || !this._beekem) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the local BeeKEM tree ` +
+          'has not been initialized, so the target\'s live reader membership ' +
+          'cannot be verified.',
+      );
+    }
+
+    const recordedKemPublicKey =
+      this._readerKemPublicKeys.get(serializedWriter);
+    if (
+      !recordedKemPublicKey ||
+      recordedKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
+    ) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the target has no valid ` +
+          'identity-bound reader KEM public key recorded locally. Register ' +
+          'the reader\'s BeeKEM leaf before promotion.',
+      );
+    }
+
+    const liveLeafIndex = await this._beekem.findLeafByPublicKey(
+      new Uint8Array(recordedKemPublicKey),
+    );
+    if (liveLeafIndex === undefined) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the target\'s recorded ` +
+          'KEM public key does not resolve to exactly one live, non-blanked ' +
+          'BeeKEM leaf.',
+      );
+    }
+
+    const cachedLeafIndex = this._readerLeafIndices.get(serializedWriter);
+    if (
+      cachedLeafIndex !== undefined &&
+      cachedLeafIndex !== liveLeafIndex
+    ) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the target\'s cached ` +
+          'BeeKEM leaf does not match the live tree. Refusing promotion from ' +
+          'divergent membership state.',
+      );
+    }
+    // Run every onboarding check above even for a legacy ACL that already
+    // lists the target as a writer. A no-op must not bless malformed state.
+    if (
+      (await retryACLConflict(() =>
+        this._writers.check(stableWriter),
+      )) === true
+    ) {
+      return;
     }
 
     // Construct a detached writer ACL change. The invitation admission guard
@@ -6641,6 +7299,9 @@ export class PeerborneDocument<
     const prepared = await this._prepareWriterAdd(stableWriter);
     beginMutation?.();
     await this._publishPreparedWriterChange(prepared, 'addWriter');
+    if (cachedLeafIndex === undefined) {
+      this._readerLeafIndices.set(serializedWriter, liveLeafIndex);
+    }
   }
 
   /**
@@ -6668,19 +7329,36 @@ export class PeerborneDocument<
         this._removeWriterUnlocked(writer, stableIdentity),
       );
     }
-    const snapshot = this._startMembershipPublicKeySnapshot(
+    const localWriterSnapshot = this._startMembershipPublicKeySnapshot(
+      this._userPublicKey,
+      'Writer removal local identity',
+    );
+    const writerSnapshot = this._startMembershipPublicKeySnapshot(
       writer,
       'Writer removal',
     );
     return this._runStateMutation(async () => {
-      const { publicKey: stableWriter } = await snapshot;
-      return this._removeWriterUnlocked(stableWriter, true);
+      const {
+        publicKey: stableWriter,
+        serialized: serializedWriter,
+      } = await writerSnapshot;
+      return this._removeWriterUnlocked(
+        stableWriter,
+        true,
+        serializedWriter,
+        localWriterSnapshot,
+      );
     });
   }
 
   private async _removeWriterUnlocked(
     stableWriter: PublicKey,
     stableIdentity = false,
+    serializedWriter?: string,
+    localWriterSnapshot?: Promise<{
+      publicKey: PublicKey;
+      serialized: string;
+    }>,
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
@@ -6698,6 +7376,26 @@ export class PeerborneDocument<
       requireSerializePublicKey(this._authProvider, 'Writer removal');
       throw new Error(
         'Writer removal requires a public-key snapshot before it is queued',
+      );
+    }
+    let isLocalWriter = false;
+    if (serializedWriter !== undefined) {
+      if (localWriterSnapshot === undefined) {
+        throw new Error(
+          'Writer removal requires a local identity snapshot before it is ' +
+            'queued',
+        );
+      }
+      isLocalWriter =
+        serializedWriter ===
+        (await localWriterSnapshot).serialized;
+    } else {
+      isLocalWriter = Object.is(stableWriter, this._userPublicKey);
+    }
+    if (isLocalWriter) {
+      throw new Error(
+        `Cannot remove the local writer from "${this.documentPath}". ` +
+          'Another authorized writer must perform that role transition.',
       );
     }
     if (
@@ -6793,6 +7491,11 @@ export class PeerborneDocument<
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
+   * When a recipient KEM key is supplied, the BeeKEM registration is prepared
+   * on a detached tree and the reader ACL is claimed before publication. Live
+   * authorization is granted only after publication resolves, in the same
+   * synchronous turn that installs the prepared tree and identity caches.
+   *
    * The initial release supports the first reader plus exact retries for that
    * identity. After `removeReader` advances the BeeKEM tree, adding a
    * replacement is rejected before ACL or BeeKEM state changes.
@@ -6821,18 +7524,43 @@ export class PeerborneDocument<
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
   ): Promise<BeeKEMWelcome | null> {
-    return this._runStateMutation(() =>
-      this._addReaderUnlocked(reader, readerKemPublicKey),
+    this._assertNoIncompleteBootstrapLoad();
+    const stableReaderKemPublicKey =
+      readerKemPublicKey === undefined
+        ? undefined
+        : new Uint8Array(readerKemPublicKey);
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      reader,
+      'BeeKEM reader onboarding',
     );
+    return this._runStateMutation(async () => {
+      const {
+        publicKey: stableReader,
+        serialized: serializedReader,
+      } = await snapshot;
+      return this._addReaderUnlocked(
+        stableReader,
+        serializedReader,
+        stableReaderKemPublicKey,
+      );
+    });
   }
 
   private async _addReaderUnlocked(
-    reader: PublicKey,
+    stableReader: PublicKey,
+    serializedReader: string,
     readerKemPublicKey?: Uint8Array,
     broadcastWelcome = true,
     beginMutation?: () => void,
   ): Promise<BeeKEMWelcome | null> {
     await this._ensureCurrentUserCanWrite();
+
+    if (this._beekemInitialized !== (this._beekem !== null)) {
+      throw new Error(
+        `[${this.documentPath}] addReader: BeeKEM initialization state is ` +
+          'internally inconsistent; discard this document instance.',
+      );
+    }
 
     // Validate prerequisites BEFORE mutating any ACL state. The founder
     // (writer who created the document) MUST have called `setKemKeyPair`
@@ -6876,22 +7604,17 @@ export class PeerborneDocument<
     // Founder-vs-joined-writer gate. The BeeKEM tree is rooted in
     // exactly one of two ways (see the long comment on `_beekem`):
     //   - **Founder**: a writer who CREATED the document. `open()` records
-    //     that provenance explicitly in `_createdLocally` before seeding
-    //     leaf 0 with their local KEM key pair via
-    //     `_initializeBeeKEMAsFounder`.
+    //     that provenance explicitly in `_createdLocally` before onboarding
+    //     prepares a tree seeded with their local KEM key pair at leaf 0.
     //   - **Joined writer**: a writer who was added to an existing
     //     document by another writer. They MUST receive a BeeKEM
     //     Welcome (which bootstraps their tree via `processWelcome`)
     //     before they can manipulate the tree.
     //
-    // Without this gate, a joined writer whose `_beekemInitialized`
-    // is still false (no Welcome received yet) would fall through to
-    // `_registerBeeKEMReader` -> `_initializeBeeKEMAsFounder`, silently
-    // spawning a NEW divergent founder tree from a non-empty document
-    // state. Their subsequent PathUpdates and Welcomes would come from
-    // a tree shape that no other peer shares, so revocations from this
-    // writer would never converge with anyone else's view -- a silent
-    // correctness bug that this gate closes.
+    // Without this gate, a joined writer whose `_beekemInitialized` is still
+    // false (no Welcome received yet) could prepare and install a divergent
+    // founder tree from non-empty document state. Their later PathUpdates and
+    // Welcomes would come from a tree shape that no other peer shares.
     //
     // Change count cannot identify founders: normal `open()` has already
     // replicated the founder-writer ACL before the first addReader call.
@@ -6914,7 +7637,7 @@ export class PeerborneDocument<
     // material. Without this branch the warning emitted below on the
     // first call would point at a recovery path that is itself a no-op.
     const alreadyReader =
-      (await retryACLConflict(() => this._readers.check(reader))) === true;
+      (await retryACLConflict(() => this._readers.check(stableReader))) === true;
     if (
       !alreadyReader &&
       (await retryACLConflict(() => this._readers.users())).length > 0
@@ -6931,6 +7654,11 @@ export class PeerborneDocument<
         `[${this.documentPath}] addReader: replacement readers are not ` +
           `supported after BeeKEM membership has advanced. Create a new ` +
           `document instead of reusing the revoked membership tree.`,
+      );
+    }
+    if (!alreadyReader && validatedReaderKemPublicKey) {
+      await this._assertKemPublicKeyAvailableForNewLeaf(
+        validatedReaderKemPublicKey,
       );
     }
 
@@ -6959,13 +7687,16 @@ export class PeerborneDocument<
         this.documentPath,
       );
     }
-    if (!alreadyReader) {
-      // Send change over network.
-      beginMutation?.();
-      const changes = await retryACLConflict(() =>
-        this._readers.add(reader),
+    // Prepare the BeeKEM registration on a detached tree before staging the
+    // ACL change. A crypto/import/tree failure therefore cannot leave live
+    // authorization ahead of the key-distribution state needed to revoke the
+    // reader later.
+    let preparedRegistration: PreparedBeeKEMReaderRegistration | undefined;
+    if (validatedReaderKemPublicKey) {
+      preparedRegistration = await this._prepareBeeKEMReaderRegistration(
+        serializedReader,
+        validatedReaderKemPublicKey,
       );
-      await this._makeChange(changes, crdtReaderChangeNode);
     }
 
     // Record the new reader in the BeeKEM ratchet tree so:
@@ -6991,24 +7722,37 @@ export class PeerborneDocument<
     // that ambiguous half-onboarded state and surfaces the warning
     // below directing the caller to re-invoke with the KEM key.
     //
-    // If `_registerBeeKEMReader` throws we PROPAGATE the failure
-    // rather than fall through to a half-Welcome. A Welcome with
-    // `beekemWelcomeForJoiner = null` would still let the joiner
-    // decrypt the *current* document key (via the sealed keychain
-    // delta), but their BeeKEM tree would be uninitialized -- so the
-    // NEXT `removeReader` rotation would silently lock them out
-    // (their leaf has no key material to derive the new root from).
-    // The ACL change has already been broadcast and the caller can
-    // retry once the underlying issue is fixed, for example by re-invoking
-    // `addReader` with the same KEM public key.
-    let beekemWelcomeForJoiner: BeeKEMWelcome | null = null;
-    if (validatedReaderKemPublicKey) {
-      beekemWelcomeForJoiner = await this._registerBeeKEMReader(
-        reader,
-        validatedReaderKemPublicKey,
-        beginMutation,
+    // The ACL provider and BeeKEM tree now share one synchronous local commit
+    // boundary. Obtain the ACL claim before publication, install the already
+    // prepared BeeKEM snapshot first, and grant authorization last. All work
+    // after publication resolves is limited to claimed finalization and
+    // prebuilt reference swaps.
+    if (!alreadyReader) {
+      const preparedReader = await this._prepareReaderAdd(stableReader);
+      const readerClaim = this._claimPreparedCommit(
+        preparedReader.claimCommit,
+        'Reader ACL commit claim',
       );
+      beginMutation?.();
+      await this._publishPreparedReaderChange(
+        preparedReader,
+        'add reader',
+        () => {
+          preparedRegistration?.install?.();
+          finalizePreparedCommitClaim(
+            readerClaim,
+            'Reader ACL commit claim',
+          );
+        },
+      );
+    } else if (preparedRegistration?.install) {
+      // Exact retries can repair a missing local cache/tree installation for
+      // an ACL member. No provider claim is needed because authorization is
+      // already live and this branch only swaps document-owned staged state.
+      beginMutation?.();
+      preparedRegistration.install();
     }
+    const beekemWelcomeForJoiner = preparedRegistration?.welcome ?? null;
 
     // Without the recipient's KEM public key we cannot seal the
     // Welcome payload, and we will NEVER send an un-sealed Welcome --
@@ -7049,7 +7793,7 @@ export class PeerborneDocument<
     // explicit key-recovery path; ordinary load responses use the current key.
     try {
       await this._sendBeeKEMWelcome(
-        reader,
+        stableReader,
         validatedReaderKemPublicKey,
         beekemWelcomeForJoiner,
         preparedWelcomeKeychain,
@@ -7087,9 +7831,13 @@ export class PeerborneDocument<
       'Public invitations',
     );
     return this._runStateMutation(async () => {
-      const { publicKey: stableReader } = await snapshot;
+      const {
+        publicKey: stableReader,
+        serialized: serializedReader,
+      } = await snapshot;
       return this._buildInvitationBootstrapUnlocked(
         stableReader,
+        serializedReader,
         stableReaderKemPublicKey,
         role,
         assertCanMutate,
@@ -7125,6 +7873,7 @@ export class PeerborneDocument<
 
   private async _buildInvitationBootstrapUnlocked(
     reader: PublicKey,
+    serializedReader: string,
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
@@ -7152,6 +7901,7 @@ export class PeerborneDocument<
         assertCanMutate?.();
         const welcome = await this._addReaderUnlocked(
           reader,
+          serializedReader,
           kemPublicKey,
           false,
           beginMutation,
@@ -7165,7 +7915,12 @@ export class PeerborneDocument<
         return welcome;
       },
       addWriter: () =>
-        this._addWriterUnlocked(reader, beginMutation, true),
+        this._addWriterUnlocked(
+          reader,
+          beginMutation,
+          true,
+          serializedReader,
+        ),
       repairReaders: async () => {
         beginMutation();
         return this._makeChange(
@@ -8474,107 +9229,27 @@ export class PeerborneDocument<
   /**
    * Remove a user as a valid reader. Users are identified by their public keys.
    *
-   * ## Atomicity contract
+   * The target must first be downgraded from writer. Revocation resolves the
+   * target's identity-bound KEM key to one unique live BeeKEM leaf, stages any
+   * reader-ACL delta, and performs the tree rotation on a clone. An already
+   * absent ACL row does not suppress a still-live leaf: the cryptographic
+   * removal proceeds.
    *
-   * Pre-validates all preconditions before mutating BeeKEM state. The
-   * BeeKEM `removeMember` call is the atomicity boundary:
+   * The new local epoch key is staged before publication. Every participating
+   * provider must supply a commit claim: all fallible work finishes before
+   * publication, then captured nonthrowing finalizers install ACL, keychain,
+   * tree, and identity-cache state in one synchronous turn. A publication
+   * failure after valid claims leaves compliant providers on their original
+   * state. An invoked claim that throws or returns a malformed/asynchronous
+   * record, or a finalizer that throws or returns a value, violates the provider
+   * contract and poisons this document instance because partial application
+   * cannot be ruled out.
    *
-   *   - BEFORE the BeeKEM mutation: every check that can fail
-   *     synchronously / cheaply (writer authorization, ACL membership,
-   *     tree initialization, leaf lookup) runs first. If any of these
-   *     throws, no state has been mutated and the caller can retry
-   *     without leaking a half-applied revocation.
-   *   - AT the BeeKEM mutation: `BeeKEM.removeMember(leafIndex)` blanks
-   *     the leaf and re-derives the writer's path key material. This
-   *     advances local BeeKEM state. The CRDT-mutating ACL build step
-   *     (`_readers.remove(reader)` -- not just a "compute change",
-   *     both the Yjs and Automerge providers mutate their internal
-   *     doc state in `remove`) and the PathUpdate signing step (which
-   *     requires the new 32-byte epoch ID derived from the new root
-   *     secret) cannot be hoisted ABOVE the BeeKEM mutation: building
-   *     the ACL change without applying it is not part of the ACL
-   *     interface, and the PathUpdate signature includes the new
-   *     epoch ID by construction.
-   *   - AFTER the BeeKEM mutation succeeds, every subsequent step is
-   *     attempted on a BEST-EFFORT basis: broadcast and ACL-commit
-   *     failures are logged but do not unwind the BeeKEM advance. The
-   *     writer is always left in a consistent state -- BeeKEM advanced,
-   *     local keychain updated with the new epoch key, outgoing traffic
-   *     encrypted under the new key. Surviving readers may need to
-   *     re-sync via a fresh document load if the ACL change or
-   *     PathUpdate broadcast was dropped.
-   *
-   * ## Ordering on the wire
-   *
-   * The ACL-change broadcast must be encryptable by surviving readers
-   * using a key they ALREADY have, not the post-rotation key (which
-   * they only learn about once they process the PathUpdate). The
-   * ACL-change pubsub message and the PathUpdate unicast stream are
-   * delivered independently and can arrive in any order; each must be
-   * independently decryptable to keep the receive path order-
-   * insensitive. This is why `addEpochKey` (which flips
-   * `_keychain.current()` to the new key) is deferred until AFTER
-   * both broadcasts: while `_makeChange` runs, `_keychain.current()`
-   * still returns the **previous** key, which surviving readers can
-   * still decrypt with.
-   *
-   * ## Steps
-   *
-   *   1. Verify the caller is a writer and look up the BeeKEM leaf
-   *      assigned to the removed reader. A missing leaf is a hard
-   *      error (see `@throws` below). Both ECDH-keypair and leaf-
-   *      lookup preconditions are checked here, BEFORE step 2.
-   *   2. Blank the leaf and re-key our path via
-   *      `BeeKEM.removeMember(leafIndex)`, which returns the
-   *      `PathUpdate` to broadcast and the new root secret. We do
-   *      NOT run a follow-up `BeeKEM.update()`: `removeMember`
-   *      already generates fresh key material along the entire path,
-   *      and re-rotating immediately would discard that material in
-   *      favour of yet-another rotation, doubling the work without
-   *      improving the cryptographic property. **This is the atomicity
-   *      boundary: every subsequent step is best-effort.**
-   *   3. Derive the new document key + 32-byte epoch ID from the root
-   *      secret via HKDF (see `derive-doc-key.ts`). **Hold locally;
-   *      the keychain is NOT updated yet.**
-   *   4. Commit the ACL removal and broadcast it via `_makeChange`,
-   *      still encrypted under the **previous** keychain key (so
-   *      surviving readers can decrypt regardless of PathUpdate
-   *      arrival order). On failure: log a warning and fall through;
-   *      surviving readers can recover the new ACL via a fresh
-   *      document load.
-   *   5. Broadcast the signed `PathUpdate` over `beekemPathUpdateV1`
-   *      to every connected peer. Surviving readers feed it into
-   *      `BeeKEM.processPathUpdate` and re-derive the same document
-   *      key + epoch ID. On failure: log a warning and fall through;
-   *      surviving readers can recover via a fresh document load.
-   *      The local keychain install in step 6 still runs so the
-   *      WRITER transitions to the new key.
-   *   6. Install the new key into the LOCAL keychain. From this
-   *      point on every subsequent outgoing message is encrypted
-   *      under the new key. This step ALWAYS runs (even if steps
-   *      4 or 5 logged failures) so the writer never gets stuck
-   *      encrypting under the previous key while the BeeKEM tree
-   *      has advanced.
-   *
-   * The revoked reader can still decrypt the step-4 ACL change (they
-   * have the previous key) -- which is fine: they just learn they've
-   * been removed. They CANNOT derive the new key from the step-5
-   * PathUpdate because their leaf is blanked, so all future writer-
-   * originated traffic remains opaque to them.
-   *
-   * If step 6 itself fails (local IO / WebCrypto error) the writer is
-   * in a partially-rotated state -- BeeKEM has advanced but the local
-   * keychain still holds only the previous key. The call throws so the
-   * caller can recover (the simplest recovery is to re-open the
-   * document, which re-loads keychain state). `addEpochKey` is a
-   * local-only call in both shipped keychain providers (no pubsub
-   * side-effects, no remote IO), so this branch is rare in practice.
-   *
-   * Unlike the previous "encrypt the new key under the old key" scheme,
-   * the removed reader cannot derive the new key even if they were
-   * connected at the moment of revocation: their leaf is blanked and
-   * the new path key material is encrypted to subtrees they no longer
-   * occupy. This closes the revocation-latency gap (#189 §5.4 item 5).
+   * PathUpdate delivery remains best effort after the local transition. A
+   * surviving member that misses it needs an explicit recipient-bound recovery
+   * or re-invitation; an ordinary load is encrypted under the unknown new key.
+   * These are cooperative local-API invariants. Incoming raw ACL deltas are not
+   * yet checked against replicated identity/KEM transition records.
    *
    * @param reader User's public key.
    * @throws If the BeeKEM tree has no record of this reader (e.g.
@@ -8582,53 +9257,73 @@ export class PeerborneDocument<
    *   was lost). Callers must surface this rather than silently
    *   degrading: a removeReader that "succeeded" without rotating the
    *   key would leave the removed reader with full ongoing access.
-   * @throws If the local keychain install fails (step 6). Steps 1-3
-   *   (pre-validation + BeeKEM rotation + key derivation) throwing
-   *   leaves the ACL unchanged so the caller can retry; broadcast
-   *   failures in steps 4-5 do NOT throw (they log warnings).
+   * @throws If identity/KEM/tree state is missing or divergent, a required
+   *   commit claim is unavailable, or ACL publication fails.
    */
   public async removeReader(reader: PublicKey) {
-    return this._runStateMutation(() =>
-      this._removeReaderUnlocked(reader),
+    this._assertNoIncompleteBootstrapLoad();
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      reader,
+      'BeeKEM reader revocation',
     );
+    return this._runStateMutation(async () => {
+      const {
+        publicKey: stableReader,
+        serialized: serializedReader,
+      } = await snapshot;
+      return this._removeReaderUnlocked(stableReader, serializedReader);
+    });
   }
 
-  private async _removeReaderUnlocked(reader: PublicKey) {
-    // ---------------------------------------------------------------
-    // Pre-validation: every check that can fail synchronously and
-    // does not mutate state runs BEFORE the BeeKEM `removeMember`
-    // call. Once that call has run, the BeeKEM tree has advanced
-    // and we no longer have a clean rollback point.
-    // ---------------------------------------------------------------
+  private async _removeReaderUnlocked(
+    stableReader: PublicKey,
+    serializedReader: string,
+  ) {
     await this._ensureCurrentUserCanWrite();
 
-    // Check that the reader is already a reader.
+    // Writers are implicit readers and must be downgraded first.
     if (
-      (await retryACLConflict(() => this._readers.check(reader))) !== true
+      (await retryACLConflict(() =>
+        this._writers.check(stableReader),
+      )) === true
     ) {
-      return;
-    }
-
-    if (await retryACLConflict(() => this._writers.check(reader))) {
       throw new Error(
-        `Cannot remove reader from "${this.documentPath}": the identity is ` +
-          'still an authorized writer. Call removeWriter first, then ' +
-          'removeReader to revoke its remaining read access.',
+        `Cannot remove reader from "${this.documentPath}" while the target ` +
+          'is still an authorized writer. Call removeWriter first, then ' +
+          'removeReader to revoke read access and rotate the BeeKEM epoch.',
       );
     }
 
-    const serializePublicKey = requireSerializePublicKey(
-      this._authProvider,
-      'BeeKEM reader revocation',
-    );
-    const serializedReader = await serializePublicKey(reader);
+    const isExplicitReader =
+      (await retryACLConflict(() =>
+        this._readers.check(stableReader),
+      )) === true;
+    const recordedKemPublicKey =
+      this._readerKemPublicKeys.get(serializedReader);
+    const cachedLeafIndex = this._readerLeafIndices.get(serializedReader);
 
-    // The BeeKEM tree must be initialized before we can revoke
-    // anything: leaf-derivation, key rotation, and PathUpdate
-    // generation all require live tree state. A fresh-start replica
-    // that has never received a Welcome (and is not the founder)
-    // cannot revoke; surface that clearly rather than fail later
-    // with a confusing leaf-lookup error.
+    // A completed prior removal clears both identity-bound caches. Preserve an
+    // idempotent no-op only when the ACL and local cryptographic membership
+    // evidence agree that there is nothing left to revoke.
+    if (
+      !isExplicitReader &&
+      recordedKemPublicKey === undefined &&
+      cachedLeafIndex === undefined
+    ) {
+      if (
+        !this._beekemInitialized ||
+        !this._beekem ||
+        !this._beekem.hasOnlyLocalLiveLeaf()
+      ) {
+        throw new Error(
+          `Cannot remove reader from "${this.documentPath}": the ACL and ` +
+            'identity-bound BeeKEM caches are absent, but the live tree does ' +
+            'not prove that every remote leaf has already been revoked.',
+        );
+      }
+      return;
+    }
+
     if (!this._beekemInitialized || !this._beekem) {
       throw new Error(
         `Cannot remove reader from "${this.documentPath}": BeeKEM tree has ` +
@@ -8639,65 +9334,42 @@ export class PeerborneDocument<
     }
     const beekem = this._beekem;
 
-    // Look up the BeeKEM leaf for the removed reader. Fast-path: an
-    // in-memory cache populated by `addReader` on this same writer
-    // process. Slow-path: derive the leaf from BeeKEM tree state by
-    // matching the reader's KEM public key against every leaf via
-    // `BeeKEM.findLeafByPublicKey`. The slow path is what makes
-    // revocation survive a cache wipe (e.g. an in-process clear of
-    // `_readerLeafIndices` for testing, or a hypothetical sibling
-    // replica with the BeeKEM tree but without the cache).
-    //
-    // Both lookups are in-memory only: BeeKEM tree state is not persisted
-    // across writer restarts. A fully restarted writer that loses both
-    // BeeKEM state and `_readerKemPublicKeys`
-    // hits the "BeeKEM tree not initialized" error above OR the
-    // "no leaf found" error below, both with actionable messaging.
-    let leafIndex = this._readerLeafIndices.get(serializedReader);
-    if (leafIndex === undefined) {
-      const kemPub = this._readerKemPublicKeys.get(serializedReader);
-      if (kemPub) {
-        leafIndex = await beekem.findLeafByPublicKey(kemPub);
-        if (leafIndex !== undefined) {
-          // Re-populate the fast-path cache so subsequent
-          // revocations for the same reader (within this process)
-          // skip the tree scan. Harmless if the reader gets removed
-          // immediately below: the entry is deleted again as part
-          // of cleanup.
-          this._readerLeafIndices.set(serializedReader, leafIndex);
-        } else {
-          // Pubkey is recorded but the BeeKEM tree has no matching
-          // non-blanked leaf. Distinguishing this case from "no
-          // pubkey at all" (below) lets operators tell apart a
-          // local-state gap (reader never registered) from a
-          // tree-state gap (leaf already blanked, or this replica
-          // never received the Welcome that placed the reader).
-          throw new Error(
-            `Cannot remove reader from "${this.documentPath}": the reader's ` +
-              `KEM public key is recorded locally but the BeeKEM tree has ` +
-              `no matching non-blanked leaf. The tree state may have ` +
-              `diverged (leaf already blanked, or this replica never ` +
-              `received the Welcome that placed the reader). A fresh ` +
-              `document load against an authorized peer can re-bootstrap ` +
-              `the local tree.`,
-          );
-        }
-      }
-    }
-    if (leafIndex === undefined) {
+    if (
+      !recordedKemPublicKey ||
+      recordedKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
+    ) {
       throw new Error(
-        `Cannot remove reader from "${this.documentPath}": no BeeKEM leaf ` +
-          `recorded for this reader, and the local replica has no KEM public ` +
-          `key recorded to scan the BeeKEM tree with. The reader must have ` +
-          `been added via addReader (which seeds the BeeKEM tree and records ` +
-          `the KEM public key) before they can be cryptographically revoked.`,
+        `Cannot remove reader from "${this.documentPath}": no valid ` +
+          'identity-bound reader KEM public key is recorded locally, so ' +
+          'cryptographic membership cannot be revoked safely.',
       );
     }
 
-    // ---------------------------------------------------------------
-    // Atomicity boundary: every step from here on advances BeeKEM
-    // state OR is best-effort relative to it.
-    // ---------------------------------------------------------------
+    const leafIndex = await beekem.findLeafByPublicKey(
+      new Uint8Array(recordedKemPublicKey),
+    );
+    if (leafIndex === undefined) {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the recorded KEM ` +
+          'public key does not resolve to exactly one live, non-blanked ' +
+          'BeeKEM leaf. Use an explicit recipient-bound recovery or ' +
+          're-invitation flow to repair local membership state.',
+      );
+    }
+    if (
+      cachedLeafIndex !== undefined &&
+      cachedLeafIndex !== leafIndex
+    ) {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the cached BeeKEM ` +
+          'leaf does not match the unique live identity-bound leaf.',
+      );
+    }
+
+    const preparedReaderRemoval = isExplicitReader
+      ? await this._prepareReaderRemove(stableReader)
+      : undefined;
+    const stagedBeeKEM = beekem.clone();
 
     // 1. Blank the leaf and re-key our path. `removeMember` re-derives
     //    key material along the entire path and returns the
@@ -8705,7 +9377,8 @@ export class PeerborneDocument<
     //    those return values directly -- no follow-up `update()` is
     //    needed (it would only discard `removeMember`'s fresh
     //    material in favour of yet-another rotation).
-    const { pathUpdate, rootSecret } = await beekem.removeMember(leafIndex);
+    const { pathUpdate, rootSecret } =
+      await stagedBeeKEM.removeMember(leafIndex);
 
     // 2. Derive the new document key + 32-byte epoch ID from the root
     //    secret. **Hold these locally; do NOT install in the keychain
@@ -8731,198 +9404,137 @@ export class PeerborneDocument<
       deriveEpochIdFromRootSecret(rootSecret),
     ]);
 
-    // 3. Commit the ACL removal and broadcast it -- still encrypted
-    //    under the **previous** keychain key (the new key hasn't been
-    //    installed yet; see step 5). Surviving readers can decrypt
-    //    this with the key they already have, regardless of whether
-    //    the PathUpdate in step 4 arrives before or after the ACL
-    //    change. The revoked reader can also decrypt the ACL change
-    //    (they still hold the previous key), which is fine -- the
-    //    ACL change just tells them they've been removed. They can't
-    //    derive the **new** key from step 4's PathUpdate because
-    //    their leaf is blanked.
-    //
-    //    Best-effort relative to the BeeKEM mutation: if `_makeChange`
-    //    or the underlying `_readers.remove(reader)` throws (signing,
-    //    serialization, pubsub publish failure, IPFS write error,
-    //    etc.) we log + fall through. The BeeKEM tree has already
-    //    advanced; unwinding it is not possible. Surviving readers
-    //    can re-sync the ACL via a fresh document load. We deliberately
-    //    do not retry: a failed pubsub publish typically indicates a
-    //    transport-level issue that the caller is better placed to
-    //    diagnose than this routine.
-    try {
-      const changes = await retryACLConflict(() =>
-        this._readers.remove(reader),
+    const epochClaimCommit = await this._prepareReaderRevocationEpoch(
+      derivedEpochId32,
+      newKey as unknown as DocumentKey,
+    );
+
+    // Build every document-owned replacement before claiming either provider.
+    // The commit turn below performs only captured finalizers and reference
+    // swaps, so compliant providers cannot expose a fallible prefix.
+    const committedReaderLeafIndices = new Map(this._readerLeafIndices);
+    committedReaderLeafIndices.delete(serializedReader);
+    const committedReaderKemPublicKeys = new Map(
+      this._readerKemPublicKeys,
+    );
+    committedReaderKemPublicKeys.delete(serializedReader);
+    const committedWelcomes = new Map(this._beekemWelcomeByLeaf);
+    committedWelcomes.delete(leafIndex);
+    const installBeeKEMRemoval = () => {
+      this._beekem = stagedBeeKEM;
+      this._readerLeafIndices = committedReaderLeafIndices;
+      this._readerKemPublicKeys = committedReaderKemPublicKeys;
+      this._beekemWelcomeByLeaf = committedWelcomes;
+    };
+
+    // Both method identities and their receivers were captured from data
+    // properties before invocation. A custom provider cannot replace a method
+    // between claim and finalization, and accessor-backed or async-shaped
+    // claims are rejected without assimilating a hostile thenable.
+    const readerCommit = preparedReaderRemoval
+      ? this._claimPreparedCommit(
+          preparedReaderRemoval.claimCommit,
+          'Reader ACL commit claim',
+        )
+      : undefined;
+    const epochCommit = this._claimPreparedCommit(
+      epochClaimCommit,
+      'Reader-revocation epoch commit claim',
+    );
+    const finalizeLocalRevocation = () => {
+      if (readerCommit) {
+        finalizePreparedCommitClaim(readerCommit, 'Reader ACL commit claim');
+      }
+      finalizePreparedCommitClaim(
+        epochCommit,
+        'Reader-revocation epoch commit claim',
       );
-      await this._makeChange(changes, crdtReaderChangeNode);
-    } catch (err) {
-      console.warn(
-        `[${this.documentPath}] removeReader: ACL-removal broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new epoch key will be ` +
-          `installed in the local keychain. Surviving readers may need to ` +
-          `re-load the document to observe the ACL change.`,
-        err,
+      installBeeKEMRemoval();
+    };
+
+    if (preparedReaderRemoval) {
+      // Publish the ACL delta under the previous epoch. Once publication
+      // resolves, `_makeChange` runs the composed finalizer before exposing the
+      // new DAG head to local observers and poisons the instance if a custom
+      // provider violates its nonthrowing finalizer contract.
+      await this._publishPreparedReaderChange(
+        preparedReaderRemoval,
+        'removeReader',
+        finalizeLocalRevocation,
       );
-      // Fall through: still distribute the PathUpdate and install
-      // the new local key so outgoing writer traffic is on the
-      // post-revocation epoch.
+    } else {
+      // The ACL row may already be absent while its BeeKEM leaf remains live.
+      // There is no publication boundary in that recovery case, but epoch,
+      // tree, and identity-cache state still finalize in one synchronous turn.
+      try {
+        finalizeLocalRevocation();
+      } catch (error) {
+        this._markDocumentStatePoisoned();
+        throw error;
+      }
     }
 
-    // 4. Forget the removed reader's per-reader state so subsequent
-    //    `removeReader` calls for the same key (idempotency) take
-    //    the "already not a reader" early return instead of trying
-    //    to re-revoke a blank leaf, and a future `addReader` for
-    //    this identity is a fresh registration -- not a re-emit of
-    //    the now-invalid pre-revocation Welcome.
-    //
-    //    Critically, we also clear the cached `BeeKEMWelcome` for
-    //    this leaf: leaving the stale entry would let a future
-    //    `_registerBeeKEMReader` re-invocation for an unrelated
-    //    reader who happens to land on the same blanked slot
-    //    re-emit a Welcome that bootstraps the new joiner against
-    //    the **revoked reader's** pre-revocation tree state.
-    //
-    //    Runs unconditionally (independent of the ACL-change branch
-    //    above) so the in-memory caches stay consistent with the
-    //    advanced BeeKEM tree.
-    this._readerLeafIndices.delete(serializedReader);
-    this._readerKemPublicKeys.delete(serializedReader);
-    this._beekemWelcomeByLeaf.delete(leafIndex);
-
-    // 5. Broadcast the PathUpdate to every connected peer. Carries
-    //    the full 32-byte epoch ID; the receiver matches it against
-    //    its own locally-derived 32-byte value, then installs under
-    //    that same 32-byte ID. No truncation step on either side --
-    //    `keyIDLength` and `deriveEpochIdFromRootSecret` both use 32.
-    //
-    //    Best-effort relative to the BeeKEM mutation: if the
-    //    PathUpdate distribution throws (signing failure, payload
-    //    serialization error, all dials failed in a way the inner
-    //    fan-out propagated) we log + fall through to `addEpochKey`
-    //    so the writer still transitions to the new key for
-    //    outgoing encryption. Surviving readers that miss the
-    //    PathUpdate can recover via a fresh document load (the new
-    //    epoch key is part of the keychain CRDT once the next ACL
-    //    or document change is broadcast and observed).
+    // PathUpdate delivery is best effort after the complete local transition.
+    // A survivor that misses it needs recipient-bound recovery or a fresh
+    // invitation; an ordinary load is encrypted under the unknown new key.
     try {
       await this._distributeBeeKEMPathUpdate(pathUpdate, derivedEpochId32);
     } catch (err) {
       console.warn(
         `[${this.documentPath}] removeReader: PathUpdate broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new key will be installed. ` +
-          `Surviving readers may need to re-load the document.`,
+          'BeeKEM state and the new key committed locally. Affected readers ' +
+          'need explicit recipient-bound recovery or re-invitation.',
         err,
       );
-      // Fall through to addEpochKey so the writer transitions to
-      // the new key.
-    }
-
-    // 6. Install the new key into our LOCAL keychain. From this
-    //    point on, `_keychain.current()` returns the new key and
-    //    every subsequent `_makeChange` encrypts under it.
-    //
-    //    This step always runs (even if steps 3 or 5 above logged
-    //    failures) so the writer never gets stuck on the previous
-    //    key after BeeKEM has advanced -- subsequent local writes
-    //    would otherwise encrypt under a key that surviving readers
-    //    (post-PathUpdate) no longer accept.
-    //
-    //    Failure mode: if `addEpochKey` itself throws (local IO /
-    //    WebCrypto error), the writer is in a partially-rotated state
-    //    -- BeeKEM has advanced but the local keychain still holds
-    //    only the previous key. We surface the failure loudly here
-    //    so operators can intervene (re-open the document to
-    //    recover keychain state). `addEpochKey` is a local-only
-    //    call in both shipped keychain providers (no pubsub
-    //    side-effects, no remote IO), so this branch is rare in
-    //    practice; the publish-then-commit shape is deliberate
-    //    to keep the on-wire ordering correct.
-    try {
-      await this._keychain.addEpochKey(
-        derivedEpochId32,
-        newKey as unknown as DocumentKey,
-      );
-    } catch (err) {
-      // Don't suppress -- let the caller see the failure -- but
-      // log first so the operator-visible diagnostic doesn't get
-      // lost in the rethrow path.
-      console.error(
-        `[${this.documentPath}] removeReader: ACL change + PathUpdate broadcast succeeded, ` +
-          `but local keychain install of the new epoch key failed. The local writer cannot ` +
-          `encrypt under the new key until keychain state is recovered (e.g. re-open the ` +
-          `document). Surviving readers will have installed the new key from the PathUpdate. ` +
-          `Underlying error:`,
-        err,
-      );
-      throw err;
     }
   }
 
-  /**
-   * Lazily initialize the per-document BeeKEM ratchet tree **as the
-   * founder**. The founder is the writer who creates a fresh document
-   * and runs the first `addReader` call; their leaf-0 KEM key pair
-   * roots the tree.
-   *
-   * Returns the singleton `BeeKEM` instance for this document. The
-   * initialization is funnelled through a single in-flight promise
-   * (`_beekemInitPromise`) so concurrent callers don't race two
-   * `initialize` calls against the same instance.
-   *
-   * PRECONDITION: the caller must have installed a KEM key pair via
-   * `setKemKeyPair` -- the founder's leaf-0 key pair is that same
-   * P-256 ECDH pair. A founder that calls `addReader` without first
-   * calling `setKemKeyPair` is misconfigured and `addReader` throws
-   * before reaching here.
-   *
-   * Non-founder peers MUST NOT enter this path. They initialize their
-   * BeeKEM state by receiving a Welcome from the inviter (see
-   * `_evaluateAndApplyBeeKEMWelcome` -> `BeeKEM.processWelcome`).
-   */
-  private async _initializeBeeKEMAsFounder(): Promise<BeeKEM> {
-    if (this._beekem) return this._beekem;
-    if (this._beekemInitPromise) return this._beekemInitPromise;
+  private async _assertKemPublicKeyAvailableForNewLeaf(
+    readerKemPublicKey: Uint8Array,
+  ): Promise<void> {
+    if (this._beekemInitialized) {
+      if (!this._beekem) {
+        throw new Error(
+          `[${this.documentPath}] addReader: BeeKEM is marked initialized ` +
+            'but the live tree is unavailable, so KEM leaf uniqueness cannot ' +
+            'be verified.',
+        );
+      }
+      if (
+        await this._beekem.hasLiveLeafWithPublicKey(
+          new Uint8Array(readerKemPublicKey),
+        )
+      ) {
+        throw new Error(
+          `[${this.documentPath}] addReader: readerKemPublicKey is already ` +
+            'owned by a live BeeKEM leaf. Each member must use a unique KEM ' +
+            'public key.',
+        );
+      }
+      return;
+    }
 
-    if (!this._kemKeyPair) {
+    if (!this._kemPublicKeyRaw) {
       throw new Error(
-        `[${this.documentPath}] BeeKEM founder initialization requires a KEM ` +
-          `key pair installed via setKemKeyPair.`,
+        `[${this.documentPath}] addReader: the founder KEM public key is ` +
+          'unavailable, so KEM leaf uniqueness cannot be verified.',
       );
     }
-    const kemKeyPair = this._kemKeyPair;
-
-    const init = (async () => {
-      const beekem = new BeeKEM();
-      await beekem.initialize(kemKeyPair.privateKey, kemKeyPair.publicKey);
-      this._beekem = beekem;
-      this._beekemInitialized = true;
-      return beekem;
-    })();
-
-    this._beekemInitPromise = init;
-    try {
-      return await init;
-    } finally {
-      // Clear the gate whether init succeeded or threw so a retry can
-      // re-attempt. On success `_beekem` is set and the next call
-      // short-circuits before reading the promise.
-      this._beekemInitPromise = null;
+    if (constantTimeEqual(this._kemPublicKeyRaw, readerKemPublicKey)) {
+      throw new Error(
+        `[${this.documentPath}] addReader: readerKemPublicKey matches the ` +
+          'founder\'s BeeKEM leaf. Each member must use a unique KEM public key.',
+      );
     }
   }
 
   /**
-   * Register a newly-added reader in the BeeKEM ratchet tree.
+   * Prepare a reader registration on detached BeeKEM and cache state.
    *
-   * Called from `addReader` after the readers-ACL update. Imports the
-   * reader's own KEM public key as the new leaf, records the
-   * resulting leaf index in `_readerLeafIndices` so `removeReader`
-   * can later look up the leaf to blank, caches the
-   * `BeeKEMWelcome` produced by `BeeKEM.addMember` so it can be
-   * re-emitted on a subsequent `addReader` call (covering the case
-   * where the initial Welcome was dropped on the wire), and returns
-   * the Welcome so the inviter can ship it inside the sealed
-   * Welcome envelope to the joiner.
+   * The returned installer performs only reference swaps and runs at the
+   * staged reader-ACL publication boundary. Until then, crypto or tree
+   * failures leave live membership unchanged. The returned Welcome can be
+   * sent inside the recipient-sealed envelope after the local commit.
    *
    * **Idempotency / re-send**: if the same reader is registered
    * again (`addReader` invoked twice with the same KEM key), the
@@ -8941,11 +9553,10 @@ export class PeerborneDocument<
    * mutating the ACL; lifting that limit requires a verified add-side
    * PathUpdate delivery and convergence path.
    */
-  private async _registerBeeKEMReader(
-    reader: PublicKey,
+  private async _prepareBeeKEMReaderRegistration(
+    serializedReader: string,
     readerKemPublicKey: Uint8Array,
-    beginMutation?: () => void,
-  ): Promise<BeeKEMWelcome | null> {
+  ): Promise<PreparedBeeKEMReaderRegistration> {
     // Validate the recipient KEM public key length BEFORE any state
     // mutation. Without this gate a malformed buffer would still be
     // recorded in `_readerKemPublicKeys` and seeded into the BeeKEM
@@ -8955,17 +9566,11 @@ export class PeerborneDocument<
     // see a precise, actionable error before any commitment.
     if (readerKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
       throw new Error(
-        `[${this.documentPath}] _registerBeeKEMReader: readerKemPublicKey ` +
+        `[${this.documentPath}] _prepareBeeKEMReaderRegistration: readerKemPublicKey ` +
           `must be ${ECIES_P256_PUBLIC_KEY_LENGTH} bytes (SEC1-uncompressed ` +
           `P-256), got ${readerKemPublicKey.byteLength}`,
       );
     }
-
-    const serializePublicKey = requireSerializePublicKey(
-      this._authProvider,
-      'BeeKEM reader revocation',
-    );
-    const serializedReader = await serializePublicKey(reader);
 
     const previousKemPublicKey =
       this._readerKemPublicKeys.get(serializedReader);
@@ -8974,7 +9579,7 @@ export class PeerborneDocument<
       !constantTimeEqual(previousKemPublicKey, readerKemPublicKey)
     ) {
       throw new Error(
-        `[${this.documentPath}] _registerBeeKEMReader: this reader is ` +
+        `[${this.documentPath}] _prepareBeeKEMReaderRegistration: this reader is ` +
           `already bound to a different KEM public key`,
       );
     }
@@ -8984,20 +9589,77 @@ export class PeerborneDocument<
     // call `BeeKEM.addMember` again -- that would mutate the tree
     // and produce a Welcome that no longer matches the joiner's
     // actual leaf index. Instead we return the cached Welcome (if
-    // any) so the caller can re-send. A miss means the writer
-    // restarted between the original `addReader` and this re-invoke;
-    // we surface that as `null` so the caller falls through to the
-    // existing recovery messaging.
+    // any) so the caller can re-send.
     const existingLeaf = this._readerLeafIndices.get(serializedReader);
     if (existingLeaf !== undefined) {
       if (!previousKemPublicKey) {
         throw new Error(
-          `[${this.documentPath}] _registerBeeKEMReader: the existing reader ` +
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the existing reader ` +
             'leaf has no recoverable KEM binding',
         );
       }
-      return this._beekemWelcomeByLeaf.get(existingLeaf) ?? null;
+      if (!this._beekemInitialized || !this._beekem) {
+        throw new Error(
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the cached reader ` +
+            'leaf exists but the live BeeKEM tree is unavailable',
+        );
+      }
+      const liveLeaf = await this._beekem.findLeafByPublicKey(
+        new Uint8Array(readerKemPublicKey),
+      );
+      if (liveLeaf !== existingLeaf) {
+        throw new Error(
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the cached reader ` +
+            'leaf does not match the unique live KEM-key owner',
+        );
+      }
+      const cachedWelcome = this._beekemWelcomeByLeaf.get(existingLeaf);
+      return {
+        welcome:
+          cachedWelcome === undefined
+            ? null
+            : copyBeeKEMWelcome(cachedWelcome),
+      };
     }
+
+    // The index map is only a cache. If the identity-to-KEM binding and live
+    // tree still agree, recover the unique leaf before running the new-leaf
+    // duplicate gate. This keeps an exact retry from rejecting its own leaf.
+    if (previousKemPublicKey) {
+      if (!this._beekemInitialized || !this._beekem) {
+        throw new Error(
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the existing reader ` +
+            'KEM binding cannot be resolved because the live BeeKEM tree is ' +
+            'unavailable',
+        );
+      }
+      const recoveredLeaf = await this._beekem.findLeafByPublicKey(
+        new Uint8Array(readerKemPublicKey),
+      );
+      if (recoveredLeaf === undefined) {
+        throw new Error(
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the existing reader ` +
+            'KEM binding does not resolve to exactly one live BeeKEM leaf',
+        );
+      }
+      const committedReaderLeafIndices = new Map(this._readerLeafIndices);
+      committedReaderLeafIndices.set(serializedReader, recoveredLeaf);
+      const cachedWelcome = this._beekemWelcomeByLeaf.get(recoveredLeaf);
+      return {
+        welcome:
+          cachedWelcome === undefined
+            ? null
+            : copyBeeKEMWelcome(cachedWelcome),
+        install: () => {
+          this._readerLeafIndices = committedReaderLeafIndices;
+        },
+      };
+    }
+
+    // A KEM key is a unique live-leaf identifier. The public addReader path
+    // performs the same check before its ACL mutation; this second gate covers
+    // retries where the ACL row exists but no identity cache survived.
+    await this._assertKemPublicKeyAvailableForNewLeaf(readerKemPublicKey);
 
     // Bootstrap the local BeeKEM tree if needed. On the founder's
     // first `addReader` this initializes leaf 0 with the founder's
@@ -9008,16 +9670,17 @@ export class PeerborneDocument<
     // Defense-in-depth gate: the caller path through `addReader`
     // already rejects a joined writer before running `_makeChange`, so by
     // the time we reach here `_createdLocally` must identify the genuine
-    // founder. A future caller that invokes `_registerBeeKEMReader`
+    // founder. A future caller that invokes this preparation helper
     // outside `addReader` without that provenance would silently
     // create a divergent founder tree on a peer that already has
     // shared state. Throw rather than spawn the rogue tree; the
     // upstream `addReader` gate's recovery message points at the
     // right path.
+    let beekem: BeeKEM;
     if (!this._beekemInitialized) {
       if (!this._createdLocally) {
         throw new Error(
-          `[${this.documentPath}] _registerBeeKEMReader: cannot ` +
+          `[${this.documentPath}] _prepareBeeKEMReaderRegistration: cannot ` +
             `initialize a fresh founder BeeKEM tree because the local ` +
             `replica did not create this document locally. A ` +
             `joined writer must bootstrap via a signed invitation acceptance ` +
@@ -9025,19 +9688,29 @@ export class PeerborneDocument<
             `readers cryptographically.`,
         );
       }
-      beginMutation?.();
-      await this._initializeBeeKEMAsFounder();
-    }
-    const beekem = this._beekem;
-    if (!beekem) {
-      throw new Error(
-        `[${this.documentPath}] BeeKEM tree is not initialized; ` +
-          `cannot register a new reader.`,
+      if (!this._kemKeyPair) {
+        throw new Error(
+          `[${this.documentPath}] BeeKEM founder initialization requires a ` +
+            'KEM key pair installed via setKemKeyPair.',
+        );
+      }
+      beekem = new BeeKEM();
+      await beekem.initialize(
+        this._kemKeyPair.privateKey,
+        this._kemKeyPair.publicKey,
       );
+    } else {
+      if (!this._beekem) {
+        throw new Error(
+          `[${this.documentPath}] BeeKEM tree is not initialized; ` +
+            'cannot register a new reader.',
+        );
+      }
+      beekem = this._beekem.clone();
     }
     if (beekem.memberCount >= 2) {
       throw new Error(
-        `[${this.documentPath}] _registerBeeKEMReader: cannot add another ` +
+        `[${this.documentPath}] _prepareBeeKEMReaderRegistration: cannot add another ` +
           'leaf when the exact existing reader Welcome is unavailable',
       );
     }
@@ -9062,24 +9735,42 @@ export class PeerborneDocument<
       true, // extractable
       [],
     );
-    beginMutation?.();
     const result = await beekem.addMember(memberPublicKey);
-    // Commit all identity-indexed caches only after the transactional BeeKEM
-    // addition and Welcome construction succeed.
-    this._readerKemPublicKeys.set(
+    const committedReaderKemPublicKeys = new Map(
+      this._readerKemPublicKeys,
+    );
+    committedReaderKemPublicKeys.set(
       serializedReader,
       new Uint8Array(readerKemPublicKey),
     );
     // `BeeKEMWelcome.leafIndex` is the node index of the new leaf
     // (even-numbered slot in the tree-math layout), which is exactly
     // what `removeMember` consumes.
-    this._readerLeafIndices.set(serializedReader, result.welcome.leafIndex);
+    const committedReaderLeafIndices = new Map(this._readerLeafIndices);
+    committedReaderLeafIndices.set(
+      serializedReader,
+      result.welcome.leafIndex,
+    );
     // Cache the Welcome under its leaf index so a subsequent
     // `addReader` re-invocation can re-emit it without mutating the
     // tree. Keyed by leaf index (not identity) so revocation can
     // clear the cache atomically when the leaf is blanked.
-    this._beekemWelcomeByLeaf.set(result.welcome.leafIndex, result.welcome);
-    return result.welcome;
+    const committedWelcomes = new Map(this._beekemWelcomeByLeaf);
+    committedWelcomes.set(
+      result.welcome.leafIndex,
+      copyBeeKEMWelcome(result.welcome),
+    );
+    const welcomeForCaller = copyBeeKEMWelcome(result.welcome);
+    return {
+      welcome: welcomeForCaller,
+      install: () => {
+        this._beekem = beekem;
+        this._beekemInitialized = true;
+        this._readerKemPublicKeys = committedReaderKemPublicKeys;
+        this._readerLeafIndices = committedReaderLeafIndices;
+        this._beekemWelcomeByLeaf = committedWelcomes;
+      },
+    };
   }
 
   /**

@@ -41,7 +41,10 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    *
    * Implementations MUST capture every caller-owned value needed for the
    * encoding synchronously, before their first asynchronous suspension, and
-   * MUST NOT retain a mutable caller-owned object for later inspection.
+   * MUST NOT retain a mutable caller-owned object for later inspection. Role
+   * transitions snapshot identities before waiting for the document mutation
+   * queue; deferring the read until after an `await` would let the caller
+   * change which identity the queued operation targets.
    *
    * This is used by the BeeKEM Welcome flow (recipient binding) and is
    * intentionally generic so non-CryptoKey providers (e.g.
@@ -67,8 +70,11 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    * caller of `serializePublicKey` (including nested aliases). Network
    * invitation flows require this operation so the inviter can verify proof
    * of possession from a previously unknown recipient and the recipient can
-   * pin the inviter named in the offer. Writer role transitions require it
-   * for mutable identities so their queued target is caller-immutable.
+   * pin the inviter named in the offer. Direct reader onboarding and writer or
+   * reader role transitions require it when the identity is mutable so their
+   * queued target is immutable from the caller's perspective. Primitive
+   * identities can be snapshotted from their canonical serialization without
+   * deserialization.
    */
   deserializePublicKey?(serialized: string): Promise<PublicKey>;
 }
