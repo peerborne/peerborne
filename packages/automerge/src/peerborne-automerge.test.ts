@@ -297,6 +297,30 @@ describe('AutomergeACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('merge preserves a removal committed by a caller accessor', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const removal = await acl.prepareRemove(key1);
+    const remote = new AutomergeACL();
+    const remoteChanges = await remote.add(key2);
+    let committed = false;
+    const reentrantChanges = new Proxy(remoteChanges, {
+      get(target, property, receiver) {
+        if (property === '0' && !committed) {
+          committed = true;
+          removal.commit();
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(() => acl.merge(reentrantChanges)).not.toThrow();
+
+    expect(committed).toBe(true);
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -441,6 +465,43 @@ describe('AutomergeACL', () => {
     receiver.merge(founderChanges);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('does not authorize across a merge that introduces missing dependencies', async () => {
+    const receiver = new AutomergeACL();
+    await receiver.add(key1);
+    const sender = new AutomergeACL();
+    await sender.add(key2);
+    const dependentChanges = await sender.add(key1);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = receiver.check(key1);
+      await started;
+      receiver.merge(dependentChanges);
+      releaseExport();
+
+      await expect(authorization).rejects.toThrow(
+        /unresolved change dependencies/,
+      );
+    } finally {
+      exportSpy.mockRestore();
+    }
   });
 });
 
