@@ -426,6 +426,25 @@ describe('YjsACL', () => {
     await expect(acl.users()).resolves.toEqual([]);
   });
 
+  test('add() rejects a known-incomplete ACL history without reviving a member', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+    acl.merge(dependent);
+
+    await expect(acl.add(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+
+    acl.merge(predecessor);
+    await expect(acl.check(key1)).resolves.toBe(false);
+    await expect(acl.check(key2)).resolves.toBe(false);
+  });
+
   test('check() rejects when a merge changes the ACL during key serialization', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
