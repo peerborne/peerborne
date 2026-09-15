@@ -159,8 +159,8 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 // `hex(welcomeEpochId)`. The buffer is drained on every readers-ACL merge,
 // so a Welcome that arrived before its corresponding ACL update gets
 // replayed automatically. A Welcome that exhausts the TTL without an
-// unblocking ACL update is discarded; the recipient must then rely on a
-// fresh document-load against an authorized peer to recover keychain state.
+// unblocking ACL update is discarded; the recipient then needs a new
+// recipient-bound Welcome or an explicit out-of-band recovery flow.
 //
 // Note: only the reader-onboarding path is currently wired through
 // `PeerborneDocument.addReader`. A writer-onboarding flow that
