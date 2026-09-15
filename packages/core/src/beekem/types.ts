@@ -41,9 +41,11 @@ export interface InternalNode {
 
 /**
  * Legacy v1 path update: encrypted key pairs along a path from leaf to root.
- * This shape has no generation or parent-tree binding, so a valid signed value
- * remains replayable and can be applied out of order. `PathUpdateV2` reserves
- * the state-bound replacement; its codec is not the v1 runtime protocol.
+ * This shape has no generation or parent-tree binding, so this BeeKEM boundary
+ * cannot distinguish a previously unseen delayed value from the next update.
+ * An enclosing keychain may reject an already-installed epoch ID, but that is
+ * not guaranteed here. `PathUpdateV2` reserves the state-bound replacement;
+ * its codec is not the v1 runtime protocol.
  */
 export interface PathUpdate {
   /** Index of the leaf that initiated the update. */
