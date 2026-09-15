@@ -97,7 +97,15 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
-- **PathUpdate is best-effort.** There is no guarantee that ACL change notifications reach all peers.
+- **PathUpdate is best-effort and v1 is replayable.** There is no guarantee that
+  ACL change notifications reach all peers. The active v1 protocol has no
+  generation, parent-tree binding, or replay cache, so a captured valid
+  writer-signed update can be delivered out of order and roll a receiver back
+  to an earlier BeeKEM root. The state-bound v2 codec is reserved but not wired
+  into the runtime handler. V1 also rejects updates whose first sender/receiver
+  path intersection is below the root because its single ciphertext per level
+  cannot safely distribute the remaining ancestor keys, so some multi-level
+  group rotations fail closed.
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
 - **UCAN capabilities are standalone.** The UCAN module can issue and verify capability tokens, but the document change path does not check them.
 - **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
