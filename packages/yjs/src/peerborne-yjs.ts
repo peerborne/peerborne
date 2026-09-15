@@ -4,6 +4,7 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -819,8 +820,10 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   async prepareAdd(
     publicKey: CryptoKey,
   ): Promise<PreparedACLChange<Uint8Array>> {
+    this._assertComplete('add an ACL member');
     const hash = await serializeKey(publicKey);
     assertCanonicalP384PublicKeyEncoding(hash);
+    this._assertComplete('add an ACL member');
     const baseRevision = this._revision;
     const base = this._acl;
     const staged = new Doc({ gc: false });
