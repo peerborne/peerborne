@@ -5,6 +5,7 @@ import {
   PeerborneDocument,
   snapshotInvitationBootstrapBundle,
 } from './peerborne-document.js';
+import { ACLOperationInProgressError } from './acl.js';
 import {
   crdtDocumentChangeNode,
   crdtReaderChangeNode,
@@ -145,6 +146,80 @@ describe('document load response boundaries', () => {
       document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
     ).rejects.toThrow(/signatureContext/);
     expect(syncValidatedProtocolMessage).not.toHaveBeenCalled();
+  });
+
+  test('retries ACL conflicts while preparing a remote-update audience', async () => {
+    const readers = jest
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError('reader listing', Promise.resolve()),
+      )
+      .mockResolvedValue(['reader']);
+    const writers = jest
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError('writer listing', Promise.resolve()),
+      )
+      .mockResolvedValue(['writer']);
+    const readerCheck = jest
+      .fn<(key: string) => Promise<boolean>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError('reader check', Promise.resolve()),
+      )
+      .mockResolvedValue(false);
+    const handler = jest.fn();
+    const document = fakeDocument({
+      _document: { ready: true },
+      _readers: { users: readers, check: readerCheck },
+      _writers: { users: writers },
+    });
+
+    await expect(
+      document._prepareRemoteUpdateNotification(['HEAD'], [handler]),
+    ).resolves.toEqual({
+      handlers: [handler],
+      document: { ready: true },
+      readers: ['reader', 'writer'],
+      writers: ['writer'],
+      hashes: ['HEAD'],
+    });
+    expect(readers).toHaveBeenCalledTimes(2);
+    expect(writers).toHaveBeenCalledTimes(2);
+    expect(readerCheck).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries ACL conflicts while authorizing a load requester', async () => {
+    const readers = jest
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError('reader listing', Promise.resolve()),
+      )
+      .mockResolvedValue([]);
+    const writers = jest
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError('writer listing', Promise.resolve()),
+      )
+      .mockResolvedValue(['writer']);
+    const verify = jest.fn(async () => true);
+    const document = fakeDocument({
+      swarm: { config: { enableSigning: true } },
+      _deserializeSignature: jest.fn(() => new Uint8Array([1])),
+      _encoder: new TextEncoder(),
+      _readers: { users: readers },
+      _writers: { users: writers },
+      _authProvider: { verify },
+    });
+
+    await expect(
+      document._isLoadRequesterAuthorized({
+        documentId: '/retry-load-requester',
+        signature: 'AAAA',
+      }),
+    ).resolves.toBe(true);
+    expect(readers).toHaveBeenCalledTimes(2);
+    expect(writers).toHaveBeenCalledTimes(2);
+    expect(verify).toHaveBeenCalledTimes(1);
   });
 
   test('rechecks current writers after an admitted signer is removed', async () => {
