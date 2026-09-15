@@ -107,11 +107,11 @@ describe('UCANACL', () => {
 
     const addition = acl.add('key1');
     await addWasStarted;
-    await expect(acl.check('attacker')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingCheck = expect(acl.check('attacker')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.users()).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingListing = expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
     expect(() => acl.current()).toThrow(/backing mutation is in progress/);
 
@@ -119,6 +119,8 @@ describe('UCANACL', () => {
     await expect(addition).rejects.toThrow(
       'backing add failed after mutation',
     );
+    await pendingCheck;
+    await pendingListing;
     await expect(acl.check('attacker')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
@@ -320,7 +322,7 @@ describe('UCANACL', () => {
     expect(hasAccess).toBe(false);
   });
 
-  test('blocks checks and user listings while backing removal is pending', async () => {
+  test('waits checks and user listings behind a backing removal', async () => {
     let removalStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       removalStarted = resolve;
@@ -339,23 +341,20 @@ describe('UCANACL', () => {
     const removal = acl.remove('key1');
     await started;
 
-    await expect(acl.check('key1')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-    await expect(acl.check('key1', '/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-    await expect(acl.users('/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
+    const membershipCheck = acl.check('key1');
+    const capabilityCheck = acl.check('key1', '/doc/read');
+    const listing = acl.users();
+    const capabilityListing = acl.users('/doc/read');
+    await Promise.resolve();
     expect(backing.check).not.toHaveBeenCalled();
+    expect(backing.users).not.toHaveBeenCalled();
 
     resolveRemoval('changes');
     await expect(removal).resolves.toBe('changes');
-    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(membershipCheck).resolves.toBe(false);
+    await expect(capabilityCheck).resolves.toBe(false);
+    await expect(listing).resolves.toEqual([]);
+    await expect(capabilityListing).resolves.toEqual([]);
   });
 
   test('denies an in-flight check when removal starts during its backing await', async () => {
@@ -390,12 +389,9 @@ describe('UCANACL', () => {
     await removalWasStarted;
 
     resolveCheck(true);
-    await expect(authorization).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-
     resolveRemoval('changes');
     await expect(removal).resolves.toBe('changes');
+    await expect(authorization).resolves.toBe(false);
   });
 
   test('poisons access after a pending backing removal fails', async () => {
@@ -416,12 +412,13 @@ describe('UCANACL', () => {
 
     const removal = acl.remove('key1');
     await started;
-    await expect(acl.check('key1')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingCheck = expect(acl.check('key1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
 
     rejectRemoval(new Error('backing remove failed'));
     await expect(removal).rejects.toThrow('backing remove failed');
+    await pendingCheck;
     await expect(acl.check('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
@@ -644,7 +641,7 @@ describe('UCANACL', () => {
     expect(members).toEqual(new Set());
   });
 
-  test('denies an in-flight check when a remote merge changes backing state', async () => {
+  test('retries an in-flight check when a remote merge changes backing state', async () => {
     let checkStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       checkStarted = resolve;
@@ -653,10 +650,12 @@ describe('UCANACL', () => {
     const pendingCheck = new Promise<boolean>((resolve) => {
       resolveCheck = resolve;
     });
-    backing.check.mockImplementation(() => {
-      checkStarted();
-      return pendingCheck;
-    });
+    backing.check
+      .mockImplementationOnce(() => {
+        checkStarted();
+        return pendingCheck;
+      })
+      .mockResolvedValueOnce(false);
 
     const authorization = acl.check('key1');
     await started;
@@ -664,6 +663,7 @@ describe('UCANACL', () => {
     resolveCheck(true);
 
     await expect(authorization).resolves.toBe(false);
+    expect(backing.check).toHaveBeenCalledTimes(2);
   });
 
   test('rechecks backing health after an in-flight negative check', async () => {
@@ -757,15 +757,15 @@ describe('UCANACL', () => {
         'issuer',
       ),
     ).rejects.toThrow('already in progress');
-    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-    await expect(acl.getEntry('user1')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
+    const pendingCheck = acl.check('user1', '/doc/write');
+    const pendingEntry = acl.getEntry('user1');
 
     resolveAdd('changes');
     await expect(grant).resolves.toBe('changes');
+    await expect(pendingCheck).resolves.toBe(true);
+    await expect(pendingEntry).resolves.toEqual(
+      expect.objectContaining({ capabilities: ['/doc/write'] }),
+    );
     expect(await acl.check('user1', '/doc/write')).toBe(true);
   });
 
@@ -830,20 +830,23 @@ describe('UCANACL', () => {
       'issuer',
     );
     await grantWasStarted;
-    await expect(acl.check('user1')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingMembershipCheck = expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
-      /backing mutation is in progress/,
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingCapabilityCheck = expect(
+      acl.check('user1', '/doc/write'),
+    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
+    const pendingListing = expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
 
     rejectGrant(new Error('backing grant failed after mutation'));
     await expect(grant).rejects.toThrow(
       'backing grant failed after mutation',
     );
+    await pendingMembershipCheck;
+    await pendingCapabilityCheck;
+    await pendingListing;
     await expect(acl.getEntry('user1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
@@ -921,14 +924,18 @@ describe('UCANACL', () => {
       'issuer',
     );
     await replacementWasStarted;
-    await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingReadCheck = expect(
+      acl.check('user1', '/doc/read'),
+    ).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingWriteCheck = expect(
+      acl.check('user1', '/doc/write'),
+    ).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.users('/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingListing = expect(acl.users('/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
     expect(() => acl.current()).toThrow(/backing mutation is in progress/);
 
@@ -936,6 +943,9 @@ describe('UCANACL', () => {
     await expect(replacement).rejects.toThrow(
       'replacement grant failed after mutation',
     );
+    await pendingReadCheck;
+    await pendingWriteCheck;
+    await pendingListing;
 
     await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
@@ -1017,11 +1027,13 @@ describe('UCANACL', () => {
       'issuer',
     );
     await replacementWasStarted;
-    await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingReadCheck = expect(
+      acl.check('user1', '/doc/read'),
+    ).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.users('/doc/read')).rejects.toThrow(
-      /backing mutation is in progress/,
+    const pendingListing = expect(acl.users('/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
     );
     expect(() => acl.current()).toThrow(/backing mutation is in progress/);
 
@@ -1029,6 +1041,8 @@ describe('UCANACL', () => {
     await expect(replacement).rejects.toThrow(
       'replacement grant failed after mutation',
     );
+    await pendingReadCheck;
+    await pendingListing;
     await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
