@@ -314,6 +314,61 @@ describe('YjsACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('merge() rejects late malformed input without changing live state', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+    const remote = new YjsACL();
+    const validRemoteAddition = await remote.add(key2);
+    expect(validRemoteAddition.at(-1)).toBe(0);
+    // Leave complete structs followed by a truncated delete-set count.
+    const malformedRemoteAddition = validRemoteAddition.subarray(
+      0,
+      validRemoteAddition.length - 1,
+    );
+
+    expect(() => acl.merge(malformedRemoteAddition)).toThrow();
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+    expect(await acl.users()).toHaveLength(1);
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('merge() preserves dependency-incomplete updates until dependencies arrive', async () => {
+    const source = new YjsACL();
+    const dependency = await source.add(key1);
+    const dependent = await source.add(key2);
+    const receiver = new YjsACL();
+
+    receiver.merge(dependent);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(false);
+
+    receiver.merge(dependency);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() preserves pending deletes until their dependencies arrive', async () => {
+    const source = new YjsACL();
+    const dependency = await source.add(key1);
+    const pendingDelete = await source.remove(key1);
+    const receiver = new YjsACL();
+
+    receiver.merge(pendingDelete);
+    await expect(receiver.prepareRemove(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+
+    receiver.merge(dependency);
+    expect(await receiver.check(key1)).toBe(false);
+    await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
+  });
+
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
     const acl = new YjsACL();
     await acl.add(key1);

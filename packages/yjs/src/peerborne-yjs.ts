@@ -627,7 +627,12 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
-    applyUpdateV2(this._acl, change);
+    const detachedChange = new Uint8Array(change);
+    const staged = new Doc();
+    applyUpdateV2(staged, encodeStateAsUpdateV2(this._acl));
+    staged.clientID = this._acl.clientID;
+    applyUpdateV2(staged, detachedChange);
+    this._acl = staged;
     this._revision++;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
