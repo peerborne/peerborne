@@ -1098,6 +1098,20 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/write')).toBe(false);
   });
 
+  test('prepareRemove rejects after a remote backing merge', async () => {
+    const commit = jest.fn();
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'remove-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareRemove('user1');
+    acl.merge('remote-changes');
+
+    expect(() => prepared.commit()).toThrow(/backing ACL changed/);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   test('prepareRemove leaves UCAN state unchanged when backing commit rejects', async () => {
     const fakeUcan = makeFakeUcan({
       issuer: 'issuer',
