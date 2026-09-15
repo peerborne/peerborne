@@ -7,9 +7,28 @@ import {
 import { generateEciesKeyPair } from '../ecies.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
+const P256_PRIME =
+  (1n << 256n) - (1n << 224n) + (1n << 192n) + (1n << 96n) - 1n;
 
 async function generateKeyPair(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(ECDH_ALGO, true, ['deriveBits']);
+}
+
+function negateP256Point(rawPublicKey: Uint8Array): Uint8Array {
+  if (rawPublicKey.byteLength !== 65 || rawPublicKey[0] !== 4) {
+    throw new Error('Expected an uncompressed P-256 public key');
+  }
+  const negated = new Uint8Array(rawPublicKey);
+  let y = 0n;
+  for (let index = 33; index < 65; index++) {
+    y = (y << 8n) | BigInt(rawPublicKey[index]);
+  }
+  let negativeY = (P256_PRIME - y) % P256_PRIME;
+  for (let index = 64; index >= 33; index--) {
+    negated[index] = Number(negativeY & 0xffn);
+    negativeY >>= 8n;
+  }
+  return negated;
 }
 
 function copyWelcome(welcome: BeeKEMWelcome): BeeKEMWelcome {
@@ -551,7 +570,9 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
         recipientKeys.privateKey,
         mismatchedKeys.publicKey,
       ),
-    ).rejects.toThrow(/recipient leaf 2 public and private keys do not match/);
+    ).rejects.toThrow(
+      /recipient leaf 2 public and private keys are not ECDH-compatible/,
+    );
     await expectTargetPristine(target);
     await expect(
       target.processWelcome(
@@ -587,6 +608,40 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     ).rejects.toThrow(
       new RegExp(
         `path node ${mismatchedNode.nodeIndex} public and private keys do not match`,
+      ),
+    );
+    await expectTargetPristine(target);
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+  });
+
+  test('rejects a negated advertised point at a decrypted path node', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createFourMemberWelcome();
+    expect(welcome.pathKeys).toHaveLength(2);
+    const forged = copyWelcome(welcome);
+    const forgedNode = forged.pathKeys[1];
+    forgedNode.publicKey = negateP256Point(forgedNode.publicKey);
+    forged.treeHash = await computeWelcomeTreeHash(
+      forged,
+      recipientKeys.publicKey,
+    );
+    const target = new BeeKEM();
+
+    await expect(
+      target.processWelcome(
+        forged,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow(
+      new RegExp(
+        `path node ${forgedNode.nodeIndex} public and private keys do not match`,
       ),
     );
     await expectTargetPristine(target);
