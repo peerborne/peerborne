@@ -112,6 +112,7 @@ async function assertExactWelcomePathKeyPair(
 }
 
 interface StagedWelcomeCandidate {
+  receiverGeneration: bigint;
   nodes: Map<number, TreeNode>;
   numLeaves: number;
   leafIndex: number;
@@ -136,6 +137,7 @@ export class BeeKEM {
   private _nodes: Map<number, TreeNode> = new Map();
   private _numLeaves: number = 0;
   private _myLeafIndex: number = -1;
+  private _receiverGeneration = 0n;
   private _welcomeAttemptRevision = 0n;
   private _pendingWelcomeAttempts = new Set<bigint>();
   private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
@@ -154,6 +156,7 @@ export class BeeKEM {
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
+    this._receiverGeneration++;
     this._nodes.clear();
     this._numLeaves = 1;
     this._myLeafIndex = 0;
@@ -453,6 +456,7 @@ export class BeeKEM {
     // descriptor trap can invoke processWelcome reentrantly; in that case the
     // nested, later invocation must retain the higher revision and win.
     const attemptRevision = ++this._welcomeAttemptRevision;
+    const receiverGeneration = this._receiverGeneration;
     this._pendingWelcomeAttempts.add(attemptRevision);
 
     try {
@@ -461,6 +465,7 @@ export class BeeKEM {
         welcome,
         privateKey,
         publicKey,
+        receiverGeneration,
       );
     } catch (error) {
       if (this._pendingWelcomeAttempts.delete(attemptRevision)) {
@@ -475,6 +480,7 @@ export class BeeKEM {
     welcome: BeeKEMWelcome,
     privateKey: CryptoKey,
     publicKey: CryptoKey,
+    receiverGeneration: bigint,
   ): Promise<Uint8Array> {
     // This public method can be called without passing through the strict wire
     // decoder. Snapshot and bound the complete legacy tree synchronously
@@ -595,7 +601,10 @@ export class BeeKEM {
     // they succeed so every malformed-input or WebCrypto failure leaves the
     // receiver's prior tree intact and a retry starts from that exact state.
     const rootSecret = await staged.getRootSecret();
-    if (!this._isFreshWelcomeTarget()) {
+    if (
+      receiverGeneration !== this._receiverGeneration ||
+      !this._isFreshWelcomeTarget()
+    ) {
       throw new Error(
         'Cannot process Welcome: the attempt was superseded or receiver state changed',
       );
@@ -604,6 +613,7 @@ export class BeeKEM {
       attemptRevision,
       staged,
       rootSecret,
+      receiverGeneration,
     );
   }
 
@@ -759,10 +769,14 @@ export class BeeKEM {
     revision: bigint,
     staged: BeeKEM,
     rootSecret: Uint8Array,
+    receiverGeneration: bigint,
   ): Promise<Uint8Array> {
     return new Promise<Uint8Array>((resolve, reject) => {
       this._pendingWelcomeAttempts.delete(revision);
-      if (!this._isFreshWelcomeTarget()) {
+      if (
+        receiverGeneration !== this._receiverGeneration ||
+        !this._isFreshWelcomeTarget()
+      ) {
         reject(
           new Error(
             'Cannot process Welcome: the attempt was superseded or receiver state changed',
@@ -772,6 +786,7 @@ export class BeeKEM {
         return;
       }
       this._stagedWelcomeCandidates.set(revision, {
+        receiverGeneration,
         nodes: staged._nodes,
         numLeaves: staged._numLeaves,
         leafIndex: staged._myLeafIndex,
@@ -784,6 +799,18 @@ export class BeeKEM {
   }
 
   private _settleWelcomeCandidates(): void {
+    if (this._stagedWelcomeCandidates.size === 0) return;
+
+    for (const [revision, candidate] of this._stagedWelcomeCandidates) {
+      if (candidate.receiverGeneration !== this._receiverGeneration) {
+        this._stagedWelcomeCandidates.delete(revision);
+        candidate.reject(
+          new Error(
+            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+          ),
+        );
+      }
+    }
     if (this._stagedWelcomeCandidates.size === 0) return;
 
     if (!this._isFreshWelcomeTarget()) {
@@ -818,6 +845,7 @@ export class BeeKEM {
 
     const candidates = [...this._stagedWelcomeCandidates.entries()];
     this._stagedWelcomeCandidates.clear();
+    this._receiverGeneration++;
     this._nodes = winner.nodes;
     this._numLeaves = winner.numLeaves;
     this._myLeafIndex = winner.leafIndex;
