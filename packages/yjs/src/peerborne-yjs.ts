@@ -707,6 +707,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   ): Promise<PreparedACLRemoval<Uint8Array>> {
     this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
+    assertCanonicalP384PublicKeyEncoding(hash);
     this._assertComplete('remove an ACL member');
     const baseRevision = this._revision;
     const base = this._acl;
@@ -715,6 +716,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       staged,
       snapshotBoundedYjsACLState(base, 'stage an ACL removal'),
     );
+    staged.clientID = base.clientID;
     const stagedUsers = staged.getMap('users');
     const hadMember = stagedUsers.has(hash);
     const beforeSV = encodeStateVector(staged);
