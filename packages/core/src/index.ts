@@ -32,7 +32,11 @@ import {
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { ACL } from './acl.js';
+import {
+  ACL,
+  ACLOperationInProgressError,
+  retryACLConflict,
+} from './acl.js';
 import {
   Keychain,
   TransactionalKeychain,
@@ -185,6 +189,8 @@ export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
+  ACLOperationInProgressError,
+  retryACLConflict,
   ACLProvider,
   SubtleCrypto,
   Peerborne,
