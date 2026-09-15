@@ -84,6 +84,55 @@ describe('UCANACL', () => {
     expect(await acl.check('key1', '/doc/read')).toBe(false);
   });
 
+  test('quarantines a partially applied failed add until an explicit retry succeeds', async () => {
+    let isMember = false;
+    let addStarted!: () => void;
+    const addWasStarted = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    let rejectAdd!: (error: Error) => void;
+    const pendingAdd = new Promise<string>((_resolve, reject) => {
+      rejectAdd = reject;
+    });
+    backing.add
+      .mockImplementationOnce(() => {
+        isMember = true;
+        addStarted();
+        return pendingAdd;
+      })
+      .mockImplementationOnce(async () => {
+        isMember = true;
+        return 'recovery-changes';
+      });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['key1'] : [],
+    );
+    backing.current.mockReturnValue('current-state');
+
+    const addition = acl.add('key1');
+    await addWasStarted;
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+
+    rejectAdd(new Error('backing add failed after mutation'));
+    await expect(addition).rejects.toThrow(
+      'backing add failed after mutation',
+    );
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+
+    await expect(acl.add('key1')).resolves.toBe('recovery-changes');
+    await expect(acl.check('key1')).resolves.toBe(true);
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(true);
+    await expect(acl.users()).resolves.toEqual(['key1']);
+    expect(acl.current()).toBe('current-state');
+  });
+
   test('orders a removal after an in-flight addition', async () => {
     let resolveAdd!: (changes: string) => void;
     const pendingAdd = new Promise<string>((resolve) => {
@@ -338,6 +387,57 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
   });
 
+  test('poisons all future operations after a partially applied failed merge', async () => {
+    let isMember = false;
+    backing.merge.mockImplementation(() => {
+      isMember = true;
+      throw new Error('backing merge failed after mutation');
+    });
+    backing.current.mockReturnValue('partially-mutated-state');
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['key1'] : [],
+    );
+
+    expect(() => acl.merge('incoming-changes')).toThrow(
+      'backing merge failed after mutation',
+    );
+
+    expect(() => acl.current()).toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(acl.check('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(acl.users()).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(acl.getEntry('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(acl.add('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(acl.remove('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    await expect(
+      acl.grant(
+        'key1',
+        '/doc/read',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).rejects.toThrow(/failed ACL merge may have partially changed/);
+    expect(() => acl.merge('retry')).toThrow(
+      /failed ACL merge may have partially changed/,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+    expect(backing.current).not.toHaveBeenCalled();
+  });
+
   test('rejects merge while identity admission is pending', async () => {
     let serializationStarted!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -553,6 +653,241 @@ describe('UCANACL', () => {
     ).rejects.toThrow('backing add failed');
     expect(await acl.getEntry('user1')).toBeUndefined();
     expect(await acl.check('user1', '/doc/write')).toBe(false);
+  });
+
+  test('quarantines a partially applied failed grant until an explicit retry succeeds', async () => {
+    let isMember = false;
+    let grantStarted!: () => void;
+    const grantWasStarted = new Promise<void>((resolve) => {
+      grantStarted = resolve;
+    });
+    let rejectGrant!: (error: Error) => void;
+    const pendingGrant = new Promise<string>((_resolve, reject) => {
+      rejectGrant = reject;
+    });
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.add
+      .mockImplementationOnce(() => {
+        isMember = true;
+        grantStarted();
+        return pendingGrant;
+      })
+      .mockImplementationOnce(async () => {
+        isMember = true;
+        return 'recovery-changes';
+      });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['user1'] : [],
+    );
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await grantWasStarted;
+    await expect(acl.check('user1')).resolves.toBe(false);
+    await expect(acl.check('user1', '/doc/write')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+
+    rejectGrant(new Error('backing grant failed after mutation'));
+    await expect(grant).rejects.toThrow(
+      'backing grant failed after mutation',
+    );
+    await expect(acl.getEntry('user1')).resolves.toBeUndefined();
+    await expect(acl.check('user1')).resolves.toBe(false);
+    await expect(acl.check('user1', '/doc/write')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).resolves.toBe('recovery-changes');
+    await expect(acl.check('user1')).resolves.toBe(true);
+    await expect(acl.check('user1', '/doc/write')).resolves.toBe(true);
+    await expect(acl.users('/doc/write')).resolves.toEqual(['user1']);
+  });
+
+  test('preserves a prior valid capability after a later grant partially fails', async () => {
+    let isMember = false;
+    let replacementStarted!: () => void;
+    const replacementWasStarted = new Promise<void>((resolve) => {
+      replacementStarted = resolve;
+    });
+    let rejectReplacement!: (error: Error) => void;
+    const pendingReplacement = new Promise<string>((_resolve, reject) => {
+      rejectReplacement = reject;
+    });
+    mockCreateUCAN
+      .mockResolvedValueOnce(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/admin' }],
+        }),
+      );
+    backing.add
+      .mockImplementationOnce(async () => {
+        isMember = true;
+        return 'initial-changes';
+      })
+      .mockImplementationOnce(() => {
+        isMember = true;
+        replacementStarted();
+        return pendingReplacement;
+      });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['user1'] : [],
+    );
+    backing.current.mockReturnValue('current-state');
+
+    await acl.grant(
+      'user1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    const replacement = acl.grant(
+      'user1',
+      '/doc/admin',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await replacementWasStarted;
+    await expect(acl.check('user1', '/doc/read')).resolves.toBe(true);
+    await expect(acl.check('user1', '/doc/write')).resolves.toBe(false);
+    await expect(acl.users('/doc/read')).resolves.toEqual(['user1']);
+    expect(acl.current()).toBe('current-state');
+
+    rejectReplacement(new Error('replacement grant failed after mutation'));
+    await expect(replacement).rejects.toThrow(
+      'replacement grant failed after mutation',
+    );
+
+    await expect(acl.check('user1', '/doc/read')).resolves.toBe(true);
+    await expect(acl.check('user1', '/doc/write')).resolves.toBe(false);
+    await expect(acl.users('/doc/read')).resolves.toEqual(['user1']);
+    expect((await acl.getEntry('user1'))?.capabilities).toEqual([
+      '/doc/read',
+    ]);
+  });
+
+  test('quarantines a cached grant when a failed grant partially re-adds a removed member', async () => {
+    let isMember = false;
+    let replacementStarted!: () => void;
+    const replacementWasStarted = new Promise<void>((resolve) => {
+      replacementStarted = resolve;
+    });
+    let rejectReplacement!: (error: Error) => void;
+    const pendingReplacement = new Promise<string>((_resolve, reject) => {
+      rejectReplacement = reject;
+    });
+    mockCreateUCAN
+      .mockResolvedValueOnce(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/admin' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/admin' }],
+        }),
+      );
+    backing.add
+      .mockImplementationOnce(async () => {
+        isMember = true;
+        return 'initial-changes';
+      })
+      .mockImplementationOnce(() => {
+        isMember = true;
+        replacementStarted();
+        return pendingReplacement;
+      })
+      .mockImplementationOnce(async () => {
+        isMember = true;
+        return 'recovery-changes';
+      });
+    backing.merge.mockImplementation(() => {
+      isMember = false;
+    });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['user1'] : [],
+    );
+    backing.current.mockReturnValue('current-state');
+
+    await acl.grant(
+      'user1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    acl.merge('remote-removal');
+    await expect(acl.check('user1', '/doc/read')).resolves.toBe(false);
+    expect((await acl.getEntry('user1'))?.capabilities).toEqual([
+      '/doc/read',
+    ]);
+
+    const replacement = acl.grant(
+      'user1',
+      '/doc/admin',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await replacementWasStarted;
+    await expect(acl.check('user1', '/doc/read')).resolves.toBe(false);
+    await expect(acl.users('/doc/read')).resolves.toEqual([]);
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+
+    rejectReplacement(new Error('replacement grant failed after mutation'));
+    await expect(replacement).rejects.toThrow(
+      'replacement grant failed after mutation',
+    );
+    await expect(acl.check('user1', '/doc/read')).resolves.toBe(false);
+    await expect(acl.users('/doc/read')).resolves.toEqual([]);
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/admin',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).resolves.toBe('recovery-changes');
+    await expect(acl.check('user1', '/doc/admin')).resolves.toBe(true);
+    expect(acl.current()).toBe('current-state');
   });
 
   test('a successful grant clears a prior revocation tombstone', async () => {
@@ -772,7 +1107,7 @@ describe('UCANACL', () => {
     expect(backing.check).not.toHaveBeenCalled();
   });
 
-  test('denies an in-flight user listing when a remote merge changes backing state', async () => {
+  test('retries an in-flight user listing when a remote merge changes backing state', async () => {
     let listingStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       listingStarted = resolve;
@@ -781,17 +1116,57 @@ describe('UCANACL', () => {
     const pendingUsers = new Promise<string[]>((resolve) => {
       resolveUsers = resolve;
     });
-    backing.users.mockImplementation(() => {
-      listingStarted();
-      return pendingUsers;
-    });
+    backing.users
+      .mockImplementationOnce(() => {
+        listingStarted();
+        return pendingUsers;
+      })
+      .mockResolvedValueOnce(['key2']);
 
     const listing = acl.users();
     await started;
     acl.merge('remote-removal');
     resolveUsers(['key1']);
 
-    await expect(listing).resolves.toEqual([]);
+    await expect(listing).resolves.toEqual(['key2']);
+    expect(backing.users).toHaveBeenCalledTimes(2);
+  });
+
+  test('rejects a user listing after bounded continuous revision races', async () => {
+    const attemptStartedResolvers: Array<() => void> = [];
+    const attemptStarted = Array.from(
+      { length: 3 },
+      () =>
+        new Promise<void>((resolve) => {
+          attemptStartedResolvers.push(resolve);
+        }),
+    );
+    const listingResolvers: Array<(users: string[]) => void> = [];
+    const pendingListings = Array.from(
+      { length: 3 },
+      () =>
+        new Promise<string[]>((resolve) => {
+          listingResolvers.push(resolve);
+        }),
+    );
+    let attempt = 0;
+    backing.users.mockImplementation(() => {
+      const currentAttempt = attempt++;
+      attemptStartedResolvers[currentAttempt]!();
+      return pendingListings[currentAttempt]!;
+    });
+
+    const listing = acl.users();
+    for (let index = 0; index < 3; index++) {
+      await attemptStarted[index];
+      acl.merge(`remote-change-${index}`);
+      listingResolvers[index]!([`key${index}`]);
+    }
+
+    await expect(listing).rejects.toThrow(
+      'ACL listing remained stale after 3 attempts',
+    );
+    expect(backing.users).toHaveBeenCalledTimes(3);
   });
 
   test('grant creates UCAN and stores entry', async () => {
