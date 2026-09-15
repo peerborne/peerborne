@@ -1162,17 +1162,20 @@ export class PeerborneDocument<
   private async _fireRemoteUpdateHandlers(hashes: string[]) {
     for (const handler of Object.values(this._remoteHandlers)) {
       try {
-        handler(
-          this._document,
-          await this.getReaders(),
-          await this.getWriters(),
-          hashes,
-        );
-      } catch (error) {
-        console.error(
-          `Remote update handler failed for ${this.documentPath}:`,
-          error,
-        );
+        void Promise.resolve(
+          handler(
+            this._document,
+            await this.getReaders(),
+            await this.getWriters(),
+            hashes,
+          ) as void | Promise<void>,
+        ).catch(() => {
+          console.error(
+            `Remote update handler failed for ${this.documentPath}`,
+          );
+        });
+      } catch {
+        console.error(`Remote update handler failed for ${this.documentPath}`);
       }
     }
   }
@@ -3177,6 +3180,7 @@ export class PeerborneDocument<
         let beganBootstrapStateApplication = false;
         let trackedLoadHadEstablishedState = false;
         let trackedLoadMadeReplicatedProgress = false;
+        let trackedLoadMadeLogicalKeychainProgress = false;
         const completeBootstrapStateApplication = async (): Promise<void> => {
           if (beganBootstrapStateApplication) {
             await this._mutationQueue.run(() =>
@@ -3206,8 +3210,15 @@ export class PeerborneDocument<
             message,
             false,
             beginBootstrapStateApplication,
+            false,
+            () => {
+              trackedLoadMadeLogicalKeychainProgress = true;
+            },
           );
           trackedLoadMadeReplicatedProgress =
+            ((loadWriterAdmission === 'pinned' ||
+              loadWriterAdmission === 'unsigned') &&
+              trackedLoadMadeLogicalKeychainProgress) ||
             this._hashes.size > hashesBefore ||
             this._lastSyncMessage !== lastSyncMessageBefore ||
             this._latestSnapshot !== latestSnapshotBefore;
@@ -4781,6 +4792,7 @@ export class PeerborneDocument<
     verifySignature: boolean,
     onStateApplicationStart?: () => void,
     continuePendingBootstrapApplication = false,
+    onLogicalKeychainChange?: () => void,
   ): Promise<boolean> {
     if (continuePendingBootstrapApplication) {
       if (this._bootstrapLoadApplicationState !== 'pending') {
@@ -4848,11 +4860,47 @@ export class PeerborneDocument<
         keychainChanges.length === 0
       );
 
+    // The built-in providers do not share one byte-level empty encoding:
+    // Automerge uses an empty array, while Yjs emits a non-empty update for an
+    // empty document. When staging and logical commitments are available,
+    // compare the live and projected key sequences before reserving a bootstrap
+    // instance. A semantic no-op is still committed atomically so providers
+    // retain causal metadata, but it does not expose new logical key state.
+    // Opaque legacy keychains retain the conservative begin-before-merge behavior.
+    const preparedKeychainMerge =
+      hasKeychainChanges &&
+      onStateApplicationStart !== undefined &&
+      this._keychain.prepareMerge
+        ? this._keychain.prepareMerge(keychainChanges)
+        : undefined;
+    let logicalKeychainStateChanged: boolean | undefined;
+    if (
+      preparedKeychainMerge?.stateCommitment &&
+      this._keychain.stateCommitment
+    ) {
+      const [liveCommitment, preparedCommitment] = await Promise.all([
+        this._keychain.stateCommitment(),
+        preparedKeychainMerge.stateCommitment(),
+      ]);
+      logicalKeychainStateChanged = !constantTimeEqual(
+        liveCommitment,
+        preparedCommitment,
+      );
+    }
     // Update/replace list of document keys (if provided).
     if (hasKeychainChanges) {
-      beginStateApplication();
+      if (logicalKeychainStateChanged !== false) {
+        beginStateApplication();
+      }
       try {
-        this._keychain.merge(keychainChanges);
+        if (preparedKeychainMerge) {
+          preparedKeychainMerge.commit();
+        } else {
+          this._keychain.merge(keychainChanges);
+        }
+        if (logicalKeychainStateChanged === true) {
+          onLogicalKeychainChange?.();
+        }
         console.log(`Updated keychain in ${this.documentPath}`);
       } catch (e) {
         console.error(
