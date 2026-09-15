@@ -182,6 +182,13 @@ import {
 import { constantTimeEqual } from './internal/constant-time-equal.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
+function throwIfLoadAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Document load was aborted');
+}
+
 /** Opaque, recipient-bound material returned by the invitation join handler. */
 export interface InvitationBootstrapBundle {
   welcomeEpochId: Uint8Array;
@@ -3045,6 +3052,7 @@ export class PeerborneDocument<
     requireCompleteCids = false,
     configuredResponseTimeoutMs?: number,
     beforeBootstrapComplete?: () => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     const responseLimit =
       maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE;
@@ -3072,6 +3080,7 @@ export class PeerborneDocument<
     // protocol traffic. Abort the already-dialed stream so this overlap does
     // not leak transport resources. The second check after response parsing
     // closes the race where another bootstrap becomes pending in flight.
+    throwIfLoadAborted(signal);
     if (this._bootstrapLoadApplicationState === 'pending') {
       abortResponse(new Error('Document load rejected on poisoned instance'));
       return false;
@@ -3104,6 +3113,7 @@ export class PeerborneDocument<
         } finally {
           clearResponseDeadline();
         }
+        throwIfLoadAborted(signal);
 
         // Empty response means the peer couldn't serve this request.
         if (assembled.length === 0) {
@@ -3151,6 +3161,7 @@ export class PeerborneDocument<
           this._syncMessageSerializer.deserializeSyncMessage(rawContent),
           'load-response-v3',
         );
+        throwIfLoadAborted(signal);
         if (message.documentId !== this.documentPath) {
           console.warn(
             `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
@@ -3292,16 +3303,23 @@ export class PeerborneDocument<
         let trackedLoadHadEstablishedState = false;
         let trackedLoadMadeReplicatedProgress = false;
         let trackedLoadMadeLogicalKeychainProgress = false;
+        const assertBootstrapCanComplete = async (): Promise<void> => {
+          throwIfLoadAborted(signal);
+          await beforeBootstrapComplete?.();
+          throwIfLoadAborted(signal);
+        };
         const completeBootstrapStateApplication = async (): Promise<void> => {
           if (beganBootstrapStateApplication) {
-            await this._mutationQueue.run(() =>
-              this._completeBootstrapStateApplicationUnlocked(
-                beforeBootstrapComplete,
-              ),
-            );
+            await this._mutationQueue.run(() => {
+              throwIfLoadAborted(signal);
+              return this._completeBootstrapStateApplicationUnlocked(
+                assertBootstrapCanComplete,
+              );
+            });
           }
         };
         const beginBootstrapStateApplication = (): void => {
+          throwIfLoadAborted(signal);
           this._markBootstrapStateApplicationPending();
           beganBootstrapStateApplication = true;
         };
@@ -3317,6 +3335,7 @@ export class PeerborneDocument<
             this._bootstrapLoadApplicationState === 'complete' ||
             hasReplicatedState();
 
+          throwIfLoadAborted(signal);
           const synced = await this._syncUnlocked(
             message,
             false,
@@ -3327,6 +3346,7 @@ export class PeerborneDocument<
               trackedLoadMadeLogicalKeychainProgress = true;
             },
           );
+          throwIfLoadAborted(signal);
           trackedLoadMadeReplicatedProgress =
             ((loadWriterAdmission === 'pinned' ||
               loadWriterAdmission === 'unsigned') &&
@@ -3341,7 +3361,7 @@ export class PeerborneDocument<
             !beganBootstrapStateApplication &&
             trackedLoadHadEstablishedState
           ) {
-            await beforeBootstrapComplete?.();
+            await assertBootstrapCanComplete();
           }
           return synced;
         };
@@ -3718,6 +3738,7 @@ export class PeerborneDocument<
           }
 
           const syncResult = await syncLoadMessage();
+          throwIfLoadAborted(signal);
           if (syncResult !== true) {
             console.warn(
               `sync rejected message during load for ${this.documentPath}`,
@@ -3764,6 +3785,7 @@ export class PeerborneDocument<
           }
 
           await completeBootstrapStateApplication();
+          throwIfLoadAborted(signal);
           return true;
         }
 
@@ -3789,6 +3811,7 @@ export class PeerborneDocument<
               },
             )
           : await syncLoadMessage();
+        throwIfLoadAborted(signal);
         if (syncResult !== true) {
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
@@ -3803,6 +3826,7 @@ export class PeerborneDocument<
           return false;
         }
         await completeBootstrapStateApplication();
+        throwIfLoadAborted(signal);
         return true;
       },
     );
@@ -4099,7 +4123,7 @@ export class PeerborneDocument<
           runOnLimitedConnection: true,
           signal,
         }),
-      (rawStream) =>
+      (rawStream, signal) =>
         this._sendLoadRequestAndSync(
           wrapStream(rawStream),
           serializedRequest,
@@ -4112,7 +4136,9 @@ export class PeerborneDocument<
             this._assertAcceptedInvitationMembership(
               issuerPublicKey,
               role,
+              signal,
             ),
+          signal,
         ),
     );
   }
@@ -4523,7 +4549,6 @@ export class PeerborneDocument<
         console.warn(
           `Failed to load document via ${documentLoadV3}:`,
           peer.toString(),
-          err,
         );
       }
     }
@@ -5128,21 +5153,14 @@ export class PeerborneDocument<
       await this._applyCollectedACL(changeTreePreflight.aclEntries);
     }
 
-    // Empty provider deltas are an explicit no-op. Do not reserve/poison a
-    // bootstrap instance solely because the optional wire field was present.
+    // Keychain changes are provider-opaque. Only an absent wire field is a
+    // generic no-op; concrete providers decide whether any present value is a
+    // semantic no-op through a staged state commitment below.
     const keychainChanges = message.keychainChanges;
-    const hasKeychainChanges =
-      keychainChanges !== undefined &&
-      keychainChanges !== null &&
-      !(
-        (Array.isArray(keychainChanges) ||
-          keychainChanges instanceof Uint8Array) &&
-        keychainChanges.length === 0
-      );
+    const hasKeychainChanges = keychainChanges !== undefined;
 
-    // The built-in providers do not share one byte-level empty encoding:
-    // Automerge uses an empty array, while Yjs emits a non-empty update for an
-    // empty document. When staging and logical commitments are available,
+    // The built-in providers do not share one byte-level empty encoding. When
+    // staging and logical commitments are available,
     // compare the live and projected key sequences before reserving a bootstrap
     // instance. A semantic no-op is still committed atomically so providers
     // retain causal metadata, but it does not expose new logical key state.
@@ -5169,13 +5187,15 @@ export class PeerborneDocument<
     }
     // Update/replace list of document keys (if provided).
     if (hasKeychainChanges) {
-      if (logicalKeychainStateChanged !== false) {
-        beginStateApplication();
-      }
       try {
         if (preparedKeychainMerge) {
+          if (logicalKeychainStateChanged !== false) {
+            await preparedKeychainMerge.hydrateKeys();
+            beginStateApplication();
+          }
           preparedKeychainMerge.commit();
         } else {
+          beginStateApplication();
           this._keychain.merge(keychainChanges);
         }
         if (logicalKeychainStateChanged === true) {
@@ -5185,7 +5205,6 @@ export class PeerborneDocument<
       } catch (e) {
         console.error(
           `Failed to merge keychain changes in ${this.documentPath}`,
-          e,
         );
         throw e;
       }
@@ -5222,10 +5241,9 @@ export class PeerborneDocument<
             snapshotSignatureValid = await this._verifySnapshotSignature(
               signPayload, incoming.signature,
             );
-          } catch (e) {
+          } catch {
             console.warn(
               `Rejected snapshot for ${this.documentPath}: malformed snapshot fields`,
-              e,
             );
           }
         }
@@ -6474,7 +6492,9 @@ export class PeerborneDocument<
   private async _assertAcceptedInvitationMembership(
     issuerPublicKey: PublicKey,
     role: 'reader' | 'editor',
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfLoadAborted(signal);
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'Public invitations',
@@ -6489,6 +6509,7 @@ export class PeerborneDocument<
       Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
       Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
     ]);
+    throwIfLoadAborted(signal);
     assertAcceptedInvitationMembershipTopology(
       {
         issuer,

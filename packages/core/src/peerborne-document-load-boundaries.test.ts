@@ -9,6 +9,7 @@ import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
+import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
 jest.mock(
@@ -656,6 +657,21 @@ describe('document load response boundaries', () => {
     document._bootstrapLoadApplicationState = 'complete';
     document._bootstrapLoadApplicationRevision = 2;
     document._hashes.add('existing-head');
+    const commit = jest.fn();
+    const hydrateKeys = jest.fn(async () => []);
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+      prepareMerge: jest.fn(() => ({
+        keyIds: [],
+        currentKeyId: undefined,
+        hydrateKeys,
+        getKey: jest.fn(),
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+        commit,
+      })),
+      merge: jest.fn(),
+    };
     let queueDepth = 0;
     const run = jest.fn(async (operation: () => Promise<unknown>) => {
       queueDepth += 1;
@@ -687,6 +703,8 @@ describe('document load response boundaries', () => {
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(assertMembership).toHaveBeenCalledTimes(1);
+    expect(hydrateKeys).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
     expect(document._bootstrapLoadApplicationState).toBe('complete');
     expect(document._bootstrapLoadApplicationRevision).toBe(2);
   });
@@ -968,30 +986,37 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
-  test('rejects an explicit empty-array keychain field without reserving bootstrap state', async () => {
-    const message = {
-      documentId: '/load-race',
-      signature: 'AAAA',
-      keychainChanges: [],
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
-      message,
-    );
-    const merge = jest.fn();
-    document._keychain.merge = merge;
+  test.each([
+    ['empty array', []],
+    ['zero-length bytes', new Uint8Array()],
+  ])(
+    'treats an %s legacy keychain change conservatively',
+    async (_name, changes) => {
+      const message = {
+        documentId: '/load-race',
+        signature: 'AAAA',
+        keychainChanges: changes,
+      };
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async () => {
+          throw new Error('bootstrap must not invoke signature verification');
+        },
+        message,
+      );
+      const merge = jest.fn();
+      document._keychain.merge = merge;
 
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).resolves.toBe(false);
+      await expect(
+        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      ).resolves.toBe(false);
 
-    expect(merge).not.toHaveBeenCalled();
-    expect(document._hashes).toEqual(new Set());
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
-  });
+      expect(merge).toHaveBeenCalledTimes(1);
+      expect(merge).toHaveBeenCalledWith(changes);
+      expect(document._hashes).toEqual(new Set());
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+    },
+  );
 
   test('commits a provider-semantic no-op without reserving bootstrap state', async () => {
     const message = {
@@ -1008,13 +1033,14 @@ describe('document load response boundaries', () => {
     );
     const commit = jest.fn();
     const merge = jest.fn();
+    const hydrateKeys = jest.fn(async () => []);
     document._keychain = {
       getKey: jest.fn(() => ({})),
       stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
       prepareMerge: jest.fn(() => ({
         keyIds: [],
         currentKeyId: undefined,
-        hydrateKeys: jest.fn(async () => []),
+        hydrateKeys,
         getKey: jest.fn(),
         stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
         commit,
@@ -1030,8 +1056,143 @@ describe('document load response boundaries', () => {
       message.keychainChanges,
     );
     expect(commit).toHaveBeenCalledTimes(1);
+    expect(hydrateKeys).not.toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('hydrates staged logical keychain changes before reservation and redacts failures', async () => {
+    const sentinel = new Error('SECRET_KEYCHAIN_SENTINEL');
+    const hydrateKeys = jest.fn(async () => {
+      throw sentinel;
+    });
+    const commit = jest.fn();
+    const beginStateApplication = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/keychain-hydration-failure',
+      swarm: { config: { enableSigning: false } },
+      _bootstrapLoadApplicationState: 'pristine',
+      _keychain: {
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+        prepareMerge: jest.fn(() => ({
+          keyIds: [new Uint8Array([7])],
+          currentKeyId: new Uint8Array([7]),
+          hydrateKeys,
+          getKey: jest.fn(),
+          stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
+          commit,
+        })),
+      },
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncUnlocked(
+          {
+            documentId: '/keychain-hydration-failure',
+            keychainChanges: { providerEncoding: 'one-key' },
+          },
+          false,
+          beginStateApplication,
+        ),
+      ).rejects.toBe(sentinel);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to merge keychain changes in /keychain-hydration-failure',
+      );
+      expect(consoleError.mock.calls.flat()).not.toContain(sentinel);
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(hydrateKeys).toHaveBeenCalledTimes(1);
+    expect(beginStateApplication).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('redacts snapshot serialization failures', async () => {
+    const sentinel = new Error('SECRET_SNAPSHOT_SENTINEL');
+    const document = fakeDocument({
+      documentPath: '/snapshot-redaction',
+      swarm: { config: { enableSigning: true } },
+      _bootstrapLoadApplicationState: 'pristine',
+      _keychain: {},
+      _latestSnapshot: undefined,
+      _changesSerializer: {
+        serializeChanges: jest.fn(() => {
+          throw sentinel;
+        }),
+      },
+    });
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncUnlocked(
+          {
+            documentId: '/snapshot-redaction',
+            signature: 'AAAA',
+            snapshot: {
+              state: {},
+              timestamp: 1,
+              compactedCount: 1,
+              signature: 'AAAA',
+            },
+          },
+          false,
+        ),
+      ).resolves.toBe(true);
+
+      expect(consoleWarn.mock.calls.flat()).not.toContain(sentinel);
+      expect(consoleWarn.mock.calls.flat().map(String).join(' ')).not.toContain(
+        'SECRET_SNAPSHOT_SENTINEL',
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  test('redacts errors propagated by failed load transports', async () => {
+    const sentinel = new Error('SECRET_LOAD_SENTINEL');
+    const peer = { toString: () => '/ip4/127.0.0.1/tcp/4001/p2p/peer-a' };
+    const document = fakeDocument({
+      documentPath: '/load-redaction',
+      swarm: {
+        config: { enableSigning: false, loadQuorumEnabled: false },
+        heliaNode: {
+          libp2p: {
+            dialProtocol: jest.fn(async () => {
+              throw sentinel;
+            }),
+          },
+        },
+      },
+      _bootstrapLoadApplicationState: 'pristine',
+      _hashes: new Set<string>(),
+      _compactionConfig: { enabled: false },
+      _shuffledPeers: jest.fn(async () => [peer]),
+      _loadMessageSerializer: {
+        serializeLoadRequest: jest.fn(() => new Uint8Array([1])),
+      },
+    });
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(document.load()).resolves.toBe(false);
+      expect(consoleWarn.mock.calls.flat()).not.toContain(sentinel);
+      expect(consoleWarn.mock.calls.flat().map(String).join(' ')).not.toContain(
+        'SECRET_LOAD_SENTINEL',
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   test.each(['pinned', 'unsigned'] as const)(
@@ -1807,6 +1968,166 @@ describe('document load response boundaries', () => {
       new Set(['ACL']),
     );
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('cancels a post-EOF invitation catch-up before state application', async () => {
+    jest.useFakeTimers();
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: { providerEncoding: 'one-key' },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    const hydrationStarted = deferred<void>();
+    const releaseHydration = deferred<void>();
+    const backgroundFinished = deferred<void>();
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('EXISTING');
+    const commit = jest.fn();
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+      prepareMerge: jest.fn(() => ({
+        keyIds: [new Uint8Array([7])],
+        currentKeyId: new Uint8Array([7]),
+        hydrateKeys: jest.fn(async () => {
+          hydrationStarted.resolve();
+          await releaseHydration.promise;
+          return [];
+        }),
+        getKey: jest.fn(),
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
+        commit,
+      })),
+      merge: jest.fn(),
+    };
+    const rawStream = {
+      ...stream,
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+    };
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      const load = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async (openedStream, signal) => {
+          try {
+            return await document._sendLoadRequestAndSync(
+              openedStream,
+              new Uint8Array([1]),
+              null,
+              'issuer',
+              undefined,
+              true,
+              1000,
+              undefined,
+              signal,
+            );
+          } finally {
+            backgroundFinished.resolve();
+          }
+        },
+        25,
+      );
+
+      await hydrationStarted.promise;
+      jest.advanceTimersByTime(25);
+      await expect(load).rejects.toThrow(/deadline exceeded/);
+      releaseHydration.resolve();
+      await backgroundFinished.promise;
+
+      expect(commit).not.toHaveBeenCalled();
+      expect(document._bootstrapLoadApplicationState).toBe('complete');
+    } finally {
+      consoleError.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  test('keeps a timed-out post-EOF catch-up pending without late notification', async () => {
+    jest.useFakeTimers();
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: { providerEncoding: 'legacy-change' },
+    };
+    const handler = jest.fn();
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    const topologyStarted = deferred<void>();
+    const releaseTopology = deferred<void>();
+    const backgroundFinished = deferred<void>();
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('EXISTING');
+    document._remoteHandlers.preBootstrap = handler;
+    const merge = jest.fn(() => {
+      document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
+    });
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      merge,
+    };
+    const rawStream = {
+      ...stream,
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+    };
+
+    try {
+      const load = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async (openedStream, signal) => {
+          try {
+            return await document._sendLoadRequestAndSync(
+              openedStream,
+              new Uint8Array([1]),
+              null,
+              'issuer',
+              undefined,
+              true,
+              1000,
+              async () => {
+                topologyStarted.resolve();
+                await releaseTopology.promise;
+              },
+              signal,
+            );
+          } finally {
+            backgroundFinished.resolve();
+          }
+        },
+        25,
+      );
+
+      await topologyStarted.promise;
+      jest.advanceTimersByTime(25);
+      await expect(load).rejects.toThrow(/deadline exceeded/);
+      releaseTopology.resolve();
+      await backgroundFinished.promise;
+
+      expect(merge).toHaveBeenCalledTimes(1);
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(
+        new Set(['APPLIED']),
+      );
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('defers buffered Welcome drain while bootstrap state is pending', () => {
