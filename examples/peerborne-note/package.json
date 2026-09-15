@@ -16,14 +16,14 @@
     "@automerge/automerge": "^3.4.1",
     "@peerborne/automerge": "workspace:packages/automerge",
     "@peerborne/core": "workspace:packages/core",
-    "react": "^19.2.8",
+    "react": "^19.3.0",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@libp2p/peer-id": "^6.0.14",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.7.5",
-    "@types/react": "^19.2.18",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
     "fake-indexeddb": "^6.2.5",
