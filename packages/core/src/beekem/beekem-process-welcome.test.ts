@@ -442,11 +442,13 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
         welcome: BeeKEMWelcome,
         privateKey: CryptoKey,
         publicKey: CryptoKey,
+        receiverGeneration: bigint,
       ): Promise<Uint8Array>;
       _registerWelcomeCandidate(
         revision: bigint,
         staged: BeeKEM,
         rootSecret: Uint8Array,
+        receiverGeneration: bigint,
       ): Promise<Uint8Array>;
       _pendingWelcomeAttempts: Set<bigint>;
       _stagedWelcomeCandidates: Map<bigint, unknown>;
@@ -470,9 +472,19 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
       }
       return originalProcessAttempt(revision, ...args);
     };
-    internals._registerWelcomeCandidate = (revision, staged, rootSecret) => {
+    internals._registerWelcomeCandidate = (
+      revision,
+      staged,
+      rootSecret,
+      receiverGeneration,
+    ) => {
       markCandidateRegistered();
-      return originalRegisterCandidate(revision, staged, rootSecret);
+      return originalRegisterCandidate(
+        revision,
+        staged,
+        rootSecret,
+        receiverGeneration,
+      );
     };
 
     const earlier = target.processWelcome(
@@ -587,6 +599,56 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
       );
     }
     await expectTargetUnchanged(target, initializedKeys, initializedRoot);
+  });
+
+  test('permanently supersedes a paused Welcome across repeated initialization', async () => {
+    const { welcome, recipientKeys } = await createTwoMemberWelcome();
+    const firstInitializedKeys = await generateKeyPair();
+    const latestInitializedKeys = await generateKeyPair();
+    const target = new BeeKEM();
+    const internals = target as unknown as { _receiverGeneration: bigint };
+    const digest = pauseNextDigest();
+    const processing = target.processWelcome(
+      copyWelcome(welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+    const outcome = processing.then(
+      (value) => ({ kind: 'fulfilled' as const, value }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    let latestRoot!: Uint8Array;
+    let settled!: Awaited<typeof outcome>;
+    try {
+      await digest.entered;
+      await target.initialize(
+        firstInitializedKeys.privateKey,
+        firstInitializedKeys.publicKey,
+      );
+      await target.initialize(
+        latestInitializedKeys.privateKey,
+        latestInitializedKeys.publicKey,
+      );
+      expect(internals._receiverGeneration).toBe(2n);
+      latestRoot = await target.getRootSecret();
+      digest.release();
+      settled = await outcome;
+    } finally {
+      digest.release();
+      digest.restore();
+    }
+
+    expect(settled.kind).toBe('rejected');
+    if (settled.kind === 'rejected') {
+      expect(settled.error).toEqual(
+        expect.objectContaining({
+          message: expect.stringMatching(/receiver state changed/),
+        }),
+      );
+    }
+    expect(internals._receiverGeneration).toBe(2n);
+    await expectTargetUnchanged(target, latestInitializedKeys, latestRoot);
   });
 
   test('snapshots Proxy-backed records without property reads', async () => {
