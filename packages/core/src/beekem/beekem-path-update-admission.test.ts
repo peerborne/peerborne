@@ -459,6 +459,105 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     ).resolves.toBe(8);
   });
 
+  test('tries a surviving descendant resolution key after removal blanks its ancestor', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+
+    const bobKeys = await generateKeyPair();
+    const { welcome: bobWelcome } = await founder.addMember(
+      bobKeys.publicKey,
+    );
+    const bob = new BeeKEM();
+    await bob.processWelcome(
+      bobWelcome,
+      bobKeys.privateKey,
+      bobKeys.publicKey,
+    );
+
+    const charlieKeys = await generateKeyPair();
+    const { welcome: charlieWelcome, rootSecret: sharedRoot } =
+      await bob.addMember(charlieKeys.publicKey);
+    const charlie = new BeeKEM();
+    await expect(
+      charlie.processWelcome(
+        charlieWelcome,
+        charlieKeys.privateKey,
+        charlieKeys.publicKey,
+      ),
+    ).resolves.toEqual(sharedRoot);
+    await expect(bob.getRootSecret()).resolves.toEqual(sharedRoot);
+
+    const { pathUpdate, rootSecret } = await charlie.removeMember(0);
+    expect(pathUpdate.nodes.map(({ nodeIndex }) => nodeIndex)).toEqual([3]);
+    await expect(bob.processPathUpdate(pathUpdate)).resolves.toEqual(
+      rootSecret,
+    );
+  });
+
+  test('does not let the removed member use stale resolution candidates', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+    await founder.addMember((await generateKeyPair()).publicKey);
+
+    const charlieKeys = await generateKeyPair();
+    const { welcome, rootSecret: sharedRoot } = await founder.addMember(
+      charlieKeys.publicKey,
+    );
+    const charlie = new BeeKEM();
+    await expect(
+      charlie.processWelcome(
+        welcome,
+        charlieKeys.privateKey,
+        charlieKeys.publicKey,
+      ),
+    ).resolves.toEqual(sharedRoot);
+    const founderRootBeforeRemoval = await founder.getRootSecret();
+
+    const { pathUpdate } = await charlie.removeMember(0);
+    await expect(founder.processPathUpdate(pathUpdate)).rejects.toThrow(
+      /no local resolution key could decrypt/,
+    );
+    await expect(founder.getRootSecret()).resolves.toEqual(
+      founderRootBeforeRemoval,
+    );
+  });
+
+  test('rejects v1 emission that needs multiple resolution ciphertexts without mutation', async () => {
+    let sender = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await sender.initialize(founderKeys.privateKey, founderKeys.publicKey);
+
+    for (let position = 1; position < 9; position++) {
+      const nextKeys = await generateKeyPair();
+      const { welcome } = await sender.addMember(nextKeys.publicKey);
+      const next = new BeeKEM();
+      await next.processWelcome(
+        welcome,
+        nextKeys.privateKey,
+        nextKeys.publicKey,
+      );
+      sender = next;
+    }
+
+    const senderInternals = sender as unknown as {
+      _nodes: Map<number, unknown>;
+    };
+    const nodesBefore = senderInternals._nodes;
+    const rootBefore = await sender.getRootSecret();
+
+    await expect(sender.removeMember(0)).rejects.toThrow(
+      /multiple sibling resolution nodes/,
+    );
+
+    expect(senderInternals._nodes).toBe(nodesBefore);
+    await expect(sender.getRootSecret()).resolves.toEqual(rootBefore);
+    await expect(
+      sender.findLeafByPublicKey(founderKeys.publicKey),
+    ).resolves.toBe(0);
+  });
+
   test('rejects own and inherited v2 markers at the legacy runtime boundary', async () => {
     const { alice, bob } = await twoMemberGroup();
     const { pathUpdate, rootSecret } = await bob.update();
