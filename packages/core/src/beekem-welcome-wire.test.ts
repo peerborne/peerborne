@@ -179,6 +179,57 @@ describe('beekem-welcome-wire', () => {
     );
   });
 
+  test('rejects negative zero in every legacy tree index', () => {
+    const makeWelcome = () => ({
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    });
+
+    const runtimeLeaf = makeWelcome();
+    runtimeLeaf.leafIndex = -0;
+    expect(() => serializeBeeKEMWelcomeForWire(runtimeLeaf)).toThrow(
+      /leafIndex.*non-negative safe integer/,
+    );
+
+    const runtimePath = makeWelcome();
+    runtimePath.pathKeys[0].nodeIndex = -0;
+    expect(() => serializeBeeKEMWelcomeForWire(runtimePath)).toThrow(
+      /pathKeys\[0\]\.nodeIndex.*non-negative safe integer/,
+    );
+
+    const runtimeTree = makeWelcome();
+    runtimeTree.treeNodePublicKeys[0].nodeIndex = -0;
+    expect(() => serializeBeeKEMWelcomeForWire(runtimeTree)).toThrow(
+      /treeNodePublicKeys\[0\]\.nodeIndex.*non-negative safe integer/,
+    );
+
+    const wireLeaf = serializeBeeKEMWelcomeForWire(makeWelcome());
+    wireLeaf.leafIndex = -0;
+    expect(() => deserializeBeeKEMWelcomeFromWire(wireLeaf)).toThrow(
+      /leafIndex.*non-negative safe integer/,
+    );
+
+    const wirePath = serializeBeeKEMWelcomeForWire(makeWelcome());
+    wirePath.pathKeys[0].nodeIndex = -0;
+    expect(() => deserializeBeeKEMWelcomeFromWire(wirePath)).toThrow(
+      /pathKeys\[0\]\.nodeIndex.*non-negative safe integer/,
+    );
+
+    const wireTree = serializeBeeKEMWelcomeForWire(makeWelcome());
+    wireTree.treeNodePublicKeys[0].nodeIndex = -0;
+    expect(() => deserializeBeeKEMWelcomeFromWire(wireTree)).toThrow(
+      /treeNodePublicKeys\[0\]\.nodeIndex.*non-negative safe integer/,
+    );
+  });
+
   test(
     'round-trips and applies real trees across non-power-of-two growth',
     async () => {
