@@ -713,6 +713,24 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  test('a backing-commit preflight rejection does not quarantine an addition', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+    backing.check.mockResolvedValue(true);
+    const prepared = await acl.prepareAdd('key1');
+    const internals = acl as { _backingMutationsInFlight: number };
+
+    internals._backingMutationsInFlight = 1;
+    expect(() => prepared.commit()).toThrow(/another backing mutation/);
+    expect(commit).not.toHaveBeenCalled();
+    internals._backingMutationsInFlight = 0;
+
+    await expect(acl.check('key1')).resolves.toBe(true);
+  });
+
   test('prepareAdd rejects after a remote backing merge', async () => {
     const commit = jest.fn();
     backing.prepareAdd = jest.fn(async () => ({
