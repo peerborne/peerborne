@@ -508,6 +508,41 @@ export class YjsACLProvider implements ACLProvider<Uint8Array, CryptoKey> {
   }
 }
 
+// Yjs carries an ACL merge as one update, so this is both the per-change and
+// aggregate bound. It leaves headroom under the shared 10 MiB transport cap.
+export const MAX_YJS_ACL_UPDATE_BYTES = 4 * 1024 * 1024;
+export const MAX_YJS_ACL_STRUCTURES = 8192;
+export const MAX_YJS_ACL_MEMBERS = 4096;
+
+function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
+  // Yjs folds pendingStructs and pendingDs into this update before returning
+  // it. Reapplying the bounded snapshot therefore preserves unresolved
+  // dependencies, while decodeUpdateV2 below counts their structs/delete
+  // ranges toward the same retained-state limits.
+  const state = encodeStateAsUpdateV2(doc);
+  if (state.byteLength > MAX_YJS_ACL_UPDATE_BYTES) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_UPDATE_BYTES}-byte limit`,
+    );
+  }
+  const decoded = decodeUpdateV2(state);
+  let structureCount = decoded.structs.length;
+  for (const ranges of decoded.ds.clients.values()) {
+    structureCount += ranges.length;
+  }
+  if (structureCount > MAX_YJS_ACL_STRUCTURES) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+    );
+  }
+  if (doc.getMap('users').size > MAX_YJS_ACL_MEMBERS) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
+    );
+  }
+  return state;
+}
+
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _acl = new Doc();
   private _revision = 0;
@@ -564,9 +599,18 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       this._assertComplete('add an ACL member');
       const hash = await serializeKey(publicKey);
       this._assertComplete('add an ACL member');
-      const beforeSV = encodeStateVector(this._acl);
-      this._acl.getMap('users').set(hash, true);
-      const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
+      const base = this._acl;
+      const staged = new Doc();
+      applyUpdateV2(
+        staged,
+        snapshotBoundedYjsACLState(base, 'add an ACL member'),
+      );
+      staged.clientID = base.clientID;
+      const beforeSV = encodeStateVector(staged);
+      staged.getMap('users').set(hash, true);
+      const changes = encodeStateAsUpdateV2(staged, beforeSV);
+      snapshotBoundedYjsACLState(staged, 'add an ACL member');
+      this._acl = staged;
       this._revision++;
       return changes;
     });
@@ -587,7 +631,10 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     const baseRevision = this._revision;
     const base = this._acl;
     const staged = new Doc();
-    applyUpdateV2(staged, encodeStateAsUpdateV2(base));
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'stage an ACL removal'),
+    );
     const stagedUsers = staged.getMap('users');
     const hadMember = stagedUsers.has(hash);
     const beforeSV = encodeStateVector(staged);
@@ -595,6 +642,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       stagedUsers.delete(hash);
     }
     const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    snapshotBoundedYjsACLState(staged, 'stage an ACL removal');
     const changes = new Uint8Array(privateChanges);
     let committed = false;
     const prepared: PreparedACLRemoval<Uint8Array> = {
@@ -630,11 +678,36 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
-    const detachedChange = new Uint8Array(change);
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const detachedChange = copyUnsharedUint8Array(
+      change,
+      1,
+      MAX_YJS_ACL_UPDATE_BYTES,
+      'Yjs ACL update',
+    );
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being detached');
+    }
     const staged = new Doc();
-    applyUpdateV2(staged, encodeStateAsUpdateV2(this._acl));
-    staged.clientID = this._acl.clientID;
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'merge ACL changes'),
+    );
+    staged.clientID = base.clientID;
     applyUpdateV2(staged, detachedChange);
+    snapshotBoundedYjsACLState(staged, 'merge ACL changes');
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being merged');
+    }
     this._acl = staged;
     this._revision++;
   }
