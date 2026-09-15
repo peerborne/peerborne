@@ -80,7 +80,6 @@ import {
 import {
   beekemPathUpdateV1,
   beekemWelcomeV1,
-  documentKeyUpdateV2,
   documentLoadV3,
   snapshotLoadV3,
   tipAdvertiseV1,
@@ -1136,13 +1135,17 @@ export class PeerborneDocument<
     return shuffledPeers;
   }
 
-  private _assertNoIncompleteBootstrapLoad(): void {
+  private _assertDocumentStateNotPoisoned(): void {
     if (this._bootstrapLoadApplicationState === 'poisoned') {
       throw new Error(
         `Document ${this.documentPath} has indeterminate authorization state; ` +
           `discard this document instance before continuing`,
       );
     }
+  }
+
+  private _assertNoIncompleteBootstrapLoad(): void {
+    this._assertDocumentStateNotPoisoned();
     if (this._activeInvitationBootstrapContinuation !== undefined) {
       throw new Error(
         `Invitation bootstrap validation for ${this.documentPath} is in progress`,
@@ -1163,6 +1166,7 @@ export class PeerborneDocument<
   }
 
   private _markDocumentStatePoisoned(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') return;
     this._bootstrapLoadApplicationState = 'poisoned';
     this._bootstrapLoadApplicationRevision++;
   }
@@ -1818,14 +1822,11 @@ export class PeerborneDocument<
     const signal = fetchOptions.signal;
     const assertStillActive = (): void => {
       throwIfLoadAborted(signal);
+      this._assertDocumentStateNotPoisoned();
       fetchOptions.assertStillActive?.();
     };
     const maxBlockBytes = fetchOptions.maxBlockBytes;
     const maxAggregateBlockBytes = fetchOptions.maxAggregateBlockBytes;
-    const enforceFetchLimits =
-      maxBlockBytes !== undefined ||
-      maxAggregateBlockBytes !== undefined ||
-      fetchOptions.aggregateBudget !== undefined;
     if (maxBlockBytes !== undefined) {
       assertPositiveSafeByteLimit(maxBlockBytes, 'Missing block byte limit');
     }
@@ -1964,22 +1965,26 @@ export class PeerborneDocument<
     }
 
     // Then apply missing hashes through a bounded worker pool. Every worker
-    // receives the enclosing load signal, and all workers are awaited even
-    // after cancellation so no queued fetch can apply state after the caller's
-    // deadline has rejected.
+    // receives the enclosing load signal, and all workers are awaited after
+    // cancellation so no queued fetch can apply state after the caller's
+    // deadline has rejected. An indeterminate ACL merge instead poisons the
+    // document, aborts sibling fetches, and releases the queue immediately;
+    // the poison assertion prevents an abort-ignoring fetch from applying
+    // state if it ever settles later.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
       const appliedMissingDocumentHashes = new Array<string | undefined>(
         missingDocumentHashes.length,
       );
-      const fetchController =
-        signal !== undefined || enforceFetchLimits
-          ? new AbortController()
-          : undefined;
+      const fetchController = new AbortController();
+      let signalPoisonedWorkerPool!: () => void;
+      const poisonedWorkerPool = new Promise<void>((resolve) => {
+        signalPoisonedWorkerPool = resolve;
+      });
       const forwardAbort = (): void => {
-        if (!fetchController?.signal.aborted) {
-          fetchController?.abort(signal?.reason);
+        if (!fetchController.signal.aborted) {
+          fetchController.abort(signal?.reason);
         }
       };
       if (signal?.aborted) {
@@ -1987,7 +1992,7 @@ export class PeerborneDocument<
       } else {
         signal?.addEventListener('abort', forwardAbort, { once: true });
       }
-      const fetchSignal = fetchController?.signal;
+      const fetchSignal = fetchController.signal;
       const assertWorkerActive = (): void => {
         assertStillActive();
         throwIfLoadAborted(fetchSignal);
@@ -2066,12 +2071,19 @@ export class PeerborneDocument<
             appliedMissingDocumentHashes[index] = missingHash;
             assertWorkerActive();
           } catch (error) {
+            if (this._bootstrapLoadApplicationState === 'poisoned') {
+              if (!fetchController.signal.aborted) {
+                fetchController.abort();
+              }
+              signalPoisonedWorkerPool();
+              this._assertDocumentStateNotPoisoned();
+            }
             if (signal?.aborted) throwIfLoadAborted(signal);
-            if (fetchLimitExceeded && fetchController?.signal.aborted) return;
+            if (fetchLimitExceeded && fetchController.signal.aborted) return;
             if (error instanceof _LoadFetchLimitExceededError) {
               fetchLimitExceeded = true;
-              if (!fetchController?.signal.aborted) {
-                fetchController?.abort(
+              if (!fetchController.signal.aborted) {
+                fetchController.abort(
                   new _LoadFetchLimitExceededError(
                     'Missing change block fetch limits exceeded',
                   ),
@@ -2094,9 +2106,23 @@ export class PeerborneDocument<
       );
       let workerResults: PromiseSettledResult<void>[];
       try {
-        workerResults = await Promise.allSettled(
+        const workersSettled = Promise.allSettled(
           Array.from({ length: workerCount }, () => worker()),
         );
+        const workerPoolOutcome = await Promise.race([
+          workersSettled.then((results) => ({
+            kind: 'settled' as const,
+            results,
+          })),
+          poisonedWorkerPool.then(() => ({ kind: 'poisoned' as const })),
+        ]);
+        if (workerPoolOutcome.kind === 'poisoned') {
+          this._assertDocumentStateNotPoisoned();
+          throw new Error(
+            `Missing change worker pool for ${this.documentPath} entered an invalid state`,
+          );
+        }
+        workerResults = workerPoolOutcome.results;
       } finally {
         signal?.removeEventListener('abort', forwardAbort);
       }
@@ -2318,9 +2344,16 @@ export class PeerborneDocument<
     assertStillActive?: () => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    await retryLoadACLConflict(() => {
+    await retryLoadACLConflict(async () => {
       assertStillActive?.();
-      return this._readers.merge(changes);
+      try {
+        await awaitLoadWork(this._readers.merge(changes), signal);
+      } catch (error) {
+        if (!(error instanceof ACLOperationInProgressError)) {
+          this._markDocumentStatePoisoned();
+        }
+        throw error;
+      }
     }, signal);
     assertStillActive?.();
     if (!this._isStateApplicationBlocked()) {
@@ -2513,22 +2546,29 @@ export class PeerborneDocument<
     assertStillActive?: () => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (this._writerPublicationsInFlight > 0) {
-      throw new Error(
-        `Cannot merge a remote writer ACL change for ${this.documentPath} ` +
-          'while a staged local writer publication is in flight. Retry the ' +
-          'sync through the document membership queue.',
-      );
-    }
     // Keep the mutation marker set while a transient ACL conflict settles and
     // the synchronous `merge()` is retried. Both invalidations (pre and post)
     // match the async helper's behavior.
     this._writerMutationsInFlight++;
     this._invalidateWriterKeyCache();
     try {
-      await retryLoadACLConflict(() => {
+      await retryLoadACLConflict(async () => {
+        if (this._writerPublicationsInFlight > 0) {
+          throw new Error(
+            `Cannot merge a remote writer ACL change for ${this.documentPath} ` +
+              'while a staged local writer publication is in flight. Retry the ' +
+              'sync through the document membership queue.',
+          );
+        }
         assertStillActive?.();
-        return this._writers.merge(changes);
+        try {
+          await awaitLoadWork(this._writers.merge(changes), signal);
+        } catch (error) {
+          if (!(error instanceof ACLOperationInProgressError)) {
+            this._markDocumentStatePoisoned();
+          }
+          throw error;
+        }
       }, signal);
       assertStillActive?.();
     } finally {
@@ -6917,7 +6957,10 @@ export class PeerborneDocument<
   }
 
   /**
-   * Add a new user as a valid writer. Users are identified by their public keys
+   * Grant write authorization to an existing explicit reader. Users are
+   * identified by their public keys. Call `addReader()` before promoting a new
+   * writer so a later `removeWriter()` can safely return them to read-only
+   * access without misrepresenting retained document-key access as revocation.
    *
    * The local ACL commits only after GossipSub publication resolves. A rejected
    * publish rolls back local DAG bookkeeping, but transport rejection is
@@ -6965,6 +7008,16 @@ export class PeerborneDocument<
       requireSerializePublicKey(this._authProvider, 'Writer addition');
       throw new Error(
         'Writer addition requires a public-key snapshot before it is queued',
+      );
+    }
+    if (
+      (await retryACLConflict(() =>
+        this._readers.check(stableWriter),
+      )) !== true
+    ) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the target must ` +
+          'already be explicitly authorized as a reader. Call addReader first.',
       );
     }
 
@@ -9463,8 +9516,8 @@ export class PeerborneDocument<
    *
    * Best-effort fan-out: each failed dial is logged but does not
    * abort the broadcast. A surviving reader that misses the
-   * PathUpdate falls back to a fresh document load to recover key
-   * state, matching the legacy `_distributeKeyUpdate` posture.
+   * PathUpdate needs explicit recovery or re-invitation to regain current key
+   * state.
    */
   private async _distributeBeeKEMPathUpdate(
     pathUpdate: PathUpdate,
@@ -9707,107 +9760,6 @@ export class PeerborneDocument<
       console.log('Installed BeeKEM-derived epoch key via PathUpdate');
     } catch {
       console.error('Shared BeeKEM PathUpdate handling failed');
-    }
-  }
-
-  /**
-   * Distribute keychain changes to all connected peers via the
-   * legacy `documentKeyUpdateV2` protocol (encrypts the new key under
-   * the previous key).
-   *
-   * `removeReader` no longer uses this path: it rotates the document
-   * key via BeeKEM's ratchet tree and broadcasts a signed
-   * `PathUpdate` over `beekemPathUpdateV1` instead, which closes the
-   * revocation-latency gap where a removed-but-still-connected
-   * reader could decrypt the rotation message (#189 §5.4 item 5).
-   *
-   * `removeWriter` continues to use this method: writer revocation
-   * has different threat properties (the removed writer no longer
-   * has write capability, even if they retain read access through
-   * the old key until the next BeeKEM rotation), and the BeeKEM
-   * tree currently models reader membership only. A follow-up
-   * change will fold writer revocation into the BeeKEM path too.
-   *
-   * @param keychainChanges The keychain CRDT changes containing the new key.
-   * @param previousKey The previous document key to encrypt the update with.
-   *   Peers already have this key and can decrypt the message to learn about the new key.
-   *   This avoids the chicken-and-egg problem of encrypting with a key peers don't have yet.
-   */
-  private async _distributeKeyUpdate(
-    keychainChanges: ChangesType,
-    previousKey: [Uint8Array, DocumentKey],
-  ) {
-    const keyUpdateMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
-      documentId: this.documentPath,
-      signatureContext: 'key-update-v2',
-      keychainChanges,
-    };
-
-    // Legacy key updates always require writer authentication, independent of
-    // the ordinary document-change signing toggle.
-    keyUpdateMessage.signature = await this._signAsWriterUnconditional(
-      keyUpdateMessage,
-    );
-
-    const serialized =
-      this._syncMessageSerializer.serializeSyncMessage(keyUpdateMessage);
-
-    // Encrypt with the PREVIOUS key so that existing peers can decrypt the message.
-    // Peers don't have the new key yet -- that's what this message delivers to them.
-    const [previousKeyID, previousDocumentKey] = previousKey;
-    const { nonce, data } = await this._authProvider.encrypt(
-      serialized,
-      previousDocumentKey,
-    );
-    if (!nonce) {
-      throw new Error(`Failed to encrypt key update! Nonce cannot be empty`);
-    }
-
-    // Send to all connected peers via the V2 key-update protocol.
-    // V2 payload format: 4-byte big-endian path length + UTF-8 path + encrypted payload
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
-
-    const v2Payload = this._buildPathPrefixedFrame(
-      'Document key-update v2',
-      previousKeyID,
-      nonce,
-      data,
-    );
-
-    // WARNING: If some peers fail to receive this update, they will be unable
-    // to decrypt future messages encrypted with the new key. They will need to
-    // perform a fresh document load to recover the keychain state.
-    const failedPeers: string[] = [];
-    for (const peer of peers) {
-      try {
-        // Wrap the v3 stream so we can keep using the legacy `pipe(..., sink)`
-        // pattern below; see snapshot-load above for the rationale.
-        const stream = wrapStream(await this.libp2p.dialProtocol(peer, [
-          documentKeyUpdateV2,
-        ], { runOnLimitedConnection: true }));
-        await pipe(
-          [v2Payload],
-          stream.sink,
-        );
-      } catch (err) {
-        const peerAddr = peer.toString();
-        failedPeers.push(peerAddr);
-        console.warn(
-          `Failed to send key update to peer:`,
-          peerAddr,
-          err,
-        );
-      }
-    }
-
-    if (failedPeers.length > 0) {
-      console.warn(
-        `Key update for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
-        'These peers may be unable to decrypt future messages until they reload the document.',
-      );
     }
   }
 
