@@ -57,19 +57,8 @@ describe('BeeKEM mutation atomicity', () => {
     );
     expect(nestedOutcome).toBeDefined();
     const nested = await nestedOutcome!;
-    expect(nested.kind).toBe('rejected');
-    if (nested.kind === 'rejected') {
-      expect(nested.error).toEqual(
-        expect.objectContaining({
-          message: expect.stringMatching(/during another BeeKEM mutation/),
-        }),
-      );
-    }
-    await expect(alice.getRootSecret()).resolves.toEqual(older.rootSecret);
-
-    await expect(
-      alice.processPathUpdate(latest.pathUpdate),
-    ).resolves.toEqual(latest.rootSecret);
+    expect(nested).toEqual({ kind: 'fulfilled', value: latest.rootSecret });
+    await expect(alice.getRootSecret()).resolves.toEqual(latest.rootSecret);
   });
 
   test('keeps the live tree unchanged while member onboarding is in flight', async () => {

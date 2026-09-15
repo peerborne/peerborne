@@ -250,6 +250,8 @@ describe('BeeKEM legacy PathUpdate admission', () => {
   test('serializes a local update behind an in-flight remote update', async () => {
     const { alice, bob } = await twoMemberGroup();
     const { pathUpdate, rootSecret: remoteRoot } = await bob.update();
+    const { pathUpdate: laterPathUpdate, rootSecret: laterRemoteRoot } =
+      await bob.update();
     const internals = alice as unknown as {
       _processPathUpdate(update: PathUpdate): Promise<Uint8Array>;
       _update(): Promise<{ pathUpdate: PathUpdate; rootSecret: Uint8Array }>;
@@ -273,20 +275,78 @@ describe('BeeKEM legacy PathUpdate admission', () => {
 
     const remoteUpdate = alice.processPathUpdate(pathUpdate);
     await started;
+    const laterRemoteUpdate = alice.processPathUpdate(laterPathUpdate);
     const localUpdate = alice.update();
     await Promise.resolve();
 
     expect(internals._update).not.toHaveBeenCalled();
     expect(() => alice.clone()).toThrow(/during an active mutation/);
     expect(() => alice.compact()).toThrow(/during an active mutation/);
-    await expect(alice.processPathUpdate(pathUpdate)).rejects.toThrow(
-      /during another BeeKEM mutation/,
-    );
     releaseProcessing();
     await expect(remoteUpdate).resolves.toEqual(remoteRoot);
+    await expect(laterRemoteUpdate).resolves.toEqual(laterRemoteRoot);
     const { rootSecret: localRoot } = await localUpdate;
     expect(internals._update).toHaveBeenCalledTimes(1);
     await expect(alice.getRootSecret()).resolves.toEqual(localRoot);
+  });
+
+  test('revalidates a detached update after an in-flight Welcome commits', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+    const recipientKeys = await generateKeyPair();
+    const { welcome, rootSecret: welcomeRoot } = await founder.addMember(
+      recipientKeys.publicKey,
+    );
+    const { pathUpdate, rootSecret: updatedRoot } = await founder.update();
+    const target = new BeeKEM();
+
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let paused = false;
+    const digestSpy = jest
+      .spyOn(crypto.subtle, 'digest')
+      .mockImplementation(async (algorithm, data) => {
+        if (!paused) {
+          paused = true;
+          enter();
+          await gate;
+        }
+        return originalDigest(algorithm, data);
+      });
+
+    const joining = target.processWelcome(
+      welcome,
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+    let queuedUpdate: Promise<Uint8Array> | undefined;
+    try {
+      await entered;
+      queuedUpdate = target.processPathUpdate(pathUpdate);
+      pathUpdate.senderLeafPublicKey.fill(0);
+      for (const node of pathUpdate.nodes) {
+        node.publicKey.fill(0);
+        node.encryptedPrivateKey.fill(0);
+      }
+      release();
+      await expect(joining).resolves.toEqual(welcomeRoot);
+      await expect(queuedUpdate).resolves.toEqual(updatedRoot);
+      await expect(target.getRootSecret()).resolves.toEqual(updatedRoot);
+    } finally {
+      release();
+      await Promise.allSettled(
+        queuedUpdate === undefined ? [joining] : [joining, queuedUpdate],
+      );
+      digestSpy.mockRestore();
+    }
   });
 
   test('rejects a protocol-valid multi-level v1 update without mutation', async () => {
