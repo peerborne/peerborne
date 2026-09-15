@@ -679,6 +679,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     return prepared;
   }
   current(): Uint8Array {
+    this._assertComplete('read the current ACL state');
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
@@ -694,17 +695,27 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     this._revision++;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
+    this._assertComplete('check ACL membership');
+    const baseRevision = this._revision;
+    const base = this._acl;
     const hash = await serializeKey(publicKey);
-    return this._acl.getMap('users').has(hash);
+    this._assertComplete('check ACL membership');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while membership was being checked');
+    }
+    return base.getMap('users').has(hash);
   }
   async users(): Promise<CryptoKey[]> {
+    this._assertComplete('list ACL members');
+    const baseRevision = this._revision;
+    const base = this._acl;
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, [
       'verify',
     ]);
-    const entries = [...this._acl.getMap('users').keys()];
-    return Promise.all(
+    const entries = [...base.getMap('users').keys()];
+    const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
         if (!key) {
@@ -714,6 +725,11 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
         return key;
       }),
     );
+    this._assertComplete('list ACL members');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while members were being listed');
+    }
+    return users;
   }
 }
 
