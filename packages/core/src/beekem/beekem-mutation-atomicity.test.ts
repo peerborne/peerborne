@@ -317,10 +317,12 @@ describe('BeeKEM mutation atomicity', () => {
     const initializationKeys = await generateKeyPair();
     const target = new BeeKEM();
     const internals = target as unknown as {
+      _resolveWelcomeSettlement: (() => void) | undefined;
       _registerWelcomeCandidate(
         revision: bigint,
         staged: BeeKEM,
         rootSecret: Uint8Array,
+        receiverGeneration: bigint,
       ): Promise<Uint8Array>;
     };
 
@@ -337,9 +339,19 @@ describe('BeeKEM mutation atomicity', () => {
       candidateReady = resolve;
     });
     const originalRegister = internals._registerWelcomeCandidate.bind(target);
-    internals._registerWelcomeCandidate = (revision, staged, rootSecret) => {
+    internals._registerWelcomeCandidate = (
+      revision,
+      staged,
+      rootSecret,
+      receiverGeneration,
+    ) => {
       candidateReady();
-      return originalRegister(revision, staged, rootSecret);
+      return originalRegister(
+        revision,
+        staged,
+        rootSecret,
+        receiverGeneration,
+      );
     };
 
     const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
@@ -408,6 +420,7 @@ describe('BeeKEM mutation atomicity', () => {
     await expect(
       target.findLeafByPublicKey(recipientKeys.publicKey),
     ).resolves.toBeUndefined();
+    expect(internals._resolveWelcomeSettlement).toBeUndefined();
   });
 
   test('releases a staged Welcome when an earlier initialization fails', async () => {
@@ -426,6 +439,7 @@ describe('BeeKEM mutation atomicity', () => {
         revision: bigint,
         staged: BeeKEM,
         rootSecret: Uint8Array,
+        receiverGeneration: bigint,
       ): Promise<Uint8Array>;
     };
 
@@ -442,9 +456,19 @@ describe('BeeKEM mutation atomicity', () => {
       candidateReady = resolve;
     });
     const originalRegister = internals._registerWelcomeCandidate.bind(target);
-    internals._registerWelcomeCandidate = (revision, staged, candidateRoot) => {
+    internals._registerWelcomeCandidate = (
+      revision,
+      staged,
+      candidateRoot,
+      receiverGeneration,
+    ) => {
       candidateReady();
-      return originalRegister(revision, staged, candidateRoot);
+      return originalRegister(
+        revision,
+        staged,
+        candidateRoot,
+        receiverGeneration,
+      );
     };
 
     const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
