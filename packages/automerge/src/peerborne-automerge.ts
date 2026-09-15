@@ -274,7 +274,22 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
-    const [doc] = applyChanges(this._acl, change);
+    // Detach caller-owned buffers before capturing the live baseline. Array
+    // accessors and Proxy traps can invoke a prepared commit reentrantly; that
+    // earlier transition must be included in this merge rather than overwritten
+    // by a result derived from a stale document reference.
+    const stableChanges = change.map(
+      (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+    );
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot merge during a local ACL mutation');
+    }
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const [doc] = applyChanges(base, stableChanges);
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while remote changes were being merged');
+    }
     this._acl = doc;
     this._revision++;
   }
@@ -283,13 +298,21 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
     this._assertComplete('check ACL membership');
+    const baseRevision = this._revision;
+    const base = this._acl;
     const hash = await serializeKey(publicKey);
+    this._assertComplete('check ACL membership');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while membership was being checked');
+    }
     return this._acl.users?.[hash] !== undefined;
   }
   // The capability parameter is accepted for interface compatibility but ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async users(capability?: string): Promise<CryptoKey[]> {
     this._assertComplete('list ACL members');
+    const baseRevision = this._revision;
+    const base = this._acl;
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey(
@@ -297,7 +320,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       ['verify'],
     );
     const entries = Object.keys(this._acl.users ?? {});
-    return Promise.all(
+    const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
         if (!key) {
@@ -307,6 +330,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         return key;
       }),
     );
+    this._assertComplete('list ACL members');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while members were being listed');
+    }
+    return users;
   }
 }
 
