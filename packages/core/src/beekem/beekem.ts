@@ -45,6 +45,7 @@ async function assertEcdhKeyPairCompatible(
   privateKey: CryptoKey,
   probe: CryptoKeyPair,
   label: string,
+  context = 'Cannot process Welcome',
 ): Promise<void> {
   let privateSide: Uint8Array;
   let publicSide: Uint8Array;
@@ -68,17 +69,17 @@ async function assertEcdhKeyPairCompatible(
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : '';
     throw new Error(
-      `Cannot process Welcome: ${label} ECDH compatibility check failed${detail}`,
+      `${context}: ${label} ECDH compatibility check failed${detail}`,
       { cause: error },
     );
   }
 
-  const coherent = constantTimeEqual(privateSide, publicSide);
+  const compatible = constantTimeEqual(privateSide, publicSide);
   privateSide.fill(0);
   publicSide.fill(0);
-  if (!coherent) {
+  if (!compatible) {
     throw new Error(
-      `Cannot process Welcome: ${label} public and private keys are not ECDH-compatible`,
+      `${context}: ${label} public and private keys are not ECDH-compatible`,
     );
   }
 }
@@ -382,6 +383,27 @@ export class BeeKEM {
     publicKey: CryptoKey,
   ): Promise<void> {
     this._receiverGeneration++;
+    let compatibilityProbe: CryptoKeyPair;
+    try {
+      compatibilityProbe = (await crypto.subtle.generateKey(
+        ECDH_ALGO,
+        false,
+        ['deriveBits'],
+      )) as CryptoKeyPair;
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      throw new Error(
+        `Cannot initialize BeeKEM: ECDH compatibility probe generation failed${detail}`,
+        { cause: error },
+      );
+    }
+    await assertEcdhKeyPairCompatible(
+      publicKey,
+      privateKey,
+      compatibilityProbe,
+      'founder leaf 0',
+      'Cannot initialize BeeKEM',
+    );
     this._nodes.clear();
     this._numLeaves = 1;
     this._myLeafIndex = 0;
@@ -848,9 +870,9 @@ export class BeeKEM {
     // private key can remain non-extractable because validation only uses its
     // deriveBits capability. Decrypted path keys are extractable and are
     // compared exactly below.
-    let coherenceProbe: CryptoKeyPair;
+    let compatibilityProbe: CryptoKeyPair;
     try {
-      coherenceProbe = (await crypto.subtle.generateKey(
+      compatibilityProbe = (await crypto.subtle.generateKey(
         ECDH_ALGO,
         false,
         ['deriveBits'],
@@ -858,14 +880,14 @@ export class BeeKEM {
     } catch (error) {
       const detail = error instanceof Error ? `: ${error.message}` : '';
       throw new Error(
-        `Cannot process Welcome: key-pair coherence probe generation failed${detail}`,
+        `Cannot process Welcome: ECDH compatibility probe generation failed${detail}`,
         { cause: error },
       );
     }
     await assertEcdhKeyPairCompatible(
       publicKey,
       privateKey,
-      coherenceProbe,
+      compatibilityProbe,
       `recipient leaf ${validated.welcome.leafIndex}`,
     );
 
