@@ -360,6 +360,7 @@ export class BeeKEM {
   private _resolveWelcomeSettlement: (() => void) | undefined;
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
+  private _pendingInitializations = 0;
 
   private _reserveMutation(): <T>(
     operation: () => Promise<T>,
@@ -412,7 +413,21 @@ export class BeeKEM {
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
-    return this._runMutation(() => this._initialize(privateKey, publicKey));
+    if (
+      this._resolveWelcomeSettlement !== undefined &&
+      this._pendingMutations !== 0
+    ) {
+      throw new Error(
+        'Cannot initialize BeeKEM while a mutation is waiting for Welcome settlement',
+      );
+    }
+    this._pendingInitializations++;
+    try {
+      await this._runMutation(() => this._initialize(privateKey, publicKey));
+    } finally {
+      this._pendingInitializations--;
+      this._settleWelcomeCandidates();
+    }
   }
 
   private async _initialize(
@@ -637,6 +652,11 @@ export class BeeKEM {
    * Detaches the update at admission, waits for any already-admitted Welcome
    * cohort, validates it against the resulting tree when its reserved turn
    * begins, and commits a staged tree only on success.
+   *
+   * This is the legacy v1 shape. It has no generation or parent-tree binding,
+   * so structural validation and FIFO application do not make captured valid
+   * updates replay-safe. Callers must treat replay/out-of-order resistance as a
+   * v2 requirement.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
     this._assertInitializedForMutation('process a PathUpdate');
@@ -915,9 +935,9 @@ export class BeeKEM {
     // private key can remain non-extractable because validation only uses its
     // deriveBits capability. Decrypted path keys are extractable and are
     // compared exactly below.
-    let compatibilityProbe: CryptoKeyPair;
+    let coherenceProbe: CryptoKeyPair;
     try {
-      compatibilityProbe = (await crypto.subtle.generateKey(
+      coherenceProbe = (await crypto.subtle.generateKey(
         ECDH_ALGO,
         false,
         ['deriveBits'],
@@ -925,14 +945,14 @@ export class BeeKEM {
     } catch (error) {
       const detail = error instanceof Error ? `: ${error.message}` : '';
       throw new Error(
-        `Cannot process Welcome: ECDH compatibility probe generation failed${detail}`,
+        `Cannot process Welcome: key-pair coherence probe generation failed${detail}`,
         { cause: error },
       );
     }
     await assertEcdhKeyPairCompatible(
       publicKey,
       privateKey,
-      compatibilityProbe,
+      coherenceProbe,
       `recipient leaf ${validated.welcome.leafIndex}`,
     );
 
@@ -1287,6 +1307,8 @@ export class BeeKEM {
       this._finishWelcomeSettlementIfPossible();
       return;
     }
+
+    if (this._pendingInitializations !== 0) return;
 
     let winnerRevision = -1n;
     let winner: StagedWelcomeCandidate | undefined;
