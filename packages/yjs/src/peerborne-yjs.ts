@@ -677,6 +677,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       staged,
       snapshotBoundedYjsACLState(base, 'stage an ACL addition'),
     );
+    staged.clientID = base.clientID;
     const stagedUsers = staged.getMap('users');
     const hadMember = stagedUsers.has(hash);
     const beforeSV = encodeStateVector(staged);
