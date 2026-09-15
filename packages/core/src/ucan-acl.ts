@@ -455,12 +455,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
 
     const backingRevision = this._backingRevision;
-    if ((await this._backing.check(snapshot.publicKey)) !== true) {
-      return false;
-    }
-
+    const isMember = (await this._backing.check(snapshot.publicKey)) === true;
     this._assertReadable('ACL check');
     if (this._backingRevision !== backingRevision) {
+      return false;
+    }
+    if (!isMember) {
       return false;
     }
 
@@ -584,14 +584,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
    */
   async getEntry(publicKey: PublicKey): Promise<UCANACLEntry | undefined> {
     this._assertReadable('ACL entry lookup');
-    const keyBase64 = await this._serializePublicKey(publicKey);
+    const snapshot = await this._snapshotPublicKey(
+      publicKey,
+      'ACL entry lookup',
+    );
     this._assertReadable('ACL entry lookup');
-    if (typeof keyBase64 !== 'string' || keyBase64.length === 0) {
-      throw new TypeError(
-        'ACL lookup requires a non-empty canonical public-key encoding',
-      );
-    }
-    const entry = this._entries.get(keyBase64);
+    const entry = this._entries.get(snapshot.keyBase64);
     return entry && copyUCANEntry(entry);
   }
 }

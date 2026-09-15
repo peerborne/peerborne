@@ -603,6 +603,33 @@ describe('UCANACL', () => {
     await expect(authorization).resolves.toBe(false);
   });
 
+  test('rechecks backing health after an in-flight negative check', async () => {
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let resolveCheck!: (allowed: boolean) => void;
+    const pendingCheck = new Promise<boolean>((resolve) => {
+      resolveCheck = resolve;
+    });
+    backing.check.mockImplementation(() => {
+      checkStarted();
+      return pendingCheck;
+    });
+    backing.merge.mockImplementation(() => {
+      throw new Error('backing merge failed');
+    });
+
+    const authorization = acl.check('key1');
+    await started;
+    expect(() => acl.merge('remote-changes')).toThrow('backing merge failed');
+    resolveCheck(false);
+
+    await expect(authorization).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
   test('check with capability falls back to backing ACL when no UCAN entry', async () => {
     backing.check.mockResolvedValue(true);
     const result = await acl.check('key1', '/doc/write');
@@ -1434,6 +1461,68 @@ describe('UCANACL', () => {
   test('getEntry returns undefined for unknown user', async () => {
     const entry = await acl.getEntry('unknown');
     expect(entry).toBeUndefined();
+  });
+
+  test('getEntry requires detached snapshots for mutable identities', async () => {
+    const objectAcl = new UCANACLImpl(
+      backing,
+      jest.fn(async (key: { id: string }) => `serialized:${key.id}`),
+    );
+
+    await expect(objectAcl.getEntry({ id: 'user-a' })).rejects.toThrow(
+      /requires a public-key deserializer for mutable identities/,
+    );
+  });
+
+  test('getEntry binds lookup to a detached canonical identity snapshot', async () => {
+    const callerIdentity = { id: 'user-a' };
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      lookupStarted = resolve;
+    });
+    let releaseLookup!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    let blockLookup = false;
+    const serialize = jest.fn((key: { id: string }) => {
+      const capturedId = key.id;
+      return (async () => {
+        if (blockLookup && key === callerIdentity) {
+          lookupStarted();
+          await release;
+        }
+        return `serialized:${capturedId}`;
+      })();
+    });
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice('serialized:'.length),
+    }));
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user-a',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+      }),
+    );
+    backing.add.mockResolvedValue('changes');
+    await objectAcl.grant(
+      { id: 'user-a' },
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    blockLookup = true;
+    const lookup = objectAcl.getEntry(callerIdentity);
+    await started;
+    callerIdentity.id = 'user-b';
+    releaseLookup();
+
+    await expect(lookup).resolves.toMatchObject({
+      publicKeyBase64: 'serialized:user-a',
+    });
   });
 
   test('getEntry returns entry after grant', async () => {
