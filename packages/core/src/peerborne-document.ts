@@ -738,6 +738,18 @@ export class PeerborneDocument<
   // Set of already-merged change blocks.
   private _hashes = new Set<string>();
 
+  // Fail-closed bootstrap admission state. A bootstrap load can mutate
+  // ACL/keychain state before a later CRDT/provider operation throws, without
+  // necessarily reaching `_hashes`, `_lastSyncMessage`, or `_latestSnapshot`.
+  // `pending` is deliberately durable after any failed application attempt;
+  // `complete` is set only after the entire response passes its post-sync
+  // checks. This prevents a partial ACL merge from manufacturing authority for
+  // a retry. An explicitly pinned signer remains a recovery path.
+  private _bootstrapLoadApplicationState:
+    | 'pristine'
+    | 'pending'
+    | 'complete' = 'pristine';
+
   // Set of CIDs that have been seen as a `children` key in any sync tree we
   // have processed (locally created or remotely received) -- i.e. every CID
   // some node references as a parent / cross-link target. These are
@@ -967,6 +979,15 @@ export class PeerborneDocument<
     const shuffledPeers = [...peers];
     shuffleArray(shuffledPeers);
     return shuffledPeers;
+  }
+
+  private _assertNoIncompleteBootstrapLoad(): void {
+    if (this._bootstrapLoadApplicationState === 'pending') {
+      throw new Error(
+        `Document load for ${this.documentPath} failed after state application began; ` +
+          `discard this document instance or recover through an explicitly pinned signer`,
+      );
+    }
   }
 
   private async _decryptBlock(
@@ -3056,6 +3077,15 @@ export class PeerborneDocument<
           );
           return false;
         }
+        // A partially-applied bootstrap cannot authorize any later ordinary
+        // response. Reject before consulting its potentially attacker-shaped
+        // writer ACL; an explicitly pinned signer remains the recovery path.
+        if (
+          requiredResponseSigner === undefined &&
+          this._bootstrapLoadApplicationState === 'pending'
+        ) {
+          return false;
+        }
         if (
           !Array.isArray(message.tips) ||
           message.tips.some((tip) => typeof tip !== 'string')
@@ -3197,6 +3227,12 @@ export class PeerborneDocument<
             }
           }
         }
+        let beganBootstrapStateApplication = false;
+        const completeBootstrapStateApplication = (): void => {
+          if (beganBootstrapStateApplication) {
+            this._bootstrapLoadApplicationState = 'complete';
+          }
+        };
         // Writer authorization that changed after admission is a conflict,
         // not a peer miss; `load()` must not treat it as an unserved document.
         const assertLoadWriterVersionUnchanged = (): void => {
@@ -3212,6 +3248,9 @@ export class PeerborneDocument<
             // Reverify while holding the membership queue. The writer set may
             // have changed after the early load-response admission check.
             return this._mutationQueue.run(async () => {
+              if (this._bootstrapLoadApplicationState === 'pending') {
+                return false;
+              }
               assertLoadWriterVersionUnchanged();
               const currentWriters = await this._getWriterKeys();
               if (
@@ -3232,6 +3271,9 @@ export class PeerborneDocument<
               assertLoadWriterVersionUnchanged();
               const currentWriters = await this._getWriterKeys();
               if (currentWriters.length > 0) {
+                if (this._bootstrapLoadApplicationState === 'pending') {
+                  return false;
+                }
                 if (
                   (await verifyOriginalLoadSignature(currentWriters)) !== true
                 ) {
@@ -3240,22 +3282,30 @@ export class PeerborneDocument<
                 return this._syncUnlocked(message, false, 'load-response-v3');
               }
               if (
+                this._bootstrapLoadApplicationState !== 'pristine' ||
                 this._hashes.size > 0 ||
                 this._lastSyncMessage !== undefined ||
                 this._latestSnapshot !== undefined
               ) {
                 return false;
               }
-              return this._syncUnlocked(message, false, 'load-response-v3');
+              return this._syncUnlocked(
+                message,
+                false,
+                'load-response-v3',
+                () => {
+                  this._bootstrapLoadApplicationState = 'pending';
+                  beganBootstrapStateApplication = true;
+                },
+              );
             });
           }
           // A pinned signer is explicit out-of-band authority and was checked
           // above. Signing-disabled loads preserve their configured behavior.
-          return this._syncValidatedProtocolMessage(
-            message,
-            'load-response-v3',
-            loadWriterKeysVersion,
-          );
+          return this._mutationQueue.run(async () => {
+            assertLoadWriterVersionUnchanged();
+            return this._syncUnlocked(message, false, 'load-response-v3');
+          });
         };
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
@@ -3576,6 +3626,7 @@ export class PeerborneDocument<
             );
           }
 
+          completeBootstrapStateApplication();
           return true;
         }
 
@@ -3604,6 +3655,7 @@ export class PeerborneDocument<
           // Return false so the caller tries the next peer.
           return false;
         }
+        completeBootstrapStateApplication();
         return true;
       },
     );
@@ -4066,11 +4118,20 @@ export class PeerborneDocument<
    * @throws {Error} When no peer served the document and a response was
    *   discarded because writer authorization changed while it was being
    *   applied. The load can be retried.
+   * @throws {Error} When an earlier encrypted-channel bootstrap began
+   *   applying state but did not complete. The document instance remains
+   *   fail-closed and must be discarded or recovered through an explicitly
+   *   pinned signer.
    */
   // Key exchange happens during:
   // - Load messages.
   // - ACL updates via /collabswarm/key-update/1.0.0 protocol
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+    // A failed bootstrap may have partially changed ACL/keychain state without
+    // producing a DAG head. Do not let a later load retry or `open()` interpret
+    // that state as a safe new-document result.
+    this._assertNoIncompleteBootstrapLoad();
+
     // Pick a peer. All peers come from getConnections() so they already have
     // open connections. dialProtocol reuses existing connections internally,
     // so no additional connection management is needed here.
@@ -4457,6 +4518,7 @@ export class PeerborneDocument<
     }
 
     // No peer could provide the document -- assume new document.
+    this._assertNoIncompleteBootstrapLoad();
     console.log(`No connected peer served ${this.documentPath}`);
     return false;
   }
@@ -4934,6 +4996,7 @@ export class PeerborneDocument<
       | 'load-response-v3'
       | 'invitation-bootstrap-v1'
     >,
+    onStateApplicationStart?: () => void,
   ): Promise<boolean> {
     let sourceSnapshot: object | undefined;
     if (context !== 'ordinary-sync-v1') {
@@ -5004,18 +5067,27 @@ export class PeerborneDocument<
       );
     }
 
+    let stateApplicationStarted = false;
+    const beginStateApplication = (): void => {
+      if (stateApplicationStarted) return;
+      stateApplicationStarted = true;
+      onStateApplicationStart?.();
+    };
+
     // Pre-pass: apply only ACL nodes from the change tree to populate
     // _writers/_readers. This is needed before snapshot verification since
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
     // It runs before the keychain merge so a rejected ACL merge leaves the
     // keychain unchanged.
-    if (changeTreePreflight) {
+    if (changeTreePreflight && changeTreePreflight.aclEntries.length > 0) {
+      beginStateApplication();
       await this._applyCollectedACL(changeTreePreflight.aclEntries);
     }
 
     // Update/replace list of document keys (if provided).
     if (message.keychainChanges) {
+      beginStateApplication();
       try {
         this._keychain.merge(message.keychainChanges);
         console.log(`Updated keychain in ${this.documentPath}`);
@@ -5074,6 +5146,7 @@ export class PeerborneDocument<
           // Apply the snapshot state. Use applySnapshot when available (e.g.
           // Automerge save format differs from incremental changes), otherwise
           // fall back to remoteChange (works for Yjs where snapshots are valid updates).
+          beginStateApplication();
           this._document = this._crdtProvider.applySnapshot
             ? this._crdtProvider.applySnapshot(this._document, incoming.state)
             : this._crdtProvider.remoteChange(this._document, incoming.state);
@@ -5104,6 +5177,7 @@ export class PeerborneDocument<
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
     if (changeTreePreflight) {
+      beginStateApplication();
       await this._syncDocumentChanges(
         message.changeId,
         changeTreePreflight.changes,
