@@ -36,7 +36,7 @@ describe('welcome-sealed-payload fuzz', () => {
                 {
                   nodeIndex: 1,
                   publicKey: new Uint8Array(65).fill(1),
-                  encryptedPrivateKey: new Uint8Array([2]),
+                  encryptedPrivateKey: new Uint8Array(125).fill(2),
                 },
               ],
               treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
