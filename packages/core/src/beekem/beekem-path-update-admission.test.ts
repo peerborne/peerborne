@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { eciesSeal, importEciesPublicKey } from '../ecies.js';
 import { BeeKEM } from './beekem.js';
 import { MAX_BEEKEM_TREE_LEAVES, PathUpdate } from './types.js';
 
@@ -200,6 +201,100 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     ).resolves.toBe(2);
 
     const receivedRoot = await alice.processPathUpdate(pathUpdate);
+    expect(bytesEqual(receivedRoot, rootSecret)).toBe(true);
+  });
+
+  test('rejects a mismatched ancestor key above a non-root intersection without mutation', async () => {
+    let sender = new BeeKEM();
+    let senderKeys = await generateKeyPair();
+    await sender.initialize(senderKeys.privateKey, senderKeys.publicKey);
+    for (let index = 0; index < 4; index++) {
+      const nextKeys = await generateKeyPair();
+      const { welcome } = await sender.addMember(nextKeys.publicKey);
+      const next = new BeeKEM();
+      await next.processWelcome(
+        welcome,
+        nextKeys.privateKey,
+        nextKeys.publicKey,
+      );
+      sender = next;
+      senderKeys = nextKeys;
+    }
+
+    const receiverKeys = await generateKeyPair();
+    const { welcome } = await sender.addMember(receiverKeys.publicKey);
+    const receiver = new BeeKEM();
+    await receiver.processWelcome(
+      welcome,
+      receiverKeys.privateKey,
+      receiverKeys.publicKey,
+    );
+
+    const senderInternals = sender as unknown as {
+      _nodes: Map<number, { privateKey?: CryptoKey }>;
+    };
+    const { pathUpdate, rootSecret } = await sender.update();
+    expect(pathUpdate.nodes.map(({ nodeIndex }) => nodeIndex)).toEqual([9, 7]);
+
+    const [intersectionNode, ancestorNode] = pathUpdate.nodes;
+    const ancestorPrivateKey = senderInternals._nodes.get(
+      ancestorNode.nodeIndex,
+    )?.privateKey;
+    expect(ancestorPrivateKey).toBeDefined();
+    if (!ancestorPrivateKey) throw new Error('missing ancestor private key');
+
+    const intersectionPublicKey = await importEciesPublicKey(
+      intersectionNode.publicKey,
+    );
+    // Make the ancestor decryptable through node 9 so rejection depends on
+    // its public/private key-pair check, not an earlier ECIES failure.
+    const encryptedAncestorPrivateKey = await eciesSeal(
+      new Uint8Array(
+        await crypto.subtle.exportKey('pkcs8', ancestorPrivateKey),
+      ),
+      intersectionPublicKey,
+    );
+    const validRewrappedUpdate: PathUpdate = {
+      ...pathUpdate,
+      nodes: [
+        intersectionNode,
+        { ...ancestorNode, encryptedPrivateKey: encryptedAncestorPrivateKey },
+      ],
+    };
+    const mismatchedAncestorPublicKey = await exportPublicKey(
+      (await generateKeyPair()).publicKey,
+    );
+    const tampered: PathUpdate = {
+      ...validRewrappedUpdate,
+      nodes: [
+        intersectionNode,
+        {
+          ...validRewrappedUpdate.nodes[1],
+          publicKey: mismatchedAncestorPublicKey,
+        },
+      ],
+    };
+
+    const receiverInternals = receiver as unknown as {
+      _nodes: Map<number, unknown>;
+    };
+    const nodesBefore = receiverInternals._nodes;
+    const rootBefore = await receiver.getRootSecret();
+
+    await expect(receiver.processPathUpdate(tampered)).rejects.toThrow(
+      /private key does not match the public key at node 7/,
+    );
+
+    expect(receiverInternals._nodes).toBe(nodesBefore);
+    await expect(receiver.getRootSecret()).resolves.toEqual(rootBefore);
+    await expect(
+      receiver.findLeafByPublicKey(pathUpdate.senderLeafPublicKey),
+    ).resolves.toBeUndefined();
+    await expect(
+      receiver.findLeafByPublicKey(senderKeys.publicKey),
+    ).resolves.toBe(8);
+
+    const receivedRoot = await receiver.processPathUpdate(validRewrappedUpdate);
     expect(bytesEqual(receivedRoot, rootSecret)).toBe(true);
   });
 
