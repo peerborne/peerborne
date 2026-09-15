@@ -182,26 +182,49 @@ describe('UCANACL', () => {
     await expect(accepted).resolves.toBe('add-changes');
     expect(backing.add).toHaveBeenCalledTimes(1);
     expect(backing.add).toHaveBeenCalledWith('key2');
+    expect(() => orderedAcl.merge('remote-changes')).not.toThrow();
   });
 
-  test('runs different identities concurrently after ordered admission', async () => {
+  test('serializes backing mutations for different identities', async () => {
     let resolveFirstAdd!: (changes: string) => void;
     const firstAdd = new Promise<string>((resolve) => {
       resolveFirstAdd = resolve;
     });
+    let firstAddStarted!: () => void;
+    const firstWasStarted = new Promise<void>((resolve) => {
+      firstAddStarted = resolve;
+    });
     const started: string[] = [];
     backing.add.mockImplementation((key: string) => {
       started.push(key);
+      if (key === 'key1') firstAddStarted();
       return key === 'key1' ? firstAdd : Promise.resolve('second-changes');
     });
 
     const first = acl.add('key1');
     const second = acl.add('key2');
+    await firstWasStarted;
 
-    await expect(second).resolves.toBe('second-changes');
-    expect(started).toEqual(['key1', 'key2']);
+    expect(started).toEqual(['key1']);
     resolveFirstAdd('first-changes');
     await expect(first).resolves.toBe('first-changes');
+    await expect(second).resolves.toBe('second-changes');
+    expect(started).toEqual(['key1', 'key2']);
+  });
+
+  test('releases the global mutation queue after a backing failure', async () => {
+    backing.add
+      .mockRejectedValueOnce(new Error('first add failed'))
+      .mockResolvedValueOnce('second-changes');
+
+    const first = acl.add('key1');
+    const second = acl.add('key2');
+
+    await expect(first).rejects.toThrow('first add failed');
+    await expect(second).resolves.toBe('second-changes');
+    expect(backing.add).toHaveBeenNthCalledWith(1, 'key1');
+    expect(backing.add).toHaveBeenNthCalledWith(2, 'key2');
+    expect(() => acl.merge('remote-changes')).not.toThrow();
   });
 
   test('remove revokes access', async () => {
@@ -221,10 +244,104 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
   });
 
+  test('rejects merge while identity admission is pending', async () => {
+    let serializationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      serializationStarted = resolve;
+    });
+    let releaseSerialization!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseSerialization = resolve;
+    });
+    const serialize = jest.fn(async (key: string) => {
+      serializationStarted();
+      await release;
+      return `serialized:${key}`;
+    });
+    const orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.add.mockResolvedValue('add-changes');
+
+    const addition = orderedAcl.add('key1');
+    await started;
+
+    expect(() => orderedAcl.merge('remote-changes')).toThrow(
+      /local membership mutation is pending/,
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+
+    releaseSerialization();
+    await expect(addition).resolves.toBe('add-changes');
+    expect(() => orderedAcl.merge('remote-changes')).not.toThrow();
+    expect(backing.merge).toHaveBeenCalledWith('remote-changes');
+  });
+
+  test('rejects merge while a backing membership mutation is pending', async () => {
+    let addStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    let resolveAdd!: (changes: string) => void;
+    const pendingAdd = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    backing.add.mockImplementation(() => {
+      addStarted();
+      return pendingAdd;
+    });
+
+    const addition = acl.add('key1');
+    await started;
+
+    expect(() => acl.merge('remote-changes')).toThrow(
+      /local membership mutation is pending/,
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+
+    resolveAdd('add-changes');
+    await expect(addition).resolves.toBe('add-changes');
+    expect(() => acl.merge('remote-changes')).not.toThrow();
+    expect(backing.merge).toHaveBeenCalledWith('remote-changes');
+  });
+
   test('check without capability delegates to backing ACL', async () => {
     backing.check.mockResolvedValue(true);
     const result = await acl.check('key1');
     expect(result).toBe(true);
+  });
+
+  test('checks backing membership with a detached identity', async () => {
+    const callerIdentity = { id: 'user-a' };
+    const serialize = jest.fn(async (key: { id: string }) =>
+      `serialized:${key.id}`,
+    );
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice('serialized:'.length),
+    }));
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let releaseCheck!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseCheck = resolve;
+    });
+    let checkedIdentity: { id: string } | undefined;
+    backing.check.mockImplementation(async (key: { id: string }) => {
+      checkedIdentity = key;
+      checkStarted();
+      await release;
+      return key.id === 'user-a';
+    });
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const check = objectAcl.check(callerIdentity);
+    await started;
+    callerIdentity.id = 'user-b';
+    releaseCheck();
+
+    await expect(check).resolves.toBe(true);
+    expect(checkedIdentity).toEqual({ id: 'user-a' });
+    expect(checkedIdentity).not.toBe(callerIdentity);
   });
 
   test('check with capability falls back to backing ACL when no UCAN entry', async () => {
@@ -481,8 +598,59 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/write')).toBe(false);
   });
 
-  test('users without capability delegates to backing ACL', async () => {
+  test('a remote re-add cannot clear a local revocation tombstone', async () => {
+    let isMember = false;
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.add.mockImplementation(async () => {
+      isMember = true;
+      return 'add-changes';
+    });
+    backing.remove.mockImplementation(async () => {
+      isMember = false;
+      return 'remove-changes';
+    });
+    backing.merge.mockImplementation(() => {
+      isMember = true;
+    });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['user1'] : [],
+    );
+
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await acl.revoke('user1');
+    acl.merge('remote-re-add');
+
+    expect(await acl.check('user1')).toBe(false);
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+    expect(await acl.users()).toEqual([]);
+    expect(await acl.users('/doc/write')).toEqual([]);
+
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    expect(await acl.check('user1')).toBe(true);
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('users without capability filters backing users through membership checks', async () => {
     backing.users.mockResolvedValue(['userA', 'userB']);
+    backing.check.mockResolvedValue(true);
     const result = await acl.users();
     expect(result).toEqual(['userA', 'userB']);
   });
