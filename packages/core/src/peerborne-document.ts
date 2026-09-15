@@ -863,13 +863,17 @@ export class PeerborneDocument<
   // necessarily reaching `_hashes`, `_lastSyncMessage`, or `_latestSnapshot`.
   // `pending` is deliberately durable after any failed application attempt;
   // `complete` is set only after the entire response passes its post-sync
-  // checks. This prevents a partial ACL merge from manufacturing authority for
-  // a retry or from being consumed by any other public state transition. There
-  // is no safe in-place recovery because the pre-failure state is not retained.
+  // checks. `poisoned` is a separate terminal state for failures, such as an
+  // opaque ACL commit exception, whose partial effects cannot be ruled out;
+  // bootstrap finalization must never clear it. These states prevent a partial
+  // ACL mutation from manufacturing authority for a retry or from being
+  // consumed by any other public state transition. There is no safe in-place
+  // recovery because the pre-failure state is not retained.
   private _bootstrapLoadApplicationState:
     | 'pristine'
     | 'pending'
-    | 'complete' = 'pristine';
+    | 'complete'
+    | 'poisoned' = 'pristine';
 
   // Monotonic generation for bootstrap state transitions. Response handlers
   // capture this before assembling a payload and require it to remain stable
@@ -1133,6 +1137,12 @@ export class PeerborneDocument<
   }
 
   private _assertNoIncompleteBootstrapLoad(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') {
+      throw new Error(
+        `Document ${this.documentPath} has indeterminate authorization state; ` +
+          `discard this document instance before continuing`,
+      );
+    }
     if (this._activeInvitationBootstrapContinuation !== undefined) {
       throw new Error(
         `Invitation bootstrap validation for ${this.documentPath} is in progress`,
@@ -1147,11 +1157,29 @@ export class PeerborneDocument<
   }
 
   private _markBootstrapStateApplicationPending(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') return;
     this._bootstrapLoadApplicationState = 'pending';
     this._bootstrapLoadApplicationRevision++;
   }
 
+  private _markDocumentStatePoisoned(): void {
+    this._bootstrapLoadApplicationState = 'poisoned';
+    this._bootstrapLoadApplicationRevision++;
+  }
+
+  private _isStateApplicationBlocked(): boolean {
+    return (
+      this._bootstrapLoadApplicationState === 'pending' ||
+      this._bootstrapLoadApplicationState === 'poisoned'
+    );
+  }
+
   private _markBootstrapStateApplicationComplete(): void {
+    if (this._bootstrapLoadApplicationState !== 'pending') {
+      throw new Error(
+        `Bootstrap completion for ${this.documentPath} requires pending state`,
+      );
+    }
     this._bootstrapLoadApplicationState = 'complete';
     this._bootstrapLoadApplicationRevision++;
   }
@@ -1561,7 +1589,7 @@ export class PeerborneDocument<
   }
 
   private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
-    if (this._bootstrapLoadApplicationState === 'pending') {
+    if (this._isStateApplicationBlocked()) {
       for (const hash of hashes) {
         this._pendingBootstrapRemoteUpdateHashes.add(hash);
       }
@@ -1596,9 +1624,8 @@ export class PeerborneDocument<
         hashes,
       );
       if (result !== undefined) {
-        void Promise.resolve(result).catch((error) => {
+        void Promise.resolve(result).catch(() => {
           this._reportLocalUpdateHandlerFailure(
-            error,
             postPublishOperation,
             true,
           );
@@ -1608,7 +1635,6 @@ export class PeerborneDocument<
   }
 
   private _reportLocalUpdateHandlerFailure(
-    error: unknown,
     postPublishOperation?: string,
     asynchronous = false,
   ): void {
@@ -1617,7 +1643,6 @@ export class PeerborneDocument<
         `[${this.documentPath}] ${postPublishOperation}: a local update ` +
           `handler failed after the ACL change was published and committed. ` +
           `The handler failure is not a retryable ACL publication failure.`,
-        error,
       );
       return;
     }
@@ -1625,7 +1650,6 @@ export class PeerborneDocument<
       console.error(
         `[${this.documentPath}] an asynchronous local update handler failed ` +
           'after the change was published.',
-        error,
       );
     }
   }
@@ -2118,7 +2142,7 @@ export class PeerborneDocument<
     this._refreshLastSyncMessageFromSync(changeId, changes);
 
     assertStillActive();
-    if (this._bootstrapLoadApplicationState === 'pending') {
+    if (this._isStateApplicationBlocked()) {
       this._bootstrapCompactionDeferred = true;
     } else {
       await this._maybeCompact();
@@ -2299,7 +2323,7 @@ export class PeerborneDocument<
       return this._readers.merge(changes);
     }, signal);
     assertStillActive?.();
-    if (this._bootstrapLoadApplicationState !== 'pending') {
+    if (!this._isStateApplicationBlocked()) {
       this._schedulePendingWelcomeDrain();
     }
   }
@@ -2856,11 +2880,13 @@ export class PeerborneDocument<
     // A staged ACL change does not mutate live authorization until publication
     // resolves. Every caller supplying `postPublishCommit` owns the shared
     // membership queue, so supported remote sync cannot interleave with these
-    // snapshots. A rejected publication or a commit that fails before applying
-    // its staged mutation therefore restores exactly this call's DAG
+    // snapshots. A rejected publication restores exactly this call's DAG
     // bookkeeping and cannot be attached as an ancestor or cross-link by a
-    // later message. The encrypted block itself may remain orphaned in the
-    // content-addressed blockstore, but no in-memory DAG root points to it.
+    // later message. A commit exception also rolls back the DAG, but a generic
+    // ACL may already have changed its backing state; that path poisons the
+    // document instance rather than assuming the staged mutation was atomic.
+    // The encrypted block itself may remain orphaned in the content-addressed
+    // blockstore, but no in-memory DAG root points to it.
     // GossipSub does not expose an acknowledgement that distinguishes
     // "rejected before send" from "accepted by the transport, then rejected
     // locally." In that narrow delivery-ambiguous case a remote peer may have
@@ -2964,7 +2990,17 @@ export class PeerborneDocument<
       );
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
-      postPublishCommit?.commit();
+      if (postPublishCommit) {
+        try {
+          postPublishCommit.commit();
+        } catch (error) {
+          // Custom ACL providers may mutate partially before throwing. The DAG
+          // rollback below cannot prove their backing authorization reverted,
+          // so every commit exception makes this instance unusable.
+          this._markDocumentStatePoisoned();
+          throw error;
+        }
+      }
       if (postPublishCommit) {
         this._lastSyncMessage = updateMessage;
       }
@@ -2993,10 +3029,7 @@ export class PeerborneDocument<
       );
     } catch (error) {
       if (!postPublishCommit) throw error;
-      this._reportLocalUpdateHandlerFailure(
-        error,
-        postPublishCommit.operation,
-      );
+      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
     }
 
     // Track document changes for compaction.
@@ -3803,7 +3836,7 @@ export class PeerborneDocument<
           this._isActiveInvitationBootstrapContinuation(
             bootstrapContinuation,
           )
-        : this._bootstrapLoadApplicationState !== 'pending' &&
+        : !this._isStateApplicationBlocked() &&
           this._activeInvitationBootstrapContinuation === undefined;
     const responseLimit = assertPositiveSafeByteLimit(
       maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
