@@ -580,7 +580,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
+      this._assertComplete('add an ACL member');
       const hash = await serializeKey(publicKey);
+      this._assertComplete('add an ACL member');
       const beforeSV = encodeStateVector(this._acl);
       this._acl.getMap('users').set(hash, true);
       const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
