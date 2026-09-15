@@ -428,6 +428,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         'Cannot merge ACL changes while a local membership mutation is pending',
       );
     }
+    if (this._backingMutationsInFlight !== 0) {
+      throw new Error(
+        'Cannot merge ACL changes while a backing mutation is in progress',
+      );
+    }
     this._backingMutationsInFlight++;
     try {
       this._backing.merge(changes);
