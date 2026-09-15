@@ -300,6 +300,71 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareAdd() releases identifiers after post-reservation validation failures', async () => {
+    const acl = new YjsACL();
+    await acl.add(key2);
+    const internals = acl as unknown as {
+      _acl: Doc;
+      _stagedAdditionOperations: Set<string>;
+      _stagedAdditionClientIDs: Set<number>;
+    };
+    internals._acl
+      .getArray('padding')
+      .insert(0, new Array(MAX_YJS_ACL_STRUCTURES - 1).fill(true));
+    const exposedOperations = new Set(
+      internals._stagedAdditionOperations,
+    );
+    const exposedClientIDs = new Set(internals._stagedAdditionClientIDs);
+
+    await expect(acl.prepareAdd(key1)).rejects.toThrow(
+      `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+    );
+    expect(internals._stagedAdditionOperations).toEqual(exposedOperations);
+    expect(internals._stagedAdditionClientIDs).toEqual(exposedClientIDs);
+
+    internals._stagedAdditionOperations.add(
+      `${internals._acl.clientID}:${MAX_YJS_ACL_STRUCTURES}`,
+    );
+    for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 3; index++) {
+      internals._stagedAdditionOperations.add(`reserved:${index}`);
+    }
+    for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 2; index++) {
+      internals._stagedAdditionClientIDs.add(-(index + 1));
+    }
+    const retainedOperations = new Set(internals._stagedAdditionOperations);
+    const retainedClientIDs = new Set(internals._stagedAdditionClientIDs);
+    expect(retainedOperations.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
+    expect(retainedClientIDs.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(acl.prepareAdd(key1)).rejects.toThrow(
+        `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+      );
+      expect(internals._stagedAdditionOperations).toEqual(
+        retainedOperations,
+      );
+      expect(internals._stagedAdditionClientIDs).toEqual(
+        retainedClientIDs,
+      );
+    }
+
+    const freshACL = new Doc({ gc: false });
+    let availableClientID = 1;
+    while (retainedClientIDs.has(availableClientID)) {
+      availableClientID++;
+    }
+    freshACL.clientID = availableClientID;
+    internals._acl = freshACL;
+    const prepared = await acl.prepareAdd(key1);
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(internals._stagedAdditionOperations.size).toBe(
+      MAX_YJS_ACL_STRUCTURES,
+    );
+    expect(internals._stagedAdditionClientIDs.size).toBe(
+      MAX_YJS_ACL_STRUCTURES,
+    );
+  });
+
   test('prepareAdd() preserves one Yjs client across staged additions', async () => {
     const acl = new YjsACL();
     const first = await acl.prepareAdd(key1);
