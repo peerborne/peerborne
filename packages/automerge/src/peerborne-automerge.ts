@@ -160,6 +160,7 @@ export const MAX_AUTOMERGE_ACL_OPERATIONS = 8192;
 export const MAX_AUTOMERGE_ACL_MEMBERS = 4096;
 // First 32 bits of SHA-256("peerborne:automerge-acl:prepared-users-root:v1").
 const AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR = '375c6f0a';
+const AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME = 0;
 
 type AutomergeACLChangeRecord = {
   readonly hash: string;
@@ -316,7 +317,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (base.users !== undefined) return base;
     return change(
       clone(base, { actor: AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR }),
-      { time: undefined },
+      { time: AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME },
       (doc) => {
         doc.users = {};
       },
