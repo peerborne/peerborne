@@ -318,6 +318,31 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test.each(['missing structs', 'pending deletes'] as const)(
+    'prepareRemove() rejects ACL history with %s',
+    async (dependencyType) => {
+      const source = new Doc();
+      const users = source.getMap('users');
+      users.set('first', true);
+      const beforeDependentUpdate = encodeStateVector(source);
+      if (dependencyType === 'missing structs') {
+        users.set('second', true);
+      } else {
+        users.delete('first');
+      }
+      const dependencyIncomplete = encodeStateAsUpdateV2(
+        source,
+        beforeDependentUpdate,
+      );
+      const acl = new YjsACL();
+      acl.merge(dependencyIncomplete);
+
+      await expect(acl.prepareRemove(key1)).rejects.toThrow(
+        'Yjs ACL has unresolved update dependencies',
+      );
+    },
+  );
+
   test('check() returns false for unknown key', async () => {
     const acl = new YjsACL();
     expect(await acl.check(key1)).toBe(false);

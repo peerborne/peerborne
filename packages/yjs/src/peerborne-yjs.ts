@@ -534,6 +534,17 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     })();
   }
 
+  private _assertComplete(operation: string): void {
+    if (
+      this._acl.store.pendingStructs !== null ||
+      this._acl.store.pendingDs !== null
+    ) {
+      throw new Error(
+        `Cannot ${operation}: Yjs ACL has unresolved update dependencies`,
+      );
+    }
+  }
+
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
       const hash = await serializeKey(publicKey);
@@ -554,7 +565,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   async prepareRemove(
     publicKey: CryptoKey,
   ): Promise<PreparedACLRemoval<Uint8Array>> {
+    this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
+    this._assertComplete('remove an ACL member');
     const baseRevision = this._revision;
     const base = this._acl;
     const staged = new Doc();
