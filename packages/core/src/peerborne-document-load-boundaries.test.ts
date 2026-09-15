@@ -115,25 +115,25 @@ function signedLoadHarness(
 }
 
 describe('document load response boundaries', () => {
-  test('retries ACL conflicts while preparing a remote-update audience', async () => {
-    const readers = jest
-      .fn<() => Promise<string[]>>()
-      .mockRejectedValueOnce(
-        new ACLOperationInProgressError('reader listing', Promise.resolve()),
-      )
-      .mockResolvedValue(['reader']);
-    const writers = jest
-      .fn<() => Promise<string[]>>()
-      .mockRejectedValueOnce(
-        new ACLOperationInProgressError('writer listing', Promise.resolve()),
-      )
-      .mockResolvedValue(['writer']);
-    const readerCheck = jest
-      .fn<(key: string) => Promise<boolean>>()
-      .mockRejectedValueOnce(
-        new ACLOperationInProgressError('reader check', Promise.resolve()),
-      )
-      .mockResolvedValue(false);
+  test('serializes reader checks while preparing a remote-update audience', async () => {
+    const readers = jest.fn(async () => ['reader']);
+    const writers = jest.fn(async () => [
+      'writer-a',
+      'writer-b',
+      'writer-c',
+    ]);
+    let checksInFlight = 0;
+    let maximumChecksInFlight = 0;
+    const readerCheck = jest.fn(async () => {
+      checksInFlight++;
+      maximumChecksInFlight = Math.max(
+        maximumChecksInFlight,
+        checksInFlight,
+      );
+      await Promise.resolve();
+      checksInFlight--;
+      return false;
+    });
     const handler = jest.fn();
     const document = fakeDocument({
       _document: { ready: true },
@@ -146,13 +146,353 @@ describe('document load response boundaries', () => {
     ).resolves.toEqual({
       handlers: [handler],
       document: { ready: true },
-      readers: ['reader', 'writer'],
-      writers: ['writer'],
+      readers: ['reader', 'writer-a', 'writer-b', 'writer-c'],
+      writers: ['writer-a', 'writer-b', 'writer-c'],
       hashes: ['HEAD'],
     });
-    expect(readers).toHaveBeenCalledTimes(2);
-    expect(writers).toHaveBeenCalledTimes(2);
-    expect(readerCheck).toHaveBeenCalledTimes(2);
+    expect(readers).toHaveBeenCalledTimes(1);
+    expect(writers).toHaveBeenCalledTimes(1);
+    expect(readerCheck).toHaveBeenCalledTimes(3);
+    expect(maximumChecksInFlight).toBe(1);
+  });
+
+  test('does not wait on an ACL conflict while preparing a remote-update audience', async () => {
+    const settlement = Promise.reject<void>(
+      new Error('audience conflict settlement must not be awaited'),
+    );
+    void settlement.catch(() => undefined);
+    const conflict = new ACLOperationInProgressError(
+      'reader listing',
+      settlement,
+    );
+    const readers = jest.fn<() => Promise<string[]>>().mockRejectedValue(
+      conflict,
+    );
+    const document = fakeDocument({
+      _document: {},
+      _readers: { users: readers },
+      _writers: { users: jest.fn(async () => []) },
+    });
+
+    await expect(
+      document._prepareRemoteUpdateNotification(['HEAD'], [jest.fn()]),
+    ).rejects.toBe(conflict);
+    expect(readers).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    'reader listing',
+    'writer listing',
+    'reader membership check',
+  ] as const)(
+    'retries a %s conflict without retaining the document mutation queue',
+    async (conflictPoint) => {
+      const settlement = deferred<void>();
+      const conflict = new ACLOperationInProgressError(
+        conflictPoint,
+        settlement.promise,
+      );
+      let conflictRaised = false;
+      const raiseOnce = () => {
+        if (conflictRaised) return;
+        conflictRaised = true;
+        throw conflict;
+      };
+      const readers = jest.fn(async () => {
+        if (conflictPoint === 'reader listing') raiseOnce();
+        return ['reader'];
+      });
+      const writers = jest.fn(async () => {
+        if (conflictPoint === 'writer listing') raiseOnce();
+        return ['writer'];
+      });
+      const readerCheck = jest.fn(async () => {
+        if (conflictPoint === 'reader membership check') raiseOnce();
+        return false;
+      });
+      const handler = jest.fn();
+      const mutationQueue = new InvitationMembershipQueue();
+      const refresh = jest.fn();
+      const document = fakeDocument({
+        documentPath: '/conflicted-notification',
+        _bootstrapLoadApplicationState: 'complete',
+        _bootstrapLoadApplicationRevision: 2,
+        _document: {},
+        _hashes: new Set<string>(),
+        _referencedAncestors: new Set<string>(),
+        _lastSyncMessage: undefined,
+        _mergeSyncTree: jest.fn(async () => [
+          ['HEAD', crdtDocumentChangeNode, { value: 'remote' }],
+        ]),
+        _crdtProvider: {
+          remoteChange: jest.fn(() => ({ value: 'remote' })),
+        },
+        _readers: { users: readers, check: readerCheck },
+        _writers: { users: writers },
+        _documentChangeCount: 0,
+        _changesSinceSnapshot: 0,
+        _recentTips: [],
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _remoteHandlers: { subscriber: handler },
+        _mutationQueue: mutationQueue,
+        _refreshLastSyncMessageFromSync: refresh,
+        _bootstrapCompactionDeferred: false,
+        _maybeCompact: jest.fn(async () => undefined),
+      });
+
+      await expect(
+        mutationQueue.run(() =>
+          document._syncDocumentChanges('HEAD', {
+            kind: crdtDocumentChangeNode,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(handler).not.toHaveBeenCalled();
+      const notificationTail = document._remoteUpdateNotificationTail;
+      expect(notificationTail).toBeDefined();
+      await expect(
+        mutationQueue.run(async () => 'queue released'),
+      ).resolves.toBe('queue released');
+
+      settlement.resolve();
+      await notificationTail;
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(
+        { value: 'remote' },
+        ['reader', 'writer'],
+        ['writer'],
+        ['HEAD'],
+      );
+      expect(document._remoteUpdateNotificationTail).toBeUndefined();
+    },
+  );
+
+  test('preserves remote-notification order and batch boundaries across an ACL conflict', async () => {
+    const settlement = deferred<void>();
+    const readers = jest
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'reader listing',
+          settlement.promise,
+        ),
+      )
+      .mockResolvedValue(['reader']);
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/ordered-notifications',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _readers: { users: readers, check: jest.fn(async () => true) },
+      _writers: { users: jest.fn(async () => []) },
+      _remoteHandlers: { subscriber: handler },
+      _mutationQueue: new InvitationMembershipQueue(),
+    });
+
+    await document._fireOrDeferRemoteUpdateHandlers(['FIRST']);
+    await document._fireOrDeferRemoteUpdateHandlers(['SECOND', 'THIRD']);
+    expect(readers).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
+    const notificationTail = document._remoteUpdateNotificationTail;
+
+    settlement.resolve();
+    await notificationTail;
+
+    expect(handler.mock.calls.map((call: unknown[]) => call[3])).toEqual([
+      ['FIRST'],
+      ['SECOND', 'THIRD'],
+    ]);
+    expect(readers).toHaveBeenCalledTimes(3);
+  });
+
+  test('redacts a terminal audience failure without suppressing frontier refresh', async () => {
+    const secret = 'private-audience-provider-error';
+    const handler = jest.fn();
+    const refresh = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/failed-notification-audience',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['HEAD', crdtDocumentChangeNode, { value: 'remote' }],
+      ]),
+      _crdtProvider: {
+        remoteChange: jest.fn(() => ({ value: 'remote' })),
+      },
+      _readers: {
+        users: jest.fn(async () => {
+          throw new Error(secret);
+        }),
+      },
+      _writers: { users: jest.fn(async () => []) },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: { subscriber: handler },
+      _refreshLastSyncMessageFromSync: refresh,
+      _bootstrapCompactionDeferred: false,
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncDocumentChanges('HEAD', {
+          kind: crdtDocumentChangeNode,
+        }),
+      ).resolves.toBeUndefined();
+      expect(consoleError.mock.calls).toEqual([
+        [
+          'Failed to prepare remote update notification for /failed-notification-audience',
+        ],
+      ]);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(document._hashes).toEqual(new Set(['HEAD']));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
+    expect(document._remoteUpdateNotificationTail).toBeUndefined();
+  });
+
+  test('keeps bootstrap pending when its deferred audience conflicts', async () => {
+    const conflict = new ACLOperationInProgressError(
+      'reader listing',
+      new Promise<void>(() => undefined),
+    );
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/bootstrap-audience-conflict',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _document: {},
+      _pendingWelcomes: new Map(),
+      _pendingBootstrapRemoteUpdateHashes: new Set(['HEAD']),
+      _bootstrapCompactionDeferred: false,
+      _readers: {
+        users: jest.fn(async () => {
+          throw conflict;
+        }),
+      },
+      _writers: { users: jest.fn(async () => []) },
+      _remoteHandlers: { subscriber: handler },
+    });
+
+    await expect(
+      document._completeBootstrapStateApplicationUnlocked(),
+    ).rejects.toBe(conflict);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(
+      new Set(['HEAD']),
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(document._remoteUpdateNotificationTail).toBeUndefined();
+  });
+
+  test('batches applied missing hashes into one remote-update audience', async () => {
+    let readerMerged = false;
+    let writerMerged = false;
+    const notifications: Array<{
+      readerMerged: boolean;
+      writerMerged: boolean;
+      hashes: string[];
+    }> = [];
+    const handler = jest.fn(
+      (
+        _state: unknown,
+        _readers: string[],
+        _writers: string[],
+        hashes: string[],
+      ) => {
+        notifications.push({
+          readerMerged,
+          writerMerged,
+          hashes: [...hashes],
+        });
+      },
+    );
+    const readerUsers = jest.fn(async () => ['reader']);
+    const writerUsers = jest.fn(async () => ['writer']);
+    const readerCheck = jest.fn(async () => false);
+    const document = fakeDocument({
+      documentPath: '/batched-missing-notifications',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['DOC', crdtDocumentChangeNode, undefined],
+        ['FAILED', crdtDocumentChangeNode, undefined],
+        ['READER', crdtReaderChangeNode, undefined],
+        ['WRITER', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => {
+        if (cid.toString() === 'FAILED') throw new Error('missing');
+        return { cid: cid.toString() };
+      }),
+      _crdtProvider: {
+        remoteChange: jest.fn((state: unknown) => state),
+      },
+      _mergeReaders: jest.fn(async () => {
+        await Promise.resolve();
+        readerMerged = true;
+      }),
+      _mergeWriters: jest.fn(async () => {
+        await Promise.resolve();
+        writerMerged = true;
+      }),
+      _readers: { users: readerUsers, check: readerCheck },
+      _writers: { users: writerUsers },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: { subscriber: handler },
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _bootstrapCompactionDeferred: false,
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncDocumentChanges('HEAD', {
+          kind: crdtDocumentChangeNode,
+        }),
+      ).resolves.toBeUndefined();
+      expect(consoleError.mock.calls).toEqual([
+        ['Failed to fetch missing change from blockstore:', 'FAILED'],
+      ]);
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(notifications).toEqual([
+      {
+        readerMerged: true,
+        writerMerged: true,
+        hashes: ['DOC', 'READER', 'WRITER'],
+      },
+    ]);
+    expect(readerUsers).toHaveBeenCalledTimes(1);
+    expect(writerUsers).toHaveBeenCalledTimes(1);
+    expect(readerCheck).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set(['DOC', 'READER', 'WRITER']));
   });
 
   test('retries ACL conflicts while authorizing a load requester', async () => {
@@ -881,6 +1221,70 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationRevision).toBe(2);
   });
 
+  test('rejects established pinned catch-up before mutation while an older notification waits', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+      {
+        documentId: '/load-race',
+        signature: 'AAAA',
+        changeId: 'new-head',
+        changes: {
+          kind: crdtDocumentChangeNode,
+          change: { value: 'must-not-apply' },
+        },
+      },
+    );
+    const mutationQueue = new InvitationMembershipQueue();
+    const conflict = new ACLOperationInProgressError(
+      'reader listing',
+      new Promise<void>(() => undefined),
+    );
+    const handler = jest.fn();
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('existing-head');
+    document._mutationQueue = mutationQueue;
+    document._readers = {
+      users: jest.fn(async () => {
+        throw conflict;
+      }),
+    };
+    document._writers = { users: jest.fn(async () => []) };
+    document._remoteHandlers.preCatchUp = handler;
+    document._syncUnlocked = jest.fn(async () => {
+      document._document = { value: 'mutated' };
+      document._hashes.add('new-head');
+      document._markBootstrapStateApplicationPending();
+      return true;
+    });
+
+    await document._fireOrDeferRemoteUpdateHandlers(['older-head']);
+    const notificationTail = document._remoteUpdateNotificationTail;
+    expect(notificationTail).toBeDefined();
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'pinned-writer',
+      ),
+    ).resolves.toBe(false);
+
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document._bootstrapLoadApplicationRevision).toBe(2);
+    expect(document._hashes).toEqual(new Set(['existing-head']));
+    expect(handler).not.toHaveBeenCalled();
+    expect(document._remoteUpdateNotificationTail).toBe(notificationTail);
+    await expect(
+      mutationQueue.run(async () => 'queue released'),
+    ).resolves.toBe('queue released');
+  });
+
   test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
     const message = {
       documentId: '/load-race',
@@ -1283,6 +1687,52 @@ describe('document load response boundaries', () => {
     expect(beginStateApplication).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('reserves bootstrap state before awaiting the ACL pre-pass', async () => {
+    const mergeStarted = deferred<void>();
+    const releaseMerge = deferred<void>();
+    let reserved = false;
+    const beginStateApplication = jest.fn(() => {
+      reserved = true;
+    });
+    const mergeReaders = jest.fn(async () => {
+      expect(reserved).toBe(true);
+      mergeStarted.resolve();
+      await releaseMerge.promise;
+    });
+    const syncDocumentChanges = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/acl-prepass-reservation',
+      swarm: { config: { enableSigning: false } },
+      _bootstrapLoadApplicationState: 'pristine',
+      _keychain: {},
+      _latestSnapshot: undefined,
+      _mergeReaders: mergeReaders,
+      _mergeWriters: jest.fn(async () => undefined),
+      _syncDocumentChanges: syncDocumentChanges,
+    });
+
+    const sync = document._syncUnlocked(
+      {
+        documentId: '/acl-prepass-reservation',
+        changeId: 'READER',
+        changes: {
+          kind: crdtReaderChangeNode,
+          change: { reader: 'partial' },
+        },
+      },
+      false,
+      beginStateApplication,
+    );
+    await mergeStarted.promise;
+
+    expect(beginStateApplication).toHaveBeenCalledTimes(1);
+    expect(syncDocumentChanges).not.toHaveBeenCalled();
+    releaseMerge.resolve();
+    await expect(sync).resolves.toBe(true);
+    expect(mergeReaders).toHaveBeenCalledTimes(1);
+    expect(syncDocumentChanges).toHaveBeenCalledTimes(1);
   });
 
   test('redacts snapshot serialization failures', async () => {
@@ -2063,6 +2513,82 @@ describe('document load response boundaries', () => {
     },
   );
 
+  test.each(['readers', 'writers'] as const)(
+    'fails closed on a queued %s conflict without retaining the mutation FIFO',
+    async (conflictingACL) => {
+      const mutationQueue = new InvitationMembershipQueue();
+      const neverSettles = new Promise<void>(() => {});
+      let conflictingReads = 0;
+      const conflictingUsers = jest.fn(async () => {
+        if (++conflictingReads === 1) return ['requester'];
+        throw new ACLOperationInProgressError(
+          'queued authorization conflict',
+          neverSettles,
+        );
+      });
+      const otherUsers = jest.fn(async () => [] as string[]);
+      const sink = jest.fn(async () => undefined);
+      const document = fakeDocument({
+        documentPath: '/queued-authorization-conflict',
+        _bootstrapLoadApplicationState: 'complete',
+        _bootstrapLoadApplicationRevision: 2,
+        _encoder: new TextEncoder(),
+        _mutationQueue: mutationQueue,
+        swarm: { config: { enableSigning: true } },
+        _readers: {
+          users:
+            conflictingACL === 'readers' ? conflictingUsers : otherUsers,
+        },
+        _writers: {
+          users:
+            conflictingACL === 'writers' ? conflictingUsers : otherUsers,
+        },
+        _servedFrontier: jest.fn(() => []),
+        _signAsWriter: jest.fn(async () => 'response-signature'),
+        _syncMessageSerializer: {
+          serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
+        },
+        _keychainProvider: { keyIDLength: 1 },
+        _keychain: {
+          current: jest.fn(async () => [new Uint8Array([1]), {}]),
+        },
+        _authProvider: {
+          nonceBits: 1,
+          verify: jest.fn(async () => true),
+          encrypt: jest.fn(async () => ({
+            nonce: new Uint8Array([2]),
+            data: new Uint8Array([3]),
+          })),
+        },
+      });
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      try {
+        await expect(
+          document.handleTipAdvertiseRequestData(
+            {
+              documentId: '/queued-authorization-conflict',
+              signature: 'AAAA',
+            },
+            { sink },
+          ),
+        ).resolves.toBeUndefined();
+      } finally {
+        consoleError.mockRestore();
+      }
+
+      expect(conflictingUsers).toHaveBeenCalledTimes(2);
+      expect(otherUsers).toHaveBeenCalledTimes(2);
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(sink).toHaveBeenCalledWith([]);
+      await expect(
+        mutationQueue.run(async () => 'released'),
+      ).resolves.toBe('released');
+    },
+  );
+
   test('poisons an accepted invitation when activation catch-up fails', async () => {
     const close = jest.fn(async () => undefined);
     const document = fakeDocument({
@@ -2486,7 +3012,7 @@ describe('document load response boundaries', () => {
     }
   });
 
-  test('defers buffered Welcome drain while bootstrap state is pending', () => {
+  test('defers buffered Welcome drain while bootstrap state is pending', async () => {
     const scheduleDrain = jest.fn();
     const document = fakeDocument({
       _bootstrapLoadApplicationState: 'pending',
@@ -2494,7 +3020,7 @@ describe('document load response boundaries', () => {
       _schedulePendingWelcomeDrain: scheduleDrain,
     });
 
-    document._mergeReaders({ reader: 'partial' });
+    await document._mergeReaders({ reader: 'partial' });
 
     expect(document._readers.merge).toHaveBeenCalledTimes(1);
     expect(scheduleDrain).not.toHaveBeenCalled();
