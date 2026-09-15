@@ -294,6 +294,47 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
   });
 
+  test('blank-base prepared additions remain mergeable in either order', async () => {
+    const first = await new AutomergeACL().prepareAdd(key1);
+    const second = await new AutomergeACL().prepareAdd(key2);
+
+    expect(first.changes[0]).toEqual(second.changes[0]);
+    for (const changes of [
+      [first.changes, second.changes],
+      [second.changes, first.changes],
+    ]) {
+      const receiver = new AutomergeACL();
+      receiver.merge(changes[0]);
+      receiver.merge(changes[1]);
+      expect(await receiver.check(key1)).toBe(true);
+      expect(await receiver.check(key2)).toBe(true);
+    }
+  });
+
+  test('same-member prepared additions remain mergeable in either order', async () => {
+    const founder = new AutomergeACL();
+    await founder.add(key1);
+    const base = founder.current();
+    const firstSource = new AutomergeACL();
+    const secondSource = new AutomergeACL();
+    firstSource.merge(base);
+    secondSource.merge(base);
+    const first = await firstSource.prepareAdd(key2);
+    const second = await secondSource.prepareAdd(key2);
+
+    for (const changes of [
+      [first.changes, second.changes],
+      [second.changes, first.changes],
+    ]) {
+      const receiver = new AutomergeACL();
+      receiver.merge(base);
+      receiver.merge(changes[0]);
+      receiver.merge(changes[1]);
+      expect(await receiver.check(key1)).toBe(true);
+      expect(await receiver.check(key2)).toBe(true);
+    }
+  });
+
   test('prepareAdd() no-op commit preserves other staged work', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -676,10 +717,18 @@ describe('AutomergeACL', () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
     const before = acl.current();
-    const independent = new AutomergeACL();
-    await independent.add(key2);
+    const serialized = await serializeKey(key2);
+    const independent = automergeChange(
+      automergeInit<AutomergeACLShape>({
+        actor: 'ffffffffffffffffffffffffffffffff',
+      }),
+      (doc) => {
+        doc.users = { [serialized]: true };
+      },
+    );
+    const independentChanges = getAllAutomergeChanges(independent);
 
-    expect(() => acl.merge(independent.current())).toThrow(
+    expect(() => acl.merge(independentChanges)).toThrow(
       /conflicting users roots/,
     );
     expect(acl.current()).toEqual(before);
@@ -687,7 +736,7 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
 
     const fresh = new AutomergeACL();
-    expect(() => fresh.merge(independent.current())).not.toThrow();
+    expect(() => fresh.merge(independentChanges)).not.toThrow();
     expect(await fresh.check(key2)).toBe(true);
   });
 
