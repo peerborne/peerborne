@@ -20,6 +20,10 @@ Use this adapter for Yjs-backed collaborative documents. It works with:
 
 `@peerborne/yjs` exports `YjsProvider`, `YjsJSONSerializer`, Yjs-backed ACL and keychain implementations, the document change handler, and key serialization helpers.
 
+## ACL history compatibility
+
+`YjsACL` retains deleted membership values with Yjs garbage collection disabled so the complete ACL history remains auditable. A history produced by an older or custom GC-enabled ACL is rejected if it contains an erased membership value: the original value cannot be authenticated safely. There is no automatic migration for that case; resynchronize from a complete non-GC ACL history or create a fresh document instance from independently authenticated membership.
+
 ## Start here
 
 - [Yjs schema design guide](https://peerborne.io/cookbook/yjs-schema-design/)
