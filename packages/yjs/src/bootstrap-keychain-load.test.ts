@@ -57,7 +57,7 @@ describe('Yjs bootstrap keychain application', () => {
     await expect(target.keys()).resolves.toEqual([]);
 
     prepareMerge.mockRestore();
-    const [, , dependentChanges] = await source.add();
+    const [keyId, , dependentChanges] = await source.add();
     await expect(
       document._syncUnlocked(
         {
@@ -72,6 +72,7 @@ describe('Yjs bootstrap keychain application', () => {
     ).resolves.toBe(true);
     expect(beginStateApplication).toHaveBeenCalledTimes(1);
     expect(logicalKeychainChange).toHaveBeenCalledTimes(1);
+    expect(target.getKey(keyId)).toBeDefined();
     await expect(target.keys()).resolves.toHaveLength(1);
   });
 });
