@@ -294,6 +294,108 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareAdd() claim stays invisible and preserves reservations through finalize', async () => {
+    const acl = new YjsACL();
+    const internals = acl as unknown as {
+      _acl: Doc;
+      _revision: number;
+      _stagedAdditionOperations: Set<string>;
+      _stagedAdditionClientIDs: Set<number>;
+    };
+    const liveACL = internals._acl;
+    const prepared = await acl.prepareAdd(key1);
+    const operations = new Set(internals._stagedAdditionOperations);
+    const clientIDs = new Set(internals._stagedAdditionClientIDs);
+
+    const claim = prepared.claimCommit!();
+
+    expect(internals._acl).toBe(liveACL);
+    expect(internals._revision).toBe(0);
+    expect(internals._stagedAdditionOperations).toEqual(operations);
+    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(await acl.check(key1)).toBe(false);
+    expect(() => prepared.claimCommit!()).toThrow(
+      /already committed or claimed/,
+    );
+    expect(() => prepared.commit()).toThrow(/already committed or claimed/);
+
+    claim.finalize();
+    claim.finalize();
+    expect(internals._acl).not.toBe(liveACL);
+    expect(internals._revision).toBe(1);
+    expect(internals._stagedAdditionOperations).toEqual(operations);
+    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('an abandoned addition claim retains its identifiers and permits fresh staging', async () => {
+    const acl = new YjsACL();
+    const internals = acl as unknown as {
+      _revision: number;
+      _stagedAdditionOperations: Set<string>;
+      _stagedAdditionClientIDs: Set<number>;
+    };
+    const abandoned = await acl.prepareAdd(key1);
+    const firstOperations = new Set(internals._stagedAdditionOperations);
+    const firstClientIDs = new Set(internals._stagedAdditionClientIDs);
+
+    abandoned.claimCommit!();
+    expect(internals._revision).toBe(0);
+    expect(await acl.check(key1)).toBe(false);
+
+    const retry = await acl.prepareAdd(key1);
+    expect(internals._stagedAdditionOperations.size).toBe(
+      firstOperations.size + 1,
+    );
+    expect(internals._stagedAdditionClientIDs.size).toBe(
+      firstClientIDs.size + 1,
+    );
+    for (const operation of firstOperations) {
+      expect(internals._stagedAdditionOperations.has(operation)).toBe(true);
+    }
+    for (const clientID of firstClientIDs) {
+      expect(internals._stagedAdditionClientIDs.has(clientID)).toBe(true);
+    }
+
+    const operationsBeforeFinalize = new Set(
+      internals._stagedAdditionOperations,
+    );
+    const clientIDsBeforeFinalize = new Set(
+      internals._stagedAdditionClientIDs,
+    );
+    retry.claimCommit!().finalize();
+    expect(internals._stagedAdditionOperations).toEqual(
+      operationsBeforeFinalize,
+    );
+    expect(internals._stagedAdditionClientIDs).toEqual(
+      clientIDsBeforeFinalize,
+    );
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepared commits do not look up replaceable claim methods', async () => {
+    const acl = new YjsACL();
+    const addition = await acl.prepareAdd(key1);
+    Object.defineProperty(addition, 'claimCommit', {
+      get: () => {
+        throw new Error('replaceable addition claim was read');
+      },
+    });
+
+    expect(() => addition.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(true);
+
+    const removal = await acl.prepareRemove(key1);
+    Object.defineProperty(removal, 'claimCommit', {
+      get: () => {
+        throw new Error('replaceable removal claim was read');
+      },
+    });
+
+    expect(() => removal.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
   test('prepareAdd() releases identifiers after post-reservation validation failures', async () => {
     const acl = new YjsACL();
     await acl.add(key2);
@@ -429,6 +531,33 @@ describe('YjsACL', () => {
     expect(await acl.check(key2)).toBe(false);
   });
 
+  test('addition and removal claims reject stale local and remote bases', async () => {
+    const acl = new YjsACL();
+    const staleAddition = await acl.prepareAdd(key2);
+    await acl.add(key1);
+    const afterLocalMutation = acl.current();
+
+    expect(() => staleAddition.claimCommit!()).toThrow(
+      'ACL changed while addition was staged',
+    );
+    expect(acl.current()).toEqual(afterLocalMutation);
+    expect(await acl.check(key2)).toBe(false);
+
+    const staleRemoval = await acl.prepareRemove(key1);
+    const remote = new YjsACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    acl.merge(remoteChanges);
+    const afterRemoteMutation = acl.current();
+
+    expect(() => staleRemoval.claimCommit!()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(acl.current()).toEqual(afterRemoteMutation);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareAdd() no-op commit preserves other staged work', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -449,6 +578,36 @@ describe('YjsACL', () => {
     expect(() => noOp.commit()).toThrow(
       'Prepared ACL addition was already committed',
     );
+  });
+
+  test('no-op claims preserve revision, identifiers, and compatible staged work', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const addition = await acl.prepareAdd(key2);
+    const noOpAddition = await acl.prepareAdd(key1);
+    const noOpRemoval = await acl.prepareRemove(key2);
+    const internals = acl as unknown as {
+      _acl: Doc;
+      _revision: number;
+      _stagedAdditionOperations: Set<string>;
+      _stagedAdditionClientIDs: Set<number>;
+    };
+    const liveACL = internals._acl;
+    const revision = internals._revision;
+    const operations = new Set(internals._stagedAdditionOperations);
+    const clientIDs = new Set(internals._stagedAdditionClientIDs);
+
+    noOpAddition.claimCommit!().finalize();
+    noOpRemoval.claimCommit!().finalize();
+
+    expect(internals._acl).toBe(liveACL);
+    expect(internals._revision).toBe(revision);
+    expect(internals._stagedAdditionOperations).toEqual(operations);
+    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+
+    addition.claimCommit!().finalize();
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
   });
 
   test('prepareAdd() commits private state after returned changes are mutated', async () => {
@@ -514,6 +673,9 @@ describe('YjsACL', () => {
     await Promise.resolve();
 
     expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
+    expect(() => external.claimCommit!()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
     expect(() => external.commit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
@@ -550,6 +712,9 @@ describe('YjsACL', () => {
     const removal = acl.remove(key1);
     await started;
 
+    expect(() => external.claimCommit!()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
     expect(() => external.commit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
@@ -602,6 +767,9 @@ describe('YjsACL', () => {
     expect(() => acl.merge(remoteChanges)).toThrow(
       'Cannot merge during a local ACL mutation',
     );
+    expect(() => externalRemoval.claimCommit!()).toThrow(
+      'Prepared ACL removal cannot commit during a local ACL mutation',
+    );
     expect(() => externalRemoval.commit()).toThrow(
       'Prepared ACL removal cannot commit during a local ACL mutation',
     );
@@ -637,6 +805,32 @@ describe('YjsACL', () => {
     prepared.commit();
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('prepareRemove() claim stays invisible until an idempotent finalize', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const internals = acl as unknown as {
+      _acl: Doc;
+      _revision: number;
+    };
+    const prepared = await acl.prepareRemove(key1);
+    const liveACL = internals._acl;
+    const revision = internals._revision;
+
+    const claim = prepared.claimCommit!();
+
+    expect(internals._acl).toBe(liveACL);
+    expect(internals._revision).toBe(revision);
+    expect(await acl.check(key1)).toBe(true);
+    expect(() => prepared.claimCommit!()).toThrow(/already committed or claimed/);
+    expect(() => prepared.commit()).toThrow(/already committed or claimed/);
+
+    claim.finalize();
+    claim.finalize();
+    expect(internals._acl).not.toBe(liveACL);
+    expect(internals._revision).toBe(revision + 1);
+    expect(await acl.check(key1)).toBe(false);
   });
 
   test('repeated staged removals preserve the Yjs actor clock', async () => {
@@ -1663,6 +1857,155 @@ describe('YjsKeychain', () => {
     expect(currentId).toEqual(expectedEpochId);
     expect(currentKey).toBe(key);
     expect(keychain.getKey(expectedEpochId)).toBe(key);
+  });
+
+  test('prepareEpochKey() claim keeps history and cache hidden until constant-time finalize', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const historyBefore = new Uint8Array(keychain.history());
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+
+    const claim = prepared.claimCommit!();
+    expect(keychain.history()).toEqual(historyBefore);
+    expect(keychain.getKey(epochId)).toBeUndefined();
+    expect(() => prepared.claimCommit!()).toThrow(
+      /already committed or claimed/,
+    );
+    expect(() => prepared.commit()).toThrow(/already committed or claimed/);
+
+    const cache = (
+      keychain as unknown as {
+        _keyCache: { set(key: string, value: CryptoKey): void };
+      }
+    )._keyCache;
+    const set = jest.spyOn(cache, 'set').mockImplementation(() => {
+      throw new Error('Live cache insertion must not run during finalization');
+    });
+    try {
+      expect(() => claim.finalize()).not.toThrow();
+      expect(() => claim.finalize()).not.toThrow();
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      set.mockRestore();
+    }
+
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('an abandoned epoch claim permits same-ID restaging without exposing its key', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const abandonedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const committedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const abandoned = await keychain.prepareEpochKey(epochId, abandonedKey);
+
+    abandoned.claimCommit!();
+    expect(keychain.getKey(epochId)).toBeUndefined();
+    const retry = await keychain.prepareEpochKey(epochId, committedKey);
+    retry.claimCommit!().finalize();
+
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
+    expect(keychain.getKey(epochId)).toBe(committedKey);
+    expect(keychain.getKey(epochId)).not.toBe(abandonedKey);
+  });
+
+  test('epoch claims reject revision-changing merge commits and retain intervening hydration', async () => {
+    const source = new YjsKeychain();
+    const baseEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const baseKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    await source.addEpochKey(baseEpochId, baseKey);
+    const receiver = new YjsKeychain();
+    receiver.merge(source.history());
+
+    const stagedEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const stagedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const claimed = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
+    const claim = claimed.claimCommit!();
+    const [, hydratedBaseKey] = await receiver.current();
+
+    claim.finalize();
+    expect(receiver.getKey(baseEpochId)).toBe(hydratedBaseKey);
+    expect(receiver.getKey(stagedEpochId)).toBe(stagedKey);
+
+    const staleEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const staleKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const stale = await receiver.prepareEpochKey(staleEpochId, staleKey);
+    const remote = new YjsKeychain();
+    remote.merge(receiver.history());
+    await remote.add();
+    receiver.prepareMerge(remote.history()).commit();
+
+    expect(() => stale.claimCommit!()).toThrow(
+      'Keychain changed while epoch key was staged',
+    );
+    expect(receiver.getKey(staleEpochId)).toBeUndefined();
+  });
+
+  test('epoch claims reject a revision-changing direct merge', async () => {
+    const receiver = new YjsKeychain();
+    await receiver.add();
+    const stagedEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const stagedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const staged = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
+    const remote = new YjsKeychain();
+    remote.merge(receiver.history());
+    await remote.add();
+
+    receiver.merge(remote.history());
+
+    expect(() => staged.claimCommit!()).toThrow(
+      'Keychain changed while epoch key was staged',
+    );
+    expect(receiver.getKey(stagedEpochId)).toBeUndefined();
+  });
+
+  test('epoch claim finalization leaves unrelated historical keys uncached', async () => {
+    const source = new YjsKeychain();
+    const [historicalEpochId] = await source.add();
+    const receiver = new YjsKeychain();
+    receiver.merge(source.history());
+    const stagedEpochId = crypto.getRandomValues(new Uint8Array(32));
+    const stagedKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const staged = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
+
+    staged.claimCommit!().finalize();
+
+    expect(receiver.getKey(historicalEpochId)).toBeUndefined();
+    expect(receiver.getKey(stagedEpochId)).toBe(stagedKey);
   });
 
   test.each([
