@@ -318,11 +318,10 @@ describe('BeeKEM reader revocation', () => {
     //   happens to arrive first, an ordering the wire does not
     //   guarantee.
     //
-    //   The fix: install the new key into the LOCAL keychain only
-    //   AFTER both broadcasts have gone out. The ACL change is then
-    //   encrypted under the previous key (which surviving readers
-    //   already have), so it's decryptable regardless of PathUpdate
-    //   arrival order.
+    //   The fix: stage the new key without live mutation, publish the
+    //   ACL change under the previous key, then synchronously commit
+    //   the staged key before PathUpdate fan-out. The ACL ciphertext
+    //   is therefore independent of PathUpdate arrival order.
     //
     // This test models the writer-side sequence with a stub keychain
     // and asserts: a surviving reader holding only the
@@ -341,7 +340,7 @@ describe('BeeKEM reader revocation', () => {
       private readonly keys: StubKey[] = [];
       readonly callLog: string[] = [];
       install(id: string, cryptoKey: CryptoKey) {
-        this.callLog.push(`addEpochKey:${id}`);
+        this.callLog.push(`commitEpochKey:${id}`);
         this.keys.push({ id, cryptoKey });
       }
       current(): StubKey {
@@ -404,26 +403,18 @@ describe('BeeKEM reader revocation', () => {
       aclChangePlaintext,
     );
 
-    // Step 5: PathUpdate broadcast. In production this goes out to
-    // every surviving peer over `beekemPathUpdateV1` and they
-    // derive the new key by processing it. The post-revocation
-    // decryptability of the *new* key by a surviving reader is
-    // covered by `surviving reader re-derives the same document key
-    // as the writer` above; this test focuses on the *previous* key
-    // remaining valid for the ACL-change broadcast.
-
-    // Step 6: install the new key in the writer's keychain. This is
-    // the deferred step -- everything above used the previous key.
+    // Commit the staged key after the ACL publication resolves. PathUpdate
+    // fan-out happens only after this local commit in the document flow.
     writerKeychain.install('post-revocation', newKey);
 
     // INVARIANT (a) -- call order:
     //   `current` was consulted for the ACL broadcast BEFORE
-    //   `addEpochKey` installed the new key. If a future refactor
+    //   the staged epoch commit installed the new key. If a future refactor
     //   moves the install before the broadcast, this assertion
     //   catches it.
     expect(writerKeychain.callLog).toEqual([
       'current',
-      'addEpochKey:post-revocation',
+      'commitEpochKey:post-revocation',
     ]);
 
     // INVARIANT (b) -- surviving-reader decryptability:
@@ -462,8 +453,8 @@ describe('BeeKEM reader revocation', () => {
     //   committed but the BeeKEM leaf un-seeded.
     //
     //   The fix moves the length validation BEFORE any state
-    //   mutation, both at the top of `_registerBeeKEMReader` (so a
-    //   caller invoking the registration helper directly fails fast)
+    //   mutation, both in `_prepareBeeKEMReaderRegistration` (so a
+    //   caller invoking the preparation helper directly fails fast)
     //   and at the top of `addReader` (so the ACL change is gated on
     //   the same precondition).
     //
@@ -550,156 +541,17 @@ describe('BeeKEM reader revocation', () => {
     ).toBe(false);
   });
 
-  test('removeReader installs new epoch key locally even when a broadcast step fails', async () => {
-    // POST-MUTATION LOCAL KEY INSTALLATION INVARIANT:
+  test('keeps the committed epoch after best-effort PathUpdate fan-out fails', async () => {
+    // ACL publication is the failure boundary: if it rejects, live ACL,
+    // keychain, and tree state do not advance. Once publication succeeds,
+    // the staged key is committed locally before best-effort PathUpdate
+    // fan-out. This primitive test only pins the resulting key usability;
+    // PeerborneDocument transaction/failure paths are tested separately.
     //
-    //   `PeerborneDocument.removeReader` runs three steps AFTER the
-    //   BeeKEM `removeMember` mutation:
-    //     (a) ACL-removal broadcast via `_makeChange` -- can throw
-    //         (signing failure, payload serialization, pubsub IO)
-    //     (b) PathUpdate broadcast via `_distributeBeeKEMPathUpdate`
-    //         -- can throw (signing failure, transport-level dial
-    //         issues that propagate)
-    //     (c) `addEpochKey` -- local-only keychain install
-    //
-    //   In the OLD shape, if (a) or (b) threw, (c) never ran -- so
-    //   the writer would be left with BeeKEM advanced but the local
-    //   keychain still pointing at the previous key. Outgoing writer
-    //   traffic would then encrypt under a key that surviving readers
-    //   (post-PathUpdate) no longer accept.
-    //
-    //   The fix wraps (a) and (b) in try/catch + warn + fall
-    //   through, so (c) always runs and the writer transitions to
-    //   the new key. The BeeKEM mutation is the atomicity boundary;
-    //   everything after it is best-effort with logged warnings,
-    //   EXCEPT the local key install which always runs.
-    //
-    // This test models the writer-side sequence with a stub
-    // keychain and an injected `_makeChange` failure. The assertion
-    // is: even though `_makeChange` threw, BeeKEM advanced AND the
-    // writer can still encrypt a fresh message under the
-    // post-revocation key (because `addEpochKey` ran via the
-    // post-mutation fall-through). The full `PeerborneDocument` call
-    // path is omitted -- the sequencing invariant is what the
-    // production try/catch guarantees.
-    type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
-    class StubKeychain {
-      private readonly keys: StubKey[] = [];
-      readonly callLog: string[] = [];
-      install(id: string, cryptoKey: CryptoKey) {
-        this.callLog.push(`addEpochKey:${id}`);
-        this.keys.push({ id, cryptoKey });
-      }
-      current(): StubKey {
-        if (this.keys.length === 0) throw new Error('empty keychain');
-        return this.keys[this.keys.length - 1];
-      }
-    }
-
-    // Pre-revocation key -- whatever the writer was encrypting
-    // under before revocation started.
-    const preRevocationKey = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    );
-    const writerKeychain = new StubKeychain();
-    writerKeychain.install('pre-revocation', preRevocationKey);
-    writerKeychain.callLog.length = 0; // reset post-setup
-
-    // 2-member BeeKEM (Alice writer + Bob revoked).
-    const alice = new BeeKEM();
-    const aliceKeys = await generateECDHKeyPair();
-    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
-
-    const bobKeys = await generateECDHKeyPair();
-    await alice.addMember(bobKeys.publicKey);
-    const bobLeafIndex = 2;
-
-    const rootBefore = await alice.getRootSecret();
-
-    // Step 1-2: BeeKEM rotation + key derivation. The writer holds
-    // the new key locally; the keychain is NOT updated yet.
-    const { rootSecret } = await alice.removeMember(bobLeafIndex);
-    const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
-
-    // Sanity: BeeKEM has advanced.
-    const rootAfterRemove = await alice.getRootSecret();
-    expect(
-      Buffer.from(rootBefore).equals(Buffer.from(rootAfterRemove)),
-    ).toBe(false);
-
-    // Step 3: ACL-removal broadcast. We INJECT a failure here to
-    // model `_makeChange` throwing (e.g. signing failure, pubsub
-    // publish failure). The production code wraps this call in
-    // try/catch + warn + fall through; we mirror that here.
-    const makeChangeStub = async () => {
-      throw new Error('injected: pubsub publish failed');
-    };
-    let aclChangeLoggedFailure = false;
-    try {
-      await makeChangeStub();
-    } catch (err) {
-      aclChangeLoggedFailure = true;
-      // Fall through (matches production behaviour).
-    }
-    expect(aclChangeLoggedFailure).toBe(true);
-
-    // Step 4: PathUpdate broadcast. Also wrapped in try/catch in
-    // production. Here we model it as succeeding (we want this test
-    // focused on the `_makeChange`-fails case; a separate test could
-    // inject `_distributeBeeKEMPathUpdate` to throw with the same
-    // structural result).
-    //
-    // Step 5: install the new key in the writer's keychain. This is
-    // the post-revocation install that MUST run regardless of step
-    // 3/4 failure -- otherwise the writer is stuck encrypting under
-    // the pre-revocation key while BeeKEM has advanced.
-    writerKeychain.install('post-revocation', newKey);
-
-    // INVARIANT (a): after step 5 the writer's current keychain
-    // entry is the post-revocation key, NOT the pre-revocation key.
-    expect(writerKeychain.current().id).toBe('post-revocation');
-
-    // INVARIANT (b): the writer can encrypt a fresh outgoing message
-    // under the new key. This is the operational property the
-    // local-key installation invariant preserves: even though the ACL
-    // broadcast failed, the writer is on the new epoch for outgoing traffic.
-    const outgoing = new TextEncoder().encode('post-revocation writer message');
-    const ciphertext = await encryptUnder(
-      writerKeychain.current().cryptoKey,
-      outgoing,
-    );
-    // Decryption with the SAME key (sanity) succeeds; decryption
-    // with the PRE-revocation key (the bug shape) fails.
-    expect(await decryptUnder(newKey, ciphertext.iv, ciphertext.ct)).toEqual(
-      outgoing,
-    );
-    await expect(
-      decryptUnder(preRevocationKey, ciphertext.iv, ciphertext.ct),
-    ).rejects.toThrow();
-
-    // INVARIANT (c): the call log shows the install happened
-    // exactly once (`addEpochKey:post-revocation`). If a future
-    // refactor accidentally re-introduces "throw on broadcast
-    // failure, skip the install", this assertion catches it.
-    expect(writerKeychain.callLog).toEqual([
-      'addEpochKey:post-revocation',
-    ]);
-  });
-
-  test('removeReader installs new epoch key locally even when PathUpdate broadcast fails', async () => {
-    // PATHUPDATE FAILURE VARIANT:
-    //
-    //   Mirror of the test above, but with the failure injected into
-    //   `_distributeBeeKEMPathUpdate` rather than `_makeChange`.
-    //   Both broadcast steps are wrapped in try/catch + log + fall
-    //   through; the local keychain install must always run.
-    //
-    // Surviving readers that miss the PathUpdate fall back to a
-    // fresh document load to recover key state; this test focuses on
-    // the WRITER side of the invariant (writer never gets stuck on
-    // the previous epoch).
+    // Surviving readers that miss the PathUpdate need explicit
+    // recipient-bound recovery or re-invitation; this test focuses
+    // on the WRITER side of the invariant (writer never gets stuck
+    // on the previous epoch).
     type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
     class StubKeychain {
       private readonly keys: StubKey[] = [];
@@ -729,10 +581,12 @@ describe('BeeKEM reader revocation', () => {
     const { rootSecret } = await alice.removeMember(2);
     const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
 
-    // Step 3: ACL broadcast succeeds (modelled as a no-op).
+    // Model a successful ACL publication followed by the synchronous staged
+    // epoch commit.
+    writerKeychain.install('post-revocation', newKey);
 
-    // Step 4: PathUpdate broadcast THROWS. The production code logs
-    // a warning and falls through to step 5.
+    // PathUpdate fan-out then fails. The production path logs this failure
+    // without rolling back already-committed local membership state.
     const distributeStub = async () => {
       throw new Error('injected: PathUpdate dial failed');
     };
@@ -744,9 +598,6 @@ describe('BeeKEM reader revocation', () => {
       // Fall through.
     }
     expect(pathUpdateLoggedFailure).toBe(true);
-
-    // Step 5: install MUST still run.
-    writerKeychain.install('post-revocation', newKey);
 
     // The writer can encrypt under the post-revocation key.
     const message = new TextEncoder().encode('post-revocation writer message');
