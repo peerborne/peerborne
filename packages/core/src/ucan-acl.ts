@@ -66,6 +66,7 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const wrappedBackingAcls = new WeakSet<object>();
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
+const MAX_BACKING_PROPERTY_PROTOTYPE_DEPTH = 32;
 /** Hard limit that keeps one backing listing's identity-codec fanout bounded. */
 export const MAX_UCAN_ACL_LISTING_IDENTITIES = 4096;
 const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
@@ -76,6 +77,7 @@ const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
   maxValueBytes: 8 * 1024,
 } as const;
 const arrayIsArray = Array.isArray;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const reflectApply = Reflect.apply;
@@ -579,6 +581,134 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
+  private _runBackingInspection<T>(
+    operationName: string,
+    operation: () => T,
+  ): T {
+    this._assertBackingOperationAvailable(operationName);
+    const finishBackingOperation = this._beginBackingOperation();
+    try {
+      return this._invokeBacking(operation);
+    } catch (error) {
+      this._backingStateUncertain = true;
+      if (error instanceof ACLOperationInProgressError) {
+        throw new Error(
+          `${operationName} reported a retry conflict after invocation; backing state is uncertain`,
+        );
+      }
+      throw error;
+    } finally {
+      this._markBackingMutation();
+      finishBackingOperation();
+    }
+  }
+
+  private _backingPrepareRemove():
+    | NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>
+    | undefined {
+    return this._runBackingInspection(
+      'Backing ACL preparation lookup',
+      () => {
+        const property = this._backingDataProperty(
+          this._backing,
+          'prepareRemove',
+          'Backing ACL prepareRemove',
+        );
+        if (!property.found) return undefined;
+        const prepareRemove = property.value;
+        if (prepareRemove === undefined) return undefined;
+        if (typeof prepareRemove !== 'function') {
+          throw new TypeError(
+            'Backing ACL prepareRemove property must be a function when present',
+          );
+        }
+        return prepareRemove as NonNullable<
+          ACL<ChangesType, PublicKey>['prepareRemove']
+        >;
+      },
+    );
+  }
+
+  private _backingDataProperty(
+    target: object,
+    property: PropertyKey,
+    field: string,
+  ): { readonly found: boolean; readonly value?: unknown } {
+    let owner: object | null = target;
+    const visited = new Set<object>();
+    let depth = 0;
+    while (owner !== null) {
+      if (
+        visited.has(owner) ||
+        depth++ >= MAX_BACKING_PROPERTY_PROTOTYPE_DEPTH
+      ) {
+        throw new TypeError(`${field} has an invalid prototype chain`);
+      }
+      visited.add(owner);
+      const descriptor = reflectApply(
+        objectGetOwnPropertyDescriptor,
+        Object,
+        [owner, property],
+      ) as PropertyDescriptor | undefined;
+      if (descriptor !== undefined) {
+        if (!('value' in descriptor)) {
+          throw new TypeError(`${field} must be a data property`);
+        }
+        return { found: true, value: descriptor.value };
+      }
+      owner = reflectApply(objectGetPrototypeOf, Object, [owner]) as
+        | object
+        | null;
+    }
+    return { found: false };
+  }
+
+  private _captureBackingPreparedRemoval(
+    prepared: PreparedACLRemoval<ChangesType>,
+  ): {
+    readonly changes: ChangesType;
+    readonly commit: () => void;
+  } {
+    return this._runBackingInspection(
+      'Backing ACL prepared-removal capture',
+      () => {
+        if (
+          (typeof prepared !== 'object' || prepared === null) &&
+          typeof prepared !== 'function'
+        ) {
+          throw new TypeError(
+            'Backing ACL prepared removal must be an object',
+          );
+        }
+        const changesProperty = this._backingDataProperty(
+          prepared,
+          'changes',
+          'Backing ACL prepared-removal changes',
+        );
+        if (!changesProperty.found) {
+          throw new TypeError(
+            'Backing ACL prepared removal must provide changes',
+          );
+        }
+        const commitProperty = this._backingDataProperty(
+          prepared,
+          'commit',
+          'Backing ACL prepared-removal commit',
+        );
+        const commit = commitProperty.value;
+        if (!commitProperty.found || typeof commit !== 'function') {
+          throw new TypeError(
+            'Backing ACL prepared removal must provide a commit function',
+          );
+        }
+        return {
+          changes: changesProperty.value as ChangesType,
+          commit: () => reflectApply(commit, prepared, []),
+        };
+      },
+    );
+  }
+
   private _runBackingCommit(operation: () => void): void {
     this._assertBackingOperationAvailable('ACL backing commit');
     const finishBackingOperation = this._beginBackingOperation();
@@ -643,7 +773,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     publicKey: PublicKey;
     keyBase64: string;
   }): Promise<ChangesType> {
-    const prepareRemove = this._backing.prepareRemove;
+    const prepareRemove = this._backingPrepareRemove();
     if (typeof prepareRemove === 'function') {
       const prepared = await this._prepareBackingRemoval(
         snapshot.publicKey,
@@ -670,7 +800,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Prepared ACL removal',
       async (snapshot) => {
-        const prepareRemove = this._backing.prepareRemove;
+        const prepareRemove = this._backingPrepareRemove();
         if (typeof prepareRemove !== 'function') {
           throw new Error('Backing ACL does not support staged removal');
         }
@@ -691,8 +821,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): Promise<PreparedACLRemoval<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL removal');
     const prepared = await this._runBackingPreparation(() =>
-      prepareRemove.call(this._backing, publicKey),
+      reflectApply(prepareRemove, this._backing, [publicKey]),
     );
+    const captured = this._captureBackingPreparedRemoval(prepared);
     const backingRevision = this._backingRevision;
     this._assertBackingOperationAvailable('Prepared ACL removal');
     if (this._backingRevision !== backingRevision) {
@@ -702,7 +833,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
     let committed = false;
     return {
-      changes: prepared.changes,
+      changes: captured.changes,
       commit: () => {
         this._assertHealthy('Prepared ACL removal');
         if (committed) {
@@ -718,7 +849,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             'Prepared ACL removal became stale after backing ACL changed',
           );
         }
-        this._runBackingCommit(() => prepared.commit());
+        this._runBackingCommit(captured.commit);
         this._revokedKeys.add(keyBase64);
         this._entries.delete(keyBase64);
         committed = true;
