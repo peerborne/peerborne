@@ -369,6 +369,24 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('merge rejects a malformed serialized membership key atomically', async () => {
+    const invalidPoint = new Uint8Array(97);
+    invalidPoint[0] = 0x04;
+    const invalidSerializedPoint = Buffer.from(invalidPoint).toString('base64');
+    const source = new Doc();
+    source.getMap('users').set(invalidSerializedPoint, true);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    expect(() => acl.merge(encodeStateAsUpdateV2(source))).toThrow(
+      /valid P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(1);
+  });
+
   test('merge accepts cross-realm updates and rejects byte lookalikes and shared backing', async () => {
     const source = new YjsACL();
     await source.add(key1);
