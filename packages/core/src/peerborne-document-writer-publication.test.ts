@@ -424,14 +424,23 @@ describe('writer ACL publication boundary', () => {
     );
     await encryptionStarted.promise;
 
-    await document.handleLoadRequestData(
+    const loadResponse = document.handleLoadRequestData(
       { documentId: '/writer-publication', signature: 'AA==' },
       { sink: loadSink },
     );
-    await document.handleSnapshotLoadRequestData(
+    const snapshotResponse = document.handleSnapshotLoadRequestData(
       { documentId: '/writer-publication', signature: 'AA==' },
       { sink: snapshotSink },
     );
+
+    await Promise.resolve();
+    expect(loadSink).not.toHaveBeenCalled();
+    expect(snapshotSink).not.toHaveBeenCalled();
+
+    pendingEncryption.reject(new Error('encryption rejected'));
+    await additionResult;
+    await expect(loadResponse).resolves.toBeUndefined();
+    await expect(snapshotResponse).resolves.toBeUndefined();
 
     expect(loadSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
     expect(snapshotSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
@@ -444,8 +453,6 @@ describe('writer ACL publication boundary', () => {
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
     expect(publish).not.toHaveBeenCalled();
 
-    pendingEncryption.reject(new Error('encryption rejected'));
-    await additionResult;
     await expect(document.addWriter('candidate')).resolves.toBeUndefined();
 
     expect(writers.members).toEqual(new Set(['owner', 'candidate']));
@@ -834,7 +841,7 @@ describe('writer ACL publication boundary', () => {
     };
     let document: any;
     const publish = jest.fn(async () => {
-      expect(() => document._mergeWriters(remoteChange)).toThrow(
+      await expect(document._mergeWriters(remoteChange)).rejects.toThrow(
         /staged local writer publication is in flight.*Retry the sync/s,
       );
       expect(writers.members).toEqual(new Set(['owner']));
@@ -848,7 +855,9 @@ describe('writer ACL publication boundary', () => {
     await expect(document.addWriter('candidate')).resolves.toBeUndefined();
 
     expect(writers.members).toEqual(new Set(['owner', 'candidate']));
-    expect(() => document._mergeWriters(remoteChange)).not.toThrow();
+    await expect(
+      document._mergeWriters(remoteChange),
+    ).resolves.toBeUndefined();
     expect(writers.members).toEqual(
       new Set(['owner', 'candidate', 'remote-writer']),
     );
@@ -885,7 +894,7 @@ describe('writer ACL publication boundary', () => {
     let remoteRan = false;
     const queuedRemote = document._mutationQueue.run(async () => {
       remoteRan = true;
-      document._mergeWriters(remoteLastSyncMessage.changes.change);
+      await document._mergeWriters(remoteLastSyncMessage.changes.change);
       document._hashes.add('remote-writer-cid');
       document._referencedAncestors.add('remote-parent-cid');
       document._trackTip('remote-writer-cid', crdtWriterChangeNode);
