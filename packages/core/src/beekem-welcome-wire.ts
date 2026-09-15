@@ -297,11 +297,7 @@ export function snapshotBeeKEMWelcomeForProcessing(
     ['leafIndex', 'pathKeys', 'treeNodePublicKeys', 'treeHash'],
     context,
   );
-  if (
-    typeof raw.leafIndex !== 'number' ||
-    !Number.isSafeInteger(raw.leafIndex) ||
-    raw.leafIndex < 0
-  ) {
+  if (!isCanonicalNonNegativeSafeInteger(raw.leafIndex)) {
     throw new Error(`${context}: leafIndex must be a non-negative safe integer`);
   }
   if (!Array.isArray(raw.pathKeys)) {
@@ -316,7 +312,10 @@ export function snapshotBeeKEMWelcomeForProcessing(
     throw new Error(`${context}: leafIndex must be the appended rightmost leaf`);
   }
   const numLeaves = leafIndex / 2 + 1;
-  if (numLeaves < 2 || numLeaves > MAX_BEEKEM_TREE_LEAVES) {
+  if (numLeaves < 2) {
+    throw new Error(`${context}: leafIndex must identify an appended member`);
+  }
+  if (numLeaves > MAX_BEEKEM_TREE_LEAVES) {
     throw new Error(
       `${context}: leafIndex exceeds the supported tree leaf bound`,
     );
@@ -356,11 +355,7 @@ export function snapshotBeeKEMWelcomeForProcessing(
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `${context}: pathKeys[${offset}]`,
     );
-    if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
-    ) {
+    if (!isCanonicalNonNegativeSafeInteger(node.nodeIndex)) {
       throw new Error(
         `${context}: pathKeys[${offset}].nodeIndex must be a non-negative safe integer`,
       );
@@ -394,11 +389,7 @@ export function snapshotBeeKEMWelcomeForProcessing(
       ['nodeIndex', 'publicKey'],
       `${context}: treeNodePublicKeys[${offset}]`,
     );
-    if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
-    ) {
+    if (!isCanonicalNonNegativeSafeInteger(node.nodeIndex)) {
       throw new Error(
         `${context}: treeNodePublicKeys[${offset}].nodeIndex must be a non-negative safe integer`,
       );

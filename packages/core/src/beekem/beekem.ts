@@ -181,6 +181,7 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('add a member');
     if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
       throw new Error(
         `Cannot add member: BeeKEM tree is limited to ${MAX_BEEKEM_TREE_LEAVES} leaves`,
@@ -228,6 +229,17 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('remove a member');
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(memberLeafIndex) ||
+      memberLeafIndex < 0 ||
+      Object.is(memberLeafIndex, -0) ||
+      memberLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(memberLeafIndex)
+    ) {
+      throw new Error('Cannot remove member: invalid leaf index');
+    }
     // Blank the removed member's leaf
     const blankedLeaf: LeafNode = {
       type: 'leaf',
@@ -271,6 +283,7 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('update');
     // Generate new ECDH key pair for our leaf
     const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
       'deriveBits',
@@ -292,6 +305,7 @@ export class BeeKEM {
    * Decrypts the relevant encrypted key and derives the new root.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
+    this._assertInitializedForMutation('process a PathUpdate');
     // Update the sender's leaf with their new public key
     const senderLeafPublicKey = await crypto.subtle.importKey(
       'raw',
@@ -763,6 +777,21 @@ export class BeeKEM {
       this._numLeaves === 0 &&
       this._myLeafIndex === -1
     );
+  }
+
+  private _assertInitializedForMutation(operation: string): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES ||
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= 2 * this._numLeaves - 1 ||
+      !TreeMath.isLeaf(this._myLeafIndex) ||
+      !this._nodes.has(this._myLeafIndex)
+    ) {
+      throw new Error(`Cannot ${operation}: BeeKEM tree is not initialized`);
+    }
   }
 
   private _registerWelcomeCandidate(
