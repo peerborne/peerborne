@@ -49,6 +49,7 @@ describe('level', () => {
     [3, 2],
     [7, 3],
     [15, 4],
+    [Number.MAX_SAFE_INTEGER, 53],
   ])('level(%i) = %i', (index, expected) => {
     expect(level(index)).toBe(expected);
   });

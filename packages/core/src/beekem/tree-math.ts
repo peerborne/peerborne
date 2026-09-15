@@ -52,10 +52,11 @@ export function isInternal(index: number): boolean {
  */
 export function level(index: number): number {
   assertNonNegativeSafeInt(index, 'index');
-  if ((index & 1) === 0) return 0;
   let k = 0;
-  while (((index >> k) & 1) === 1) {
+  let remaining = index;
+  while (remaining % 2 === 1) {
     k++;
+    remaining = (remaining - 1) / 2;
   }
   return k;
 }
