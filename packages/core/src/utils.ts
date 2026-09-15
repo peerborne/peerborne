@@ -43,6 +43,7 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
 const uint8ArrayConstructor = Uint8Array;
+const arrayConstructor = Array;
 const arrayIsArray = Array.isArray;
 const numberIsSafeInteger = Number.isSafeInteger;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -50,6 +51,7 @@ const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
+const reflectHas = Reflect.has;
 const reflectOwnKeys = Reflect.ownKeys;
 const intrinsicStructuredClone = globalThis.structuredClone;
 const cryptoKeyTypeGetter =
@@ -295,15 +297,27 @@ export function isNativeCryptoKey(value: unknown): boolean {
   }
 }
 
+export interface DeepDataSnapshotOptions {
+  /**
+   * Reject these properties whether they are own or inherited. This is for
+   * versioned runtime boundaries that must not erase newer-version markers
+   * while converting an input to an own-data snapshot.
+   */
+  readonly forbiddenFields?: readonly string[];
+  /** Retain native CryptoKey objects by reference instead of rejecting them. */
+  readonly retainCryptoKeys?: boolean;
+}
+
 /**
  * Iteratively detach an untrusted codec/provider value without invoking own
- * accessors or reading an own property more than once. Plain records retain
- * their descriptor order, arrays must be dense own-data arrays, genuine
+ * accessors. Plain records retain their descriptor order and each retained
+ * field is read once; arrays retain a stable bounded length and dense own data
+ * elements while irrelevant non-index properties are ignored; genuine
  * unshared Uint8Arrays are copied through captured intrinsics, and CryptoKeys
  * are cloned as immutable platform values. Cycles, exotic objects, symbols,
- * accessors, sparse arrays, SAB views, and values exceeding the aggregate
- * work/allocation limits are rejected. Repeated aliases are copied
- * independently so a later mutation through one consumer cannot change
+ * accessors in retained fields, sparse arrays, SAB views, and values exceeding
+ * the aggregate work/allocation limits are rejected. Repeated aliases are
+ * copied independently so a later mutation through one consumer cannot change
  * another authenticated field.
  */
 export function snapshotDeepEnumerableData<T>(
@@ -320,7 +334,7 @@ export function snapshotDeepEnumerableData<T>(
     maxArrayLength: 65_536,
     maxValueBytes: 64 * 1024 * 1024,
   },
-  options: { retainCryptoKeys?: boolean } = {},
+  options: DeepDataSnapshotOptions = {},
 ): T {
   for (const [name, limit] of Object.entries(limits)) {
     if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -388,7 +402,7 @@ export function snapshotDeepEnumerableData<T>(
     } else if (target.kind === 'array') {
       defineEnumerableDataProperty(
         target.parent,
-        String(target.index),
+        `${target.index}`,
         candidate,
       );
     } else {
@@ -477,64 +491,45 @@ export function snapshotDeepEnumerableData<T>(
       throw new TypeError(`${field} contains an unstable object`);
     }
 
-    let preflightArrayLength: number | undefined;
     if (isArray) {
-      let lengthDescriptor: PropertyDescriptor | undefined;
-      try {
-        lengthDescriptor = reflectApply(
-          objectGetOwnPropertyDescriptor,
-          Object,
-          [objectCandidate, 'length'],
-        ) as PropertyDescriptor | undefined;
-      } catch {
-        throw new TypeError(`${field} contains an unstable object`);
-      }
-      if (
-        lengthDescriptor === undefined ||
-        !('value' in lengthDescriptor) ||
-        !Number.isSafeInteger(lengthDescriptor.value) ||
-        lengthDescriptor.value < 0 ||
-        lengthDescriptor.value > limits.maxArrayLength
-      ) {
-        throw new TypeError(`${field} contains an invalid array`);
-      }
-      preflightArrayLength = lengthDescriptor.value as number;
-      accountProperties(preflightArrayLength);
-    }
+      const readLength = (): number => {
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = reflectApply(
+            objectGetOwnPropertyDescriptor,
+            Object,
+            [objectCandidate, 'length'],
+          ) as PropertyDescriptor | undefined;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (
+          descriptor === undefined ||
+          !('value' in descriptor) ||
+          !Number.isSafeInteger(descriptor.value) ||
+          descriptor.value < 0 ||
+          descriptor.value > limits.maxArrayLength
+        ) {
+          throw new TypeError(`${field} contains an invalid array`);
+        }
+        return descriptor.value as number;
+      };
 
-    let prototype: object | null;
-    let descriptors: PropertyDescriptorMap;
-    try {
-      prototype = reflectApply(objectGetPrototypeOf, Object, [
-        objectCandidate,
-      ]) as object | null;
-      descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
-        objectCandidate,
-      ]) as PropertyDescriptorMap;
-    } catch {
-      throw new TypeError(`${field} contains an unstable object`);
-    }
-
-    if (isArray) {
-      const lengthDescriptor = descriptors.length;
-      if (
-        lengthDescriptor === undefined ||
-        !('value' in lengthDescriptor) ||
-        !Number.isSafeInteger(lengthDescriptor.value) ||
-        lengthDescriptor.value < 0 ||
-        lengthDescriptor.value !== preflightArrayLength
-      ) {
-        throw new TypeError(`${field} contains an invalid array`);
-      }
-      const length = preflightArrayLength!;
-      const keys = reflectOwnKeys(descriptors);
-      if (keys.length !== length + 1) {
-        throw new TypeError(`${field} arrays must be dense data arrays`);
-      }
-      const copy = new Array<unknown>(length);
+      const length = readLength();
+      accountProperties(length);
+      const copy = new arrayConstructor<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
-        const descriptor = descriptors[String(index)];
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = reflectApply(
+            objectGetOwnPropertyDescriptor,
+            Object,
+            [objectCandidate, `${index}`],
+          ) as PropertyDescriptor | undefined;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
         if (
           descriptor === undefined ||
           descriptor.enumerable !== true ||
@@ -551,6 +546,9 @@ export function snapshotDeepEnumerableData<T>(
           target: { kind: 'array', parent: copy, index },
         });
       }
+      if (readLength() !== length) {
+        throw new TypeError(`${field} contains an invalid array`);
+      }
       assign(target, copy);
       active.add(objectCandidate);
       pending.push({ kind: 'leave', candidate: objectCandidate });
@@ -558,6 +556,40 @@ export function snapshotDeepEnumerableData<T>(
         pending.push(children[index]!);
       }
       continue;
+    }
+
+    const forbiddenFields = options.forbiddenFields;
+    if (forbiddenFields !== undefined) {
+      for (let index = 0; index < forbiddenFields.length; index++) {
+        const forbiddenField = forbiddenFields[index]!;
+        let present: boolean;
+        try {
+          present = reflectApply(reflectHas, Reflect, [
+            objectCandidate,
+            forbiddenField,
+          ]) as boolean;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (present) {
+          throw new TypeError(
+            `${field} contains forbidden field '${forbiddenField}'`,
+          );
+        }
+      }
+    }
+
+    let prototype: object | null;
+    let descriptors: PropertyDescriptorMap;
+    try {
+      prototype = reflectApply(objectGetPrototypeOf, Object, [
+        objectCandidate,
+      ]) as object | null;
+      descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
+        objectCandidate,
+      ]) as PropertyDescriptorMap;
+    } catch {
+      throw new TypeError(`${field} contains an unstable object`);
     }
 
     if (prototype !== objectPrototype && prototype !== null) {
