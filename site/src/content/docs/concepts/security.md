@@ -169,6 +169,18 @@ from before this requirement sent unsigned key-updates when signing was
 disabled; current receivers drop those, so all peers in a swarm must run a
 version that signs membership-control messages.
 
+The active `beekemPathUpdateV1` protocol has no generation, parent-tree hash,
+or replay cache. A captured valid writer-signed PathUpdate can therefore be
+replayed or delivered out of order and may roll a live receiver back to an
+earlier BeeKEM root and document-key epoch. The state-bound v2 wire codec is
+reserved but is not applied by the runtime handler, so writer authentication
+must not be interpreted as PathUpdate freshness or replay protection.
+V1 also carries only one ciphertext at each path level. The runtime therefore
+rejects an otherwise well-formed update when the receiver's first shared path
+node with the sender is below the root: accepting it would leave the receiver
+without a safe way to obtain the remaining ancestor keys. Some multi-level
+group updates consequently require the v2 per-resolution bundles.
+
 ## Initial-load quorum
 
 Before accepting a remote document state, Peerborne can require **Q-of-K**
@@ -231,6 +243,9 @@ await document.removeReader(revokedPeerSigningPublicKey);
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.
 - **BeeKEM state is lost on restart.** If the node restarts, it loses track of which keys have been invalidated.
 - **PathUpdate is not guaranteed.** There is no acknowledgment or retry mechanism.
+- **Legacy PathUpdate is replayable.** V1 does not bind a generation or parent
+  tree, so a captured writer-signed update can roll a receiver back to an older
+  BeeKEM root. The reserved v2 codec is not wired into the runtime protocol.
 - **Key reuse risk.** If the application reuses KEM key pairs across documents, revoking access to one document may not fully revoke it from another.
 
 ## Metadata and hostile infrastructure
