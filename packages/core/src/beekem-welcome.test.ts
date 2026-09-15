@@ -165,12 +165,11 @@ function applyWelcomeStateChanges(
   // `eciesSealed`. The mirror does not run ECIES; the seal/open
   // round-trip is covered separately in `ecies.test.ts`.
   if (message.keychainChanges) state.keychain.merge(message.keychainChanges);
-  // Monotonic-forward update: never regress the invitation-epoch
-  // anchor (mirrors `PeerborneDocument._shouldAdvanceInvitationEpoch`).
-  // See the doc-comment on the production method for the threat model
-  // (an out-of-order or hostile Welcome carrying an earlier
-  // `welcomeEpochId` would otherwise shrink the recipient's join
-  // boundary and leak more history via `since_invited`).
+  // Monotonic-forward update: never regress the invitation-epoch anchor. The
+  // production receive path derives the same ordering from its detached staged
+  // key IDs before committing. An out-of-order or hostile Welcome carrying an
+  // earlier `welcomeEpochId` would otherwise shrink the recipient's join
+  // boundary and leak more history via `since_invited`.
   state.invitationEpoch = chooseInvitationEpoch(
     state.invitationEpoch,
     message.welcomeEpochId,
@@ -179,9 +178,9 @@ function applyWelcomeStateChanges(
 }
 
 /**
- * Pure mirror of `PeerborneDocument._shouldAdvanceInvitationEpoch`
- * for unit-test exercise without a libp2p/Helia stack. Returns the
- * epoch the local node should record as its anchor:
+ * Pure mirror of the production staged-key ordering check for unit-test
+ * exercise without a libp2p/Helia stack. Returns the epoch the local node
+ * should record as its anchor:
  *   - the incoming one iff strictly later than the existing one in
  *     keychain insertion order,
  *   - the existing one in every other case (equal bytes, earlier
