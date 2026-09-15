@@ -407,6 +407,41 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('ordinary additions stage and commit in invocation order', async () => {
+    const acl = new YjsACL();
+    const prepareAdd = acl.prepareAdd.bind(acl);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let preparation = 0;
+    acl.prepareAdd = jest.fn(async (publicKey: CryptoKey) => {
+      preparation++;
+      if (preparation === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      return prepareAdd(publicKey);
+    });
+
+    const first = acl.add(key1);
+    await started;
+    const second = acl.add(key2);
+    await Promise.resolve();
+
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await expect(first).resolves.toBeInstanceOf(Uint8Array);
+    await expect(second).resolves.toBeInstanceOf(Uint8Array);
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(2);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('remove() removes user and check() returns false', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
