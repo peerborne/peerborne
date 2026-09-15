@@ -3,6 +3,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
+  snapshotInvitationBootstrapBundle,
 } from './peerborne-document.js';
 import {
   crdtDocumentChangeNode,
@@ -2097,6 +2098,88 @@ describe('document load response boundaries', () => {
     }
   });
 
+  test('does not publish completion when the deadline expires while preparing a deferred notification', async () => {
+    jest.useFakeTimers();
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: { providerEncoding: 'legacy-change' },
+    };
+    const handler = jest.fn();
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    const aclReadStarted = deferred<void>();
+    const releaseAclRead = deferred<void>();
+    const backgroundFinished = deferred<void>();
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('EXISTING');
+    document._document = { value: 'partially-applied' };
+    document._remoteHandlers.preBootstrap = handler;
+    document._readers = {
+      users: jest.fn(async () => {
+        aclReadStarted.resolve();
+        await releaseAclRead.promise;
+        return ['reader'];
+      }),
+      check: jest.fn(async () => false),
+    };
+    document._writers = { users: jest.fn(async () => ['writer']) };
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      merge: jest.fn(() => {
+        document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
+      }),
+    };
+    const rawStream = {
+      ...stream,
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+    };
+
+    try {
+      const load = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => rawStream,
+        async (openedStream, signal) => {
+          try {
+            return await document._sendLoadRequestAndSync(
+              openedStream,
+              new Uint8Array([1]),
+              null,
+              'issuer',
+              undefined,
+              true,
+              1000,
+              async () => undefined,
+              signal,
+            );
+          } finally {
+            backgroundFinished.resolve();
+          }
+        },
+        25,
+      );
+
+      await aclReadStarted.promise;
+      jest.advanceTimersByTime(25);
+      await expect(load).rejects.toThrow(/deadline exceeded/);
+      releaseAclRead.resolve();
+      await backgroundFinished.promise;
+
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(
+        new Set(['APPLIED']),
+      );
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('defers buffered Welcome drain while bootstrap state is pending', () => {
     const scheduleDrain = jest.fn();
     const document = fakeDocument({
@@ -2187,6 +2270,367 @@ describe('document load response boundaries', () => {
     expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(new Set());
   });
 
+  test('cancels and settles the bounded missing-CID worker pool at the invitation deadline', async () => {
+    jest.useFakeTimers();
+    const fetchesStarted = deferred<void>();
+    const backgroundFinished = deferred<void>();
+    let activeFetches = 0;
+    let maximumActiveFetches = 0;
+    let settledFetches = 0;
+    const missingEntries = Array.from({ length: 20 }, (_, index) => [
+      `CID-${index}`,
+      crdtDocumentChangeNode,
+      undefined,
+    ]);
+    const get = jest.fn((_cid: unknown, options?: { signal?: AbortSignal }) =>
+      (async function* () {
+        const signal = options?.signal;
+        activeFetches += 1;
+        maximumActiveFetches = Math.max(
+          maximumActiveFetches,
+          activeFetches,
+        );
+        if (activeFetches === 8) fetchesStarted.resolve();
+        try {
+          await new Promise<void>((_resolve, reject) => {
+            if (!signal) throw new Error('missing block fetch signal');
+            if (signal.aborted) {
+              reject(signal.reason);
+              return;
+            }
+            signal.addEventListener(
+              'abort',
+              () => reject(signal.reason),
+              { once: true },
+            );
+          });
+          yield new Uint8Array([1, 2, 3]);
+        } finally {
+          activeFetches -= 1;
+          settledFetches += 1;
+        }
+      })(),
+    );
+    const remoteChange = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/cancel-missing-cids',
+      swarm: { heliaNode: { blockstore: { get } } },
+      _bootstrapLoadApplicationState: 'pending',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => missingEntries),
+      _keychainProvider: { keyIDLength: 1 },
+      _keychain: { getKey: jest.fn(() => ({})) },
+      _authProvider: {
+        nonceBits: 1,
+        decrypt: jest.fn(async () => new Uint8Array([1])),
+      },
+      _changesSerializer: {
+        deserializeChanges: jest.fn(() => ({ value: 'late' })),
+      },
+      _crdtProvider: { remoteChange },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: {},
+    });
+    const stream = {
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+      abort: jest.fn(),
+    };
+
+    try {
+      const load = withIssuerPinnedInvitationStream(
+        '/ip4/127.0.0.1/tcp/4001',
+        async () => stream,
+        async (_openedStream, signal) => {
+          try {
+            await document._syncDocumentChanges(
+              'HEAD',
+              { kind: crdtDocumentChangeNode },
+              {
+                signal,
+                maxBlockBytes: 64,
+                maxAggregateBlockBytes: 64,
+              },
+            );
+          } finally {
+            backgroundFinished.resolve();
+          }
+        },
+        25,
+      );
+
+      await fetchesStarted.promise;
+      jest.advanceTimersByTime(25);
+      await expect(load).rejects.toThrow(/deadline exceeded/);
+      await backgroundFinished.promise;
+
+      expect(maximumActiveFetches).toBe(8);
+      expect(get).toHaveBeenCalledTimes(8);
+      expect(settledFetches).toBe(8);
+      expect(activeFetches).toBe(0);
+      expect(remoteChange).not.toHaveBeenCalled();
+      expect(document._hashes).toEqual(new Set());
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      for (const [, options] of get.mock.calls) {
+        expect(options?.signal.aborted).toBe(true);
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('bounds each missing block and the aggregate fetched bytes', async () => {
+    const createMissingBlockDocument = (
+      entries: Array<[string, string, undefined]>,
+      blocks: Record<string, Uint8Array>,
+    ) => {
+      const remoteChange = jest.fn((state: unknown) => state);
+      return fakeDocument({
+        documentPath: '/bounded-missing-cids',
+        swarm: {
+          heliaNode: {
+            blockstore: {
+              get: jest.fn((cid: { toString(): string }) =>
+                (async function* () {
+                  yield blocks[cid.toString()]!;
+                })(),
+              ),
+            },
+          },
+        },
+        _bootstrapLoadApplicationState: 'pending',
+        _document: {},
+        _hashes: new Set<string>(),
+        _referencedAncestors: new Set<string>(),
+        _lastSyncMessage: undefined,
+        _mergeSyncTree: jest.fn(async () => entries),
+        _keychainProvider: { keyIDLength: 1 },
+        _keychain: { getKey: jest.fn(() => ({})) },
+        _authProvider: {
+          nonceBits: 1,
+          decrypt: jest.fn(async () => new Uint8Array([7])),
+        },
+        _changesSerializer: {
+          deserializeChanges: jest.fn(() => ({ value: 'bounded' })),
+        },
+        _crdtProvider: { remoteChange },
+        _documentChangeCount: 0,
+        _changesSinceSnapshot: 0,
+        _recentTips: [],
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _remoteHandlers: {},
+      });
+    };
+
+    const oversized = createMissingBlockDocument(
+      [['OVERSIZED', crdtDocumentChangeNode, undefined]],
+      { OVERSIZED: new Uint8Array(5) },
+    );
+    await expect(
+      oversized._syncDocumentChanges(
+        'HEAD',
+        { kind: crdtDocumentChangeNode },
+        { maxBlockBytes: 4, maxAggregateBlockBytes: 8 },
+      ),
+    ).rejects.toThrow(/fetch limits exceeded/);
+    expect(oversized._crdtProvider.remoteChange).not.toHaveBeenCalled();
+    expect(oversized._bootstrapLoadApplicationState).toBe('pending');
+
+    await expect(
+      oversized._syncDocumentChanges(
+        'HEAD',
+        { kind: crdtDocumentChangeNode },
+        { maxBlockBytes: 0, maxAggregateBlockBytes: 8 },
+      ),
+    ).rejects.toThrow(/positive safe integer/);
+
+    const aggregate = createMissingBlockDocument(
+      [
+        ['FIRST', crdtDocumentChangeNode, undefined],
+        ['SECOND', crdtDocumentChangeNode, undefined],
+      ],
+      {
+        FIRST: new Uint8Array(3),
+        SECOND: new Uint8Array(3),
+      },
+    );
+    await expect(
+      aggregate._syncDocumentChanges(
+        'HEAD',
+        { kind: crdtDocumentChangeNode },
+        { maxBlockBytes: 3, maxAggregateBlockBytes: 5 },
+      ),
+    ).rejects.toThrow(/fetch limits exceeded/);
+    expect(aggregate._hashes.size).toBeLessThanOrEqual(1);
+    expect(aggregate._bootstrapLoadApplicationState).toBe('pending');
+  });
+
+  test('redacts arbitrary missing-block provider and serializer failures', async () => {
+    const secret = 'decrypted-document-secret-sentinel';
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const document = fakeDocument({
+      documentPath: '/redacted-missing-cid',
+      _bootstrapLoadApplicationState: 'pending',
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['SECRET-CID', crdtDocumentChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async () => {
+        // A provider may use RangeError for malformed decrypted data. Without
+        // explicit load limits this remains an ordinary redacted block miss,
+        // not a new failure mode for public live sync().
+        throw new RangeError(secret);
+      }),
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: {},
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _bootstrapCompactionDeferred: false,
+    });
+
+    try {
+      await expect(
+        document._syncDocumentChanges('HEAD', {
+          kind: crdtDocumentChangeNode,
+        }),
+      ).resolves.toBeUndefined();
+      expect(consoleError.mock.calls).toEqual([
+        [
+          'Failed to fetch missing change from blockstore:',
+          'SECRET-CID',
+        ],
+      ]);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test('snapshots all invitation bundle bytes once and rejects shared or forged views', () => {
+    const welcomeEpochId = new Uint8Array([1]);
+    const sealedWelcome = new Uint8Array([2]);
+    const encryptedBootstrap = new Uint8Array([1, 3, 4]);
+    let propertyReads = 0;
+    const input = {
+      welcomeEpochId,
+      sealedWelcome,
+      encryptedBootstrap,
+    };
+    const snapshot = snapshotInvitationBootstrapBundle(
+      new Proxy(input, {
+        get() {
+          propertyReads += 1;
+          throw new Error('invitation bundle property read must not run');
+        },
+      }),
+      1,
+      1,
+    );
+    welcomeEpochId.fill(9);
+    sealedWelcome.fill(9);
+    encryptedBootstrap.fill(9);
+
+    expect(propertyReads).toBe(0);
+    expect([...snapshot.welcomeEpochId]).toEqual([1]);
+    expect([...snapshot.sealedWelcome]).toEqual([2]);
+    expect([...snapshot.encryptedBootstrap]).toEqual([1, 3, 4]);
+
+    let getterCalls = 0;
+    const accessorBundle = {
+      sealedWelcome: new Uint8Array([2]),
+      encryptedBootstrap: new Uint8Array([1, 3, 4]),
+    } as Record<string, unknown>;
+    Object.defineProperty(accessorBundle, 'welcomeEpochId', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return new Uint8Array([1]);
+      },
+    });
+    expect(() =>
+      snapshotInvitationBootstrapBundle(
+        accessorBundle as unknown as Parameters<
+          typeof snapshotInvitationBootstrapBundle
+        >[0],
+        1,
+        1,
+      ),
+    ).toThrow(/enumerable data properties/);
+    expect(getterCalls).toBe(0);
+
+    expect(() =>
+      snapshotInvitationBootstrapBundle(
+        { ...input, extra: new Uint8Array([5]) } as Parameters<
+          typeof snapshotInvitationBootstrapBundle
+        >[0],
+        1,
+        1,
+      ),
+    ).toThrow(/exactly its three byte fields/);
+    expect(() =>
+      snapshotInvitationBootstrapBundle(
+        new Proxy(input, {
+          ownKeys() {
+            throw new Error('unstable invitation bundle');
+          },
+        }),
+        1,
+        1,
+      ),
+    ).toThrow(/stable own data properties/);
+    expect(() =>
+      snapshotInvitationBootstrapBundle(input, 0, 1),
+    ).toThrow(/positive safe integer/);
+
+    const validBundle = (): Record<string, unknown> => ({
+      welcomeEpochId: new Uint8Array([1]),
+      sealedWelcome: new Uint8Array([2]),
+      encryptedBootstrap: new Uint8Array([1, 3, 4]),
+    });
+    for (const [field, length] of [
+      ['welcomeEpochId', 1],
+      ['sealedWelcome', 1],
+      ['encryptedBootstrap', 3],
+    ] as const) {
+      const sharedBundle = validBundle();
+      sharedBundle[field] = new Uint8Array(new SharedArrayBuffer(length));
+      expect(() =>
+        snapshotInvitationBootstrapBundle(
+          sharedBundle as unknown as Parameters<
+            typeof snapshotInvitationBootstrapBundle
+          >[0],
+          1,
+          1,
+        ),
+      ).toThrow(/invalid length or backing buffer/);
+
+      const lookalikeBundle = validBundle();
+      lookalikeBundle[field] = {
+        byteLength: length,
+        buffer: new ArrayBuffer(length),
+        0: 1,
+      };
+      expect(() =>
+        snapshotInvitationBootstrapBundle(
+          lookalikeBundle as unknown as Parameters<
+            typeof snapshotInvitationBootstrapBundle
+          >[0],
+          1,
+          1,
+        ),
+      ).toThrow(/genuine Uint8Array/);
+    }
+  });
+
   test('bounds ordinary document responses before deserialization', async () => {
     const abort = jest.fn();
     const document = fakeDocument({
@@ -2206,6 +2650,30 @@ describe('document load response boundaries', () => {
     expect(abort).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Document load response rejected' }),
     );
+  });
+
+  test('rejects invalid load byte limits before protocol I/O', async () => {
+    const stream = {
+      sink: jest.fn(async () => undefined),
+      source: (async function* () {
+        yield new Uint8Array([1]);
+      })(),
+      abort: jest.fn(),
+    };
+    const document = fakeDocument({
+      swarm: { config: { loadQuorumTimeoutMs: 1000 } },
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        undefined,
+        0,
+      ),
+    ).rejects.toThrow(/positive safe integer/);
+    expect(stream.sink).not.toHaveBeenCalled();
   });
 
   test('aborts a normal load whose peer withholds response EOF', async () => {
