@@ -6914,8 +6914,8 @@ export class PeerborneDocument<
    * delivery-ambiguous: a remote peer may already have received the delta.
    * This is a local publication boundary, not a distributed transaction.
    *
-  * @param writer User's public key
-  */
+   * @param writer User's public key
+   */
   public async addWriter(writer: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
     if (typeof this._authProvider.serializePublicKey !== 'function') {
@@ -6978,8 +6978,8 @@ export class PeerborneDocument<
    * delivery-ambiguous: a remote peer may already have received the delta.
    * This is a local publication boundary, not a distributed transaction.
    *
-  * @param writer User's public key
-  */
+   * @param writer User's public key
+   */
   public async removeWriter(writer: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
     if (typeof this._authProvider.serializePublicKey !== 'function') {
