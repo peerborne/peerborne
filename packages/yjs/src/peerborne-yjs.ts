@@ -32,6 +32,7 @@ import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
   applyUpdateV2,
   ContentAny,
+  ContentDeleted,
   decodeUpdateV2,
   Doc,
   encodeStateAsUpdateV2,
@@ -527,36 +528,70 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
     );
   }
   const decoded = decodeUpdateV2(state);
-  let structureCount = decoded.structs.length;
-  for (const ranges of decoded.ds.clients.values()) {
-    structureCount += ranges.length;
+  let structureCount = 0;
+  for (const struct of decoded.structs) {
+    if (
+      !Number.isSafeInteger(struct.length) ||
+      struct.length < 1 ||
+      struct.length > MAX_YJS_ACL_STRUCTURES - structureCount
+    ) {
+      throw new RangeError(
+        `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+      );
+    }
+    structureCount += struct.length;
   }
-  if (structureCount > MAX_YJS_ACL_STRUCTURES) {
-    throw new RangeError(
-      `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
-    );
+  for (const ranges of decoded.ds.clients.values()) {
+    for (const range of ranges) {
+      if (
+        !Number.isSafeInteger(range.len) ||
+        range.len < 1 ||
+        range.len > MAX_YJS_ACL_STRUCTURES - structureCount
+      ) {
+        throw new RangeError(
+          `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+        );
+      }
+      structureCount += range.len;
+    }
   }
   if (doc.getMap('users').size > MAX_YJS_ACL_MEMBERS) {
     throw new RangeError(
       `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
     );
   }
+  assertValidYjsACLHistory(doc, operation);
   return state;
 }
 
-function assertValidYjsACLMembers(doc: Doc, operation: string): void {
-  for (const [key, value] of doc.getMap('users')) {
-    assertCanonicalP384PublicKeyEncoding(key);
-    if (value !== true) {
-      throw new Error(
-        `Cannot ${operation}: Yjs ACL membership values must be true`,
-      );
+function assertValidYjsACLHistory(doc: Doc, operation: string): void {
+  const users = doc.getMap('users');
+  for (const structs of doc.store.clients.values()) {
+    for (const struct of structs) {
+      if (!(struct instanceof Item) || struct.parent !== users) continue;
+      const key = struct.parentSub;
+      assertCanonicalP384PublicKeyEncoding(key);
+      if (struct.content instanceof ContentDeleted) {
+        throw new Error(
+          `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
+        );
+      }
+      if (
+        !(struct.content instanceof ContentAny) ||
+        struct.length !== struct.content.arr.length ||
+        struct.content.arr.length === 0 ||
+        struct.content.arr.some((value) => value !== true)
+      ) {
+        throw new Error(
+          `Cannot ${operation}: Yjs ACL membership values must be true`,
+        );
+      }
     }
   }
 }
 
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
-  private _acl = new Doc();
+  private _acl = new Doc({ gc: false });
   private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
@@ -613,7 +648,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       assertCanonicalP384PublicKeyEncoding(hash);
       this._assertComplete('add an ACL member');
       const base = this._acl;
-      const staged = new Doc();
+      const staged = new Doc({ gc: false });
       applyUpdateV2(
         staged,
         snapshotBoundedYjsACLState(base, 'add an ACL member'),
@@ -643,7 +678,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     this._assertComplete('remove an ACL member');
     const baseRevision = this._revision;
     const base = this._acl;
-    const staged = new Doc();
+    const staged = new Doc({ gc: false });
     applyUpdateV2(
       staged,
       snapshotBoundedYjsACLState(base, 'stage an ACL removal'),
@@ -706,7 +741,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     ) {
       throw new Error('ACL changed while remote changes were being detached');
     }
-    const staged = new Doc();
+    const staged = new Doc({ gc: false });
     applyUpdateV2(
       staged,
       snapshotBoundedYjsACLState(base, 'merge ACL changes'),
@@ -714,7 +749,6 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     staged.clientID = base.clientID;
     applyUpdateV2(staged, detachedChange);
     snapshotBoundedYjsACLState(staged, 'merge ACL changes');
-    assertValidYjsACLMembers(staged, 'merge ACL changes');
     if (
       this._pendingMutations !== 0 ||
       this._revision !== baseRevision ||
