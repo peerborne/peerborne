@@ -139,11 +139,17 @@ export const MAX_AUTOMERGE_ACL_MEMBERS = 4096;
 // First 32 bits of SHA-256("peerborne:automerge-acl:prepared-users-root:v1").
 const AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR = '375c6f0a';
 const AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME = 0;
+// The canonical users-root seed occupies one structural change without
+// reducing the public membership/change capacity. It remains charged against
+// the byte, operation, and retained-state limits.
+const MAX_AUTOMERGE_ACL_CHANGES_WITH_USERS_ROOT_SEED =
+  MAX_AUTOMERGE_ACL_CHANGES + 1;
 
 type AutomergeACLChangeRecord = {
   readonly hash: string;
   readonly byteLength: number;
   readonly operationCount: number;
+  readonly isCanonicalUsersRootSeed: boolean;
 };
 
 type AutomergeACLAdditionActorReservation = {
@@ -156,6 +162,33 @@ type AutomergeACLKeyWrite = {
   readonly effect: 'add' | 'remove' | 'invalid';
 };
 
+function isCanonicalAutomergeACLUsersRootSeed(
+  decoded: ReturnType<typeof decodeChange>,
+): boolean {
+  const operation = decoded.ops[0];
+  return (
+    decoded.actor === AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR &&
+    decoded.seq === 1 &&
+    decoded.startOp === 1 &&
+    decoded.time === AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME &&
+    decoded.message === null &&
+    decoded.deps.length === 0 &&
+    decoded.ops.length === 1 &&
+    operation?.action === 'makeMap' &&
+    operation.obj === '_root' &&
+    operation.key === 'users' &&
+    operation.pred.length === 0
+  );
+}
+
+function hasCanonicalAutomergeACLUsersRootSeed(
+  changes: readonly BinaryChange[],
+): boolean {
+  return changes.some((binaryChange) =>
+    isCanonicalAutomergeACLUsersRootSeed(decodeChange(binaryChange)),
+  );
+}
+
 function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
   if (!Array.isArray(changes)) {
     throw new TypeError('Automerge ACL changes must be an array');
@@ -164,7 +197,7 @@ function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
   if (!Number.isSafeInteger(changeCount) || changeCount < 0) {
     throw new TypeError('Invalid Automerge ACL change count');
   }
-  if (changeCount > MAX_AUTOMERGE_ACL_CHANGES) {
+  if (changeCount > MAX_AUTOMERGE_ACL_CHANGES_WITH_USERS_ROOT_SEED) {
     throw new RangeError(
       `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
     );
@@ -190,6 +223,14 @@ function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
     totalChangeBytes += stableChange.byteLength;
     stableChanges.push(stableChange as BinaryChange);
   }
+  if (
+    changeCount > MAX_AUTOMERGE_ACL_CHANGES &&
+    !hasCanonicalAutomergeACLUsersRootSeed(stableChanges)
+  ) {
+    throw new RangeError(
+      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+    );
+  }
   return stableChanges;
 }
 
@@ -198,7 +239,11 @@ function assertAutomergeACLResourceLimits(
   operation: string,
 ): void {
   const history = getAllChanges(acl);
-  if (history.length > MAX_AUTOMERGE_ACL_CHANGES) {
+  if (
+    history.length > MAX_AUTOMERGE_ACL_CHANGES_WITH_USERS_ROOT_SEED ||
+    (history.length > MAX_AUTOMERGE_ACL_CHANGES &&
+      !hasCanonicalAutomergeACLUsersRootSeed(history))
+  ) {
     throw new RangeError(
       `Cannot ${operation}: Automerge ACL history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
     );
@@ -243,6 +288,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   >();
   private _retainedChangeBytes = 0;
   private _retainedOperations = 0;
+  private _retainedCanonicalUsersRootSeed = false;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
@@ -476,6 +522,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   ): AutomergeACLChangeRecord[] {
     const records: AutomergeACLChangeRecord[] = [];
     const newHashes = new Set<string>();
+    let retainedChangeCount =
+      this._retainedChanges.size -
+      (this._retainedCanonicalUsersRootSeed ? 1 : 0);
+    let hasCanonicalUsersRootSeed = this._retainedCanonicalUsersRootSeed;
     let retainedBytes = this._retainedChangeBytes;
     let retainedOperations = this._retainedOperations;
     for (const binaryChange of changes) {
@@ -490,10 +540,14 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         hash: decoded.hash,
         byteLength: binaryChange.byteLength,
         operationCount: decoded.ops.length,
+        isCanonicalUsersRootSeed:
+          isCanonicalAutomergeACLUsersRootSeed(decoded),
       };
+      const usesCanonicalSeedAllowance =
+        record.isCanonicalUsersRootSeed && !hasCanonicalUsersRootSeed;
       if (
-        this._retainedChanges.size + records.length + 1 >
-        MAX_AUTOMERGE_ACL_CHANGES
+        !usesCanonicalSeedAllowance &&
+        retainedChangeCount + 1 > MAX_AUTOMERGE_ACL_CHANGES
       ) {
         throw new RangeError(
           `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
@@ -515,6 +569,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
           `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_OPERATIONS}-operation limit`,
         );
       }
+      if (usesCanonicalSeedAllowance) {
+        hasCanonicalUsersRootSeed = true;
+      } else {
+        retainedChangeCount++;
+      }
       newHashes.add(record.hash);
       records.push(record);
       retainedBytes += record.byteLength;
@@ -530,6 +589,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       this._retainedChanges.set(record.hash, record);
       this._retainedChangeBytes += record.byteLength;
       this._retainedOperations += record.operationCount;
+      if (record.isCanonicalUsersRootSeed) {
+        this._retainedCanonicalUsersRootSeed = true;
+      }
     }
   }
 
