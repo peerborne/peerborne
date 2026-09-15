@@ -7223,8 +7223,10 @@ export class PeerborneDocument<
    * The revoked reader can still decrypt the step-4 ACL change (they
    * have the previous key) -- which is fine: they just learn they've
    * been removed. They CANNOT derive the new key from the step-5
-   * PathUpdate because their leaf is blanked, so all future writer-
-   * originated traffic remains opaque to them.
+   * PathUpdate because their leaf is blanked. This excludes them from that
+   * freshly generated epoch; it does not guarantee all future traffic remains
+   * opaque because v1 PathUpdates have no generation/parent binding and their
+   * delivery is best-effort.
    *
    * If step 6 itself fails (local IO / WebCrypto error) the writer is
    * in a partially-rotated state -- BeeKEM has advanced but the local
@@ -7238,7 +7240,9 @@ export class PeerborneDocument<
    * the removed reader cannot derive the new key even if they were
    * connected at the moment of revocation: their leaf is blanked and
    * the new path key material is encrypted to subtrees they no longer
-   * occupy. This closes the revocation-latency gap (#189 §5.4 item 5).
+   * occupy. This closes the direct "new key encrypted under the old key" leak
+   * for this rotation (#189 §5.4 item 5), but the v1 replay and delivery limits
+   * still preclude an end-to-end revocation guarantee.
    *
    * @param reader User's public key.
    * @throws If the BeeKEM tree has no record of this reader (e.g.
