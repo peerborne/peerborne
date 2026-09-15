@@ -659,18 +659,23 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
+    const detachedChange = new Uint8Array(change);
+    const staged = new Doc();
+    applyUpdateV2(staged, encodeStateAsUpdateV2(this._acl));
+    staged.clientID = this._acl.clientID;
     // Yjs emits an update only for transactions that integrated new structs
     // or deletions; parked pending updates and replays stay silent.
     let changed = false;
     const markChanged = () => {
       changed = true;
     };
-    this._acl.on('updateV2', markChanged);
+    staged.on('updateV2', markChanged);
     try {
-      applyUpdateV2(this._acl, change);
+      applyUpdateV2(staged, detachedChange);
     } finally {
-      this._acl.off('updateV2', markChanged);
+      staged.off('updateV2', markChanged);
     }
+    this._acl = staged;
     this._revision++;
     return changed;
   }
