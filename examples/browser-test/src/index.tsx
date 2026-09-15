@@ -49,8 +49,8 @@ declare global {
 }
 
 const crossNatTest = import.meta.env.VITE_CROSS_NAT_TEST === '1';
-// Web Crypto fixes generated EC public keys as extractable; this argument
-// controls the private key, which must never be exported into test artifacts.
+// In Chromium (our Playwright target), generated ECDSA public keys remain exportable.
+// The `extractable` flag must still keep the private key non-extractable so it can’t be exported into test artifacts.
 const userKeyPair = (await crypto.subtle.generateKey(
   { name: 'ECDSA', namedCurve: 'P-384' },
   false,
