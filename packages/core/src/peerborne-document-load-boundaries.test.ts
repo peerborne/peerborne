@@ -968,7 +968,7 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
-  test('rejects an empty keychain merge through the real bootstrap sync path', async () => {
+  test('rejects an explicit empty-array keychain field without reserving bootstrap state', async () => {
     const message = {
       documentId: '/load-race',
       signature: 'AAAA',
@@ -991,6 +991,133 @@ describe('document load response boundaries', () => {
     expect(merge).not.toHaveBeenCalled();
     expect(document._hashes).toEqual(new Set());
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('commits a provider-semantic no-op without reserving bootstrap state', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: { providerEncoding: 'empty' },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    const commit = jest.fn();
+    const merge = jest.fn();
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+      prepareMerge: jest.fn(() => ({
+        keyIds: [],
+        currentKeyId: undefined,
+        hydrateKeys: jest.fn(async () => []),
+        getKey: jest.fn(),
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+        commit,
+      })),
+      merge,
+    };
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(document._keychain.prepareMerge).toHaveBeenCalledWith(
+      message.keychainChanges,
+    );
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(merge).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test.each(['pinned', 'unsigned'] as const)(
+    'counts a committed logical keychain change as %s load progress',
+    async (admission) => {
+      const message = {
+        documentId: '/load-race',
+        signature: 'AAAA',
+        keychainChanges: { providerEncoding: 'one-key' },
+      };
+      const { document, stream } = signedLoadHarness(
+        async () => {
+          if (admission === 'pinned') {
+            throw new Error('pinned admission must not read the writer ACL');
+          }
+          return [];
+        },
+        async () => true,
+        message,
+      );
+      if (admission === 'unsigned') {
+        document.swarm.config.enableSigning = false;
+      }
+      const commit = jest.fn();
+      document._keychain = {
+        getKey: jest.fn(() => ({})),
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+        prepareMerge: jest.fn(() => ({
+          keyIds: [new Uint8Array([7])],
+          currentKeyId: new Uint8Array([7]),
+          hydrateKeys: jest.fn(async () => []),
+          getKey: jest.fn(),
+          stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
+          commit,
+        })),
+        merge: jest.fn(),
+      };
+
+      await expect(
+        document._sendLoadRequestAndSync(
+          stream,
+          new Uint8Array([1]),
+          null,
+          admission === 'pinned' ? 'pinned-writer' : undefined,
+        ),
+      ).resolves.toBe(true);
+
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(document._bootstrapLoadApplicationState).toBe('complete');
+    },
+  );
+
+  test('does not establish unpinned bootstrap authority from a keychain-only change', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: { providerEncoding: 'one-key' },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    const commit = jest.fn();
+    document._keychain = {
+      getKey: jest.fn(() => ({})),
+      stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
+      prepareMerge: jest.fn(() => ({
+        keyIds: [new Uint8Array([7])],
+        currentKeyId: new Uint8Array([7]),
+        hydrateKeys: jest.fn(async () => []),
+        getKey: jest.fn(),
+        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
+        commit,
+      })),
+      merge: jest.fn(),
+    };
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
   });
 
   test('does not admit bootstrap state on an already-subscribed instance', async () => {
@@ -1204,11 +1331,16 @@ describe('document load response boundaries', () => {
     expect(document.document).toEqual({ value: 'verified-but-not-finalized' });
   });
 
-  test('isolates deferred observer failures after successful finalization', async () => {
+  test('isolates deferred observer failures without awaiting or logging their errors', async () => {
+    const releaseAsyncHandler = deferred<void>();
+    const asyncFailureLogged = deferred<void>();
+    let asyncHandlerReleased = false;
     const laterHandler = jest.fn();
     const consoleError = jest
       .spyOn(console, 'error')
-      .mockImplementation(() => undefined);
+      .mockImplementation(() => {
+        if (asyncHandlerReleased) asyncFailureLogged.resolve();
+      });
     const document = fakeDocument({
       documentPath: '/observer-isolation',
       _bootstrapLoadApplicationState: 'pending',
@@ -1223,8 +1355,12 @@ describe('document load response boundaries', () => {
       },
       _writers: { users: jest.fn(async () => ['writer']) },
       _remoteHandlers: {
-        failing: () => {
-          throw new Error('observer failed');
+        synchronousFailure: () => {
+          throw new Error('synchronous document secret');
+        },
+        asynchronousFailure: async () => {
+          await releaseAsyncHandler.promise;
+          throw new Error('asynchronous document secret');
         },
         later: laterHandler,
       },
@@ -1234,6 +1370,16 @@ describe('document load response boundaries', () => {
       await expect(
         document._completeBootstrapStateApplicationUnlocked(),
       ).resolves.toBeUndefined();
+      expect(consoleError).toHaveBeenCalledTimes(1);
+
+      asyncHandlerReleased = true;
+      releaseAsyncHandler.resolve();
+      await asyncFailureLogged.promise;
+      expect(consoleError).toHaveBeenCalledTimes(2);
+      expect(consoleError.mock.calls).toEqual([
+        ['Remote update handler failed for /observer-isolation'],
+        ['Remote update handler failed for /observer-isolation'],
+      ]);
     } finally {
       consoleError.mockRestore();
     }
