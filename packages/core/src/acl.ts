@@ -2,6 +2,11 @@
  * An ACL keeps track of a list of user's public keys and produces changes that
  * can be sent to other swarm peers.
  *
+ * Implementations must compare public keys by their provider-defined canonical
+ * key material, not JavaScript object reference. Security wrappers may pass a
+ * fresh detached object that represents the same canonical identity to each
+ * operation.
+ *
  * @typeParam ChangesType A block of CRDT change(s).
  * @typeParam PublicKey Type of a user's public key.
  */

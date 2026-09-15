@@ -217,6 +217,38 @@ describe('UCANACL', () => {
     expect(await orderedAcl.users()).toEqual([]);
   });
 
+  test('reserves FIFO admission before a serializer can synchronously reenter', async () => {
+    const events: string[] = [];
+    let reentered = false;
+    let reentrantRemoval!: Promise<string>;
+    let orderedAcl: any;
+    const serialize = jest.fn((key: string) => {
+      if (key === 'key1' && !reentered) {
+        reentered = true;
+        expect(() => orderedAcl.merge('reentrant-merge')).toThrow(
+          /local membership mutation is pending/,
+        );
+        reentrantRemoval = orderedAcl.remove('key2');
+      }
+      return Promise.resolve(`serialized:${key}`);
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.add.mockImplementation(async (key: string) => {
+      events.push(`add:${key}`);
+      return 'add-changes';
+    });
+    backing.remove.mockImplementation(async (key: string) => {
+      events.push(`remove:${key}`);
+      return 'remove-changes';
+    });
+
+    await expect(orderedAcl.add('key1')).resolves.toBe('add-changes');
+    await expect(reentrantRemoval).resolves.toBe('remove-changes');
+
+    expect(events).toEqual(['add:key1', 'remove:key2']);
+    expect(backing.merge).not.toHaveBeenCalled();
+  });
+
   test('releases codec admission after a rejected snapshot', async () => {
     const serialize = jest
       .fn()
@@ -579,6 +611,37 @@ describe('UCANACL', () => {
     await expect(check).resolves.toBe(true);
     expect(checkedIdentity).toEqual({ id: 'user-a' });
     expect(checkedIdentity).not.toBe(callerIdentity);
+  });
+
+  test('uses canonical value equality across detached backing identities', async () => {
+    const members = new Set<string>();
+    const serialize = jest.fn(async (key: { id: string }) => `s:${key.id}`);
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice(2),
+    }));
+    const seen: Array<{ id: string }> = [];
+    backing.add.mockImplementation(async (key: { id: string }) => {
+      seen.push(key);
+      members.add(key.id);
+      return 'add-changes';
+    });
+    backing.check.mockImplementation(async (key: { id: string }) => {
+      seen.push(key);
+      return members.has(key.id);
+    });
+    backing.remove.mockImplementation(async (key: { id: string }) => {
+      seen.push(key);
+      members.delete(key.id);
+      return 'remove-changes';
+    });
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    await objectAcl.add({ id: 'user-a' });
+    await expect(objectAcl.check({ id: 'user-a' })).resolves.toBe(true);
+    await objectAcl.remove({ id: 'user-a' });
+
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(members).toEqual(new Set());
   });
 
   test('denies an in-flight check when a remote merge changes backing state', async () => {
@@ -1695,5 +1758,22 @@ describe('UCANACLProvider', () => {
     await expect(acl.add({ id: 'reader' })).resolves.toBe('changes');
     expect(deserializeKey).toHaveBeenCalledWith('s:reader');
     expect(backing.add).toHaveBeenCalledWith({ id: 'reader' });
+  });
+
+  test('rejects a backing provider that reuses mutable ACL state', () => {
+    const sharedBacking = makeMockAcl();
+    const backingProvider = {
+      initialize: jest.fn(() => sharedBacking),
+    };
+    const provider = new UCANACLProviderImpl(
+      backingProvider,
+      jest.fn(async (key: string) => key),
+    );
+
+    expect(provider.initialize()).toBeInstanceOf(UCANACLImpl);
+    expect(() => provider.initialize()).toThrow(
+      /initialize\(\) must return isolated ACL state/,
+    );
+    expect(backingProvider.initialize).toHaveBeenCalledTimes(2);
   });
 });
