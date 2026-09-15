@@ -389,6 +389,21 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('replayed updates do not stale a prepared removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const remote = new YjsACL();
+    const remoteChanges = await remote.add(key2);
+    acl.merge(remoteChanges);
+    const prepared = await acl.prepareRemove(key1);
+
+    acl.merge(remoteChanges);
+
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareRemove() rejects a stale commit before changing membership', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -662,6 +677,26 @@ describe('YjsACL', () => {
     receiver.merge(dependency);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('a new dependency-incomplete update still stales prepared removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+    const { dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+
+    acl.merge(dependent);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(() => acl.current()).toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
   });
 
   test('current(), check(), and users() reject a known-incomplete ACL history', async () => {

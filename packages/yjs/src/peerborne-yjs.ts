@@ -763,13 +763,14 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       throw new Error('ACL changed while remote changes were being detached');
     }
     const staged = new Doc({ gc: false });
-    applyUpdateV2(
-      staged,
-      snapshotBoundedYjsACLState(base, 'merge ACL changes'),
-    );
+    const baseState = snapshotBoundedYjsACLState(base, 'merge ACL changes');
+    applyUpdateV2(staged, baseState);
     staged.clientID = base.clientID;
     applyUpdateV2(staged, detachedChange);
-    snapshotBoundedYjsACLState(staged, 'merge ACL changes');
+    const stagedState = snapshotBoundedYjsACLState(
+      staged,
+      'merge ACL changes',
+    );
     if (
       this._pendingMutations !== 0 ||
       this._revision !== baseRevision ||
@@ -777,6 +778,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     ) {
       throw new Error('ACL changed while remote changes were being merged');
     }
+    if (compareBytes(baseState, stagedState) === 0) return;
     this._acl = staged;
     this._revision++;
   }
