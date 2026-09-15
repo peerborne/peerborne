@@ -304,6 +304,21 @@ describe('AutomergeACL', () => {
     }
   });
 
+  test('blank-base prepared additions share a seed across creation times', async () => {
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000);
+      const first = await new AutomergeACL().prepareAdd(key1);
+
+      now.mockReturnValue(3_000);
+      const second = await new AutomergeACL().prepareAdd(key2);
+
+      expect(first.changes[0]).toEqual(second.changes[0]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   test('same-member prepared additions remain mergeable in either order', async () => {
     const founder = new AutomergeACL();
     await founder.add(key1);
