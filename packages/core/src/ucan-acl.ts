@@ -551,6 +551,25 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
+  private _runBackingCommit(operation: () => void): void {
+    this._assertBackingOperationAvailable('ACL backing commit');
+    const finishBackingOperation = this._beginBackingOperation();
+    try {
+      this._invokeSynchronousBacking(operation, 'Backing ACL commit');
+    } catch (error) {
+      this._backingStateUncertain = true;
+      if (error instanceof ACLOperationInProgressError) {
+        throw new Error(
+          'Backing ACL commit reported a retry conflict after invocation; backing state is uncertain',
+        );
+      }
+      throw error;
+    } finally {
+      this._markBackingMutation();
+      finishBackingOperation();
+    }
+  }
+
   private _isLocallyAuthorized(
     keyBase64: string,
     capability?: string,
@@ -619,7 +638,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareRemove(
     publicKey: PublicKey,
   ): Promise<PreparedACLRemoval<ChangesType>> {
-    this._assertHealthy('Prepared ACL removal');
+    this._assertPublicOperationAvailable('Prepared ACL removal');
     const prepareRemove = this._backing.prepareRemove;
     if (typeof prepareRemove !== 'function') {
       throw new Error('Backing ACL does not support staged removal');
@@ -628,7 +647,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Prepared ACL removal',
     );
-    this._assertHealthy('Prepared ACL removal');
+    this._assertPublicOperationAvailable('Prepared ACL removal');
     return this._prepareBackingRemoval(
       snapshot.publicKey,
       snapshot.keyBase64,
@@ -642,10 +661,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
     allowActiveMutation = false,
   ): Promise<PreparedACLRemoval<ChangesType>> {
-    this._assertHealthy('Prepared ACL removal');
+    this._assertBackingOperationAvailable('Prepared ACL removal');
     const backingRevision = this._backingRevision;
     const prepared = await prepareRemove.call(this._backing, publicKey);
-    this._assertHealthy('Prepared ACL removal');
+    this._assertBackingOperationAvailable('Prepared ACL removal');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
         'Prepared ACL removal became stale after backing ACL changed',
@@ -669,11 +688,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             'Prepared ACL removal became stale after backing ACL changed',
           );
         }
-        try {
-          prepared.commit();
-        } finally {
-          this._markBackingMutation();
-        }
+        this._runBackingCommit(() => prepared.commit());
         this._revokedKeys.add(keyBase64);
         this._entries.delete(keyBase64);
         committed = true;
