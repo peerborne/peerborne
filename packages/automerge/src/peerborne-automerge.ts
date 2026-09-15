@@ -179,6 +179,17 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
+  private _assertSingleUsersRoot(
+    acl: AutomergeACLDoc,
+    operation: string,
+  ): void {
+    if (getConflicts(acl, 'users') !== undefined) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history contains conflicting users roots`,
+      );
+    }
+  }
+
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
       this._assertComplete('add an ACL member');
@@ -266,7 +277,8 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
     const baseRevision = this._revision;
     const base = this._acl;
-    const [doc] = applyChanges(base, stableChanges);
+    const [doc] = applyChanges(clone(base), stableChanges);
+    this._assertSingleUsersRoot(doc, 'merge ACL changes');
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
     }
