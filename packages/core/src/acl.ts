@@ -131,6 +131,12 @@ export interface ACL<ChangesType, PublicKey> {
   /**
    * Applies a block of change(s) to the ACL.
    *
+   * A thrown {@link ACLOperationInProgressError} certifies that the merge was
+   * rejected at its pre-mutation admission boundary and can be retried after
+   * settlement. Generic callers cannot assume any other exception left a
+   * custom implementation unchanged, so authorization-sensitive orchestration
+   * must fail closed.
+   *
    * @param changes A block of change(s) to apply.
    */
   merge(changes: ChangesType): void;
