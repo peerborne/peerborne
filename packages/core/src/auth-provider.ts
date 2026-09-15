@@ -34,9 +34,14 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
 
   /**
    * Serialize a `PublicKey` to a stable string representation. The
-   * representation MUST be deterministic for a given key so two peers
-   * can compare serialized strings for equality and reach the same
-   * conclusion about whether a `PublicKey` is the same identity.
+   * representation MUST be canonical and collision-free for the provider's
+   * identity domain: two keys serialize equally if and only if the provider
+   * treats them as the same identity. Two peers must therefore reach the same
+   * identity decision from the serialized strings.
+   *
+   * Implementations MUST capture every caller-owned value needed for the
+   * encoding synchronously, before their first asynchronous suspension, and
+   * MUST NOT retain a mutable caller-owned object for later inspection.
    *
    * This is used by the BeeKEM Welcome flow (recipient binding) and is
    * intentionally generic so non-CryptoKey providers (e.g.
@@ -57,9 +62,13 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
 
   /**
    * Restore a public identity from the canonical representation produced by
-   * `serializePublicKey`. Network invitation flows require this operation so
-   * the inviter can verify proof of possession from a previously unknown
-   * recipient and the recipient can pin the inviter named in the offer.
+   * `serializePublicKey`. The result MUST round-trip to the exact same
+   * canonical string and MUST be detached from mutable objects owned by the
+   * caller of `serializePublicKey` (including nested aliases). Network
+   * invitation flows require this operation so the inviter can verify proof
+   * of possession from a previously unknown recipient and the recipient can
+   * pin the inviter named in the offer. Writer role transitions require it
+   * for mutable identities so their queued target is caller-immutable.
    */
   deserializePublicKey?(serialized: string): Promise<PublicKey>;
 }

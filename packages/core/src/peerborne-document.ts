@@ -20,7 +20,11 @@ import {
 } from './utils.js';
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
-import { AuthProvider, requireSerializePublicKey } from './auth-provider.js';
+import {
+  AuthProvider,
+  requireDeserializePublicKey,
+  requireSerializePublicKey,
+} from './auth-provider.js';
 import {
   CRDTChangeNode,
   crdtChangeNodeDeferred,
@@ -63,7 +67,6 @@ import {
 import {
   beekemPathUpdateV1,
   beekemWelcomeV1,
-  documentKeyUpdateV2,
   documentLoadV3,
   snapshotLoadV3,
   tipAdvertiseV1,
@@ -100,7 +103,11 @@ import {
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
-import { ACLOperationInProgressError, retryACLConflict } from './acl.js';
+import {
+  ACLOperationInProgressError,
+  retryACLConflict,
+  type PreparedACLChange,
+} from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrFull } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
@@ -283,6 +290,13 @@ interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
   readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
   readonly serializedBootstrapBaselineBytes: number;
   readonly welcomeWithoutBeeKEMBytes: number;
+}
+
+interface PostPublishCommit {
+  /** User-facing operation name used when reporting a handler failure. */
+  readonly operation: string;
+  /** Synchronous commit for state whose change was just published. */
+  readonly commit: () => void;
 }
 
 /**
@@ -532,7 +546,7 @@ export class PeerborneDocument<
   // Document-scoped (not per-DAG-node): every signature check needs the current
   // trusted writer set, so a single lazy cache is sufficient. Invalidated by
   // bumping `_writerKeysVersion` whenever `_writers` is mutated via
-  // `_mergeWriters` / `_addWriter` / `_removeWriter`. All ACL mutations must
+  // `_mergeWriters` / `_publishPreparedWriterChange`. All ACL mutations must
   // go through those helpers. The version counter is what makes invalidation
   // race-safe: `_getWriterKeys` captures the version before awaiting and only
   // commits the result if the version is still current, so an in-flight fetch
@@ -543,15 +557,17 @@ export class PeerborneDocument<
   // later signature verification.
   private _cachedWriterKeys: ReadonlyArray<PublicKey> | null = null;
   private _writerKeysVersion = 0;
-  // Counter of in-flight `_writers` mutations (add/remove/merge). Some ACL
-  // implementations (e.g. UCANACL.remove, YjsACL.remove) mutate their
-  // backing state *before* their returned Promise resolves, so during the
-  // mutation window `_writers.users()` may already reflect the new state
-  // even though the helper has not yet reached its post-await invalidation
-  // line. While this counter is nonzero, `_getWriterKeys` bypasses the
-  // cache entirely and always re-fetches, so a signature check that races
-  // a mutation cannot observe the stale pre-mutation list.
+  // Counter of in-flight `_writers` mutations. Staged local publications keep
+  // it nonzero from before publication through commit and handler delivery;
+  // remote merges bracket their synchronous mutation with the same guard.
+  // `_getWriterKeys` bypasses the cache throughout either window, so a
+  // signature check cannot observe a cached pre-mutation list.
   private _writerMutationsInFlight = 0;
+  // A staged writer delta has been prepared and is awaiting its publication
+  // commit point. Normal inbound sync is serialized behind this interval by
+  // `_mutationQueue`; `_mergeWriters` also rejects any accidental out-of-queue
+  // interleaving so a published delta cannot fail its local stale-base commit.
+  private _writerPublicationsInFlight = 0;
 
   // List of document encryption keys. Lower index numbers mean more recent.
   // Since the document is created from change history, all keys are needed.
@@ -870,13 +886,17 @@ export class PeerborneDocument<
   // necessarily reaching `_hashes`, `_lastSyncMessage`, or `_latestSnapshot`.
   // `pending` is deliberately durable after any failed application attempt;
   // `complete` is set only after the entire response passes its post-sync
-  // checks. This prevents a partial ACL merge from manufacturing authority for
-  // a retry or from being consumed by any other public state transition. There
-  // is no safe in-place recovery because the pre-failure state is not retained.
+  // checks. `poisoned` is a separate terminal state for failures, such as an
+  // opaque ACL commit exception, whose partial effects cannot be ruled out;
+  // bootstrap finalization must never clear it. These states prevent a partial
+  // ACL mutation from manufacturing authority for a retry or from being
+  // consumed by any other public state transition. There is no safe in-place
+  // recovery because the pre-failure state is not retained.
   private _bootstrapLoadApplicationState:
     | 'pristine'
     | 'pending'
-    | 'complete' = 'pristine';
+    | 'complete'
+    | 'poisoned' = 'pristine';
 
   // Monotonic generation for bootstrap state transitions. Response handlers
   // capture this before assembling a payload and require it to remain stable
@@ -1138,7 +1158,17 @@ export class PeerborneDocument<
     return shuffledPeers;
   }
 
+  private _assertDocumentStateNotPoisoned(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') {
+      throw new Error(
+        `Document ${this.documentPath} has indeterminate authorization state; ` +
+          `discard this document instance before continuing`,
+      );
+    }
+  }
+
   private _assertNoIncompleteBootstrapLoad(): void {
+    this._assertDocumentStateNotPoisoned();
     if (this._activeInvitationBootstrapContinuation !== undefined) {
       throw new Error(
         `Invitation bootstrap validation for ${this.documentPath} is in progress`,
@@ -1153,11 +1183,30 @@ export class PeerborneDocument<
   }
 
   private _markBootstrapStateApplicationPending(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') return;
     this._bootstrapLoadApplicationState = 'pending';
     this._bootstrapLoadApplicationRevision++;
   }
 
+  private _markDocumentStatePoisoned(): void {
+    if (this._bootstrapLoadApplicationState === 'poisoned') return;
+    this._bootstrapLoadApplicationState = 'poisoned';
+    this._bootstrapLoadApplicationRevision++;
+  }
+
+  private _isStateApplicationBlocked(): boolean {
+    return (
+      this._bootstrapLoadApplicationState === 'pending' ||
+      this._bootstrapLoadApplicationState === 'poisoned'
+    );
+  }
+
   private _markBootstrapStateApplicationComplete(): void {
+    if (this._bootstrapLoadApplicationState !== 'pending') {
+      throw new Error(
+        `Bootstrap completion for ${this.documentPath} requires pending state`,
+      );
+    }
     this._bootstrapLoadApplicationState = 'complete';
     this._bootstrapLoadApplicationRevision++;
   }
@@ -1552,7 +1601,7 @@ export class PeerborneDocument<
   }
 
   private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
-    if (this._bootstrapLoadApplicationState === 'pending') {
+    if (this._isStateApplicationBlocked()) {
       for (const hash of hashes) {
         this._pendingBootstrapRemoteUpdateHashes.add(hash);
       }
@@ -1570,13 +1619,49 @@ export class PeerborneDocument<
     ]);
   }
 
-  private async _fireLocalUpdateHandlers(hashes: string[]) {
+  private async _fireLocalUpdateHandlers(
+    hashes: string[],
+    postPublishOperation?: string,
+  ) {
     for (const handler of Object.values(this._localHandlers)) {
-      handler(
+      const result = (handler as (
+        current: DocType,
+        readers: PublicKey[],
+        writers: PublicKey[],
+        hashes: string[],
+      ) => unknown)(
         this._document,
         await this.getReaders(),
         await this.getWriters(),
         hashes,
+      );
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => {
+          this._reportLocalUpdateHandlerFailure(
+            postPublishOperation,
+            true,
+          );
+        });
+      }
+    }
+  }
+
+  private _reportLocalUpdateHandlerFailure(
+    postPublishOperation?: string,
+    asynchronous = false,
+  ): void {
+    if (postPublishOperation) {
+      console.error(
+        `[${this.documentPath}] ${postPublishOperation}: a local update ` +
+          `handler failed after the ACL change was published and committed. ` +
+          `The handler failure is not a retryable ACL publication failure.`,
+      );
+      return;
+    }
+    if (asynchronous) {
+      console.error(
+        `[${this.documentPath}] an asynchronous local update handler failed ` +
+          'after the change was published.',
       );
     }
   }
@@ -1744,14 +1829,11 @@ export class PeerborneDocument<
     const signal = fetchOptions.signal;
     const assertStillActive = (): void => {
       throwIfLoadAborted(signal);
+      this._assertDocumentStateNotPoisoned();
       fetchOptions.assertStillActive?.();
     };
     const maxBlockBytes = fetchOptions.maxBlockBytes;
     const maxAggregateBlockBytes = fetchOptions.maxAggregateBlockBytes;
-    const enforceFetchLimits =
-      maxBlockBytes !== undefined ||
-      maxAggregateBlockBytes !== undefined ||
-      fetchOptions.aggregateBudget !== undefined;
     if (maxBlockBytes !== undefined) {
       assertPositiveSafeByteLimit(maxBlockBytes, 'Missing block byte limit');
     }
@@ -1887,22 +1969,26 @@ export class PeerborneDocument<
     }
 
     // Then apply missing hashes through a bounded worker pool. Every worker
-    // receives the enclosing load signal, and all workers are awaited even
-    // after cancellation so no queued fetch can apply state after the caller's
-    // deadline has rejected.
+    // receives the enclosing load signal, and all workers are awaited after
+    // cancellation so no queued fetch can apply state after the caller's
+    // deadline has rejected. An indeterminate ACL merge instead poisons the
+    // document, aborts sibling fetches, and releases the queue immediately;
+    // the poison assertion prevents an abort-ignoring fetch from applying
+    // state if it ever settles later.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
       const appliedMissingDocumentHashes = new Array<string | undefined>(
         missingDocumentHashes.length,
       );
-      const fetchController =
-        signal !== undefined || enforceFetchLimits
-          ? new AbortController()
-          : undefined;
+      const fetchController = new AbortController();
+      let signalPoisonedWorkerPool!: () => void;
+      const poisonedWorkerPool = new Promise<void>((resolve) => {
+        signalPoisonedWorkerPool = resolve;
+      });
       const forwardAbort = (): void => {
-        if (!fetchController?.signal.aborted) {
-          fetchController?.abort(signal?.reason);
+        if (!fetchController.signal.aborted) {
+          fetchController.abort(signal?.reason);
         }
       };
       if (signal?.aborted) {
@@ -1910,7 +1996,7 @@ export class PeerborneDocument<
       } else {
         signal?.addEventListener('abort', forwardAbort, { once: true });
       }
-      const fetchSignal = fetchController?.signal;
+      const fetchSignal = fetchController.signal;
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded) {
           assertStillActive();
@@ -1974,12 +2060,19 @@ export class PeerborneDocument<
             appliedMissingDocumentHashes[index] = missingHash;
             assertStillActive();
           } catch (error) {
+            if (this._bootstrapLoadApplicationState === 'poisoned') {
+              if (!fetchController.signal.aborted) {
+                fetchController.abort();
+              }
+              signalPoisonedWorkerPool();
+              this._assertDocumentStateNotPoisoned();
+            }
             if (signal?.aborted) throwIfLoadAborted(signal);
-            if (fetchLimitExceeded && fetchController?.signal.aborted) return;
+            if (fetchLimitExceeded && fetchController.signal.aborted) return;
             if (error instanceof _LoadFetchLimitExceededError) {
               fetchLimitExceeded = true;
-              if (!fetchController?.signal.aborted) {
-                fetchController?.abort(
+              if (!fetchController.signal.aborted) {
+                fetchController.abort(
                   new _LoadFetchLimitExceededError(
                     'Missing change block fetch limits exceeded',
                   ),
@@ -2002,9 +2095,23 @@ export class PeerborneDocument<
       );
       let workerResults: PromiseSettledResult<void>[];
       try {
-        workerResults = await Promise.allSettled(
+        const workersSettled = Promise.allSettled(
           Array.from({ length: workerCount }, () => worker()),
         );
+        const workerPoolOutcome = await Promise.race([
+          workersSettled.then((results) => ({
+            kind: 'settled' as const,
+            results,
+          })),
+          poisonedWorkerPool.then(() => ({ kind: 'poisoned' as const })),
+        ]);
+        if (workerPoolOutcome.kind === 'poisoned') {
+          this._assertDocumentStateNotPoisoned();
+          throw new Error(
+            `Missing change worker pool for ${this.documentPath} entered an invalid state`,
+          );
+        }
+        workerResults = workerPoolOutcome.results;
       } finally {
         signal?.removeEventListener('abort', forwardAbort);
       }
@@ -2050,7 +2157,7 @@ export class PeerborneDocument<
     this._refreshLastSyncMessageFromSync(changeId, changes);
 
     assertStillActive();
-    if (this._bootstrapLoadApplicationState === 'pending') {
+    if (this._isStateApplicationBlocked()) {
       this._bootstrapCompactionDeferred = true;
     } else {
       await this._maybeCompact();
@@ -2224,12 +2331,19 @@ export class PeerborneDocument<
     changes: ChangesType,
     assertStillActive?: () => void,
   ): Promise<void> {
-    await retryACLConflict(() => {
+    await retryACLConflict(async () => {
       assertStillActive?.();
-      return this._readers.merge(changes);
+      try {
+        await this._readers.merge(changes);
+      } catch (error) {
+        if (!(error instanceof ACLOperationInProgressError)) {
+          this._markDocumentStatePoisoned();
+        }
+        throw error;
+      }
     });
     assertStillActive?.();
-    if (this._bootstrapLoadApplicationState !== 'pending') {
+    if (!this._isStateApplicationBlocked()) {
       this._schedulePendingWelcomeDrain();
     }
   }
@@ -2310,8 +2424,9 @@ export class PeerborneDocument<
   /**
    * Returns the current list of authorized writer public keys, populating
    * the document-scoped cache on miss. Callers must not mutate the result.
-   * The cache is invalidated by `_mergeWriters`, `_addWriter`, and
-   * `_removeWriter` -- the only sanctioned mutation paths for `_writers`.
+   * The cache is invalidated by `_mergeWriters` and
+   * `_publishPreparedWriterChange` -- the only sanctioned mutation paths for
+   * `_writers`.
    *
    * Race-safety has two layers:
    *  - Mutation-in-flight bypass: while `_writerMutationsInFlight > 0`,
@@ -2408,9 +2523,23 @@ export class PeerborneDocument<
     this._writerMutationsInFlight++;
     this._invalidateWriterKeyCache();
     try {
-      await retryACLConflict(() => {
+      await retryACLConflict(async () => {
+        if (this._writerPublicationsInFlight > 0) {
+          throw new Error(
+            `Cannot merge a remote writer ACL change for ${this.documentPath} ` +
+              'while a staged local writer publication is in flight. Retry the ' +
+              'sync through the document membership queue.',
+          );
+        }
         assertStillActive?.();
-        return this._writers.merge(changes);
+        try {
+          await this._writers.merge(changes);
+        } catch (error) {
+          if (!(error instanceof ACLOperationInProgressError)) {
+            this._markDocumentStatePoisoned();
+          }
+          throw error;
+        }
       });
       assertStillActive?.();
     } finally {
@@ -2419,18 +2548,112 @@ export class PeerborneDocument<
     }
   }
 
-  /** Add a writer and invalidate the cached key list. */
-  private async _addWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() =>
-      retryACLConflict(() => this._writers.add(publicKey)),
+  /** Stage a writer addition without changing live authorization. */
+  private async _prepareWriterAdd(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareAdd = this._writers.prepareAdd;
+    if (typeof prepareAdd !== 'function') {
+      throw new Error(
+        'Writer ACL does not support the staged additions required for safe publication',
+      );
+    }
+    return retryACLConflict(() =>
+      prepareAdd.call(this._writers, publicKey),
     );
   }
 
-  /** Remove a writer and invalidate the cached key list. */
-  private async _removeWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() =>
-      retryACLConflict(() => this._writers.remove(publicKey)),
+  /** Stage a writer removal without changing live authorization. */
+  private async _prepareWriterRemove(
+    publicKey: PublicKey,
+  ): Promise<PreparedACLChange<ChangesType>> {
+    const prepareRemove = this._writers.prepareRemove;
+    if (typeof prepareRemove !== 'function') {
+      throw new Error(
+        'Writer ACL does not support the staged removals required for safe publication',
+      );
+    }
+    return retryACLConflict(() =>
+      prepareRemove.call(this._writers, publicKey),
     );
+  }
+
+  /** Publish a staged writer change, then commit it before local handlers run. */
+  private async _publishPreparedWriterChange(
+    prepared: PreparedACLChange<ChangesType>,
+    operation: string,
+  ): Promise<void> {
+    this._writerPublicationsInFlight++;
+    try {
+      await this._runWriterMutation(() =>
+        this._makeChange(prepared.changes, crdtWriterChangeNode, {
+          operation,
+          commit: () => {
+            prepared.commit();
+            // Commit is synchronous, so this version bump is the first
+            // observable step after live writer membership changes. Any
+            // users() read started against the pre-commit ACL must retry
+            // instead of returning that stale snapshot during handlers.
+            this._invalidateWriterKeyCache();
+          },
+        }),
+      );
+    } finally {
+      this._writerPublicationsInFlight--;
+    }
+  }
+
+  /** Reconstruct a detached identity from its canonical encoding. */
+  private async _snapshotMembershipPublicKey(
+    publicKey: PublicKey,
+    featureName: string,
+  ): Promise<{ publicKey: PublicKey; serialized: string }> {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      featureName,
+    );
+    const serialized = await serializePublicKey(publicKey);
+    if (typeof serialized !== 'string' || serialized.length === 0) {
+      throw new TypeError(
+        `${featureName} requires a non-empty canonical public-key encoding`,
+      );
+    }
+    const mutableIdentity =
+      (typeof publicKey === 'object' && publicKey !== null) ||
+      typeof publicKey === 'function';
+    const deserializePublicKey = this._authProvider.deserializePublicKey;
+    if (typeof deserializePublicKey !== 'function') {
+      if (mutableIdentity) {
+        requireDeserializePublicKey(this._authProvider, featureName);
+      }
+      return { publicKey, serialized };
+    }
+    const stablePublicKey = await deserializePublicKey.call(
+      this._authProvider,
+      serialized,
+    );
+    if (mutableIdentity && stablePublicKey === publicKey) {
+      throw new Error(
+        `${featureName} requires AuthProvider.deserializePublicKey to ` +
+          'return a detached identity',
+      );
+    }
+    if ((await serializePublicKey(stablePublicKey)) !== serialized) {
+      throw new Error(
+        `${featureName} rejected a non-canonical public-key round trip`,
+      );
+    }
+    return { publicKey: stablePublicKey, serialized };
+  }
+
+  /** Start caller-input capture before waiting for the mutation queue. */
+  private _startMembershipPublicKeySnapshot(
+    publicKey: PublicKey,
+    featureName: string,
+  ): Promise<{ publicKey: PublicKey; serialized: string }> {
+    const snapshot = this._snapshotMembershipPublicKey(publicKey, featureName);
+    void snapshot.catch(() => undefined);
+    return snapshot;
   }
 
   private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
@@ -2573,90 +2796,162 @@ export class PeerborneDocument<
   private async _makeChange(
     changes: ChangesType,
     kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
+    postPublishCommit?: PostPublishCommit,
   ) {
-    // Store changes in blockstore.
-    const hash = await this._putBlock(changes);
-    this._hashes.add(hash);
+    // A staged ACL change does not mutate live authorization until publication
+    // resolves. Every caller supplying `postPublishCommit` owns the shared
+    // membership queue, so supported remote sync cannot interleave with these
+    // snapshots. A rejected publication restores exactly this call's DAG
+    // bookkeeping and cannot be attached as an ancestor or cross-link by a
+    // later message. A commit exception also rolls back the DAG, but a generic
+    // ACL may already have changed its backing state; that path poisons the
+    // document instance rather than assuming the staged mutation was atomic.
+    // The encrypted block itself may remain orphaned in the content-addressed
+    // blockstore, but no in-memory DAG root points to it.
+    // GossipSub does not expose an acknowledgement that distinguishes
+    // "rejected before send" from "accepted by the transport, then rejected
+    // locally." In that narrow delivery-ambiguous case a remote peer may have
+    // applied a delta that this sender rolls back; a later sync/load must
+    // reconcile it. This boundary prevents deterministic local reattachment,
+    // not a distributed publish transaction.
+    const lastSyncMessageBefore = this._lastSyncMessage;
+    const recentTipsBefore = postPublishCommit
+      ? [...this._recentTips]
+      : undefined;
+    const newlyReferencedAncestors: string[] = [];
+    let hash = '';
+    let hashWasKnown = false;
+    let commitResolved = false;
+    try {
+      // Store changes in blockstore.
+      hash = await this._putBlock(changes);
+      hashWasKnown = this._hashes.has(hash);
+      this._hashes.add(hash);
 
-    // Send new message.
-    let updateMessage = this._createSyncMessage();
-    const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
-    const primaryParentId = updateMessage.changeId;
-    if (primaryParentId && updateMessage.changes) {
-      // Primary back-pointer: include the previous head's subtree inline so
-      // peers can apply our change without an extra round-trip for the parent.
-      changeNode.children = {};
-      changeNode.children[primaryParentId] = updateMessage.changes;
+      // Send new message.
+      const updateMessage = this._createSyncMessage();
+      const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
+      const primaryParentId = updateMessage.changeId;
+      if (primaryParentId && updateMessage.changes) {
+        // Primary back-pointer: include the previous head's subtree inline so
+        // peers can apply our change without an extra round-trip for the parent.
+        changeNode.children = {};
+        changeNode.children[primaryParentId] = updateMessage.changes;
 
-      // Cross-links (Merkle CRDT paper §VI.B.e): additionally reference other
-      // recent tips so a peer who missed an intermediate message can still
-      // discover the missing CID via a later message. Cross-link entries
-      // are emitted as *deferred* nodes (no `change` payload, no `children`)
-      // -- they carry only the CID + kind. Receivers that don't already have
-      // the block trigger a blockstore fetch in `_syncDocumentChanges`.
-      // Receivers that already have the block treat the entry as a no-op
-      // (deduplicated via `_hashes`).
-      const crossLinkTips = selectCrossLinks(
-        this._recentTips,
-        primaryParentId,
-        hash,
-        MAX_CROSS_LINKS,
+        // Cross-links (Merkle CRDT paper §VI.B.e): additionally reference other
+        // recent tips so a peer who missed an intermediate message can still
+        // discover the missing CID via a later message. Cross-link entries
+        // are emitted as *deferred* nodes (no `change` payload, no `children`)
+        // -- they carry only the CID + kind. Receivers that don't already have
+        // the block trigger a blockstore fetch in `_syncDocumentChanges`.
+        // Receivers that already have the block treat the entry as a no-op
+        // (deduplicated via `_hashes`).
+        const crossLinkTips = selectCrossLinks(
+          this._recentTips,
+          primaryParentId,
+          hash,
+          MAX_CROSS_LINKS,
+        );
+        for (const tip of crossLinkTips) {
+          // Skip if the tip is already a direct child of the new change node.
+          if (changeNode.children[tip.cid]) continue;
+          // Deferred leaf: no `change` payload, no `children`. Receivers fetch
+          // the block from Helia if they don't already have it.
+          changeNode.children[tip.cid] = { kind: tip.kind };
+        }
+      }
+      updateMessage.changeId = hash;
+      updateMessage.changes = changeNode;
+
+      // Record every CID this new change references as a parent / cross-link
+      // target. The primary parent and all cross-link tips become *referenced
+      // ancestors* and drop out of `_currentFrontier()`. Walks just the new
+      // `changeNode` (not the full inherited subtree below it) because the
+      // inherited subtree's ancestor relationships were already recorded
+      // when each of those nodes was created or applied.
+      if (changeNode.children) {
+        for (const childCid of Object.keys(changeNode.children)) {
+          if (!this._referencedAncestors.has(childCid)) {
+            newlyReferencedAncestors.push(childCid);
+          }
+          this._referencedAncestors.add(childCid);
+        }
+      }
+
+      // Track this new tip for future cross-linking. The primary parent is
+      // also retained -- it's the immediate predecessor of *this* tip and may
+      // still be useful as a cross-link target for the *next* change if a
+      // later remote sync arrives in between.
+      this._trackTip(hash, kind);
+
+      // Sign new message.
+      updateMessage.signature = await this._signAsWriter(updateMessage);
+
+      if (!postPublishCommit) {
+        this._lastSyncMessage = updateMessage;
+      }
+      const serializedUpdate =
+        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
+
+      // Encrypt sync message.
+      const [documentKeyID, documentKey] = await this._keychain.current();
+      if (!documentKey) {
+        throw new Error(`Document ${this.documentPath} has an empty keychain!`);
+      }
+      const { nonce, data } = await this._authProvider.encrypt(
+        serializedUpdate,
+        documentKey,
       );
-      for (const tip of crossLinkTips) {
-        // Skip if the tip is already a direct child of the new change node.
-        if (changeNode.children[tip.cid]) continue;
-        // Deferred leaf: no `change` payload, no `children`. Receivers fetch
-        // the block from Helia if they don't already have it.
-        changeNode.children[tip.cid] = { kind: tip.kind };
+      if (!nonce) {
+        throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
-    }
-    updateMessage.changeId = hash;
-    updateMessage.changes = changeNode;
-
-    // Record every CID this new change references as a parent / cross-link
-    // target. The primary parent and all cross-link tips become *referenced
-    // ancestors* and drop out of `_currentFrontier()`. Walks just the new
-    // `changeNode` (not the full inherited subtree below it) because the
-    // inherited subtree's ancestor relationships were already recorded
-    // when each of those nodes was created or applied.
-    if (changeNode.children) {
-      for (const childCid of Object.keys(changeNode.children)) {
-        this._referencedAncestors.add(childCid);
+      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+        this._topic,
+        concatUint8Arrays(documentKeyID, nonce, data),
+      );
+      // This is the sole live-authorization commit point for staged writer
+      // changes: publication has resolved, but no local observer has run yet.
+      if (postPublishCommit) {
+        try {
+          postPublishCommit.commit();
+        } catch (error) {
+          // Custom ACL providers may mutate partially before throwing. The DAG
+          // rollback below cannot prove their backing authorization reverted,
+          // so every commit exception makes this instance unusable.
+          this._markDocumentStatePoisoned();
+          throw error;
+        }
       }
+      if (postPublishCommit) {
+        this._lastSyncMessage = updateMessage;
+      }
+      commitResolved = true;
+    } catch (error) {
+      if (postPublishCommit && !commitResolved) {
+        if (hash && !hashWasKnown) {
+          this._hashes.delete(hash);
+        }
+        for (const childCid of newlyReferencedAncestors) {
+          this._referencedAncestors.delete(childCid);
+        }
+        this._recentTips = recentTipsBefore!;
+        this._lastSyncMessage = lastSyncMessageBefore;
+      }
+      throw error;
     }
 
-    // Track this new tip for future cross-linking. The primary parent is
-    // also retained -- it's the immediate predecessor of *this* tip and may
-    // still be useful as a cross-link target for the *next* change if a
-    // later remote sync arrives in between.
-    this._trackTip(hash, kind);
-
-    // Sign new message.
-    updateMessage.signature = await this._signAsWriter(updateMessage);
-
-    this._lastSyncMessage = updateMessage;
-    const serializedUpdate =
-      this._syncMessageSerializer.serializeSyncMessage(updateMessage);
-
-    // Encrypt sync message.
-    const [documentKeyID, documentKey] = await this._keychain.current();
-    if (!documentKey) {
-      throw new Error(`Document ${this.documentPath} has an empty keychain!`);
+    // Fire change handlers. Once the staged commit above succeeds, handler
+    // failures are observer failures rather than retryable ACL publication
+    // failures. Report them, but preserve the successful membership result.
+    try {
+      await this._fireLocalUpdateHandlers(
+        [hash],
+        postPublishCommit?.operation,
+      );
+    } catch (error) {
+      if (!postPublishCommit) throw error;
+      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
     }
-    const { nonce, data } = await this._authProvider.encrypt(
-      serializedUpdate,
-      documentKey,
-    );
-    if (!nonce) {
-      throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
-    }
-    await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-      this._topic,
-      concatUint8Arrays(documentKeyID, nonce, data),
-    );
-
-    // Fire change handlers.
-    await this._fireLocalUpdateHandlers([hash]);
 
     // Track document changes for compaction.
     if (kind === crdtDocumentChangeNode) {
@@ -3461,7 +3756,7 @@ export class PeerborneDocument<
           this._isActiveInvitationBootstrapContinuation(
             bootstrapContinuation,
           )
-        : this._bootstrapLoadApplicationState !== 'pending' &&
+        : !this._isStateApplicationBlocked() &&
           this._activeInvitationBootstrapContinuation === undefined;
     const responseLimit = assertPositiveSafeByteLimit(
       maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
@@ -5406,8 +5701,9 @@ export class PeerborneDocument<
             );
           }
           this._createdLocally = true;
-          // Add current user as a writer.
-          const founderWriterChanges = await this._addWriter(
+          // Stage the current user as the founder writer. Live authorization is
+          // installed only after the replicated ACL change is published.
+          const founderWriter = await this._prepareWriterAdd(
             this._userPublicKey,
           );
 
@@ -5419,7 +5715,10 @@ export class PeerborneDocument<
           // it only in the creator's in-memory ACL lets first-load peers decrypt
           // document state but leaves them unable to authenticate later writer
           // updates (or write as the same restored identity).
-          await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+          await this._publishPreparedWriterChange(
+            founderWriter,
+            'open founder writer',
+          );
         });
       }
     } catch (err) {
@@ -6207,67 +6506,149 @@ export class PeerborneDocument<
   }
 
   /**
-   * Add a new user as a valid writer. Users are identified by their public keys
+   * Grant write authorization to an existing explicit reader. Users are
+   * identified by their public keys. Call `addReader()` before promoting a new
+   * writer so a later `removeWriter()` can safely return them to read-only
+   * access without misrepresenting retained document-key access as revocation.
+   *
+   * The local ACL commits only after GossipSub publication resolves. A rejected
+   * publish rolls back local DAG bookkeeping, but transport rejection is
+   * delivery-ambiguous: a remote peer may already have received the delta.
+   * This is a local publication boundary, not a distributed transaction.
    *
    * @param writer User's public key
    */
   public async addWriter(writer: PublicKey) {
-    return this._runStateMutation(() => this._addWriterUnlocked(writer));
+    this._assertNoIncompleteBootstrapLoad();
+    if (typeof this._authProvider.serializePublicKey !== 'function') {
+      const stableIdentity =
+        (typeof writer !== 'object' || writer === null) &&
+        typeof writer !== 'function';
+      return this._runStateMutation(() =>
+        this._addWriterUnlocked(writer, undefined, stableIdentity),
+      );
+    }
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      writer,
+      'Writer addition',
+    );
+    return this._runStateMutation(async () => {
+      const { publicKey: stableWriter } = await snapshot;
+      return this._addWriterUnlocked(stableWriter, undefined, true);
+    });
   }
 
   private async _addWriterUnlocked(
-    writer: PublicKey,
+    stableWriter: PublicKey,
     beginMutation?: () => void,
+    stableIdentity = false,
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
     // Check that the writer is not already a writer.
     if (
-      (await retryACLConflict(() => this._writers.check(writer))) === true
+      (await retryACLConflict(() =>
+        this._writers.check(stableWriter),
+      )) === true
     ) {
       return;
     }
+    if (!stableIdentity) {
+      requireSerializePublicKey(this._authProvider, 'Writer addition');
+      throw new Error(
+        'Writer addition requires a public-key snapshot before it is queued',
+      );
+    }
+    if (
+      (await retryACLConflict(() =>
+        this._readers.check(stableWriter),
+      )) !== true
+    ) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the target must ` +
+          'already be explicitly authorized as a reader. Call addReader first.',
+      );
+    }
 
-    // Construct a new writer ACL change.
+    // Construct a detached writer ACL change. The invitation admission guard
+    // runs immediately before the first live/DAG mutation, not during staging.
+    const prepared = await this._prepareWriterAdd(stableWriter);
     beginMutation?.();
-    const changes = await this._addWriter(writer);
-
-    await this._makeChange(changes, crdtWriterChangeNode);
+    await this._publishPreparedWriterChange(prepared, 'addWriter');
   }
 
   /**
-   * Remove a user as a valid writer. Users are identified by their public keys
+   * Remove a user's explicit write authorization while preserving their
+   * explicit reader authorization. A writer-only legacy member is rejected:
+   * this operation does not rotate document keys, so silently removing its
+   * only ACL row would misrepresent retained read access as full revocation.
+   * To fully revoke an editor, first downgrade it here, then call
+   * `removeReader` so the reader-removal flow rotates the BeeKEM epoch.
+   *
+   * The local ACL commits only after GossipSub publication resolves. A rejected
+   * publish rolls back local DAG bookkeeping, but transport rejection is
+   * delivery-ambiguous: a remote peer may already have received the delta.
+   * This is a local publication boundary, not a distributed transaction.
    *
    * @param writer User's public key
    */
   public async removeWriter(writer: PublicKey) {
-    return this._runStateMutation(() => this._removeWriterUnlocked(writer));
+    this._assertNoIncompleteBootstrapLoad();
+    if (typeof this._authProvider.serializePublicKey !== 'function') {
+      const stableIdentity =
+        (typeof writer !== 'object' || writer === null) &&
+        typeof writer !== 'function';
+      return this._runStateMutation(() =>
+        this._removeWriterUnlocked(writer, stableIdentity),
+      );
+    }
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      writer,
+      'Writer removal',
+    );
+    return this._runStateMutation(async () => {
+      const { publicKey: stableWriter } = await snapshot;
+      return this._removeWriterUnlocked(stableWriter, true);
+    });
   }
 
-  private async _removeWriterUnlocked(writer: PublicKey): Promise<void> {
+  private async _removeWriterUnlocked(
+    stableWriter: PublicKey,
+    stableIdentity = false,
+  ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
-    // Check that the writer is already a writer.
+    // Preserve the historical idempotent no-op for absent targets without
+    // requiring identity codecs from legacy providers.
     if (
-      (await retryACLConflict(() => this._writers.check(writer))) !== true
+      (await retryACLConflict(() =>
+        this._writers.check(stableWriter),
+      )) !== true
     ) {
       return;
     }
 
-    // Construct a new writer ACL change.
-    const changes = await this._removeWriter(writer);
+    if (!stableIdentity) {
+      requireSerializePublicKey(this._authProvider, 'Writer removal');
+      throw new Error(
+        'Writer removal requires a public-key snapshot before it is queued',
+      );
+    }
+    if (
+      (await retryACLConflict(() =>
+        this._readers.check(stableWriter),
+      )) !== true
+    ) {
+      throw new Error(
+        `Cannot remove writer from "${this.documentPath}": the target must ` +
+          'remain explicitly authorized as a reader. Add or repair its ' +
+          'reader membership before downgrading it.',
+      );
+    }
 
-    await this._makeChange(changes, crdtWriterChangeNode);
-
-    // Save the current (soon-to-be-previous) key before rotation.
-    // This key is what peers currently have and can use to decrypt the update.
-    const previousKey = await this._keychain.current();
-
-    // Rotate the document key (required after removing any member with access).
-    const [keyID, key, keychainChanges] = await this._keychain.add();
-
-    // Distribute the new key to all remaining members, encrypted with the previous key.
-    await this._distributeKeyUpdate(keychainChanges, previousKey);
+    // Keep live authorization unchanged until the ACL delta is published.
+    const prepared = await this._prepareWriterRemove(stableWriter);
+    await this._publishPreparedWriterChange(prepared, 'removeWriter');
   }
 
   /**
@@ -6633,14 +7014,21 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
   ): Promise<InvitationBootstrapBundle> {
-    return this._runStateMutation(() =>
-      this._buildInvitationBootstrapUnlocked(
-        reader,
-        readerKemPublicKey,
+    this._assertNoIncompleteBootstrapLoad();
+    const stableReaderKemPublicKey = new Uint8Array(readerKemPublicKey);
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      reader,
+      'Public invitations',
+    );
+    return this._runStateMutation(async () => {
+      const { publicKey: stableReader } = await snapshot;
+      return this._buildInvitationBootstrapUnlocked(
+        stableReader,
+        stableReaderKemPublicKey,
         role,
         assertCanMutate,
-      ),
-    );
+      );
+    });
   }
 
   private async _initialInvitationMembershipState(
@@ -6710,7 +7098,8 @@ export class PeerborneDocument<
         }
         return welcome;
       },
-      addWriter: () => this._addWriterUnlocked(reader, beginMutation),
+      addWriter: () =>
+        this._addWriterUnlocked(reader, beginMutation, true),
       repairReaders: async () => {
         beginMutation();
         return this._makeChange(
@@ -8631,8 +9020,8 @@ export class PeerborneDocument<
    *
    * Best-effort fan-out: each failed dial is logged but does not
    * abort the broadcast. A surviving reader that misses the
-   * PathUpdate falls back to a fresh document load to recover key
-   * state, matching the legacy `_distributeKeyUpdate` posture.
+   * PathUpdate needs explicit recovery or re-invitation to regain current key
+   * state.
    */
   private async _distributeBeeKEMPathUpdate(
     pathUpdate: PathUpdate,
@@ -8861,129 +9250,6 @@ export class PeerborneDocument<
       console.log('Installed BeeKEM-derived epoch key via PathUpdate');
     } catch {
       console.error('Shared BeeKEM PathUpdate handling failed');
-    }
-  }
-
-  /**
-   * Distribute keychain changes to all connected peers via the
-   * legacy `documentKeyUpdateV2` protocol (encrypts the new key under
-   * the previous key).
-   *
-   * `removeReader` no longer uses this path: it rotates the document
-   * key via BeeKEM's ratchet tree and broadcasts a signed
-   * `PathUpdate` over `beekemPathUpdateV1` instead, which closes the
-   * revocation-latency gap where a removed-but-still-connected
-   * reader could decrypt the rotation message (#189 §5.4 item 5).
-   *
-   * `removeWriter` continues to use this method: writer revocation
-   * has different threat properties (the removed writer no longer
-   * has write capability, even if they retain read access through
-   * the old key until the next BeeKEM rotation), and the BeeKEM
-   * tree currently models reader membership only. A follow-up
-   * change will fold writer revocation into the BeeKEM path too.
-   *
-   * @param keychainChanges The keychain CRDT changes containing the new key.
-   * @param previousKey The previous document key to encrypt the update with.
-   *   Peers already have this key and can decrypt the message to learn about the new key.
-   *   This avoids the chicken-and-egg problem of encrypting with a key peers don't have yet.
-   */
-  private async _distributeKeyUpdate(
-    keychainChanges: ChangesType,
-    previousKey: [Uint8Array, DocumentKey],
-  ) {
-    const keyUpdateMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
-      documentId: this.documentPath,
-      keychainChanges,
-    };
-
-    // Sign the key update message.
-    keyUpdateMessage.signature = await this._signAsWriter(keyUpdateMessage);
-
-    const serialized =
-      this._syncMessageSerializer.serializeSyncMessage(keyUpdateMessage);
-
-    // Encrypt with the PREVIOUS key so that existing peers can decrypt the message.
-    // Peers don't have the new key yet -- that's what this message delivers to them.
-    const [previousKeyID, previousDocumentKey] = previousKey;
-    const { nonce, data } = await this._authProvider.encrypt(
-      serialized,
-      previousDocumentKey,
-    );
-    if (!nonce) {
-      throw new Error(`Failed to encrypt key update! Nonce cannot be empty`);
-    }
-
-    // Send to all connected peers via the V2 key-update protocol.
-    // V2 payload format: 4-byte big-endian path length + UTF-8 path + encrypted payload
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
-
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-        `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the V2 key-update protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    assertSharedProtocolRequestSize(
-      pathHeader.byteLength +
-        pathBytes.byteLength +
-        previousKeyID.byteLength +
-        nonce.byteLength +
-        data.byteLength,
-      'Document key-update shared protocol request',
-    );
-    const v2Payload = concatUint8Arrays(
-      pathHeader,
-      pathBytes,
-      previousKeyID,
-      nonce,
-      data,
-    );
-    assertSharedProtocolRequestSize(
-      v2Payload.byteLength,
-      'Document key-update shared protocol request',
-    );
-
-    // WARNING: If some peers fail to receive this update, they will be unable
-    // to decrypt future messages encrypted with the new key. They will need to
-    // perform a fresh document load to recover the keychain state.
-    const failedPeers: string[] = [];
-    for (const peer of peers) {
-      try {
-        // Wrap the v3 stream so we can keep using the legacy `pipe(..., sink)`
-        // pattern below; see snapshot-load above for the rationale.
-        const stream = wrapStream(await this.libp2p.dialProtocol(peer, [
-          documentKeyUpdateV2,
-        ], { runOnLimitedConnection: true }));
-        await pipe(
-          [v2Payload],
-          stream.sink,
-        );
-      } catch (err) {
-        const peerAddr = peer.toString();
-        failedPeers.push(peerAddr);
-        console.warn(
-          `Failed to send key update to peer:`,
-          peerAddr,
-          err,
-        );
-      }
-    }
-
-    if (failedPeers.length > 0) {
-      console.warn(
-        `Key update for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
-        'These peers may be unable to decrypt future messages until they reload the document.',
-      );
     }
   }
 

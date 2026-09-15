@@ -80,7 +80,7 @@ Each document has an access control list with two roles:
 // SEC1-uncompressed P-256 ECDH public key bytes, optional)
 await document.addReader(peerSigningPublicKey, readerKemPublicKeyBytes);
 
-// Grant write access
+// Promote an existing explicit reader to write access
 await document.addWriter(peerSigningPublicKey);
 ```
 
@@ -91,7 +91,7 @@ await document.setKemKeyPair(kemKeyPair);
 ```
 
 - **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold.
-- **Writers** sign ordinary sync messages that carry new changes. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
+- **Writers** sign ordinary sync messages that carry new changes. A new writer must already have an explicit reader row; call `addReader()` before `addWriter()`. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
 - **Ordinary document sync/load signing is configurable.** BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 ### Current-writer authorization only
