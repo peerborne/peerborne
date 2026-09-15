@@ -79,10 +79,14 @@ const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
 const arrayIsArray = Array.isArray;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const nativeObjectConstructor = Object;
+const nativeObjectPrototype = Object.prototype;
+const nativeFunctionPrototype = Function.prototype;
 const reflectApply = Reflect.apply;
 const reflectGet = Reflect.get;
 const emptyBackingArguments: never[] = [];
 const nativePromiseConstructor = Promise;
+const nativePromisePrototype = Promise.prototype;
 const promiseThen = Promise.prototype.then;
 const nativePromiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
   nativePromiseConstructor,
@@ -147,6 +151,16 @@ interface CapturedBackingFinalizer {
  * addition also quarantines its requested identity, while a previously granted
  * UCAN is preserved only when stable backing membership was proven before the
  * attempt.
+ *
+ * A backing commit claim consumed by this wrapper must be a plain record whose
+ * immediate prototype is `Object.prototype` or `null`. Class instances are
+ * rejected so a custom constructor or Promise species hook cannot disguise an
+ * asynchronous claim as a synchronous record.
+ * Backing `current()` remains an opaque generic value for compatibility. Its
+ * synchronous contract is mandatory: runtime checks detect ordinary native
+ * Promises and visible thenables, but JavaScript exposes no hook-free Promise
+ * brand predicate for an object with deliberately forged prototype and
+ * constructor state.
  *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
@@ -433,10 +447,28 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _invokeSynchronousBacking<T>(
     operation: () => T,
     operationName: string,
-    requirePlainClaimResult = false,
+    resultPolicy: 'opaque' | 'plain-claim' | 'void' = 'opaque',
   ): T {
     return this._invokeBacking(() => {
       const result = operation();
+      if (resultPolicy === 'void') {
+        if (result !== undefined) {
+          this._backingSyncContractViolated = true;
+          if (
+            (typeof result === 'object' && result !== null) ||
+            typeof result === 'function'
+          ) {
+            this._observeInvalidNativePromiseReturn(
+              result,
+              `${operationName} result`,
+            );
+          }
+          throw new TypeError(`${operationName} must complete synchronously`);
+        }
+        return result;
+      }
+
+      const requirePlainClaimResult = resultPolicy === 'plain-claim';
       let hasThenProperty = false;
       let then: unknown;
       let isNativePromise = false;
@@ -444,6 +476,29 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         (typeof result === 'object' && result !== null) ||
         typeof result === 'function'
       ) {
+        let plainClaimPrototype: object | null | undefined;
+        if (requirePlainClaimResult) {
+          try {
+            plainClaimPrototype = reflectApply(objectGetPrototypeOf, Object, [
+              result,
+            ]) as object | null;
+          } catch {
+            this._backingSyncContractViolated = true;
+            throw new TypeError(
+              `${operationName} returned an invalid claim record`,
+            );
+          }
+          if (
+            plainClaimPrototype !== null &&
+            plainClaimPrototype !== nativeObjectPrototype &&
+            plainClaimPrototype !== nativePromisePrototype
+          ) {
+            this._backingSyncContractViolated = true;
+            throw new TypeError(
+              `${operationName} returned an invalid asynchronous result: expected a plain claim record`,
+            );
+          }
+        }
         try {
           const thenProperty = this._backingDataProperty(
             result,
@@ -452,24 +507,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           );
           hasThenProperty = thenProperty.found;
           then = thenProperty.value;
-          if (requirePlainClaimResult) {
-            const observationIsSafe =
-              this._canSafelyObserveNativePromise(
-                result,
-                `${operationName} result`,
-              );
-            if (!hasThenProperty && !observationIsSafe) {
-              throw new TypeError(
-                `${operationName} returned an ambiguous asynchronous result`,
-              );
-            }
-            if (observationIsSafe) {
-              // The captured intrinsic checks the internal Promise brand
-              // without assimilating a custom thenable. Its handlers also
-              // prevent a rejected native Promise from becoming unobserved.
-              isNativePromise = observeNativePromiseSettlement(result);
-            }
-          }
         } catch {
           this._backingSyncContractViolated = true;
           this._observeInvalidNativePromiseReturn(
@@ -478,6 +515,53 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           );
           throw new TypeError(
             `${operationName} returned an invalid asynchronous result`,
+          );
+        }
+        let observationIsSafe = false;
+        try {
+          observationIsSafe = this._canSafelyObserveNativePromise(
+            result,
+            `${operationName} result`,
+          );
+        } catch {
+          if (requirePlainClaimResult) {
+            this._backingSyncContractViolated = true;
+            this._observeInvalidNativePromiseReturn(
+              result,
+              `${operationName} result`,
+            );
+            throw new TypeError(
+              `${operationName} returned an invalid asynchronous result`,
+            );
+          }
+        }
+        if (requirePlainClaimResult && !hasThenProperty && !observationIsSafe) {
+          this._backingSyncContractViolated = true;
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
+          throw new TypeError(
+            `${operationName} returned an invalid asynchronous result`,
+          );
+        }
+        if (observationIsSafe) {
+          // The captured intrinsic checks the internal Promise brand without
+          // assimilating a custom thenable. Attempt it for every object whose
+          // species path is known to be hook-free. Plain claim results fail
+          // closed when that proof is unavailable; opaque current-state reads
+          // retain arbitrary synchronous ChangesType compatibility and rely
+          // on the provider contract for deliberately ambiguous object shapes.
+          isNativePromise = observeNativePromiseSettlement(result);
+        }
+        if (
+          requirePlainClaimResult &&
+          !isNativePromise &&
+          plainClaimPrototype === nativePromisePrototype
+        ) {
+          this._backingSyncContractViolated = true;
+          throw new TypeError(
+            `${operationName} returned an invalid asynchronous result: expected a plain claim record`,
           );
         }
       }
@@ -886,17 +970,44 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       );
     }
 
-    const speciesProperty = this._backingDataProperty(
-      constructor,
-      Symbol.species,
-      `${field} Promise species`,
-    );
-    return (
-      !speciesProperty.found ||
-      speciesProperty.value === undefined ||
-      speciesProperty.value === null ||
-      speciesProperty.value === nativePromiseConstructor
-    );
+    // An arbitrary object or function can be a Proxy whose descriptor trap
+    // reports a harmless data property while its ordinary `get` trap throws or
+    // mutates state when Promise.prototype.then performs species lookup. Only
+    // trust the captured intrinsic Object constructor and its pristine
+    // prototype chain. Plain claim records use exactly this path; custom class
+    // instances are rejected by the stricter claim-result policy.
+    if (constructor !== nativeObjectConstructor) return false;
+    if (
+      reflectApply(objectGetPrototypeOf, Object, [
+        nativeObjectConstructor,
+      ]) !== nativeFunctionPrototype ||
+      reflectApply(objectGetPrototypeOf, Object, [
+        nativeFunctionPrototype,
+      ]) !== nativeObjectPrototype ||
+      reflectApply(objectGetPrototypeOf, Object, [nativeObjectPrototype]) !==
+        null
+    ) {
+      return false;
+    }
+    for (const owner of [
+      nativeObjectConstructor,
+      nativeFunctionPrototype,
+      nativeObjectPrototype,
+    ]) {
+      const descriptor = reflectApply(
+        objectGetOwnPropertyDescriptor,
+        Object,
+        [owner, Symbol.species],
+      ) as PropertyDescriptor | undefined;
+      if (descriptor === undefined) continue;
+      if (!('value' in descriptor)) return false;
+      return (
+        descriptor.value === undefined ||
+        descriptor.value === null ||
+        descriptor.value === nativePromiseConstructor
+      );
+    }
+    return true;
   }
 
   /** Observe only a safely branded forbidden Promise return. */
@@ -991,7 +1102,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     this._assertBackingOperationAvailable('ACL backing commit');
     const finishBackingOperation = this._beginBackingOperation();
     try {
-      this._invokeSynchronousBacking(operation, 'Backing ACL commit');
+      this._invokeSynchronousBacking(
+        operation,
+        'Backing ACL commit',
+        'void',
+      );
     } catch (error) {
       this._backingStateUncertain = true;
       if (error instanceof ACLOperationInProgressError) {
@@ -1021,7 +1136,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         claim = this._invokeSynchronousBacking(
           operation,
           operationName,
-          true,
+          'plain-claim',
         );
       } catch (error) {
         const foreignConflict = this._isForeignOperationConflict(error);
@@ -1627,6 +1742,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       this._invokeSynchronousBacking(
         () => this._backing.merge(changes),
         'Backing ACL merge',
+        'void',
       );
     } catch (error) {
       this._backingStateUncertain = true;
