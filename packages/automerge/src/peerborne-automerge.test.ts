@@ -199,6 +199,7 @@ describe('AutomergeACL', () => {
   test('ordinary mutations are FIFO and reject a racing merge', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
+    const externalRemoval = await acl.prepareRemove(key1);
     const remote = new AutomergeACL();
     const remoteChanges = await remote.add(key2);
     const originalPrepareRemove = acl.prepareRemove.bind(acl);
@@ -225,12 +226,18 @@ describe('AutomergeACL', () => {
     expect(() => acl.merge(remoteChanges)).toThrow(
       'Cannot merge during a local ACL mutation',
     );
+    expect(() => externalRemoval.commit()).toThrow(
+      'Prepared ACL removal cannot commit during a local ACL mutation',
+    );
 
     releasePreparation();
     await expect(removal).resolves.toBeDefined();
     await expect(addition).resolves.toBeDefined();
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
+    expect(() => externalRemoval.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
   });
 
   test('prepareRemove() stages detached changes without changing live membership', async () => {

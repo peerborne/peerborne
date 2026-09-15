@@ -135,6 +135,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
+  private readonly _queuedRemovalCommits = new WeakSet<
+    PreparedACLRemoval<BinaryChange[]>
+  >();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -153,6 +156,17 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         release();
       }
     })();
+  }
+
+  private _commitQueuedRemoval(
+    prepared: PreparedACLRemoval<BinaryChange[]>,
+  ): void {
+    this._queuedRemovalCommits.add(prepared);
+    try {
+      prepared.commit();
+    } finally {
+      this._queuedRemovalCommits.delete(prepared);
+    }
   }
 
   private _assertComplete(operation: string): void {
@@ -184,7 +198,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
       const prepared = await this.prepareRemove(publicKey);
-      prepared.commit();
+      this._commitQueuedRemoval(prepared);
       return prepared.changes;
     });
   }
@@ -207,11 +221,19 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
     );
     let committed = false;
-    return {
+    const prepared: PreparedACLRemoval<BinaryChange[]> = {
       changes,
       commit: () => {
         if (committed) {
           throw new Error('Prepared ACL removal was already committed');
+        }
+        if (
+          this._pendingMutations !== 0 &&
+          !this._queuedRemovalCommits.has(prepared)
+        ) {
+          throw new Error(
+            'Prepared ACL removal cannot commit during a local ACL mutation',
+          );
         }
         if (this._revision !== baseRevision || this._acl !== base) {
           throw new Error('ACL changed while removal was staged');
@@ -222,6 +244,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         this._revision++;
       },
     };
+    return prepared;
   }
   current(): BinaryChange[] {
     this._assertComplete('read the current ACL history');
