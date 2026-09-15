@@ -120,27 +120,14 @@ const WELCOME_SUPERSEDED_MESSAGE =
 async function assertMatchingPathKeyPair(
   publicKey: CryptoKey,
   privateKey: CryptoKey,
-  probe: CryptoKeyPair,
   nodeIndex: number,
 ): Promise<void> {
-  let privateAgreement: Uint8Array;
-  let publicAgreement: Uint8Array;
+  let publicJwk: JsonWebKey;
+  let privateJwk: JsonWebKey;
   try {
-    [privateAgreement, publicAgreement] = await Promise.all([
-      crypto.subtle
-        .deriveBits(
-          { name: 'ECDH', public: probe.publicKey },
-          privateKey,
-          256,
-        )
-        .then((bits) => new Uint8Array(bits)),
-      crypto.subtle
-        .deriveBits(
-          { name: 'ECDH', public: publicKey },
-          probe.privateKey,
-          256,
-        )
-        .then((bits) => new Uint8Array(bits)),
+    [publicJwk, privateJwk] = await Promise.all([
+      crypto.subtle.exportKey('jwk', publicKey),
+      crypto.subtle.exportKey('jwk', privateKey),
     ]);
   } catch (error) {
     throw new Error(
@@ -148,10 +135,16 @@ async function assertMatchingPathKeyPair(
       { cause: error },
     );
   }
-  const coherent = constantTimeEqual(privateAgreement, publicAgreement);
-  privateAgreement.fill(0);
-  publicAgreement.fill(0);
-  if (!coherent) {
+  if (
+    publicJwk.kty !== 'EC' ||
+    privateJwk.kty !== 'EC' ||
+    publicJwk.crv !== ECDH_CURVE ||
+    privateJwk.crv !== ECDH_CURVE ||
+    typeof publicJwk.x !== 'string' ||
+    typeof publicJwk.y !== 'string' ||
+    publicJwk.x !== privateJwk.x ||
+    publicJwk.y !== privateJwk.y
+  ) {
     throw new Error(
       `Invalid PathUpdate: decrypted private key does not match the public key at node ${nodeIndex}`,
     );
@@ -326,9 +319,29 @@ export class BeeKEM {
   private _welcomeAttemptRevision = 0n;
   private _pendingWelcomeAttempts = new Set<bigint>();
   private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
 
-  /** @internal Create a detached copy for validating before commit. */
-  clone(): BeeKEM {
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    })();
+  }
+
+  private _cloneState(): BeeKEM {
     const copy = new BeeKEM();
     copy._nodes = new Map(this._nodes);
     copy._numLeaves = this._numLeaves;
@@ -336,11 +349,26 @@ export class BeeKEM {
     return copy;
   }
 
+  /** @internal Create a detached copy for validating before commit. */
+  clone(): BeeKEM {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot clone BeeKEM during an active mutation');
+    }
+    return this._cloneState();
+  }
+
   /**
    * Initialize as the first member of a new group.
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
+    return this._runMutation(() => this._initialize(privateKey, publicKey));
+  }
+
+  private async _initialize(
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+  ): Promise<void> {
     this._receiverGeneration++;
     this._nodes.clear();
     this._numLeaves = 1;
@@ -367,6 +395,14 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertInitializedForMutation('add a member');
+    return this._runMutation(() => this._addMember(memberPublicKey));
+  }
+
+  private async _addMember(memberPublicKey: CryptoKey): Promise<{
+    pathUpdate: PathUpdate;
+    welcome: BeeKEMWelcome;
+    rootSecret: Uint8Array;
+  }> {
     if (
       !Number.isSafeInteger(this._numLeaves) ||
       this._numLeaves < 1 ||
@@ -432,6 +468,13 @@ export class BeeKEM {
     ) {
       throw new Error('Cannot remove member: invalid leaf index');
     }
+    return this._runMutation(() => this._removeMember(memberLeafIndex));
+  }
+
+  private async _removeMember(memberLeafIndex: number): Promise<{
+    pathUpdate: PathUpdate;
+    rootSecret: Uint8Array;
+  }> {
     // Blank the removed member's leaf
     const blankedLeaf: LeafNode = {
       type: 'leaf',
@@ -476,6 +519,13 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertInitializedForMutation('update');
+    return this._runMutation(() => this._update());
+  }
+
+  private async _update(): Promise<{
+    pathUpdate: PathUpdate;
+    rootSecret: Uint8Array;
+  }> {
     // Generate new ECDH key pair for our leaf
     const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
       'deriveBits',
@@ -499,22 +549,18 @@ export class BeeKEM {
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
     this._assertInitializedForMutation('process a PathUpdate');
-    if (
-      !Number.isSafeInteger(this._numLeaves) ||
-      this._numLeaves < 1 ||
-      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
-    ) {
-      throw new Error('Cannot process path update: BeeKEM tree state is invalid');
+    if (this._pendingMutations !== 0) {
+      throw new Error(
+        'Cannot process path update during another BeeKEM mutation',
+      );
     }
-    const treeWidth = 2 * this._numLeaves - 1;
-    if (
-      !Number.isSafeInteger(this._myLeafIndex) ||
-      this._myLeafIndex < 0 ||
-      this._myLeafIndex >= treeWidth ||
-      !TreeMath.isLeaf(this._myLeafIndex)
-    ) {
-      throw new Error('Cannot process path update: local leaf is invalid');
-    }
+    this._assertPathUpdateState();
+    const detachedUpdate = snapshotPathUpdateForTree(update, this._numLeaves);
+    return this._runMutation(() => this._processPathUpdate(detachedUpdate));
+  }
+
+  private async _processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
+    this._assertPathUpdateState();
     const detachedUpdate = snapshotPathUpdateForTree(
       update,
       this._numLeaves,
@@ -545,12 +591,7 @@ export class BeeKEM {
       );
     }
 
-    const staged = this.clone();
-    const keyPairProbe = (await crypto.subtle.generateKey(
-      ECDH_ALGO,
-      false,
-      ['deriveBits'],
-    )) as CryptoKeyPair;
+    const staged = this._cloneState();
     // Update the sender's leaf with their new public key
     const senderLeafPublicKey = await crypto.subtle.importKey(
       'raw',
@@ -625,7 +666,6 @@ export class BeeKEM {
     await assertMatchingPathKeyPair(
       intersectionPublicKey,
       decryptedPrivateKey,
-      keyPairProbe,
       intersectionNode.nodeIndex,
     );
 
@@ -637,49 +677,6 @@ export class BeeKEM {
       privateKey: decryptedPrivateKey,
     };
     staged._nodes.set(intersectionNode.nodeIndex, intNode);
-
-    // Update all remaining nodes above the intersection (toward root)
-    // with their public keys, and derive private keys where possible
-    for (let i = intersectionIdx + 1; i < detachedUpdate.nodes.length; i++) {
-      const pathNode = detachedUpdate.nodes[i];
-      const publicKey = await crypto.subtle.importKey(
-        'raw',
-        toBuffer(pathNode.publicKey),
-        ECDH_ALGO,
-        true,
-        [],
-      );
-
-      // If this node is on our direct path, we can derive its private key
-      // from the child on our side
-      const childOnOurSide = staged._findChildOnOurSide(pathNode.nodeIndex);
-      const childNode = childOnOurSide !== undefined
-        ? staged._nodes.get(childOnOurSide)
-        : undefined;
-      let privateKey: CryptoKey | undefined;
-
-      if (childNode?.privateKey) {
-        // Decrypt this node's private key
-        privateKey = await staged._decryptNodeKey(
-          pathNode.encryptedPrivateKey,
-          childNode.privateKey,
-        );
-        await assertMatchingPathKeyPair(
-          publicKey,
-          privateKey,
-          keyPairProbe,
-          pathNode.nodeIndex,
-        );
-      }
-
-      const node: InternalNode = {
-        type: 'internal',
-        index: pathNode.nodeIndex,
-        publicKey,
-        privateKey,
-      };
-      staged._nodes.set(pathNode.nodeIndex, node);
-    }
 
     // Also update nodes below the intersection from the sender's side
     for (let i = 0; i < intersectionIdx; i++) {
@@ -704,6 +701,25 @@ export class BeeKEM {
     return rootSecret;
   }
 
+  private _assertPathUpdateState(): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
+    ) {
+      throw new Error('Cannot process path update: BeeKEM tree state is invalid');
+    }
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(this._myLeafIndex)
+    ) {
+      throw new Error('Cannot process path update: local leaf is invalid');
+    }
+  }
+
   /**
    * Process a welcome message to join an existing group.
    * Requires a fresh BeeKEM instance; replacement and re-invitation must use a
@@ -717,7 +733,6 @@ export class BeeKEM {
     if (!this._isFreshWelcomeTarget()) {
       throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
     }
-
     // Reserve this attempt before inspecting caller-controlled input. A Proxy
     // descriptor trap can invoke processWelcome reentrantly; in that case the
     // nested, later invocation must retain the higher revision and win.
@@ -992,6 +1007,9 @@ export class BeeKEM {
    * that can never contribute to key derivation.
    */
   compact(): void {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot compact BeeKEM during an active mutation');
+    }
     // Find blanked leaf indices
     const blankedLeaves: number[] = [];
     for (let i = 0; i < this._numLeaves; i++) {
