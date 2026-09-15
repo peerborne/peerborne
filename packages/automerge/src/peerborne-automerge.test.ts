@@ -45,6 +45,7 @@ import {
   MAX_MERKLE_DAG_DEPTH,
   BeeKEM,
   SubtleCrypto,
+  UCANACL,
   eciesSeal,
   encodeWelcomeSealedPayload,
   type CRDTChangeNode,
@@ -413,6 +414,35 @@ describe('AutomergeACL', () => {
 
     expect(() => removal.commit()).not.toThrow();
     expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('UCAN-wrapped Automerge claim commits backing membership and local authorization together', async () => {
+    const backing = new AutomergeACL();
+    const acl = new UCANACL(
+      backing,
+      serializeKey,
+      deserializeKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        ['verify'],
+      ),
+    );
+    await acl.add(key1);
+    await acl.remove(key1);
+    const prepared = await acl.prepareAdd(key1);
+
+    const claim = prepared.claimCommit!();
+
+    expect(await backing.check(key1)).toBe(false);
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.users()).toEqual([]);
+
+    claim.finalize();
+
+    expect(await backing.check(key1)).toBe(true);
+    expect(await acl.check(key1)).toBe(true);
+    expect(
+      await Promise.all((await acl.users()).map(serializeKey)),
+    ).toEqual([await serializeKey(key1)]);
   });
 
   test('prepareAdd() releases actors after post-reservation validation failures', async () => {
@@ -2462,6 +2492,26 @@ describe('AutomergeKeychain', () => {
     expect(currentId).toEqual(expectedEpochId);
     expect(currentKey).toBe(key);
     expect(keychain.getKey(expectedEpochId)).toBe(key);
+  });
+
+  test('legacy keychain commit uses its captured claim method', async () => {
+    const keychain = new AutomergeKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+    Object.defineProperty(prepared, 'claimCommit', {
+      get: () => {
+        throw new Error('replaceable keychain claim was read');
+      },
+    });
+
+    expect(() => prepared.commit()).not.toThrow();
+    expect(keychain.getKey(epochId)).toBe(key);
+    expect((await keychain.current())[0]).toEqual(epochId);
   });
 
   test('prepareEpochKey() claim keeps history and cache hidden until constant-time finalize', async () => {

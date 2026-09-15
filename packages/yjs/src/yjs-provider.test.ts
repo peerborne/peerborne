@@ -379,6 +379,27 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('UCAN claim composes a real Yjs addition with wrapper metadata at finalize', async () => {
+    const backing = new YjsACL();
+    const acl = new UCANACL(
+      backing,
+      serializeKey,
+      deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, ['verify']),
+    );
+    await acl.remove(key1);
+    const prepared = await acl.prepareAdd(key1);
+
+    const claim = prepared.claimCommit!();
+
+    expect(await backing.check(key1)).toBe(false);
+    expect(await acl.check(key1)).toBe(false);
+
+    claim.finalize();
+
+    expect(await backing.check(key1)).toBe(true);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
   test('an abandoned addition claim retains its identifiers and permits fresh staging', async () => {
     const acl = new YjsACL();
     const internals = acl as unknown as {
@@ -2247,6 +2268,29 @@ describe('YjsKeychain', () => {
       set.mockRestore();
     }
 
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('legacy epoch commit ignores an accessor replacing the returned claim method', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+    const replacement = jest.fn(() => {
+      throw new Error('replaceable epoch claim was invoked');
+    });
+    Object.defineProperty(prepared, 'claimCommit', {
+      get: replacement,
+    });
+
+    expect(() => prepared.commit()).not.toThrow();
+
+    expect(replacement).not.toHaveBeenCalled();
     expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
     expect(keychain.getKey(epochId)).toBe(key);
   });
