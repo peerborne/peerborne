@@ -40,7 +40,10 @@ export interface InternalNode {
 }
 
 /**
- * Path update message: encrypted key pairs along a path from leaf to root.
+ * Legacy v1 path update: encrypted key pairs along a path from leaf to root.
+ * This shape has no generation or parent-tree binding, so a valid signed value
+ * remains replayable and can be applied out of order. `PathUpdateV2` reserves
+ * the state-bound replacement; its codec is not the v1 runtime protocol.
  */
 export interface PathUpdate {
   /** Index of the leaf that initiated the update. */
@@ -139,8 +142,8 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
 }
 
 /**
- * Tree-size ceiling for the legacy Welcome runtime boundary, v2 codecs, and
- * hardened PathUpdate admission.
+ * Tree-size ceiling for the legacy Welcome and PathUpdate wire/runtime
+ * boundaries and the v2 codecs.
  *
  * Legacy PathUpdate v1 also rejects a non-root first intersection because its
  * single ciphertext per level cannot safely distribute the remaining ancestor
