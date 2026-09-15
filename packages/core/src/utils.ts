@@ -42,6 +42,7 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
 const uint8ArraySet = Uint8Array.prototype.set;
 const arrayIsArray = Array.isArray;
 const objectDefineProperty = Object.defineProperty;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
@@ -463,6 +464,38 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
 
+    let isArray: boolean;
+    try {
+      isArray = reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean;
+    } catch {
+      throw new TypeError(`${field} contains an unstable object`);
+    }
+
+    let preflightArrayLength: number | undefined;
+    if (isArray) {
+      let lengthDescriptor: PropertyDescriptor | undefined;
+      try {
+        lengthDescriptor = reflectApply(
+          objectGetOwnPropertyDescriptor,
+          Object,
+          [objectCandidate, 'length'],
+        ) as PropertyDescriptor | undefined;
+      } catch {
+        throw new TypeError(`${field} contains an unstable object`);
+      }
+      if (
+        lengthDescriptor === undefined ||
+        !('value' in lengthDescriptor) ||
+        !Number.isSafeInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0 ||
+        lengthDescriptor.value > limits.maxArrayLength
+      ) {
+        throw new TypeError(`${field} contains an invalid array`);
+      }
+      preflightArrayLength = lengthDescriptor.value as number;
+      accountProperties(preflightArrayLength);
+    }
+
     let prototype: object | null;
     let descriptors: PropertyDescriptorMap;
     try {
@@ -476,23 +509,22 @@ export function snapshotDeepEnumerableData<T>(
       throw new TypeError(`${field} contains an unstable object`);
     }
 
-    if (reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean) {
+    if (isArray) {
       const lengthDescriptor = descriptors.length;
       if (
         lengthDescriptor === undefined ||
         !('value' in lengthDescriptor) ||
         !Number.isSafeInteger(lengthDescriptor.value) ||
         lengthDescriptor.value < 0 ||
-        lengthDescriptor.value > limits.maxArrayLength
+        lengthDescriptor.value !== preflightArrayLength
       ) {
         throw new TypeError(`${field} contains an invalid array`);
       }
-      const length = lengthDescriptor.value as number;
+      const length = preflightArrayLength!;
       const keys = reflectOwnKeys(descriptors);
       if (keys.length !== length + 1) {
         throw new TypeError(`${field} arrays must be dense data arrays`);
       }
-      accountProperties(length);
       const copy = new Array<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
