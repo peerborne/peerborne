@@ -21,6 +21,7 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
