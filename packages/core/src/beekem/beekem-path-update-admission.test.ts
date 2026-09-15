@@ -349,6 +349,72 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     }
   });
 
+  test('releases a queued update after an in-flight Welcome fails', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+    const recipientKeys = await generateKeyPair();
+    const { welcome } = await founder.addMember(recipientKeys.publicKey);
+    const { pathUpdate } = await founder.update();
+    welcome.treeHash[0] ^= 0xff;
+    const target = new BeeKEM();
+
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let paused = false;
+    const digestSpy = jest
+      .spyOn(crypto.subtle, 'digest')
+      .mockImplementation(async (algorithm, data) => {
+        if (!paused) {
+          paused = true;
+          enter();
+          await gate;
+        }
+        return originalDigest(algorithm, data);
+      });
+
+    const joining = target.processWelcome(
+      welcome,
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+    let queuedUpdate: Promise<Uint8Array> | undefined;
+    try {
+      await entered;
+      queuedUpdate = target.processPathUpdate(pathUpdate);
+      const queuedOutcome = queuedUpdate.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      release();
+      await expect(joining).rejects.toThrow(/tree hash mismatch/);
+      await expect(queuedOutcome).resolves.toEqual(
+        expect.objectContaining({
+          message: expect.stringMatching(/tree state is invalid/),
+        }),
+      );
+      await expect(
+        target.initialize(
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      release();
+      await Promise.allSettled(
+        queuedUpdate === undefined ? [joining] : [joining, queuedUpdate],
+      );
+      digestSpy.mockRestore();
+    }
+  });
+
   test('rejects a protocol-valid multi-level v1 update without mutation', async () => {
     let sender = new BeeKEM();
     let senderKeys = await generateKeyPair();
