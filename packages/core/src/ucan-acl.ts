@@ -3,7 +3,11 @@ import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
 import { LRUCache } from './lru-cache.js';
-import { snapshotDeepEnumerableData } from './utils.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
+import {
+  copyUnsharedUint8Array,
+  snapshotDeepEnumerableData,
+} from './utils.js';
 
 /**
  * An entry in the UCAN-based ACL.
@@ -34,12 +38,23 @@ function copyUCAN(ucan: UCAN): UCAN {
   };
 }
 
+function copyOptionalEpochId(epochId: unknown): Uint8Array | undefined {
+  return epochId === undefined
+    ? undefined
+    : copyUnsharedUint8Array(
+        epochId,
+        EPOCH_ID_LENGTH,
+        EPOCH_ID_LENGTH,
+        'UCAN ACL epoch ID',
+      );
+}
+
 function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
   return {
     ...entry,
     ucan: copyUCAN(entry.ucan),
     capabilities: [...entry.capabilities],
-    epochId: entry.epochId && new Uint8Array(entry.epochId),
+    epochId: copyOptionalEpochId(entry.epochId),
   };
 }
 
@@ -701,7 +716,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     epochId?: Uint8Array,
   ): Promise<ChangesType> {
     const stableProofs = [...proofs];
-    const stableEpochId = epochId && new Uint8Array(epochId);
+    const stableEpochId = copyOptionalEpochId(epochId);
     return this._startMembershipMutation(
       publicKey,
       'Capability grant',
