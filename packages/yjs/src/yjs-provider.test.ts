@@ -273,6 +273,29 @@ describe('YjsACL', () => {
     expect(await acl.check(keyPair.publicKey)).toBe(false);
   });
 
+  test('removal rejects a non-P-384 identity without changing state', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    await expect(acl.prepareRemove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+
+    await expect(acl.remove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
   test('add() adds user and check() returns true', async () => {
     const acl = new YjsACL();
     const changes = await acl.add(key1);
@@ -355,6 +378,29 @@ describe('YjsACL', () => {
     prepared.commit();
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('repeated staged removals preserve the Yjs actor clock', async () => {
+    const acl = new YjsACL();
+    const additions = [await acl.add(key1)];
+
+    for (let iteration = 0; iteration < 2; iteration++) {
+      const prepared = await acl.prepareRemove(key1);
+      prepared.commit();
+      additions.push(await acl.add(key1));
+    }
+
+    const identities = additions.map((update) => {
+      const decoded = decodeUpdateV2(update);
+      expect(decoded.structs).toHaveLength(1);
+      return decoded.structs[0]!.id;
+    });
+    expect(identities.map(({ client }) => client)).toEqual([
+      identities[0]!.client,
+      identities[0]!.client,
+      identities[0]!.client,
+    ]);
+    expect(identities.map(({ clock }) => clock)).toEqual([0, 1, 2]);
   });
 
   test('prepareRemove() commit is single-use', async () => {
