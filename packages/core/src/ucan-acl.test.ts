@@ -1497,6 +1497,31 @@ describe('UCANACL', () => {
     expect(backing.check).not.toHaveBeenCalled();
   });
 
+  test('poisons a prepared commit whose native Promise hides a non-callable then', async () => {
+    let rejected = false;
+    const hiddenPromise = Promise.resolve().then(() => {
+      rejected = true;
+      throw new Error('hidden prepared-commit rejection');
+    });
+    Object.defineProperty(hiddenPromise, 'then', { value: null });
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: () => hiddenPromise,
+    }));
+
+    const prepared = await acl.prepareAdd('user1');
+    expect(() => prepared.commit()).toThrow(
+      'Backing ACL commit must complete synchronously',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejected).toBe(true);
+    await expect(acl.check('user1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+  });
+
   test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
     await expect(acl.prepareAdd('key1')).rejects.toThrow(
       'Backing ACL does not support staged addition',
@@ -2748,6 +2773,27 @@ describe('UCANACL', () => {
     );
   });
 
+  test('poisons a backing current Promise with an own undefined then', async () => {
+    let rejected = false;
+    const hiddenPromise = Promise.resolve().then(() => {
+      rejected = true;
+      throw new Error('hidden current rejection');
+    });
+    Object.defineProperty(hiddenPromise, 'then', { value: undefined });
+    backing.current.mockReturnValue(hiddenPromise);
+
+    expect(() => acl.current()).toThrow(
+      'Backing ACL current-state read must complete synchronously',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejected).toBe(true);
+    await expect(acl.check('key1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+  });
+
   test('poisons an asynchronous backing merge contract violation', async () => {
     let asynchronousMerge!: Promise<unknown>;
     backing.merge.mockImplementation(() => {
@@ -2764,6 +2810,28 @@ describe('UCANACL', () => {
     await expect(asynchronousMerge).rejects.toThrow(
       /backing ACL violated a synchronous operation contract/,
     );
+    await expect(acl.remove('key1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    expect(backing.remove).not.toHaveBeenCalled();
+  });
+
+  test('poisons a backing merge Promise with no visible then', async () => {
+    let rejected = false;
+    const hiddenPromise = Promise.resolve().then(() => {
+      rejected = true;
+      throw new Error('hidden merge rejection');
+    });
+    Object.setPrototypeOf(hiddenPromise, null);
+    backing.merge.mockReturnValue(hiddenPromise);
+
+    expect(() => acl.merge('incoming-changes')).toThrow(
+      'Backing ACL merge must complete synchronously',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejected).toBe(true);
     await expect(acl.remove('key1')).rejects.toThrow(
       /backing ACL violated a synchronous operation contract/,
     );
@@ -4791,6 +4859,120 @@ describe('UCANACL', () => {
       );
 
       expect(constructorGetter).not.toHaveBeenCalled();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(members.has('user1')).toBe(true);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a proxy species preflight cannot disguise a native Promise claim', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let asynchronousWorkRan = false;
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      const speciesDescriptorTrap = jest.fn(
+        (_target: object, property: PropertyKey) =>
+          property === Symbol.species
+            ? {
+                configurable: true,
+                enumerable: false,
+                value: Promise,
+                writable: false,
+              }
+            : undefined,
+      );
+      const speciesGetTrap = jest.fn(() => {
+        throw new Error('hostile Promise species getter');
+      });
+      const hostileConstructor = new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: speciesDescriptorTrap,
+          get: speciesGetTrap,
+        },
+      );
+      const claim = Promise.resolve().then(() => {
+        asynchronousWorkRan = true;
+        return { finalize };
+      }) as Promise<{ finalize: () => void }> & {
+        finalize: () => void;
+      };
+      Object.setPrototypeOf(claim, null);
+      Object.defineProperties(claim, {
+        constructor: { value: hostileConstructor },
+        finalize: { value: finalize },
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => claim),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow(
+        /invalid asynchronous result/,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(asynchronousWorkRan).toBe(true);
+      expect(speciesDescriptorTrap).not.toHaveBeenCalled();
+      expect(speciesGetTrap).not.toHaveBeenCalled();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(members.has('user1')).toBe(true);
+      await expectClaimStatePoisoned();
+    });
+
+    test('rejects a Promise with a mutating Proxy prototype before probing it', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let asynchronousWorkRan = false;
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      let claim!: Promise<{ finalize: () => void }> & {
+        finalize: () => void;
+      };
+      const descriptorTrap = jest.fn(() => undefined);
+      const prototypeTrap = jest.fn(() => null);
+      const getTrap = jest.fn((_target: object, property: PropertyKey) => {
+        if (property === 'constructor') {
+          Object.setPrototypeOf(claim, Object.prototype);
+          throw new Error('mutating constructor lookup');
+        }
+        return undefined;
+      });
+      const hostilePrototype = new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: descriptorTrap,
+          getPrototypeOf: prototypeTrap,
+          get: getTrap,
+        },
+      );
+      claim = Promise.resolve().then(() => {
+        asynchronousWorkRan = true;
+        return { finalize };
+      }) as typeof claim;
+      Object.setPrototypeOf(claim, hostilePrototype);
+      Object.defineProperty(claim, 'finalize', { value: finalize });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => claim),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow(/plain claim record/);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(asynchronousWorkRan).toBe(true);
+      expect(descriptorTrap).not.toHaveBeenCalled();
+      expect(prototypeTrap).not.toHaveBeenCalled();
+      expect(getTrap).not.toHaveBeenCalled();
+      expect(Object.getPrototypeOf(claim)).toBe(hostilePrototype);
       expect(finalize).not.toHaveBeenCalled();
       expect(members.has('user1')).toBe(true);
       await expectClaimStatePoisoned();
