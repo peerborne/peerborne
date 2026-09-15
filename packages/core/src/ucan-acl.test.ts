@@ -717,6 +717,20 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  test('prepareAdd rejects after a remote backing merge', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    acl.merge('remote-changes');
+
+    expect(() => prepared.commit()).toThrow(/backing ACL changed/);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   test('staged reauthorization clears a tombstone only after commit', async () => {
     backing.remove.mockResolvedValue('remove-changes');
     backing.check.mockResolvedValue(true);
