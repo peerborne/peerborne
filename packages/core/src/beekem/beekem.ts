@@ -76,6 +76,12 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
+    if (await this.hasLiveLeafWithPublicKey(memberPublicKey)) {
+      throw new Error(
+        'Cannot add BeeKEM member: public key is already owned by a live leaf',
+      );
+    }
+
     const previousNodes = this._nodes;
     const previousNumLeaves = this._numLeaves;
     // All mutation happens on a shallow map copy. Tree nodes are immutable
@@ -477,14 +483,45 @@ export class BeeKEM {
   }
 
   /**
-   * Find the node index of the leaf whose public key matches `publicKey`,
-   * or `undefined` if no such (non-blanked) leaf exists.
+   * Return true only when the tree contains exactly one live leaf and that
+   * leaf is the local member. Blanked and missing leaf slots do not count.
    *
-   * Used by `PeerborneDocument.removeReader` as the canonical source
-   * of truth for leaf-index lookup during revocation: the writer's
-   * in-memory `_readerLeafIndices` cache is wiped on process restart,
-   * so revocation must be able to recover the leaf assignment from
-   * tree state alone.
+   * This is intentionally stricter than checking `memberCount === 1` because
+   * removed members leave blanked positions behind. Callers use this as proof
+   * that no remote member remains when identity-to-leaf caches are absent.
+   */
+  hasOnlyLocalLiveLeaf(): boolean {
+    if (this._myLeafIndex < 0) return false;
+
+    let foundLocalLeaf = false;
+    for (let leafPos = 0; leafPos < this._numLeaves; leafPos++) {
+      const nodeIndex = TreeMath.leafToNodeIndex(leafPos);
+      const node = this._nodes.get(nodeIndex);
+      if (!node || node.type !== 'leaf' || !node.publicKey) continue;
+      if (nodeIndex !== this._myLeafIndex) return false;
+      foundLocalLeaf = true;
+    }
+    return foundLocalLeaf;
+  }
+
+  /** Return whether any live leaf owns `publicKey`, including duplicates. */
+  async hasLiveLeafWithPublicKey(
+    publicKey: CryptoKey | Uint8Array,
+  ): Promise<boolean> {
+    return (
+      await this._matchingLiveLeafIndices(publicKey, 1)
+    ).length > 0;
+  }
+
+  /**
+   * Find the node index of the unique live leaf whose public key matches
+   * `publicKey`, or `undefined` if no such leaf exists or the key appears in
+   * more than one non-blanked leaf.
+   *
+   * Used by `PeerborneDocument` as the canonical source of truth for live
+   * leaf-index lookup during reader revocation and writer promotion. The
+   * writer's in-memory leaf-index cache can be missing, so role transitions
+   * must be able to recover an unambiguous assignment from tree state alone.
    *
    * Comparison is done over the raw exported ECDH public key bytes:
    * - `CryptoKey` inputs are exported via `crypto.subtle.exportKey('raw', ...)`
@@ -505,15 +542,20 @@ export class BeeKEM {
   async findLeafByPublicKey(
     publicKey: CryptoKey | Uint8Array,
   ): Promise<number | undefined> {
-    let target: Uint8Array;
-    if (publicKey instanceof Uint8Array) {
-      target = publicKey;
-    } else {
-      target = new Uint8Array(
-        await crypto.subtle.exportKey('raw', publicKey),
-      );
-    }
+    const matches = await this._matchingLiveLeafIndices(publicKey, 2);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
 
+  private async _matchingLiveLeafIndices(
+    publicKey: CryptoKey | Uint8Array,
+    maximumMatches: number,
+  ): Promise<number[]> {
+    // Snapshot caller-owned bytes before the first await so mutation during a
+    // WebCrypto export cannot redirect the lookup to a different leaf.
+    const target = publicKey instanceof Uint8Array
+      ? new Uint8Array(publicKey)
+      : new Uint8Array(await crypto.subtle.exportKey('raw', publicKey));
+    const matchingLeafIndices: number[] = [];
     for (let leafPos = 0; leafPos < this._numLeaves; leafPos++) {
       const nodeIndex = TreeMath.leafToNodeIndex(leafPos);
       const node = this._nodes.get(nodeIndex);
@@ -531,9 +573,12 @@ export class BeeKEM {
           break;
         }
       }
-      if (match) return nodeIndex;
+      if (match) {
+        matchingLeafIndices.push(nodeIndex);
+        if (matchingLeafIndices.length >= maximumMatches) break;
+      }
     }
-    return undefined;
+    return matchingLeafIndices;
   }
 
   /**
