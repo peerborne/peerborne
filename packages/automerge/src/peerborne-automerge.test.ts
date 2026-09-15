@@ -302,6 +302,7 @@ describe('AutomergeACL', () => {
     await acl.add(key1);
     const removal = await acl.prepareRemove(key1);
     const remote = new AutomergeACL();
+    remote.merge(acl.current());
     const remoteChanges = await remote.add(key2);
     let committed = false;
     const reentrantChanges = new Proxy(remoteChanges, {
@@ -319,6 +320,25 @@ describe('AutomergeACL', () => {
     expect(committed).toBe(true);
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('rejects conflicting independent ACL roots without changing membership', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const independent = new AutomergeACL();
+    await independent.add(key2);
+
+    expect(() => acl.merge(independent.current())).toThrow(
+      /conflicting users roots/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+
+    const fresh = new AutomergeACL();
+    expect(() => fresh.merge(independent.current())).not.toThrow();
+    expect(await fresh.check(key2)).toBe(true);
   });
 
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
