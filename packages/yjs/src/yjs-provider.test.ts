@@ -372,10 +372,25 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
-  test('prepareAdd() rejects competing and merge-staled commits before mutation', async () => {
+  test('prepareAdd() reserves distinct IDs and rejects stale local commits', async () => {
     const acl = new YjsACL();
     const first = await acl.prepareAdd(key1);
     const competing = await acl.prepareAdd(key2);
+    const firstClient = decodeUpdateV2(first.changes).structs[0]!.id.client;
+    const competingClient =
+      decodeUpdateV2(competing.changes).structs[0]!.id.client;
+
+    expect(competingClient).not.toBe(firstClient);
+    const peer = new YjsACL();
+    peer.merge(first.changes);
+    peer.merge(competing.changes);
+    expect(await peer.check(key1)).toBe(true);
+    expect(await peer.check(key2)).toBe(true);
+    const reversePeer = new YjsACL();
+    reversePeer.merge(competing.changes);
+    reversePeer.merge(first.changes);
+    expect(await reversePeer.check(key1)).toBe(true);
+    expect(await reversePeer.check(key2)).toBe(true);
 
     first.commit();
     expect(() => competing.commit()).toThrow(
