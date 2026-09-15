@@ -33,6 +33,7 @@ import {
   validateChangeBlockMetadata,
 } from './json-serializer.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
+import { assertCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
@@ -334,6 +335,7 @@ export {
   DEFAULT_DOCUMENT_PUBLISH_PATH,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   LRUCache,
+  assertCanonicalP384PublicKeyEncoding,
 };
 
 export type { NetworkStatsSnapshot } from './network-stats.js';
