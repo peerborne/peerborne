@@ -1381,11 +1381,13 @@ export class PeerborneDocument<
       };
     }
     const [readers, writers] = await Promise.all([
-      this._readers.users(),
-      this._writers.users(),
+      retryACLConflict(() => this._readers.users()),
+      retryACLConflict(() => this._writers.users()),
     ]);
     const checkResults = await Promise.all(
-      writers.map((writer) => this._readers.check(writer)),
+      writers.map((writer) =>
+        retryACLConflict(() => this._readers.check(writer)),
+      ),
     );
     const filteredWriters = writers.filter(
       (_, index) => checkResults[index] !== true,
@@ -2083,7 +2085,10 @@ export class PeerborneDocument<
     }
     const requestBytes = this._encoder.encode(message.documentId);
     const authorizedKeys = (
-      await Promise.all([this._readers.users(), this._writers.users()])
+      await Promise.all([
+        retryACLConflict(() => this._readers.users()),
+        retryACLConflict(() => this._writers.users()),
+      ])
     ).flat();
     for (const key of authorizedKeys) {
       if (
