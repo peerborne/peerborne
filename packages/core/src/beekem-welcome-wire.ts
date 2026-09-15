@@ -32,6 +32,15 @@ const MAX_V2_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_V2_AGGREGATE_WORK_ITEMS = 4 * MAX_BEEKEM_TREE_LEAVES;
 
+function isCanonicalNonNegativeSafeInteger(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    !Object.is(value, -0)
+  );
+}
+
 /** JSON-safe encoding of `PathNodeUpdate` (mirrors path-update-wire). */
 export interface SerializedWelcomePathNodeUpdate {
   nodeIndex: number;
@@ -103,9 +112,7 @@ function snapshotLegacyRuntimeWelcome(value: unknown): BeeKEMWelcome {
     context,
   );
   if (
-    typeof raw.leafIndex !== 'number' ||
-    !Number.isSafeInteger(raw.leafIndex) ||
-    raw.leafIndex < 0 ||
+    !isCanonicalNonNegativeSafeInteger(raw.leafIndex) ||
     !TreeMath.isLeaf(raw.leafIndex)
   ) {
     throw new Error(
@@ -154,9 +161,7 @@ function snapshotLegacyRuntimeWelcome(value: unknown): BeeKEMWelcome {
       `${context}: pathKeys[${offset}]`,
     );
     if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
+      !isCanonicalNonNegativeSafeInteger(node.nodeIndex)
     ) {
       throw new Error(
         `${context}: pathKeys[${offset}].nodeIndex must be a non-negative safe integer`,
@@ -189,9 +194,7 @@ function snapshotLegacyRuntimeWelcome(value: unknown): BeeKEMWelcome {
       `${context}: treeNodePublicKeys[${offset}]`,
     );
     if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
+      !isCanonicalNonNegativeSafeInteger(node.nodeIndex)
     ) {
       throw new Error(
         `${context}: treeNodePublicKeys[${offset}].nodeIndex must be a non-negative safe integer`,
@@ -478,9 +481,7 @@ export function deserializeBeeKEMWelcomeFromWire(
   );
 
   if (
-    typeof raw.leafIndex !== 'number' ||
-    !Number.isSafeInteger(raw.leafIndex) ||
-    raw.leafIndex < 0 ||
+    !isCanonicalNonNegativeSafeInteger(raw.leafIndex) ||
     !TreeMath.isLeaf(raw.leafIndex)
   ) {
     throw new Error(
@@ -546,9 +547,7 @@ export function deserializeBeeKEMWelcomeFromWire(
       `${context}: pathKeys[${offset}]`,
     );
     if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
+      !isCanonicalNonNegativeSafeInteger(node.nodeIndex)
     ) {
       throw new Error(
         `${context}: pathKeys[${offset}].nodeIndex must be a non-negative safe integer (got ${describe(
@@ -597,9 +596,7 @@ export function deserializeBeeKEMWelcomeFromWire(
       `${context}: treeNodePublicKeys[${offset}]`,
     );
     if (
-      typeof node.nodeIndex !== 'number' ||
-      !Number.isSafeInteger(node.nodeIndex) ||
-      node.nodeIndex < 0
+      !isCanonicalNonNegativeSafeInteger(node.nodeIndex)
     ) {
       throw new Error(
         `${context}: treeNodePublicKeys[${offset}].nodeIndex must be a non-negative safe integer (got ${describe(
@@ -1035,11 +1032,7 @@ function snapshotRuntimeBytes(
 }
 
 function requireNonNegativeInteger(value: unknown, field: string): void {
-  if (
-    typeof value !== 'number' ||
-    !Number.isSafeInteger(value) ||
-    value < 0
-  ) {
+  if (!isCanonicalNonNegativeSafeInteger(value)) {
     throw new Error(
       `Invalid BeeKEMWelcomeV2: '${field}' must be a non-negative safe integer`,
     );
