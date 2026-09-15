@@ -776,24 +776,14 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       throw new Error('ACL changed while remote changes were being detached');
     }
     const staged = new Doc({ gc: false });
-    applyUpdateV2(
-      staged,
-      snapshotBoundedYjsACLState(base, 'merge ACL changes'),
-    );
+    const baseState = snapshotBoundedYjsACLState(base, 'merge ACL changes');
+    applyUpdateV2(staged, baseState);
     staged.clientID = base.clientID;
-    // Yjs emits an update only for transactions that integrated new structs
-    // or deletions; parked pending updates and replays stay silent.
-    let changed = false;
-    const markChanged = () => {
-      changed = true;
-    };
-    staged.on('updateV2', markChanged);
-    try {
-      applyUpdateV2(staged, detachedChange);
-    } finally {
-      staged.off('updateV2', markChanged);
-    }
-    snapshotBoundedYjsACLState(staged, 'merge ACL changes');
+    applyUpdateV2(staged, detachedChange);
+    const stagedState = snapshotBoundedYjsACLState(
+      staged,
+      'merge ACL changes',
+    );
     if (
       this._pendingMutations !== 0 ||
       this._revision !== baseRevision ||
@@ -801,9 +791,10 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     ) {
       throw new Error('ACL changed while remote changes were being merged');
     }
+    if (compareBytes(baseState, stagedState) === 0) return false;
     this._acl = staged;
     this._revision++;
-    return changed;
+    return true;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
     this._assertComplete('check ACL membership');
