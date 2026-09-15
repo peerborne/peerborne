@@ -4,6 +4,7 @@ import {
   BeeKEMWelcome,
   MAX_BEEKEM_TREE_LEAVES,
 } from './types.js';
+import { generateEciesKeyPair } from '../ecies.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -43,6 +44,71 @@ async function createTwoMemberWelcome(
     recipientKeys.publicKey,
   );
   return { welcome, recipientKeys, rootSecret };
+}
+
+async function createFourMemberWelcome(
+  recipientKeyPair?: CryptoKeyPair,
+): Promise<{
+  welcome: BeeKEMWelcome;
+  recipientKeys: CryptoKeyPair;
+  rootSecret: Uint8Array;
+}> {
+  const founder = new BeeKEM();
+  const founderKeys = await generateKeyPair();
+  await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+  await founder.addMember((await generateKeyPair()).publicKey);
+
+  const thirdMemberKeys = await generateKeyPair();
+  const { welcome: thirdMemberWelcome } = await founder.addMember(
+    thirdMemberKeys.publicKey,
+  );
+  const thirdMember = new BeeKEM();
+  await thirdMember.processWelcome(
+    thirdMemberWelcome,
+    thirdMemberKeys.privateKey,
+    thirdMemberKeys.publicKey,
+  );
+
+  const recipientKeys = recipientKeyPair ?? (await generateKeyPair());
+  const { welcome, rootSecret } = await thirdMember.addMember(
+    recipientKeys.publicKey,
+  );
+  return { welcome, recipientKeys, rootSecret };
+}
+
+async function computeWelcomeTreeHash(
+  welcome: BeeKEMWelcome,
+  recipientPublicKey: CryptoKey,
+): Promise<Uint8Array> {
+  const publicKeys = new Map<number, Uint8Array | null>();
+  publicKeys.set(
+    welcome.leafIndex,
+    new Uint8Array(await crypto.subtle.exportKey('raw', recipientPublicKey)),
+  );
+  for (const pathKey of welcome.pathKeys) {
+    publicKeys.set(pathKey.nodeIndex, pathKey.publicKey);
+  }
+  for (const node of welcome.treeNodePublicKeys) {
+    publicKeys.set(node.nodeIndex, node.publicKey);
+  }
+
+  const parts: Uint8Array[] = [];
+  for (const [nodeIndex, publicKey] of [...publicKeys].sort(
+    ([left], [right]) => left - right,
+  )) {
+    if (publicKey === null) continue;
+    const indexBytes = new Uint8Array(4);
+    new DataView(indexBytes.buffer).setUint32(0, nodeIndex, false);
+    parts.push(indexBytes, publicKey);
+  }
+  const byteLength = parts.reduce((total, part) => total + part.byteLength, 0);
+  const encoded = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const part of parts) {
+    encoded.set(part, offset);
+    offset += part.byteLength;
+  }
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', encoded));
 }
 
 async function createInitializedTarget(): Promise<{
@@ -261,6 +327,48 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     expect(await target.getRootSecret()).not.toEqual(older.rootSecret);
   });
 
+  test('reserves reentrant attempts before inspecting Proxy descriptors', async () => {
+    const recipientKeys = await generateKeyPair();
+    const older = await createTwoMemberWelcome(recipientKeys);
+    const latest = await createTwoMemberWelcome(recipientKeys);
+    const target = new BeeKEM();
+    let latestProcessing: Promise<Uint8Array> | undefined;
+    const reentrantWelcome = new Proxy(copyWelcome(older.welcome), {
+      getOwnPropertyDescriptor(source, property) {
+        latestProcessing ??= target.processWelcome(
+          copyWelcome(latest.welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        );
+        return Reflect.getOwnPropertyDescriptor(source, property);
+      },
+    });
+
+    const olderProcessing = target.processWelcome(
+      reentrantWelcome,
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+    const olderOutcome = olderProcessing.then(
+      (value) => ({ kind: 'fulfilled' as const, value }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    expect(latestProcessing).toBeDefined();
+    await expect(latestProcessing).resolves.toEqual(latest.rootSecret);
+    const outcome = await olderOutcome;
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.error).toEqual(
+        expect.objectContaining({
+          message: expect.stringMatching(/superseded/),
+        }),
+      );
+    }
+    expect(await target.getRootSecret()).toEqual(latest.rootSecret);
+    expect(await target.getRootSecret()).not.toEqual(older.rootSecret);
+  });
+
   test('does not overwrite initialization that occurs while a Welcome is in flight', async () => {
     const { welcome, recipientKeys } = await createTwoMemberWelcome();
     const initializedKeys = await generateKeyPair();
@@ -426,7 +534,88 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     }
   });
 
+  test('rejects a valid recipient public key paired with another private key', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const mismatchedKeys = await generateKeyPair();
+    const forged = copyWelcome(welcome);
+    forged.treeHash = await computeWelcomeTreeHash(
+      forged,
+      mismatchedKeys.publicKey,
+    );
+    const target = new BeeKEM();
+
+    await expect(
+      target.processWelcome(
+        forged,
+        recipientKeys.privateKey,
+        mismatchedKeys.publicKey,
+      ),
+    ).rejects.toThrow(/recipient leaf 2 public and private keys do not match/);
+    await expectTargetPristine(target);
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+  });
+
+  test('rejects a mismatched advertised key at a higher decrypted path node', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createFourMemberWelcome();
+    expect(welcome.pathKeys).toHaveLength(2);
+    const forged = copyWelcome(welcome);
+    const mismatchedKeys = await generateKeyPair();
+    const mismatchedNode = forged.pathKeys[1];
+    mismatchedNode.publicKey = new Uint8Array(
+      await crypto.subtle.exportKey('raw', mismatchedKeys.publicKey),
+    );
+    forged.treeHash = await computeWelcomeTreeHash(
+      forged,
+      recipientKeys.publicKey,
+    );
+    const target = new BeeKEM();
+
+    await expect(
+      target.processWelcome(
+        forged,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow(
+      new RegExp(
+        `path node ${mismatchedNode.nodeIndex} public and private keys do not match`,
+      ),
+    );
+    await expectTargetPristine(target);
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+  });
+
+  test('accepts a recipient private key that cannot be exported', async () => {
+    const recipientKeys = await generateEciesKeyPair();
+    expect(recipientKeys.privateKey.extractable).toBe(false);
+    const { welcome, rootSecret } = await createTwoMemberWelcome(recipientKeys);
+    const target = new BeeKEM();
+
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+  });
+
   test.each([
+    'generateKey',
     'importKey',
     'deriveBits',
     'deriveKey',
