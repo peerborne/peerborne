@@ -4,6 +4,7 @@ import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
 } from './peerborne-document.js';
+import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
 jest.mock(
   'it-pipe',
@@ -47,7 +48,206 @@ function fakeDocument(fields: Record<string, unknown>): any {
   return Object.assign(Object.create(PeerborneDocument.prototype), fields);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function signedLoadHarness(
+  getWriterKeys: () => Promise<string[]>,
+  verify: (...args: unknown[]) => Promise<boolean>,
+  message: any = { documentId: '/load-race', signature: 'AAAA' },
+  serializeSyncMessage: (message: any) => Uint8Array = () =>
+    new Uint8Array([8]),
+) {
+  const document = fakeDocument({
+    documentPath: message.documentId,
+    swarm: { config: { enableSigning: true, loadQuorumTimeoutMs: 1000 } },
+    _keychainProvider: { keyIDLength: 1 },
+    _keychain: { getKey: jest.fn(() => ({})) },
+    _authProvider: {
+      nonceBits: 1,
+      decrypt: jest.fn(async () => new Uint8Array([9])),
+      verify: jest.fn(verify),
+    },
+    _syncMessageSerializer: {
+      deserializeSyncMessage: jest.fn(() => message),
+      serializeSyncMessage: jest.fn(serializeSyncMessage),
+    },
+    _getWriterKeys: jest.fn(getWriterKeys),
+    _mutationQueue: {
+      run: (operation: () => Promise<unknown>) => operation(),
+    },
+    _hashes: new Set<string>(),
+  });
+  const stream = {
+    sink: jest.fn(async () => undefined),
+    source: (async function* () {
+      yield new Uint8Array([1, 2, 3]);
+    })(),
+    abort: jest.fn(),
+  };
+  return { document, stream };
+}
+
 describe('document load response boundaries', () => {
+  test('rechecks current writers after an admitted signer is removed', async () => {
+    const verificationStarted = deferred<void>();
+    const releaseVerification = deferred<boolean>();
+    let currentWriters = ['removed-writer'];
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('prototype writer lookup must be used');
+      },
+      async () => {
+        verificationStarted.resolve();
+        return releaseVerification.promise;
+      },
+    );
+    delete document._getWriterKeys;
+    document._writers = {
+      users: jest.fn(async () => [...currentWriters]),
+    };
+    document._writerMutationsInFlight = 1;
+    document._writerKeysVersion = 1;
+    document._cachedWriterKeys = null;
+
+    const load = document._sendLoadRequestAndSync(
+      stream,
+      new Uint8Array([1]),
+    );
+    await verificationStarted.promise;
+    currentWriters = [];
+    document._writerMutationsInFlight = 0;
+    document._invalidateWriterKeyCache();
+    releaseVerification.resolve(true);
+
+    await expect(load).resolves.toBe(false);
+    expect(document._writers.users).toHaveBeenCalledTimes(2);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+  });
+
+  test('ends bootstrap trust if a writer exists at queued application', async () => {
+    let writerRead = 0;
+    const { document, stream } = signedLoadHarness(
+      async () => (++writerRead === 1 ? [] : ['current-writer']),
+      async () => false,
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(document._getWriterKeys).toHaveBeenCalledTimes(2);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+  });
+
+  test('rechecks original signed bytes after quorum strips inline changes', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: 'document',
+        change: { value: 'signed-inline-change' },
+      },
+    };
+    const verifiedRaw: number[][] = [];
+    const serialize = jest.fn((unsigned: any) =>
+      new Uint8Array([unsigned.changes?.change === undefined ? 0 : 1]),
+    );
+    const { document, stream } = signedLoadHarness(
+      async () => ['current-writer'],
+      async (raw) => {
+        verifiedRaw.push([...raw as Uint8Array]);
+        return (raw as Uint8Array)[0] === 1;
+      },
+      message,
+      serialize,
+    );
+    document._writers = {
+      users: jest.fn(async () => ['current-writer']),
+    };
+    document.swarm.heliaNode = {
+      blockstore: {
+        get: jest.fn(async function* () {
+          yield new Uint8Array([1]);
+        }),
+      },
+    };
+    document._syncUnlocked = jest.fn(
+      async (appliedMessage: any, verifySignature: boolean) => {
+        expect(verifySignature).toBe(false);
+        expect(appliedMessage.changes.change).toBeUndefined();
+        document._hashes.add('HEAD');
+        return true;
+      },
+    );
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).resolves.toBe(true);
+
+    expect(verifiedRaw).toEqual([[1], [1]]);
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('accepts encrypted-channel bootstrap only for a pristine empty-writer document', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+
+    document._hashes.add('existing-change');
+    const nextStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(nextStream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+    expect(document._authProvider.verify).not.toHaveBeenCalled();
+  });
+
+  test('preserves an explicitly pinned load signer outside the writer ACL', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'pinned-writer',
+      ),
+    ).resolves.toBe(true);
+
+    expect(document._getWriterKeys).not.toHaveBeenCalled();
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+  });
+
   test('bounds ordinary document responses before deserialization', async () => {
     const abort = jest.fn();
     const document = fakeDocument({
