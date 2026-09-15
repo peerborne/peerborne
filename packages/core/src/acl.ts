@@ -78,9 +78,13 @@ export interface ACL<ChangesType, PublicKey> {
    *
    * Callers can finish fallible publication work before invoking the
    * synchronous commit. Implementations MUST detach `changes` from both the
-   * caller and the private staged state, reject a repeated or stale commit
-   * before mutation, and either apply the staged state completely or throw
-   * before changing live membership.
+   * caller and the private staged state and reject a repeated or stale commit
+   * before mutation. A successful commit MUST apply the staged state
+   * completely. Generic callers MUST treat any other commit exception as an
+   * indeterminate backing state and fail closed; they cannot assume a custom
+   * implementation rolled back a partially applied commit. The shipped CRDT
+   * adapters complete fallible work during preparation and atomically swap
+   * their private staged state only after all commit checks pass.
    *
    * Optional for backwards compatibility. Workflows that require
    * publication-before-commit semantics must feature-detect this method and
@@ -101,9 +105,13 @@ export interface ACL<ChangesType, PublicKey> {
    *
    * Callers can finish fallible publication work before invoking the
    * synchronous commit. Implementations MUST detach `changes` from both the
-   * caller and the private staged state, reject a repeated or stale commit
-   * before mutation, and either apply the staged state completely or throw
-   * before changing live membership.
+   * caller and the private staged state and reject a repeated or stale commit
+   * before mutation. A successful commit MUST apply the staged state
+   * completely. Generic callers MUST treat any other commit exception as an
+   * indeterminate backing state and fail closed; they cannot assume a custom
+   * implementation rolled back a partially applied commit. The shipped CRDT
+   * adapters complete fallible work during preparation and atomically swap
+   * their private staged state only after all commit checks pass.
    *
    * Optional for backwards compatibility. Workflows that require
    * publication-before-commit semantics must feature-detect this method and
@@ -150,7 +158,12 @@ export interface ACL<ChangesType, PublicKey> {
 export interface PreparedACLChange<ChangesType> {
   /** Changes suitable for publication to an ACL with the same base state. */
   readonly changes: ChangesType;
-  /** Synchronous, single-use, stale-base-checked live-state commit. */
+  /**
+   * Synchronous, single-use, stale-base-checked live-state commit. A normal
+   * return proves complete application. Repeated and stale calls throw before
+   * mutation; any other exception leaves state indeterminate to generic
+   * callers and requires fail-closed handling.
+   */
   commit(): void;
 }
 
