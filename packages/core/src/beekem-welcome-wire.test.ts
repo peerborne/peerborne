@@ -197,6 +197,51 @@ describe('beekem-welcome-wire', () => {
     ]);
   });
 
+  test('rejects incomplete, reordered, duplicate, and out-of-range topology', () => {
+    const welcome = {
+      leafIndex: 10,
+      pathKeys: [9, 7].map((nodeIndex) => ({
+        nodeIndex,
+        publicKey: new Uint8Array(65).fill(nodeIndex),
+        encryptedPrivateKey: new Uint8Array(125).fill(nodeIndex),
+      })),
+      treeNodePublicKeys: [0, 1, 2, 3, 4, 5, 6, 8].map((nodeIndex) => ({
+        nodeIndex,
+        publicKey: new Uint8Array(65).fill(nodeIndex + 1),
+      })),
+      treeHash: new Uint8Array(32),
+    };
+    const wire = serializeBeeKEMWelcomeForWire(welcome);
+
+    expect(() =>
+      deserializeBeeKEMWelcomeFromWire({
+        ...wire,
+        pathKeys: wire.pathKeys.slice(0, 1),
+      }),
+    ).toThrow(/complete direct path/);
+    expect(() =>
+      deserializeBeeKEMWelcomeFromWire({
+        ...wire,
+        pathKeys: [...wire.pathKeys].reverse(),
+      }),
+    ).toThrow(/out-of-order/);
+    expect(() =>
+      serializeBeeKEMWelcomeForWire({
+        ...welcome,
+        treeNodePublicKeys: [
+          ...welcome.treeNodePublicKeys,
+          welcome.treeNodePublicKeys[0],
+        ],
+      }),
+    ).toThrow(/duplicate/);
+
+    const outOfRange = JSON.parse(JSON.stringify(wire));
+    outOfRange.treeNodePublicKeys[0].nodeIndex = 11;
+    expect(() => deserializeBeeKEMWelcomeFromWire(outOfRange)).toThrow(
+      /out-of-range/,
+    );
+  });
+
   test(
     'round-trips and applies a real Welcome containing blanked nodes',
     async () => {
@@ -295,6 +340,15 @@ describe('beekem-welcome-wire', () => {
         treeHash: '',
       }),
     ).toThrow(/supported tree width/);
+
+    expect(() =>
+      deserializeBeeKEMWelcomeFromWire({
+        leafIndex: 2 * MAX_BEEKEM_TREE_LEAVES,
+        pathKeys: [],
+        treeNodePublicKeys: [],
+        treeHash: '',
+      }),
+    ).toThrow(/8192-leaf tree bound/);
   });
 
   test('rejects oversized encrypted path material before base64 decoding', () => {

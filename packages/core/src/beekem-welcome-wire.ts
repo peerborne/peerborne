@@ -577,11 +577,13 @@ export function deserializeBeeKEMWelcomeFromWire(
     reserveEncodedField(
       node.publicKey,
       65,
+      65,
       `pathKeys[${offset}].publicKey`,
       budget,
     );
     reserveEncodedField(
       node.encryptedPrivateKey,
+      MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
       MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
       `pathKeys[${offset}].encryptedPrivateKey`,
       budget,
@@ -620,13 +622,14 @@ export function deserializeBeeKEMWelcomeFromWire(
       reserveEncodedField(
         node.publicKey,
         65,
+        65,
         `treeNodePublicKeys[${offset}].publicKey`,
         budget,
       );
     }
     return { nodeIndex: node.nodeIndex, publicKey: node.publicKey };
   });
-  reserveEncodedField(raw.treeHash, 32, 'treeHash', budget);
+  reserveEncodedField(raw.treeHash, 32, 32, 'treeHash', budget);
 
   validateLegacyWelcomeTopology(
     leafIndex,
@@ -1056,13 +1059,35 @@ function requirePositiveInteger(value: unknown, field: string): void {
 
 function reserveEncodedField(
   value: string,
-  maxBytes: number,
+  minimumBytes: number,
+  maximumBytes: number,
   fieldName: string,
   budget: WelcomeDecodeBudget,
 ): void {
-  if (value.length > Math.ceil(maxBytes / 3) * 4) {
+  if (value.length > Math.ceil(maximumBytes / 3) * 4) {
     throw new Error(
       `${budget.context}: ${fieldName} exceeds the encoded size limit`,
+    );
+  }
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  ) {
+    throw new Error(
+      `${budget.context}: ${fieldName} must use canonical padded base64`,
+    );
+  }
+  const paddingBytes = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const decodedLength = (value.length / 4) * 3 - paddingBytes;
+  if (decodedLength < minimumBytes || decodedLength > maximumBytes) {
+    const expected =
+      minimumBytes === maximumBytes
+        ? `${minimumBytes} bytes`
+        : `${minimumBytes} to ${maximumBytes} bytes`;
+    throw new Error(
+      `${budget.context}: ${fieldName} must decode to ${expected}`,
     );
   }
   reserveV2DecodedBytes(budget, value.length, fieldName);
