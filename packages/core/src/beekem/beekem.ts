@@ -318,7 +318,9 @@ export class BeeKEM {
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
 
-  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+  private _reserveMutation(): <T>(
+    operation: () => Promise<T>,
+  ) => Promise<T> {
     const previous = this._mutationTail;
     let release!: () => void;
     const turn = new Promise<void>((resolve) => {
@@ -326,7 +328,12 @@ export class BeeKEM {
     });
     this._mutationTail = turn;
     this._pendingMutations++;
-    return (async () => {
+    let consumed = false;
+    return async <T>(operation: () => Promise<T>): Promise<T> => {
+      if (consumed) {
+        throw new Error('BeeKEM mutation reservation was already consumed');
+      }
+      consumed = true;
       await previous;
       try {
         return await operation();
@@ -334,7 +341,11 @@ export class BeeKEM {
         this._pendingMutations--;
         release();
       }
-    })();
+    };
+  }
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    return this._reserveMutation()(operation);
   }
 
   private _cloneState(): BeeKEM {
@@ -399,49 +410,34 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
-    if (
-      !Number.isSafeInteger(this._numLeaves) ||
-      this._numLeaves < 1 ||
-      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
-    ) {
-      throw new Error('Cannot add member: BeeKEM tree state is invalid');
-    }
+    this._assertLocalMutationState('add member');
     if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
       throw new Error(
         `Cannot add member: BeeKEM tree is limited to ${MAX_BEEKEM_TREE_LEAVES} leaves`,
       );
     }
-    const previousNodes = this._nodes;
-    const previousNumLeaves = this._numLeaves;
-    // All mutation happens on a shallow map copy. Tree nodes are immutable
-    // value objects in these paths, so discarding the copy rolls back a failed
-    // WebCrypto/export/Welcome operation without leaving a phantom leaf.
-    this._nodes = new Map(previousNodes);
-    try {
-      // Add new leaf at next position
-      const newLeafPos = this._numLeaves;
-      const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
-      this._numLeaves++;
+    const staged = this._cloneState();
+    const newLeafPos = staged._numLeaves;
+    const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
+    staged._numLeaves++;
 
-      const newLeaf: LeafNode = {
-        type: 'leaf',
-        index: newLeafIndex,
-        publicKey: memberPublicKey,
-      };
-      this._nodes.set(newLeafIndex, newLeaf);
+    const newLeaf: LeafNode = {
+      type: 'leaf',
+      index: newLeafIndex,
+      publicKey: memberPublicKey,
+    };
+    staged._nodes.set(newLeafIndex, newLeaf);
 
-      // Generate fresh key material along our path to root
-      const { pathUpdate, rootSecret } = await this._updatePath();
+    const { pathUpdate, rootSecret } = await staged._updatePath();
+    const welcome = await staged._buildWelcome(
+      newLeafIndex,
+      memberPublicKey,
+    );
 
-      // Build welcome message for the new member
-      const welcome = await this._buildWelcome(newLeafIndex, memberPublicKey);
-
-      return { pathUpdate, welcome, rootSecret };
-    } catch (error) {
-      this._nodes = previousNodes;
-      this._numLeaves = previousNumLeaves;
-      throw error;
-    }
+    this._nodes = staged._nodes;
+    this._numLeaves = staged._numLeaves;
+    this._myLeafIndex = staged._myLeafIndex;
+    return { pathUpdate, welcome, rootSecret };
   }
 
   /**
@@ -471,23 +467,51 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertLocalMutationState('remove member');
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(memberLeafIndex) ||
+      memberLeafIndex < 0 ||
+      memberLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(memberLeafIndex)
+    ) {
+      throw new Error(
+        'Cannot remove member: target must identify a leaf in the current tree',
+      );
+    }
+    if (memberLeafIndex === this._myLeafIndex) {
+      throw new Error('Cannot remove member: cannot remove the local member');
+    }
+    const memberLeaf = this._nodes.get(memberLeafIndex);
+    if (
+      memberLeaf?.type !== 'leaf' ||
+      memberLeaf.index !== memberLeafIndex ||
+      !memberLeaf.publicKey
+    ) {
+      throw new Error('Cannot remove member: target is not an active tree leaf');
+    }
+
+    const staged = this._cloneState();
     // Blank the removed member's leaf
     const blankedLeaf: LeafNode = {
       type: 'leaf',
       index: memberLeafIndex,
       publicKey: null,
     };
-    this._nodes.set(memberLeafIndex, blankedLeaf);
+    staged._nodes.set(memberLeafIndex, blankedLeaf);
 
     // Blank all internal nodes on the removed member's direct path
-    const removedPath = TreeMath.directPath(memberLeafIndex, this._numLeaves);
+    const removedPath = TreeMath.directPath(
+      memberLeafIndex,
+      staged._numLeaves,
+    );
     for (const nodeIndex of removedPath) {
       const blankedNode: InternalNode = {
         type: 'internal',
         index: nodeIndex,
         publicKey: null,
       };
-      this._nodes.set(nodeIndex, blankedNode);
+      staged._nodes.set(nodeIndex, blankedNode);
     }
 
     // Generate fresh key pair for our leaf
@@ -496,14 +520,16 @@ export class BeeKEM {
     ]);
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: this._myLeafIndex,
+      index: staged._myLeafIndex,
       publicKey: newKeyPair.publicKey,
       privateKey: newKeyPair.privateKey,
     };
-    this._nodes.set(this._myLeafIndex, myLeaf);
+    staged._nodes.set(staged._myLeafIndex, myLeaf);
 
     // Re-derive path keys from our leaf to root
-    return this._updatePath();
+    const result = await staged._updatePath();
+    this._nodes = staged._nodes;
+    return result;
   }
 
   /**
@@ -522,20 +548,24 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertLocalMutationState('update');
+    const staged = this._cloneState();
     // Generate new ECDH key pair for our leaf
     const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
       'deriveBits',
     ]);
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: this._myLeafIndex,
+      index: staged._myLeafIndex,
       publicKey: newKeyPair.publicKey,
       privateKey: newKeyPair.privateKey,
     };
-    this._nodes.set(this._myLeafIndex, myLeaf);
+    staged._nodes.set(staged._myLeafIndex, myLeaf);
 
     // Re-derive all internal node keys on our path to root
-    return this._updatePath();
+    const result = await staged._updatePath();
+    this._nodes = staged._nodes;
+    return result;
   }
 
   /**
@@ -550,9 +580,21 @@ export class BeeKEM {
         'Cannot process path update during another BeeKEM mutation',
       );
     }
-    this._assertPathUpdateState();
-    const detachedUpdate = snapshotPathUpdateForTree(update, this._numLeaves);
-    return this._runMutation(() => this._processPathUpdate(detachedUpdate));
+    const runReservedMutation = this._reserveMutation();
+    try {
+      this._assertPathUpdateState();
+      const detachedUpdate = snapshotPathUpdateForTree(
+        update,
+        this._numLeaves,
+      );
+      return runReservedMutation(() =>
+        this._processPathUpdate(detachedUpdate),
+      );
+    } catch (error) {
+      return runReservedMutation(async () => {
+        throw error;
+      });
+    }
   }
 
   private async _processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
@@ -713,6 +755,34 @@ export class BeeKEM {
       !TreeMath.isLeaf(this._myLeafIndex)
     ) {
       throw new Error('Cannot process path update: local leaf is invalid');
+    }
+  }
+
+  private _assertLocalMutationState(action: string): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
+    ) {
+      throw new Error(`Cannot ${action}: BeeKEM tree state is invalid`);
+    }
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(this._myLeafIndex)
+    ) {
+      throw new Error(`Cannot ${action}: local leaf is invalid`);
+    }
+    const localLeaf = this._nodes.get(this._myLeafIndex);
+    if (
+      localLeaf?.type !== 'leaf' ||
+      localLeaf.index !== this._myLeafIndex ||
+      !localLeaf.publicKey ||
+      !localLeaf.privateKey
+    ) {
+      throw new Error(`Cannot ${action}: local leaf is not active`);
     }
   }
 
