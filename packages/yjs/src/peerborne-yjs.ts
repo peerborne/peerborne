@@ -1306,7 +1306,8 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
       'Yjs keychain change',
     );
     validateRawYjsKeychainUpdate(commitChanges);
-    const baseEntries = validateYjsKeychain(this._keychain);
+    const base = this._keychain;
+    const baseEntries = validateYjsKeychain(base);
     const baseRevision = this._revision;
     let staged: Doc | undefined;
     let stagedEntries: CanonicalKeychainEntry[] | undefined;
@@ -1345,7 +1346,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
           throw new Error('Keychain append replay does not match live history');
         }
         staged = new Doc();
-        applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
+        applyUpdateV2(staged, encodeStateAsUpdateV2(base));
         stagedEntries = baseEntries;
       } else {
         if (current?.[0] !== stableAppendIntent.previousKeyId) {
@@ -1357,7 +1358,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
           throw new Error('Keychain append would replay an older key');
         }
         staged = new Doc();
-        applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
+        applyUpdateV2(staged, encodeStateAsUpdateV2(base));
         staged
           .getArray<[string, string]>('keys')
           .push([[projected[0], projected[1]]]);
@@ -1372,13 +1373,13 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
         sameKeychainEntry(current, incomingEntries[0])
       ) {
         staged = new Doc();
-        applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
+        applyUpdateV2(staged, encodeStateAsUpdateV2(base));
         stagedEntries = baseEntries;
       } else if (
         baseEntries.length === incomingEntries.length &&
         isKeychainPrefix(baseEntries, incomingEntries)
       ) {
-        const baseHistory = encodeStateAsUpdateV2(this._keychain);
+        const baseHistory = encodeStateAsUpdateV2(base);
         const incomingHistory = encodeStateAsUpdateV2(incoming);
         if (compareBytes(baseHistory, incomingHistory) <= 0) {
           staged = new Doc();
@@ -1393,7 +1394,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
         stagedEntries = incomingEntries;
       } else if (isKeychainPrefix(incomingEntries, baseEntries)) {
         staged = new Doc();
-        applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
+        applyUpdateV2(staged, encodeStateAsUpdateV2(base));
         stagedEntries = baseEntries;
       } else {
         throw new Error(
@@ -1404,7 +1405,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
 
     if (!staged || !stagedEntries) {
       staged = new Doc();
-      applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
+      applyUpdateV2(staged, encodeStateAsUpdateV2(base));
       applyUpdateV2(staged, commitChanges);
       stagedEntries = validateYjsKeychain(staged);
     }
@@ -1420,45 +1421,94 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
         ? undefined
         : new Uint8Array(committedKeyIds[committedKeyIds.length - 1]);
     const stagedKeyCache = new Map<string, CryptoKey>();
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    let hydrationInProgress = false;
+    let hydrationPromise: Promise<void> | undefined;
+    const hydrateKeys = async (): Promise<[Uint8Array, CryptoKey][]> => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      let pending = hydrationPromise;
+      if (pending === undefined) {
+        hydrationInProgress = true;
+        const newHydration = (async () => {
+          const hydrated = new Map<string, CryptoKey>();
+          for (const [keyID, serialized] of stagedEntries) {
+            const key = await deserializeKey(
+              { name: 'AES-GCM', length: 256 },
+              ['encrypt', 'decrypt'],
+            )(serialized);
+            hydrated.set(keyID, key);
+          }
+          for (const [keyID, key] of hydrated) {
+            stagedKeyCache.set(keyID, key);
+          }
+        })();
+        hydrationPromise = newHydration;
+        void newHydration.then(
+          () => {
+            hydrationInProgress = false;
+          },
+          () => {
+            hydrationInProgress = false;
+            if (hydrationPromise === newHydration) {
+              hydrationPromise = undefined;
+            }
+          },
+        );
+        pending = newHydration;
+      }
+      await pending;
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      return stagedEntries.map(([keyID]) => [
+        cacheKeyToKeyId(keyID),
+        stagedKeyCache.get(keyID)!,
+      ]);
+    };
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      if (this._keychain !== base || this._revision !== baseRevision) {
+        throw new Error('Keychain changed while merge was staged');
+      }
+      if (hydrationInProgress) {
+        throw new Error(
+          'Prepared keychain merge cannot be claimed while key hydration is in progress',
+        );
+      }
+      const finalizeCache = this._keyCache.prepareSetMany(stagedKeyCache);
+      const claim = {
+        finalize: () => {
+          if (state === 'committed') return;
+          finalizeCache();
+          this._keychain = staged;
+          this._revision = baseRevision + 1;
+          state = 'committed';
+        },
+      };
+      state = 'claimed';
+      return claim;
+    };
     return {
       changes: new Uint8Array(commitChanges),
       keyIds: returnedKeyIds,
       currentKeyId,
-      hydrateKeys: async () => {
-        const hydrated: [Uint8Array, CryptoKey][] = [];
-        for (const [keyID, serialized] of stagedEntries) {
-          let key = stagedKeyCache.get(keyID);
-          if (!key) {
-            key = await deserializeKey({ name: 'AES-GCM', length: 256 }, [
-              'encrypt',
-              'decrypt',
-            ])(serialized);
-            stagedKeyCache.set(keyID, key);
-          }
-          hydrated.push([cacheKeyToKeyId(keyID), key]);
-        }
-        return hydrated;
-      },
+      hydrateKeys,
       getKey: (keyID: Uint8Array) =>
         stagedKeyCache.get(keyIdToCacheKey(keyID)),
       stateCommitment: async () =>
         await yjsKeychainStateCommitment(stagedEntries),
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared keychain merge was already committed');
-        }
-        if (this._revision !== baseRevision) {
-          throw new Error('Keychain changed while merge was staged');
-        }
-        const liveCache = this._keyCache;
-        for (const [keyID, key] of stagedKeyCache) {
-          liveCache.set(keyID, key);
-        }
-        this._keychain = staged;
-        this._revision++;
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
   async keys(): Promise<[Uint8Array, CryptoKey][]> {
