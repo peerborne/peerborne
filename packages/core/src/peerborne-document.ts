@@ -101,7 +101,7 @@ import {
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
-import { retryACLConflict } from './acl.js';
+import { ACLOperationInProgressError, retryACLConflict } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrReject } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
@@ -974,6 +974,12 @@ export class PeerborneDocument<
     [id: string]: PeerborneDocumentChangeHandler<DocType, PublicKey>;
   } = {};
 
+  // Remote state is committed before its observer audience is resolved. Keep
+  // conflicted notifications on a separate FIFO so waiting for an ACL
+  // operation never retains the document mutation queue or prevents frontier
+  // refresh. Later notifications join the same FIFO to preserve event order.
+  private _remoteUpdateNotificationTail?: Promise<void>;
+
   // A bootstrap response can apply several remote changes before its
   // completeness checks finish. Keep those notifications private until the
   // response is known to be complete so application callbacks can never
@@ -1384,17 +1390,17 @@ export class PeerborneDocument<
       };
     }
     const [readers, writers] = await Promise.all([
-      retryACLConflict(() => this._readers.users()),
-      retryACLConflict(() => this._writers.users()),
+      this._readers.users(),
+      this._writers.users(),
     ]);
-    const checkResults = await Promise.all(
-      writers.map((writer) =>
-        retryACLConflict(() => this._readers.check(writer)),
-      ),
-    );
-    const filteredWriters = writers.filter(
-      (_, index) => checkResults[index] !== true,
-    );
+    // ACL implementations may reject overlapping operations, so keep at most
+    // one read against the reader ACL in flight.
+    const filteredWriters: PublicKey[] = [];
+    for (const writer of writers) {
+      if ((await this._readers.check(writer)) !== true) {
+        filteredWriters.push(writer);
+      }
+    }
     return {
       handlers,
       document: this._document,
@@ -1404,9 +1410,80 @@ export class PeerborneDocument<
     };
   }
 
+  private _appendRemoteUpdateNotificationTask(
+    task: () => void | Promise<void>,
+  ): void {
+    const previous = this._remoteUpdateNotificationTail ?? Promise.resolve();
+    let queued!: Promise<void>;
+    queued = previous
+      .then(task)
+      .catch(() => {
+        console.error(
+          `Failed to prepare remote update notification for ${this.documentPath}`,
+        );
+      })
+      .finally(() => {
+        if (this._remoteUpdateNotificationTail === queued) {
+          this._remoteUpdateNotificationTail = undefined;
+        }
+      });
+    this._remoteUpdateNotificationTail = queued;
+  }
+
+  private _enqueueRemoteUpdateNotification(
+    hashes: string[],
+    handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[],
+    initialConflict?: ACLOperationInProgressError,
+  ): void {
+    const capturedHashes = [...hashes];
+    const capturedHandlers = [...handlers];
+    this._appendRemoteUpdateNotificationTask(async () => {
+      let conflict = initialConflict;
+      for (;;) {
+        if (conflict) {
+          await conflict.waitForSettlement();
+          conflict = undefined;
+        }
+        try {
+          await this._mutationQueue.run(async () => {
+            this._assertNoIncompleteBootstrapLoad();
+            const notification = await this._prepareRemoteUpdateNotification(
+              capturedHashes,
+              capturedHandlers,
+            );
+            this._dispatchRemoteUpdateHandlers(notification);
+          });
+          return;
+        } catch (error) {
+          if (!(error instanceof ACLOperationInProgressError)) throw error;
+          conflict = error;
+        }
+      }
+    });
+  }
+
   private async _fireRemoteUpdateHandlers(hashes: string[]): Promise<void> {
-    const notification = await this._prepareRemoteUpdateNotification(hashes);
-    this._dispatchRemoteUpdateHandlers(notification);
+    const handlers = Object.values(this._remoteHandlers);
+    if (handlers.length === 0) return;
+    if (this._remoteUpdateNotificationTail) {
+      this._enqueueRemoteUpdateNotification(hashes, handlers);
+      return;
+    }
+    try {
+      const notification = await this._prepareRemoteUpdateNotification(
+        hashes,
+        handlers,
+      );
+      this._dispatchRemoteUpdateHandlers(notification);
+    } catch (error) {
+      if (error instanceof ACLOperationInProgressError) {
+        this._enqueueRemoteUpdateNotification(hashes, handlers, error);
+        return;
+      }
+      console.error(
+        `Failed to prepare remote update notification for ${this.documentPath}`,
+      );
+    }
   }
 
   private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
@@ -1742,6 +1819,9 @@ export class PeerborneDocument<
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
+      const appliedMissingDocumentHashes = new Array<string | undefined>(
+        missingDocumentHashes.length,
+      );
       const fetchController =
         signal !== undefined || enforceFetchLimits
           ? new AbortController()
@@ -1793,7 +1873,6 @@ export class PeerborneDocument<
                 this._documentChangeCount++;
                 this._changesSinceSnapshot++;
                 this._trackTip(missingHash, missingHashKind);
-                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
                 break;
               }
               case crdtReaderChangeNode: {
@@ -1802,17 +1881,16 @@ export class PeerborneDocument<
                 await this._mergeReaders(missingChanges);
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
-                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
                 break;
               }
               case crdtWriterChangeNode: {
                 await this._mergeWriters(missingChanges);
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
-                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
                 break;
               }
             }
+            appliedMissingDocumentHashes[index] = missingHash;
             throwIfLoadAborted(signal);
           } catch (error) {
             if (signal?.aborted) throwIfLoadAborted(signal);
@@ -1859,6 +1937,12 @@ export class PeerborneDocument<
         throw new _LoadFetchLimitExceededError(
           'Missing change block fetch limits exceeded',
         );
+      }
+      const appliedHashes = appliedMissingDocumentHashes.filter(
+        (hash): hash is string => hash !== undefined,
+      );
+      if (appliedHashes.length > 0) {
+        await this._fireOrDeferRemoteUpdateHandlers(appliedHashes);
       }
     }
     throwIfLoadAborted(signal);
@@ -2075,6 +2159,7 @@ export class PeerborneDocument<
 
   private async _isLoadRequesterAuthorized(
     message: CRDTLoadRequest,
+    retryConflicts = true,
   ): Promise<boolean> {
     if (!this._isSigningEnabled()) return true;
     if (!message.signature) return false;
@@ -2087,10 +2172,14 @@ export class PeerborneDocument<
     }
     const requestBytes = this._encoder.encode(message.documentId);
     const authorizedKeys = (
-      await Promise.all([
-        retryACLConflict(() => this._readers.users()),
-        retryACLConflict(() => this._writers.users()),
-      ])
+      await Promise.all(
+        retryConflicts
+          ? [
+              retryACLConflict(() => this._readers.users()),
+              retryACLConflict(() => this._writers.users()),
+            ]
+          : [this._readers.users(), this._writers.users()],
+      )
     ).flat();
     for (const key of authorizedKeys) {
       if (
@@ -2111,7 +2200,10 @@ export class PeerborneDocument<
   ): Promise<void> {
     const dispatch = await this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
-      if (!(await this._isLoadRequesterAuthorized(message))) {
+      // A provider-reported conflict cannot be awaited while this operation
+      // owns the document FIFO. Fail closed so a hung provider cannot retain
+      // the queue after the request deadline.
+      if (!(await this._isLoadRequesterAuthorized(message, false))) {
         if (!isSharedProtocolHandlerActive(admission)) return;
         return { completion: stream.sink([] as Iterable<Uint8Array>) };
       }
@@ -3524,6 +3616,12 @@ export class PeerborneDocument<
           this._lastSyncMessage !== undefined ||
           this._latestSnapshot !== undefined;
         const syncTrackedLoadMessageUnlocked = async (): Promise<boolean> => {
+          // Established pinned/unsigned catch-up can temporarily return a
+          // complete document to the pending bootstrap state. Do not begin
+          // that transition while an older observer notification is waiting:
+          // finalization cannot await the observer without retaining this
+          // queue slot, and dispatching first would overtake it.
+          if (this._remoteUpdateNotificationTail) return false;
           const hashesBefore = this._hashes.size;
           const lastSyncMessageBefore = this._lastSyncMessage;
           const latestSnapshotBefore = this._latestSnapshot;
