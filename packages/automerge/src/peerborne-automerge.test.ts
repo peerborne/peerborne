@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { snapshotDeepEnumerableData } from '@peerborne/core';
 import {
   Change as BinaryChange,
+  applyChanges as applyAutomergeChanges,
   clone as automergeClone,
   change as automergeChange,
   decodeChange as decodeAutomergeChange,
@@ -69,6 +70,10 @@ async function importECDSAPublicKey(jwk: JsonWebKey): Promise<CryptoKey> {
     ['verify'],
   );
 }
+
+type AutomergeACLShape = {
+  users?: Record<string, true>;
+};
 
 // ─── AutomergeProvider ──────────────────────────────────────────────
 
@@ -461,6 +466,83 @@ describe('AutomergeACL', () => {
     const fresh = new AutomergeACL();
     expect(() => fresh.merge(independent.current())).not.toThrow();
     expect(await fresh.check(key2)).toBe(true);
+  });
+
+  test('rejects a concurrent membership assignment and deletion atomically', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const serialized = await serializeKey(key1);
+    const deleteBase = automergeInit<AutomergeACLShape>({
+      actor: 'ffffffffffffffffffffffffffffffff',
+    });
+    const assignBase = automergeInit<AutomergeACLShape>({
+      actor: '11111111111111111111111111111111',
+    });
+    const [deleteDocument] = applyAutomergeChanges(deleteBase, before);
+    const [assignDocument] = applyAutomergeChanges(assignBase, before);
+    const deletion = automergeChange(deleteDocument, (doc) => {
+      delete doc.users![serialized];
+    });
+    const assignment = automergeChange(assignDocument, (doc) => {
+      delete doc.users![serialized];
+      doc.users![serialized] = true;
+    });
+    const conflicted = automergeMerge(deletion, assignment);
+
+    expect(() => acl.merge(getAllAutomergeChanges(conflicted))).toThrow(
+      /conflicting membership/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects a users-root deletion racing a nested assignment', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const serialized = await serializeKey(key2);
+    const deleteBase = automergeInit<AutomergeACLShape>({
+      actor: 'ffffffffffffffffffffffffffffffff',
+    });
+    const assignBase = automergeInit<AutomergeACLShape>({
+      actor: '11111111111111111111111111111111',
+    });
+    const [deleteDocument] = applyAutomergeChanges(deleteBase, before);
+    const [assignDocument] = applyAutomergeChanges(assignBase, before);
+    const deletion = automergeChange(deleteDocument, (doc) => {
+      delete doc.users;
+    });
+    const assignment = automergeChange(assignDocument, (doc) => {
+      doc.users![serialized] = true;
+    });
+    const conflicted = automergeMerge(deletion, assignment);
+    expect(conflicted.users).toBeUndefined();
+
+    expect(() => acl.merge(getAllAutomergeChanges(conflicted))).toThrow(
+      /mutates the users root/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+  });
+
+  test('rejects a malformed serialized membership key atomically', async () => {
+    const invalidPoint = new Uint8Array(97);
+    invalidPoint[0] = 0x04;
+    const invalidSerializedPoint = Buffer.from(invalidPoint).toString('base64');
+    let source = automergeInit<AutomergeACLShape>();
+    source = automergeChange(source, (doc) => {
+      doc.users = { [invalidSerializedPoint]: true };
+    });
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    expect(() => acl.merge(getAllAutomergeChanges(source))).toThrow(
+      /valid P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    await expect(acl.users()).resolves.toEqual([]);
   });
 
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
