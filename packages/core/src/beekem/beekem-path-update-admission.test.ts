@@ -290,7 +290,7 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     await expect(alice.getRootSecret()).resolves.toEqual(localRoot);
   });
 
-  test('revalidates a detached update after an in-flight Welcome commits', async () => {
+  test('rejects a PathUpdate before Welcome commit and accepts a retry afterward', async () => {
     const founder = new BeeKEM();
     const founderKeys = await generateKeyPair();
     await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
@@ -327,35 +327,34 @@ describe('BeeKEM legacy PathUpdate admission', () => {
       recipientKeys.privateKey,
       recipientKeys.publicKey,
     );
-    let queuedUpdate: Promise<Uint8Array> | undefined;
     try {
       await entered;
-      queuedUpdate = target.processPathUpdate(pathUpdate);
-      await expect(
-        target.initialize(
-          recipientKeys.privateKey,
-          recipientKeys.publicKey,
-        ),
-      ).rejects.toThrow(/mutation is waiting for Welcome settlement/);
-      pathUpdate.senderLeafPublicKey.fill(0);
-      for (const node of pathUpdate.nodes) {
-        node.publicKey.fill(0);
-        node.encryptedPrivateKey.fill(0);
-      }
+      let inputReads = 0;
+      const unreadUpdate = new Proxy(pathUpdate, {
+        getOwnPropertyDescriptor(target, property) {
+          inputReads++;
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
+      await expect(target.processPathUpdate(unreadUpdate)).rejects.toThrow(
+        /tree is not initialized/,
+      );
+      expect(inputReads).toBe(0);
+
       release();
       await expect(joining).resolves.toEqual(welcomeRoot);
-      await expect(queuedUpdate).resolves.toEqual(updatedRoot);
+      await expect(target.processPathUpdate(pathUpdate)).resolves.toEqual(
+        updatedRoot,
+      );
       await expect(target.getRootSecret()).resolves.toEqual(updatedRoot);
     } finally {
       release();
-      await Promise.allSettled(
-        queuedUpdate === undefined ? [joining] : [joining, queuedUpdate],
-      );
+      await Promise.allSettled([joining]);
       digestSpy.mockRestore();
     }
   });
 
-  test('releases a queued update after an in-flight Welcome fails', async () => {
+  test('allows initialization after an in-flight Welcome fails', async () => {
     const founder = new BeeKEM();
     const founderKeys = await generateKeyPair();
     await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
@@ -391,21 +390,13 @@ describe('BeeKEM legacy PathUpdate admission', () => {
       recipientKeys.privateKey,
       recipientKeys.publicKey,
     );
-    let queuedUpdate: Promise<Uint8Array> | undefined;
     try {
       await entered;
-      queuedUpdate = target.processPathUpdate(pathUpdate);
-      const queuedOutcome = queuedUpdate.then(
-        () => undefined,
-        (error: unknown) => error,
+      await expect(target.processPathUpdate(pathUpdate)).rejects.toThrow(
+        /tree is not initialized/,
       );
       release();
       await expect(joining).rejects.toThrow(/tree hash mismatch/);
-      await expect(queuedOutcome).resolves.toEqual(
-        expect.objectContaining({
-          message: expect.stringMatching(/tree state is invalid/),
-        }),
-      );
       await expect(
         target.initialize(
           recipientKeys.privateKey,
@@ -414,9 +405,7 @@ describe('BeeKEM legacy PathUpdate admission', () => {
       ).resolves.toBeUndefined();
     } finally {
       release();
-      await Promise.allSettled(
-        queuedUpdate === undefined ? [joining] : [joining, queuedUpdate],
-      );
+      await Promise.allSettled([joining]);
       digestSpy.mockRestore();
     }
   });
@@ -620,7 +609,7 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     });
 
     await expect(alice.processPathUpdate(unreadUpdate)).rejects.toThrow(
-      /BeeKEM tree state is invalid/,
+      /BeeKEM tree is not initialized/,
     );
     expect(inputReads).toBe(0);
   });
