@@ -856,6 +856,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             snapshot.keyBase64,
             prepareAdd,
             true,
+            preservePriorEntry,
           );
           prepared.commit();
           return prepared.changes;
@@ -903,11 +904,27 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     keyBase64: string,
     prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
     allowActiveMutation = false,
+    preservePriorEntry?: boolean,
   ): Promise<PreparedACLChange<ChangesType>> {
     this._assertReadable('Prepared ACL addition');
+    preservePriorEntry ??= await this._hasStablePriorEntry(
+      publicKey,
+      keyBase64,
+      'Prepared ACL addition',
+    );
+    this._assertReadable('Prepared ACL addition');
     const metadataRevision = this._metadataRevision;
+    const prepared = await this._runBackingPreparation(async () => {
+      try {
+        return await prepareAdd.call(this._backing, publicKey);
+      } catch (error) {
+        if (!preservePriorEntry) {
+          this._quarantineAddition(keyBase64);
+        }
+        throw error;
+      }
+    });
     const backingRevision = this._backingRevision;
-    const prepared = await prepareAdd.call(this._backing, publicKey);
     this._assertReadable('Prepared ACL addition');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
     if (this._backingRevision !== backingRevision) {

@@ -663,14 +663,17 @@ describe('UCANACL', () => {
     expect(backing.add).not.toHaveBeenCalled();
   });
 
-  test('a rejected staged preparation leaves ACL state readable and retryable', async () => {
+  test('a rejected staged preparation quarantines an unproven addition until retry', async () => {
     const members = new Set<string>();
     backing.current.mockReturnValue('current-state');
     backing.check.mockImplementation(async (key: string) => members.has(key));
     backing.users.mockImplementation(async () => [...members]);
     backing.prepareAdd = jest
       .fn()
-      .mockRejectedValueOnce(new Error('staging failed before mutation'))
+      .mockImplementationOnce(async (key: string) => {
+        members.add(key);
+        throw new Error('staging failed after partial mutation');
+      })
       .mockResolvedValueOnce({
         changes: 'retry-changes',
         commit: () => {
@@ -679,14 +682,15 @@ describe('UCANACL', () => {
       });
 
     await expect(acl.add('key1')).rejects.toThrow(
-      'staging failed before mutation',
+      'staging failed after partial mutation',
     );
-    expect(acl.current()).toBe('current-state');
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
     await expect(acl.check('key1')).resolves.toBe(false);
     await expect(acl.users()).resolves.toEqual([]);
 
     await expect(acl.add('key1')).resolves.toBe('retry-changes');
     await expect(acl.check('key1')).resolves.toBe(true);
+    expect(acl.current()).toBe('current-state');
   });
 
   test('prepareAdd delegates without committing backing membership', async () => {
@@ -701,6 +705,104 @@ describe('UCANACL', () => {
     expect(prepared.changes).toBe('staged-changes');
     expect(commit).not.toHaveBeenCalled();
     prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('prepareAdd quarantines a rejected unproven backing preparation', async () => {
+    const members = new Set<string>();
+    backing.current.mockReturnValue('current-state');
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+    backing.prepareAdd = jest.fn(async (key: string) => {
+      members.add(key);
+      throw new Error('preparation failed after partial mutation');
+    });
+
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      'preparation failed after partial mutation',
+    );
+
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+  });
+
+  test('a preparation preflight rejection does not quarantine an addition', async () => {
+    backing.current.mockReturnValue('current-state');
+    backing.check.mockResolvedValue(true);
+    backing.prepareAdd = jest.fn();
+    const internals = acl as { _backingMutationsInFlight: number };
+
+    internals._backingMutationsInFlight = 1;
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      /backing (?:mutation|operation) is in progress/,
+    );
+    expect(backing.prepareAdd).not.toHaveBeenCalled();
+    internals._backingMutationsInFlight = 0;
+
+    await expect(acl.check('key1')).resolves.toBe(true);
+    expect(acl.current()).toBe('current-state');
+  });
+
+  test('a rejected staged reauthorization preserves a proven prior entry', async () => {
+    const members = new Set<string>();
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:key1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+      }),
+    );
+    backing.add.mockImplementation(async (key: string) => {
+      members.add(key);
+      return 'initial-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+    backing.current.mockReturnValue('current-state');
+    await acl.grant(
+      'key1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    backing.prepareAdd = jest.fn(async () => {
+      throw new Error('could not stage reauthorization');
+    });
+
+    await expect(acl.add('key1')).rejects.toThrow(
+      'could not stage reauthorization',
+    );
+
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(true);
+    await expect(acl.users('/doc/read')).resolves.toEqual(['key1']);
+    await expect(acl.getEntry('key1')).resolves.toBeDefined();
+    expect(acl.current()).toBe('current-state');
+  });
+
+  test('prepareAdd blocks a reentrant merge during backing preparation', async () => {
+    const commit = jest.fn();
+    let mergeError: unknown;
+    backing.prepareAdd = jest.fn(async () => {
+      try {
+        acl.merge('reentrant-changes');
+      } catch (error) {
+        mergeError = error;
+      }
+      return { changes: 'staged-changes', commit };
+    });
+
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(mergeError).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /cannot reenter|backing (?:mutation|operation) is in progress/,
+        ),
+      }),
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+    expect(() => prepared.commit()).not.toThrow();
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
