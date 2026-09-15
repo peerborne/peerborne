@@ -884,6 +884,44 @@ describe('UCANACL', () => {
     expect(await acl.check('key1', '/doc/read')).toBe(false);
   });
 
+  test('quarantines a partially applied failed prepared addition until retry', async () => {
+    let isMember = false;
+    backing.prepareAdd = jest.fn();
+    backing.prepareAdd
+      .mockResolvedValueOnce({
+        changes: 'failed-changes',
+        commit: () => {
+          isMember = true;
+          throw new Error('prepared add failed after mutation');
+        },
+      })
+      .mockResolvedValueOnce({
+        changes: 'recovery-changes',
+        commit: () => {
+          isMember = true;
+        },
+      });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['key1'] : [],
+    );
+    backing.current.mockReturnValue('current-state');
+
+    const failed = await acl.prepareAdd('key1');
+    expect(() => failed.commit()).toThrow(
+      'prepared add failed after mutation',
+    );
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+
+    const recovery = await acl.prepareAdd('key1');
+    expect(() => recovery.commit()).not.toThrow();
+    await expect(acl.check('key1')).resolves.toBe(true);
+    await expect(acl.users()).resolves.toEqual(['key1']);
+    expect(acl.current()).toBe('current-state');
+  });
+
   test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
     await expect(acl.prepareAdd('key1')).rejects.toThrow(
       'Backing ACL does not support staged addition',
@@ -2210,6 +2248,9 @@ describe('UCANACL', () => {
     );
     await expect(acl.remove('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
     );
     await expect(acl.prepareRemove('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
