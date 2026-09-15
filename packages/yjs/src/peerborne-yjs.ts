@@ -610,6 +610,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     return this._runMutation(async () => {
       this._assertComplete('add an ACL member');
       const hash = await serializeKey(publicKey);
+      assertCanonicalP384PublicKeyEncoding(hash);
       this._assertComplete('add an ACL member');
       const base = this._acl;
       const staged = new Doc();
