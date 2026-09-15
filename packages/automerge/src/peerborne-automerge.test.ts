@@ -252,6 +252,35 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareAdd() releases actors after post-reservation validation failures', async () => {
+    const acl = new AutomergeACL();
+    const internals = acl as unknown as {
+      _retainedChanges: Map<string, unknown>;
+      _stagedAdditionActors: Set<string>;
+    };
+    for (let index = 0; index < MAX_AUTOMERGE_ACL_CHANGES; index++) {
+      internals._retainedChanges.set(`retained-${index}`, {});
+      if (index < MAX_AUTOMERGE_ACL_CHANGES - 1) {
+        internals._stagedAdditionActors.add(`reserved-${index}`);
+      }
+    }
+    const retainedActors = new Set(internals._stagedAdditionActors);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(acl.prepareAdd(key1)).rejects.toThrow(
+        `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      );
+      expect(internals._stagedAdditionActors).toEqual(retainedActors);
+    }
+
+    internals._retainedChanges.clear();
+    const prepared = await acl.prepareAdd(key1);
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(internals._stagedAdditionActors.size).toBe(
+      MAX_AUTOMERGE_ACL_CHANGES,
+    );
+  });
+
   test('prepareAdd() commit is single-use', async () => {
     const acl = new AutomergeACL();
     const prepared = await acl.prepareAdd(key1);
