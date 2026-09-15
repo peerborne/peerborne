@@ -11,6 +11,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
+import { InvitationMembershipQueue } from './invitation-membership.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
 jest.mock(
@@ -1924,20 +1925,21 @@ describe('document load response boundaries', () => {
   ] as const)(
     '%s rechecks the requester against the queued current ACL before send',
     async (methodName) => {
-      let readerQuery = 0;
+      const responseConstructionPaused = deferred<void>();
+      const releaseResponseConstruction = deferred<void>();
+      const mutationQueue = new InvitationMembershipQueue();
+      let authorized = true;
       const sink = jest.fn(async () => undefined);
       const document = fakeDocument({
         documentPath: '/response-revocation',
         _bootstrapLoadApplicationState: 'complete',
         _bootstrapLoadApplicationRevision: 2,
         _encoder: new TextEncoder(),
-        _mutationQueue: {
-          run: (operation: () => Promise<unknown>) => operation(),
-        },
+        _mutationQueue: mutationQueue,
         swarm: { config: { enableSigning: true } },
         _readers: {
           users: jest.fn(async () =>
-            ++readerQuery === 1 ? ['revoked-reader'] : [],
+            authorized ? ['revoked-reader'] : [],
           ),
         },
         _writers: { users: jest.fn(async () => []) },
@@ -1947,7 +1949,11 @@ describe('document load response boundaries', () => {
         _keychainChangesForVisibility: jest.fn(async () => ({ keys: [] })),
         _latestSnapshot: { lastChangeNodeCID: 'SNAPSHOT' },
         _servedFrontier: jest.fn(() => []),
-        _signAsWriter: jest.fn(async () => 'response-signature'),
+        _signAsWriter: jest.fn(async () => {
+          responseConstructionPaused.resolve();
+          await releaseResponseConstruction.promise;
+          return 'response-signature';
+        }),
         _syncMessageSerializer: {
           serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
         },
@@ -1965,12 +1971,16 @@ describe('document load response boundaries', () => {
         },
       });
 
-      await expect(
-        document[methodName](
-          { documentId: '/response-revocation', signature: 'AAAA' },
-          { sink },
-        ),
-      ).resolves.toBeUndefined();
+      const response = document[methodName](
+        { documentId: '/response-revocation', signature: 'AAAA' },
+        { sink },
+      );
+      await responseConstructionPaused.promise;
+      await mutationQueue.run(async () => {
+        authorized = false;
+      });
+      releaseResponseConstruction.resolve();
+      await expect(response).resolves.toBeUndefined();
 
       expect(document._readers.users).toHaveBeenCalledTimes(2);
       expect(sink).toHaveBeenCalledTimes(1);
