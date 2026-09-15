@@ -2,6 +2,8 @@ import { ACL } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
+import { LRUCache } from './lru-cache.js';
+import { snapshotDeepEnumerableData } from './utils.js';
 
 /**
  * An entry in the UCAN-based ACL.
@@ -42,6 +44,22 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
 }
 
 const MAX_STABLE_USER_LISTING_ATTEMPTS = 3;
+const MAX_CACHED_LISTING_IDENTITIES = 128;
+const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
+const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
+  maxDepth: 8,
+  maxObjects: 16,
+  maxProperties: 64,
+  maxArrayLength: 64,
+  maxValueBytes: 8 * 1024,
+} as const;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const reflectApply = Reflect.apply;
+
+interface CachedListingIdentity<PublicKey> {
+  readonly backingRevision: object;
+  readonly template: PublicKey;
+}
 
 /**
  * UCAN-based ACL with fine-grained capability support.
@@ -73,8 +91,10 @@ const MAX_STABLE_USER_LISTING_ATTEMPTS = 3;
  * provider's identity domain, and must capture caller-owned state before its
  * first asynchronous suspension. Object and function identities additionally
  * require a deserializer that returns a fully detached identity with the same
- * canonical encoding. Primitive identities are immutable and remain supported
- * with the two-argument constructor.
+ * canonical encoding. Listing caches retain only bounded, private canonical
+ * templates for one backing revision, and every identity returned to a caller
+ * is freshly detached. Primitive identities are immutable and remain
+ * supported with the two-argument constructor.
  */
 export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicKey> {
   private _entries: Map<string, UCANACLEntry> = new Map(); // publicKeyBase64 -> entry
@@ -90,6 +110,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _pendingMembershipMutations = 0;
   private _backingMutationsInFlight = 0;
   private _backingStateUncertain = false;
+  private readonly _listingIdentityCache = new LRUCache<
+    string,
+    CachedListingIdentity<PublicKey>
+  >(MAX_CACHED_LISTING_IDENTITIES);
 
   // Private backing ACL so membership checks cannot bypass the wrapper's
   // capability and local-revocation gates.
@@ -106,13 +130,41 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     publicKey: PublicKey,
     operation: string,
   ): Promise<{ publicKey: PublicKey; keyBase64: string }> {
+    const keyBase64 = await this._canonicalPublicKey(publicKey, operation);
+    const stablePublicKey = await this._deserializeStablePublicKey(
+      publicKey,
+      keyBase64,
+      operation,
+    );
+    if (!this._deserializePublicKey) {
+      return { publicKey: stablePublicKey, keyBase64 };
+    }
+    if ((await this._serializePublicKey(stablePublicKey)) !== keyBase64) {
+      throw new Error(
+        `${operation} rejected a non-canonical public-key round trip`,
+      );
+    }
+    return { publicKey: stablePublicKey, keyBase64 };
+  }
+
+  private async _canonicalPublicKey(
+    publicKey: PublicKey,
+    operation: string,
+  ): Promise<string> {
     const keyBase64 = await this._serializePublicKey(publicKey);
     if (typeof keyBase64 !== 'string' || keyBase64.length === 0) {
       throw new TypeError(
         `${operation} requires a non-empty canonical public-key encoding`,
       );
     }
+    return keyBase64;
+  }
 
+  private async _deserializeStablePublicKey(
+    publicKey: PublicKey,
+    keyBase64: string,
+    operation: string,
+  ): Promise<PublicKey> {
     const mutableIdentity =
       (typeof publicKey === 'object' && publicKey !== null) ||
       typeof publicKey === 'function';
@@ -122,7 +174,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           `${operation} requires a public-key deserializer for mutable identities`,
         );
       }
-      return { publicKey, keyBase64 };
+      return publicKey;
     }
 
     const stablePublicKey = await this._deserializePublicKey(keyBase64);
@@ -131,6 +183,97 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         `${operation} requires the public-key deserializer to return a detached identity`,
       );
     }
+    return stablePublicKey;
+  }
+
+  private _cloneCacheableListingIdentity(
+    publicKey: PublicKey,
+  ): PublicKey | undefined {
+    let clone: PublicKey;
+    try {
+      clone = snapshotDeepEnumerableData(
+        publicKey,
+        'ACL listing identity',
+        CACHED_IDENTITY_SNAPSHOT_LIMITS,
+      );
+      const sourceIsObject =
+        typeof publicKey === 'object' && publicKey !== null;
+      if (
+        sourceIsObject &&
+        (clone === publicKey ||
+          reflectApply(objectGetPrototypeOf, Object, [clone]) !==
+            reflectApply(objectGetPrototypeOf, Object, [publicKey]))
+      ) {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+    return clone;
+  }
+
+  private async _snapshotListedPublicKey(
+    publicKey: PublicKey,
+    operation: string,
+    backingRevision: object,
+  ): Promise<{ publicKey: PublicKey; keyBase64: string }> {
+    const keyBase64 = await this._canonicalPublicKey(publicKey, operation);
+    const cacheableEncoding =
+      keyBase64.length <= MAX_CACHED_IDENTITY_ENCODING_LENGTH;
+    if (cacheableEncoding) {
+      const cached = this._listingIdentityCache.get(keyBase64);
+      if (cached?.backingRevision === backingRevision) {
+        const clone = this._cloneCacheableListingIdentity(cached.template);
+        if (clone !== undefined) return { publicKey: clone, keyBase64 };
+      }
+    }
+
+    const stablePublicKey = await this._deserializeStablePublicKey(
+      publicKey,
+      keyBase64,
+      operation,
+    );
+    if (!this._deserializePublicKey) {
+      return { publicKey: stablePublicKey, keyBase64 };
+    }
+    if (cacheableEncoding) {
+      // Keep a clone that neither the codec nor any caller can retain. Validate
+      // canonicality on a separate throwaway clone before caching it.
+      const template = this._cloneCacheableListingIdentity(stablePublicKey);
+      const validationIdentity =
+        template === undefined
+          ? undefined
+          : this._cloneCacheableListingIdentity(template);
+      const returnedIdentity =
+        template === undefined
+          ? undefined
+          : this._cloneCacheableListingIdentity(template);
+      if (
+        template !== undefined &&
+        validationIdentity !== undefined &&
+        returnedIdentity !== undefined
+      ) {
+        let validationEncoding: string | undefined;
+        try {
+          validationEncoding = await this._serializePublicKey(
+            validationIdentity,
+          );
+        } catch {
+          // A structurally cloneable identity can still rely on representation
+          // details that the bounded clone intentionally does not preserve.
+        }
+        if (validationEncoding === keyBase64) {
+          if (this._backingRevision === backingRevision) {
+            this._listingIdentityCache.set(keyBase64, {
+              backingRevision,
+              template,
+            });
+          }
+          return { publicKey: returnedIdentity, keyBase64 };
+        }
+      }
+    }
+
     if ((await this._serializePublicKey(stablePublicKey)) !== keyBase64) {
       throw new Error(
         `${operation} rejected a non-canonical public-key round trip`,
@@ -485,7 +628,13 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         continue;
       }
       const snapshots = await Promise.all(
-        allUsers.map((user) => this._snapshotPublicKey(user, 'ACL listing')),
+        allUsers.map((user) =>
+          this._snapshotListedPublicKey(
+            user,
+            'ACL listing',
+            backingRevision,
+          ),
+        ),
       );
       this._assertReadable('ACL listing');
       if (
