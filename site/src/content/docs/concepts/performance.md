@@ -55,7 +55,9 @@ is a primitive-level property, not an end-to-end revocation guarantee: the
 active PathUpdate v1 protocol has no generation or parent-tree binding, accepts
 previously unseen delayed updates out of order, and has no delivery guarantee.
 Shipped keychains may incidentally reject an exact repeat of an already-installed
-epoch ID, which does not provide an ordering guarantee. Source:
+epoch ID, which does not provide an ordering guarantee. Rotations also fail
+closed when a blank sibling subtree requires more than v1's single ciphertext
+to cover its resolution. Source:
 [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts)
 and
 [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).

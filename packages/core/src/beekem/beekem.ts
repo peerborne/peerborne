@@ -740,55 +740,13 @@ export class BeeKEM {
     };
     staged._nodes.set(detachedUpdate.senderLeafIndex, senderLeaf);
 
-    // The update path consists of internal nodes from the sender's leaf to root.
-    // We need to find the first node in the update that is on our direct path.
-    // At that node, the encrypted private key is encrypted to the resolution
-    // of the subtree on OUR side (the sender's copath), so we can decrypt it
-    // using a private key from our subtree.
-    let decryptedPrivateKey: CryptoKey | null = null;
-    let intersectionIdx = -1;
-
-    for (let i = 0; i < detachedUpdate.nodes.length; i++) {
-      const pathNode = detachedUpdate.nodes[i];
-      const dpIdx = myDirectPath.indexOf(pathNode.nodeIndex);
-      if (dpIdx >= 0) {
-        // This update node is on our direct path.
-        // The sender encrypted this node's private key to the resolution of
-        // the subtree on OUR side (the sender's copath at this level).
-        // Find the child of this node on our side and look for a private key.
-        const childOnOurSide = staged._findChildOnOurSide(pathNode.nodeIndex);
-        if (childOnOurSide !== undefined) {
-          const childNode = staged._nodes.get(childOnOurSide);
-          if (childNode?.privateKey) {
-            decryptedPrivateKey = await staged._decryptNodeKey(
-              pathNode.encryptedPrivateKey,
-              childNode.privateKey,
-            );
-          } else {
-            // Walk down our subtree to find any node with a private key
-            const resolved = await staged._resolveSubtreeKey(childOnOurSide);
-            if (resolved) {
-              decryptedPrivateKey = await staged._decryptNodeKey(
-                pathNode.encryptedPrivateKey,
-                resolved,
-              );
-            }
-          }
-        }
-
-        intersectionIdx = i;
-        break;
-      }
-    }
-
-    if (!decryptedPrivateKey || intersectionIdx === -1) {
+    if (firstIntersection === -1) {
       throw new Error(
         'Cannot process path update: no intersection found with our path',
       );
     }
 
-    // Import the public key for the intersection node
-    const intersectionNode = detachedUpdate.nodes[intersectionIdx];
+    const intersectionNode = detachedUpdate.nodes[firstIntersection];
     const intersectionPublicKey = await crypto.subtle.importKey(
       'raw',
       toBuffer(intersectionNode.publicKey),
@@ -796,11 +754,41 @@ export class BeeKEM {
       true,
       [],
     );
-    await assertMatchingPathKeyPair(
-      intersectionPublicKey,
-      decryptedPrivateKey,
+    const childOnOurSide = staged._findChildOnOurSide(
       intersectionNode.nodeIndex,
     );
+    const candidateKeys =
+      childOnOurSide === undefined
+        ? []
+        : staged._privateKeyCandidates(childOnOurSide);
+    let decryptedPrivateKey: CryptoKey | null = null;
+    let lastDecryptionError: unknown;
+    for (const candidateKey of candidateKeys) {
+      let candidatePrivateKey: CryptoKey;
+      try {
+        candidatePrivateKey = await staged._decryptNodeKey(
+          intersectionNode.encryptedPrivateKey,
+          candidateKey,
+        );
+      } catch (error) {
+        lastDecryptionError = error;
+        continue;
+      }
+      await assertMatchingPathKeyPair(
+        intersectionPublicKey,
+        candidatePrivateKey,
+        intersectionNode.nodeIndex,
+      );
+      decryptedPrivateKey = candidatePrivateKey;
+      break;
+    }
+    if (!decryptedPrivateKey) {
+      throw new Error(
+        'Cannot process path update: no local resolution key could decrypt ' +
+          'the intersection',
+        { cause: lastDecryptionError },
+      );
+    }
 
     // Set the intersection node
     const intNode: InternalNode = {
@@ -812,7 +800,7 @@ export class BeeKEM {
     staged._nodes.set(intersectionNode.nodeIndex, intNode);
 
     // Also update nodes below the intersection from the sender's side
-    for (let i = 0; i < intersectionIdx; i++) {
+    for (let i = 0; i < firstIntersection; i++) {
       const pathNode = detachedUpdate.nodes[i];
       const publicKey = await crypto.subtle.importKey(
         'raw',
@@ -1565,53 +1553,63 @@ export class BeeKEM {
   }
 
   /**
-   * Resolve the public key of a subtree rooted at the given node index.
-   * If the node has a public key, return it.
-   * If the node is blank, search its children for a non-blank key.
+   * Resolve the single public key that legacy PathUpdate v1 can address for a
+   * subtree. A blank node can expand to several resolution nodes, but v1 has
+   * only one ciphertext per path level and must reject that case.
    */
   private async _resolvePublicKey(
     nodeIndex: number,
   ): Promise<CryptoKey | null> {
-    const node = this._nodes.get(nodeIndex);
-    if (node?.publicKey) return node.publicKey;
-
-    // For internal nodes, try children
-    if (TreeMath.isInternal(nodeIndex)) {
-      const leftChild = TreeMath.left(nodeIndex);
-      const rightChild = TreeMath.right(nodeIndex, this._numLeaves);
-
-      const leftKey = await this._resolvePublicKey(leftChild);
-      if (leftKey) return leftKey;
-
-      const rightKey = await this._resolvePublicKey(rightChild);
-      if (rightKey) return rightKey;
+    const resolution = this._collectResolutionPublicKeys(nodeIndex, 2);
+    if (resolution.length > 1) {
+      throw new Error(
+        'Cannot update path: legacy PathUpdate v1 cannot safely encode ' +
+          'multiple sibling resolution nodes',
+      );
     }
-
-    return null;
+    return resolution[0] ?? null;
   }
 
-  /**
-   * Find a private key in our subtree by walking down from a given node.
-   * Returns the private key if found, null otherwise.
-   */
-  private async _resolveSubtreeKey(
+  private _collectResolutionPublicKeys(
     nodeIndex: number,
-  ): Promise<CryptoKey | null> {
+    limit: number,
+  ): CryptoKey[] {
     const node = this._nodes.get(nodeIndex);
-    if (node?.privateKey) return node.privateKey;
+    if (node?.publicKey) return [node.publicKey];
 
     if (TreeMath.isInternal(nodeIndex)) {
       const leftChild = TreeMath.left(nodeIndex);
       const rightChild = TreeMath.right(nodeIndex, this._numLeaves);
-
-      const leftKey = await this._resolveSubtreeKey(leftChild);
-      if (leftKey) return leftKey;
-
-      const rightKey = await this._resolveSubtreeKey(rightChild);
-      if (rightKey) return rightKey;
+      const leftKeys = this._collectResolutionPublicKeys(
+        leftChild,
+        limit,
+      );
+      if (leftKeys.length >= limit) return leftKeys;
+      const rightKeys = this._collectResolutionPublicKeys(
+        rightChild,
+        limit - leftKeys.length,
+      );
+      return [...leftKeys, ...rightKeys];
     }
 
-    return null;
+    return [];
+  }
+
+  /** Private resolution keys from the subtree root down to our own leaf. */
+  private _privateKeyCandidates(nodeIndex: number): CryptoKey[] {
+    const localPath = [
+      this._myLeafIndex,
+      ...TreeMath.directPath(this._myLeafIndex, this._numLeaves),
+    ];
+    const subtreeOffset = localPath.indexOf(nodeIndex);
+    if (subtreeOffset === -1) return [];
+
+    const candidates: CryptoKey[] = [];
+    for (let offset = subtreeOffset; offset >= 0; offset--) {
+      const privateKey = this._nodes.get(localPath[offset])?.privateKey;
+      if (privateKey) candidates.push(privateKey);
+    }
+    return candidates;
   }
 
   /**
