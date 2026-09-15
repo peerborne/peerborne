@@ -325,6 +325,19 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('no-op merge replays do not stale a prepared removal', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const replay = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+
+    acl.merge([]);
+    acl.merge(replay);
+
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
   test('prepareRemove() rejects a stale commit before changing membership', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -803,6 +816,24 @@ describe('AutomergeACL', () => {
     receiver.merge(founderChanges);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('a new dependency-incomplete change still stales prepared removal', async () => {
+    const receiver = new AutomergeACL();
+    await receiver.add(key1);
+    const prepared = await receiver.prepareRemove(key1);
+    const sender = new AutomergeACL();
+    await sender.add(key2);
+    const dependent = await sender.add(key1);
+
+    receiver.merge(dependent);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(() => receiver.current()).toThrow(
+      /unresolved change dependencies/,
+    );
   });
 
   test('does not authorize across a merge that introduces missing dependencies', async () => {
