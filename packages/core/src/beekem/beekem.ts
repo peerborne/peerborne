@@ -438,7 +438,6 @@ export class BeeKEM {
     privateKey: CryptoKey,
     publicKey: CryptoKey,
   ): Promise<void> {
-    this._receiverGeneration++;
     let compatibilityProbe: CryptoKeyPair;
     try {
       compatibilityProbe = (await crypto.subtle.generateKey(
@@ -460,6 +459,7 @@ export class BeeKEM {
       'founder leaf 0',
       'Cannot initialize BeeKEM',
     );
+    this._receiverGeneration++;
     this._nodes.clear();
     this._numLeaves = 1;
     this._myLeafIndex = 0;
@@ -1307,7 +1307,10 @@ export class BeeKEM {
         );
       }
     }
-    if (this._stagedWelcomeCandidates.size === 0) return;
+    if (this._stagedWelcomeCandidates.size === 0) {
+      this._finishWelcomeSettlementIfPossible();
+      return;
+    }
 
     if (!this._isFreshWelcomeTarget()) {
       const candidates = [...this._stagedWelcomeCandidates.values()];
