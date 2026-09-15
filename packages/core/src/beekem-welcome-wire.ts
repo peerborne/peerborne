@@ -206,9 +206,15 @@ function snapshotLegacyWelcome<T>(
   if (rawPathKeys.length === 0) {
     throw new Error(`${context}: pathKeys has invalid length`);
   }
+  const directPath = TreeMath.directPath(leafIndex, numLeaves);
+  if (rawPathKeys.length !== directPath.length) {
+    throw new Error(
+      `${context}: pathKeys must contain the complete direct path`,
+    );
+  }
   const rawTreeNodePublicKeys = snapshotBoundedArray(
     raw.treeNodePublicKeys,
-    treeWidth - 2,
+    treeWidth - directPath.length - 1,
     `${context}: treeNodePublicKeys`,
     budget,
     `${context}: treeNodePublicKeys exceeds the supported tree width`,
@@ -254,12 +260,6 @@ function snapshotLegacyWelcome<T>(
     };
   });
 
-  const directPath = TreeMath.directPath(leafIndex, numLeaves);
-  if (pathKeys.length !== directPath.length) {
-    throw new Error(
-      `${context}: pathKeys must contain the complete direct path`,
-    );
-  }
   const covered = new Set<number>([leafIndex]);
   for (let offset = 0; offset < pathKeys.length; offset++) {
     const nodeIndex = pathKeys[offset].nodeIndex;

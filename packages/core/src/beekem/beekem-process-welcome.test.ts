@@ -213,7 +213,7 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
         recipientKeys.privateKey,
         recipientKeys.publicKey,
       ),
-    ).rejects.toThrow(/supported tree leaf bound/);
+    ).rejects.toThrow(/supported \d+-leaf tree bound/);
     await expectTargetPristine(target);
 
     let getterCalls = 0;
