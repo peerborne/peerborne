@@ -716,6 +716,280 @@ describe('document load response boundaries', () => {
     expect(remoteChange).toHaveBeenCalledWith(document._document, decodedChanges);
   });
 
+  test.each(['blockstore', 'prefetched'] as const)(
+    'decrypts an invitation change block through only the staged key view: %s',
+    async (source) => {
+      const stagedKey = { staged: true };
+      const stagedGetKey = jest.fn(() => stagedKey);
+      const liveGetKey = jest.fn(() => {
+        throw new Error('live keychain must remain untouched');
+      });
+      const block = new Uint8Array([7, 8, 9]);
+      const get = jest.fn(async function* () {
+        yield block;
+      });
+      const decodedChanges = { value: 'staged-decryption' };
+      const decrypt = jest.fn(async () => new Uint8Array([10]));
+      const remoteChange = jest.fn(() => decodedChanges);
+      const document = fakeDocument({
+        documentPath: '/staged-block-decryption',
+        _bootstrapLoadApplicationState: 'pending',
+        _document: {},
+        _hashes: new Set<string>(),
+        _referencedAncestors: new Set<string>(),
+        _lastSyncMessage: undefined,
+        _latestSnapshot: undefined,
+        _mergeSyncTree: jest.fn(async () => [
+          ['HEAD', crdtDocumentChangeNode, undefined],
+        ]),
+        _keychainProvider: { keyIDLength: 1 },
+        _keychain: { getKey: liveGetKey },
+        _authProvider: { nonceBits: 1, decrypt },
+        _changesSerializer: {
+          deserializeChanges: jest.fn(() => decodedChanges),
+        },
+        _crdtProvider: { remoteChange },
+        _documentChangeCount: 0,
+        _changesSinceSnapshot: 0,
+        _recentTips: [],
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _remoteHandlers: {},
+        _refreshLastSyncMessageFromSync: jest.fn(),
+        _bootstrapCompactionDeferred: false,
+        _maybeCompact: jest.fn(async () => undefined),
+        swarm: { heliaNode: { blockstore: { get } } },
+      });
+
+      await expect(
+        document._syncDocumentChanges(
+          'HEAD',
+          { kind: crdtDocumentChangeNode },
+          {
+            getKey: stagedGetKey,
+            ...(source === 'prefetched'
+              ? { prefetchedBlocks: new Map([['HEAD', block]]) }
+              : {}),
+          },
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(stagedGetKey).toHaveBeenCalledWith(new Uint8Array([7]));
+      expect(liveGetKey).not.toHaveBeenCalled();
+      expect(get).toHaveBeenCalledTimes(source === 'blockstore' ? 1 : 0);
+      expect(decrypt).toHaveBeenCalledWith(
+        new Uint8Array([9]),
+        stagedKey,
+        new Uint8Array([8]),
+      );
+      expect(remoteChange).toHaveBeenCalledTimes(1);
+      expect(document._hashes).toContain('HEAD');
+    },
+  );
+
+  test.each(['gc-missing', 'over-budget'] as const)(
+    'does not prefetch or budget known compacted history on an established load: %s',
+    async (knownBlockMode) => {
+      const message = {
+        documentId: '/established-prefetch',
+        signature: 'AAAA',
+        changeId: 'HEAD',
+        tips: ['HEAD'],
+        changes: {
+          kind: crdtDocumentChangeNode,
+          change: { inline: 'head' },
+          children: {
+            KNOWN: {
+              kind: crdtDocumentChangeNode,
+              change: { inline: 'compacted-history' },
+            },
+          },
+        },
+      };
+      const { document, stream } = signedLoadHarness(
+        async () => ['current-writer'],
+        async () => true,
+        message,
+      );
+      document._bootstrapLoadApplicationState = 'complete';
+      document._bootstrapLoadApplicationRevision = 2;
+      document._hashes.add('KNOWN');
+      document._writers = { users: jest.fn(async () => ['current-writer']) };
+      const get = jest.fn((cid: { toString(): string }) =>
+        (async function* () {
+          if (cid.toString() === 'KNOWN' && knownBlockMode === 'gc-missing') {
+            throw new Error('compacted block was garbage-collected');
+          }
+          yield new Uint8Array([1, 2, 3]);
+        })(),
+      );
+      document.swarm.heliaNode = { blockstore: { get } };
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _onStateApplicationStart: (() => void) | undefined,
+          _continuePending: boolean,
+          _onLogicalKeychainChange: (() => void) | undefined,
+          fetchOptions: any,
+        ) => {
+          expect(appliedMessage.changes.change).toBeUndefined();
+          expect(appliedMessage.changes.children.KNOWN.change).toBeUndefined();
+          expect(fetchOptions.prefetchedBlocks.has('HEAD')).toBe(true);
+          expect(fetchOptions.prefetchedBlocks.has('KNOWN')).toBe(false);
+          document._hashes.add('HEAD');
+          return true;
+        },
+      );
+      const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+      await expect(
+        document._sendLoadRequestAndSync(
+          stream,
+          new Uint8Array([1]),
+          expectedTipsHash,
+          undefined,
+          3,
+        ),
+      ).resolves.toBe(true);
+
+      expect(get.mock.calls.map(([cid]) => cid.toString())).toEqual(['HEAD']);
+      expect(document._hashes).toEqual(new Set(['KNOWN', 'HEAD']));
+    },
+  );
+
+  test('does not skip prefetch for a transient hash that a queued mutation rolls back', async () => {
+    const message = {
+      documentId: '/transient-prefetch-hash',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._writers = { users: jest.fn(async () => ['issuer']) };
+    const queue = new InvitationMembershipQueue();
+    const transientHashInstalled = deferred<void>();
+    const releaseTransientMutation = deferred<void>();
+    let queueAdmissions = 0;
+    document._mutationQueue = {
+      run: <T>(operation: () => Promise<T>): Promise<T> => {
+        queueAdmissions++;
+        if (queueAdmissions === 2) releaseTransientMutation.resolve();
+        return queue.run(operation);
+      },
+    };
+    const transientMutation = document._mutationQueue.run(async () => {
+      document._hashes.add('HEAD');
+      transientHashInstalled.resolve();
+      await releaseTransientMutation.promise;
+      document._hashes.delete('HEAD');
+    });
+    await transientHashInstalled.promise;
+
+    const get = jest.fn(async function* () {
+      yield new Uint8Array([1]);
+    });
+    document.swarm.heliaNode = { blockstore: { get } };
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart: (() => void) | undefined,
+        _continuePending: boolean,
+        _onLogicalKeychainChange: (() => void) | undefined,
+        fetchOptions: any,
+      ) => {
+        expect(fetchOptions.prefetchedBlocks.has('HEAD')).toBe(true);
+        onStateApplicationStart?.();
+        document._hashes.add('HEAD');
+        return true;
+      },
+    );
+    document._completeBootstrapStateApplicationUnlocked = jest.fn(
+      async () => document._markBootstrapStateApplicationComplete(),
+    );
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+        'issuer',
+      ),
+    ).resolves.toBe(true);
+    await expect(transientMutation).resolves.toBeUndefined();
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toContain('HEAD');
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
+  test('does not require GC history below an already-applied snapshot boundary', async () => {
+    const message = {
+      documentId: '/snapshot-prefetch',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+        children: {
+          SNAPSHOT: {
+            kind: crdtDocumentChangeNode,
+            children: {
+              'GC-ANCESTOR': { kind: crdtDocumentChangeNode },
+            },
+          },
+        },
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => ['current-writer'],
+      async () => true,
+      message,
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('SNAPSHOT');
+    document._latestSnapshot = { lastChangeNodeCID: 'SNAPSHOT' };
+    document._writers = { users: jest.fn(async () => ['current-writer']) };
+    const get = jest.fn((cid: { toString(): string }) =>
+      (async function* () {
+        if (cid.toString() !== 'HEAD') {
+          throw new Error('snapshot-covered block was garbage-collected');
+        }
+        yield new Uint8Array([1]);
+      })(),
+    );
+    document.swarm.heliaNode = { blockstore: { get } };
+    document._syncUnlocked = jest.fn(async () => {
+      document._hashes.add('HEAD');
+      return true;
+    });
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).resolves.toBe(true);
+
+    expect(get.mock.calls.map(([cid]) => cid.toString())).toEqual(['HEAD']);
+    expect(document._hashes.has('GC-ANCESTOR')).toBe(false);
+  });
+
   test('does not classify a prefetch provider RangeError as a byte limit', async () => {
     const secret = 'prefetch-provider-private-sentinel';
     const message = {
@@ -1921,6 +2195,155 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
+  test.each([undefined, Symbol('forged-continuation')])(
+    'does not let an ordinary pinned load continue a pending bootstrap: %p',
+    async (forgedContinuation) => {
+      const { document, stream } = signedLoadHarness(
+        async () => ['issuer'],
+        async () => true,
+      );
+      document._bootstrapLoadApplicationState = 'pending';
+      document._syncUnlocked = jest.fn(async () => true);
+
+      await expect(
+        document._sendLoadRequestAndSync(
+          stream,
+          new Uint8Array([1]),
+          null,
+          'issuer',
+          undefined,
+          true,
+          undefined,
+          undefined,
+          undefined,
+          forgedContinuation,
+        ),
+      ).resolves.toBe(false);
+
+      expect(stream.abort).toHaveBeenCalledTimes(1);
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+    },
+  );
+
+  test('does not resume a deferred load after its invitation continuation is revoked', async () => {
+    const continuation = {};
+    const sourceStarted = deferred<void>();
+    const releaseSource = deferred<void>();
+    const { document, stream } = signedLoadHarness(
+      async () => ['issuer'],
+      async () => true,
+    );
+    stream.source = (async function* () {
+      sourceStarted.resolve();
+      await releaseSource.promise;
+      yield new Uint8Array([1, 2, 3]);
+    })();
+    document._bootstrapLoadApplicationState = 'pending';
+    document._activeInvitationBootstrapContinuation = continuation;
+    document._syncUnlocked = jest.fn(async () => {
+      document._hashes.add('STALE');
+      return true;
+    });
+
+    const staleLoad = document._sendLoadRequestAndSync(
+      stream,
+      new Uint8Array([1]),
+      null,
+      'issuer',
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      continuation,
+    );
+    await sourceStarted.promise;
+
+    // Model the outer deadline path revoking its per-acceptance capability
+    // while an underlying Promise.race loser remains alive.
+    document._activeInvitationBootstrapContinuation = undefined;
+    releaseSource.resolve();
+
+    await expect(staleLoad).resolves.toBe(false);
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._hashes).toEqual(new Set());
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+  });
+
+  test('stops a multi-entry ACL prepass after a deferred merge loses its continuation', async () => {
+    const continuation = {};
+    const firstMergeStarted = deferred<void>();
+    const releaseFirstMerge = deferred<void>();
+    const mergeReader = jest.fn(async () => {
+      firstMergeStarted.resolve();
+      await releaseFirstMerge.promise;
+    });
+    const mergeWriter = jest.fn(async () => undefined);
+    const syncDocumentChanges = jest.fn(async () => undefined);
+    const applySnapshot = jest.fn(() => ({ snapshot: true }));
+    const document = fakeDocument({
+      documentPath: '/revoked-acl-prepass',
+      swarm: { config: { enableSigning: false } },
+      _bootstrapLoadApplicationState: 'pending',
+      _activeInvitationBootstrapContinuation: continuation,
+      _document: {},
+      _hashes: new Set<string>(),
+      _readers: { merge: mergeReader },
+      _writers: { merge: mergeWriter },
+      _pendingWelcomes: new Map(),
+      _writerMutationsInFlight: 0,
+      _cachedWriterKeys: null,
+      _writerKeysVersion: 0,
+      _collectACLFromTree: jest.fn(() => ({
+        aclEntries: [
+          { kind: crdtReaderChangeNode, change: { reader: true } },
+          { kind: crdtWriterChangeNode, change: { writer: true } },
+        ],
+        changes: { kind: crdtDocumentChangeNode },
+      })),
+      _syncDocumentChanges: syncDocumentChanges,
+      _latestSnapshot: undefined,
+      _crdtProvider: { applySnapshot },
+    });
+    const assertStillActive = () => {
+      if (document._activeInvitationBootstrapContinuation !== continuation) {
+        throw new Error('invitation continuation revoked');
+      }
+    };
+
+    const syncing = document._syncUnlocked(
+      {
+        documentId: '/revoked-acl-prepass',
+        changeId: 'HEAD',
+        changes: { kind: crdtDocumentChangeNode },
+        snapshot: {
+          state: { snapshot: true },
+          lastChangeNodeCID: 'SNAPSHOT',
+          compactedCount: 1,
+          signature: 'AAAA',
+          timestamp: 1,
+        },
+      },
+      false,
+      undefined,
+      true,
+      undefined,
+      { assertStillActive },
+    );
+    await firstMergeStarted.promise;
+
+    document._activeInvitationBootstrapContinuation = undefined;
+    releaseFirstMerge.resolve();
+
+    await expect(syncing).rejects.toThrow(/continuation revoked/);
+    expect(mergeReader).toHaveBeenCalledTimes(1);
+    expect(mergeWriter).not.toHaveBeenCalled();
+    expect(applySnapshot).not.toHaveBeenCalled();
+    expect(syncDocumentChanges).not.toHaveBeenCalled();
+    expect(document._hashes).toEqual(new Set());
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+  });
+
   test('rechecks invitation pristine state at its queued application boundary', async () => {
     const queued = deferred<void>();
     const release = deferred<void>();
@@ -1964,7 +2387,9 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._runInvitationBootstrapStateApplication(async () => {
+      document._runInvitationBootstrapStateApplication(async (begin: () => void) => {
+        expect(document._bootstrapLoadApplicationState).toBe('pristine');
+        begin();
         expect(document._bootstrapLoadApplicationState).toBe('pending');
         throw new Error('live write failed');
       }),
@@ -2591,12 +3016,14 @@ describe('document load response boundaries', () => {
 
   test('poisons an accepted invitation when activation catch-up fails', async () => {
     const close = jest.fn(async () => undefined);
+    const continuation = {};
     const document = fakeDocument({
       documentPath: '/failed-invitation-activation',
-      _bootstrapLoadApplicationState: 'complete',
-      _bootstrapLoadApplicationRevision: 2,
-      _invitationBootstrapReady: false,
-      open: jest.fn(async () => true),
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _invitationBootstrapReady: true,
+      _activeInvitationBootstrapContinuation: continuation,
+      _open: jest.fn(async () => true),
       _loadInvitationCatchUp: jest.fn(async () => false),
       _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
       close,
@@ -2607,15 +3034,186 @@ describe('document load response boundaries', () => {
         '/founder',
         'issuer',
         'reader',
+        continuation,
       ),
     ).rejects.toThrow(/catch-up load failed/);
 
     expect(document._bootstrapLoadApplicationState).toBe('pending');
-    expect(document._bootstrapLoadApplicationRevision).toBe(3);
+    expect(document._bootstrapLoadApplicationRevision).toBe(1);
     expect(close).toHaveBeenCalledTimes(1);
+    // The enclosing invitation transaction clears its one-shot capability in
+    // `finally`; this direct activation unit test mirrors that handoff before
+    // checking the durable post-failure gate.
+    document._activeInvitationBootstrapContinuation = undefined;
     expect(() => document._assertNoIncompleteBootstrapLoad()).toThrow(
       /discard this document instance/,
     );
+  });
+
+  test('does not publish invitation completion when final membership fails', async () => {
+    const close = jest.fn(async () => undefined);
+    const continuation = {};
+    const complete = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/failed-invitation-membership',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _invitationBootstrapReady: true,
+      _activeInvitationBootstrapContinuation: continuation,
+      _open: jest.fn(async () => true),
+      _loadInvitationCatchUp: jest.fn(async () => true),
+      _assertAcceptedInvitationMembership: jest.fn(async () => {
+        throw new Error('final membership rejected');
+      }),
+      _completeBootstrapStateApplicationUnlocked: complete,
+      close,
+    });
+
+    await expect(
+      document._activateAcceptedInvitationBootstrap(
+        '/founder',
+        'issuer',
+        'reader',
+        continuation,
+      ),
+    ).rejects.toThrow(/final membership rejected/);
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._bootstrapLoadApplicationRevision).toBe(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test('publishes invitation completion only after open, catch-up, and final membership', async () => {
+    const order: string[] = [];
+    const close = jest.fn(async () => undefined);
+    const continuationCapability = {};
+    const document = fakeDocument({
+      documentPath: '/successful-invitation-activation',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _invitationBootstrapReady: true,
+      _activeInvitationBootstrapContinuation: continuationCapability,
+      _hashes: new Set(['HEAD']),
+      _computeTopic: jest.fn(() => '/invitation-topic'),
+      _keychainProvider: { keyIDLength: 1 },
+      _authProvider: { nonceBits: 1 },
+      _syncMessageSerializer: { deserializeSyncMessage: jest.fn() },
+      swarm: {
+        config: { enableSigning: false },
+        registerDocument: jest.fn(() => {
+          expect(document._bootstrapLoadApplicationState).toBe('pending');
+          order.push('open');
+        }),
+        heliaNode: {
+          libp2p: {
+            services: {
+              pubsub: {
+                addEventListener: jest.fn(),
+                subscribe: jest.fn(() => {
+                  expect(document._bootstrapLoadApplicationState).toBe(
+                    'pending',
+                  );
+                }),
+              },
+            },
+          },
+        },
+      },
+      _loadInvitationCatchUp: jest.fn(
+        async (
+          _founder: string,
+          _issuer: string,
+          _role: string,
+          continuation: unknown,
+        ) => {
+          expect(continuation).toBe(continuationCapability);
+          expect(document._bootstrapLoadApplicationState).toBe('pending');
+          order.push('catch-up');
+          return true;
+        },
+      ),
+      _assertAcceptedInvitationMembership: jest.fn(async () => {
+        expect(document._bootstrapLoadApplicationState).toBe('pending');
+        order.push('membership');
+      }),
+      _completeBootstrapStateApplicationUnlocked: jest.fn(async () => {
+        expect(document._bootstrapLoadApplicationState).toBe('pending');
+        expect(
+          document._activeInvitationBootstrapContinuation,
+        ).toBeUndefined();
+        order.push('complete');
+        document._markBootstrapStateApplicationComplete();
+      }),
+      close,
+    });
+
+    await expect(
+      document._activateAcceptedInvitationBootstrap(
+        '/founder',
+        'issuer',
+        'reader',
+        continuationCapability,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(order).toEqual(['open', 'catch-up', 'membership', 'complete']);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document._bootstrapLoadApplicationRevision).toBe(2);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  test('retires invitation continuation before deferred handlers observe completion', async () => {
+    const continuation = {};
+    const stateSeenByHandler: string[] = [];
+    let reentrantDocument: unknown;
+    let reentrantError: unknown;
+    const handler = jest.fn(() => {
+      stateSeenByHandler.push(document._bootstrapLoadApplicationState);
+      try {
+        reentrantDocument = document.document;
+      } catch (error) {
+        reentrantError = error;
+      }
+    });
+    const currentDocument = { ready: true };
+    const document = fakeDocument({
+      documentPath: '/invitation-handler-completion',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _invitationBootstrapReady: true,
+      _activeInvitationBootstrapContinuation: continuation,
+      _open: jest.fn(async () => true),
+      _loadInvitationCatchUp: jest.fn(async () => true),
+      _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
+      _pendingWelcomes: new Map(),
+      _bootstrapCompactionDeferred: false,
+      _pendingBootstrapRemoteUpdateHashes: new Set(['HEAD']),
+      _remoteHandlers: { subscriber: handler },
+      _document: currentDocument,
+      _readers: {
+        users: jest.fn(async () => ['reader']),
+        check: jest.fn(async () => false),
+      },
+      _writers: { users: jest.fn(async () => ['writer']) },
+      close: jest.fn(async () => undefined),
+    });
+
+    await expect(
+      document._activateAcceptedInvitationBootstrap(
+        '/founder',
+        'issuer',
+        'reader',
+        continuation,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stateSeenByHandler).toEqual(['complete']);
+    expect(reentrantDocument).toBe(currentDocument);
+    expect(reentrantError).toBeUndefined();
+    expect(document._activeInvitationBootstrapContinuation).toBeUndefined();
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(new Set());
   });
 
   test('blocks invitation activation and acceptance on a poisoned instance', async () => {
