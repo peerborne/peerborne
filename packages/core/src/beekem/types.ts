@@ -143,9 +143,10 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
  * Tree-size ceiling for the legacy Welcome and PathUpdate wire/runtime
  * boundaries and the v2 codecs.
  *
- * Legacy PathUpdate v1 also rejects a non-root first intersection because its
- * single ciphertext per level cannot safely distribute the remaining ancestor
- * keys to that receiver subtree. Transport senders separately enforce the
- * document protocol's frame limit on the complete signed and framed request.
+ * Legacy PathUpdate v1 also rejects local emission when a blank sibling
+ * expands to multiple resolution nodes, and receivers reject a non-root first
+ * intersection. Its single ciphertext per level cannot safely cover either
+ * case. Transport senders separately enforce the document protocol's frame
+ * limit on the complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
