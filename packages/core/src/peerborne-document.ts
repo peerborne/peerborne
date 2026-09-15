@@ -278,6 +278,32 @@ const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
 /** Bound ordinary encrypted snapshot/document responses before decoding. */
 export const MAX_DOCUMENT_LOAD_RESPONSE_SIZE = 10 * 1024 * 1024;
 
+function assertCanonicalACLIdentity(
+  value: unknown,
+): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(
+      'AuthProvider.serializePublicKey must return a non-empty string',
+    );
+  }
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError(
+          'AuthProvider.serializePublicKey must return well-formed UTF-16',
+        );
+      }
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new TypeError(
+        'AuthProvider.serializePublicKey must return well-formed UTF-16',
+      );
+    }
+  }
+}
+
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_DOCUMENT_LOAD_RESPONSE_TIMEOUT_MS = 5000;
 
@@ -1501,9 +1527,8 @@ export class PeerborneDocument<
   private _applyACLFromTree(
     node: CRDTChangeNode<ChangesType>,
   ): Promise<void> {
-    return this._applyCollectedACL(
-      this._collectACLFromTree(node).aclEntries,
-    );
+    const { aclEntries } = this._collectACLFromTree(node);
+    return this._applyCollectedACL(aclEntries);
   }
 
   /**
@@ -5036,16 +5061,45 @@ export class PeerborneDocument<
       retryACLConflict(() => this._readers.users()),
       retryACLConflict(() => this._writers.users()),
     ]);
-    // Filter out any writers that also appear in the readers list to avoid duplicates.
-    // Run checks in parallel to avoid sequential async overhead with many writers.
-    const checkResults = await Promise.all(
-      writers.map(writer =>
-        retryACLConflict(() => this._readers.check(writer))
-      )
-    );
-    const filteredWriters = writers.filter(
-      (_, i) => checkResults[i] !== true,
-    );
+    if (writers.length === 0) return [...readers];
+    if (readers.length === 0) return [...writers];
+    const serializer = this._authProvider.serializePublicKey;
+    if (serializer !== undefined) {
+      if (typeof serializer !== 'function') {
+        throw new TypeError(
+          'AuthProvider.serializePublicKey must be a function',
+        );
+      }
+      const serializePublicKey = serializer.bind(this._authProvider);
+      const readerIdentities = new Set<string>();
+      // Keep identity-codec work bounded to one in-flight call. Custom auth
+      // providers are not required to support unbounded parallel invocation.
+      for (const reader of readers) {
+        const identity = await serializePublicKey(reader);
+        assertCanonicalACLIdentity(identity);
+        readerIdentities.add(identity);
+      }
+      const filteredWriters: PublicKey[] = [];
+      for (const writer of writers) {
+        const identity = await serializePublicKey(writer);
+        assertCanonicalACLIdentity(identity);
+        if (!readerIdentities.has(identity)) filteredWriters.push(writer);
+      }
+      return [...readers, ...filteredWriters];
+    }
+
+    // Legacy providers without canonical serialization must use ACL.check.
+    // Keep those calls serial because serialized ACLs reject overlap; a
+    // Promise.all fan-out would turn N checks into a quadratic retry storm.
+    const filteredWriters: PublicKey[] = [];
+    for (const writer of writers) {
+      if (
+        (await retryACLConflict(() => this._readers.check(writer))) !==
+        true
+      ) {
+        filteredWriters.push(writer);
+      }
+    }
     return [...readers, ...filteredWriters];
   }
 
