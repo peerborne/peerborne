@@ -192,9 +192,13 @@ describe('PeerborneDocument writer removal', () => {
       _publishPreparedWriterChange: publish,
     });
 
-    await document._removeWriterUnlocked('writer', 'writer', false);
+    const localWriter = Promise.resolve({
+      publicKey: 'local',
+      serialized: 'local',
+    });
+    await document._removeWriterUnlocked('writer', 'writer', false, localWriter);
     writersACL.merge(new Uint8Array([3]));
-    await document._removeWriterUnlocked('writer', 'writer', false);
+    await document._removeWriterUnlocked('writer', 'writer', false, localWriter);
 
     expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
     expect(publish).toHaveBeenCalledTimes(2);
