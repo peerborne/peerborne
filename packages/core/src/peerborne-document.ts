@@ -2980,6 +2980,57 @@ export class PeerborneDocument<
           );
           return false;
         }
+        let loadWriterAdmission:
+          | 'unsigned'
+          | 'pinned'
+          | 'bootstrap'
+          | 'current-writer' = this._isSigningEnabled()
+            ? 'bootstrap'
+            : 'unsigned';
+        const originalSignature = message.signature;
+        let originalUnsigned:
+          | { raw: Uint8Array; unchanged: () => boolean }
+          | undefined;
+        if (
+          (requiredResponseSigner !== undefined || this._isSigningEnabled()) &&
+          originalSignature
+        ) {
+          originalUnsigned = this._serializeUnsignedForVerification(
+            message,
+            'load-response-v3',
+            responseLimit,
+          );
+        }
+        const originalSignedRaw = originalUnsigned?.raw;
+        let originalSignatureBytes: Uint8Array | undefined;
+        const getOriginalSignatureBytes = (): Uint8Array | undefined => {
+          if (originalSignatureBytes) return originalSignatureBytes;
+          if (!originalSignature) return undefined;
+          try {
+            originalSignatureBytes = this._deserializeSignature(
+              originalSignature,
+            );
+            return originalSignatureBytes;
+          } catch {
+            return undefined;
+          }
+        };
+        const verifyOriginalLoadSignature = async (
+          writerKeys: readonly PublicKey[],
+        ): Promise<boolean> => {
+          const signatureBytes = getOriginalSignatureBytes();
+          if (!originalSignedRaw || !signatureBytes) return false;
+          const verified = await firstTrue(
+            writerKeys.map((writerKey) =>
+              this._authProvider.verify(
+                originalSignedRaw,
+                writerKey,
+                signatureBytes,
+              ),
+            ),
+          );
+          return verified === true && originalUnsigned!.unchanged();
+        };
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the
         // existing trusted writer set BEFORE sync() mutates state. This
@@ -2993,39 +3044,35 @@ export class PeerborneDocument<
             requiredResponseSigner === undefined
               ? await this._getWriterKeys()
               : [];
+          loadWriterAdmission = requiredResponseSigner === undefined
+            ? preLoadWriters.length > 0
+              ? 'current-writer'
+              : 'bootstrap'
+            : 'pinned';
           if (
             requiredResponseSigner !== undefined ||
             preLoadWriters.length > 0
           ) {
-            if (!message.signature) {
+            if (!originalSignature) {
               console.warn(
                 `Load response for ${this.documentPath}: missing signature, skipping peer`,
               );
               return false;
             }
-            const signature = message.signature;
-            const unsigned = this._serializeUnsignedForVerification(
-              message,
-              'load-response-v3',
-              responseLimit,
-            );
-            if (unsigned === undefined) {
+            if (originalUnsigned === undefined) {
               console.warn(
                 `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
               );
               return false;
             }
-            const raw = unsigned.raw;
             // Mirror `_verifyWriterSignature`: a malformed/non-string signature
             // can cause `js-base64` to throw. Treat decode failure as a
             // verification failure for this peer (skip and let the caller try
             // the next one) rather than letting the exception escape -- the
             // outer snapshot-load attempt swallows errors via a blanket
             // catch{}, which would hide the malformed input entirely.
-            let signatureBytes: Uint8Array;
-            try {
-              signatureBytes = this._deserializeSignature(signature);
-            } catch {
+            const signatureBytes = getOriginalSignatureBytes();
+            if (!signatureBytes) {
               console.warn(
                 `Load response for ${this.documentPath}: malformed signature, skipping peer`,
               );
@@ -3033,13 +3080,9 @@ export class PeerborneDocument<
             }
             const verified =
               requiredResponseSigner === undefined
-                ? await firstTrue(
-                    preLoadWriters.map((writerKey) =>
-                      this._authProvider.verify(raw, writerKey, signatureBytes),
-                    ),
-                  )
+                ? await verifyOriginalLoadSignature(preLoadWriters)
                 : await this._authProvider.verify(
-                    raw,
+                    originalUnsigned.raw,
                     requiredResponseSigner,
                     signatureBytes,
                   );
@@ -3049,7 +3092,7 @@ export class PeerborneDocument<
               );
               return false;
             }
-            if (!unsigned.unchanged()) {
+            if (!originalUnsigned.unchanged()) {
               console.warn(
                 `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
               );
@@ -3057,6 +3100,53 @@ export class PeerborneDocument<
             }
           }
         }
+        const syncLoadMessage = (): Promise<boolean> => {
+          if (loadWriterAdmission === 'current-writer') {
+            // Reverify while holding the membership queue. The writer set may
+            // have changed after the early load-response admission check.
+            return this._mutationQueue.run(async () => {
+              const currentWriters = await this._getWriterKeys();
+              if (
+                (await verifyOriginalLoadSignature(currentWriters)) !== true
+              ) {
+                return false;
+              }
+              return this._syncUnlocked(message, false, 'load-response-v3');
+            });
+          }
+          if (loadWriterAdmission === 'bootstrap') {
+            // First-load encrypted-channel bootstrap is valid only while the
+            // writer ACL and local DAG are still pristine at the queued
+            // application boundary. An existing document whose raw/legacy ACL
+            // reached zero writers must not regain bootstrap authority merely
+            // because a peer still holds an old document key.
+            return this._mutationQueue.run(async () => {
+              const currentWriters = await this._getWriterKeys();
+              if (currentWriters.length > 0) {
+                if (
+                  (await verifyOriginalLoadSignature(currentWriters)) !== true
+                ) {
+                  return false;
+                }
+                return this._syncUnlocked(message, false, 'load-response-v3');
+              }
+              if (
+                this._hashes.size > 0 ||
+                this._lastSyncMessage !== undefined ||
+                this._latestSnapshot !== undefined
+              ) {
+                return false;
+              }
+              return this._syncUnlocked(message, false, 'load-response-v3');
+            });
+          }
+          // A pinned signer is explicit out-of-band authority and was checked
+          // above. Signing-disabled loads preserve their configured behavior.
+          return this._syncValidatedProtocolMessage(
+            message,
+            'load-response-v3',
+          );
+        };
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
         // structurally describe the same tip set the responder voted
@@ -3364,10 +3454,7 @@ export class PeerborneDocument<
             }
           }
 
-          const syncResult = await this._syncValidatedProtocolMessage(
-            message,
-            'load-response-v3',
-          );
+          const syncResult = await syncLoadMessage();
           if (syncResult !== true) {
             console.warn(
               `sync rejected message during load for ${this.documentPath}`,
@@ -3416,11 +3503,7 @@ export class PeerborneDocument<
           ? await syncInvitationMessageCompletely(
               message,
               this._hashes,
-              () =>
-                this._syncValidatedProtocolMessage(
-                  message,
-                  'load-response-v3',
-                ),
+              syncLoadMessage,
               'catch-up',
               {
                 provenSnapshotBoundariesBeforeSync:
@@ -3431,10 +3514,7 @@ export class PeerborneDocument<
                   this._isLatestSnapshotFrom(message),
               },
             )
-          : await this._syncValidatedProtocolMessage(
-              message,
-              'load-response-v3',
-            );
+          : await syncLoadMessage();
         if (syncResult !== true) {
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
