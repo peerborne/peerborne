@@ -757,6 +757,11 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<Uint8Array>
   >();
+  // A stale preparation may already have been published. Retain its exact
+  // client/clock tuple for this ACL's bounded lifetime so a later live-base
+  // replacement cannot expose a different struct under the same identifier.
+  private readonly _stagedAdditionOperations = new Set<string>();
+  private readonly _stagedAdditionClientIDs = new Set<number>();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -810,6 +815,41 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
+  private _reserveStagedAdditionClientID(
+    base: Doc,
+    fallbackClientID: number,
+  ): number {
+    if (this._stagedAdditionOperations.size >= MAX_YJS_ACL_STRUCTURES) {
+      throw new RangeError(
+        `Yjs ACL has too many staged addition identifiers`,
+      );
+    }
+
+    let clientID = base.clientID;
+    let clock = getState(base.store, clientID);
+    let operationID = `${clientID}:${clock}`;
+    if (this._stagedAdditionOperations.has(operationID)) {
+      clientID = fallbackClientID;
+      let attempts = 0;
+      while (
+        this._stagedAdditionClientIDs.has(clientID) ||
+        base.store.clients.has(clientID)
+      ) {
+        if (attempts++ >= 32) {
+          throw new Error(
+            'Could not reserve a distinct Yjs ACL addition client ID',
+          );
+        }
+        clientID = new Doc().clientID;
+      }
+      clock = 0;
+      operationID = `${clientID}:${clock}`;
+    }
+    this._stagedAdditionOperations.add(operationID);
+    this._stagedAdditionClientIDs.add(clientID);
+    return clientID;
+  }
+
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
       const prepared = await this.prepareAdd(publicKey);
@@ -831,9 +871,19 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       staged,
       snapshotBoundedYjsACLState(base, 'stage an ACL addition'),
     );
-    staged.clientID = base.clientID;
     const stagedUsers = staged.getMap('users');
     const hadMember = stagedUsers.has(hash);
+    if (!hadMember) {
+      // Continue the live client's clock for the first staged write. Further
+      // writes exposed from the same base receive reserved actors so two
+      // publication candidates can never reuse one client/clock tuple.
+      staged.clientID = this._reserveStagedAdditionClientID(
+        base,
+        staged.clientID,
+      );
+    } else {
+      staged.clientID = base.clientID;
+    }
     const beforeSV = encodeStateVector(staged);
     if (!hadMember) {
       stagedUsers.set(hash, true);
