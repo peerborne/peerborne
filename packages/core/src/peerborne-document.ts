@@ -17,6 +17,7 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
+  snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
@@ -183,11 +184,104 @@ function throwIfLoadAborted(signal?: AbortSignal): void {
     : new Error('Document load was aborted');
 }
 
+function assertPositiveSafeByteLimit(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${field} must be a positive safe integer`);
+  }
+  return value;
+}
+
+const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
+
+async function countBoundedBlockBytes(
+  iterable: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+  maxBytes: number,
+  signal?: AbortSignal,
+  consumeBytes?: (byteLength: number) => void,
+): Promise<number> {
+  let byteLength = 0;
+  let chunkCount = 0;
+  throwIfLoadAborted(signal);
+  for await (const chunk of iterable) {
+    throwIfLoadAborted(signal);
+    chunkCount += 1;
+    if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
+      throw new RangeError('Block stream chunk budget exceeded');
+    }
+    const nextByteLength = byteLength + chunk.byteLength;
+    if (!Number.isSafeInteger(nextByteLength) || nextByteLength > maxBytes) {
+      throw new RangeError('Block stream byte budget exceeded');
+    }
+    consumeBytes?.(chunk.byteLength);
+    byteLength = nextByteLength;
+  }
+  throwIfLoadAborted(signal);
+  return byteLength;
+}
+
 /** Opaque, recipient-bound material returned by the invitation join handler. */
 export interface InvitationBootstrapBundle {
   welcomeEpochId: Uint8Array;
   sealedWelcome: Uint8Array;
   encryptedBootstrap: Uint8Array;
+}
+
+const reflectOwnKeys = Reflect.ownKeys;
+
+/** @internal Validate and detach every caller-owned invitation byte field. */
+export function snapshotInvitationBootstrapBundle(
+  bundle: InvitationBootstrapBundle,
+  keyIDLength: number,
+  nonceLength: number,
+): Readonly<InvitationBootstrapBundle> {
+  assertPositiveSafeByteLimit(keyIDLength, 'Invitation key ID length');
+  assertPositiveSafeByteLimit(nonceLength, 'Invitation nonce length');
+  const candidate = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
+    bundle,
+    'Invitation bootstrap bundle',
+  );
+  const keys = reflectOwnKeys(candidate);
+  let recognizedKeys = 0;
+  for (const key of keys) {
+    if (
+      key !== 'welcomeEpochId' &&
+      key !== 'sealedWelcome' &&
+      key !== 'encryptedBootstrap'
+    ) {
+      throw new TypeError(
+        'Invitation bootstrap bundle must contain exactly its three byte fields',
+      );
+    }
+    recognizedKeys += 1;
+  }
+  if (recognizedKeys !== 3) {
+    throw new TypeError(
+      'Invitation bootstrap bundle must contain exactly its three byte fields',
+    );
+  }
+  const welcomeEpochId = copyUnsharedUint8Array(
+    candidate.welcomeEpochId,
+    keyIDLength,
+    keyIDLength,
+    'Invitation welcome epoch',
+  );
+  const sealedWelcome = copyUnsharedUint8Array(
+    candidate.sealedWelcome,
+    1,
+    MAX_INVITATION_MESSAGE_BYTES,
+    'Invitation sealed Welcome',
+  );
+  const encryptedBootstrap = copyUnsharedUint8Array(
+    candidate.encryptedBootstrap,
+    keyIDLength + nonceLength + 1,
+    MAX_INVITATION_MESSAGE_BYTES,
+    'Invitation encrypted bootstrap',
+  );
+  return Object.freeze({
+    welcomeEpochId,
+    sealedWelcome,
+    encryptedBootstrap,
+  });
 }
 
 interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
@@ -208,6 +302,26 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   writers: PublicKey[],
   hashes: string[],
 ) => void;
+
+interface RemoteUpdateNotification<DocType, PublicKey> {
+  readonly handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[];
+  readonly document: DocType;
+  readonly readers: PublicKey[];
+  readonly writers: PublicKey[];
+  readonly hashes: string[];
+}
+
+interface MissingBlockFetchOptions {
+  readonly signal?: AbortSignal;
+  readonly maxBlockBytes?: number;
+  readonly consumeBytes?: (byteLength: number) => void;
+}
+
+interface DocumentChangeFetchOptions {
+  readonly signal?: AbortSignal;
+  readonly maxBlockBytes?: number;
+  readonly maxAggregateBlockBytes?: number;
+}
 
 /**
  * A peerborne "document" represents a single CRDT document.
@@ -1065,6 +1179,7 @@ export class PeerborneDocument<
   /** Finalize a verified bootstrap while holding `_mutationQueue`. */
   private async _completeBootstrapStateApplicationUnlocked(
     beforeComplete?: () => Promise<void>,
+    assertStillActive?: () => void,
   ): Promise<void> {
     if (this._bootstrapLoadApplicationState !== 'pending') {
       throw new Error(
@@ -1079,11 +1194,18 @@ export class PeerborneDocument<
       await this._maybeCompact();
     }
     await beforeComplete?.();
-    // Keep every public read and transition fail-closed until all internal
-    // finalization work has succeeded. Handlers may use guarded public getters,
-    // so publish completion immediately before delivering their notification.
+    const deferredNotification =
+      await this._prepareDeferredBootstrapRemoteUpdateNotification();
+    // Preparing the notification can await ACL providers. Recheck the caller's
+    // deadline immediately before publishing completion; after this point the
+    // notification dispatch is deliberately synchronous and cannot escape as
+    // late background work after a timed-out invitation has been rejected.
+    assertStillActive?.();
     this._markBootstrapStateApplicationComplete();
-    await this._fireDeferredBootstrapRemoteUpdateHandlers();
+    if (deferredNotification) {
+      this._pendingBootstrapRemoteUpdateHashes.clear();
+      this._dispatchRemoteUpdateHandlers(deferredNotification);
+    }
   }
 
   private async _decryptBlock(
@@ -1103,12 +1225,24 @@ export class PeerborneDocument<
     }
   }
 
-  private async _getBlock(hash: CID): Promise<ChangesType> {
+  private async _getBlock(
+    hash: CID,
+    options?: MissingBlockFetchOptions,
+  ): Promise<ChangesType> {
     // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
     // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
     // rather than a single `Uint8Array`. Consume the generator into a
     // contiguous buffer here before slicing the encryption header off.
-    const block = await readUint8Iterable(this.swarm.heliaNode.blockstore.get(hash));
+    throwIfLoadAborted(options?.signal);
+    const block = await readUint8Iterable(
+      this.swarm.heliaNode.blockstore.get(
+        hash,
+        options?.signal ? { signal: options.signal } : undefined,
+      ),
+      options?.maxBlockBytes,
+      options?.consumeBytes,
+    );
+    throwIfLoadAborted(options?.signal);
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
@@ -1118,10 +1252,13 @@ export class PeerborneDocument<
       this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
     );
     const content = await this._decryptBlock(blockKeyID, blockNonce, blockData);
+    throwIfLoadAborted(options?.signal);
     if (!content) {
       throw new Error(`Failed to decrypt block (CID: ${hash})`);
     }
-    return this._changesSerializer.deserializeChanges(content);
+    const changes = this._changesSerializer.deserializeChanges(content);
+    throwIfLoadAborted(options?.signal);
+    return changes;
   }
 
   private async _putBlock(block: ChangesType): Promise<string> {
@@ -1164,15 +1301,17 @@ export class PeerborneDocument<
     );
   }
 
-  private async _fireRemoteUpdateHandlers(hashes: string[]) {
-    for (const handler of Object.values(this._remoteHandlers)) {
+  private _dispatchRemoteUpdateHandlers(
+    notification: RemoteUpdateNotification<DocType, PublicKey>,
+  ): void {
+    for (const handler of notification.handlers) {
       try {
         void Promise.resolve(
           handler(
-            this._document,
-            await this.getReaders(),
-            await this.getWriters(),
-            hashes,
+            notification.document,
+            [...notification.readers],
+            [...notification.writers],
+            [...notification.hashes],
           ) as void | Promise<void>,
         ).catch(() => {
           console.error(
@@ -1185,6 +1324,43 @@ export class PeerborneDocument<
     }
   }
 
+  private async _prepareRemoteUpdateNotification(
+    hashes: string[],
+    handlers = Object.values(this._remoteHandlers),
+  ): Promise<RemoteUpdateNotification<DocType, PublicKey>> {
+    if (handlers.length === 0) {
+      return {
+        handlers,
+        document: this._document,
+        readers: [],
+        writers: [],
+        hashes,
+      };
+    }
+    const [readers, writers] = await Promise.all([
+      this._readers.users(),
+      this._writers.users(),
+    ]);
+    const checkResults = await Promise.all(
+      writers.map((writer) => this._readers.check(writer)),
+    );
+    const filteredWriters = writers.filter(
+      (_, index) => checkResults[index] !== true,
+    );
+    return {
+      handlers,
+      document: this._document,
+      readers: [...readers, ...filteredWriters],
+      writers: [...writers],
+      hashes: [...hashes],
+    };
+  }
+
+  private async _fireRemoteUpdateHandlers(hashes: string[]): Promise<void> {
+    const notification = await this._prepareRemoteUpdateNotification(hashes);
+    this._dispatchRemoteUpdateHandlers(notification);
+  }
+
   private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
     if (this._bootstrapLoadApplicationState === 'pending') {
       for (const hash of hashes) {
@@ -1195,11 +1371,13 @@ export class PeerborneDocument<
     await this._fireRemoteUpdateHandlers(hashes);
   }
 
-  private async _fireDeferredBootstrapRemoteUpdateHandlers(): Promise<void> {
-    if (this._pendingBootstrapRemoteUpdateHashes.size === 0) return;
-    const hashes = [...this._pendingBootstrapRemoteUpdateHashes];
-    this._pendingBootstrapRemoteUpdateHashes.clear();
-    await this._fireRemoteUpdateHandlers(hashes);
+  private async _prepareDeferredBootstrapRemoteUpdateNotification(): Promise<
+    RemoteUpdateNotification<DocType, PublicKey> | undefined
+  > {
+    if (this._pendingBootstrapRemoteUpdateHashes.size === 0) return undefined;
+    return this._prepareRemoteUpdateNotification([
+      ...this._pendingBootstrapRemoteUpdateHashes,
+    ]);
   }
 
   private async _fireLocalUpdateHandlers(hashes: string[]) {
@@ -1372,7 +1550,38 @@ export class PeerborneDocument<
   private async _syncDocumentChanges(
     changeId: string | undefined,
     changes: CRDTChangeNode<ChangesType>,
+    fetchOptions: DocumentChangeFetchOptions = {},
   ) {
+    const signal = fetchOptions.signal;
+    const maxBlockBytes = fetchOptions.maxBlockBytes;
+    const maxAggregateBlockBytes = fetchOptions.maxAggregateBlockBytes;
+    const enforceFetchLimits =
+      maxBlockBytes !== undefined || maxAggregateBlockBytes !== undefined;
+    if (maxBlockBytes !== undefined) {
+      assertPositiveSafeByteLimit(maxBlockBytes, 'Missing block byte limit');
+    }
+    if (maxAggregateBlockBytes !== undefined) {
+      assertPositiveSafeByteLimit(
+        maxAggregateBlockBytes,
+        'Missing block aggregate byte limit',
+      );
+    }
+    let fetchedBlockBytes = 0;
+    const consumeBytes =
+      maxAggregateBlockBytes === undefined
+        ? undefined
+        : (byteLength: number): void => {
+            throwIfLoadAborted(signal);
+            const nextTotal = fetchedBlockBytes + byteLength;
+            if (
+              !Number.isSafeInteger(nextTotal) ||
+              nextTotal > maxAggregateBlockBytes
+            ) {
+              throw new RangeError('Missing change block byte budget exceeded');
+            }
+            fetchedBlockBytes = nextTotal;
+          };
+    throwIfLoadAborted(signal);
     // Walk the incoming sync tree once and record every CID that appears
     // as a `children` key. Those CIDs are referenced ancestors -- by
     // definition no longer heads of the local DAG. Doing this BEFORE the
@@ -1393,6 +1602,7 @@ export class PeerborneDocument<
       this._lastSyncMessage && this._lastSyncMessage.changeId,
       this._hashes,
     );
+    throwIfLoadAborted(signal);
 
     // First apply changes that were sent directly.
     let newDocument = this._document;
@@ -1464,70 +1674,122 @@ export class PeerborneDocument<
       await this._fireOrDeferRemoteUpdateHandlers(newDocumentHashes);
     }
 
-    // Then apply missing hashes by fetching them from the blockstore.
-    // Track all fetch promises so we can compact only after all complete,
-    // avoiding premature snapshots of incomplete state.
-    const fetchPromises: Promise<void>[] = [];
-    for (const [missingHash, missingHashKind] of missingDocumentHashes) {
-      const cid = CID.parse(missingHash);
-      fetchPromises.push(
-        this._getBlock(cid)
-          .then(async (missingChanges) => {
-            if (missingChanges) {
-              switch (missingHashKind) {
-                case crdtDocumentChangeNode: {
-                  this._document = this._crdtProvider.remoteChange(
-                    this._document,
-                    missingChanges,
-                  );
-                  this._hashes.add(missingHash);
-                  this._documentChangeCount++;
-                  this._changesSinceSnapshot++;
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtReaderChangeNode: {
-                  // Go through `_mergeReaders` to drain any pending
-                  // BeeKEM Welcomes parked while waiting for this ACL
-                  // update.
-                  await this._mergeReaders(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtWriterChangeNode: {
-                  await this._mergeWriters(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-              }
-            } else {
-              console.error(
-                `Block '${missingHash}' returned nothing`,
-                missingChanges,
-              );
+    // Then apply missing hashes through a bounded worker pool. Every worker
+    // receives the enclosing load signal, and all workers are awaited even
+    // after cancellation so no queued fetch can apply state after the caller's
+    // deadline has rejected.
+    if (missingDocumentHashes.length > 0) {
+      let nextIndex = 0;
+      let fetchLimitExceeded = false;
+      const fetchController =
+        signal !== undefined || enforceFetchLimits
+          ? new AbortController()
+          : undefined;
+      const forwardAbort = (): void => {
+        if (!fetchController?.signal.aborted) {
+          fetchController?.abort(signal?.reason);
+        }
+      };
+      if (signal?.aborted) {
+        forwardAbort();
+      } else {
+        signal?.addEventListener('abort', forwardAbort, { once: true });
+      }
+      const fetchSignal = fetchController?.signal;
+      const worker = async (): Promise<void> => {
+        while (!fetchLimitExceeded) {
+          throwIfLoadAborted(signal);
+          const index = nextIndex++;
+          if (index >= missingDocumentHashes.length) return;
+          const [missingHash, missingHashKind] =
+            missingDocumentHashes[index]!;
+          try {
+            const cid = CID.parse(missingHash);
+            const missingChanges = await this._getBlock(cid, {
+              signal: fetchSignal,
+              maxBlockBytes,
+              consumeBytes,
+            });
+            throwIfLoadAborted(signal);
+            if (!missingChanges) {
+              console.error(`Block '${missingHash}' returned nothing`);
+              continue;
             }
-          })
-          .catch((err) => {
+            switch (missingHashKind) {
+              case crdtDocumentChangeNode: {
+                this._document = this._crdtProvider.remoteChange(
+                  this._document,
+                  missingChanges,
+                );
+                this._hashes.add(missingHash);
+                this._documentChangeCount++;
+                this._changesSinceSnapshot++;
+                this._trackTip(missingHash, missingHashKind);
+                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
+                break;
+              }
+              case crdtReaderChangeNode: {
+                // Go through `_mergeReaders` to drain any pending BeeKEM
+                // Welcomes parked while waiting for this ACL update.
+                await this._mergeReaders(missingChanges);
+                this._hashes.add(missingHash);
+                this._trackTip(missingHash, missingHashKind);
+                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
+                break;
+              }
+              case crdtWriterChangeNode: {
+                await this._mergeWriters(missingChanges);
+                this._hashes.add(missingHash);
+                this._trackTip(missingHash, missingHashKind);
+                await this._fireOrDeferRemoteUpdateHandlers([missingHash]);
+                break;
+              }
+            }
+            throwIfLoadAborted(signal);
+          } catch (error) {
+            if (signal?.aborted) throwIfLoadAborted(signal);
+            if (fetchLimitExceeded && fetchController?.signal.aborted) return;
+            if (enforceFetchLimits && error instanceof RangeError) {
+              fetchLimitExceeded = true;
+              if (!fetchController?.signal.aborted) {
+                fetchController?.abort(
+                  new RangeError('Missing change block fetch limits exceeded'),
+                );
+              }
+              return;
+            }
+            // A provider/serializer can throw arbitrary values derived from
+            // decrypted document bytes. Never pass that value to a logger.
             console.error(
               'Failed to fetch missing change from blockstore:',
               missingHash,
-              err,
             );
-          }),
+          }
+        }
+      };
+      const workerCount = Math.min(
+        LOAD_PREFETCH_MAX_CONCURRENCY,
+        missingDocumentHashes.length,
       );
+      let workerResults: PromiseSettledResult<void>[];
+      try {
+        workerResults = await Promise.allSettled(
+          Array.from({ length: workerCount }, () => worker()),
+        );
+      } finally {
+        signal?.removeEventListener('abort', forwardAbort);
+      }
+      throwIfLoadAborted(signal);
+      const workerFailure = workerResults.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (workerFailure) throw workerFailure.reason;
+      if (fetchLimitExceeded) {
+        throw new RangeError('Missing change block fetch limits exceeded');
+      }
     }
-
-    // Wait for all missing block fetches to settle before considering
-    // compaction. Bootstrap compaction remains deferred until the caller has
-    // separately verified that every advertised CID was installed.
-    if (fetchPromises.length > 0) {
-      await Promise.all(fetchPromises);
-    }
+    throwIfLoadAborted(signal);
 
     // Refresh `_lastSyncMessage` so the served frontier reflects what we now
     // hold. Without this, a relay peer that joined via `load()` (or that has
@@ -3053,8 +3315,15 @@ export class PeerborneDocument<
     beforeBootstrapComplete?: () => Promise<void>,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const responseLimit =
-      maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE;
+    const responseLimit = assertPositiveSafeByteLimit(
+      maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
+      'Document load response byte limit',
+    );
+    const changeFetchOptions: DocumentChangeFetchOptions = {
+      signal,
+      maxBlockBytes: responseLimit,
+      maxAggregateBlockBytes: responseLimit,
+    };
     const responseTimeoutMs = documentLoadResponseTimeoutMs(
       configuredResponseTimeoutMs ?? this.swarm.config?.loadQuorumTimeoutMs,
     );
@@ -3313,6 +3582,7 @@ export class PeerborneDocument<
               throwIfLoadAborted(signal);
               return this._completeBootstrapStateApplicationUnlocked(
                 assertBootstrapCanComplete,
+                () => throwIfLoadAborted(signal),
               );
             });
           }
@@ -3344,6 +3614,7 @@ export class PeerborneDocument<
             () => {
               trackedLoadMadeLogicalKeychainProgress = true;
             },
+            changeFetchOptions,
           );
           throwIfLoadAborted(signal);
           trackedLoadMadeReplicatedProgress =
@@ -3383,7 +3654,15 @@ export class PeerborneDocument<
               ) {
                 return false;
               }
-              return this._syncUnlocked(message, false, 'load-response-v3');
+              return this._syncUnlocked(
+                message,
+                false,
+                'load-response-v3',
+                undefined,
+                false,
+                undefined,
+                changeFetchOptions,
+              );
             });
           }
           if (loadWriterAdmission === 'bootstrap') {
@@ -3685,12 +3964,39 @@ export class PeerborneDocument<
           if (expectedCids.length > 0) {
             const missingCids: string[] = [];
             let nextIndex = 0;
+            let prefetchedBytes = 0;
+            let prefetchLimitExceeded = false;
+            const consumePrefetchedBytes = (byteLength: number): void => {
+              const nextTotal = prefetchedBytes + byteLength;
+              if (
+                !Number.isSafeInteger(nextTotal) ||
+                nextTotal > responseLimit
+              ) {
+                throw new RangeError('Load pre-fetch byte budget exceeded');
+              }
+              prefetchedBytes = nextTotal;
+            };
+            const prefetchController = new AbortController();
+            const forwardPrefetchAbort = (): void => {
+              if (!prefetchController.signal.aborted) {
+                prefetchController.abort(signal?.reason);
+              }
+            };
+            if (signal?.aborted) {
+              forwardPrefetchAbort();
+            } else {
+              signal?.addEventListener('abort', forwardPrefetchAbort, {
+                once: true,
+              });
+            }
+            const prefetchSignal = prefetchController.signal;
             const workerCount = Math.min(
               LOAD_PREFETCH_MAX_CONCURRENCY,
               expectedCids.length,
             );
             const worker = async (): Promise<void> => {
-              while (true) {
+              while (!prefetchLimitExceeded) {
+                throwIfLoadAborted(signal);
                 const i = nextIndex++;
                 if (i >= expectedCids.length) return;
                 const cidStr = expectedCids[i]!;
@@ -3699,21 +4005,55 @@ export class PeerborneDocument<
                   // Force the blockstore to retrieve the block. Helia
                   // validates content vs CID on `get`; draining the
                   // returned async-iterable triggers the actual fetch.
-                  // Discard the chunks (no concat) — we only need
-                  // content-validation here, not the bytes.
-                  for await (const _chunk of this.swarm.heliaNode.blockstore.get(
-                    cid,
-                  )) {
-                    void _chunk;
+                  await countBoundedBlockBytes(
+                    this.swarm.heliaNode.blockstore.get(
+                      cid,
+                      { signal: prefetchSignal },
+                    ),
+                    responseLimit,
+                    prefetchSignal,
+                    consumePrefetchedBytes,
+                  );
+                  throwIfLoadAborted(signal);
+                } catch (error) {
+                  if (signal?.aborted) throwIfLoadAborted(signal);
+                  if (
+                    prefetchLimitExceeded &&
+                    prefetchController.signal.aborted
+                  ) {
+                    return;
                   }
-                } catch {
+                  if (error instanceof RangeError) {
+                    prefetchLimitExceeded = true;
+                    prefetchController.abort(
+                      new RangeError('Load pre-fetch limits exceeded'),
+                    );
+                    return;
+                  }
                   missingCids.push(cidStr);
                 }
               }
             };
-            await Promise.all(
-              Array.from({ length: workerCount }, () => worker()),
+            let prefetchResults: PromiseSettledResult<void>[];
+            try {
+              prefetchResults = await Promise.allSettled(
+                Array.from({ length: workerCount }, () => worker()),
+              );
+            } finally {
+              signal?.removeEventListener('abort', forwardPrefetchAbort);
+            }
+            throwIfLoadAborted(signal);
+            const prefetchFailure = prefetchResults.find(
+              (result): result is PromiseRejectedResult =>
+                result.status === 'rejected',
             );
+            if (prefetchFailure) throw prefetchFailure.reason;
+            if (prefetchLimitExceeded) {
+              throw new _QuorumBindCheckFailedError(
+                '(prefetch-limits-exceeded)',
+                'Quorum-bound load pre-fetch exceeded block retrieval limits',
+              );
+            }
             if (missingCids.length > 0) {
               console.warn(
                 `[${this.documentPath}] Quorum-bound load pre-fetch ` +
@@ -5063,7 +5403,9 @@ export class PeerborneDocument<
     onStateApplicationStart?: () => void,
     continuePendingBootstrapApplication = false,
     onLogicalKeychainChange?: () => void,
+    changeFetchOptions: DocumentChangeFetchOptions = {},
   ): Promise<boolean> {
+    throwIfLoadAborted(changeFetchOptions.signal);
     if (continuePendingBootstrapApplication) {
       if (this._bootstrapLoadApplicationState !== 'pending') {
         throw new Error(
@@ -5141,6 +5483,7 @@ export class PeerborneDocument<
         incomingChangeId,
       );
     }
+    throwIfLoadAborted(changeFetchOptions.signal);
 
     let stateApplicationStarted = false;
     const beginStateApplication = (): void => {
@@ -5181,6 +5524,7 @@ export class PeerborneDocument<
         preparedCommitment,
       );
     }
+    throwIfLoadAborted(changeFetchOptions.signal);
     // Update/replace list of document keys (if provided).
     if (hasKeychainChanges) {
       try {
@@ -5295,6 +5639,7 @@ export class PeerborneDocument<
       await this._syncDocumentChanges(
         message.changeId,
         changeTreePreflight.changes,
+        changeFetchOptions,
       );
     }
 
@@ -6563,17 +6908,17 @@ export class PeerborneDocument<
     }
     const invitationKemKeyPair = this._kemKeyPair;
     const invitationKemPublicKeyRaw = new Uint8Array(this._kemPublicKeyRaw);
-    if (bundle.welcomeEpochId.byteLength !== this._keychainProvider.keyIDLength) {
-      throw new Error(
-        `Invitation welcome epoch must be ${this._keychainProvider.keyIDLength} bytes`,
-      );
-    }
+    const invitationBundle = snapshotInvitationBootstrapBundle(
+      bundle,
+      this._keychainProvider.keyIDLength,
+      this._authProvider.nonceBits,
+    );
 
     let welcomeEnvelope;
     try {
       welcomeEnvelope = decodeWelcomeSealedPayload(
         await eciesOpen(
-          bundle.sealedWelcome,
+          invitationBundle.sealedWelcome,
           invitationKemKeyPair.privateKey,
         ),
       );
@@ -6612,9 +6957,12 @@ export class PeerborneDocument<
         this._keychain.merge(keychainChanges);
         const hydratedKeys = await this._keychain.keys();
         const epochPresent = hydratedKeys.some(([keyId]) =>
-          constantTimeEqual(keyId, bundle.welcomeEpochId),
+          constantTimeEqual(keyId, invitationBundle.welcomeEpochId),
         );
-        if (!epochPresent || !this._keychain.getKey(bundle.welcomeEpochId)) {
+        if (
+          !epochPresent ||
+          !this._keychain.getKey(invitationBundle.welcomeEpochId)
+        ) {
           throw new Error(
             'Invitation Welcome did not install its advertised epoch key',
           );
@@ -6625,26 +6973,24 @@ export class PeerborneDocument<
 
         const headerLength =
           this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
-        if (bundle.encryptedBootstrap.byteLength <= headerLength) {
-          throw new Error('Invitation encrypted bootstrap is truncated');
-        }
-        const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
+        const bootstrapKeyId = invitationBundle.encryptedBootstrap.subarray(
           0,
           this._keychainProvider.keyIDLength,
         );
         assertInvitationBootstrapEpochBinding(
-          bundle.welcomeEpochId,
+          invitationBundle.welcomeEpochId,
           bootstrapKeyId,
         );
         const bootstrapKey = this._keychain.getKey(bootstrapKeyId);
         if (!bootstrapKey) {
           throw new Error('Invitation encrypted bootstrap uses an unknown key');
         }
-        const nonce = bundle.encryptedBootstrap.subarray(
+        const nonce = invitationBundle.encryptedBootstrap.subarray(
           this._keychainProvider.keyIDLength,
           headerLength,
         );
-        const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
+        const ciphertext =
+          invitationBundle.encryptedBootstrap.subarray(headerLength);
         let bootstrapPlaintext: Uint8Array;
         try {
           bootstrapPlaintext = await this._authProvider.decrypt(
@@ -6720,6 +7066,11 @@ export class PeerborneDocument<
                 'invitation-bootstrap-v1',
                 undefined,
                 true,
+                undefined,
+                {
+                  maxBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                  maxAggregateBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                },
               ),
             'bootstrap',
             {
@@ -6732,7 +7083,9 @@ export class PeerborneDocument<
         }
         await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
 
-        this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
+        this._invitationEpoch = new Uint8Array(
+          invitationBundle.welcomeEpochId,
+        );
         this._invitationBootstrapReady = true;
         try {
           await this._completeBootstrapStateApplicationUnlocked();
