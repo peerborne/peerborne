@@ -294,6 +294,26 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareAdd() preserves one Yjs client across staged additions', async () => {
+    const acl = new YjsACL();
+    const first = await acl.prepareAdd(key1);
+    const firstClients = new Set(
+      decodeUpdateV2(first.changes).structs.map((struct) => struct.id.client),
+    );
+    first.commit();
+
+    const second = await acl.prepareAdd(key2);
+    const secondClients = new Set(
+      decodeUpdateV2(second.changes).structs.map((struct) => struct.id.client),
+    );
+    second.commit();
+
+    expect(firstClients.size).toBe(1);
+    expect(secondClients).toEqual(firstClients);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareAdd() commit is single-use', async () => {
     const acl = new YjsACL();
     const prepared = await acl.prepareAdd(key1);
@@ -1106,8 +1126,12 @@ describe('YjsACL', () => {
     const additionReceiver = new YjsACL();
 
     additionReceiver.merge(additionChild.changes);
-    expect(await additionReceiver.check(key2)).toBe(true);
-    expect(await additionReceiver.check(key1)).toBe(false);
+    await expect(additionReceiver.check(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(additionReceiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
     additionReceiver.merge(additionParent);
     expect(await additionReceiver.check(key1)).toBe(true);
     expect(await additionReceiver.check(key2)).toBe(true);
