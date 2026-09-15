@@ -340,10 +340,20 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         }
         if (
           usersObjectId !== undefined &&
-          operationEntry.obj === usersObjectId &&
-          typeof operationEntry.key === 'string'
+          operationEntry.obj === usersObjectId
         ) {
-          writesInChange.set(operationEntry.key, operationEntry.action);
+          const key = operationEntry.key;
+          assertCanonicalP384PublicKeyEncoding(key);
+          if (
+            operationEntry.action !== 'del' &&
+            (operationEntry.action !== 'set' ||
+              operationEntry.value !== true)
+          ) {
+            throw new Error(
+              `Cannot ${operation}: Automerge ACL membership values must be true`,
+            );
+          }
+          writesInChange.set(key, operationEntry.action);
         }
       }
 
