@@ -27,6 +27,10 @@ import {
   MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
 } from './beekem/path-update-limits.js';
 import * as TreeMath from './beekem/tree-math.js';
+import {
+  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+} from './beekem/path-update-limits.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 const MAX_V2_PATH_KEYS = 64;
@@ -290,6 +294,15 @@ export function snapshotBeeKEMWelcomeForProcessing(
 ): { welcome: BeeKEMWelcome; numLeaves: number } {
   const context = 'Invalid BeeKEMWelcome runtime';
   const budget = createWelcomeDecodeBudget(context);
+  for (const field of ['version', 'generation', 'numLeaves']) {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      Reflect.has(value, field)
+    ) {
+      throw new Error(`${context}: unexpected field '${field}' (v2-only)`);
+    }
+  }
   const raw = snapshotPlainObject(
     value,
     ['leafIndex', 'pathKeys', 'treeNodePublicKeys', 'treeHash'],
@@ -438,8 +451,8 @@ export function snapshotBeeKEMWelcomeForProcessing(
     ),
     encryptedPrivateKey: snapshotRuntimeBytes(
       node.encryptedPrivateKey,
-      1,
-      MAX_V2_CIPHERTEXT_BYTES,
+      MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
       `pathKeys[${offset}].encryptedPrivateKey`,
       budget,
       'BeeKEMWelcome',
