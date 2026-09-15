@@ -235,6 +235,33 @@ describe('snapshotDeepEnumerableData', () => {
       }),
     ).toThrow(/maximum depth 8/);
   });
+
+  test('rejects oversized dense arrays before enumerating their entries', () => {
+    let ownKeysCalls = 0;
+    let entryDescriptorCalls = 0;
+    const values = new Proxy(new Array(9).fill(0), {
+      ownKeys(target) {
+        ownKeysCalls++;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property !== 'length') entryDescriptorCalls++;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    expect(() =>
+      snapshotDeepEnumerableData({ values }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 16,
+        maxProperties: 16,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/invalid array/);
+    expect(ownKeysCalls).toBe(0);
+    expect(entryDescriptorCalls).toBe(0);
+  });
 });
 
 describe('concatUint8Arrays', () => {
