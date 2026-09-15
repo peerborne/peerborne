@@ -17,17 +17,18 @@ describe('welcome-sealed-payload round-trip', () => {
 
   test('encode then decode with beekemWelcome present', () => {
     const beekemWelcome = {
-      leafIndex: 3,
-      pathKeys: [{
-        nodeIndex: 4,
-        publicKey: new Uint8Array([10, 20, 30]),
-        encryptedPrivateKey: new Uint8Array([40, 50, 60]),
-      }],
-      treeNodePublicKeys: [
-        { nodeIndex: 0, publicKey: new Uint8Array([70, 80]) },
-        { nodeIndex: 1, publicKey: null },
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65).fill(10),
+          encryptedPrivateKey: new Uint8Array(125).fill(40),
+        },
       ],
-      treeHash: new Uint8Array([99, 100, 101]),
+      treeNodePublicKeys: [
+        { nodeIndex: 0, publicKey: new Uint8Array(65).fill(70) },
+      ],
+      treeHash: new Uint8Array(32).fill(99),
     };
     const encoded = encodeWelcomeSealedPayload({
       keychainChanges: keychainBytes,
@@ -36,7 +37,7 @@ describe('welcome-sealed-payload round-trip', () => {
     const decoded = decodeWelcomeSealedPayload(encoded);
     expect(decoded.keychainChanges).toEqual(keychainBytes);
     expect(decoded.beekemWelcome).not.toBeNull();
-    expect(decoded.beekemWelcome!.leafIndex).toBe(3);
+    expect(decoded.beekemWelcome!.leafIndex).toBe(2);
     expect(decoded.beekemWelcome!.pathKeys).toHaveLength(1);
   });
 
@@ -119,6 +120,23 @@ describe('welcome-sealed-payload V2 boundary', () => {
         version: 1,
       } as unknown as typeof beekemWelcome),
     ).toThrow(/version.*must be 2/);
+  });
+
+  test('rejects negative-zero V2 tree indices on both boundaries', () => {
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        treeNodePublicKeys: [
+          { ...beekemWelcome.treeNodePublicKeys[0], nodeIndex: -0 },
+        ],
+      }),
+    ).toThrow(/nodeIndex.*non-negative safe integer/);
+
+    const wire = serializeBeeKEMWelcomeV2ForWire(beekemWelcome);
+    wire.treeNodePublicKeys[0].nodeIndex = -0;
+    expect(() => deserializeBeeKEMWelcomeV2FromWire(wire)).toThrow(
+      /nodeIndex.*non-negative safe integer/,
+    );
   });
 
   test('uses intrinsic byte lengths instead of shadowed properties', () => {
