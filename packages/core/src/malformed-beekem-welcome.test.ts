@@ -11,7 +11,7 @@ function buildValidWelcome() {
       {
         nodeIndex: 1,
         publicKey: new Uint8Array(65).fill(2),
-        encryptedPrivateKey: new Uint8Array([40, 50, 60]),
+        encryptedPrivateKey: new Uint8Array(125).fill(40),
       },
     ],
     treeNodePublicKeys: [
