@@ -12,7 +12,8 @@
  * - The level of a node equals the number of trailing 1-bits in its index
  */
 
-const MAX_TREE_MATH_LEAVES = 1 << 30;
+const MAX_TREE_MATH_LEAVES = 2 ** 30;
+const MAX_TREE_NODE_INDEX = 2 * MAX_TREE_MATH_LEAVES - 2;
 const MAX_TREE_TRAVERSAL_STEPS = 31;
 
 /** Throws if the value is negative or not a safe integer. */
@@ -20,6 +21,15 @@ function assertNonNegativeSafeInt(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(
       `${name} must be a non-negative safe integer, got ${value}`,
+    );
+  }
+}
+
+function assertSupportedNodeIndex(value: number, name: string): void {
+  assertNonNegativeSafeInt(value, name);
+  if (value > MAX_TREE_NODE_INDEX) {
+    throw new Error(
+      `${name} exceeds the supported tree-math node range, got ${value}`,
     );
   }
 }
@@ -38,12 +48,22 @@ function assertLeafCount(numLeaves: number): void {
 
 /** Returns true if the node index is a leaf (even index). */
 export function isLeaf(index: number): boolean {
-  return (index & 1) === 0;
+  return (
+    Number.isSafeInteger(index) &&
+    index >= 0 &&
+    index <= MAX_TREE_NODE_INDEX &&
+    index % 2 === 0
+  );
 }
 
 /** Returns true if the node index is an internal node (odd index). */
 export function isInternal(index: number): boolean {
-  return (index & 1) === 1;
+  return (
+    Number.isSafeInteger(index) &&
+    index >= 0 &&
+    index <= MAX_TREE_NODE_INDEX &&
+    index % 2 === 1
+  );
 }
 
 /**
@@ -51,7 +71,7 @@ export function isInternal(index: number): boolean {
  * Leaves are level 0; the level equals the number of trailing 1-bits.
  */
 export function level(index: number): number {
-  assertNonNegativeSafeInt(index, 'index');
+  assertSupportedNodeIndex(index, 'index');
   let k = 0;
   let remaining = index;
   while (remaining % 2 === 1) {
@@ -71,10 +91,12 @@ function log2(x: number): number {
   assertNonNegativeSafeInt(x, 'x');
   if (x === 0) return 0;
   let k = 0;
-  while ((x >> k) !== 0) {
+  let remaining = x;
+  while (remaining >= 2) {
     k++;
+    remaining = Math.floor(remaining / 2);
   }
-  return k - 1;
+  return k;
 }
 
 /**
@@ -84,7 +106,9 @@ function log2(x: number): number {
 export function left(index: number): number {
   const k = level(index);
   if (k === 0) throw new Error('Leaves have no children');
-  return index ^ (1 << (k - 1));
+  const child = index - 2 ** (k - 1);
+  assertSupportedNodeIndex(child, 'left child');
+  return child;
 }
 
 /**
@@ -95,23 +119,41 @@ export function left(index: number): number {
 export function right(index: number, numLeaves?: number): number {
   const k = level(index);
   if (k === 0) throw new Error('Leaves have no children');
-  let r = index ^ (0b11 << (k - 1));
-  // For non-power-of-2 leaf counts, clamp to valid range
-  if (numLeaves !== undefined) {
-    const w = nodeWidth(numLeaves);
-    while (r >= w) {
-      r = left(r);
-    }
+  let child = index + 2 ** (k - 1);
+  assertSupportedNodeIndex(child, 'right child');
+  if (numLeaves === undefined) return child;
+
+  assertLeafCount(numLeaves);
+  const w = nodeWidth(numLeaves);
+  if (index >= w) {
+    throw new Error(`index ${index} is outside the ${w}-node tree`);
   }
-  return r;
+  const visited = new Set<number>();
+  for (let step = 0; step < MAX_TREE_TRAVERSAL_STEPS; step++) {
+    if (child < w) return child;
+    if (visited.has(child)) {
+      throw new Error('Right-child traversal made no progress');
+    }
+    visited.add(child);
+    const next = left(child);
+    if (next >= child) {
+      throw new Error('Right-child traversal made no progress');
+    }
+    child = next;
+  }
+  throw new Error('Right-child traversal exceeded the supported depth');
 }
 
 /**
- * One step of the parent computation (bitwise formula).
+ * One step of the parent computation.
  */
 function parentStep(index: number): number {
   const k = level(index);
-  return (index | (1 << k)) & ~(1 << (k + 1));
+  const step = 2 ** k;
+  const higherBit = Math.floor(index / (2 * step)) % 2;
+  const candidate = higherBit === 0 ? index + step : index - step;
+  assertSupportedNodeIndex(candidate, 'parent');
+  return candidate;
 }
 
 /**
@@ -123,7 +165,7 @@ function parentStep(index: number): number {
  */
 export function parent(index: number, numLeaves: number): number {
   assertLeafCount(numLeaves);
-  assertNonNegativeSafeInt(index, 'index');
+  assertSupportedNodeIndex(index, 'index');
   const w = nodeWidth(numLeaves);
   if (index >= w) {
     throw new Error(`index ${index} is outside the ${w}-node tree`);
@@ -164,7 +206,7 @@ export function sibling(index: number, numLeaves: number): number {
  */
 export function directPath(leafIndex: number, numLeaves: number): number[] {
   assertLeafCount(numLeaves);
-  assertNonNegativeSafeInt(leafIndex, 'leafIndex');
+  assertSupportedNodeIndex(leafIndex, 'leafIndex');
   const w = nodeWidth(numLeaves);
   if (!isLeaf(leafIndex) || leafIndex >= w) {
     throw new Error(`leafIndex ${leafIndex} is not a leaf in the ${w}-node tree`);
@@ -209,16 +251,23 @@ export function root(numLeaves: number): number {
   assertLeafCount(numLeaves);
   if (numLeaves === 1) return 0;
   const w = nodeWidth(numLeaves);
-  return (1 << log2(w)) - 1;
+  return 2 ** log2(w) - 1;
 }
 
 /** Convert leaf position (0-based member index) to tree node index. */
 export function leafToNodeIndex(leafPosition: number): number {
+  assertNonNegativeSafeInt(leafPosition, 'leafPosition');
+  if (leafPosition >= MAX_TREE_MATH_LEAVES) {
+    throw new Error(
+      `leafPosition exceeds the supported tree-math leaf range, got ${leafPosition}`,
+    );
+  }
   return leafPosition * 2;
 }
 
 /** Convert tree node index to leaf position (0-based member index). */
 export function nodeToLeafIndex(nodeIndex: number): number {
+  assertSupportedNodeIndex(nodeIndex, 'nodeIndex');
   if (!isLeaf(nodeIndex)) throw new Error('Not a leaf node');
-  return nodeIndex >> 1;
+  return nodeIndex / 2;
 }
