@@ -203,6 +203,18 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     ).rejects.toThrow(/even non-negative safe integer/);
     await expectTargetPristine(target);
 
+    await expect(
+      target.processWelcome(
+        {
+          ...copyWelcome(welcome),
+          leafIndex: 2 * MAX_BEEKEM_TREE_LEAVES,
+        },
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow(/supported tree leaf bound/);
+    await expectTargetPristine(target);
+
     let getterCalls = 0;
     const oversizedTree = new Array(2 * MAX_BEEKEM_TREE_LEAVES - 2);
     Object.defineProperty(oversizedTree, '0', {
@@ -277,6 +289,29 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     mutableWelcome.treeHash.fill(0);
 
     await expect(processing).resolves.toEqual(rootSecret);
+    expect(target.memberCount).toBe(2);
+    expect(target.myLeafIndex).toBe(2);
+  });
+
+  test('accepts omitted blank nodes in a sparse legacy Welcome', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const sparseWelcome = copyWelcome(welcome);
+    sparseWelcome.treeNodePublicKeys[0].publicKey = null;
+    sparseWelcome.treeHash = await computeWelcomeTreeHash(
+      sparseWelcome,
+      recipientKeys.publicKey,
+    );
+    sparseWelcome.treeNodePublicKeys.length = 0;
+    const target = new BeeKEM();
+
+    await expect(
+      target.processWelcome(
+        sparseWelcome,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
     expect(target.memberCount).toBe(2);
     expect(target.myLeafIndex).toBe(2);
   });
