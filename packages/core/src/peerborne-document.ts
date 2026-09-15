@@ -16,6 +16,7 @@ import {
   concatUint8Arrays,
   copyUnsharedUint8Array,
   firstTrue,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
   snapshotEnumerableOwnDataObject,
@@ -110,7 +111,10 @@ import {
   retryACLConflict,
 } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { keychainHistorySinceOrReject } from './keychain.js';
+import {
+  keychainHistorySinceOrReject,
+  MAX_KEYCHAIN_EPOCHS,
+} from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { Base64 } from 'js-base64';
@@ -297,6 +301,16 @@ interface CapturedCommitFinalizer {
   readonly finalize: (...args: unknown[]) => unknown;
 }
 
+interface CapturedPreparedKeychainMerge {
+  readonly keyIds: readonly Uint8Array[];
+  readonly currentKeyId: Uint8Array;
+  readonly hydrateKeys: CapturedDataMethod;
+  readonly getKey: CapturedDataMethod;
+  readonly claimCommit: CapturedDataMethod;
+}
+
+type BeeKEMWelcomeApplicationOutcome = 'applied' | 'terminal' | 'retry';
+
 function preparedDataProperty(
   value: unknown,
   property: PropertyKey,
@@ -351,6 +365,174 @@ function capturePreparedDataMethod(
     receiver: value as object,
     method: captured.value as (...args: unknown[]) => unknown,
   };
+}
+
+function boundedPreparedArrayLength(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  label: string,
+): number {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`${label} must be an array`);
+  }
+  const lengthDescriptor = documentReflectApply(
+    documentGetOwnPropertyDescriptor,
+    documentObjectConstructor,
+    [value, 'length'],
+  ) as PropertyDescriptor | undefined;
+  if (
+    lengthDescriptor === undefined ||
+    !('value' in lengthDescriptor) ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.value < minimumLength ||
+    lengthDescriptor.value > maximumLength
+  ) {
+    throw new TypeError(`${label} has an invalid length`);
+  }
+  return lengthDescriptor.value as number;
+}
+
+function preparedArrayDataEntry(
+  value: readonly unknown[],
+  index: number,
+  label: string,
+): unknown {
+  const descriptor = documentReflectApply(
+    documentGetOwnPropertyDescriptor,
+    documentObjectConstructor,
+    [value, String(index)],
+  ) as PropertyDescriptor | undefined;
+  if (descriptor === undefined || !('value' in descriptor)) {
+    throw new TypeError(`${label} must be a data property`);
+  }
+  return descriptor.value;
+}
+
+function capturePreparedKeychainMerge(
+  prepared: unknown,
+): CapturedPreparedKeychainMerge {
+  const hydrateKeys = capturePreparedDataMethod(
+    prepared,
+    'hydrateKeys',
+    'Prepared Welcome keychain hydrateKeys',
+  );
+  const getKey = capturePreparedDataMethod(
+    prepared,
+    'getKey',
+    'Prepared Welcome keychain getKey',
+  );
+  const claimCommit = capturePreparedDataMethod(
+    prepared,
+    'claimCommit',
+    'Prepared Welcome keychain claimCommit',
+  );
+  const currentKeyIdProperty = preparedDataProperty(
+    prepared,
+    'currentKeyId',
+    'Prepared Welcome keychain currentKeyId',
+  );
+  if (!currentKeyIdProperty.found) {
+    throw new TypeError(
+      'Prepared Welcome keychain must provide currentKeyId',
+    );
+  }
+  const currentKeyId = copyUnsharedUint8Array(
+    currentKeyIdProperty.value,
+    EPOCH_ID_LENGTH,
+    EPOCH_ID_LENGTH,
+    'Prepared Welcome keychain currentKeyId',
+  );
+  const keyIdsProperty = preparedDataProperty(
+    prepared,
+    'keyIds',
+    'Prepared Welcome keychain keyIds',
+  );
+  if (!keyIdsProperty.found) {
+    throw new TypeError('Prepared Welcome keychain must provide keyIds');
+  }
+  const keyCount = boundedPreparedArrayLength(
+    keyIdsProperty.value,
+    1,
+    MAX_KEYCHAIN_EPOCHS,
+    'Prepared Welcome keychain keyIds',
+  );
+  const rawKeyIds = keyIdsProperty.value as readonly unknown[];
+  const keyIds: Uint8Array[] = [];
+  const seenKeyIds = new Set<string>();
+  for (let index = 0; index < keyCount; index++) {
+    const keyId = copyUnsharedUint8Array(
+      preparedArrayDataEntry(
+        rawKeyIds,
+        index,
+        `Prepared Welcome keychain keyIds[${index}]`,
+      ),
+      EPOCH_ID_LENGTH,
+      EPOCH_ID_LENGTH,
+      `Prepared Welcome keychain keyIds[${index}]`,
+    );
+    let encodedKeyId = '';
+    for (let offset = 0; offset < keyId.byteLength; offset++) {
+      encodedKeyId += keyId[offset].toString(16).padStart(2, '0');
+    }
+    if (seenKeyIds.has(encodedKeyId)) {
+      throw new TypeError('Prepared Welcome keychain has duplicate key IDs');
+    }
+    seenKeyIds.add(encodedKeyId);
+    keyIds.push(keyId);
+  }
+  if (!constantTimeEqual(currentKeyId, keyIds[keyIds.length - 1])) {
+    throw new TypeError(
+      'Prepared Welcome keychain currentKeyId must be its final key ID',
+    );
+  }
+  return { keyIds, currentKeyId, hydrateKeys, getKey, claimCommit };
+}
+
+function hydratedKeychainContainsEpoch(
+  hydrated: unknown,
+  epochId: Uint8Array,
+): boolean {
+  const entryCount = boundedPreparedArrayLength(
+    hydrated,
+    1,
+    MAX_KEYCHAIN_EPOCHS,
+    'Prepared Welcome hydrated keys',
+  );
+  const entries = hydrated as readonly unknown[];
+  let found = false;
+  for (let index = 0; index < entryCount; index++) {
+    const entry = preparedArrayDataEntry(
+      entries,
+      index,
+      `Prepared Welcome hydrated keys[${index}]`,
+    );
+    boundedPreparedArrayLength(
+      entry,
+      2,
+      2,
+      `Prepared Welcome hydrated keys[${index}]`,
+    );
+    const hydratedKeyId = copyUnsharedUint8Array(
+      preparedArrayDataEntry(
+        entry as readonly unknown[],
+        0,
+        `Prepared Welcome hydrated keys[${index}][0]`,
+      ),
+      EPOCH_ID_LENGTH,
+      EPOCH_ID_LENGTH,
+      `Prepared Welcome hydrated keys[${index}][0]`,
+    );
+    const key = preparedArrayDataEntry(
+      entry as readonly unknown[],
+      1,
+      `Prepared Welcome hydrated keys[${index}][1]`,
+    );
+    if (key !== undefined && constantTimeEqual(hydratedKeyId, epochId)) {
+      found = true;
+    }
+  }
+  return found;
 }
 
 function canSafelyObservePreparedNativePromise(
@@ -3270,7 +3452,11 @@ export class PeerborneDocument<
     const verificationTasks: Promise<boolean>[] = [];
     for (const writerKey of writerKeys) {
       verificationTasks.push(
-        this._authProvider.verify(raw, writerKey, signatureBytes),
+        this._authProvider.verify(
+          new Uint8Array(raw),
+          writerKey,
+          new Uint8Array(signatureBytes),
+        ),
       );
     }
     return firstTrue(verificationTasks);
@@ -3366,7 +3552,11 @@ export class PeerborneDocument<
     const verificationTasks: Promise<boolean>[] = [];
     for (const writerKey of writerKeys) {
       verificationTasks.push(
-        this._authProvider.verify(raw, writerKey, signatureBytes),
+        this._authProvider.verify(
+          new Uint8Array(raw),
+          writerKey,
+          new Uint8Array(signatureBytes),
+        ),
       );
     }
     return firstTrue(verificationTasks);
@@ -8764,7 +8954,10 @@ export class PeerborneDocument<
    *   `not-in-readers-acl` to avoid an infinite drain loop and instead
    *   leave the entry in place for the next drain cycle (or TTL
    *   eviction).
-   * @returns `true` iff the Welcome was accepted and applied.
+   * @returns `applied` after a complete state commit, `terminal` when an
+   *   authenticated replay or permanently invalid transition is safe to
+   *   discard, and `retry` when a buffered Welcome may become applicable
+   *   after local state changes.
    *
    * @internal
    */
@@ -8772,7 +8965,7 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     opts: { fromBuffer: boolean; failClosedOnCommitError?: boolean },
     admission?: SharedProtocolHandlerAdmission,
-  ): Promise<boolean> {
+  ): Promise<BeeKEMWelcomeApplicationOutcome> {
     // Run the pure validation gates (extracted to
     // `beekem-welcome-handler.ts` so they can be unit-tested without
     // a full libp2p/Helia stack). On `accept` we apply the keychain
@@ -8797,17 +8990,17 @@ export class PeerborneDocument<
         this._verifyWelcomeWriterSignature(raw, signature),
       syncMessageSerializer: this._syncMessageSerializer,
     });
-    if (!isSharedProtocolHandlerActive(admission)) return false;
+    if (!isSharedProtocolHandlerActive(admission)) return 'retry';
 
     if (decision.kind !== 'accept') {
       switch (decision.kind) {
         case 'drop-not-for-us':
           // Legitimate Welcome to another peer flowing past our
           // connection -- silently ignore.
-          return false;
+          return 'terminal';
         case 'drop-malformed':
           console.warn('Dropping malformed BeeKEM Welcome');
-          return false;
+          return 'terminal';
         case 'drop-unauthorized':
           // If the Welcome was dropped solely because the local user is
           // not yet a reader (ACL update + Welcome can reorder;
@@ -8826,7 +9019,7 @@ export class PeerborneDocument<
               admission,
               () => this._bufferPendingWelcome(pendingWelcome),
             );
-            if (!buffered.admitted) return false;
+            if (!buffered.admitted) return 'retry';
           } else if (
             opts.fromBuffer &&
             decision.reason === 'not-in-readers-acl'
@@ -8843,7 +9036,7 @@ export class PeerborneDocument<
           } else {
             console.warn('Dropping unauthorized BeeKEM Welcome');
           }
-          return false;
+          return 'retry';
       }
     }
 
@@ -8868,7 +9061,7 @@ export class PeerborneDocument<
     // will always echo back the recipient's own KEM public key.
     if (!this._kemKeyPair || !this._kemPublicKeyRaw) {
       console.warn('Dropping BeeKEM Welcome without a local KEM key pair');
-      return false;
+      return 'retry';
     }
     // Use the eagerly-cached raw bytes from `setKemKeyPair` rather
     // than re-exporting on every Welcome.
@@ -8880,7 +9073,26 @@ export class PeerborneDocument<
       !this._constantTimeEquals(messageKemPublic, localKemPublicRaw)
     ) {
       console.warn('Dropping BeeKEM Welcome for a different KEM public key');
-      return false;
+      return 'retry';
+    }
+
+    const newEpochId = copyUnsharedUint8Array(
+      message.welcomeEpochId,
+      EPOCH_ID_LENGTH,
+      EPOCH_ID_LENGTH,
+      'BeeKEM Welcome epoch ID',
+    );
+    const existingInvitationEpoch =
+      this._invitationEpoch === undefined
+        ? undefined
+        : new Uint8Array(this._invitationEpoch);
+    const sameInvitationEpoch =
+      existingInvitationEpoch !== undefined &&
+      constantTimeEqual(existingInvitationEpoch, newEpochId);
+    const hasInstalledBeeKEM =
+      this._beekemInitialized === true && this._beekem != null;
+    if (sameInvitationEpoch && hasInstalledBeeKEM) {
+      return 'terminal';
     }
 
     let keychainPlaintext: ChangesType;
@@ -8911,17 +9123,90 @@ export class PeerborneDocument<
       // plaintext from a non-upgraded peer). Both are
       // security-relevant; log and drop.
       console.warn('Failed to open sealed BeeKEM Welcome payload');
-      return false;
+      return 'terminal';
     }
 
-    // Bootstrap our local BeeKEM ratchet state from the inviter's
-    // Welcome payload. Without this step the joiner has no leaf
-    // index in the tree and no private key material on their direct
-    // path; subsequent PathUpdates broadcast on `removeReader` would
-    // fail to apply at `processPathUpdate`, locking the joiner out
-    // of the new document key. Initialize-once: a peer that
-    // re-receives a Welcome (e.g. a re-invite after being removed)
-    // gets a fresh `BeeKEM` instance for the new epoch.
+    let preparedKeychainMerge: CapturedPreparedKeychainMerge;
+    try {
+      const prepareMerge = capturePreparedDataMethod(
+        this._keychain,
+        'prepareMerge',
+        'Welcome keychain prepareMerge',
+      );
+      const prepared = documentReflectApply(
+        prepareMerge.method,
+        prepareMerge.receiver,
+        [keychainPlaintext],
+      );
+      preparedKeychainMerge = capturePreparedKeychainMerge(prepared);
+
+      if (existingInvitationEpoch !== undefined) {
+        let existingIndex = -1;
+        let incomingIndex = -1;
+        for (
+          let index = 0;
+          index < preparedKeychainMerge.keyIds.length;
+          index++
+        ) {
+          const keyId = preparedKeychainMerge.keyIds[index];
+          if (constantTimeEqual(keyId, existingInvitationEpoch)) {
+            existingIndex = index;
+          }
+          if (constantTimeEqual(keyId, newEpochId)) {
+            incomingIndex = index;
+          }
+        }
+        if (existingIndex === -1 || incomingIndex === -1) {
+          console.warn(
+            'Dropping BeeKEM Welcome with a divergent staged keychain',
+          );
+          return 'terminal';
+        }
+        if (incomingIndex < existingIndex) {
+          console.warn('Ignoring out-of-order BeeKEM Welcome');
+          return 'terminal';
+        }
+        if (incomingIndex === existingIndex && !sameInvitationEpoch) {
+          return 'terminal';
+        }
+      }
+
+      if (!constantTimeEqual(preparedKeychainMerge.currentKeyId, newEpochId)) {
+        console.warn(
+          'Dropping BeeKEM Welcome whose epoch is not the staged current key',
+        );
+        return 'terminal';
+      }
+
+      const hydrated = await documentReflectApply(
+        preparedKeychainMerge.hydrateKeys.method,
+        preparedKeychainMerge.hydrateKeys.receiver,
+        emptyCommitArguments,
+      );
+      if (!hydratedKeychainContainsEpoch(hydrated, newEpochId)) {
+        console.warn(
+          'Dropping BeeKEM Welcome without its hydrated advertised epoch',
+        );
+        return 'retry';
+      }
+      const hydratedEpochKey = documentReflectApply(
+        preparedKeychainMerge.getKey.method,
+        preparedKeychainMerge.getKey.receiver,
+        [new Uint8Array(newEpochId)],
+      );
+      if (hydratedEpochKey === undefined) {
+        console.warn(
+          'Dropping BeeKEM Welcome without its advertised epoch key',
+        );
+        return 'retry';
+      }
+    } catch {
+      console.warn('Failed to stage BeeKEM Welcome keychain state');
+      return 'retry';
+    }
+
+    // A non-null Welcome must yield a complete detached ratchet tree. Installing
+    // its keychain without that tree would make the next PathUpdate unrecoverable.
     let stagedBeeKEM: BeeKEM | undefined;
     if (bootstrapWelcome !== null) {
       try {
@@ -8933,107 +9218,52 @@ export class PeerborneDocument<
         );
         stagedBeeKEM = beekem;
       } catch {
-        // BeeKEM bootstrap failure is non-fatal at this layer: the
-        // keychain delta can still let the joiner decrypt CURRENT document
-        // traffic. They will, however, be unable to apply future PathUpdates
-        // and need a fresh Welcome to recover ratchet state before the next
-        // rotation. Surface a warning so this is visible.
-        console.warn(
-          'BeeKEM Welcome bootstrap failed; a fresh Welcome is required',
-        );
+        console.warn('Dropping BeeKEM Welcome with invalid bootstrap state');
+        return 'terminal';
       }
     }
 
-    // Record the invitation epoch -- this gates `since_invited` history
-    // filtering on subsequent doc-load / snapshot-load responses we send.
-    // `evaluateBeeKEMWelcome` guarantees `welcomeEpochId` is set when
-    // it returns `accept`.
-    //
-    // MONOTONIC UPDATE: if we already have an
-    // `_invitationEpoch`, only advance it forward in keychain order --
-    // never regress to an earlier epoch.
-    //
-    // The threat model: a writer could (maliciously or via reordering)
-    // send a later writer-signed Welcome that nominally addresses this
-    // node but carries an *earlier* `welcomeEpochId`. If we
-    // unconditionally overwrote `_invitationEpoch`, this would shrink
-    // the recipient's join boundary, broadening the set of keys
-    // returned by future `since_invited` history responses we send
-    // (leaking more history than the original invitation granted).
-    //
-    // Comparison strategy: `_keychain.keys()` returns entries in the
-    // insertion order used by Yjs/Automerge keychain implementations
-    // (`keychain.keys.push(...)`). Position in that array is the
-    // canonical "later means later" relation -- the same one
-    // `historySince` relies on to slice the suffix. We compare the
-    // positions of the existing and incoming epoch IDs; if the new
-    // one is strictly later we advance, otherwise we keep the
-    // existing anchor.
-    //
-    // Fallback: if either ID is not present in `keys()` after the
-    // keychain merge (e.g. the merge dropped the entry, or the local
-    // keychain implementation does not expose insertion order), we
-    // conservatively keep the existing `_invitationEpoch` -- it is
-    // already known-good. The only path that loses fidelity is the
-    // first-Welcome-ever case (no existing anchor) which is handled
-    // by the simple assignment branch.
-    const newEpochId = message.welcomeEpochId as Uint8Array;
+    // A legacy key-only Welcome may already have installed this epoch without
+    // a ratchet tree. Do not recommit an identical key-only replay, but allow a
+    // later non-null Welcome for the same epoch to repair the missing tree.
+    if (sameInvitationEpoch && stagedBeeKEM === undefined) {
+      return 'terminal';
+    }
+
     try {
       const committed = await runSharedProtocolMutation(
         admission,
-        async () => {
-          // Merge before recording the invitation epoch so a concurrent
-          // Welcome cannot leave an anchor for a key that was not installed.
-          this._keychain.merge(keychainPlaintext);
-          if (stagedBeeKEM !== undefined) {
-            this._beekem = stagedBeeKEM;
-            this._beekemInitialized = true;
-          }
-
-          if (this._invitationEpoch === undefined) {
-            this._invitationEpoch = newEpochId;
-            console.log('Recorded BeeKEM Welcome invitation epoch');
-            return;
-          }
-
-          const advanced = await this._shouldAdvanceInvitationEpoch(
-            this._invitationEpoch,
-            newEpochId,
+        () => {
+          const keychainCommit = this._claimPreparedCommit(
+            preparedKeychainMerge.claimCommit,
+            'Welcome keychain commit claim',
           );
-          if (advanced === true) {
-            this._invitationEpoch = newEpochId;
-            console.log('Recorded BeeKEM Welcome invitation epoch');
-            return;
-          }
-
-          // Byte-equality check distinguishes benign duplicate Welcomes
-          // (same epoch ID arriving more than once -- expected with
-          // gossipsub fanout) from genuine out-of-order or regression
-          // cases (different epoch ID that is not strictly later than
-          // the current anchor). Only the latter is worth warning about;
-          // duplicates are silently ignored to avoid log noise.
-          let isDuplicate = false;
-          if (this._invitationEpoch.byteLength === newEpochId.byteLength) {
-            let diff = 0;
-            for (let i = 0; i < this._invitationEpoch.byteLength; i++) {
-              diff |= this._invitationEpoch[i] ^ newEpochId[i];
+          try {
+            finalizePreparedCommitClaim(
+              keychainCommit,
+              'Welcome keychain commit claim',
+            );
+            if (stagedBeeKEM !== undefined) {
+              this._beekem = stagedBeeKEM;
+              this._beekemInitialized = true;
             }
-            isDuplicate = diff === 0;
-          }
-          if (!isDuplicate) {
-            console.warn('Ignoring out-of-order BeeKEM Welcome');
+            this._invitationEpoch = newEpochId;
+          } catch (error) {
+            this._markDocumentStatePoisoned();
+            throw error;
           }
         },
       );
-      if (!committed.admitted) return false;
+      if (!committed.admitted) return 'retry';
     } catch (error) {
       console.error('Failed to commit BeeKEM Welcome state');
       if (opts.failClosedOnCommitError) {
         throw error;
       }
-      return false;
+      return 'retry';
     }
-    return true;
+    console.log('Recorded BeeKEM Welcome invitation epoch');
+    return 'applied';
   }
 
   /**
@@ -9117,16 +9347,26 @@ export class PeerborneDocument<
         );
         continue;
       }
-      const accepted = await this._evaluateAndApplyBeeKEMWelcome(entry.message, {
-        fromBuffer: true,
-        failClosedOnCommitError,
-      });
-      if (accepted) {
+      const outcome = await this._evaluateAndApplyBeeKEMWelcome(
+        entry.message,
+        {
+          fromBuffer: true,
+          failClosedOnCommitError,
+        },
+      );
+      if (this._bootstrapLoadApplicationState === 'poisoned') return;
+      if (outcome !== 'retry') {
         this._pendingWelcomes.delete(key);
-        console.log(
-          `Replayed buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `after readers-ACL update`,
-        );
+        if (outcome === 'applied') {
+          console.log(
+            `Replayed buffered BeeKEM Welcome for ${this.documentPath} ` +
+              `after readers-ACL update`,
+          );
+        } else {
+          console.debug(
+            `Discarded terminal buffered BeeKEM Welcome for ${this.documentPath}`,
+          );
+        }
       }
     }
   }
@@ -9186,63 +9426,35 @@ export class PeerborneDocument<
   }
 
   /**
-   * Decide whether an incoming BeeKEM Welcome's `welcomeEpochId` is
-   * strictly later than the existing `_invitationEpoch`. Used by
-   * `handleBeeKEMWelcomeRequestData` to enforce a monotonic-forward
-   * update on the invitation-epoch anchor.
+   * Compatibility helper for comparing two invitation epochs against the live
+   * keychain order. The inbound Welcome transaction now performs its security
+   * decision against the detached staged projection before commit.
    *
-   * Comparison is performed by looking up both IDs in the
-   * post-merge `_keychain.keys()` ordering. Yjs and Automerge keychain
-   * implementations append entries in insertion order, so the array
-   * position is the canonical "later means later" ordering -- the
-   * same relation `historySince` slices on.
-   *
-   * Returns `true` iff the new epoch is strictly later than the
-   * existing one. Returns `false` if:
-   *   - the two IDs are byte-equal (no-op, do not log a regression),
-   *   - the new epoch is at an earlier position than the existing one
-   *     (would regress the anchor),
-   *   - either ID is not present in the keychain after the merge
-   *     (we cannot establish ordering; conservatively keep the
-   *     known-good existing anchor).
-   *
-   * @internal exposed only for unit tests.
+   * @deprecated Internal callers should use the staged Welcome transaction.
+   * @internal
    */
   public async _shouldAdvanceInvitationEpoch(
     existing: Uint8Array,
     incoming: Uint8Array,
   ): Promise<boolean> {
-    // Byte-equal: no advancement needed and not a regression.
-    if (
-      existing.length === incoming.length &&
-      existing.every((b, i) => b === incoming[i])
-    ) {
-      return false;
-    }
+    const stableExisting = new Uint8Array(existing);
+    const stableIncoming = new Uint8Array(incoming);
+    if (constantTimeEqual(stableExisting, stableIncoming)) return false;
 
     let allKeys: [Uint8Array, unknown][];
     try {
       allKeys = await this._keychain.keys();
     } catch {
-      // Keychain refused to enumerate keys (empty keychain, transient
-      // error). Conservatively keep the known-good anchor.
       return false;
     }
-
-    const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
-      if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-      return true;
-    };
-
-    const existingIdx = allKeys.findIndex(([id]) => sameBytes(id, existing));
-    const incomingIdx = allKeys.findIndex(([id]) => sameBytes(id, incoming));
-    if (existingIdx === -1 || incomingIdx === -1) {
-      // One of the IDs is not in the keychain -- cannot establish
-      // ordering. Keep the existing anchor.
-      return false;
+    let existingIndex = -1;
+    let incomingIndex = -1;
+    for (let index = 0; index < allKeys.length; index++) {
+      const keyId = allKeys[index][0];
+      if (constantTimeEqual(keyId, stableExisting)) existingIndex = index;
+      if (constantTimeEqual(keyId, stableIncoming)) incomingIndex = index;
     }
-    return incomingIdx > existingIdx;
+    return existingIndex !== -1 && incomingIndex > existingIndex;
   }
 
   /**
@@ -9947,7 +10159,7 @@ export class PeerborneDocument<
 
       // Defense-in-depth against misrouted payloads (the shared
       // handler already routes by document path).
-      if (message.documentId && message.documentId !== this.documentPath) {
+      if (message.documentId !== this.documentPath) {
         console.warn('Ignoring BeeKEM PathUpdate for the wrong document');
         return;
       }
@@ -9957,15 +10169,6 @@ export class PeerborneDocument<
         console.warn('Dropping BeeKEM PathUpdate without a signature');
         return;
       }
-      const { signature, ...messageWithoutSignature } = message;
-      const raw = this._syncMessageSerializer.serializeSyncMessage(
-        messageWithoutSignature,
-      );
-      if ((await this._verifyWelcomeWriterSignature(raw, signature)) !== true) {
-        console.warn('Dropping BeeKEM PathUpdate with an invalid signature');
-        return;
-      }
-
       if (!message.pathUpdate) {
         console.warn('Dropping BeeKEM PathUpdate without an update payload');
         return;
@@ -9975,11 +10178,69 @@ export class PeerborneDocument<
         return;
       }
 
-      let pathUpdate: PathUpdate;
       try {
-        pathUpdate = deserializePathUpdateFromWire(message.pathUpdate);
+        copyUnsharedUint8Array(
+          message.pathUpdateEpochId,
+          EPOCH_ID_LENGTH,
+          EPOCH_ID_LENGTH,
+          'BeeKEM PathUpdate epoch ID',
+        );
       } catch {
         console.warn('Dropping malformed BeeKEM PathUpdate payload');
+        return;
+      }
+
+      const { signature, ...messageWithoutSignature } = message;
+      let raw: Uint8Array;
+      try {
+        raw = copyUnsharedUint8Array(
+          this._syncMessageSerializer.serializeSyncMessage(
+            messageWithoutSignature,
+          ),
+          1,
+          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+          'BeeKEM PathUpdate signature encoding',
+        );
+      } catch {
+        console.warn('Dropping malformed BeeKEM PathUpdate payload');
+        return;
+      }
+      if (
+        (await this._verifyWelcomeWriterSignature(
+          new Uint8Array(raw),
+          signature,
+        )) !== true
+      ) {
+        console.warn('Dropping BeeKEM PathUpdate with an invalid signature');
+        return;
+      }
+
+      let pathUpdate: PathUpdate;
+      let senderEpochId32: Uint8Array;
+      try {
+        const authenticatedMessage = snapshotEnumerableOwnDataObject<
+          CRDTSyncMessage<ChangesType, PublicKey>
+        >(
+          this._syncMessageSerializer.deserializeSyncMessage(raw),
+          'Authenticated BeeKEM PathUpdate',
+        );
+        if (
+          authenticatedMessage.documentId !== this.documentPath ||
+          !authenticatedMessage.pathUpdate
+        ) {
+          throw new TypeError('Authenticated BeeKEM PathUpdate is malformed');
+        }
+        senderEpochId32 = copyUnsharedUint8Array(
+          authenticatedMessage.pathUpdateEpochId,
+          EPOCH_ID_LENGTH,
+          EPOCH_ID_LENGTH,
+          'Authenticated BeeKEM PathUpdate epoch ID',
+        );
+        pathUpdate = deserializePathUpdateFromWire(
+          authenticatedMessage.pathUpdate,
+        );
+      } catch {
+        console.warn('Dropping malformed authenticated BeeKEM PathUpdate');
         return;
       }
 
@@ -10025,24 +10286,51 @@ export class PeerborneDocument<
       // byte-identical to what both ends will key on for future
       // encrypted-block lookups.
       const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
-      const senderEpochId32 = message.pathUpdateEpochId;
       if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
         console.warn('Dropping BeeKEM PathUpdate with a mismatched epoch ID');
         return;
       }
 
       const newKey = await deriveDocumentKeyFromRootSecret(rootSecret);
+      let epochClaimCommit: CapturedDataMethod;
       try {
-        const committed = await runSharedProtocolMutation(
-          admission,
-          async () => {
-            await this._keychain.addEpochKey(
-              localEpochId32,
-              newKey as unknown as DocumentKey,
+        const prepareEpochKey = capturePreparedDataMethod(
+          this._keychain,
+          'prepareEpochKey',
+          'PathUpdate keychain prepareEpochKey',
+        );
+        const preparedEpoch = await documentReflectApply(
+          prepareEpochKey.method,
+          prepareEpochKey.receiver,
+          [localEpochId32, newKey as unknown as DocumentKey],
+        );
+        epochClaimCommit = capturePreparedDataMethod(
+          preparedEpoch,
+          'claimCommit',
+          'Prepared PathUpdate epoch claimCommit',
+        );
+      } catch {
+        console.error('Failed to stage BeeKEM-derived epoch key');
+        return;
+      }
+
+      try {
+        const committed = await runSharedProtocolMutation(admission, () => {
+          const epochCommit = this._claimPreparedCommit(
+            epochClaimCommit,
+            'PathUpdate epoch commit claim',
+          );
+          try {
+            finalizePreparedCommitClaim(
+              epochCommit,
+              'PathUpdate epoch commit claim',
             );
             this._beekem = beekem;
-          },
-        );
+          } catch (error) {
+            this._markDocumentStatePoisoned();
+            throw error;
+          }
+        });
         if (!committed.admitted) return;
       } catch {
         console.error('Failed to install BeeKEM-derived epoch key');
