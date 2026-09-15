@@ -1,6 +1,5 @@
 /**
- * End-to-end wire-integration test for the BeeKEM-based reader
- * revocation flow.
+ * Wire-codec composition test for BeeKEM reader-revocation primitives.
  *
  * The companion test in `beekem-revocation.test.ts` exercises the
  * cryptographic core in isolation (BeeKEM tree + HKDF doc-key
@@ -14,7 +13,7 @@
  *   - The BeeKEM PathUpdate wire shape
  *     (`path-update-wire.ts`).
  *
- * The flow models a 3-reader scenario where:
+ * The primitive flow models a 3-member BeeKEM tree where:
  *   - Alice (writer/founder) seeds the tree as leaf 0.
  *   - Bob is invited as leaf 1 (node index 2) and bootstraps via
  *     the sealed envelope.
@@ -28,14 +27,11 @@
  *   - Bob CANNOT derive the new key from the same PathUpdate
  *     (security property: REMOVED reader is locked out).
  *
- * The full `PeerborneDocument` receive path requires a libp2p/Helia
- * stack which is heavy to spin up in unit tests. The current integration
- * surface -- the structured sealed-payload envelope plus the
- * `processWelcome` step on the joiner
- * -- is exercised here against the same wire encoders/decoders used
- * by production code, so a regression in either the envelope shape or
- * the BeeKEM-side handling surfaces here without needing a full e2e
- * environment.
+ * This does not exercise `PeerborneDocument`, libp2p delivery, ACL ordering,
+ * or the production founder-plus-one admission limit. It composes the sealed
+ * payload and BeeKEM wire codecs with the cryptographic primitives so codec or
+ * primitive regressions surface without being presented as end-to-end
+ * capability evidence.
  */
 
 import { describe, expect, test } from '@jest/globals';
