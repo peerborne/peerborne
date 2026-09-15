@@ -907,7 +907,7 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  test('a rejected staged reauthorization preserves its tombstone', async () => {
+  test('a rejected staged reauthorization poisons subsequent reads', async () => {
     backing.remove.mockResolvedValue('remove-changes');
     backing.check.mockResolvedValue(true);
     await acl.remove('key1');
@@ -920,26 +920,21 @@ describe('UCANACL', () => {
 
     const prepared = await acl.prepareAdd('key1');
     expect(() => prepared.commit()).toThrow('stale backing ACL');
-    expect(await acl.check('key1', '/doc/read')).toBe(false);
+    await expect(acl.check('key1', '/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
   });
 
-  test('quarantines a partially applied failed prepared addition until retry', async () => {
+  test('poisons a partially applied failed prepared addition', async () => {
     let isMember = false;
     backing.prepareAdd = jest.fn();
-    backing.prepareAdd
-      .mockResolvedValueOnce({
-        changes: 'failed-changes',
-        commit: () => {
-          isMember = true;
-          throw new Error('prepared add failed after mutation');
-        },
-      })
-      .mockResolvedValueOnce({
-        changes: 'recovery-changes',
-        commit: () => {
-          isMember = true;
-        },
-      });
+    backing.prepareAdd.mockResolvedValueOnce({
+      changes: 'failed-changes',
+      commit: () => {
+        isMember = true;
+        throw new Error('prepared add failed after mutation');
+      },
+    });
     backing.check.mockImplementation(async () => isMember);
     backing.users.mockImplementation(async () =>
       isMember ? ['key1'] : [],
@@ -950,15 +945,69 @@ describe('UCANACL', () => {
     expect(() => failed.commit()).toThrow(
       'prepared add failed after mutation',
     );
-    await expect(acl.check('key1')).resolves.toBe(false);
-    await expect(acl.users()).resolves.toEqual([]);
-    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
+    await expect(acl.check('key1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    expect(backing.prepareAdd).toHaveBeenCalledTimes(1);
+  });
 
-    const recovery = await acl.prepareAdd('key1');
-    expect(() => recovery.commit()).not.toThrow();
-    await expect(acl.check('key1')).resolves.toBe(true);
-    await expect(acl.users()).resolves.toEqual(['key1']);
-    expect(acl.current()).toBe('current-state');
+  test('blocks reentrant merges during a failing prepared addition', async () => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+      }),
+    );
+    let isMember = true;
+    backing.add.mockResolvedValue('initial-changes');
+    backing.check.mockImplementation(async () => isMember);
+    backing.merge.mockImplementation(() => {
+      isMember = false;
+    });
+    let mergeError: unknown;
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'replacement-changes',
+      commit: () => {
+        try {
+          acl.merge('reentrant-removal');
+        } catch (error) {
+          mergeError = error;
+        }
+        isMember = true;
+        throw new Error('prepared add failed after reentrant merge');
+      },
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    const prepared = await acl.prepareAdd('user1');
+    expect(() => prepared.commit()).toThrow(
+      'prepared add failed after reentrant merge',
+    );
+
+    expect(mergeError).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/backing mutation is in progress/),
+      }),
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+    await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
   });
 
   test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
