@@ -139,11 +139,12 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
 }
 
 /**
- * BeeKEM tree-size ceiling.
+ * Tree-size ceiling for the legacy Welcome runtime boundary, v2 codecs, and
+ * hardened PathUpdate admission.
  *
- * The conservative limit bounds traversal and structural work in the legacy
- * Welcome and PathUpdate wire/runtime boundaries and the v2 codecs. Transport
- * senders separately enforce the document protocol's frame limit on the
- * complete signed and framed request.
+ * Legacy PathUpdate v1 also rejects a non-root first intersection because its
+ * single ciphertext per level cannot safely distribute the remaining ancestor
+ * keys to that receiver subtree. Transport senders separately enforce the
+ * document protocol's frame limit on the complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
