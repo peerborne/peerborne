@@ -122,6 +122,23 @@ describe('welcome-sealed-payload V2 boundary', () => {
     ).toThrow(/version.*must be 2/);
   });
 
+  test('rejects negative-zero V2 tree indices on both boundaries', () => {
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({
+        ...beekemWelcome,
+        treeNodePublicKeys: [
+          { ...beekemWelcome.treeNodePublicKeys[0], nodeIndex: -0 },
+        ],
+      }),
+    ).toThrow(/nodeIndex.*non-negative safe integer/);
+
+    const wire = serializeBeeKEMWelcomeV2ForWire(beekemWelcome);
+    wire.treeNodePublicKeys[0].nodeIndex = -0;
+    expect(() => deserializeBeeKEMWelcomeV2FromWire(wire)).toThrow(
+      /nodeIndex.*non-negative safe integer/,
+    );
+  });
+
   test('uses intrinsic byte lengths instead of shadowed properties', () => {
     const shadowedPublicKey = new Uint8Array([1]);
     Object.defineProperty(shadowedPublicKey, 'length', { value: 65 });
