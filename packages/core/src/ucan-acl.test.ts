@@ -1204,6 +1204,124 @@ describe('UCANACL', () => {
     expect(backing.check).not.toHaveBeenCalled();
   });
 
+  test('reuses private detached listing identities within one backing revision', async () => {
+    const backingIdentity = {
+      id: 'user-a',
+      nested: { label: 'original' },
+    };
+    const decodedIdentities: Array<{
+      id: string;
+      nested: { label: string };
+    }> = [];
+    const serialize = jest.fn(
+      async (key: { id: string; nested: { label: string } }) =>
+        `serialized:${key.id}`,
+    );
+    const deserialize = jest.fn(async (serialized: string) => {
+      const identity = {
+        id: serialized.slice('serialized:'.length),
+        nested: { label: 'original' },
+      };
+      decodedIdentities.push(identity);
+      return identity;
+    });
+    backing.users.mockImplementation(async () => [backingIdentity]);
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const first = (await objectAcl.users())[0];
+    expect(first).toEqual({ id: 'user-a', nested: { label: 'original' } });
+    expect(serialize).toHaveBeenCalledTimes(2);
+    expect(deserialize).toHaveBeenCalledTimes(1);
+
+    first.id = 'caller-mutated';
+    first.nested.label = 'caller-mutated';
+    decodedIdentities[0]!.nested.label = 'decoder-mutated';
+    const second = (await objectAcl.users())[0];
+
+    expect(second).toEqual({ id: 'user-a', nested: { label: 'original' } });
+    expect(second).not.toBe(first);
+    expect(second.nested).not.toBe(first.nested);
+    expect(serialize).toHaveBeenCalledTimes(3);
+    expect(deserialize).toHaveBeenCalledTimes(1);
+
+    backingIdentity.id = 'user-b';
+    await expect(objectAcl.users()).resolves.toEqual([
+      { id: 'user-b', nested: { label: 'original' } },
+    ]);
+    expect(serialize).toHaveBeenCalledTimes(5);
+    expect(deserialize).toHaveBeenCalledTimes(2);
+
+    objectAcl.merge('remote-change');
+    await expect(objectAcl.users()).resolves.toEqual([
+      { id: 'user-b', nested: { label: 'original' } },
+    ]);
+    expect(serialize).toHaveBeenCalledTimes(7);
+    expect(deserialize).toHaveBeenCalledTimes(3);
+  });
+
+  test('avoids repeat imports and validation exports for CryptoKey listings', async () => {
+    const rawKey = new Uint8Array(16).fill(7);
+    const backingKey = await crypto.subtle.importKey(
+      'raw',
+      rawKey,
+      'AES-GCM',
+      true,
+      ['encrypt'],
+    );
+    const serialize = jest.fn(async (key: CryptoKey) =>
+      Buffer.from(await crypto.subtle.exportKey('raw', key)).toString('base64'),
+    );
+    const deserialize = jest.fn(async (serialized: string) =>
+      crypto.subtle.importKey(
+        'raw',
+        Buffer.from(serialized, 'base64'),
+        'AES-GCM',
+        true,
+        ['encrypt'],
+      ),
+    );
+    backing.users.mockResolvedValue([backingKey]);
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const first = (await objectAcl.users())[0];
+    const second = (await objectAcl.users())[0];
+
+    expect(first).not.toBe(backingKey);
+    expect(second).not.toBe(first);
+    expect(serialize).toHaveBeenCalledTimes(3);
+    expect(deserialize).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not cache identities whose canonical representation cannot be cloned', async () => {
+    type Identity = { id: string; canonicalMarker: string };
+    const makeIdentity = (id: string): Identity =>
+      Object.defineProperty({ id }, 'canonicalMarker', {
+        configurable: true,
+        enumerable: false,
+        value: 'marker',
+        writable: true,
+      }) as Identity;
+    const serialize = jest.fn(
+      async (key: Identity) => `${key.id}:${key.canonicalMarker}`,
+    );
+    const deserialize = jest.fn(async (serialized: string) =>
+      makeIdentity(serialized.slice(0, serialized.indexOf(':'))),
+    );
+    backing.users.mockResolvedValue([makeIdentity('user-a')]);
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const first = (await objectAcl.users())[0];
+    const second = (await objectAcl.users())[0];
+
+    expect(first).not.toBe(second);
+    expect(first.canonicalMarker).toBe('marker');
+    expect(
+      Object.getOwnPropertyDescriptor(first, 'canonicalMarker')?.enumerable,
+    ).toBe(false);
+    expect(serialize).toHaveBeenCalledTimes(4);
+    expect(deserialize).toHaveBeenCalledTimes(2);
+  });
+
   test('retries an in-flight user listing when a remote merge changes backing state', async () => {
     let listingStarted!: () => void;
     const started = new Promise<void>((resolve) => {
