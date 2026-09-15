@@ -408,6 +408,26 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
   });
 
+  test('rejects a reentrant merge while the backing merge is active', () => {
+    let reentrantError: unknown;
+    backing.merge.mockImplementationOnce(() => {
+      try {
+        acl.merge('reentrant-changes');
+      } catch (error) {
+        reentrantError = error;
+      }
+    });
+
+    expect(() => acl.merge('incoming-changes')).not.toThrow();
+
+    expect(reentrantError).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/backing mutation is in progress/),
+      }),
+    );
+    expect(backing.merge).toHaveBeenCalledTimes(1);
+  });
+
   test('poisons all future operations after a partially applied failed merge', async () => {
     let isMember = false;
     backing.merge.mockImplementation(() => {
