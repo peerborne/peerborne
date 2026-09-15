@@ -59,7 +59,7 @@ primary_region = "iad"           # US East (Virginia); change to your nearest re
 [env]
   RELAY_IDENTITY_KEY_PATH = "/data/relay-identity.key"
   READINESS_PORT = "9000"
-  TOPIC_ALLOWLIST = "/document/,/documents"
+  TOPIC_ALLOWLIST = "/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents"
   MAX_AUTO_TOPICS = "1000"
   MAX_AUTO_TOPICS_PER_PEER = "32"
   GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"

@@ -9,7 +9,12 @@ Peerborne does not currently provide a runnable, end-to-end pinning daemon or du
 
 ## What exists
 
-The Node-only `PeerborneNode` contains a listener for `pubsubDocumentPublishPath` (default `/documents`). Given an announcement, it can open that document, observe its change graph, and call Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
+The Node-only `PeerborneNode` contains a listener for
+`pubsubDocumentPublishPath` (default `/peerborne/documents/v3`). Given an
+announcement, it can open that document, observe its change graph, and call
+Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
+Legacy `/documents` is a separate, explicitly configured compatibility topic;
+relays do not bridge it to the v3 default.
 
 That listener is only one side of a protocol. The normal core document commit path does **not** publish document announcements to it, so ordinary application changes do not activate automatic pinning. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
