@@ -61,6 +61,41 @@ describe('BeeKEM mutation atomicity', () => {
     await expect(alice.getRootSecret()).resolves.toEqual(latest.rootSecret);
   });
 
+  test('reentrant forbidden-marker checks preserve mutation call order', async () => {
+    const { alice, bob } = await twoMemberGroup();
+    const update = await bob.update();
+    let nestedOutcome:
+      | Promise<
+          | { kind: 'fulfilled'; value: Uint8Array }
+          | { kind: 'rejected'; error: unknown }
+        >
+      | undefined;
+    const proxied = new Proxy(update.pathUpdate, {
+      has(target, property) {
+        if (property === 'version') {
+          nestedOutcome ??= alice.processPathUpdate(update.pathUpdate).then(
+            (value) => ({ kind: 'fulfilled' as const, value }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          );
+          return true;
+        }
+        return Reflect.has(target, property);
+      },
+    });
+
+    await expect(alice.processPathUpdate(proxied)).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining("forbidden field 'version'"),
+      }),
+    });
+    expect(nestedOutcome).toBeDefined();
+    await expect(nestedOutcome!).resolves.toEqual({
+      kind: 'fulfilled',
+      value: update.rootSecret,
+    });
+    await expect(alice.getRootSecret()).resolves.toEqual(update.rootSecret);
+  });
+
   test('keeps the live tree unchanged while member onboarding is in flight', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await generateKeyPair();

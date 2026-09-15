@@ -464,6 +464,104 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     ).resolves.toBe(8);
   });
 
+  test('rejects own and inherited v2 markers at the legacy runtime boundary', async () => {
+    const { alice, bob } = await twoMemberGroup();
+    const { pathUpdate, rootSecret } = await bob.update();
+    const internals = alice as unknown as {
+      _nodes: Map<number, unknown>;
+    };
+    const nodesBefore = internals._nodes;
+    const rootBefore = await alice.getRootSecret();
+    const topLevelMarkers = [
+      'version',
+      'generation',
+      'parentTreeHash',
+      'numLeaves',
+      'treeNodePublicKeys',
+      'treeHash',
+    ] as const;
+
+    for (const field of topLevelMarkers) {
+      const forged = { ...pathUpdate };
+      Object.defineProperty(forged, field, {
+        enumerable: true,
+        value: field === 'version' ? 2 : 1,
+      });
+      await expect(alice.processPathUpdate(forged)).rejects.toMatchObject({
+        cause: expect.objectContaining({
+          message: expect.stringContaining(`forbidden field '${field}'`),
+        }),
+      });
+
+      const prior = Object.getOwnPropertyDescriptor(Object.prototype, field);
+      Object.defineProperty(Object.prototype, field, {
+        configurable: true,
+        value: field === 'version' ? 2 : 1,
+      });
+      try {
+        await expect(
+          alice.processPathUpdate(pathUpdate),
+        ).rejects.toMatchObject({
+          cause: expect.objectContaining({
+            message: expect.stringContaining(`forbidden field '${field}'`),
+          }),
+        });
+      } finally {
+        if (prior === undefined) {
+          delete (Object.prototype as Record<string, unknown>)[field];
+        } else {
+          Object.defineProperty(Object.prototype, field, prior);
+        }
+      }
+    }
+
+    const nodePrototype = Object.create(null) as Record<string, unknown>;
+    nodePrototype.encryptedPathKeyBundles = [];
+    const inheritedBundleNode = Object.assign(
+      Object.create(nodePrototype) as Record<string, unknown>,
+      pathUpdate.nodes[0],
+    );
+    await expect(
+      alice.processPathUpdate({
+        ...pathUpdate,
+        nodes: [
+          inheritedBundleNode,
+          ...pathUpdate.nodes.slice(1),
+        ] as unknown as PathUpdate['nodes'],
+      }),
+    ).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining(
+          "forbidden field 'encryptedPathKeyBundles'",
+        ),
+      }),
+    });
+
+    const ownBundleNode = { ...pathUpdate.nodes[0] };
+    Object.defineProperty(ownBundleNode, 'encryptedPathKeyBundles', {
+      enumerable: true,
+      value: [],
+    });
+    await expect(
+      alice.processPathUpdate({
+        ...pathUpdate,
+        nodes: [ownBundleNode, ...pathUpdate.nodes.slice(1)],
+      }),
+    ).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining(
+          "forbidden field 'encryptedPathKeyBundles'",
+        ),
+      }),
+    });
+
+    expect(internals._nodes).toBe(nodesBefore);
+    await expect(alice.getRootSecret()).resolves.toEqual(rootBefore);
+    await expect(alice.processPathUpdate(pathUpdate)).resolves.toEqual(
+      rootSecret,
+    );
+  });
+
   test('rejects oversized or non-data runtime shapes without reading entries', async () => {
     const { alice, bob } = await twoMemberGroup();
     const { pathUpdate } = await bob.update();
