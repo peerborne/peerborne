@@ -4235,6 +4235,791 @@ describe('UCANACL', () => {
     const entry = await acl.getEntry('user1');
     expect(entry).toBeUndefined();
   });
+
+  describe('prepared commit claims', () => {
+    const poisonedState =
+      /backing ACL violated a synchronous operation contract|failed ACL backing mutation may have partially changed/;
+
+    function installMembershipBacking(members: Set<string>): void {
+      backing.add.mockImplementation(async (key: string) => {
+        members.add(key);
+        return `add:${key}`;
+      });
+      backing.remove.mockImplementation(async (key: string) => {
+        members.delete(key);
+        return `remove:${key}`;
+      });
+      backing.check.mockImplementation(async (key: string) =>
+        members.has(key),
+      );
+      backing.users.mockImplementation(async () => [...members]);
+      backing.current.mockImplementation(() => [...members]);
+    }
+
+    async function expectClaimStatePoisoned(): Promise<void> {
+      expect(() => acl.current()).toThrow(poisonedState);
+      await expect(acl.check('user1')).rejects.toThrow(poisonedState);
+      await expect(acl.users()).rejects.toThrow(poisonedState);
+      await expect(acl.prepareRemove('user1')).rejects.toThrow(
+        poisonedState,
+      );
+    }
+
+    test('addition claim stays hidden until idempotent finalization and excludes commit', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      await acl.remove('user1');
+
+      const finalize = jest.fn(() => {
+        members.add('user1');
+      });
+      const backingClaim = jest.fn(() => ({ finalize }));
+      backing.prepareAdd = jest.fn(async () => ({
+        changes: 'add-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+
+      const prepared = await acl.prepareAdd('user1');
+      const claim = prepared.claimCommit();
+
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      expect(finalize).not.toHaveBeenCalled();
+      expect(await acl.check('user1', '/doc/read')).toBe(false);
+      expect(await acl.users()).toEqual([]);
+      expect(() => prepared.commit()).toThrow(
+        /already committed or claimed/,
+      );
+
+      claim.finalize();
+      claim.finalize();
+
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(await acl.check('user1', '/doc/read')).toBe(true);
+      expect(await acl.users()).toEqual(['user1']);
+    });
+
+    test('removal claim keeps backing membership and UCAN metadata live until idempotent finalization', async () => {
+      const members = new Set<string>();
+      installMembershipBacking(members);
+      mockCreateUCAN.mockResolvedValue(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+        }),
+      );
+      await acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      );
+
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      const backingClaim = jest.fn(() => ({ finalize }));
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      expect(await acl.check('user1', '/doc/write')).toBe(true);
+      expect(await acl.getEntry('user1')).toBeDefined();
+      expect(() => prepared.commit()).toThrow(
+        /already committed or claimed/,
+      );
+
+      claim.finalize();
+      claim.finalize();
+
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(await acl.check('user1', '/doc/write')).toBe(false);
+      expect(await acl.getEntry('user1')).toBeUndefined();
+      expect(await acl.users()).toEqual([]);
+    });
+
+    test('claim rejects newer UCAN metadata before invoking the backing claim', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const backingClaim = jest.fn(() => ({ finalize: jest.fn() }));
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      mockCreateUCAN.mockResolvedValue(
+        makeFakeUcan({
+          audience: 'serialized:user1',
+          capabilities: [{ resource: 'doc-1', ability: '/doc/admin' }],
+          nonce: 'newer-grant',
+        }),
+      );
+
+      await acl.grant(
+        'user1',
+        '/doc/admin',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      );
+
+      expect(() => prepared.claimCommit()).toThrow(/UCAN metadata changed/);
+      expect(backingClaim).not.toHaveBeenCalled();
+      expect((await acl.getEntry('user1'))?.ucan.nonce).toBe(
+        'newer-grant',
+      );
+      expect(await acl.check('user1', '/doc/admin')).toBe(true);
+    });
+
+    test.each([
+      ['addition', 'prepareAdd', false],
+      ['removal', 'prepareRemove', true],
+    ])(
+      '%s claim rejects a newer backing revision before provider invocation',
+      async (_label, prepareMethod, initiallyPresent) => {
+        const members = new Set<string>(
+          initiallyPresent ? ['user1'] : [],
+        );
+        installMembershipBacking(members);
+        const backingClaim = jest.fn(() => ({ finalize: jest.fn() }));
+        backing[prepareMethod] = jest.fn(async () => ({
+          changes: `${prepareMethod}-claim`,
+          claimCommit: backingClaim,
+          commit: jest.fn(),
+        }));
+        const prepared = await acl[prepareMethod]('user1');
+
+        acl.merge('remote-backing-revision');
+
+        expect(() => prepared.claimCommit()).toThrow(
+          /backing ACL changed/,
+        );
+        expect(backingClaim).not.toHaveBeenCalled();
+        expect(() => acl.current()).not.toThrow();
+        expect(await acl.check('user1')).toBe(initiallyPresent);
+      },
+    );
+
+    test('busy public admission rejects before the backing claim and leaves the stage usable', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      const backingClaim = jest.fn(() => ({ finalize }));
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      let readStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        readStarted = resolve;
+      });
+      let finishRead!: (allowed: boolean) => void;
+      const pendingRead = new Promise<boolean>((resolve) => {
+        finishRead = resolve;
+      });
+      let blockRead = true;
+      backing.check.mockImplementation((key: string) => {
+        if (blockRead) {
+          blockRead = false;
+          readStarted();
+          return pendingRead;
+        }
+        return Promise.resolve(members.has(key));
+      });
+
+      const read = acl.check('user1');
+      await started;
+
+      expect(() => prepared.claimCommit()).toThrow(
+        ACLOperationInProgressError,
+      );
+      expect(backingClaim).not.toHaveBeenCalled();
+
+      finishRead(true);
+      await expect(read).resolves.toBe(true);
+      prepared.claimCommit().finalize();
+
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      expect(await acl.check('user1')).toBe(false);
+    });
+
+    test.each([
+      ['addition', 'prepareAdd', false, true],
+      ['removal', 'prepareRemove', true, false],
+    ])(
+      'an abandoned %s claim permits a fresh staged transition',
+      async (
+        _label,
+        prepareMethod,
+        initiallyPresent,
+        finallyPresent,
+      ) => {
+        const members = new Set<string>(
+          initiallyPresent ? ['user1'] : [],
+        );
+        installMembershipBacking(members);
+        const finalizers: Array<ReturnType<typeof jest.fn>> = [];
+        backing[prepareMethod] = jest.fn(async () => {
+          const finalize = jest.fn(() => {
+            if (finallyPresent) {
+              members.add('user1');
+            } else {
+              members.delete('user1');
+            }
+          });
+          finalizers.push(finalize);
+          return {
+            changes: `${prepareMethod}-claim`,
+            claimCommit: jest.fn(() => ({ finalize })),
+            commit: jest.fn(),
+          };
+        });
+
+        const abandoned = await acl[prepareMethod]('user1');
+        abandoned.claimCommit();
+        expect(await acl.check('user1')).toBe(initiallyPresent);
+
+        const retry = await acl[prepareMethod]('user1');
+        retry.claimCommit().finalize();
+
+        expect(finalizers[0]).not.toHaveBeenCalled();
+        expect(finalizers[1]).toHaveBeenCalledTimes(1);
+        expect(await acl.check('user1')).toBe(finallyPresent);
+      },
+    );
+
+    test('captures prepared and finalizer methods with their original receivers', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let claimReceiver: unknown;
+      let finalizerReceiver: unknown;
+      const originalFinalize = jest.fn(function (this: unknown) {
+        finalizerReceiver = this;
+        members.delete('user1');
+      });
+      const claimObject: any = { finalize: originalFinalize };
+      const originalClaim = jest.fn(function (this: unknown) {
+        claimReceiver = this;
+        return claimObject;
+      });
+      const replacementClaim = jest.fn();
+      const replacementFinalize = jest.fn();
+      const backingPrepared: any = {
+        changes: 'remove-claim',
+        claimCommit: originalClaim,
+        commit: jest.fn(),
+      };
+      backing.prepareRemove = jest.fn(async () => backingPrepared);
+
+      const prepared = await acl.prepareRemove('user1');
+      backingPrepared.claimCommit = replacementClaim;
+      const claim = prepared.claimCommit();
+      claimObject.finalize = replacementFinalize;
+
+      claim.finalize();
+
+      expect(originalClaim).toHaveBeenCalledTimes(1);
+      expect(replacementClaim).not.toHaveBeenCalled();
+      expect(claimReceiver).toBe(backingPrepared);
+      expect(originalFinalize).toHaveBeenCalledTimes(1);
+      expect(replacementFinalize).not.toHaveBeenCalled();
+      expect(finalizerReceiver).toBe(claimObject);
+      expect(await acl.check('user1')).toBe(false);
+    });
+
+    test('rejects an accessor-backed claim method without invoking it', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let getterCalled = false;
+      const returned = {
+        changes: 'remove-claim',
+        commit: jest.fn(),
+      };
+      Object.defineProperty(returned, 'claimCommit', {
+        configurable: true,
+        get() {
+          getterCalled = true;
+          members.delete('user1');
+          return jest.fn();
+        },
+      });
+      backing.prepareRemove = jest.fn(async () => returned);
+
+      await expect(acl.prepareRemove('user1')).rejects.toThrow(
+        /prepared-removal claimCommit must be a data property/,
+      );
+
+      expect(getterCalled).toBe(false);
+      expect(members.has('user1')).toBe(true);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a safely rejected backing claim leaves live state healthy for fresh staging', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const rejectedClaim = jest.fn(() => {
+        throw new Error('backing claim rejected');
+      });
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      backing.prepareRemove = jest
+        .fn()
+        .mockResolvedValueOnce({
+          changes: 'rejected-remove-claim',
+          claimCommit: rejectedClaim,
+          commit: jest.fn(),
+        })
+        .mockResolvedValueOnce({
+          changes: 'replacement-remove-claim',
+          claimCommit: jest.fn(() => ({ finalize })),
+          commit: jest.fn(),
+        });
+      const rejected = await acl.prepareRemove('user1');
+
+      expect(() => rejected.claimCommit()).toThrow(
+        'backing claim rejected',
+      );
+      expect(() => rejected.claimCommit()).toThrow(/backing ACL changed/);
+      expect(rejectedClaim).toHaveBeenCalledTimes(1);
+      expect(() => acl.current()).not.toThrow();
+      expect(await acl.check('user1')).toBe(true);
+
+      const replacement = await acl.prepareRemove('user1');
+      replacement.claimCommit().finalize();
+
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(await acl.check('user1')).toBe(false);
+    });
+
+    test('a claim-result then accessor is rejected without invocation', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let getterCalled = false;
+      const claim = Object.defineProperty(
+        { finalize: jest.fn() },
+        'then',
+        {
+          configurable: true,
+          get() {
+            getterCalled = true;
+            members.delete('user1');
+            return undefined;
+          },
+        },
+      );
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => claim),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow(
+        /invalid asynchronous result/,
+      );
+
+      expect(getterCalled).toBe(false);
+      expect(members.has('user1')).toBe(true);
+      await expectClaimStatePoisoned();
+    });
+
+    test.each<
+      [string, (mutate: () => void) => unknown]
+    >([
+      ['primitive', () => null],
+      ['missing finalizer', () => ({})],
+      [
+        'accessor finalizer',
+        (mutate) =>
+          Object.defineProperty({}, 'finalize', {
+            configurable: true,
+            get: () => {
+              mutate();
+              return jest.fn();
+            },
+          }),
+      ],
+      [
+        'proxy descriptor trap',
+        (mutate) =>
+          new Proxy(
+            {},
+            {
+              getOwnPropertyDescriptor() {
+                mutate();
+                throw new Error('claim descriptor trap');
+              },
+            },
+          ),
+      ],
+    ])('a %s claim is rejected and poisons future access', async (_label, makeClaim) => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const backingClaim = jest.fn(() =>
+        makeClaim(() => members.add('attacker')),
+      );
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow();
+
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      await expectClaimStatePoisoned();
+    });
+
+    test.each<
+      [string, (mutate: () => void) => unknown, boolean]
+    >([
+      [
+        'thenable',
+        (mutate) => ({
+          then(resolve: (value: unknown) => void) {
+            mutate();
+            resolve({ finalize: jest.fn() });
+          },
+        }),
+        false,
+      ],
+      [
+        'async',
+        async (mutate) => {
+          await Promise.resolve();
+          mutate();
+          return { finalize: jest.fn() };
+        },
+        true,
+      ],
+    ])('%s claim results poison before delayed work can reenter', async (_label, makeClaim, expectDelayedWork) => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let delayedWorkRan = false;
+      const backingClaim = jest.fn(() =>
+        makeClaim(() => {
+          delayedWorkRan = true;
+          members.add('attacker');
+        }),
+      );
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow(
+        /must complete synchronously/,
+      );
+      for (let turn = 0; turn < 4 && !delayedWorkRan; turn++) {
+        await Promise.resolve();
+      }
+
+      expect(delayedWorkRan).toBe(expectDelayedWork);
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a caught reentry attempt during claim acquisition is terminal', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let reentryError: unknown;
+      const backingClaim = jest.fn(() => {
+        try {
+          acl.current();
+        } catch (error) {
+          reentryError = error;
+        }
+        return { finalize: jest.fn() };
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      expect(() => prepared.claimCommit()).toThrow(/attempted to reenter/);
+
+      expect(reentryError).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/cannot reenter/) }),
+      );
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a caught reentry attempt during finalization poisons and cannot be repeated', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let reentryError: unknown;
+      const finalize = jest.fn(() => {
+        try {
+          acl.current();
+        } catch (error) {
+          reentryError = error;
+        }
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      expect(() => claim.finalize()).toThrow(/attempted to reenter/);
+      expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+
+      expect(reentryError).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/cannot reenter/) }),
+      );
+      expect(finalize).toHaveBeenCalledTimes(1);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a finalizer that mutates then throws poisons persistently and is never reinvoked', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+        throw new Error('finalizer failed after mutation');
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      expect(() => claim.finalize()).toThrow(
+        'finalizer failed after mutation',
+      );
+      expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(members.has('user1')).toBe(false);
+      await expectClaimStatePoisoned();
+    });
+
+    test('an asynchronous finalizer poisons before delayed mutation and is never reinvoked', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let asynchronousFinalize!: Promise<void>;
+      const finalize = jest.fn(() => {
+        asynchronousFinalize = (async () => {
+          await Promise.resolve();
+          members.delete('user1');
+        })();
+        return asynchronousFinalize;
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      expect(() => claim.finalize()).toThrow(/must complete synchronously/);
+      await asynchronousFinalize;
+      expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(members.has('user1')).toBe(false);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a finalizer-result then accessor is rejected without invocation', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let getterCalled = false;
+      const invalidResult = Object.defineProperty({}, 'then', {
+        configurable: true,
+        get() {
+          getterCalled = true;
+          members.add('attacker');
+          return undefined;
+        },
+      });
+      const finalize = jest.fn(() => invalidResult);
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      expect(() => claim.finalize()).toThrow(/without a return value/);
+      expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+
+      expect(getterCalled).toBe(false);
+      expect(members.has('attacker')).toBe(false);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      await expectClaimStatePoisoned();
+    });
+
+    test('a finalizer conflict is non-retryable after provider invocation', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let settle!: () => void;
+      const settlement = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const finalize = jest.fn(() => {
+        throw new ACLOperationInProgressError(
+          'Backing finalizer conflict',
+          settlement,
+        );
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+
+      await expect(
+        retryACLConflict(() => claim.finalize()),
+      ).rejects.toThrow(/finalizer reported a retry conflict.*uncertain/);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+      settle();
+      await settlement;
+      await expectClaimStatePoisoned();
+    });
+
+    test('a provider-certified acquisition conflict retries the same healthy stage', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      let settle!: () => void;
+      const settlement = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      const backingClaim = jest
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new ACLOperationInProgressError(
+            'Backing claim admission',
+            settlement,
+          );
+        })
+        .mockImplementationOnce(() => ({ finalize }));
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: backingClaim,
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+
+      const retrying = retryACLConflict(() => prepared.claimCommit());
+      expect(await settleWithinMicrotasks(retrying)).toBeUndefined();
+      expect(backingClaim).toHaveBeenCalledTimes(1);
+      expect(() => acl.current()).not.toThrow();
+
+      settle();
+      const claim = await retrying;
+      claim.finalize();
+
+      expect(backingClaim).toHaveBeenCalledTimes(2);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(await acl.check('user1')).toBe(false);
+    });
+
+    test('a membership check spanning finalization retries against the committed revision', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+      let readStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        readStarted = resolve;
+      });
+      let finishRead!: (allowed: boolean) => void;
+      const pendingRead = new Promise<boolean>((resolve) => {
+        finishRead = resolve;
+      });
+      backing.check
+        .mockImplementationOnce(() => {
+          readStarted();
+          return pendingRead;
+        })
+        .mockImplementation(async (key: string) => members.has(key));
+
+      const read = acl.check('user1');
+      await started;
+      claim.finalize();
+      finishRead(true);
+
+      await expect(read).resolves.toBe(false);
+      expect(backing.check).toHaveBeenCalledTimes(2);
+    });
+
+    test('a membership listing spanning finalization retries against the committed revision', async () => {
+      const members = new Set(['user1']);
+      installMembershipBacking(members);
+      const finalize = jest.fn(() => {
+        members.delete('user1');
+      });
+      backing.prepareRemove = jest.fn(async () => ({
+        changes: 'remove-claim',
+        claimCommit: jest.fn(() => ({ finalize })),
+        commit: jest.fn(),
+      }));
+      const prepared = await acl.prepareRemove('user1');
+      const claim = prepared.claimCommit();
+      let listingStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        listingStarted = resolve;
+      });
+      let finishListing!: (users: string[]) => void;
+      const pendingListing = new Promise<string[]>((resolve) => {
+        finishListing = resolve;
+      });
+      backing.users
+        .mockImplementationOnce(() => {
+          listingStarted();
+          return pendingListing;
+        })
+        .mockImplementation(async () => [...members]);
+
+      const listing = acl.users();
+      await started;
+      claim.finalize();
+      finishListing(['user1']);
+
+      await expect(listing).resolves.toEqual([]);
+      expect(backing.users).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 describe('UCANACLProvider', () => {

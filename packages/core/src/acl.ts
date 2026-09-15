@@ -1,3 +1,5 @@
+import type { PreparedCommitClaim } from './prepared-commit.js';
+
 /** A retryable conflict with an unresolved ACL operation. */
 export class ACLOperationInProgressError extends Error {
   private readonly _settled: Promise<void>;
@@ -164,6 +166,21 @@ export interface ACL<ChangesType, PublicKey> {
 export interface PreparedACLChange<ChangesType> {
   /** Changes suitable for publication to an ACL with the same base state. */
   readonly changes: ChangesType;
+  /**
+   * Claim the staged revision without changing live authorization.
+   *
+   * All fallible single-use and stale-base checks, allocation, and provider
+   * work MUST finish before this method returns. The returned finalizer obeys
+   * {@link PreparedCommitClaim}: callers may compose several successful
+   * claims and then install them synchronously without a fail-partial state.
+   * If a later claim fails, discarding this claim MUST leave live state
+   * unchanged; a fresh staging operation must remain possible.
+   *
+   * Optional for compatibility. Workflows that need to compose this ACL
+   * change atomically with another provider transition must fail closed when
+   * the capability is absent.
+   */
+  claimCommit?(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, stale-base-checked live-state commit. A normal
    * return proves complete application. Repeated and stale calls throw before

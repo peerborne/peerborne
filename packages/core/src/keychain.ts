@@ -1,4 +1,5 @@
 import { copyUnsharedUint8Array } from './utils.js';
+import type { PreparedCommitClaim } from './prepared-commit.js';
 
 /** Maximum retained epochs supported by the built-in keychain adapters. */
 export const MAX_KEYCHAIN_EPOCHS = 1000;
@@ -308,6 +309,15 @@ export interface PreparedKeychainEpoch<KeychainChange> {
    * closed.
    */
   readonly currentKeyChange?: KeychainChange;
+  /**
+   * Claim the staged revision without changing the live keychain.
+   *
+   * The method and returned finalizer have the same composed-commit contract
+   * as `PreparedACLChange.claimCommit()`. Workflows spanning providers must
+   * require this optional capability instead of sequencing independently
+   * fallible `commit()` calls.
+   */
+  claimCommit?(): PreparedCommitClaim;
   /** Synchronous, single-use, atomic live-state commit. */
   commit(): void;
 }
