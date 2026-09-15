@@ -27,10 +27,6 @@ import {
   MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
 } from './beekem/path-update-limits.js';
 import * as TreeMath from './beekem/tree-math.js';
-import {
-  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-} from './beekem/path-update-limits.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 const MAX_V2_PATH_KEYS = 64;
@@ -335,7 +331,7 @@ export function snapshotBeeKEMWelcomeForProcessing(
 
   const rawPathKeys = snapshotBoundedArray(
     raw.pathKeys,
-    MAX_V2_PATH_KEYS,
+    MAX_V1_PATH_NODES,
     `${context}: pathKeys`,
     budget,
     `${context}: pathKeys has invalid length`,
