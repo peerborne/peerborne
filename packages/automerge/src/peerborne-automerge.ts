@@ -6,6 +6,7 @@ import {
   decodeChange,
   getChanges,
   getConflicts,
+  getObjectId,
   applyChanges,
   getMissingDeps,
   Change as BinaryChange,
@@ -46,6 +47,7 @@ import {
   serializeInitialLoadChallengeForWire,
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
+  assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
 import { Base64 } from 'js-base64';
@@ -156,6 +158,11 @@ type AutomergeACLChangeRecord = {
   readonly hash: string;
   readonly byteLength: number;
   readonly operationCount: number;
+};
+
+type AutomergeACLKeyWrite = {
+  readonly changeIndex: number;
+  readonly action: string;
 };
 
 function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
@@ -302,6 +309,98 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       throw new Error(
         `Cannot ${operation}: Automerge ACL history contains conflicting users roots`,
       );
+    }
+  }
+
+  private _assertValidUsersHistory(
+    acl: AutomergeACLDoc,
+    operation: string,
+  ): void {
+    this._assertSingleUsersRoot(acl, operation);
+    const users = acl.users as unknown;
+    if (
+      users !== undefined &&
+      (typeof users !== 'object' || users === null || Array.isArray(users))
+    ) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history contains an invalid users root`,
+      );
+    }
+
+    const usersObjectId =
+      users === undefined
+        ? undefined
+        : getObjectId(users as Record<string, true>) ?? undefined;
+    const ancestryByHash = new Map<string, bigint>();
+    const writesByKey = new Map<string, AutomergeACLKeyWrite[]>();
+    let usersRootCreations = 0;
+
+    for (const binaryChange of getAllChanges(acl)) {
+      const decoded = decodeChange(binaryChange);
+      const changeIndex = ancestryByHash.size;
+      let ancestry = 1n << BigInt(changeIndex);
+      for (const dependency of decoded.deps) {
+        ancestry |= ancestryByHash.get(dependency) ?? 0n;
+      }
+      ancestryByHash.set(decoded.hash, ancestry);
+
+      const writesInChange = new Map<string, string>();
+      for (const operationEntry of decoded.ops) {
+        if (
+          operationEntry.obj === '_root' &&
+          operationEntry.key === 'users'
+        ) {
+          if (operationEntry.action !== 'makeMap') {
+            throw new Error(
+              `Cannot ${operation}: Automerge ACL history mutates the users root`,
+            );
+          }
+          usersRootCreations++;
+        }
+        if (
+          usersObjectId !== undefined &&
+          operationEntry.obj === usersObjectId &&
+          typeof operationEntry.key === 'string'
+        ) {
+          writesInChange.set(operationEntry.key, operationEntry.action);
+        }
+      }
+
+      for (const [key, action] of writesInChange) {
+        const frontier = writesByKey.get(key) ?? [];
+        const surviving = frontier.filter(
+          ({ changeIndex: priorIndex }) =>
+            (ancestry & (1n << BigInt(priorIndex))) === 0n,
+        );
+        surviving.push({ changeIndex, action });
+        writesByKey.set(key, surviving);
+      }
+    }
+
+    if (usersRootCreations > 1) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history contains conflicting users roots`,
+      );
+    }
+    if (users === undefined) return;
+
+    for (const [key, frontier] of writesByKey) {
+      if (
+        frontier.length > 1 &&
+        frontier.some(({ action }) => action !== 'del')
+      ) {
+        throw new Error(
+          `Cannot ${operation}: Automerge ACL history contains conflicting membership for ${key}`,
+        );
+      }
+    }
+    for (const [key, value] of Object.entries(users)) {
+      assertCanonicalP384PublicKeyEncoding(key);
+      if (value !== true) {
+        throw new Error(
+          `Cannot ${operation}: Automerge ACL membership values must be true`,
+        );
+      }
     }
   }
 
@@ -462,7 +561,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     assertAutomergeACLResourceLimits(base, 'merge ACL changes');
     const accounting = this._prepareChangeAccounting(stableChanges);
     const [doc] = applyChanges(clone(base), stableChanges);
-    this._assertSingleUsersRoot(doc, 'merge ACL changes');
+    this._assertValidUsersHistory(doc, 'merge ACL changes');
     assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
