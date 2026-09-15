@@ -3,6 +3,10 @@ import { describe, expect, test, jest, beforeEach } from '@jest/globals';
 const ucanAcl = require('./ucan-acl');
 const UCANACLImpl = ucanAcl.UCANACL;
 const UCANACLProviderImpl = ucanAcl.UCANACLProvider;
+const {
+  ACLOperationInProgressError,
+  retryACLConflict,
+} = require('./acl');
 const { EPOCH_ID_LENGTH } = require('./epoch');
 
 jest.mock('./ucan', () => ({ createUCAN: jest.fn() }));
@@ -44,6 +48,31 @@ function makeMockAcl() {
     check: jest.fn(),
     users: jest.fn(),
   };
+}
+
+async function settleWithinMicrotasks<T>(
+  promise: Promise<T>,
+): Promise<
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown }
+  | undefined
+> {
+  let outcome:
+    | { status: 'fulfilled'; value: T }
+    | { status: 'rejected'; reason: unknown }
+    | undefined;
+  void promise.then(
+    (value) => {
+      outcome = { status: 'fulfilled', value };
+    },
+    (reason) => {
+      outcome = { status: 'rejected', reason };
+    },
+  );
+  for (let turn = 0; turn < 50 && outcome === undefined; turn++) {
+    await Promise.resolve();
+  }
+  return outcome;
 }
 
 describe('UCANACL', () => {
@@ -108,13 +137,17 @@ describe('UCANACL', () => {
 
     const addition = acl.add('key1');
     await addWasStarted;
-    const pendingCheck = expect(acl.check('attacker')).rejects.toThrow(
+    const pendingCheck = expect(
+      retryACLConflict(() => acl.check('attacker')),
+    ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    const pendingListing = expect(acl.users()).rejects.toThrow(
+    const pendingListing = expect(
+      retryACLConflict(() => acl.users()),
+    ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    expect(() => acl.current()).toThrow(/backing mutation is in progress/);
+    expect(() => acl.current()).toThrow(ACLOperationInProgressError);
 
     rejectAdd(new Error('backing add failed after mutation'));
     await expect(addition).rejects.toThrow(
@@ -164,7 +197,7 @@ describe('UCANACL', () => {
 
     const add = acl.add('key1');
     await addWasStarted;
-    const remove = acl.remove('key1');
+    const remove = retryACLConflict(() => acl.remove('key1'));
     await Promise.resolve();
     expect(backing.remove).not.toHaveBeenCalled();
     resolveAdd('add-changes');
@@ -176,7 +209,7 @@ describe('UCANACL', () => {
     expect(await acl.users()).toEqual([]);
   });
 
-  test('orders add then remove when codec promises resolve out of order', async () => {
+  test('retries a removal after an earlier slow identity codec', async () => {
     let resolveFirstSerialization!: (serialized: string) => void;
     const firstSerialization = new Promise<string>((resolve) => {
       resolveFirstSerialization = resolve;
@@ -205,10 +238,10 @@ describe('UCANACL', () => {
     backing.users.mockImplementation(async () => [...members]);
 
     const addition = orderedAcl.add('key1');
-    const removal = orderedAcl.remove('key1');
+    const removal = retryACLConflict(() => orderedAcl.remove('key1'));
     await Promise.resolve();
 
-    expect(serialize).toHaveBeenCalledTimes(2);
+    expect(serialize).toHaveBeenCalledTimes(1);
     expect(backing.add).not.toHaveBeenCalled();
     expect(backing.remove).not.toHaveBeenCalled();
 
@@ -220,7 +253,7 @@ describe('UCANACL', () => {
     expect(await orderedAcl.users()).toEqual([]);
   });
 
-  test('reserves FIFO admission before a serializer can synchronously reenter', async () => {
+  test('rejects synchronous serializer reentry without queuing it', async () => {
     const events: string[] = [];
     let reentered = false;
     let reentrantRemoval!: Promise<string>;
@@ -229,7 +262,7 @@ describe('UCANACL', () => {
       if (key === 'key1' && !reentered) {
         reentered = true;
         expect(() => orderedAcl.merge('reentrant-merge')).toThrow(
-          /local membership mutation is pending/,
+          ACLOperationInProgressError,
         );
         reentrantRemoval = orderedAcl.remove('key2');
       }
@@ -246,10 +279,203 @@ describe('UCANACL', () => {
     });
 
     await expect(orderedAcl.add('key1')).resolves.toBe('add-changes');
-    await expect(reentrantRemoval).resolves.toBe('remove-changes');
+    await expect(reentrantRemoval).rejects.toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
 
-    expect(events).toEqual(['add:key1', 'remove:key2']);
+    expect(events).toEqual(['add:key1']);
+    expect(backing.remove).not.toHaveBeenCalled();
     expect(backing.merge).not.toHaveBeenCalled();
+  });
+
+  test('rejects serializer reentry after suspension without hanging', async () => {
+    let reenter = true;
+    let orderedAcl: any;
+    const serialize = jest.fn(async (key: string) => {
+      await Promise.resolve();
+      if (reenter) {
+        reenter = false;
+        await orderedAcl.remove('key2');
+      }
+      return `serialized:${key}`;
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.add.mockResolvedValue('add-changes');
+
+    await expect(
+      settleWithinMicrotasks(orderedAcl.add('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.any(ACLOperationInProgressError),
+      }),
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    await expect(orderedAcl.add('key1')).resolves.toBe('add-changes');
+  });
+
+  test('rejects deserializer reentry after suspension without hanging', async () => {
+    let reenter = true;
+    let orderedAcl: any;
+    const deserialize = jest.fn(async (serialized: string) => {
+      await Promise.resolve();
+      if (reenter) {
+        reenter = false;
+        await orderedAcl.check('key2');
+      }
+      return serialized.slice('serialized:'.length);
+    });
+    orderedAcl = new UCANACLImpl(
+      backing,
+      jest.fn(async (key: string) => `serialized:${key}`),
+      deserialize,
+    );
+    backing.add.mockResolvedValue('add-changes');
+
+    await expect(
+      settleWithinMicrotasks(orderedAcl.add('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.any(ACLOperationInProgressError),
+      }),
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+    expect(backing.check).not.toHaveBeenCalled();
+
+    await expect(orderedAcl.add('key1')).resolves.toBe('add-changes');
+  });
+
+  test('tracks a check through delayed identity-codec reentry', async () => {
+    let reenter = true;
+    let orderedAcl: any;
+    const serialize = jest.fn(async (key: string) => {
+      await Promise.resolve();
+      if (reenter) {
+        reenter = false;
+        await orderedAcl.check('key2');
+      }
+      return `serialized:${key}`;
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.check.mockResolvedValue(true);
+
+    await expect(
+      settleWithinMicrotasks(orderedAcl.check('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.any(ACLOperationInProgressError),
+      }),
+    );
+    expect(backing.check).not.toHaveBeenCalled();
+    await expect(orderedAcl.check('key1')).resolves.toBe(true);
+  });
+
+  test('tracks a listing through delayed identity-codec reentry', async () => {
+    let reenter = true;
+    let orderedAcl: any;
+    const serialize = jest.fn(async (key: string) => {
+      await Promise.resolve();
+      if (reenter) {
+        reenter = false;
+        await orderedAcl.users();
+      }
+      return `serialized:${key}`;
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.users.mockResolvedValue(['key1']);
+
+    await expect(
+      settleWithinMicrotasks(orderedAcl.users()),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.any(ACLOperationInProgressError),
+      }),
+    );
+    expect(backing.users).toHaveBeenCalledTimes(1);
+    await expect(orderedAcl.users()).resolves.toEqual(['key1']);
+  });
+
+  test('keeps listing admission until every identity codec settles', async () => {
+    let releaseSlowCodec!: () => void;
+    const releaseSlow = new Promise<void>((resolve) => {
+      releaseSlowCodec = resolve;
+    });
+    let slowCodecStarted!: () => void;
+    const slowStarted = new Promise<void>((resolve) => {
+      slowCodecStarted = resolve;
+    });
+    let reentryError: unknown;
+    let orderedAcl: any;
+    const serialize = jest.fn(async (key: string) => {
+      if (key === 'bad') throw new Error('malformed listing identity');
+      slowCodecStarted();
+      await releaseSlow;
+      try {
+        await orderedAcl.remove('victim');
+      } catch (error) {
+        reentryError = error;
+        throw error;
+      }
+      return `serialized:${key}`;
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.users.mockResolvedValue(['bad', 'slow']);
+
+    const listing = orderedAcl.users();
+    await slowStarted;
+    expect(await settleWithinMicrotasks(listing)).toBeUndefined();
+    releaseSlowCodec();
+
+    await expect(listing).rejects.toThrow('malformed listing identity');
+    expect(reentryError).toBeInstanceOf(ACLOperationInProgressError);
+    expect(backing.remove).not.toHaveBeenCalled();
+  });
+
+  test('settles started listing codecs after an index getter throws', async () => {
+    let releaseSlowCodec!: () => void;
+    const releaseSlow = new Promise<void>((resolve) => {
+      releaseSlowCodec = resolve;
+    });
+    let slowCodecStarted!: () => void;
+    const slowStarted = new Promise<void>((resolve) => {
+      slowCodecStarted = resolve;
+    });
+    let reentryError: unknown;
+    let orderedAcl: any;
+    const serialize = jest.fn(async (key: string) => {
+      slowCodecStarted();
+      await releaseSlow;
+      try {
+        await orderedAcl.remove(key);
+      } catch (error) {
+        reentryError = error;
+        throw error;
+      }
+      return `serialized:${key}`;
+    });
+    orderedAcl = new UCANACLImpl(backing, serialize);
+    const listedUsers = ['slow', 'unread'];
+    Object.defineProperty(listedUsers, '1', {
+      enumerable: true,
+      get: () => {
+        throw new Error('unstable listing index');
+      },
+    });
+    backing.users.mockResolvedValue(listedUsers);
+
+    const listing = orderedAcl.users();
+    await slowStarted;
+    expect(await settleWithinMicrotasks(listing)).toBeUndefined();
+    releaseSlowCodec();
+
+    await expect(listing).rejects.toThrow('unstable listing index');
+    expect(reentryError).toBeInstanceOf(ACLOperationInProgressError);
+    expect(backing.remove).not.toHaveBeenCalled();
   });
 
   test('releases codec admission after a rejected snapshot', async () => {
@@ -261,7 +487,7 @@ describe('UCANACL', () => {
     backing.add.mockResolvedValue('add-changes');
 
     const rejected = orderedAcl.add('key1');
-    const accepted = orderedAcl.add('key2');
+    const accepted = retryACLConflict(() => orderedAcl.add('key2'));
 
     await expect(rejected).rejects.toThrow('invalid identity');
     await expect(accepted).resolves.toBe('add-changes');
@@ -287,7 +513,7 @@ describe('UCANACL', () => {
     });
 
     const first = acl.add('key1');
-    const second = acl.add('key2');
+    const second = retryACLConflict(() => acl.add('key2'));
     await firstWasStarted;
 
     expect(started).toEqual(['key1']);
@@ -297,13 +523,13 @@ describe('UCANACL', () => {
     expect(started).toEqual(['key1', 'key2']);
   });
 
-  test('releases the mutation queue but rejects queued work after a backing failure', async () => {
+  test('rejects a retried mutation after a backing failure', async () => {
     backing.add
       .mockRejectedValueOnce(new Error('first add failed'))
       .mockResolvedValueOnce('second-changes');
 
     const first = acl.add('key1');
-    const second = acl.add('key2');
+    const second = retryACLConflict(() => acl.add('key2'));
 
     await expect(first).rejects.toThrow('first add failed');
     await expect(second).rejects.toThrow(
@@ -316,6 +542,35 @@ describe('UCANACL', () => {
     );
   });
 
+  test('does not quarantine an addition rejected before backing admission', async () => {
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let resolveCheck!: (isMember: boolean) => void;
+    const pendingCheck = new Promise<boolean>((resolve) => {
+      resolveCheck = resolve;
+    });
+    backing.check.mockImplementation(() => {
+      checkStarted();
+      return pendingCheck;
+    });
+    backing.current.mockReturnValue('current-state');
+    backing.add.mockResolvedValue('add-changes');
+
+    const check = acl.check('key1');
+    await started;
+    await expect(acl.add('key2')).rejects.toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+
+    resolveCheck(false);
+    await expect(check).resolves.toBe(false);
+    expect(acl.current()).toBe('current-state');
+    await expect(acl.add('key2')).resolves.toBe('add-changes');
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');
@@ -323,7 +578,7 @@ describe('UCANACL', () => {
     expect(hasAccess).toBe(false);
   });
 
-  test('waits checks and user listings behind a backing removal', async () => {
+  test('retries checks and user listings after a backing removal', async () => {
     let removalStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       removalStarted = resolve;
@@ -339,13 +594,21 @@ describe('UCANACL', () => {
     backing.check.mockResolvedValue(true);
     backing.users.mockResolvedValue(['key1']);
 
-    const removal = acl.remove('key1');
+    const removal = retryACLConflict(() => acl.remove('key1'));
     await started;
 
-    const membershipCheck = acl.check('key1');
-    const capabilityCheck = acl.check('key1', '/doc/read');
-    const listing = acl.users();
-    const capabilityListing = acl.users('/doc/read');
+    const directConflict = acl.check('key1');
+    await expect(directConflict).rejects.toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
+    const membershipCheck = retryACLConflict(() => acl.check('key1'));
+    const capabilityCheck = retryACLConflict(() =>
+      acl.check('key1', '/doc/read'),
+    );
+    const listing = retryACLConflict(() => acl.users());
+    const capabilityListing = retryACLConflict(() =>
+      acl.users('/doc/read'),
+    );
     await Promise.resolve();
     expect(backing.check).not.toHaveBeenCalled();
     expect(backing.users).not.toHaveBeenCalled();
@@ -358,7 +621,289 @@ describe('UCANACL', () => {
     await expect(capabilityListing).resolves.toEqual([]);
   });
 
-  test('denies an in-flight check when removal starts during its backing await', async () => {
+  test('rejects a check reentered by a backing addition without deadlocking', async () => {
+    backing.add.mockImplementation(async () => {
+      await acl.check('key2');
+      return 'changes';
+    });
+
+    await expect(acl.add('key1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+    await expect(acl.check('key2')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects a listing reentered by a backing removal without deadlocking', async () => {
+    backing.remove.mockImplementation(async () => {
+      await acl.users();
+      return 'changes';
+    });
+
+    await expect(acl.remove('key1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+    await expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects a check reentered after a backing addition suspends', async () => {
+    backing.add.mockImplementation(async () => {
+      await Promise.resolve();
+      await acl.check('key2');
+      return 'changes';
+    });
+
+    await expect(
+      settleWithinMicrotasks(acl.add('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /retry conflict after invocation; backing state is uncertain/,
+          ),
+        }),
+      }),
+    );
+    await expect(acl.check('key2')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects a listing reentered after a backing removal suspends', async () => {
+    backing.remove.mockImplementation(async () => {
+      await Promise.resolve();
+      await acl.users();
+      return 'changes';
+    });
+
+    await expect(
+      settleWithinMicrotasks(acl.remove('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /retry conflict after invocation; backing state is uncertain/,
+          ),
+        }),
+      }),
+    );
+    await expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects a mutation reentered after a backing addition suspends', async () => {
+    backing.add.mockImplementation(async () => {
+      await Promise.resolve();
+      await acl.remove('key2');
+      return 'changes';
+    });
+
+    await expect(
+      settleWithinMicrotasks(acl.add('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /retry conflict after invocation; backing state is uncertain/,
+          ),
+        }),
+      }),
+    );
+    expect(backing.remove).not.toHaveBeenCalled();
+    await expect(acl.remove('key2')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects wrapper recursion from a backing read operation', async () => {
+    backing.check.mockImplementation(async () => acl.getEntry('key1'));
+
+    await expect(acl.check('key1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+  });
+
+  test('rejects backing check recursion after the backing read suspends', async () => {
+    backing.check.mockImplementation(async () => {
+      await Promise.resolve();
+      return acl.check('key1');
+    });
+
+    await expect(
+      settleWithinMicrotasks(acl.check('key1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /Backing ACL read cannot reenter this UCAN ACL/,
+          ),
+        }),
+      }),
+    );
+  });
+
+  test('rejects backing listing recursion after the backing read suspends', async () => {
+    backing.users.mockImplementation(async () => {
+      await Promise.resolve();
+      return acl.users();
+    });
+
+    await expect(settleWithinMicrotasks(acl.users())).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /Backing ACL read cannot reenter this UCAN ACL/,
+          ),
+        }),
+      }),
+    );
+  });
+
+  test('preserves a foreign retryable conflict from a backing check', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    backing.check
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL check',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce(true);
+
+    const check = retryACLConflict(() => acl.check('key1'));
+    expect(await settleWithinMicrotasks(check)).toBeUndefined();
+    expect(backing.check).toHaveBeenCalledTimes(1);
+    settle();
+
+    await expect(check).resolves.toBe(true);
+    expect(backing.check).toHaveBeenCalledTimes(2);
+  });
+
+  test('preserves a foreign retryable conflict from a backing listing', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    backing.users
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL listing',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce(['key1']);
+
+    const listing = retryACLConflict(() => acl.users());
+    expect(await settleWithinMicrotasks(listing)).toBeUndefined();
+    expect(backing.users).toHaveBeenCalledTimes(1);
+    settle();
+
+    await expect(listing).resolves.toEqual(['key1']);
+    expect(backing.users).toHaveBeenCalledTimes(2);
+  });
+
+  test('poisons when a backing addition propagates a foreign conflict', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    backing.add
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL addition',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce('changes');
+    backing.current.mockReturnValue('current-state');
+
+    const addition = retryACLConflict(() => acl.add('key1'));
+    await expect(addition).rejects.toThrow(
+      /retry conflict after invocation; backing state is uncertain/,
+    );
+    expect(backing.add).toHaveBeenCalledTimes(1);
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+
+    settle();
+    await Promise.resolve();
+    expect(backing.add).toHaveBeenCalledTimes(1);
+  });
+
+  test('poisons when a backing removal propagates a foreign conflict', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    backing.remove
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL removal',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce('changes');
+    backing.current.mockReturnValue('current-state');
+
+    const removal = retryACLConflict(() => acl.remove('key1'));
+    await expect(removal).rejects.toThrow(
+      /retry conflict after invocation; backing state is uncertain/,
+    );
+    expect(backing.remove).toHaveBeenCalledTimes(1);
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+
+    settle();
+    await Promise.resolve();
+    expect(backing.remove).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports overlapping reads and permits an external retry', async () => {
+    let firstCheckStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      firstCheckStarted = resolve;
+    });
+    let resolveFirstCheck!: (allowed: boolean) => void;
+    const firstCheck = new Promise<boolean>((resolve) => {
+      resolveFirstCheck = resolve;
+    });
+    backing.check
+      .mockImplementationOnce(() => {
+        firstCheckStarted();
+        return firstCheck;
+      })
+      .mockResolvedValueOnce(true);
+
+    const first = acl.check('key1');
+    await started;
+    await expect(acl.check('key2')).rejects.toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
+    const retried = retryACLConflict(() => acl.check('key2'));
+    expect(await settleWithinMicrotasks(retried)).toBeUndefined();
+    expect(backing.check).toHaveBeenCalledTimes(1);
+
+    resolveFirstCheck(true);
+    await expect(first).resolves.toBe(true);
+    await expect(retried).resolves.toBe(true);
+    expect(backing.check).toHaveBeenCalledTimes(2);
+  });
+
+  test('linearizes a removal after an in-flight backing check', async () => {
     let checkStarted!: () => void;
     const checkWasStarted = new Promise<void>((resolve) => {
       checkStarted = resolve;
@@ -384,15 +929,18 @@ describe('UCANACL', () => {
       return pendingRemoval;
     });
 
-    const authorization = acl.check('key1');
+    const authorization = retryACLConflict(() => acl.check('key1'));
     await checkWasStarted;
-    const removal = acl.remove('key1');
-    await removalWasStarted;
+    const removal = retryACLConflict(() => acl.remove('key1'));
+    await Promise.resolve();
+    expect(backing.remove).not.toHaveBeenCalled();
 
     resolveCheck(true);
+    await expect(authorization).resolves.toBe(true);
+    await removalWasStarted;
     resolveRemoval('changes');
     await expect(removal).resolves.toBe('changes');
-    await expect(authorization).resolves.toBe(false);
+    await expect(acl.check('key1')).resolves.toBe(false);
   });
 
   test('poisons access after a pending backing removal fails', async () => {
@@ -413,9 +961,9 @@ describe('UCANACL', () => {
 
     const removal = acl.remove('key1');
     await started;
-    const pendingCheck = expect(acl.check('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
+    const pendingCheck = expect(
+      retryACLConflict(() => acl.check('key1')),
+    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
 
     rejectRemoval(new Error('backing remove failed'));
     await expect(removal).rejects.toThrow('backing remove failed');
@@ -438,6 +986,79 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
   });
 
+  test('poisons an asynchronous backing current-state contract violation', async () => {
+    let asynchronousCurrent!: Promise<unknown>;
+    backing.current.mockImplementation(() => {
+      asynchronousCurrent = (async () => {
+        await Promise.resolve();
+        return acl.check('key1');
+      })();
+      return asynchronousCurrent;
+    });
+
+    expect(() => acl.current()).toThrow(
+      'Backing ACL current-state read must complete synchronously',
+    );
+    await expect(asynchronousCurrent).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    await expect(acl.check('key1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    expect(backing.check).not.toHaveBeenCalled();
+  });
+
+  test('poisons an asynchronous backing merge contract violation', async () => {
+    let asynchronousMerge!: Promise<unknown>;
+    backing.merge.mockImplementation(() => {
+      asynchronousMerge = (async () => {
+        await Promise.resolve();
+        return acl.remove('key1');
+      })();
+      return asynchronousMerge;
+    });
+
+    expect(() => acl.merge('incoming-changes')).toThrow(
+      'Backing ACL merge must complete synchronously',
+    );
+    await expect(asynchronousMerge).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    await expect(acl.remove('key1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    expect(backing.remove).not.toHaveBeenCalled();
+  });
+
+  test('poisons when a backing merge propagates a foreign conflict', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    backing.merge
+      .mockImplementationOnce(() => {
+        throw new ACLOperationInProgressError(
+          'Nested ACL merge',
+          settlement,
+        );
+      })
+      .mockImplementationOnce(() => undefined);
+    backing.current.mockReturnValue('current-state');
+
+    const merge = retryACLConflict(() => acl.merge('incoming-changes'));
+    await expect(merge).rejects.toThrow(
+      /retry conflict after invocation; backing state is uncertain/,
+    );
+    expect(backing.merge).toHaveBeenCalledTimes(1);
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+
+    settle();
+    await Promise.resolve();
+    expect(backing.merge).toHaveBeenCalledTimes(1);
+  });
+
   test('rejects a reentrant merge while the backing merge is active', () => {
     let reentrantError: unknown;
     backing.merge.mockImplementationOnce(() => {
@@ -452,7 +1073,9 @@ describe('UCANACL', () => {
 
     expect(reentrantError).toEqual(
       expect.objectContaining({
-        message: expect.stringMatching(/backing mutation is in progress/),
+        message: expect.stringMatching(
+          /cannot reenter the UCAN ACL from a backing ACL operation/,
+        ),
       }),
     );
     expect(backing.merge).toHaveBeenCalledTimes(1);
@@ -532,7 +1155,7 @@ describe('UCANACL', () => {
     await started;
 
     expect(() => orderedAcl.merge('remote-changes')).toThrow(
-      /local membership mutation is pending/,
+      ACLOperationInProgressError,
     );
     expect(backing.merge).not.toHaveBeenCalled();
 
@@ -560,7 +1183,7 @@ describe('UCANACL', () => {
     await started;
 
     expect(() => acl.merge('remote-changes')).toThrow(
-      /local membership mutation is pending/,
+      ACLOperationInProgressError,
     );
     expect(backing.merge).not.toHaveBeenCalled();
 
@@ -642,7 +1265,7 @@ describe('UCANACL', () => {
     expect(members).toEqual(new Set());
   });
 
-  test('retries an in-flight check when a remote merge changes backing state', async () => {
+  test('rejects a remote merge until an in-flight backing check settles', async () => {
     let checkStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       checkStarted = resolve;
@@ -660,14 +1283,25 @@ describe('UCANACL', () => {
 
     const authorization = acl.check('key1');
     await started;
-    acl.merge('remote-removal');
+    let conflict: unknown;
+    try {
+      acl.merge('remote-removal');
+    } catch (error) {
+      conflict = error;
+    }
+    expect(conflict).toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
     resolveCheck(true);
 
-    await expect(authorization).resolves.toBe(false);
+    await expect(authorization).resolves.toBe(true);
+    await (conflict as any).waitForSettlement();
+    acl.merge('remote-removal');
+    await expect(acl.check('key1')).resolves.toBe(false);
     expect(backing.check).toHaveBeenCalledTimes(2);
   });
 
-  test('rechecks backing health after an in-flight negative check', async () => {
+  test('runs a failing remote merge only after an in-flight check settles', async () => {
     let checkStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       checkStarted = resolve;
@@ -686,10 +1320,22 @@ describe('UCANACL', () => {
 
     const authorization = acl.check('key1');
     await started;
-    expect(() => acl.merge('remote-changes')).toThrow('backing merge failed');
+    let conflict: unknown;
+    try {
+      acl.merge('remote-changes');
+    } catch (error) {
+      conflict = error;
+    }
+    expect(conflict).toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
     resolveCheck(false);
 
-    await expect(authorization).rejects.toThrow(
+    await expect(authorization).resolves.toBe(false);
+    await (conflict as any).waitForSettlement();
+    expect(() => acl.merge('remote-changes')).toThrow('backing merge failed');
+    await expect(acl.check('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
   });
@@ -757,9 +1403,11 @@ describe('UCANACL', () => {
         {} as CryptoKey,
         'issuer',
       ),
-    ).rejects.toThrow('already in progress');
-    const pendingCheck = acl.check('user1', '/doc/write');
-    const pendingEntry = acl.getEntry('user1');
+    ).rejects.toBeInstanceOf(ACLOperationInProgressError);
+    const pendingCheck = retryACLConflict(() =>
+      acl.check('user1', '/doc/write'),
+    );
+    const pendingEntry = retryACLConflict(() => acl.getEntry('user1'));
 
     resolveAdd('changes');
     await expect(grant).resolves.toBe('changes');
@@ -831,13 +1479,15 @@ describe('UCANACL', () => {
       'issuer',
     );
     await grantWasStarted;
-    const pendingMembershipCheck = expect(acl.check('user1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    const pendingCapabilityCheck = expect(
-      acl.check('user1', '/doc/write'),
+    const pendingMembershipCheck = expect(
+      retryACLConflict(() => acl.check('user1')),
     ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
-    const pendingListing = expect(acl.users()).rejects.toThrow(
+    const pendingCapabilityCheck = expect(
+      retryACLConflict(() => acl.check('user1', '/doc/write')),
+    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
+    const pendingListing = expect(
+      retryACLConflict(() => acl.users()),
+    ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
 
@@ -926,19 +1576,19 @@ describe('UCANACL', () => {
     );
     await replacementWasStarted;
     const pendingReadCheck = expect(
-      acl.check('user1', '/doc/read'),
+      retryACLConflict(() => acl.check('user1', '/doc/read')),
     ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
     const pendingWriteCheck = expect(
-      acl.check('user1', '/doc/write'),
+      retryACLConflict(() => acl.check('user1', '/doc/write')),
     ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    const pendingListing = expect(acl.users('/doc/read')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    expect(() => acl.current()).toThrow(/backing mutation is in progress/);
+    const pendingListing = expect(
+      retryACLConflict(() => acl.users('/doc/read')),
+    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
+    expect(() => acl.current()).toThrow(ACLOperationInProgressError);
 
     rejectReplacement(new Error('replacement grant failed after mutation'));
     await expect(replacement).rejects.toThrow(
@@ -1029,14 +1679,14 @@ describe('UCANACL', () => {
     );
     await replacementWasStarted;
     const pendingReadCheck = expect(
-      acl.check('user1', '/doc/read'),
+      retryACLConflict(() => acl.check('user1', '/doc/read')),
     ).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    const pendingListing = expect(acl.users('/doc/read')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    expect(() => acl.current()).toThrow(/backing mutation is in progress/);
+    const pendingListing = expect(
+      retryACLConflict(() => acl.users('/doc/read')),
+    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
+    expect(() => acl.current()).toThrow(ACLOperationInProgressError);
 
     rejectReplacement(new Error('replacement grant failed after mutation'));
     await expect(replacement).rejects.toThrow(
@@ -1127,7 +1777,7 @@ describe('UCANACL', () => {
       'issuer',
     );
     await addWasStarted;
-    const remove = acl.remove('user1');
+    const remove = retryACLConflict(() => acl.remove('user1'));
     await Promise.resolve();
     expect(backing.remove).not.toHaveBeenCalled();
     resolveAdd('add-changes');
@@ -1140,7 +1790,7 @@ describe('UCANACL', () => {
     expect(await acl.users()).toEqual([]);
   });
 
-  test('orders grant then revoke when codec promises resolve out of order', async () => {
+  test('retries revoke after an earlier slow grant identity codec', async () => {
     let resolveFirstSerialization!: (serialized: string) => void;
     const firstSerialization = new Promise<string>((resolve) => {
       resolveFirstSerialization = resolve;
@@ -1181,10 +1831,10 @@ describe('UCANACL', () => {
       {} as CryptoKey,
       'issuer',
     );
-    const revoke = orderedAcl.revoke('user1');
+    const revoke = retryACLConflict(() => orderedAcl.revoke('user1'));
     await Promise.resolve();
 
-    expect(serialize).toHaveBeenCalledTimes(2);
+    expect(serialize).toHaveBeenCalledTimes(1);
     expect(backing.add).not.toHaveBeenCalled();
     expect(backing.remove).not.toHaveBeenCalled();
 
@@ -1400,7 +2050,7 @@ describe('UCANACL', () => {
     expect(deserialize).toHaveBeenCalledTimes(2);
   });
 
-  test('retries an in-flight user listing when a remote merge changes backing state', async () => {
+  test('rejects a remote merge until an in-flight backing listing settles', async () => {
     let listingStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       listingStarted = resolve;
@@ -1418,48 +2068,55 @@ describe('UCANACL', () => {
 
     const listing = acl.users();
     await started;
-    acl.merge('remote-removal');
+    let conflict: unknown;
+    try {
+      acl.merge('remote-removal');
+    } catch (error) {
+      conflict = error;
+    }
+    expect(conflict).toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
     resolveUsers(['key1']);
 
-    await expect(listing).resolves.toEqual(['key2']);
+    await expect(listing).resolves.toEqual(['key1']);
+    await (conflict as any).waitForSettlement();
+    acl.merge('remote-removal');
+    await expect(acl.users()).resolves.toEqual(['key2']);
     expect(backing.users).toHaveBeenCalledTimes(2);
   });
 
-  test('rejects a user listing after bounded continuous revision races', async () => {
-    const attemptStartedResolvers: Array<() => void> = [];
-    const attemptStarted = Array.from(
-      { length: 3 },
-      () =>
-        new Promise<void>((resolve) => {
-          attemptStartedResolvers.push(resolve);
-        }),
-    );
-    const listingResolvers: Array<(users: string[]) => void> = [];
-    const pendingListings = Array.from(
-      { length: 3 },
-      () =>
-        new Promise<string[]>((resolve) => {
-          listingResolvers.push(resolve);
-        }),
-    );
-    let attempt = 0;
-    backing.users.mockImplementation(() => {
-      const currentAttempt = attempt++;
-      attemptStartedResolvers[currentAttempt]!();
-      return pendingListings[currentAttempt]!;
+  test('holds listing admission through identity serialization', async () => {
+    let serializationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      serializationStarted = resolve;
     });
+    let resolveSerialization!: (value: string) => void;
+    const pendingSerialization = new Promise<string>((resolve) => {
+      resolveSerialization = resolve;
+    });
+    backing.users.mockResolvedValue(['key1']);
+    const serialize = jest.fn(() => {
+      serializationStarted();
+      return pendingSerialization;
+    });
+    const racingAcl = new UCANACLImpl(backing, serialize);
 
-    const listing = acl.users();
-    for (let index = 0; index < 3; index++) {
-      await attemptStarted[index];
-      acl.merge(`remote-change-${index}`);
-      listingResolvers[index]!([`key${index}`]);
-    }
-
-    await expect(listing).rejects.toThrow(
-      'ACL listing remained stale after 3 attempts',
+    const listing = racingAcl.users();
+    await started;
+    expect(() => racingAcl.merge('remote-change')).toThrow(
+      ACLOperationInProgressError,
     );
-    expect(backing.users).toHaveBeenCalledTimes(3);
+    const merge = retryACLConflict(() =>
+      racingAcl.merge('remote-change'),
+    );
+    expect(await settleWithinMicrotasks(merge)).toBeUndefined();
+    expect(backing.merge).not.toHaveBeenCalled();
+
+    resolveSerialization('serialized:key1');
+    await expect(listing).resolves.toEqual(['key1']);
+    await expect(merge).resolves.toBeUndefined();
+    expect(backing.merge).toHaveBeenCalledWith('remote-change');
   });
 
   test('grant creates UCAN and stores entry', async () => {
