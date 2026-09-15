@@ -884,6 +884,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareAdd(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>> {
+    this._assertHealthy('Prepared ACL addition');
     const prepareAdd = this._backing.prepareAdd;
     if (typeof prepareAdd !== 'function') {
       throw new Error('Backing ACL does not support staged addition');
@@ -892,6 +893,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Prepared ACL addition',
     );
+    this._assertHealthy('Prepared ACL addition');
     return this._prepareBackingAddition(
       snapshot.publicKey,
       snapshot.keyBase64,
@@ -906,14 +908,17 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     allowActiveMutation = false,
     preservePriorEntry?: boolean,
   ): Promise<PreparedACLChange<ChangesType>> {
+    this._assertHealthy('Prepared ACL addition');
     preservePriorEntry ??= await this._hasStablePriorEntry(
       publicKey,
       keyBase64,
       'Prepared ACL addition',
     );
+    this._assertHealthy('Prepared ACL addition');
     const metadataRevision = this._metadataRevision;
     const backingRevision = this._backingRevision;
     const prepared = await prepareAdd.call(this._backing, publicKey);
+    this._assertHealthy('Prepared ACL addition');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
@@ -924,6 +929,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return {
       changes: prepared.changes,
       commit: () => {
+        this._assertHealthy('Prepared ACL addition');
         if (committed) {
           throw new Error('Prepared ACL addition was already committed');
         }
