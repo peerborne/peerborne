@@ -1152,7 +1152,7 @@ describe('UCANACL', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
-  test('prepareRemove leaves UCAN state unchanged when backing commit rejects', async () => {
+  test('prepareRemove poisons reads when the backing commit rejects', async () => {
     const fakeUcan = makeFakeUcan({
       issuer: 'issuer',
       audience: 'serialized:user1',
@@ -1178,8 +1178,12 @@ describe('UCANACL', () => {
 
     expect(() => prepared.commit()).toThrow('stale backing ACL');
 
-    expect(await acl.getEntry('user1')).toBeDefined();
-    expect(await acl.check('user1', '/doc/write')).toBe(true);
+    await expect(acl.getEntry('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
   });
 
   test('prepareRemove rejects after the same member receives a newer grant', async () => {
@@ -1449,7 +1453,7 @@ describe('UCANACL', () => {
     expect(backing.remove).not.toHaveBeenCalled();
   });
 
-  test('legacy backing removal failure leaves UCAN state unchanged', async () => {
+  test('legacy backing removal failure poisons subsequent reads', async () => {
     const fakeUcan = makeFakeUcan({
       issuer: 'issuer',
       audience: 'serialized:user1',
@@ -1471,8 +1475,12 @@ describe('UCANACL', () => {
       'legacy removal failed',
     );
 
-    expect(await acl.getEntry('user1')).toBeDefined();
-    expect(await acl.check('user1', '/doc/write')).toBe(true);
+    await expect(acl.getEntry('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
   });
 
   test('current delegates to backing ACL', () => {
@@ -1604,7 +1612,15 @@ describe('UCANACL', () => {
     await expect(acl.getEntry('key1')).resolves.toBeUndefined();
     expect(() => acl.merge('valid-remote-changes')).not.toThrow();
     expect(backing.merge).toHaveBeenCalledTimes(2);
-    await expect(acl.remove('key1')).resolves.toBe('remove-changes');
+    backing.prepareRemove = jest.fn(async () => ({
+      changes: 'prepared-remove-changes',
+      commit: () => {
+        isMember = false;
+      },
+    }));
+    const prepared = await acl.prepareRemove('key1');
+    expect(prepared.changes).toBe('prepared-remove-changes');
+    prepared.commit();
     await expect(acl.check('key1')).resolves.toBe(false);
     await expect(acl.users()).resolves.toEqual([]);
   });
