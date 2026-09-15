@@ -1,8 +1,10 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem.js';
 import { MAX_BEEKEM_TREE_LEAVES, PathUpdate } from './types.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
+const P256_PRIME =
+  (1n << 256n) - (1n << 224n) + (1n << 192n) + (1n << 96n) - 1n;
 
 async function generateKeyPair(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(ECDH_ALGO, true, ['deriveBits']);
@@ -14,6 +16,23 @@ async function exportPublicKey(publicKey: CryptoKey): Promise<Uint8Array> {
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return Buffer.from(left).equals(Buffer.from(right));
+}
+
+function negateP256Point(rawPublicKey: Uint8Array): Uint8Array {
+  if (rawPublicKey.byteLength !== 65 || rawPublicKey[0] !== 4) {
+    throw new Error('Expected an uncompressed P-256 public key');
+  }
+  const negated = new Uint8Array(rawPublicKey);
+  let y = 0n;
+  for (let index = 33; index < 65; index++) {
+    y = (y << 8n) | BigInt(rawPublicKey[index]);
+  }
+  let negativeY = (P256_PRIME - y) % P256_PRIME;
+  for (let index = 64; index >= 33; index--) {
+    negated[index] = Number(negativeY & 0xffn);
+    negativeY >>= 8n;
+  }
+  return negated;
 }
 
 async function twoMemberGroup() {
@@ -203,6 +222,73 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     expect(bytesEqual(receivedRoot, rootSecret)).toBe(true);
   });
 
+  test('rejects the negated public point for a decrypted private key', async () => {
+    const { alice, bob, bobKeys } = await twoMemberGroup();
+    const originalRoot = await alice.getRootSecret();
+    const bobOriginalPublicKey = await exportPublicKey(bobKeys.publicKey);
+    const { pathUpdate } = await bob.update();
+    const mismatched: PathUpdate = {
+      ...pathUpdate,
+      nodes: pathUpdate.nodes.map((node, index) => ({
+        ...node,
+        publicKey:
+          index === pathUpdate.nodes.length - 1
+            ? negateP256Point(node.publicKey)
+            : node.publicKey,
+      })),
+    };
+
+    await expect(alice.processPathUpdate(mismatched)).rejects.toThrow(
+      /private key does not match the public key/,
+    );
+    await expect(alice.getRootSecret()).resolves.toEqual(originalRoot);
+    await expect(
+      alice.findLeafByPublicKey(bobOriginalPublicKey),
+    ).resolves.toBe(2);
+  });
+
+  test('serializes a local update behind an in-flight remote update', async () => {
+    const { alice, bob } = await twoMemberGroup();
+    const { pathUpdate, rootSecret: remoteRoot } = await bob.update();
+    const internals = alice as unknown as {
+      _processPathUpdate(update: PathUpdate): Promise<Uint8Array>;
+      _update(): Promise<{ pathUpdate: PathUpdate; rootSecret: Uint8Array }>;
+    };
+    const processPathUpdate = internals._processPathUpdate.bind(alice);
+    let releaseProcessing!: () => void;
+    const processingGate = new Promise<void>((resolve) => {
+      releaseProcessing = resolve;
+    });
+    let processingStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      processingStarted = resolve;
+    });
+    internals._processPathUpdate = async (update) => {
+      processingStarted();
+      await processingGate;
+      return processPathUpdate(update);
+    };
+    const update = internals._update.bind(alice);
+    internals._update = jest.fn(update);
+
+    const remoteUpdate = alice.processPathUpdate(pathUpdate);
+    await started;
+    const localUpdate = alice.update();
+    await Promise.resolve();
+
+    expect(internals._update).not.toHaveBeenCalled();
+    expect(() => alice.clone()).toThrow(/during an active mutation/);
+    expect(() => alice.compact()).toThrow(/during an active mutation/);
+    await expect(alice.processPathUpdate(pathUpdate)).rejects.toThrow(
+      /during another BeeKEM mutation/,
+    );
+    releaseProcessing();
+    await expect(remoteUpdate).resolves.toEqual(remoteRoot);
+    const { rootSecret: localRoot } = await localUpdate;
+    expect(internals._update).toHaveBeenCalledTimes(1);
+    await expect(alice.getRootSecret()).resolves.toEqual(localRoot);
+  });
+
   test('rejects a protocol-valid multi-level v1 update without mutation', async () => {
     let sender = new BeeKEM();
     let senderKeys = await generateKeyPair();
@@ -279,6 +365,30 @@ describe('BeeKEM legacy PathUpdate admission', () => {
         unexpected: undefined,
       } as unknown as PathUpdate),
     ).rejects.toThrow(/unexpected.*field 'unexpected'/);
+  });
+
+  test('rejects oversized live state before inspecting update input', async () => {
+    const { alice } = await twoMemberGroup();
+    const internals = alice as unknown as {
+      _numLeaves: number;
+      _myLeafIndex: number;
+    };
+    internals._numLeaves = MAX_BEEKEM_TREE_LEAVES + 1;
+    internals._myLeafIndex = 0;
+    let inputReads = 0;
+    const unreadUpdate = {} as PathUpdate;
+    Object.defineProperty(unreadUpdate, 'nodes', {
+      enumerable: true,
+      get() {
+        inputReads++;
+        throw new Error('must not inspect update input');
+      },
+    });
+
+    await expect(alice.processPathUpdate(unreadUpdate)).rejects.toThrow(
+      /BeeKEM tree state is invalid/,
+    );
+    expect(inputReads).toBe(0);
   });
 
   test('rejects additions at the shared tree-size ceiling before mutation', async () => {
