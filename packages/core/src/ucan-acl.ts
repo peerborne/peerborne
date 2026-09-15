@@ -729,6 +729,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareRemove(
     publicKey: PublicKey,
   ): Promise<PreparedACLRemoval<ChangesType>> {
+    this._assertHealthy('Prepared ACL removal');
     const prepareRemove = this._backing.prepareRemove;
     if (typeof prepareRemove !== 'function') {
       throw new Error('Backing ACL does not support staged removal');
@@ -737,6 +738,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Prepared ACL removal',
     );
+    this._assertHealthy('Prepared ACL removal');
     return this._prepareBackingRemoval(
       snapshot.publicKey,
       snapshot.keyBase64,
@@ -750,9 +752,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
     allowActiveMutation = false,
   ): Promise<PreparedACLRemoval<ChangesType>> {
+    this._assertHealthy('Prepared ACL removal');
     const metadataRevision = this._metadataRevision;
     const backingRevision = this._backingRevision;
     const prepared = await prepareRemove.call(this._backing, publicKey);
+    this._assertHealthy('Prepared ACL removal');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
@@ -763,6 +767,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return {
       changes: prepared.changes,
       commit: () => {
+        this._assertHealthy('Prepared ACL removal');
         if (committed) {
           throw new Error('Prepared ACL removal was already committed');
         }
