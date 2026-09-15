@@ -104,6 +104,15 @@ describe('parent', () => {
     expect(() => parent(3, 4)).toThrow('Root has no parent');
     expect(() => parent(7, 8)).toThrow('Root has no parent');
   });
+
+  test('clamps the rightmost leaf of a five-leaf tree to root', () => {
+    expect(parent(8, 5)).toBe(7);
+  });
+
+  test('rejects out-of-range inputs before parent traversal', () => {
+    expect(() => parent(Number.MAX_SAFE_INTEGER, 5)).toThrow(/outside/);
+    expect(() => parent(0, Number.MAX_SAFE_INTEGER)).toThrow(/numLeaves/);
+  });
 });
 
 describe('sibling', () => {
@@ -134,6 +143,25 @@ describe('directPath', () => {
 
   test('1 leaf returns empty path', () => {
     expect(directPath(0, 1)).toEqual([]);
+  });
+
+  test('5 leaves, rightmost leaf reaches root without exposing clamped nodes', () => {
+    expect(directPath(8, 5)).toEqual([7]);
+  });
+
+  test('all supported rightmost-leaf paths terminate within 13 steps', () => {
+    for (let numLeaves = 2; numLeaves <= 8192; numLeaves++) {
+      const path = directPath(leafToNodeIndex(numLeaves - 1), numLeaves);
+      expect(path.length).toBeLessThanOrEqual(13);
+      expect(path.at(-1)).toBe(root(numLeaves));
+    }
+  });
+
+  test('rejects invalid leaves before direct-path traversal', () => {
+    expect(() => directPath(9, 5)).toThrow(/not a leaf/);
+    expect(() => directPath(Number.MAX_SAFE_INTEGER - 1, 5)).toThrow(
+      /not a leaf/,
+    );
   });
 });
 
