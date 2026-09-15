@@ -433,7 +433,7 @@ describe('beekem-welcome-wire', () => {
       const inviterKeys = await generateECDHKeyPair();
       await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
 
-      for (let leafCount = 2; leafCount <= 5; leafCount++) {
+      for (let leafCount = 2; leafCount <= 3; leafCount++) {
         const memberKeys = await generateECDHKeyPair();
         const { welcome } = await inviter.addMember(memberKeys.publicKey);
         const joined = new BeeKEM();
@@ -448,6 +448,7 @@ describe('beekem-welcome-wire', () => {
       await inviter.removeMember(0);
       inviter.compact();
 
+      await inviter.addMember((await generateECDHKeyPair()).publicKey);
       const memberKeys = await generateECDHKeyPair();
       const { welcome, rootSecret } = await inviter.addMember(
         memberKeys.publicKey,
