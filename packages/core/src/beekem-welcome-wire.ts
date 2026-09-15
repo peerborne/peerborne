@@ -31,6 +31,7 @@ const MAX_V2_PATH_KEYS = 64;
 const MAX_V2_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_V2_AGGREGATE_WORK_ITEMS = 4 * MAX_BEEKEM_TREE_LEAVES;
+const MAX_WELCOME_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
 
 function isCanonicalNonNegativeSafeInteger(value: unknown): value is number {
   return (
@@ -266,6 +267,206 @@ function validateLegacyWelcomeTopology(
     covered.add(nodeIndex);
   }
   return directPath;
+}
+
+/**
+ * Validate and detach a legacy runtime Welcome before applying it to a tree.
+ *
+ * Unlike the wire decoder, this boundary receives structurally typed values
+ * directly from JavaScript callers. It therefore snapshots data descriptors,
+ * bounds all arrays and byte fields, and rejects v2 markers rather than
+ * silently discarding their transition metadata.
+ *
+ * @internal
+ */
+export function snapshotBeeKEMWelcomeForProcessing(
+  value: unknown,
+): { welcome: BeeKEMWelcome; numLeaves: number } {
+  const context = 'Invalid BeeKEMWelcome runtime';
+  const budget = createWelcomeDecodeBudget(context);
+  const raw = snapshotPlainObject(
+    value,
+    ['leafIndex', 'pathKeys', 'treeNodePublicKeys', 'treeHash'],
+    context,
+  );
+  if (
+    typeof raw.leafIndex !== 'number' ||
+    !Number.isSafeInteger(raw.leafIndex) ||
+    raw.leafIndex < 0
+  ) {
+    throw new Error(`${context}: leafIndex must be a non-negative safe integer`);
+  }
+  if (!Array.isArray(raw.pathKeys)) {
+    throw new Error(`${context}: pathKeys must be an array`);
+  }
+  if (!Array.isArray(raw.treeNodePublicKeys)) {
+    throw new Error(`${context}: treeNodePublicKeys must be an array`);
+  }
+
+  const rawPathKeys = snapshotBoundedArray(
+    raw.pathKeys,
+    MAX_V2_PATH_KEYS,
+    `${context}: pathKeys`,
+    budget,
+    `${context}: pathKeys has invalid length`,
+  );
+  if (rawPathKeys.length === 0) {
+    throw new Error(`${context}: pathKeys has invalid length`);
+  }
+  const rawTreeNodePublicKeys = snapshotBoundedArray(
+    raw.treeNodePublicKeys,
+    MAX_WELCOME_TREE_WIDTH - 2,
+    `${context}: treeNodePublicKeys`,
+    budget,
+    `${context}: treeNodePublicKeys exceeds the supported tree width`,
+  );
+  const treeWidth =
+    rawPathKeys.length + rawTreeNodePublicKeys.length + 1;
+  if (
+    treeWidth < 3 ||
+    treeWidth > MAX_WELCOME_TREE_WIDTH ||
+    treeWidth % 2 === 0
+  ) {
+    throw new Error(
+      `${context}: pathKeys and treeNodePublicKeys do not describe a supported complete tree`,
+    );
+  }
+
+  const numLeaves = (treeWidth + 1) / 2;
+  const leafIndex = raw.leafIndex;
+  if (leafIndex !== TreeMath.leafToNodeIndex(numLeaves - 1)) {
+    throw new Error(`${context}: leafIndex must be the appended rightmost leaf`);
+  }
+
+  const directPath = TreeMath.directPath(leafIndex, numLeaves);
+  const covered = new Set<number>([leafIndex]);
+  let previousPathOffset = -1;
+  const pathKeySnapshots = rawPathKeys.map((entry, offset) => {
+    const node = snapshotPlainObject(
+      entry,
+      ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
+      `${context}: pathKeys[${offset}]`,
+    );
+    if (
+      typeof node.nodeIndex !== 'number' ||
+      !Number.isSafeInteger(node.nodeIndex) ||
+      node.nodeIndex < 0
+    ) {
+      throw new Error(
+        `${context}: pathKeys[${offset}].nodeIndex must be a non-negative safe integer`,
+      );
+    }
+    const nodeIndex = node.nodeIndex;
+    const pathOffset = directPath.indexOf(nodeIndex);
+    if (
+      nodeIndex >= treeWidth ||
+      pathOffset !== previousPathOffset + 1 ||
+      covered.has(nodeIndex)
+    ) {
+      throw new Error(
+        `${context}: pathKeys[${offset}] has an invalid, duplicate, out-of-order, or non-contiguous nodeIndex`,
+      );
+    }
+    previousPathOffset = pathOffset;
+    covered.add(nodeIndex);
+    return {
+      nodeIndex,
+      publicKey: node.publicKey,
+      encryptedPrivateKey: node.encryptedPrivateKey,
+    };
+  });
+  if (pathKeySnapshots.at(-1)?.nodeIndex !== TreeMath.root(numLeaves)) {
+    throw new Error(`${context}: pathKeys must end at the root`);
+  }
+
+  const treeNodeSnapshots = rawTreeNodePublicKeys.map((entry, offset) => {
+    const node = snapshotPlainObject(
+      entry,
+      ['nodeIndex', 'publicKey'],
+      `${context}: treeNodePublicKeys[${offset}]`,
+    );
+    if (
+      typeof node.nodeIndex !== 'number' ||
+      !Number.isSafeInteger(node.nodeIndex) ||
+      node.nodeIndex < 0
+    ) {
+      throw new Error(
+        `${context}: treeNodePublicKeys[${offset}].nodeIndex must be a non-negative safe integer`,
+      );
+    }
+    const nodeIndex = node.nodeIndex;
+    if (nodeIndex >= treeWidth || covered.has(nodeIndex)) {
+      throw new Error(
+        `${context}: treeNodePublicKeys[${offset}] has an out-of-range or duplicate nodeIndex`,
+      );
+    }
+    covered.add(nodeIndex);
+    if (!Object.prototype.hasOwnProperty.call(node, 'publicKey')) {
+      throw new Error(
+        `${context}: treeNodePublicKeys[${offset}].publicKey is required`,
+      );
+    }
+    return { nodeIndex, publicKey: node.publicKey };
+  });
+
+  if (
+    covered.size !== treeWidth ||
+    Array.from({ length: treeWidth }, (_, index) => index).some(
+      (index) => !covered.has(index),
+    )
+  ) {
+    throw new Error(
+      `${context}: pathKeys and treeNodePublicKeys must cover the complete tree exactly once`,
+    );
+  }
+
+  const pathKeys: PathNodeUpdate[] = pathKeySnapshots.map((node, offset) => ({
+    nodeIndex: node.nodeIndex,
+    publicKey: snapshotRuntimeBytes(
+      node.publicKey,
+      65,
+      65,
+      `pathKeys[${offset}].publicKey`,
+      budget,
+      'BeeKEMWelcome',
+    ),
+    encryptedPrivateKey: snapshotRuntimeBytes(
+      node.encryptedPrivateKey,
+      1,
+      MAX_V2_CIPHERTEXT_BYTES,
+      `pathKeys[${offset}].encryptedPrivateKey`,
+      budget,
+      'BeeKEMWelcome',
+    ),
+  }));
+  const treeNodePublicKeys: WelcomeNodePublicKey[] =
+    treeNodeSnapshots.map((node, offset) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey:
+        node.publicKey === null
+          ? null
+          : snapshotRuntimeBytes(
+              node.publicKey,
+              65,
+              65,
+              `treeNodePublicKeys[${offset}].publicKey`,
+              budget,
+              'BeeKEMWelcome',
+            ),
+    }));
+  const treeHash = snapshotRuntimeBytes(
+    raw.treeHash,
+    32,
+    32,
+    'treeHash',
+    budget,
+    'BeeKEMWelcome',
+  );
+
+  return {
+    welcome: { leafIndex, pathKeys, treeNodePublicKeys, treeHash },
+    numLeaves,
+  };
 }
 
 export function serializeBeeKEMWelcomeV2ForWire(
