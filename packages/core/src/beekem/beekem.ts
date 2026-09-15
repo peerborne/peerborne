@@ -529,6 +529,22 @@ export class BeeKEM {
         'Cannot process path update: sender is not an active tree leaf',
       );
     }
+    const myDirectPath = TreeMath.directPath(
+      this._myLeafIndex,
+      this._numLeaves,
+    );
+    const firstIntersection = detachedUpdate.nodes.findIndex((node) =>
+      myDirectPath.includes(node.nodeIndex),
+    );
+    if (
+      firstIntersection >= 0 &&
+      firstIntersection < detachedUpdate.nodes.length - 1
+    ) {
+      throw new Error(
+        'Cannot process path update: legacy PathUpdate v1 cannot safely ' +
+          'distribute ancestor keys above a non-root intersection',
+      );
+    }
 
     const staged = this.clone();
     const keyPairProbe = (await crypto.subtle.generateKey(
@@ -550,12 +566,6 @@ export class BeeKEM {
       publicKey: senderLeafPublicKey,
     };
     staged._nodes.set(detachedUpdate.senderLeafIndex, senderLeaf);
-
-    // Find where our copath intersects the update path
-    const myDirectPath = TreeMath.directPath(
-      staged._myLeafIndex,
-      staged._numLeaves,
-    );
 
     // The update path consists of internal nodes from the sender's leaf to root.
     // We need to find the first node in the update that is on our direct path.
