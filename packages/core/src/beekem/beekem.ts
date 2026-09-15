@@ -33,7 +33,7 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return difference === 0;
 }
 
-async function assertEcdhKeyPairCoherent(
+async function assertEcdhKeyPairCompatible(
   publicKey: CryptoKey,
   privateKey: CryptoKey,
   probe: CryptoKeyPair,
@@ -61,7 +61,7 @@ async function assertEcdhKeyPairCoherent(
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : '';
     throw new Error(
-      `Cannot process Welcome: ${label} key-pair coherence check failed${detail}`,
+      `Cannot process Welcome: ${label} ECDH compatibility check failed${detail}`,
       { cause: error },
     );
   }
@@ -71,7 +71,42 @@ async function assertEcdhKeyPairCoherent(
   publicSide.fill(0);
   if (!coherent) {
     throw new Error(
-      `Cannot process Welcome: ${label} public and private keys do not match`,
+      `Cannot process Welcome: ${label} public and private keys are not ECDH-compatible`,
+    );
+  }
+}
+
+async function assertExactWelcomePathKeyPair(
+  publicKey: CryptoKey,
+  privateKey: CryptoKey,
+  nodeIndex: number,
+): Promise<void> {
+  let publicJwk: JsonWebKey;
+  let privateJwk: JsonWebKey;
+  try {
+    [publicJwk, privateJwk] = await Promise.all([
+      crypto.subtle.exportKey('jwk', publicKey),
+      crypto.subtle.exportKey('jwk', privateKey),
+    ]);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Cannot process Welcome: could not validate the key pair at path node ${nodeIndex}${detail}`,
+      { cause: error },
+    );
+  }
+  if (
+    publicJwk.kty !== 'EC' ||
+    privateJwk.kty !== 'EC' ||
+    publicJwk.crv !== ECDH_CURVE ||
+    privateJwk.crv !== ECDH_CURVE ||
+    typeof publicJwk.x !== 'string' ||
+    typeof publicJwk.y !== 'string' ||
+    publicJwk.x !== privateJwk.x ||
+    publicJwk.y !== privateJwk.y
+  ) {
+    throw new Error(
+      `Cannot process Welcome: path node ${nodeIndex} public and private keys do not match`,
     );
   }
 }
@@ -416,10 +451,11 @@ export class BeeKEM {
     staged._myLeafIndex = validated.welcome.leafIndex;
     staged._numLeaves = validated.numLeaves;
 
-    // Cross-derive through one ephemeral key pair to prove that every private
-    // key installed below matches its advertised public key. The caller's
+    // Cross-derive through one ephemeral key pair to prove that the caller's
+    // private key is compatible with its advertised ECDH public key. The
     // private key can remain non-extractable because validation only uses its
-    // deriveBits capability.
+    // deriveBits capability. Decrypted path keys are extractable and are
+    // compared exactly below.
     let coherenceProbe: CryptoKeyPair;
     try {
       coherenceProbe = (await crypto.subtle.generateKey(
@@ -434,7 +470,7 @@ export class BeeKEM {
         { cause: error },
       );
     }
-    await assertEcdhKeyPairCoherent(
+    await assertEcdhKeyPairCompatible(
       publicKey,
       privateKey,
       coherenceProbe,
@@ -468,11 +504,10 @@ export class BeeKEM {
         pathKey.encryptedPrivateKey,
         currentPrivateKey,
       );
-      await assertEcdhKeyPairCoherent(
+      await assertExactWelcomePathKeyPair(
         nodePublicKey,
         nodePrivateKey,
-        coherenceProbe,
-        `path node ${pathKey.nodeIndex}`,
+        pathKey.nodeIndex,
       );
 
       const node: InternalNode = {
