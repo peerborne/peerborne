@@ -62,6 +62,148 @@ describe('UCANACL', () => {
     expect(result).toBe('changes');
   });
 
+  test('a successful local add clears a prior revocation tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+
+    await acl.add('key1');
+
+    expect(await acl.check('key1', '/doc/read')).toBe(true);
+  });
+
+  test('a failed local add preserves a prior revocation tombstone', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockRejectedValue(new Error('backing add failed'));
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+
+    await expect(acl.add('key1')).rejects.toThrow('backing add failed');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
+  test('orders a removal after an in-flight addition', async () => {
+    let resolveAdd!: (changes: string) => void;
+    const pendingAdd = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    let addStarted!: () => void;
+    const addWasStarted = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    let isMember = false;
+    backing.add.mockImplementation(async () => {
+      addStarted();
+      const changes = await pendingAdd;
+      isMember = true;
+      return changes;
+    });
+    backing.remove.mockImplementation(async () => {
+      isMember = false;
+      return 'remove-changes';
+    });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['key1'] : [],
+    );
+
+    const add = acl.add('key1');
+    await addWasStarted;
+    const remove = acl.remove('key1');
+    await Promise.resolve();
+    expect(backing.remove).not.toHaveBeenCalled();
+    resolveAdd('add-changes');
+
+    await expect(add).resolves.toBe('add-changes');
+    await expect(remove).resolves.toBe('remove-changes');
+    expect(await acl.check('key1')).toBe(false);
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+    expect(await acl.users()).toEqual([]);
+  });
+
+  test('orders add then remove when codec promises resolve out of order', async () => {
+    let resolveFirstSerialization!: (serialized: string) => void;
+    const firstSerialization = new Promise<string>((resolve) => {
+      resolveFirstSerialization = resolve;
+    });
+    let serializationCall = 0;
+    const serialize = jest.fn((key: string) => {
+      serializationCall++;
+      return serializationCall === 1
+        ? firstSerialization
+        : Promise.resolve(`serialized:${key}`);
+    });
+    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const events: string[] = [];
+    const members = new Set<string>();
+    backing.add.mockImplementation(async (key: string) => {
+      events.push(`add:${key}`);
+      members.add(key);
+      return 'add-changes';
+    });
+    backing.remove.mockImplementation(async (key: string) => {
+      events.push(`remove:${key}`);
+      members.delete(key);
+      return 'remove-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const addition = orderedAcl.add('key1');
+    const removal = orderedAcl.remove('key1');
+    await Promise.resolve();
+
+    expect(serialize).toHaveBeenCalledTimes(2);
+    expect(backing.add).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    resolveFirstSerialization('serialized:key1');
+    await expect(addition).resolves.toBe('add-changes');
+    await expect(removal).resolves.toBe('remove-changes');
+    expect(events).toEqual(['add:key1', 'remove:key1']);
+    expect(await orderedAcl.check('key1')).toBe(false);
+    expect(await orderedAcl.users()).toEqual([]);
+  });
+
+  test('releases codec admission after a rejected snapshot', async () => {
+    const serialize = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('invalid identity'))
+      .mockResolvedValueOnce('serialized:key2');
+    const orderedAcl = new UCANACLImpl(backing, serialize);
+    backing.add.mockResolvedValue('add-changes');
+
+    const rejected = orderedAcl.add('key1');
+    const accepted = orderedAcl.add('key2');
+
+    await expect(rejected).rejects.toThrow('invalid identity');
+    await expect(accepted).resolves.toBe('add-changes');
+    expect(backing.add).toHaveBeenCalledTimes(1);
+    expect(backing.add).toHaveBeenCalledWith('key2');
+  });
+
+  test('runs different identities concurrently after ordered admission', async () => {
+    let resolveFirstAdd!: (changes: string) => void;
+    const firstAdd = new Promise<string>((resolve) => {
+      resolveFirstAdd = resolve;
+    });
+    const started: string[] = [];
+    backing.add.mockImplementation((key: string) => {
+      started.push(key);
+      return key === 'key1' ? firstAdd : Promise.resolve('second-changes');
+    });
+
+    const first = acl.add('key1');
+    const second = acl.add('key2');
+
+    await expect(second).resolves.toBe('second-changes');
+    expect(started).toEqual(['key1', 'key2']);
+    resolveFirstAdd('first-changes');
+    await expect(first).resolves.toBe('first-changes');
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');
@@ -99,6 +241,7 @@ describe('UCANACL', () => {
     });
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('changes');
+    backing.check.mockResolvedValue(true);
 
     await (acl.grant as any)('user1', '/doc/write', 'doc-1', {} as CryptoKey, 'issuer');
 
@@ -108,6 +251,234 @@ describe('UCANACL', () => {
     expect(readResult).toBe(true);
     const adminResult = await acl.check('user1', '/doc/admin');
     expect(adminResult).toBe(false);
+  });
+
+  test('grant stays unavailable until backing membership succeeds', async () => {
+    const fakeUcan = makeFakeUcan({
+      audience: 'serialized:user1',
+      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+    });
+    let resolveAdd!: (changes: string) => void;
+    const pendingAdd = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    let addStarted!: () => void;
+    const addWasStarted = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockImplementation(() => {
+      addStarted();
+      return pendingAdd;
+    });
+    backing.check.mockResolvedValue(true);
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await addWasStarted;
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/read',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).rejects.toThrow('already in progress');
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+    expect(await acl.getEntry('user1')).toBeUndefined();
+
+    resolveAdd('changes');
+    await expect(grant).resolves.toBe('changes');
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('a rejected backing addition does not install a capability', async () => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.add.mockRejectedValue(new Error('backing add failed'));
+    backing.check.mockResolvedValue(false);
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+      ),
+    ).rejects.toThrow('backing add failed');
+    expect(await acl.getEntry('user1')).toBeUndefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+  });
+
+  test('a successful grant clears a prior revocation tombstone', async () => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.add.mockResolvedValue('add-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('user1');
+
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    expect(await acl.check('user1', '/doc/write')).toBe(true);
+  });
+
+  test('orders a removal after an in-flight capability grant', async () => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    let resolveAdd!: (changes: string) => void;
+    const pendingAdd = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    let addStarted!: () => void;
+    const addWasStarted = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    let isMember = false;
+    backing.add.mockImplementation(async () => {
+      addStarted();
+      const changes = await pendingAdd;
+      isMember = true;
+      return changes;
+    });
+    backing.remove.mockImplementation(async () => {
+      isMember = false;
+      return 'remove-changes';
+    });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['user1'] : [],
+    );
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await addWasStarted;
+    const remove = acl.remove('user1');
+    await Promise.resolve();
+    expect(backing.remove).not.toHaveBeenCalled();
+    resolveAdd('add-changes');
+
+    await expect(grant).resolves.toBe('add-changes');
+    await expect(remove).resolves.toBe('remove-changes');
+    expect(await acl.getEntry('user1')).toBeUndefined();
+    expect(await acl.check('user1')).toBe(false);
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
+    expect(await acl.users()).toEqual([]);
+  });
+
+  test('orders grant then revoke when codec promises resolve out of order', async () => {
+    let resolveFirstSerialization!: (serialized: string) => void;
+    const firstSerialization = new Promise<string>((resolve) => {
+      resolveFirstSerialization = resolve;
+    });
+    let serializationCall = 0;
+    const serialize = jest.fn((key: string) => {
+      serializationCall++;
+      return serializationCall === 1
+        ? firstSerialization
+        : Promise.resolve(`serialized:${key}`);
+    });
+    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const events: string[] = [];
+    const members = new Set<string>();
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.add.mockImplementation(async (key: string) => {
+      events.push(`grant:${key}`);
+      members.add(key);
+      return 'grant-changes';
+    });
+    backing.remove.mockImplementation(async (key: string) => {
+      events.push(`revoke:${key}`);
+      members.delete(key);
+      return 'revoke-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const grant = orderedAcl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    const revoke = orderedAcl.revoke('user1');
+    await Promise.resolve();
+
+    expect(serialize).toHaveBeenCalledTimes(2);
+    expect(backing.add).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    resolveFirstSerialization('serialized:user1');
+    await expect(grant).resolves.toBe('grant-changes');
+    await expect(revoke).resolves.toBe('revoke-changes');
+    expect(events).toEqual(['grant:user1', 'revoke:user1']);
+    expect(await orderedAcl.getEntry('user1')).toBeUndefined();
+    expect(await orderedAcl.check('user1')).toBe(false);
+    expect(await orderedAcl.users()).toEqual([]);
+  });
+
+  test('a remote backing removal disables cached capability metadata', async () => {
+    let isMember = true;
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    backing.add.mockResolvedValue('changes');
+    backing.check.mockImplementation(async () => isMember);
+    backing.merge.mockImplementation(() => {
+      isMember = false;
+    });
+    await acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    acl.merge('remote-removal');
+
+    expect(await acl.getEntry('user1')).toBeDefined();
+    expect(await acl.check('user1', '/doc/write')).toBe(false);
   });
 
   test('users without capability delegates to backing ACL', async () => {
@@ -128,7 +499,8 @@ describe('UCANACL', () => {
     await (acl.grant as any)('user1', '/doc/write', 'doc-1', {} as CryptoKey, 'issuer-b64', []);
     const entry = await acl.getEntry('user1');
     expect(entry).toBeDefined();
-    expect(entry!.ucan).toBe(fakeUcan);
+    expect(entry!.ucan).toEqual(fakeUcan);
+    expect(entry!.ucan).not.toBe(fakeUcan);
     expect(entry!.capabilities).toEqual(['/doc/write']);
     expect(entry!.revoked).toBe(false);
   });
@@ -146,6 +518,159 @@ describe('UCANACL', () => {
     await (acl.grant as any)('user2', '/doc/admin', 'doc-1', {} as CryptoKey, 'issuer-b64', [], epochId);
     const entry = await acl.getEntry('user2');
     expect(entry!.epochId).toEqual(epochId);
+  });
+
+  test('detaches stored grants from mutable token inputs and lookup results', async () => {
+    const tokenCapabilities = [
+      { resource: 'doc-1', ability: '/doc/write' },
+    ];
+    const proofs = ['proof-1'];
+    const fakeUcan = makeFakeUcan({
+      audience: 'serialized:user1',
+      capabilities: tokenCapabilities,
+      proofs,
+    });
+    const epochId = new Uint8Array([10, 20, 30]);
+    let resolveAdd!: (changes: string) => void;
+    const addPending = new Promise<string>((resolve) => {
+      resolveAdd = resolve;
+    });
+    let addStarted!: () => void;
+    const addWasStarted = new Promise<void>((resolve) => {
+      addStarted = resolve;
+    });
+    mockCreateUCAN.mockResolvedValue(fakeUcan);
+    backing.add.mockImplementation(() => {
+      addStarted();
+      return addPending;
+    });
+    backing.check.mockResolvedValue(true);
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+      proofs,
+      epochId,
+    );
+    await addWasStarted;
+    tokenCapabilities[0]!.ability = '/doc/admin';
+    proofs.push('proof-2');
+    epochId[0] = 255;
+    resolveAdd('changes');
+    await grant;
+
+    const first = await acl.getEntry('user1');
+    first!.capabilities[0] = '/doc/admin';
+    first!.ucan.capabilities[0]!.ability = '/doc/admin';
+    first!.ucan.proofs.push('proof-3');
+    first!.epochId![1] = 255;
+
+    const second = await acl.getEntry('user1');
+    expect(second!.capabilities).toEqual(['/doc/write']);
+    expect(second!.ucan.capabilities).toEqual([
+      { resource: 'doc-1', ability: '/doc/write' },
+    ]);
+    expect(second!.ucan.proofs).toEqual(['proof-1']);
+    expect(second!.epochId).toEqual(new Uint8Array([10, 20, 30]));
+    expect(await acl.check('user1', '/doc/admin')).toBe(false);
+  });
+
+  test('binds deferred grant metadata and membership to one detached identity', async () => {
+    const callerIdentity = { id: 'user-a' };
+    let serializationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      serializationStarted = resolve;
+    });
+    let releaseSerialization!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseSerialization = resolve;
+    });
+    const serialize = jest.fn((key: { id: string }) => {
+      const capturedId = key.id;
+      return (async () => {
+        if (key === callerIdentity) {
+          serializationStarted();
+          await release;
+        }
+        return `serialized:${capturedId}`;
+      })();
+    });
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice('serialized:'.length),
+    }));
+    const members = new Set<string>();
+    backing.add.mockImplementation(async (key: { id: string }) => {
+      members.add(key.id);
+      return 'changes';
+    });
+    backing.check.mockImplementation(async (key: { id: string }) =>
+      members.has(key.id),
+    );
+    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user-a',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+
+    const grant = objectAcl.grant(
+      callerIdentity,
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    await started;
+    callerIdentity.id = 'user-b';
+    releaseSerialization();
+
+    await expect(grant).resolves.toBe('changes');
+    expect(backing.add).toHaveBeenCalledWith({ id: 'user-a' });
+    expect(
+      await objectAcl.check({ id: 'user-a' }, '/doc/write'),
+    ).toBe(true);
+    expect(
+      await objectAcl.check({ id: 'user-b' }, '/doc/admin'),
+    ).toBe(false);
+  });
+
+  test('fails closed when a mutable identity cannot be detached', async () => {
+    const identity = { id: 'user-a' };
+    const serialize = jest.fn(async (key: { id: string }) => key.id);
+    const withoutDeserializer = new UCANACLImpl(backing, serialize);
+    backing.add.mockResolvedValue('changes');
+
+    await expect(withoutDeserializer.add(identity)).rejects.toThrow(
+      /requires a public-key deserializer for mutable identities/,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+
+    const aliasingDeserializer = new UCANACLImpl(
+      backing,
+      serialize,
+      jest.fn(async () => identity),
+    );
+    await expect(aliasingDeserializer.add(identity)).rejects.toThrow(
+      /return a detached identity/,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
+  test('rejects a non-canonical reconstructed identity', async () => {
+    const objectAcl = new UCANACLImpl(
+      backing,
+      jest.fn(async (key: { id: string }) => `serialized:${key.id}`),
+      jest.fn(async () => ({ id: 'different-user' })),
+    );
+
+    await expect(objectAcl.add({ id: 'user-a' })).rejects.toThrow(
+      /non-canonical public-key round trip/,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
   });
 
   test('revoke delegates to remove', async () => {
@@ -191,12 +716,25 @@ describe('UCANACL', () => {
 });
 
 describe('UCANACLProvider', () => {
-  test('initialize creates a UCANACL with the backing ACL', () => {
+  test('forwards the identity codec to the initialized UCAN ACL', async () => {
     const mockBackingAclProvider = { initialize: jest.fn(() => makeMockAcl()) };
-    const serializeKey = jest.fn(async (key: string) => `s:${key}`);
-    const provider = new UCANACLProviderImpl(mockBackingAclProvider, serializeKey);
+    const serializeKey = jest.fn(async (key: { id: string }) => `s:${key.id}`);
+    const deserializeKey = jest.fn(async (serialized: string) => ({
+      id: serialized.slice(2),
+    }));
+    const provider = new UCANACLProviderImpl(
+      mockBackingAclProvider,
+      serializeKey,
+      deserializeKey,
+    );
     const acl = provider.initialize();
+    const backing = mockBackingAclProvider.initialize.mock.results[0]!.value;
+    backing.add.mockResolvedValue('changes');
+
     expect(acl).toBeInstanceOf(UCANACLImpl);
     expect(mockBackingAclProvider.initialize).toHaveBeenCalledTimes(1);
+    await expect(acl.add({ id: 'reader' })).resolves.toBe('changes');
+    expect(deserializeKey).toHaveBeenCalledWith('s:reader');
+    expect(backing.add).toHaveBeenCalledWith({ id: 'reader' });
   });
 });
