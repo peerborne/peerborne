@@ -84,22 +84,29 @@ const objectGetPrototypeOf = Object.getPrototypeOf;
 const reflectApply = Reflect.apply;
 const reflectGet = Reflect.get;
 const emptyBackingArguments: never[] = [];
+const nativePromiseConstructor = Promise;
 const promiseThen = Promise.prototype.then;
+const nativePromiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
+  nativePromiseConstructor,
+  Symbol.species,
+);
 const ignorePromiseSettlement = (_value: unknown): undefined => undefined;
 const ignoredPromiseSettlementArguments = [
   ignorePromiseSettlement,
   ignorePromiseSettlement,
 ];
 
-function ignoreNativePromiseSettlement(value: object): void {
+function observeNativePromiseSettlement(value: object): boolean {
   try {
     void reflectApply(
       promiseThen,
       value,
       ignoredPromiseSettlementArguments,
     );
+    return true;
   } catch {
     // Non-native thenables are never assimilated.
+    return false;
   }
 }
 
@@ -422,33 +429,73 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _invokeSynchronousBacking<T>(
     operation: () => T,
     operationName: string,
+    requirePlainClaimResult = false,
   ): T {
     return this._invokeBacking(() => {
       const result = operation();
+      let hasThenProperty = false;
       let then: unknown;
+      let isNativePromise = false;
       if (
         (typeof result === 'object' && result !== null) ||
         typeof result === 'function'
       ) {
         try {
-          then = this._backingDataProperty(
+          const thenProperty = this._backingDataProperty(
             result,
             'then',
             `${operationName} result then`,
-          ).value;
+          );
+          hasThenProperty = thenProperty.found;
+          then = thenProperty.value;
+          if (requirePlainClaimResult) {
+            const observationIsSafe =
+              this._canSafelyObserveNativePromise(
+                result,
+                `${operationName} result`,
+              );
+            if (!hasThenProperty && !observationIsSafe) {
+              throw new TypeError(
+                `${operationName} returned an ambiguous asynchronous result`,
+              );
+            }
+            if (observationIsSafe) {
+              // The captured intrinsic checks the internal Promise brand
+              // without assimilating a custom thenable. Its handlers also
+              // prevent a rejected native Promise from becoming unobserved.
+              isNativePromise = observeNativePromiseSettlement(result);
+            }
+          }
         } catch {
           this._backingSyncContractViolated = true;
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
           throw new TypeError(
             `${operationName} returned an invalid asynchronous result`,
           );
         }
       }
-      if (typeof then === 'function') {
-        // Poison before observing a native promise's settlement. Custom
-        // thenables are never invoked by this wrapper; native async work may
-        // already be scheduled and must find every later operation closed.
+      if (
+        isNativePromise ||
+        (requirePlainClaimResult
+          ? hasThenProperty
+          : typeof then === 'function')
+      ) {
+        // Custom thenables are never invoked by this wrapper. Native async
+        // work may already be scheduled and must find later operations closed.
         this._backingSyncContractViolated = true;
-        ignoreNativePromiseSettlement(result as object);
+        if (
+          !isNativePromise &&
+          ((typeof result === 'object' && result !== null) ||
+            typeof result === 'function')
+        ) {
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
+        }
         throw new TypeError(`${operationName} must complete synchronously`);
       }
       return result;
@@ -719,6 +766,91 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return { found: false };
   }
 
+  /**
+   * Promise.prototype.then performs species construction after its internal
+   * Promise brand check. Preflight that later step without invoking accessors
+   * or constructors so a hostile branded Promise cannot turn a species throw
+   * into a false "not a Promise" result.
+   */
+  private _canSafelyObserveNativePromise(
+    target: object,
+    field: string,
+  ): boolean {
+    const constructorProperty = this._backingDataProperty(
+      target,
+      'constructor',
+      `${field} constructor`,
+    );
+    if (
+      !constructorProperty.found ||
+      constructorProperty.value === undefined
+    ) {
+      return true;
+    }
+    const constructor = constructorProperty.value;
+    if (
+      (typeof constructor !== 'object' || constructor === null) &&
+      typeof constructor !== 'function'
+    ) {
+      return false;
+    }
+
+    if (constructor === nativePromiseConstructor) {
+      const currentSpeciesDescriptor = reflectApply(
+        objectGetOwnPropertyDescriptor,
+        Object,
+        [nativePromiseConstructor, Symbol.species],
+      ) as PropertyDescriptor | undefined;
+      if (
+        currentSpeciesDescriptor !== undefined &&
+        !('value' in currentSpeciesDescriptor)
+      ) {
+        return (
+          nativePromiseSpeciesDescriptor !== undefined &&
+          !('value' in nativePromiseSpeciesDescriptor) &&
+          currentSpeciesDescriptor.get ===
+            nativePromiseSpeciesDescriptor.get &&
+          currentSpeciesDescriptor.set ===
+            nativePromiseSpeciesDescriptor.set
+        );
+      }
+      const species = currentSpeciesDescriptor?.value;
+      return (
+        currentSpeciesDescriptor !== undefined &&
+        (species === undefined ||
+          species === null ||
+          species === nativePromiseConstructor)
+      );
+    }
+
+    const speciesProperty = this._backingDataProperty(
+      constructor,
+      Symbol.species,
+      `${field} Promise species`,
+    );
+    return (
+      !speciesProperty.found ||
+      speciesProperty.value === undefined ||
+      speciesProperty.value === null ||
+      speciesProperty.value === nativePromiseConstructor
+    );
+  }
+
+  /** Observe only a safely branded forbidden Promise return. */
+  private _observeInvalidNativePromiseReturn(
+    value: object,
+    field: string,
+  ): void {
+    try {
+      if (this._canSafelyObserveNativePromise(value, field)) {
+        observeNativePromiseSettlement(value);
+      }
+    } catch {
+      // The result is rejected below regardless; never invoke unsafe species
+      // hooks merely to suppress a malicious provider's rejection.
+    }
+  }
+
   private _captureBackingPreparedChange(
     prepared: unknown,
     changeName: 'addition' | 'removal',
@@ -818,7 +950,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     try {
       let claim: unknown;
       try {
-        claim = this._invokeSynchronousBacking(operation, operationName);
+        claim = this._invokeSynchronousBacking(
+          operation,
+          operationName,
+          true,
+        );
       } catch (error) {
         const foreignConflict = this._isForeignOperationConflict(error);
         if (
@@ -909,6 +1045,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): void {
     const reentryAttempts = this._backingReentryAttempts;
     try {
+      this._assertHealthy('Backing ACL commit claim finalizer');
       this._backingInvocationDepth++;
       let result: unknown;
       try {
@@ -926,7 +1063,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           (typeof result === 'object' && result !== null) ||
           typeof result === 'function'
         ) {
-          ignoreNativePromiseSettlement(result);
+          this._observeInvalidNativePromiseReturn(
+            result,
+            'Backing ACL commit claim finalizer result',
+          );
         }
         throw new TypeError(
           'Backing ACL commit claim finalizer must complete synchronously without a return value',
