@@ -651,6 +651,51 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     await expectTargetUnchanged(target, latestInitializedKeys, latestRoot);
   });
 
+  test('rejects every tree mutation while a fresh receiver is processing a Welcome', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const otherMemberKeys = await generateKeyPair();
+    const senderLeafPublicKey = new Uint8Array(
+      await crypto.subtle.exportKey('raw', otherMemberKeys.publicKey),
+    );
+    const target = new BeeKEM();
+    const digest = pauseNextDigest();
+    const processing = target.processWelcome(
+      copyWelcome(welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    let completedRoot!: Uint8Array;
+    try {
+      await digest.entered;
+      await expect(target.addMember(otherMemberKeys.publicKey)).rejects.toThrow(
+        /tree is not initialized/,
+      );
+      await expect(target.removeMember(0)).rejects.toThrow(
+        /tree is not initialized/,
+      );
+      await expect(target.update()).rejects.toThrow(/tree is not initialized/);
+      await expect(
+        target.processPathUpdate({
+          senderLeafIndex: 0,
+          senderLeafPublicKey,
+          nodes: [],
+        }),
+      ).rejects.toThrow(/tree is not initialized/);
+      await expectTargetPristine(target);
+
+      digest.release();
+      completedRoot = await processing;
+    } finally {
+      digest.release();
+      digest.restore();
+    }
+
+    expect(completedRoot).toEqual(rootSecret);
+    expect(await target.getRootSecret()).toEqual(rootSecret);
+  });
+
   test('snapshots Proxy-backed records without property reads', async () => {
     const { welcome, recipientKeys, rootSecret } =
       await createTwoMemberWelcome();
