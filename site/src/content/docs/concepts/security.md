@@ -174,8 +174,11 @@ authentication must not be interpreted as PathUpdate ordering or freshness.
 V1 also carries only one ciphertext at each path level. The runtime therefore
 rejects an otherwise well-formed update when the receiver's first shared path
 node with the sender is below the root: accepting it would leave the receiver
-without a safe way to obtain the remaining ancestor keys. Some multi-level
-group updates consequently require the v2 per-resolution bundles.
+without a safe way to obtain the remaining ancestor keys. A root intersection
+is not sufficient when a blank sibling subtree has multiple resolution nodes,
+so local mutations reject before commit rather than encrypting to only one of
+those nodes and stranding the other survivors. Some multi-level group updates
+consequently require the v2 per-resolution bundles.
 
 ## Initial-load quorum
 
