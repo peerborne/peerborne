@@ -1574,6 +1574,9 @@ describe('UCANACL', () => {
     await expect(acl.remove('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
+    await expect(acl.prepareRemove('key1')).rejects.toThrow(
+      /failed ACL merge may have partially changed/,
+    );
     await expect(
       acl.grant(
         'key1',
