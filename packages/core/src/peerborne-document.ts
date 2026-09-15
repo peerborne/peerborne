@@ -193,30 +193,24 @@ function assertPositiveSafeByteLimit(value: number, field: string): number {
 
 const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
 
-async function countBoundedBlockBytes(
-  iterable: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
-  maxBytes: number,
-  signal?: AbortSignal,
-  consumeBytes?: (byteLength: number) => void,
-): Promise<number> {
-  let byteLength = 0;
-  let chunkCount = 0;
-  throwIfLoadAborted(signal);
-  for await (const chunk of iterable) {
-    throwIfLoadAborted(signal);
-    chunkCount += 1;
-    if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
-      throw new RangeError('Block stream chunk budget exceeded');
-    }
-    const nextByteLength = byteLength + chunk.byteLength;
-    if (!Number.isSafeInteger(nextByteLength) || nextByteLength > maxBytes) {
-      throw new RangeError('Block stream byte budget exceeded');
-    }
-    consumeBytes?.(chunk.byteLength);
-    byteLength = nextByteLength;
+class _LoadFetchLimitExceededError extends RangeError {}
+
+interface DocumentChangeFetchBudget {
+  readonly maxBytes: number;
+  consumedBytes: number;
+}
+
+function consumeDocumentChangeFetchBytes(
+  budget: DocumentChangeFetchBudget,
+  byteLength: number,
+): void {
+  const nextTotal = budget.consumedBytes + byteLength;
+  if (!Number.isSafeInteger(nextTotal) || nextTotal > budget.maxBytes) {
+    throw new _LoadFetchLimitExceededError(
+      'Missing change block byte budget exceeded',
+    );
   }
-  throwIfLoadAborted(signal);
-  return byteLength;
+  budget.consumedBytes = nextTotal;
 }
 
 /** Opaque, recipient-bound material returned by the invitation join handler. */
@@ -321,6 +315,8 @@ interface DocumentChangeFetchOptions {
   readonly signal?: AbortSignal;
   readonly maxBlockBytes?: number;
   readonly maxAggregateBlockBytes?: number;
+  readonly aggregateBudget?: DocumentChangeFetchBudget;
+  readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
 }
 
 /**
@@ -1228,24 +1224,60 @@ export class PeerborneDocument<
     }
   }
 
-  private async _getBlock(
+  private async _readBlock(
     hash: CID,
     options?: MissingBlockFetchOptions,
-  ): Promise<ChangesType> {
+  ): Promise<Uint8Array> {
     // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
     // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
     // rather than a single `Uint8Array`. Consume the generator into a
     // contiguous buffer here before slicing the encryption header off.
     throwIfLoadAborted(options?.signal);
-    const block = await readUint8Iterable(
-      this.swarm.heliaNode.blockstore.get(
-        hash,
-        options?.signal ? { signal: options.signal } : undefined,
-      ),
-      options?.maxBlockBytes,
-      options?.consumeBytes,
+    const signal = options?.signal;
+    const maxBlockBytes = options?.maxBlockBytes;
+    const consumeBytes = options?.consumeBytes;
+    const rawBlock = this.swarm.heliaNode.blockstore.get(
+      hash,
+      signal ? { signal } : undefined,
     );
+    const boundedBlock =
+      maxBlockBytes !== undefined || consumeBytes !== undefined
+        ? (async function* () {
+            let byteLength = 0;
+            let chunkCount = 0;
+            for await (const chunk of rawBlock) {
+              throwIfLoadAborted(signal);
+              chunkCount += 1;
+              if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
+                throw new _LoadFetchLimitExceededError(
+                  'Block stream chunk budget exceeded',
+                );
+              }
+              const nextByteLength = byteLength + chunk.byteLength;
+              if (
+                !Number.isSafeInteger(nextByteLength) ||
+                (maxBlockBytes !== undefined && nextByteLength > maxBlockBytes)
+              ) {
+                throw new _LoadFetchLimitExceededError(
+                  'Block stream byte budget exceeded',
+                );
+              }
+              consumeBytes?.(chunk.byteLength);
+              byteLength = nextByteLength;
+              yield chunk;
+            }
+          })()
+        : rawBlock;
+    const block = await readUint8Iterable(boundedBlock);
     throwIfLoadAborted(options?.signal);
+    return block;
+  }
+
+  private async _decodeBlock(
+    hash: CID,
+    block: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<ChangesType> {
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
@@ -1255,13 +1287,24 @@ export class PeerborneDocument<
       this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
     );
     const content = await this._decryptBlock(blockKeyID, blockNonce, blockData);
-    throwIfLoadAborted(options?.signal);
+    throwIfLoadAborted(signal);
     if (!content) {
       throw new Error(`Failed to decrypt block (CID: ${hash})`);
     }
     const changes = this._changesSerializer.deserializeChanges(content);
-    throwIfLoadAborted(options?.signal);
+    throwIfLoadAborted(signal);
     return changes;
+  }
+
+  private async _getBlock(
+    hash: CID,
+    options?: MissingBlockFetchOptions,
+  ): Promise<ChangesType> {
+    return this._decodeBlock(
+      hash,
+      await this._readBlock(hash, options),
+      options?.signal,
+    );
   }
 
   private async _putBlock(block: ChangesType): Promise<string> {
@@ -1558,7 +1601,9 @@ export class PeerborneDocument<
     const maxBlockBytes = fetchOptions.maxBlockBytes;
     const maxAggregateBlockBytes = fetchOptions.maxAggregateBlockBytes;
     const enforceFetchLimits =
-      maxBlockBytes !== undefined || maxAggregateBlockBytes !== undefined;
+      maxBlockBytes !== undefined ||
+      maxAggregateBlockBytes !== undefined ||
+      fetchOptions.aggregateBudget !== undefined;
     if (maxBlockBytes !== undefined) {
       assertPositiveSafeByteLimit(maxBlockBytes, 'Missing block byte limit');
     }
@@ -1568,20 +1613,32 @@ export class PeerborneDocument<
         'Missing block aggregate byte limit',
       );
     }
-    let fetchedBlockBytes = 0;
+    const aggregateBudget =
+      fetchOptions.aggregateBudget ??
+      (maxAggregateBlockBytes === undefined
+        ? undefined
+        : { maxBytes: maxAggregateBlockBytes, consumedBytes: 0 });
+    if (aggregateBudget !== undefined) {
+      assertPositiveSafeByteLimit(
+        aggregateBudget.maxBytes,
+        'Missing block aggregate byte limit',
+      );
+      if (
+        !Number.isSafeInteger(aggregateBudget.consumedBytes) ||
+        aggregateBudget.consumedBytes < 0 ||
+        aggregateBudget.consumedBytes > aggregateBudget.maxBytes
+      ) {
+        throw new RangeError(
+          'Missing block aggregate byte consumption must be in range',
+        );
+      }
+    }
     const consumeBytes =
-      maxAggregateBlockBytes === undefined
+      aggregateBudget === undefined
         ? undefined
         : (byteLength: number): void => {
             throwIfLoadAborted(signal);
-            const nextTotal = fetchedBlockBytes + byteLength;
-            if (
-              !Number.isSafeInteger(nextTotal) ||
-              nextTotal > maxAggregateBlockBytes
-            ) {
-              throw new RangeError('Missing change block byte budget exceeded');
-            }
-            fetchedBlockBytes = nextTotal;
+            consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
           };
     throwIfLoadAborted(signal);
     // Walk the incoming sync tree once and record every CID that appears
@@ -1707,11 +1764,18 @@ export class PeerborneDocument<
             missingDocumentHashes[index]!;
           try {
             const cid = CID.parse(missingHash);
-            const missingChanges = await this._getBlock(cid, {
-              signal: fetchSignal,
-              maxBlockBytes,
-              consumeBytes,
-            });
+            const prefetched = fetchOptions.prefetchedBlocks;
+            const missingChanges = prefetched?.has(missingHash)
+              ? await this._decodeBlock(
+                  cid,
+                  prefetched.get(missingHash)!,
+                  fetchSignal,
+                )
+              : await this._getBlock(cid, {
+                  signal: fetchSignal,
+                  maxBlockBytes,
+                  consumeBytes,
+                });
             throwIfLoadAborted(signal);
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
@@ -1751,11 +1815,13 @@ export class PeerborneDocument<
           } catch (error) {
             if (signal?.aborted) throwIfLoadAborted(signal);
             if (fetchLimitExceeded && fetchController?.signal.aborted) return;
-            if (enforceFetchLimits && error instanceof RangeError) {
+            if (error instanceof _LoadFetchLimitExceededError) {
               fetchLimitExceeded = true;
               if (!fetchController?.signal.aborted) {
                 fetchController?.abort(
-                  new RangeError('Missing change block fetch limits exceeded'),
+                  new _LoadFetchLimitExceededError(
+                    'Missing change block fetch limits exceeded',
+                  ),
                 );
               }
               return;
@@ -1788,7 +1854,9 @@ export class PeerborneDocument<
       );
       if (workerFailure) throw workerFailure.reason;
       if (fetchLimitExceeded) {
-        throw new RangeError('Missing change block fetch limits exceeded');
+        throw new _LoadFetchLimitExceededError(
+          'Missing change block fetch limits exceeded',
+        );
       }
     }
     throwIfLoadAborted(signal);
@@ -1990,11 +2058,8 @@ export class PeerborneDocument<
   private _schedulePendingWelcomeDrain(): void {
     if (this._pendingWelcomes.size === 0) return;
     void this._runStateMutation(() => this._drainPendingWelcomesUnlocked())
-      .catch((err) => {
-        console.error(
-          `Failed to drain pending BeeKEM Welcomes for ${this.documentPath}:`,
-          err,
-        );
+      .catch(() => {
+        console.error('Failed to drain pending BeeKEM Welcomes');
       });
   }
 
@@ -2004,6 +2069,52 @@ export class PeerborneDocument<
    */
   private _isSigningEnabled(): boolean {
     return this.swarm.config?.enableSigning !== false;
+  }
+
+  private async _isLoadRequesterAuthorized(
+    message: CRDTLoadRequest,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    if (!message.signature) return false;
+
+    let signature: Uint8Array;
+    try {
+      signature = this._deserializeSignature(message.signature);
+    } catch {
+      return false;
+    }
+    const requestBytes = this._encoder.encode(message.documentId);
+    const authorizedKeys = (
+      await Promise.all([this._readers.users(), this._writers.users()])
+    ).flat();
+    for (const key of authorizedKeys) {
+      if (
+        (await this._authProvider.verify(requestBytes, key, signature)) === true
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async _sendAuthorizedLoadResponse(
+    message: CRDTLoadRequest,
+    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    data: Iterable<Uint8Array>,
+    bootstrapRevision: number,
+    admission?: SharedProtocolHandlerAdmission,
+  ): Promise<void> {
+    const dispatch = await this._runStateMutation(async () => {
+      if (!isSharedProtocolHandlerActive(admission)) return;
+      if (!(await this._isLoadRequesterAuthorized(message))) {
+        if (!isSharedProtocolHandlerActive(admission)) return;
+        return { completion: stream.sink([] as Iterable<Uint8Array>) };
+      }
+      if (!isSharedProtocolHandlerActive(admission)) return;
+      this._assertBootstrapResponseRevision(bootstrapRevision);
+      return { completion: stream.sink(data) };
+    });
+    await dispatch?.completion;
   }
 
   /**
@@ -2700,41 +2811,7 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn('Shared doc-load request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared doc-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -2807,9 +2884,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared doc-load response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      this._assertBootstrapResponseRevision(bootstrapRevision);
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared doc-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -2847,41 +2928,7 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn('Shared snapshot-load request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared snapshot-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -2938,9 +2985,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared snapshot-load response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      this._assertBootstrapResponseRevision(bootstrapRevision);
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared snapshot-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -3003,40 +3054,9 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized. Mirrors the
-      // load handlers above so the gate is symmetrical: a deployment that
-      // disables signing keeps the same trust posture across all protocols.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          console.warn('Shared tip-advertise request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      // Signing-disabled deployments retain the same trust posture across
+      // all shared load protocols through the common authorization helper.
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared tip-advertise request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -3103,9 +3123,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared tip-advertise response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      this._assertBootstrapResponseRevision(bootstrapRevision);
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared tip-advertise request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -3230,10 +3254,17 @@ export class PeerborneDocument<
       maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
       'Document load response byte limit',
     );
+    const aggregateBudget: DocumentChangeFetchBudget = {
+      maxBytes: responseLimit,
+      consumedBytes: 0,
+    };
+    const prefetchedBlocks = new Map<string, Uint8Array>();
     const changeFetchOptions: DocumentChangeFetchOptions = {
       signal,
       maxBlockBytes: responseLimit,
       maxAggregateBlockBytes: responseLimit,
+      aggregateBudget,
+      prefetchedBlocks,
     };
     const responseTimeoutMs = documentLoadResponseTimeoutMs(
       configuredResponseTimeoutMs ?? this.swarm.config?.loadQuorumTimeoutMs,
@@ -3852,18 +3883,9 @@ export class PeerborneDocument<
           if (expectedCids.length > 0) {
             const missingCids: string[] = [];
             let nextIndex = 0;
-            let prefetchedBytes = 0;
             let prefetchLimitExceeded = false;
-            const consumePrefetchedBytes = (byteLength: number): void => {
-              const nextTotal = prefetchedBytes + byteLength;
-              if (
-                !Number.isSafeInteger(nextTotal) ||
-                nextTotal > responseLimit
-              ) {
-                throw new RangeError('Load pre-fetch byte budget exceeded');
-              }
-              prefetchedBytes = nextTotal;
-            };
+            const consumePrefetchedBytes = (byteLength: number): void =>
+              consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
             const prefetchController = new AbortController();
             const forwardPrefetchAbort = (): void => {
               if (!prefetchController.signal.aborted) {
@@ -3890,18 +3912,16 @@ export class PeerborneDocument<
                 const cidStr = expectedCids[i]!;
                 try {
                   const cid = CID.parse(cidStr);
-                  // Force the blockstore to retrieve the block. Helia
-                  // validates content vs CID on `get`; draining the
-                  // returned async-iterable triggers the actual fetch.
-                  await countBoundedBlockBytes(
-                    this.swarm.heliaNode.blockstore.get(
-                      cid,
-                      { signal: prefetchSignal },
-                    ),
-                    responseLimit,
-                    prefetchSignal,
-                    consumePrefetchedBytes,
-                  );
+                  // Fetch once before state application. Helia validates
+                  // content vs CID on `get`; caching the bounded raw block lets
+                  // `_syncDocumentChanges` decrypt and deserialize that exact
+                  // value without a second blockstore read or byte budget.
+                  const block = await this._readBlock(cid, {
+                    signal: prefetchSignal,
+                    maxBlockBytes: responseLimit,
+                    consumeBytes: consumePrefetchedBytes,
+                  });
+                  prefetchedBlocks.set(cidStr, block);
                   throwIfLoadAborted(signal);
                 } catch (error) {
                   if (signal?.aborted) throwIfLoadAborted(signal);
@@ -3911,10 +3931,12 @@ export class PeerborneDocument<
                   ) {
                     return;
                   }
-                  if (error instanceof RangeError) {
+                  if (error instanceof _LoadFetchLimitExceededError) {
                     prefetchLimitExceeded = true;
                     prefetchController.abort(
-                      new RangeError('Load pre-fetch limits exceeded'),
+                      new _LoadFetchLimitExceededError(
+                        'Load pre-fetch limits exceeded',
+                      ),
                     );
                     return;
                   }
@@ -6593,6 +6615,38 @@ export class PeerborneDocument<
     );
   }
 
+  private async _activateAcceptedInvitationBootstrap(
+    founderAddress: string,
+    issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+  ): Promise<void> {
+    try {
+      const existing = await this.open();
+      if (!existing) {
+        throw new Error('Invitation bootstrap attempted to create a new document');
+      }
+      if (
+        !(await this._loadInvitationCatchUp(
+          founderAddress,
+          issuerPublicKey,
+          role,
+        ))
+      ) {
+        throw new Error('Invitation bootstrap catch-up load failed');
+      }
+      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+    } catch (error) {
+      this._invitationBootstrapReady = false;
+      // `open()` and catch-up run only after the verified bootstrap has been
+      // published as complete. If either later activation gate fails, poison
+      // the partially activated instance again before cleanup so synchronous
+      // getters and every public mutation remain fail-closed.
+      this._markBootstrapStateApplicationPending();
+      await this.close().catch(() => {});
+      throw error;
+    }
+  }
+
   /**
    * Apply a recipient-bound invitation bootstrap and activate the document
    * without invoking normal first-load/new-document detection.
@@ -6814,26 +6868,11 @@ export class PeerborneDocument<
         }
       },
     );
-    try {
-      const existing = await this.open();
-      if (!existing) {
-        throw new Error('Invitation bootstrap attempted to create a new document');
-      }
-      if (
-        !(await this._loadInvitationCatchUp(
-          founderAddress,
-          issuerPublicKey,
-          role,
-        ))
-      ) {
-        throw new Error('Invitation bootstrap catch-up load failed');
-      }
-      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
-    } catch (error) {
-      this._invitationBootstrapReady = false;
-      await this.close().catch(() => {});
-      throw error;
-    }
+    await this._activateAcceptedInvitationBootstrap(
+      founderAddress,
+      issuerPublicKey,
+      role,
+    );
   }
 
   /**
