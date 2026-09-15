@@ -922,7 +922,7 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
       ),
     ).rejects.toThrow(
       new RegExp(
-        `path node ${mismatchedNode.nodeIndex} public and private keys do not match`,
+        `path node ${mismatchedNode.nodeIndex} public and private keys are not ECDH-compatible`,
       ),
     );
     await expectTargetPristine(target);
