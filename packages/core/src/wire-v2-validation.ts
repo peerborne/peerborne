@@ -157,16 +157,15 @@ function reserveV2DecodedBytes(
 }
 
 /**
- * Detach runtime bytes for encoding and return their canonical base64,
- * charging the encoded size to the budget.
+ * Detach runtime bytes, charging their encoded size to the budget.
  */
-export function encodeRuntimeBytes(
+export function copyRuntimeBytes(
   value: unknown,
   minimumLength: number,
   maximumLength: number,
   fieldName: string,
   budget: V2DecodeBudget,
-): string {
+): Uint8Array {
   const { typeName } = budget.codec;
   let bytes: Uint8Array;
   try {
@@ -182,7 +181,23 @@ export function encodeRuntimeBytes(
     );
   }
   reserveV2DecodedBytes(budget, Math.ceil(bytes.byteLength / 3) * 4, fieldName);
-  return Base64.fromUint8Array(bytes);
+  return bytes;
+}
+
+/**
+ * Detach runtime bytes for encoding and return their canonical base64,
+ * charging the encoded size to the budget.
+ */
+export function encodeRuntimeBytes(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  fieldName: string,
+  budget: V2DecodeBudget,
+): string {
+  return Base64.fromUint8Array(
+    copyRuntimeBytes(value, minimumLength, maximumLength, fieldName, budget),
+  );
 }
 
 /**

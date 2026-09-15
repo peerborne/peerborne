@@ -25,6 +25,7 @@ import {
 } from './beekem/path-update-limits.js';
 import * as TreeMath from './beekem/tree-math.js';
 import {
+  copyRuntimeBytes,
   createV2DecodeBudget,
   decodeV2Bytes,
   describe,
@@ -279,6 +280,46 @@ function snapshotLegacyWelcome<T>(
     covered.add(nodeIndex);
   }
   return { leafIndex, pathKeys, treeNodePublicKeys, treeHash };
+}
+
+/**
+ * Validate and detach a legacy runtime Welcome before applying it to a tree.
+ *
+ * Unlike the wire decoder, this boundary receives structurally typed values
+ * directly from JavaScript callers. It enforces the same structure, bounds
+ * and topology as the wire decoder, copies every byte field, and rejects v2
+ * markers (own or inherited) rather than silently discarding their
+ * transition metadata.
+ *
+ * @internal
+ */
+export function snapshotBeeKEMWelcomeForProcessing(value: unknown): {
+  welcome: BeeKEMWelcome;
+  numLeaves: number;
+} {
+  if (typeof value === 'object' && value !== null) {
+    for (const field of WELCOME_V2_ONLY_FIELDS) {
+      if (Reflect.has(value, field)) {
+        throw new Error(
+          `${WELCOME_V1_CONTEXT}: unexpected field '${field}' (v2-only)`,
+        );
+      }
+    }
+  }
+  const budget = createV2DecodeBudget(WELCOME_V1);
+  const copy =
+    (minimumLength: number, maximumLength: number) =>
+    (value: unknown, fieldName: string): Uint8Array =>
+      copyRuntimeBytes(value, minimumLength, maximumLength, fieldName, budget);
+  const welcome = snapshotLegacyWelcome(value, budget, {
+    treeHash: (value) => copy(32, 32)(value, 'treeHash'),
+    publicKey: copy(65, 65),
+    encryptedPrivateKey: copy(
+      MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+    ),
+  });
+  return { welcome, numLeaves: welcome.leafIndex / 2 + 1 };
 }
 
 export function serializeBeeKEMWelcomeV2ForWire(
