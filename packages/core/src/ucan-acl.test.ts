@@ -672,6 +672,32 @@ describe('UCANACL', () => {
     expect(backing.add).not.toHaveBeenCalled();
   });
 
+  test('a rejected staged preparation leaves ACL state readable and retryable', async () => {
+    const members = new Set<string>();
+    backing.current.mockReturnValue('current-state');
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+    backing.prepareAdd = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('staging failed before mutation'))
+      .mockResolvedValueOnce({
+        changes: 'retry-changes',
+        commit: () => {
+          members.add('key1');
+        },
+      });
+
+    await expect(acl.add('key1')).rejects.toThrow(
+      'staging failed before mutation',
+    );
+    expect(acl.current()).toBe('current-state');
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+
+    await expect(acl.add('key1')).resolves.toBe('retry-changes');
+    await expect(acl.check('key1')).resolves.toBe(true);
+  });
+
   test('prepareAdd delegates without committing backing membership', async () => {
     const commit = jest.fn();
     backing.prepareAdd = jest.fn(async () => ({
