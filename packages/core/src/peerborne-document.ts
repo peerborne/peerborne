@@ -2828,7 +2828,6 @@ export class PeerborneDocument<
     const newlyReferencedAncestors: string[] = [];
     let hash = '';
     let hashWasKnown = false;
-    let publicationResolved = false;
     let commitResolved = false;
     try {
       // Store changes in blockstore.
@@ -2917,8 +2916,6 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
-      publicationResolved = true;
-
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       postPublishCommit?.commit();
@@ -2927,10 +2924,7 @@ export class PeerborneDocument<
       }
       commitResolved = true;
     } catch (error) {
-      if (
-        postPublishCommit &&
-        (!publicationResolved || !commitResolved)
-      ) {
+      if (postPublishCommit && !commitResolved) {
         if (hash && !hashWasKnown) {
           this._hashes.delete(hash);
         }
