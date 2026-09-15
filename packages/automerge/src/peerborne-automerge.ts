@@ -282,7 +282,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // older random-seed releases apply without a competing root assignment.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
-  private readonly _retainedChanges = new Map<
+  private _retainedChanges = new Map<
     string,
     AutomergeACLChangeRecord
   >();
@@ -595,6 +595,35 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
+  private _prepareCommittedChangeAccounting(
+    records: readonly AutomergeACLChangeRecord[],
+  ): {
+    readonly retainedChanges: Map<string, AutomergeACLChangeRecord>;
+    readonly retainedChangeBytes: number;
+    readonly retainedOperations: number;
+    readonly retainedCanonicalUsersRootSeed: boolean;
+  } {
+    const retainedChanges = new Map(this._retainedChanges);
+    let retainedChangeBytes = this._retainedChangeBytes;
+    let retainedOperations = this._retainedOperations;
+    let retainedCanonicalUsersRootSeed =
+      this._retainedCanonicalUsersRootSeed;
+    for (const record of records) {
+      retainedChanges.set(record.hash, record);
+      retainedChangeBytes += record.byteLength;
+      retainedOperations += record.operationCount;
+      if (record.isCanonicalUsersRootSeed) {
+        retainedCanonicalUsersRootSeed = true;
+      }
+    }
+    return {
+      retainedChanges,
+      retainedChangeBytes,
+      retainedOperations,
+      retainedCanonicalUsersRootSeed,
+    };
+  }
+
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
     return this._runMutation(async () => {
       const prepared = await this.prepareAdd(publicKey);
@@ -635,30 +664,51 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       const changes = privateChanges.map(
         (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
       );
-      let committed = false;
-      const prepared: PreparedACLChange<BinaryChange[]> = {
+      let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+      let prepared!: PreparedACLChange<BinaryChange[]>;
+      const claimCommit = () => {
+        if (state !== 'prepared') {
+          throw new Error(
+            'Prepared ACL addition was already committed or claimed',
+          );
+        }
+        if (
+          this._pendingMutations !== 0 &&
+          !this._queuedAdditionCommits.has(prepared)
+        ) {
+          throw new Error(
+            'Prepared ACL addition cannot commit during a local ACL mutation',
+          );
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while addition was staged');
+        }
+        const committedAccounting =
+          this._prepareCommittedChangeAccounting(accounting);
+        const claim = {
+          finalize: () => {
+            if (state === 'committed') return;
+            if (privateChanges.length !== 0) {
+              this._acl = staged;
+              this._retainedChanges = committedAccounting.retainedChanges;
+              this._retainedChangeBytes =
+                committedAccounting.retainedChangeBytes;
+              this._retainedOperations =
+                committedAccounting.retainedOperations;
+              this._retainedCanonicalUsersRootSeed =
+                committedAccounting.retainedCanonicalUsersRootSeed;
+              this._revision = baseRevision + 1;
+            }
+            state = 'committed';
+          },
+        };
+        state = 'claimed';
+        return claim;
+      };
+      prepared = {
         changes,
-        commit: () => {
-          if (committed) {
-            throw new Error('Prepared ACL addition was already committed');
-          }
-          if (
-            this._pendingMutations !== 0 &&
-            !this._queuedAdditionCommits.has(prepared)
-          ) {
-            throw new Error(
-              'Prepared ACL addition cannot commit during a local ACL mutation',
-            );
-          }
-          if (this._revision !== baseRevision || this._acl !== base) {
-            throw new Error('ACL changed while addition was staged');
-          }
-          committed = true;
-          if (privateChanges.length === 0) return;
-          this._acl = staged;
-          this._commitChangeAccounting(accounting);
-          this._revision++;
-        },
+        claimCommit,
+        commit: () => claimCommit().finalize(),
       };
       return prepared;
     } catch (error) {
@@ -695,30 +745,50 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const changes = privateChanges.map(
       (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
     );
-    let committed = false;
-    const prepared: PreparedACLRemoval<BinaryChange[]> = {
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    let prepared!: PreparedACLRemoval<BinaryChange[]>;
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared ACL removal was already committed or claimed',
+        );
+      }
+      if (
+        this._pendingMutations !== 0 &&
+        !this._queuedRemovalCommits.has(prepared)
+      ) {
+        throw new Error(
+          'Prepared ACL removal cannot commit during a local ACL mutation',
+        );
+      }
+      if (this._revision !== baseRevision || this._acl !== base) {
+        throw new Error('ACL changed while removal was staged');
+      }
+      const committedAccounting =
+        this._prepareCommittedChangeAccounting(accounting);
+      const claim = {
+        finalize: () => {
+          if (state === 'committed') return;
+          if (privateChanges.length !== 0) {
+            this._acl = staged;
+            this._retainedChanges = committedAccounting.retainedChanges;
+            this._retainedChangeBytes =
+              committedAccounting.retainedChangeBytes;
+            this._retainedOperations = committedAccounting.retainedOperations;
+            this._retainedCanonicalUsersRootSeed =
+              committedAccounting.retainedCanonicalUsersRootSeed;
+            this._revision = baseRevision + 1;
+          }
+          state = 'committed';
+        },
+      };
+      state = 'claimed';
+      return claim;
+    };
+    prepared = {
       changes,
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared ACL removal was already committed');
-        }
-        if (
-          this._pendingMutations !== 0 &&
-          !this._queuedRemovalCommits.has(prepared)
-        ) {
-          throw new Error(
-            'Prepared ACL removal cannot commit during a local ACL mutation',
-          );
-        }
-        if (this._revision !== baseRevision || this._acl !== base) {
-          throw new Error('ACL changed while removal was staged');
-        }
-        committed = true;
-        if (privateChanges.length === 0) return;
-        this._acl = staged;
-        this._commitChangeAccounting(accounting);
-        this._revision++;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
     return prepared;
   }
@@ -1373,6 +1443,7 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     if (baseEntries.some(([keyID]) => keyID === epochIdHex)) {
       throw new Error('Duplicate keychain key ID');
     }
+    const finalizeCache = this._keyCache.prepareSet(epochIdHex, key);
     const keychainNew = change(clone(base), (doc) => {
       doc.keys.push([epochIdHex, serialized]);
     });
@@ -1389,7 +1460,28 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     });
     validateAutomergeKeychain(projection);
     const currentKeyChange = getAllChanges(projection);
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared epoch key was already committed or claimed',
+        );
+      }
+      if (this._keychain !== base || this._revision !== baseRevision) {
+        throw new Error('Keychain changed while epoch key was staged');
+      }
+      const claim = {
+        finalize: () => {
+          if (state === 'committed') return;
+          finalizeCache();
+          this._keychain = keychainNew;
+          this._revision = baseRevision + 1;
+          state = 'committed';
+        },
+      };
+      state = 'claimed';
+      return claim;
+    };
     return {
       changes: changes.map(
         (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
@@ -1400,18 +1492,8 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
       currentKeyChange: currentKeyChange.map(
         (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
       ),
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared epoch key was already committed');
-        }
-        if (this._keychain !== base || this._revision !== baseRevision) {
-          throw new Error('Keychain changed while epoch key was staged');
-        }
-        this._keyCache.set(epochIdHex, key);
-        this._keychain = keychainNew;
-        this._revision++;
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
 
