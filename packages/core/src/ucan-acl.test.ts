@@ -438,6 +438,28 @@ describe('UCANACL', () => {
     expect(checkedIdentity).not.toBe(callerIdentity);
   });
 
+  test('denies an in-flight check when a remote merge changes backing state', async () => {
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let resolveCheck!: (allowed: boolean) => void;
+    const pendingCheck = new Promise<boolean>((resolve) => {
+      resolveCheck = resolve;
+    });
+    backing.check.mockImplementation(() => {
+      checkStarted();
+      return pendingCheck;
+    });
+
+    const authorization = acl.check('key1');
+    await started;
+    acl.merge('remote-removal');
+    resolveCheck(true);
+
+    await expect(authorization).resolves.toBe(false);
+  });
+
   test('check with capability falls back to backing ACL when no UCAN entry', async () => {
     backing.check.mockResolvedValue(true);
     const result = await acl.check('key1', '/doc/write');
@@ -742,11 +764,34 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/write')).toBe(true);
   });
 
-  test('users without capability filters backing users through membership checks', async () => {
+  test('users filters the backing snapshot without redundant membership checks', async () => {
     backing.users.mockResolvedValue(['userA', 'userB']);
     backing.check.mockResolvedValue(true);
     const result = await acl.users();
     expect(result).toEqual(['userA', 'userB']);
+    expect(backing.check).not.toHaveBeenCalled();
+  });
+
+  test('denies an in-flight user listing when a remote merge changes backing state', async () => {
+    let listingStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      listingStarted = resolve;
+    });
+    let resolveUsers!: (users: string[]) => void;
+    const pendingUsers = new Promise<string[]>((resolve) => {
+      resolveUsers = resolve;
+    });
+    backing.users.mockImplementation(() => {
+      listingStarted();
+      return pendingUsers;
+    });
+
+    const listing = acl.users();
+    await started;
+    acl.merge('remote-removal');
+    resolveUsers(['key1']);
+
+    await expect(listing).resolves.toEqual([]);
   });
 
   test('grant creates UCAN and stores entry', async () => {
