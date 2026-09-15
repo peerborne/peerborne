@@ -197,6 +197,43 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
+  test('ordinary mutations are FIFO and reject a racing merge', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const remote = new AutomergeACL();
+    const remoteChanges = await remote.add(key2);
+    const originalPrepareRemove = acl.prepareRemove.bind(acl);
+    let releasePreparation!: () => void;
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      preparationStarted();
+      await preparationGate;
+      return originalPrepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+    const addition = acl.add(key2);
+    await Promise.resolve();
+
+    expect(await acl.check(key2)).toBe(false);
+    expect(() => acl.merge(remoteChanges)).toThrow(
+      'Cannot merge during a local ACL mutation',
+    );
+
+    releasePreparation();
+    await expect(removal).resolves.toBeDefined();
+    await expect(addition).resolves.toBeDefined();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareRemove() stages detached changes without changing live membership', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
