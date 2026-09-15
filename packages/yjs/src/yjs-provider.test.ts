@@ -19,6 +19,7 @@ import {
   YjsKeychain,
   YjsKeychainProvider,
   YjsJSONSerializer,
+  MAX_YJS_ACL_UPDATE_BYTES,
   serializeKey,
 } from './peerborne-yjs.js';
 
@@ -368,10 +369,85 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
-  test('merge() preserves dependency-incomplete updates until dependencies arrive', async () => {
+  test('merge accepts cross-realm updates and rejects byte lookalikes and shared backing', async () => {
     const source = new YjsACL();
-    const dependency = await source.add(key1);
-    const dependent = await source.add(key2);
+    await source.add(key1);
+    const history = source.current();
+    const crossRealm = runInNewContext(
+      `new Uint8Array([${Array.from(history).join(',')}])`,
+    ) as Uint8Array;
+    expect(crossRealm).not.toBeInstanceOf(Uint8Array);
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(crossRealm)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    const before = receiver.current();
+    let lookalikeAccessorRead = false;
+    const lookalike = new Proxy(
+      {},
+      {
+        get() {
+          lookalikeAccessorRead = true;
+          void receiver.add(key2);
+          return 1;
+        },
+      },
+    );
+    expect(() =>
+      receiver.merge(lookalike as unknown as Uint8Array),
+    ).toThrow('Yjs ACL update must be a genuine Uint8Array');
+    expect(lookalikeAccessorRead).toBe(false);
+    expect(receiver.current()).toEqual(before);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(1));
+      expect(() => receiver.merge(shared)).toThrow(
+        'Yjs ACL update has an invalid length or backing buffer',
+      );
+      expect(receiver.current()).toEqual(before);
+    }
+  });
+
+  test('merge bounds update bytes before Yjs parsing', () => {
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    expect(() =>
+      acl.merge(new Uint8Array(MAX_YJS_ACL_UPDATE_BYTES + 1)),
+    ).toThrow(/invalid length/);
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge rejects retained Yjs ACL state growth atomically', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const padding = new Doc();
+    const chunks: Uint8Array[] = [];
+    for (let index = 0; index < 5; index++) {
+      const beforeSV = encodeStateVector(padding);
+      padding.getMap('padding').set(`chunk-${index}`, 'x'.repeat(900_000));
+      chunks.push(encodeStateAsUpdateV2(padding, beforeSV));
+    }
+
+    for (const chunk of chunks.slice(0, 4)) {
+      expect(() => acl.merge(chunk)).not.toThrow();
+    }
+    const before = acl.current();
+    expect(before.byteLength).toBeLessThanOrEqual(MAX_YJS_ACL_UPDATE_BYTES);
+
+    expect(() => acl.merge(chunks[4]!)).toThrow(/retained state exceeds/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge() preserves dependency-incomplete updates until dependencies arrive', async () => {
+    const source = new Doc();
+    const users = source.getMap('users');
+    users.set(await serializeKey(key1), true);
+    const dependency = encodeStateAsUpdateV2(source);
+    const beforeDependent = encodeStateVector(source);
+    users.set(await serializeKey(key2), true);
+    const dependent = encodeStateAsUpdateV2(source, beforeDependent);
     const receiver = new YjsACL();
 
     receiver.merge(dependent);
