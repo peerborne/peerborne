@@ -342,12 +342,15 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     const { alice, bob } = await twoMemberGroup();
     const { pathUpdate } = await bob.update();
     let nodeReads = 0;
-    const oversizedNodes = new Array(14);
-    Object.defineProperty(oversizedNodes, '0', {
-      enumerable: true,
-      get() {
-        nodeReads++;
-        throw new Error('must not read an oversized array');
+    let nodeKeyEnumerations = 0;
+    const oversizedNodes = new Proxy(new Array(14).fill(null), {
+      ownKeys(target) {
+        nodeKeyEnumerations++;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property !== 'length') nodeReads++;
+        return Reflect.getOwnPropertyDescriptor(target, property);
       },
     });
 
@@ -358,6 +361,7 @@ describe('BeeKEM legacy PathUpdate admission', () => {
       }),
     ).rejects.toThrow(/safely detach input/);
     expect(nodeReads).toBe(0);
+    expect(nodeKeyEnumerations).toBe(0);
 
     await expect(
       alice.processPathUpdate({
