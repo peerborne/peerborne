@@ -563,6 +563,11 @@ function existingYjsACLUsers(doc: Doc) {
   return users;
 }
 
+type YjsACLAdditionIdentifierReservation = {
+  readonly clientID: number;
+  release(): void;
+};
+
 function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
   // Yjs folds pendingStructs and pendingDs into this update before returning
   // it. Reapplying the bounded snapshot therefore preserves unresolved
@@ -818,7 +823,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _reserveStagedAdditionClientID(
     base: Doc,
     fallbackClientID: number,
-  ): number {
+  ): YjsACLAdditionIdentifierReservation {
     if (this._stagedAdditionOperations.size >= MAX_YJS_ACL_STRUCTURES) {
       throw new RangeError(
         `Yjs ACL has too many staged addition identifiers`,
@@ -845,9 +850,21 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       clock = 0;
       operationID = `${clientID}:${clock}`;
     }
+    const clientIDWasReserved = this._stagedAdditionClientIDs.has(clientID);
     this._stagedAdditionOperations.add(operationID);
     this._stagedAdditionClientIDs.add(clientID);
-    return clientID;
+    let active = true;
+    return {
+      clientID,
+      release: () => {
+        if (!active) return;
+        active = false;
+        this._stagedAdditionOperations.delete(operationID);
+        if (!clientIDWasReserved) {
+          this._stagedAdditionClientIDs.delete(clientID);
+        }
+      },
+    };
   }
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
@@ -873,49 +890,58 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     );
     const stagedUsers = staged.getMap('users');
     const hadMember = stagedUsers.has(hash);
-    if (!hadMember) {
-      // Continue the live client's clock for the first staged write. Further
-      // writes exposed from the same base receive reserved actors so two
-      // publication candidates can never reuse one client/clock tuple.
-      staged.clientID = this._reserveStagedAdditionClientID(
-        base,
-        staged.clientID,
-      );
-    } else {
-      staged.clientID = base.clientID;
+    let identifierReservation:
+      | YjsACLAdditionIdentifierReservation
+      | undefined;
+    try {
+      if (!hadMember) {
+        // Continue the live client's clock for the first staged write. Further
+        // writes exposed from the same base receive reserved actors so two
+        // publication candidates can never reuse one client/clock tuple.
+        identifierReservation = this._reserveStagedAdditionClientID(
+          base,
+          staged.clientID,
+        );
+        staged.clientID = identifierReservation.clientID;
+      } else {
+        staged.clientID = base.clientID;
+      }
+      const beforeSV = encodeStateVector(staged);
+      if (!hadMember) {
+        stagedUsers.set(hash, true);
+      }
+      const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+      snapshotBoundedYjsACLState(staged, 'stage an ACL addition');
+      const changes = new Uint8Array(privateChanges);
+      let committed = false;
+      const prepared: PreparedACLChange<Uint8Array> = {
+        changes,
+        commit: () => {
+          if (committed) {
+            throw new Error('Prepared ACL addition was already committed');
+          }
+          if (
+            this._pendingMutations !== 0 &&
+            !this._queuedAdditionCommits.has(prepared)
+          ) {
+            throw new Error(
+              'Prepared ACL addition cannot commit during a local ACL mutation',
+            );
+          }
+          if (this._revision !== baseRevision || this._acl !== base) {
+            throw new Error('ACL changed while addition was staged');
+          }
+          committed = true;
+          if (hadMember) return;
+          this._acl = staged;
+          this._revision++;
+        },
+      };
+      return prepared;
+    } catch (error) {
+      identifierReservation?.release();
+      throw error;
     }
-    const beforeSV = encodeStateVector(staged);
-    if (!hadMember) {
-      stagedUsers.set(hash, true);
-    }
-    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
-    snapshotBoundedYjsACLState(staged, 'stage an ACL addition');
-    const changes = new Uint8Array(privateChanges);
-    let committed = false;
-    const prepared: PreparedACLChange<Uint8Array> = {
-      changes,
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared ACL addition was already committed');
-        }
-        if (
-          this._pendingMutations !== 0 &&
-          !this._queuedAdditionCommits.has(prepared)
-        ) {
-          throw new Error(
-            'Prepared ACL addition cannot commit during a local ACL mutation',
-          );
-        }
-        if (this._revision !== baseRevision || this._acl !== base) {
-          throw new Error('ACL changed while addition was staged');
-        }
-        committed = true;
-        if (hadMember) return;
-        this._acl = staged;
-        this._revision++;
-      },
-    };
-    return prepared;
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
