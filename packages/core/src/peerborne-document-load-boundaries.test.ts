@@ -87,6 +87,10 @@ function signedLoadHarness(
       run: (operation: () => Promise<unknown>) => operation(),
     },
     _hashes: new Set<string>(),
+    _pendingWelcomes: new Map(),
+    _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+    _remoteHandlers: {},
+    _localHandlers: {},
     _bootstrapLoadApplicationState: 'pristine',
   });
   const stream = {
@@ -417,7 +421,17 @@ describe('document load response boundaries', () => {
     document._syncMessageSerializer.deserializeSyncMessage
       .mockReturnValueOnce({ ...validMessage, documentId: '/wrong-document' })
       .mockReturnValueOnce(validMessage);
-    document._syncUnlocked = jest.fn(async () => true);
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        document._hashes.add('valid-head');
+        return true;
+      },
+    );
 
     await expect(
       document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
@@ -488,6 +502,7 @@ describe('document load response boundaries', () => {
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
+        document._hashes.add('valid-head');
         return true;
       },
     );
@@ -524,6 +539,7 @@ describe('document load response boundaries', () => {
       ) => {
         onStateApplicationStart?.();
         currentWriters = ['writer'];
+        document._hashes.add('valid-head');
         return true;
       },
     );
@@ -546,7 +562,7 @@ describe('document load response boundaries', () => {
     expect(document._syncUnlocked).toHaveBeenCalledTimes(2);
   });
 
-  test('preserves an explicitly pinned load signer outside the writer ACL', async () => {
+  test('rejects an explicitly pinned load after bootstrap application is incomplete', async () => {
     const { document, stream } = signedLoadHarness(
       async () => {
         throw new Error('pinned admission must not read the writer ACL');
@@ -562,10 +578,737 @@ describe('document load response boundaries', () => {
         null,
         'pinned-writer',
       ),
+    ).resolves.toBe(false);
+
+    expect(stream.sink).not.toHaveBeenCalled();
+    expect(stream.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Document load rejected on poisoned instance',
+      }),
+    );
+    expect(document._getWriterKeys).not.toHaveBeenCalled();
+    expect(document._authProvider.verify).not.toHaveBeenCalled();
+  });
+
+  test('accepts an explicitly pinned load on a pristine invitation document', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+    );
+    document._syncUnlocked = jest.fn(async () => true);
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'pinned-writer',
+      ),
     ).resolves.toBe(true);
 
     expect(document._getWriterKeys).not.toHaveBeenCalled();
     expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'legacy-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    const handler = jest.fn();
+    document._remoteHandlers.preBootstrap = handler;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        await document._fireOrDeferRemoteUpdateHandlers(['legacy-head']);
+        return true;
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/bootstrap state is incomplete/);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('tracks partial state application when signing is disabled', async () => {
+    const message = {
+      documentId: '/load-race',
+      changeId: 'unsigned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('unsigned admission must not read the writer ACL');
+      },
+      async () => {
+        throw new Error('unsigned admission must not verify signatures');
+      },
+      message,
+    );
+    document.swarm.config.enableSigning = false;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        throw new Error('provider failed after unsigned state application');
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/provider failed/);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._getWriterKeys).not.toHaveBeenCalled();
+    expect(document._authProvider.verify).not.toHaveBeenCalled();
+  });
+
+  test('tracks and defers an incomplete signer-pinned catch-up', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'pinned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+      message,
+    );
+    const handler = jest.fn();
+    document._remoteHandlers.preBootstrap = handler;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        await document._fireOrDeferRemoteUpdateHandlers(['pinned-head']);
+        return true;
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'pinned-writer',
+        undefined,
+        true,
+      ),
+    ).rejects.toThrow(/catch-up state is incomplete/);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('blocks reads and queued public mutations after incomplete bootstrap application', async () => {
+    const syncUnlocked = jest.fn(async () => true);
+    const changeUnlocked = jest.fn(async () => undefined);
+    const addWriterUnlocked = jest.fn(async () => undefined);
+    const otherMutation = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/poisoned',
+      _bootstrapLoadApplicationState: 'pending',
+      _document: { value: 'partial' },
+      _hashes: new Set(['partial']),
+      _latestSnapshot: { state: 'partial' },
+      _invitationEpoch: new Uint8Array([1]),
+      _mutationQueue: {
+        run: (operation: () => Promise<unknown>) => operation(),
+      },
+      _syncUnlocked: syncUnlocked,
+      _changeUnlocked: changeUnlocked,
+      _addWriterUnlocked: addWriterUnlocked,
+      _removeWriterUnlocked: otherMutation,
+      _addReaderUnlocked: otherMutation,
+      _removeReaderUnlocked: otherMutation,
+      _endChangeUnlocked: otherMutation,
+      _snapshotUnlocked: otherMutation,
+      _setKemKeyPairUnlocked: otherMutation,
+      _buildInvitationBootstrapUnlocked: otherMutation,
+      _handleBeeKEMWelcomeRequestDataUnlocked: otherMutation,
+      _handleBeeKEMPathUpdateRequestDataUnlocked: otherMutation,
+      _handleKeyUpdateRequestDataUnlocked: otherMutation,
+    });
+
+    expect(() => document.document).toThrow(/discard this document instance/);
+    expect(() => document.historySize()).toThrow(/discard this document instance/);
+    expect(() => document.latestSnapshot).toThrow(/discard this document instance/);
+    expect(() => document.hasChange('partial')).toThrow(
+      /discard this document instance/,
+    );
+    expect(() => document.invitationEpoch).toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.loadChangeBlock('partial')).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.getReaders()).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.getWriters()).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.sync({ documentId: '/poisoned' })).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.change(jest.fn())).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.addWriter('writer')).rejects.toThrow(
+      /discard this document instance/,
+    );
+    const otherMutations = [
+      () => document.removeWriter('writer'),
+      () => document.addReader('reader'),
+      () => document.removeReader('reader'),
+      () => document.endChange(),
+      () => document.snapshot(),
+      () => document.setKemKeyPair(undefined),
+      () =>
+        document.buildInvitationBootstrap(
+          'reader',
+          new Uint8Array([1]),
+          'reader',
+        ),
+      () => document.handleBeeKEMWelcomeRequestData(new Uint8Array([1])),
+      () => document.handleBeeKEMPathUpdateRequestData(new Uint8Array([1])),
+      () => document.handleKeyUpdateRequestData(new Uint8Array([1])),
+    ];
+    for (const mutate of otherMutations) {
+      await expect(mutate()).rejects.toThrow(/discard this document instance/);
+    }
+    expect(() => document.startChange()).toThrow(
+      /discard this document instance/,
+    );
+    expect(() => document.addChange(jest.fn())).toThrow(
+      /discard this document instance/,
+    );
+    expect(() => document.subscribe('handler', jest.fn())).toThrow(
+      /discard this document instance/,
+    );
+
+    expect(syncUnlocked).not.toHaveBeenCalled();
+    expect(changeUnlocked).not.toHaveBeenCalled();
+    expect(addWriterUnlocked).not.toHaveBeenCalled();
+    expect(otherMutation).not.toHaveBeenCalled();
+  });
+
+  test('rechecks bootstrap integrity when an already-queued mutation executes', async () => {
+    const queued = deferred<void>();
+    const release = deferred<void>();
+    const syncUnlocked = jest.fn(async () => true);
+    const document = fakeDocument({
+      documentPath: '/queued-before-poison',
+      _bootstrapLoadApplicationState: 'pristine',
+      _mutationQueue: {
+        run: async (operation: () => Promise<unknown>) => {
+          queued.resolve();
+          await release.promise;
+          return operation();
+        },
+      },
+      _syncUnlocked: syncUnlocked,
+    });
+
+    const sync = document.sync({ documentId: '/queued-before-poison' });
+    await queued.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    release.resolve();
+
+    await expect(sync).rejects.toThrow(/discard this document instance/);
+    expect(syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('rejects an already-queued bootstrap response before rereading a poisoned ACL', async () => {
+    const queued = deferred<void>();
+    const release = deferred<void>();
+    const getWriterKeys = jest.fn(async () => [] as string[]);
+    const { document, stream } = signedLoadHarness(
+      getWriterKeys,
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+    document._mutationQueue = {
+      run: async (operation: () => Promise<unknown>) => {
+        queued.resolve();
+        await release.promise;
+        return operation();
+      },
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+
+    const load = document._sendLoadRequestAndSync(stream, new Uint8Array([1]));
+    await queued.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    release.resolve();
+
+    await expect(load).resolves.toBe(false);
+    expect(getWriterKeys).toHaveBeenCalledTimes(1);
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('rechecks invitation pristine state at its queued application boundary', async () => {
+    const queued = deferred<void>();
+    const release = deferred<void>();
+    const apply = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/invitation-overlap',
+      _bootstrapLoadApplicationState: 'pristine',
+      _hashes: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _latestSnapshot: undefined,
+      _subscribed: false,
+      _mutationQueue: {
+        run: async (operation: () => Promise<unknown>) => {
+          queued.resolve();
+          await release.promise;
+          return operation();
+        },
+      },
+    });
+
+    const bootstrap = document._runInvitationBootstrapStateApplication(apply);
+    await queued.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    release.resolve();
+
+    await expect(bootstrap).rejects.toThrow(/requires a pristine document/);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  test('marks invitation application pending before its first live write', async () => {
+    const document = fakeDocument({
+      documentPath: '/invitation-reservation',
+      _bootstrapLoadApplicationState: 'pristine',
+      _hashes: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _latestSnapshot: undefined,
+      _subscribed: false,
+      _mutationQueue: {
+        run: (operation: () => Promise<unknown>) => operation(),
+      },
+    });
+
+    await expect(
+      document._runInvitationBootstrapStateApplication(async () => {
+        expect(document._bootstrapLoadApplicationState).toBe('pending');
+        throw new Error('live write failed');
+      }),
+    ).rejects.toThrow(/live write failed/);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+  });
+
+  test('rechecks the invitation KEM key at the queued application boundary', async () => {
+    const queued = deferred<void>();
+    const release = deferred<void>();
+    const originalKemKeyPair = {
+      privateKey: {},
+      publicKey: {},
+    };
+    const apply = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/invitation-kem-overlap',
+      _bootstrapLoadApplicationState: 'pristine',
+      _hashes: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _latestSnapshot: undefined,
+      _subscribed: false,
+      _kemKeyPair: originalKemKeyPair,
+      _mutationQueue: {
+        run: async (operation: () => Promise<unknown>) => {
+          queued.resolve();
+          await release.promise;
+          return operation();
+        },
+      },
+    });
+
+    const bootstrap = document._runInvitationBootstrapStateApplication(
+      apply,
+      () => {
+        if (document._kemKeyPair !== originalKemKeyPair) {
+          throw new Error('KEM key pair changed');
+        }
+      },
+    );
+    await queued.promise;
+    document._kemKeyPair = { privateKey: {}, publicKey: {} };
+    release.resolve();
+
+    await expect(bootstrap).rejects.toThrow(/KEM key pair changed/);
+    expect(apply).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('does not return from load after an overlapping bootstrap becomes incomplete', async () => {
+    const peersStarted = deferred<void>();
+    const releasePeers = deferred<unknown[]>();
+    const document = fakeDocument({
+      documentPath: '/load-overlap',
+      _bootstrapLoadApplicationState: 'pristine',
+      _shuffledPeers: jest.fn(async () => {
+        peersStarted.resolve();
+        return releasePeers.promise;
+      }),
+    });
+
+    const load = document.load();
+    await peersStarted.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    releasePeers.resolve([]);
+
+    await expect(load).rejects.toThrow(/discard this document instance/);
+  });
+
+  test('does not return an ACL read that overlaps incomplete bootstrap application', async () => {
+    const usersStarted = deferred<void>();
+    const releaseUsers = deferred<void>();
+    const document = fakeDocument({
+      documentPath: '/read-overlap',
+      _bootstrapLoadApplicationState: 'pristine',
+      _writers: {
+        users: jest.fn(async () => {
+          usersStarted.resolve();
+          await releaseUsers.promise;
+          return ['partially-applied-writer'];
+        }),
+      },
+    });
+
+    const read = document.getWriters();
+    await usersStarted.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    releaseUsers.resolve();
+
+    await expect(read).rejects.toThrow(/discard this document instance/);
+  });
+
+  test('defers automatic compaction until bootstrap finalization', async () => {
+    const maybeCompact = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/deferred-compaction',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapCompactionDeferred: false,
+      _pendingWelcomes: new Map(),
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => []),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _maybeCompact: maybeCompact,
+    });
+
+    await document._syncDocumentChanges(undefined, {
+      kind: crdtDocumentChangeNode,
+    });
+    expect(maybeCompact).not.toHaveBeenCalled();
+    expect(document._bootstrapCompactionDeferred).toBe(true);
+
+    await document._completeBootstrapStateApplicationUnlocked();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(maybeCompact).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps public state closed while bootstrap finalization is awaiting internal work', async () => {
+    const drainStarted = deferred<void>();
+    const releaseDrain = deferred<void>();
+    const document = fakeDocument({
+      documentPath: '/deferred-finalization',
+      _bootstrapLoadApplicationState: 'pending',
+      _document: { value: 'verified-but-not-finalized' },
+      _pendingWelcomes: new Map([['buffered', {}]]),
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _bootstrapCompactionDeferred: false,
+      _remoteHandlers: {},
+      _drainPendingWelcomesUnlocked: jest.fn(async () => {
+        drainStarted.resolve();
+        await releaseDrain.promise;
+      }),
+    });
+
+    const completion = document._completeBootstrapStateApplicationUnlocked();
+    await drainStarted.promise;
+
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(() => document.document).toThrow(/discard this document instance/);
+
+    releaseDrain.resolve();
+    await expect(completion).resolves.toBeUndefined();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document.document).toEqual({ value: 'verified-but-not-finalized' });
+  });
+
+  test('keeps bootstrap pending when buffered Welcome finalization partially fails', async () => {
+    const liveKeychain = { partiallyMerged: false };
+    const drainPendingWelcomes = jest.fn(async () => {
+      liveKeychain.partiallyMerged = true;
+      throw new Error('Welcome commit failed after merge');
+    });
+    const document = fakeDocument({
+      documentPath: '/failed-welcome-finalization',
+      _bootstrapLoadApplicationState: 'pending',
+      _document: { value: 'bootstrap' },
+      _pendingWelcomes: new Map([['buffered', {}]]),
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _bootstrapCompactionDeferred: false,
+      _remoteHandlers: {},
+      _drainPendingWelcomesUnlocked: drainPendingWelcomes,
+    });
+
+    await expect(
+      document._completeBootstrapStateApplicationUnlocked(),
+    ).rejects.toThrow(/Welcome commit failed after merge/);
+
+    expect(drainPendingWelcomes).toHaveBeenCalledWith(true);
+    expect(liveKeychain.partiallyMerged).toBe(true);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(() => document.document).toThrow(/discard this document instance/);
+  });
+
+  test('open rechecks pending state after asynchronous path validation', async () => {
+    const validationStarted = deferred<void>();
+    const releaseValidation = deferred<void>();
+    const registerDocument = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/open-overlap',
+      _bootstrapLoadApplicationState: 'pristine',
+      _invitationBootstrapReady: false,
+      _hashes: new Set<string>(),
+      _computeTopic: jest.fn(() => '/topic'),
+      _userPublicKey: 'user',
+      load: jest.fn(async () => false),
+      swarm: {
+        config: {
+          validateDocumentPath: jest.fn(async () => {
+            validationStarted.resolve();
+            await releaseValidation.promise;
+            return true;
+          }),
+        },
+        registerDocument,
+      },
+    });
+
+    const open = document.open();
+    await validationStarted.promise;
+    document._bootstrapLoadApplicationState = 'pending';
+    releaseValidation.resolve();
+
+    await expect(open).rejects.toThrow(/discard this document instance/);
+    expect(registerDocument).not.toHaveBeenCalled();
+  });
+
+  test('blocks invitation activation and acceptance on a poisoned instance', async () => {
+    const computeTopic = jest.fn(() => '/topic');
+    const load = jest.fn(async () => true);
+    const document = fakeDocument({
+      documentPath: '/poisoned-invitation',
+      _bootstrapLoadApplicationState: 'pending',
+      _invitationBootstrapReady: true,
+      _computeTopic: computeTopic,
+      load,
+    });
+
+    await expect(document.open()).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(
+      document.acceptInvitationBootstrap({}, 'issuer', 'reader', '/founder'),
+    ).rejects.toThrow(/requires a pristine document instance/);
+    await expect(
+      document._loadInvitationCatchUp('/founder', 'issuer'),
+    ).rejects.toThrow(/discard this document instance/);
+    await expect(document.createInvitation({})).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.assertCanCreateInitialInvitation()).rejects.toThrow(
+      /discard this document instance/,
+    );
+    expect(computeTopic).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(document._invitationBootstrapReady).toBe(true);
+  });
+
+  test('does not notify a pre-bootstrap subscriber when completeness later fails', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { value: 'partial' },
+      },
+    };
+    const handler = jest.fn();
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    document._remoteHandlers.preBootstrap = handler;
+    document._writers = { users: jest.fn(async () => []) };
+    document._readers = {
+      users: jest.fn(async () => []),
+      check: jest.fn(async () => false),
+    };
+    document._pendingWelcomes.set('buffered', {});
+    document._drainPendingWelcomesUnlocked = jest.fn(async () => undefined);
+    document.swarm.heliaNode = {
+      blockstore: {
+        get: jest.fn(async function* () {
+          yield new Uint8Array([1]);
+        }),
+      },
+    };
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        await document._fireOrDeferRemoteUpdateHandlers(['HEAD']);
+        return true;
+      },
+    );
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).rejects.toThrow(/completed sync.*not retrievable/);
+
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(
+      new Set(['HEAD']),
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(document._readers.users).not.toHaveBeenCalled();
+    expect(document._drainPendingWelcomesUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('defers buffered Welcome drain while bootstrap state is pending', () => {
+    const scheduleDrain = jest.fn();
+    const document = fakeDocument({
+      _bootstrapLoadApplicationState: 'pending',
+      _readers: { merge: jest.fn() },
+      _schedulePendingWelcomeDrain: scheduleDrain,
+    });
+
+    document._mergeReaders({ reader: 'partial' });
+
+    expect(document._readers.merge).toHaveBeenCalledTimes(1);
+    expect(scheduleDrain).not.toHaveBeenCalled();
+  });
+
+  test('notifies a pre-bootstrap subscriber once and only after completion', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { value: 'complete' },
+      },
+    };
+    const completionOrder: string[] = [];
+    const receivedHashes: string[][] = [];
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    document._document = { value: 'complete' };
+    document._writers = { users: jest.fn(async () => ['writer']) };
+    document._readers = {
+      users: jest.fn(async () => ['reader']),
+      check: jest.fn(async () => false),
+    };
+    document._remoteHandlers.preBootstrap = jest.fn(
+      (_state, _readers, _writers, hashes) => {
+        expect(document._bootstrapLoadApplicationState).toBe('complete');
+        completionOrder.push('notify');
+        receivedHashes.push([...hashes]);
+      },
+    );
+    document._pendingWelcomes.set('buffered', {});
+    document._drainPendingWelcomesUnlocked = jest.fn(async () => {
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      completionOrder.push('drain');
+      document._pendingWelcomes.clear();
+    });
+    document.swarm.heliaNode = {
+      blockstore: {
+        get: jest.fn(async function* () {
+          yield new Uint8Array([1]);
+        }),
+      },
+    };
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        await document._fireOrDeferRemoteUpdateHandlers(['HEAD']);
+        await document._fireOrDeferRemoteUpdateHandlers(['ACL', 'HEAD']);
+        document._hashes.add('HEAD');
+        return true;
+      },
+    );
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).resolves.toBe(true);
+
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(completionOrder).toEqual(['drain', 'notify']);
+    expect(receivedHashes).toEqual([['HEAD', 'ACL']]);
+    expect(document._remoteHandlers.preBootstrap).toHaveBeenCalledTimes(1);
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(new Set());
   });
 
   test('bounds ordinary document responses before deserialization', async () => {
