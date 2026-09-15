@@ -11,10 +11,26 @@ import {
 import * as TreeMath from './tree-math.js';
 import { eciesSeal, eciesOpen } from '../ecies.js';
 import { snapshotBeeKEMWelcomeForProcessing } from '../beekem-welcome-wire.js';
+import { snapshotDeepEnumerableData } from '../utils.js';
+import {
+  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+  MAX_V1_PATH_NODES,
+  MAX_V1_PATH_UPDATE_BYTES,
+  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+} from './path-update-limits.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
 const ECDH_ALGO = { name: 'ECDH', namedCurve: ECDH_CURVE };
+const V1_PATH_UPDATE_FORBIDDEN_FIELDS = [
+  'version',
+  'generation',
+  'parentTreeHash',
+  'numLeaves',
+  'treeNodePublicKeys',
+  'treeHash',
+  'encryptedPathKeyBundles',
+] as const;
 
 /** Cast Uint8Array to ArrayBuffer for WebCrypto API compatibility. */
 function toBuffer(data: Uint8Array): ArrayBuffer {
@@ -38,6 +54,7 @@ async function assertEcdhKeyPairCompatible(
   privateKey: CryptoKey,
   probe: CryptoKeyPair,
   label: string,
+  context = 'Cannot process Welcome',
 ): Promise<void> {
   let privateSide: Uint8Array;
   let publicSide: Uint8Array;
@@ -61,17 +78,17 @@ async function assertEcdhKeyPairCompatible(
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : '';
     throw new Error(
-      `Cannot process Welcome: ${label} ECDH compatibility check failed${detail}`,
+      `${context}: ${label} ECDH compatibility check failed${detail}`,
       { cause: error },
     );
   }
 
-  const coherent = constantTimeEqual(privateSide, publicSide);
+  const compatible = constantTimeEqual(privateSide, publicSide);
   privateSide.fill(0);
   publicSide.fill(0);
-  if (!coherent) {
+  if (!compatible) {
     throw new Error(
-      `Cannot process Welcome: ${label} public and private keys are not ECDH-compatible`,
+      `${context}: ${label} public and private keys are not ECDH-compatible`,
     );
   }
 }
@@ -111,6 +128,40 @@ async function assertExactWelcomePathKeyPair(
   }
 }
 
+async function assertMatchingPathKeyPair(
+  publicKey: CryptoKey,
+  privateKey: CryptoKey,
+  nodeIndex: number,
+): Promise<void> {
+  let publicJwk: JsonWebKey;
+  let privateJwk: JsonWebKey;
+  try {
+    [publicJwk, privateJwk] = await Promise.all([
+      crypto.subtle.exportKey('jwk', publicKey),
+      crypto.subtle.exportKey('jwk', privateKey),
+    ]);
+  } catch (error) {
+    throw new Error(
+      `Invalid PathUpdate: could not validate the key pair at node ${nodeIndex}`,
+      { cause: error },
+    );
+  }
+  if (
+    publicJwk.kty !== 'EC' ||
+    privateJwk.kty !== 'EC' ||
+    publicJwk.crv !== ECDH_CURVE ||
+    privateJwk.crv !== ECDH_CURVE ||
+    typeof publicJwk.x !== 'string' ||
+    typeof publicJwk.y !== 'string' ||
+    publicJwk.x !== privateJwk.x ||
+    publicJwk.y !== privateJwk.y
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: decrypted private key does not match the public key at node ${nodeIndex}`,
+    );
+  }
+}
+
 interface StagedWelcomeCandidate {
   receiverGeneration: bigint;
   nodes: Map<number, TreeNode>;
@@ -119,6 +170,175 @@ interface StagedWelcomeCandidate {
   rootSecret: Uint8Array;
   resolve: (rootSecret: Uint8Array) => void;
   reject: (error: Error) => void;
+}
+
+function requireExactDataFields(
+  value: unknown,
+  expectedFields: readonly string[],
+  context: string,
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${context} must be a plain data object`);
+  }
+  const expected = new Set(expectedFields);
+  const keys = Reflect.ownKeys(value);
+  for (const key of keys) {
+    if (typeof key !== 'string' || !expected.has(key)) {
+      throw new Error(
+        `${context} contains an unexpected ${
+          typeof key === 'string' ? `field '${key}'` : 'symbol field'
+        }`,
+      );
+    }
+  }
+  for (const field of expectedFields) {
+    if (!Object.prototype.hasOwnProperty.call(value, field)) {
+      throw new Error(`${context} is missing field '${field}'`);
+    }
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireDetachedBytes(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  field: string,
+): Uint8Array {
+  if (
+    !(value instanceof Uint8Array) ||
+    value.byteLength < minimumLength ||
+    value.byteLength > maximumLength
+  ) {
+    throw new Error(
+      `Invalid PathUpdate: '${field}' must be a Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
+    );
+  }
+  return value;
+}
+
+function snapshotPathUpdate(update: PathUpdate): PathUpdate {
+  let detached: unknown;
+  try {
+    detached = snapshotDeepEnumerableData(
+      update,
+      'PathUpdate',
+      {
+        maxDepth: 3,
+        maxObjects: 64,
+        maxProperties: 64,
+        maxArrayLength: MAX_V1_PATH_NODES,
+        maxValueBytes: MAX_V1_PATH_UPDATE_BYTES,
+      },
+      { forbiddenFields: V1_PATH_UPDATE_FORBIDDEN_FIELDS },
+    );
+  } catch (error) {
+    throw new Error('Invalid PathUpdate: could not safely detach input', {
+      cause: error,
+    });
+  }
+
+  const raw = requireExactDataFields(
+    detached,
+    ['senderLeafIndex', 'senderLeafPublicKey', 'nodes'],
+    'Invalid PathUpdate',
+  );
+  const maximumTreeWidth = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
+  if (
+    typeof raw.senderLeafIndex !== 'number' ||
+    !Number.isSafeInteger(raw.senderLeafIndex) ||
+    raw.senderLeafIndex < 0 ||
+    raw.senderLeafIndex >= maximumTreeWidth ||
+    !TreeMath.isLeaf(raw.senderLeafIndex)
+  ) {
+    throw new Error(
+      "Invalid PathUpdate: 'senderLeafIndex' must identify a bounded tree leaf",
+    );
+  }
+  const senderLeafIndex = raw.senderLeafIndex;
+  const senderLeafPublicKey = requireDetachedBytes(
+    raw.senderLeafPublicKey,
+    65,
+    65,
+    'senderLeafPublicKey',
+  );
+  if (!Array.isArray(raw.nodes)) {
+    throw new Error("Invalid PathUpdate: 'nodes' must be an array");
+  }
+
+  const nodes: PathNodeUpdate[] = raw.nodes.map((value, index) => {
+    const node = requireExactDataFields(
+      value,
+      ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
+      `Invalid PathUpdate: node[${index}]`,
+    );
+    if (
+      typeof node.nodeIndex !== 'number' ||
+      !Number.isSafeInteger(node.nodeIndex) ||
+      node.nodeIndex < 0 ||
+      node.nodeIndex >= maximumTreeWidth ||
+      TreeMath.isLeaf(node.nodeIndex)
+    ) {
+      throw new Error(
+        `Invalid PathUpdate: 'node[${index}].nodeIndex' must identify a bounded internal tree node`,
+      );
+    }
+    const encryptedPrivateKey = requireDetachedBytes(
+      node.encryptedPrivateKey,
+      0,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+      `node[${index}].encryptedPrivateKey`,
+    );
+    if (
+      encryptedPrivateKey.byteLength !== 0 &&
+      encryptedPrivateKey.byteLength < MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES
+    ) {
+      throw new Error(
+        `Invalid PathUpdate: 'node[${index}].encryptedPrivateKey' must be empty or ${MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES}..${MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES} bytes`,
+      );
+    }
+    return {
+      nodeIndex: node.nodeIndex,
+      publicKey: requireDetachedBytes(
+        node.publicKey,
+        65,
+        65,
+        `node[${index}].publicKey`,
+      ),
+      encryptedPrivateKey,
+    };
+  });
+
+  return { senderLeafIndex, senderLeafPublicKey, nodes };
+}
+
+function snapshotPathUpdateForTree(
+  update: PathUpdate,
+  numLeaves: number,
+): PathUpdate {
+  const detached = snapshotPathUpdate(update);
+  const treeWidth = 2 * numLeaves - 1;
+  if (detached.senderLeafIndex >= treeWidth) {
+    throw new Error(
+      "Invalid PathUpdate: 'senderLeafIndex' must identify a leaf in the current tree",
+    );
+  }
+
+  const expectedPath = TreeMath.directPath(
+    detached.senderLeafIndex,
+    numLeaves,
+  );
+  if (
+    detached.nodes.length !== expectedPath.length ||
+    detached.nodes.some(
+      (node, index) => node.nodeIndex !== expectedPath[index],
+    )
+  ) {
+    throw new Error(
+      'Invalid PathUpdate: nodes must exactly match the sender direct path',
+    );
+  }
+  return detached;
 }
 
 /**
@@ -141,9 +361,43 @@ export class BeeKEM {
   private _welcomeAttemptRevision = 0n;
   private _pendingWelcomeAttempts = new Set<bigint>();
   private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
+  private _welcomeSettlement: Promise<void> = Promise.resolve();
+  private _resolveWelcomeSettlement: (() => void) | undefined;
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
+  private _pendingInitializations = 0;
 
-  /** @internal Create a detached copy for validating before commit. */
-  clone(): BeeKEM {
+  private _reserveMutation(): <T>(
+    operation: () => Promise<T>,
+  ) => Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    let consumed = false;
+    return async <T>(operation: () => Promise<T>): Promise<T> => {
+      if (consumed) {
+        throw new Error('BeeKEM mutation reservation was already consumed');
+      }
+      consumed = true;
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    };
+  }
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    return this._reserveMutation()(operation);
+  }
+
+  private _cloneState(): BeeKEM {
     const copy = new BeeKEM();
     copy._nodes = new Map(this._nodes);
     copy._numLeaves = this._numLeaves;
@@ -151,11 +405,61 @@ export class BeeKEM {
     return copy;
   }
 
+  /** @internal Create a detached copy for validating before commit. */
+  clone(): BeeKEM {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot clone BeeKEM during an active mutation');
+    }
+    return this._cloneState();
+  }
+
   /**
    * Initialize as the first member of a new group.
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
+    if (
+      this._resolveWelcomeSettlement !== undefined &&
+      this._pendingMutations !== 0
+    ) {
+      throw new Error(
+        'Cannot initialize BeeKEM while a mutation is waiting for Welcome settlement',
+      );
+    }
+    this._pendingInitializations++;
+    try {
+      await this._runMutation(() => this._initialize(privateKey, publicKey));
+    } finally {
+      this._pendingInitializations--;
+      this._settleWelcomeCandidates();
+    }
+  }
+
+  private async _initialize(
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+  ): Promise<void> {
+    let compatibilityProbe: CryptoKeyPair;
+    try {
+      compatibilityProbe = (await crypto.subtle.generateKey(
+        ECDH_ALGO,
+        false,
+        ['deriveBits'],
+      )) as CryptoKeyPair;
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      throw new Error(
+        `Cannot initialize BeeKEM: ECDH compatibility probe generation failed${detail}`,
+        { cause: error },
+      );
+    }
+    await assertEcdhKeyPairCompatible(
+      publicKey,
+      privateKey,
+      compatibilityProbe,
+      'founder leaf 0',
+      'Cannot initialize BeeKEM',
+    );
     this._receiverGeneration++;
     this._nodes.clear();
     this._numLeaves = 1;
@@ -182,42 +486,42 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertInitializedForMutation('add a member');
+    return this._runMutation(() => this._addMember(memberPublicKey));
+  }
+
+  private async _addMember(memberPublicKey: CryptoKey): Promise<{
+    pathUpdate: PathUpdate;
+    welcome: BeeKEMWelcome;
+    rootSecret: Uint8Array;
+  }> {
+    this._assertLocalMutationState('add member');
     if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
       throw new Error(
         `Cannot add member: BeeKEM tree is limited to ${MAX_BEEKEM_TREE_LEAVES} leaves`,
       );
     }
-    const previousNodes = this._nodes;
-    const previousNumLeaves = this._numLeaves;
-    // All mutation happens on a shallow map copy. Tree nodes are immutable
-    // value objects in these paths, so discarding the copy rolls back a failed
-    // WebCrypto/export/Welcome operation without leaving a phantom leaf.
-    this._nodes = new Map(previousNodes);
-    try {
-      // Add new leaf at next position
-      const newLeafPos = this._numLeaves;
-      const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
-      this._numLeaves++;
+    const staged = this._cloneState();
+    const newLeafPos = staged._numLeaves;
+    const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
+    staged._numLeaves++;
 
-      const newLeaf: LeafNode = {
-        type: 'leaf',
-        index: newLeafIndex,
-        publicKey: memberPublicKey,
-      };
-      this._nodes.set(newLeafIndex, newLeaf);
+    const newLeaf: LeafNode = {
+      type: 'leaf',
+      index: newLeafIndex,
+      publicKey: memberPublicKey,
+    };
+    staged._nodes.set(newLeafIndex, newLeaf);
 
-      // Generate fresh key material along our path to root
-      const { pathUpdate, rootSecret } = await this._updatePath();
+    const { pathUpdate, rootSecret } = await staged._updatePath();
+    const welcome = await staged._buildWelcome(
+      newLeafIndex,
+      memberPublicKey,
+    );
 
-      // Build welcome message for the new member
-      const welcome = await this._buildWelcome(newLeafIndex, memberPublicKey);
-
-      return { pathUpdate, welcome, rootSecret };
-    } catch (error) {
-      this._nodes = previousNodes;
-      this._numLeaves = previousNumLeaves;
-      throw error;
-    }
+    this._nodes = staged._nodes;
+    this._numLeaves = staged._numLeaves;
+    this._myLeafIndex = staged._myLeafIndex;
+    return { pathUpdate, welcome, rootSecret };
   }
 
   /**
@@ -240,23 +544,58 @@ export class BeeKEM {
     ) {
       throw new Error('Cannot remove member: invalid leaf index');
     }
+    return this._runMutation(() => this._removeMember(memberLeafIndex));
+  }
+
+  private async _removeMember(memberLeafIndex: number): Promise<{
+    pathUpdate: PathUpdate;
+    rootSecret: Uint8Array;
+  }> {
+    this._assertLocalMutationState('remove member');
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(memberLeafIndex) ||
+      memberLeafIndex < 0 ||
+      memberLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(memberLeafIndex)
+    ) {
+      throw new Error(
+        'Cannot remove member: target must identify a leaf in the current tree',
+      );
+    }
+    if (memberLeafIndex === this._myLeafIndex) {
+      throw new Error('Cannot remove member: cannot remove the local member');
+    }
+    const memberLeaf = this._nodes.get(memberLeafIndex);
+    if (
+      memberLeaf?.type !== 'leaf' ||
+      memberLeaf.index !== memberLeafIndex ||
+      !memberLeaf.publicKey
+    ) {
+      throw new Error('Cannot remove member: target is not an active tree leaf');
+    }
+
+    const staged = this._cloneState();
     // Blank the removed member's leaf
     const blankedLeaf: LeafNode = {
       type: 'leaf',
       index: memberLeafIndex,
       publicKey: null,
     };
-    this._nodes.set(memberLeafIndex, blankedLeaf);
+    staged._nodes.set(memberLeafIndex, blankedLeaf);
 
     // Blank all internal nodes on the removed member's direct path
-    const removedPath = TreeMath.directPath(memberLeafIndex, this._numLeaves);
+    const removedPath = TreeMath.directPath(
+      memberLeafIndex,
+      staged._numLeaves,
+    );
     for (const nodeIndex of removedPath) {
       const blankedNode: InternalNode = {
         type: 'internal',
         index: nodeIndex,
         publicKey: null,
       };
-      this._nodes.set(nodeIndex, blankedNode);
+      staged._nodes.set(nodeIndex, blankedNode);
     }
 
     // Generate fresh key pair for our leaf
@@ -265,14 +604,16 @@ export class BeeKEM {
     ]);
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: this._myLeafIndex,
+      index: staged._myLeafIndex,
       publicKey: newKeyPair.publicKey,
       privateKey: newKeyPair.privateKey,
     };
-    this._nodes.set(this._myLeafIndex, myLeaf);
+    staged._nodes.set(staged._myLeafIndex, myLeaf);
 
     // Re-derive path keys from our leaf to root
-    return this._updatePath();
+    const result = await staged._updatePath();
+    this._nodes = staged._nodes;
+    return result;
   }
 
   /**
@@ -284,99 +625,129 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertInitializedForMutation('update');
+    return this._runMutation(() => this._update());
+  }
+
+  private async _update(): Promise<{
+    pathUpdate: PathUpdate;
+    rootSecret: Uint8Array;
+  }> {
+    this._assertLocalMutationState('update');
+    const staged = this._cloneState();
     // Generate new ECDH key pair for our leaf
     const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
       'deriveBits',
     ]);
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: this._myLeafIndex,
+      index: staged._myLeafIndex,
       publicKey: newKeyPair.publicKey,
       privateKey: newKeyPair.privateKey,
     };
-    this._nodes.set(this._myLeafIndex, myLeaf);
+    staged._nodes.set(staged._myLeafIndex, myLeaf);
 
     // Re-derive all internal node keys on our path to root
-    return this._updatePath();
+    const result = await staged._updatePath();
+    this._nodes = staged._nodes;
+    return result;
   }
 
   /**
    * Process a path update from another member.
-   * Decrypts the relevant encrypted key and derives the new root.
+   * Requires an initialized tree at admission, detaches the update, validates
+   * it against the tree when its reserved turn begins, and commits a staged
+   * tree only on success.
+   *
+   * This is the legacy v1 shape. It has no generation or parent-tree binding,
+   * so structural validation and FIFO application do not make captured valid
+   * updates replay-safe. Callers must treat replay/out-of-order resistance as a
+   * v2 requirement.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
     this._assertInitializedForMutation('process a PathUpdate');
+    const welcomeSettlement = this._resolveWelcomeSettlement
+      ? this._welcomeSettlement
+      : undefined;
+    const validateAgainstCurrentTree =
+      this._pendingMutations === 0 && welcomeSettlement === undefined;
+    const runReservedMutation = this._reserveMutation();
+    try {
+      let detachedUpdate: PathUpdate;
+      if (validateAgainstCurrentTree) {
+        this._assertPathUpdateState();
+        detachedUpdate = snapshotPathUpdateForTree(
+          update,
+          this._numLeaves,
+        );
+      } else {
+        detachedUpdate = snapshotPathUpdate(update);
+      }
+      return runReservedMutation(async () => {
+        await welcomeSettlement;
+        return this._processPathUpdate(detachedUpdate);
+      });
+    } catch (error) {
+      return runReservedMutation(async () => {
+        throw error;
+      });
+    }
+  }
+
+  private async _processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
+    this._assertPathUpdateState();
+    const detachedUpdate = snapshotPathUpdateForTree(
+      update,
+      this._numLeaves,
+    );
+    const currentSenderLeaf = this._nodes.get(detachedUpdate.senderLeafIndex);
+    if (
+      currentSenderLeaf?.type !== 'leaf' ||
+      currentSenderLeaf.publicKey === null
+    ) {
+      throw new Error(
+        'Cannot process path update: sender is not an active tree leaf',
+      );
+    }
+    const myDirectPath = TreeMath.directPath(
+      this._myLeafIndex,
+      this._numLeaves,
+    );
+    const firstIntersection = detachedUpdate.nodes.findIndex((node) =>
+      myDirectPath.includes(node.nodeIndex),
+    );
+    if (
+      firstIntersection >= 0 &&
+      firstIntersection < detachedUpdate.nodes.length - 1
+    ) {
+      throw new Error(
+        'Cannot process path update: legacy PathUpdate v1 cannot safely ' +
+          'distribute ancestor keys above a non-root intersection',
+      );
+    }
+
+    const staged = this._cloneState();
     // Update the sender's leaf with their new public key
     const senderLeafPublicKey = await crypto.subtle.importKey(
       'raw',
-      toBuffer(update.senderLeafPublicKey),
+      toBuffer(detachedUpdate.senderLeafPublicKey),
       ECDH_ALGO,
       true,
       [],
     );
     const senderLeaf: LeafNode = {
       type: 'leaf',
-      index: update.senderLeafIndex,
+      index: detachedUpdate.senderLeafIndex,
       publicKey: senderLeafPublicKey,
     };
-    this._nodes.set(update.senderLeafIndex, senderLeaf);
+    staged._nodes.set(detachedUpdate.senderLeafIndex, senderLeaf);
 
-    // Find where our copath intersects the update path
-    const myCopath = TreeMath.copath(this._myLeafIndex, this._numLeaves);
-    const myDirectPath = TreeMath.directPath(
-      this._myLeafIndex,
-      this._numLeaves,
-    );
-
-    // The update path consists of internal nodes from the sender's leaf to root.
-    // We need to find the first node in the update that is on our direct path.
-    // At that node, the encrypted private key is encrypted to the resolution
-    // of the subtree on OUR side (the sender's copath), so we can decrypt it
-    // using a private key from our subtree.
-    let decryptedPrivateKey: CryptoKey | null = null;
-    let intersectionIdx = -1;
-
-    for (let i = 0; i < update.nodes.length; i++) {
-      const pathNode = update.nodes[i];
-      const dpIdx = myDirectPath.indexOf(pathNode.nodeIndex);
-      if (dpIdx >= 0) {
-        // This update node is on our direct path.
-        // The sender encrypted this node's private key to the resolution of
-        // the subtree on OUR side (the sender's copath at this level).
-        // Find the child of this node on our side and look for a private key.
-        const childOnOurSide = this._findChildOnOurSide(pathNode.nodeIndex);
-        if (childOnOurSide !== undefined) {
-          const childNode = this._nodes.get(childOnOurSide);
-          if (childNode?.privateKey) {
-            decryptedPrivateKey = await this._decryptNodeKey(
-              pathNode.encryptedPrivateKey,
-              childNode.privateKey,
-            );
-          } else {
-            // Walk down our subtree to find any node with a private key
-            const resolved = await this._resolveSubtreeKey(childOnOurSide);
-            if (resolved) {
-              decryptedPrivateKey = await this._decryptNodeKey(
-                pathNode.encryptedPrivateKey,
-                resolved,
-              );
-            }
-          }
-        }
-
-        intersectionIdx = i;
-        break;
-      }
-    }
-
-    if (!decryptedPrivateKey || intersectionIdx === -1) {
+    if (firstIntersection === -1) {
       throw new Error(
         'Cannot process path update: no intersection found with our path',
       );
     }
 
-    // Import the public key for the intersection node
-    const intersectionNode = update.nodes[intersectionIdx];
+    const intersectionNode = detachedUpdate.nodes[firstIntersection];
     const intersectionPublicKey = await crypto.subtle.importKey(
       'raw',
       toBuffer(intersectionNode.publicKey),
@@ -384,6 +755,41 @@ export class BeeKEM {
       true,
       [],
     );
+    const childOnOurSide = staged._findChildOnOurSide(
+      intersectionNode.nodeIndex,
+    );
+    const candidateKeys =
+      childOnOurSide === undefined
+        ? []
+        : staged._privateKeyCandidates(childOnOurSide);
+    let decryptedPrivateKey: CryptoKey | null = null;
+    let lastDecryptionError: unknown;
+    for (const candidateKey of candidateKeys) {
+      let candidatePrivateKey: CryptoKey;
+      try {
+        candidatePrivateKey = await staged._decryptNodeKey(
+          intersectionNode.encryptedPrivateKey,
+          candidateKey,
+        );
+      } catch (error) {
+        lastDecryptionError = error;
+        continue;
+      }
+      await assertMatchingPathKeyPair(
+        intersectionPublicKey,
+        candidatePrivateKey,
+        intersectionNode.nodeIndex,
+      );
+      decryptedPrivateKey = candidatePrivateKey;
+      break;
+    }
+    if (!decryptedPrivateKey) {
+      throw new Error(
+        'Cannot process path update: no local resolution key could decrypt ' +
+          'the intersection',
+        { cause: lastDecryptionError },
+      );
+    }
 
     // Set the intersection node
     const intNode: InternalNode = {
@@ -392,48 +798,11 @@ export class BeeKEM {
       publicKey: intersectionPublicKey,
       privateKey: decryptedPrivateKey,
     };
-    this._nodes.set(intersectionNode.nodeIndex, intNode);
-
-    // Update all remaining nodes above the intersection (toward root)
-    // with their public keys, and derive private keys where possible
-    for (let i = intersectionIdx + 1; i < update.nodes.length; i++) {
-      const pathNode = update.nodes[i];
-      const publicKey = await crypto.subtle.importKey(
-        'raw',
-        toBuffer(pathNode.publicKey),
-        ECDH_ALGO,
-        true,
-        [],
-      );
-
-      // If this node is on our direct path, we can derive its private key
-      // from the child on our side
-      const childOnOurSide = this._findChildOnOurSide(pathNode.nodeIndex);
-      const childNode = childOnOurSide !== undefined
-        ? this._nodes.get(childOnOurSide)
-        : undefined;
-      let privateKey: CryptoKey | undefined;
-
-      if (childNode?.privateKey) {
-        // Decrypt this node's private key
-        privateKey = await this._decryptNodeKey(
-          pathNode.encryptedPrivateKey,
-          childNode.privateKey,
-        );
-      }
-
-      const node: InternalNode = {
-        type: 'internal',
-        index: pathNode.nodeIndex,
-        publicKey,
-        privateKey,
-      };
-      this._nodes.set(pathNode.nodeIndex, node);
-    }
+    staged._nodes.set(intersectionNode.nodeIndex, intNode);
 
     // Also update nodes below the intersection from the sender's side
-    for (let i = 0; i < intersectionIdx; i++) {
-      const pathNode = update.nodes[i];
+    for (let i = 0; i < firstIntersection; i++) {
+      const pathNode = detachedUpdate.nodes[i];
       const publicKey = await crypto.subtle.importKey(
         'raw',
         toBuffer(pathNode.publicKey),
@@ -446,10 +815,59 @@ export class BeeKEM {
         index: pathNode.nodeIndex,
         publicKey,
       };
-      this._nodes.set(pathNode.nodeIndex, node);
+      staged._nodes.set(pathNode.nodeIndex, node);
     }
 
-    return this.getRootSecret();
+    const rootSecret = await staged.getRootSecret();
+    this._nodes = staged._nodes;
+    return rootSecret;
+  }
+
+  private _assertPathUpdateState(): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
+    ) {
+      throw new Error('Cannot process path update: BeeKEM tree state is invalid');
+    }
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(this._myLeafIndex)
+    ) {
+      throw new Error('Cannot process path update: local leaf is invalid');
+    }
+  }
+
+  private _assertLocalMutationState(action: string): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
+    ) {
+      throw new Error(`Cannot ${action}: BeeKEM tree state is invalid`);
+    }
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(this._myLeafIndex)
+    ) {
+      throw new Error(`Cannot ${action}: local leaf is invalid`);
+    }
+    const localLeaf = this._nodes.get(this._myLeafIndex);
+    if (
+      localLeaf?.type !== 'leaf' ||
+      localLeaf.index !== this._myLeafIndex ||
+      !localLeaf.publicKey ||
+      !localLeaf.privateKey
+    ) {
+      throw new Error(`Cannot ${action}: local leaf is not active`);
+    }
   }
 
   /**
@@ -465,10 +883,10 @@ export class BeeKEM {
     if (!this._isFreshWelcomeTarget()) {
       throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
     }
-
     // Reserve this attempt before inspecting caller-controlled input. A Proxy
     // descriptor trap can invoke processWelcome reentrantly; in that case the
     // nested, later invocation must retain the higher revision and win.
+    this._beginWelcomeSettlement();
     const attemptRevision = ++this._welcomeAttemptRevision;
     const receiverGeneration = this._receiverGeneration;
     this._pendingWelcomeAttempts.add(attemptRevision);
@@ -741,6 +1159,9 @@ export class BeeKEM {
    * that can never contribute to key derivation.
    */
   compact(): void {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot compact BeeKEM during an active mutation');
+    }
     // Find blanked leaf indices
     const blankedLeaves: number[] = [];
     for (let i = 0; i < this._numLeaves; i++) {
@@ -827,8 +1248,32 @@ export class BeeKEM {
     });
   }
 
+  private _beginWelcomeSettlement(): void {
+    if (this._resolveWelcomeSettlement !== undefined) return;
+    this._welcomeSettlement = new Promise<void>((resolve) => {
+      this._resolveWelcomeSettlement = resolve;
+    });
+  }
+
+  private _finishWelcomeSettlementIfPossible(): void {
+    if (
+      this._resolveWelcomeSettlement === undefined ||
+      (this._isFreshWelcomeTarget() &&
+        (this._pendingWelcomeAttempts.size !== 0 ||
+          this._stagedWelcomeCandidates.size !== 0))
+    ) {
+      return;
+    }
+    const resolve = this._resolveWelcomeSettlement;
+    this._resolveWelcomeSettlement = undefined;
+    resolve();
+  }
+
   private _settleWelcomeCandidates(): void {
-    if (this._stagedWelcomeCandidates.size === 0) return;
+    if (this._stagedWelcomeCandidates.size === 0) {
+      this._finishWelcomeSettlementIfPossible();
+      return;
+    }
 
     for (const [revision, candidate] of this._stagedWelcomeCandidates) {
       if (candidate.receiverGeneration !== this._receiverGeneration) {
@@ -840,7 +1285,10 @@ export class BeeKEM {
         );
       }
     }
-    if (this._stagedWelcomeCandidates.size === 0) return;
+    if (this._stagedWelcomeCandidates.size === 0) {
+      this._finishWelcomeSettlementIfPossible();
+      return;
+    }
 
     if (!this._isFreshWelcomeTarget()) {
       const candidates = [...this._stagedWelcomeCandidates.values()];
@@ -852,8 +1300,11 @@ export class BeeKEM {
           ),
         );
       }
+      this._finishWelcomeSettlementIfPossible();
       return;
     }
+
+    if (this._pendingInitializations !== 0) return;
 
     let winnerRevision = -1n;
     let winner: StagedWelcomeCandidate | undefined;
@@ -886,6 +1337,7 @@ export class BeeKEM {
         );
       }
     }
+    this._finishWelcomeSettlementIfPossible();
   }
 
   /**
@@ -1089,53 +1541,63 @@ export class BeeKEM {
   }
 
   /**
-   * Resolve the public key of a subtree rooted at the given node index.
-   * If the node has a public key, return it.
-   * If the node is blank, search its children for a non-blank key.
+   * Resolve the single public key that legacy PathUpdate v1 can address for a
+   * subtree. A blank node can expand to several resolution nodes, but v1 has
+   * only one ciphertext per path level and must reject that case.
    */
   private async _resolvePublicKey(
     nodeIndex: number,
   ): Promise<CryptoKey | null> {
-    const node = this._nodes.get(nodeIndex);
-    if (node?.publicKey) return node.publicKey;
-
-    // For internal nodes, try children
-    if (TreeMath.isInternal(nodeIndex)) {
-      const leftChild = TreeMath.left(nodeIndex);
-      const rightChild = TreeMath.right(nodeIndex, this._numLeaves);
-
-      const leftKey = await this._resolvePublicKey(leftChild);
-      if (leftKey) return leftKey;
-
-      const rightKey = await this._resolvePublicKey(rightChild);
-      if (rightKey) return rightKey;
+    const resolution = this._collectResolutionPublicKeys(nodeIndex, 2);
+    if (resolution.length > 1) {
+      throw new Error(
+        'Cannot update path: legacy PathUpdate v1 cannot safely encode ' +
+          'multiple sibling resolution nodes',
+      );
     }
-
-    return null;
+    return resolution[0] ?? null;
   }
 
-  /**
-   * Find a private key in our subtree by walking down from a given node.
-   * Returns the private key if found, null otherwise.
-   */
-  private async _resolveSubtreeKey(
+  private _collectResolutionPublicKeys(
     nodeIndex: number,
-  ): Promise<CryptoKey | null> {
+    limit: number,
+  ): CryptoKey[] {
     const node = this._nodes.get(nodeIndex);
-    if (node?.privateKey) return node.privateKey;
+    if (node?.publicKey) return [node.publicKey];
 
     if (TreeMath.isInternal(nodeIndex)) {
       const leftChild = TreeMath.left(nodeIndex);
       const rightChild = TreeMath.right(nodeIndex, this._numLeaves);
-
-      const leftKey = await this._resolveSubtreeKey(leftChild);
-      if (leftKey) return leftKey;
-
-      const rightKey = await this._resolveSubtreeKey(rightChild);
-      if (rightKey) return rightKey;
+      const leftKeys = this._collectResolutionPublicKeys(
+        leftChild,
+        limit,
+      );
+      if (leftKeys.length >= limit) return leftKeys;
+      const rightKeys = this._collectResolutionPublicKeys(
+        rightChild,
+        limit - leftKeys.length,
+      );
+      return [...leftKeys, ...rightKeys];
     }
 
-    return null;
+    return [];
+  }
+
+  /** Private resolution keys from the subtree root down to our own leaf. */
+  private _privateKeyCandidates(nodeIndex: number): CryptoKey[] {
+    const localPath = [
+      this._myLeafIndex,
+      ...TreeMath.directPath(this._myLeafIndex, this._numLeaves),
+    ];
+    const subtreeOffset = localPath.indexOf(nodeIndex);
+    if (subtreeOffset === -1) return [];
+
+    const candidates: CryptoKey[] = [];
+    for (let offset = subtreeOffset; offset >= 0; offset--) {
+      const privateKey = this._nodes.get(localPath[offset])?.privateKey;
+      if (privateKey) candidates.push(privateKey);
+    }
+    return candidates;
   }
 
   /**

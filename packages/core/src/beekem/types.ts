@@ -40,7 +40,12 @@ export interface InternalNode {
 }
 
 /**
- * Path update message: encrypted key pairs along a path from leaf to root.
+ * Legacy v1 path update: encrypted key pairs along a path from leaf to root.
+ * This shape has no generation or parent-tree binding, so this BeeKEM boundary
+ * cannot distinguish a previously unseen delayed value from the next update.
+ * An enclosing keychain may reject an already-installed epoch ID, but that is
+ * not guaranteed here. `PathUpdateV2` reserves the state-bound replacement;
+ * its codec is not the v1 runtime protocol.
  */
 export interface PathUpdate {
   /** Index of the leaf that initiated the update. */
@@ -135,11 +140,13 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
 }
 
 /**
- * BeeKEM tree leaf bound.
+ * Tree-size ceiling for the legacy Welcome and PathUpdate wire/runtime
+ * boundaries and the v2 codecs.
  *
- * The conservative limit bounds traversal and structural work in the legacy
- * wire/runtime boundaries and the v2 codecs. Transport senders separately
- * enforce the document protocol's frame limit on the complete signed and
- * framed request.
+ * Legacy PathUpdate v1 also rejects local emission when a blank sibling
+ * expands to multiple resolution nodes, and receivers reject a non-root first
+ * intersection. Its single ciphertext per level cannot safely cover either
+ * case. Transport senders separately enforce the document protocol's frame
+ * limit on the complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
