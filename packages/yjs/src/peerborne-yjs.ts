@@ -2,6 +2,7 @@ import {
   ACL,
   ACLProvider,
   PeerborneDocumentChangeHandler,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -25,11 +26,13 @@ import {
   serializeInitialLoadChallengeForWire,
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
+  assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
   applyUpdateV2,
   ContentAny,
+  ContentDeleted,
   decodeUpdateV2,
   Doc,
   encodeStateAsUpdateV2,
@@ -565,42 +568,281 @@ export class YjsACLProvider implements ACLProvider<Uint8Array, CryptoKey> {
   }
 }
 
+// Yjs carries an ACL merge as one update, so this is both the per-change and
+// aggregate bound. It leaves headroom under the shared 10 MiB transport cap.
+export const MAX_YJS_ACL_UPDATE_BYTES = 4 * 1024 * 1024;
+export const MAX_YJS_ACL_STRUCTURES = 8192;
+export const MAX_YJS_ACL_MEMBERS = 4096;
+
+function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
+  // Yjs folds pendingStructs and pendingDs into this update before returning
+  // it. Reapplying the bounded snapshot therefore preserves unresolved
+  // dependencies, while decodeUpdateV2 below counts their structs/delete
+  // ranges toward the same retained-state limits.
+  const state = encodeStateAsUpdateV2(doc);
+  if (state.byteLength > MAX_YJS_ACL_UPDATE_BYTES) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_UPDATE_BYTES}-byte limit`,
+    );
+  }
+  const decoded = decodeUpdateV2(state);
+  let structureCount = 0;
+  for (const struct of decoded.structs) {
+    if (
+      !Number.isSafeInteger(struct.length) ||
+      struct.length < 1 ||
+      struct.length > MAX_YJS_ACL_STRUCTURES - structureCount
+    ) {
+      throw new RangeError(
+        `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+      );
+    }
+    structureCount += struct.length;
+  }
+  for (const ranges of decoded.ds.clients.values()) {
+    for (const range of ranges) {
+      if (
+        !Number.isSafeInteger(range.len) ||
+        range.len < 1 ||
+        range.len > MAX_YJS_ACL_STRUCTURES - structureCount
+      ) {
+        throw new RangeError(
+          `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+        );
+      }
+      structureCount += range.len;
+    }
+  }
+  if (doc.getMap('users').size > MAX_YJS_ACL_MEMBERS) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
+    );
+  }
+  assertValidYjsACLHistory(doc, operation);
+  return state;
+}
+
+function assertValidYjsACLHistory(doc: Doc, operation: string): void {
+  const users = doc.getMap('users');
+  for (const structs of doc.store.clients.values()) {
+    for (const struct of structs) {
+      if (!(struct instanceof Item) || struct.parent !== users) continue;
+      const key = struct.parentSub;
+      assertCanonicalP384PublicKeyEncoding(key);
+      if (struct.content instanceof ContentDeleted) {
+        throw new Error(
+          `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
+        );
+      }
+      if (
+        !(struct.content instanceof ContentAny) ||
+        struct.length !== struct.content.arr.length ||
+        struct.content.arr.length === 0 ||
+        struct.content.arr.some((value) => value !== true)
+      ) {
+        throw new Error(
+          `Cannot ${operation}: Yjs ACL membership values must be true`,
+        );
+      }
+    }
+  }
+}
+
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
-  private readonly _acl = new Doc();
+  private _acl = new Doc({ gc: false });
+  private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
+  private readonly _queuedRemovalCommits = new WeakSet<
+    PreparedACLRemoval<Uint8Array>
+  >();
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    })();
+  }
+
+  private _commitQueuedRemoval(
+    prepared: PreparedACLRemoval<Uint8Array>,
+  ): void {
+    this._queuedRemovalCommits.add(prepared);
+    try {
+      prepared.commit();
+    } finally {
+      this._queuedRemovalCommits.delete(prepared);
+    }
+  }
+
+  private _assertComplete(operation: string): void {
+    if (
+      this._acl.store.pendingStructs !== null ||
+      this._acl.store.pendingDs !== null
+    ) {
+      throw new Error(
+        `Cannot ${operation}: Yjs ACL has unresolved update dependencies`,
+      );
+    }
+  }
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
-    const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    this._acl.getMap('users').set(hash, true);
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    return this._runMutation(async () => {
+      this._assertComplete('add an ACL member');
+      const hash = await serializeKey(publicKey);
+      assertCanonicalP384PublicKeyEncoding(hash);
+      this._assertComplete('add an ACL member');
+      const base = this._acl;
+      const staged = new Doc({ gc: false });
+      applyUpdateV2(
+        staged,
+        snapshotBoundedYjsACLState(base, 'add an ACL member'),
+      );
+      staged.clientID = base.clientID;
+      const beforeSV = encodeStateVector(staged);
+      staged.getMap('users').set(hash, true);
+      const changes = encodeStateAsUpdateV2(staged, beforeSV);
+      snapshotBoundedYjsACLState(staged, 'add an ACL member');
+      this._acl = staged;
+      this._revision++;
+      return changes;
+    });
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
+    return this._runMutation(async () => {
+      const prepared = await this.prepareRemove(publicKey);
+      this._commitQueuedRemoval(prepared);
+      return prepared.changes;
+    });
+  }
+  async prepareRemove(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLRemoval<Uint8Array>> {
+    this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    if (this._acl.getMap('users').has(hash)) {
-      this._acl.getMap('users').delete(hash);
+    assertCanonicalP384PublicKeyEncoding(hash);
+    this._assertComplete('remove an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc({ gc: false });
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'stage an ACL removal'),
+    );
+    staged.clientID = base.clientID;
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    const beforeSV = encodeStateVector(staged);
+    if (hadMember) {
+      stagedUsers.delete(hash);
     }
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    snapshotBoundedYjsACLState(staged, 'stage an ACL removal');
+    const changes = new Uint8Array(privateChanges);
+    let committed = false;
+    const prepared: PreparedACLRemoval<Uint8Array> = {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        if (
+          this._pendingMutations !== 0 &&
+          !this._queuedRemovalCommits.has(prepared)
+        ) {
+          throw new Error(
+            'Prepared ACL removal cannot commit during a local ACL mutation',
+          );
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while removal was staged');
+        }
+        committed = true;
+        if (!hadMember) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
+    return prepared;
   }
   current(): Uint8Array {
+    this._assertComplete('read the current ACL state');
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
-    applyUpdateV2(this._acl, change);
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot merge during a local ACL mutation');
+    }
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const detachedChange = copyUnsharedUint8Array(
+      change,
+      1,
+      MAX_YJS_ACL_UPDATE_BYTES,
+      'Yjs ACL update',
+    );
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being detached');
+    }
+    const staged = new Doc({ gc: false });
+    const baseState = snapshotBoundedYjsACLState(base, 'merge ACL changes');
+    applyUpdateV2(staged, baseState);
+    staged.clientID = base.clientID;
+    applyUpdateV2(staged, detachedChange);
+    const stagedState = snapshotBoundedYjsACLState(
+      staged,
+      'merge ACL changes',
+    );
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being merged');
+    }
+    if (compareBytes(baseState, stagedState) === 0) return;
+    this._acl = staged;
+    this._revision++;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
+    this._assertComplete('check ACL membership');
+    const baseRevision = this._revision;
+    const base = this._acl;
     const hash = await serializeKey(publicKey);
-    return this._acl.getMap('users').has(hash);
+    this._assertComplete('check ACL membership');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while membership was being checked');
+    }
+    return base.getMap('users').has(hash);
   }
   async users(): Promise<CryptoKey[]> {
+    this._assertComplete('list ACL members');
+    const baseRevision = this._revision;
+    const base = this._acl;
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, [
       'verify',
     ]);
-    const entries = [...this._acl.getMap('users').keys()];
-    return Promise.all(
+    const entries = [...base.getMap('users').keys()];
+    const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
         if (!key) {
@@ -610,6 +852,11 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
         return key;
       }),
     );
+    this._assertComplete('list ACL members');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new Error('ACL changed while members were being listed');
+    }
+    return users;
   }
 }
 

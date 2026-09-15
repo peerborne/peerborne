@@ -2,9 +2,11 @@ import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
 import {
   applyUpdateV2,
+  decodeUpdateV2,
   Doc,
   encodeStateAsUpdateV2,
   encodeStateVector,
+  Map as YMap,
 } from 'yjs';
 import {
   MAX_KEYCHAIN_EPOCHS,
@@ -19,6 +21,8 @@ import {
   YjsKeychain,
   YjsKeychainProvider,
   YjsJSONSerializer,
+  MAX_YJS_ACL_STRUCTURES,
+  MAX_YJS_ACL_UPDATE_BYTES,
   serializeKey,
 } from './peerborne-yjs.js';
 
@@ -59,6 +63,36 @@ beforeAll(async () => {
     ['verify'],
   );
 });
+
+async function makeOutOfOrderRemovalUpdates(
+  current: Uint8Array,
+  removedKey: CryptoKey,
+  transientKey: CryptoKey,
+): Promise<{ predecessor: Uint8Array; dependent: Uint8Array }> {
+  const source = new Doc();
+  applyUpdateV2(source, current);
+  const users = source.getMap('users');
+  const [serializedRemovedKey, serializedTransientKey] = await Promise.all([
+    serializeKey(removedKey),
+    serializeKey(transientKey),
+  ]);
+  const updates: Uint8Array[] = [];
+  source.on('updateV2', (update) => {
+    updates.push(new Uint8Array(update));
+  });
+  source.transact(() => {
+    users.delete(serializedRemovedKey);
+    users.set(serializedTransientKey, true);
+  });
+  source.transact(() => {
+    users.delete(serializedTransientKey);
+  });
+  const [predecessor, dependent] = updates;
+  if (!predecessor || !dependent) {
+    throw new Error('Expected two Yjs ACL updates');
+  }
+  return { predecessor, dependent };
+}
 
 describe('YjsProvider', () => {
   test('newDocument returns a valid Yjs Doc', () => {
@@ -196,6 +230,45 @@ describe('YjsACL delta encoding', () => {
 });
 
 describe('YjsACL', () => {
+  test('add rejects a non-P-384 identity before emitting changes', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    await expect(acl.add(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(keyPair.publicKey)).toBe(false);
+  });
+
+  test('removal rejects a non-P-384 identity without changing state', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    await expect(acl.prepareRemove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+
+    await expect(acl.remove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
   test('add() adds user and check() returns true', async () => {
     const acl = new YjsACL();
     const changes = await acl.add(key1);
@@ -212,6 +285,611 @@ describe('YjsACL', () => {
     expect(removeChanges).toBeInstanceOf(Uint8Array);
     expect(await acl.check(key1)).toBe(false);
   });
+
+  test('ordinary mutations are FIFO and reject a racing merge', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const externalRemoval = await acl.prepareRemove(key1);
+    const remote = new YjsACL();
+    const remoteChanges = await remote.add(key2);
+    const originalPrepareRemove = acl.prepareRemove.bind(acl);
+    let releasePreparation!: () => void;
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      preparationStarted();
+      await preparationGate;
+      return originalPrepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+    const addition = acl.add(key2);
+    await Promise.resolve();
+
+    expect(await acl.check(key2)).toBe(false);
+    expect(() => acl.merge(remoteChanges)).toThrow(
+      'Cannot merge during a local ACL mutation',
+    );
+    expect(() => externalRemoval.commit()).toThrow(
+      'Prepared ACL removal cannot commit during a local ACL mutation',
+    );
+
+    releasePreparation();
+    await expect(removal).resolves.toBeInstanceOf(Uint8Array);
+    await expect(addition).resolves.toBeInstanceOf(Uint8Array);
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => externalRemoval.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+  });
+
+  test('prepareRemove() stages detached changes without changing live membership', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    await acl.add(key2);
+    const before = acl.current();
+
+    const prepared = await acl.prepareRemove(key1);
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(2);
+
+    const receiver = new YjsACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('repeated staged removals preserve the Yjs actor clock', async () => {
+    const acl = new YjsACL();
+    const additions = [await acl.add(key1)];
+
+    for (let iteration = 0; iteration < 2; iteration++) {
+      const prepared = await acl.prepareRemove(key1);
+      prepared.commit();
+      additions.push(await acl.add(key1));
+    }
+
+    const identities = additions.map((update) => {
+      const decoded = decodeUpdateV2(update);
+      expect(decoded.structs).toHaveLength(1);
+      return decoded.structs[0]!.id;
+    });
+    expect(identities.map(({ client }) => client)).toEqual([
+      identities[0]!.client,
+      identities[0]!.client,
+      identities[0]!.client,
+    ]);
+    expect(identities.map(({ clock }) => clock)).toEqual([0, 1, 2]);
+  });
+
+  test('prepareRemove() commit is single-use', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    prepared.commit();
+
+    expect(() => prepared.commit()).toThrow(
+      'Prepared ACL removal was already committed',
+    );
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('replayed updates do not stale a prepared removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const remote = new YjsACL();
+    const remoteChanges = await remote.add(key2);
+    acl.merge(remoteChanges);
+    const prepared = await acl.prepareRemove(key1);
+
+    acl.merge(remoteChanges);
+
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('prepareRemove() rejects a stale commit before changing membership', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+    const concurrentChanges = await acl.add(key2);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+
+    const receiver = new YjsACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    receiver.merge(concurrentChanges);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() rejects late malformed input without changing live state', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+    const remote = new YjsACL();
+    const validRemoteAddition = await remote.add(key2);
+    expect(validRemoteAddition.at(-1)).toBe(0);
+    // Leave complete structs followed by a truncated delete-set count.
+    const malformedRemoteAddition = validRemoteAddition.subarray(
+      0,
+      validRemoteAddition.length - 1,
+    );
+
+    expect(() => acl.merge(malformedRemoteAddition)).toThrow();
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+    expect(await acl.users()).toHaveLength(1);
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('merge rejects a malformed serialized membership key atomically', async () => {
+    const invalidPoint = new Uint8Array(97);
+    invalidPoint[0] = 0x04;
+    const invalidSerializedPoint = Buffer.from(invalidPoint).toString('base64');
+    const source = new Doc();
+    source.getMap('users').set(invalidSerializedPoint, true);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    expect(() => acl.merge(encodeStateAsUpdateV2(source))).toThrow(
+      /valid P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(1);
+  });
+
+  test('merge rejects a tombstoned non-P-384 membership key atomically', async () => {
+    const nonP384Point = new Uint8Array(65);
+    nonP384Point[0] = 0x04;
+    const nonP384Key = Buffer.from(nonP384Point).toString('base64');
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc();
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(nonP384Key, true);
+    source.getMap('users').delete(nonP384Key);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(nonP384Key)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects a tombstoned invalid membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc({ gc: false });
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(serialized, true);
+    source.getMap('padding').set('separate-membership-structs', true);
+    source.getMap('users').set(serialized, false);
+    source.getMap('users').delete(serialized);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(serialized)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects a tombstoned structured membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const source = new Doc({ gc: false });
+    applyUpdateV2(source, before);
+    const beforeRemoteChange = encodeStateVector(source);
+    source.getMap('users').set(serialized, new YMap());
+    source.getMap('users').delete(serialized);
+    const remoteHistory = encodeStateAsUpdateV2(
+      source,
+      beforeRemoteChange,
+    );
+    expect(source.getMap('users').has(serialized)).toBe(false);
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge rejects erased membership history from a gc-enabled peer atomically', async () => {
+    const serialized = await serializeKey(key1);
+    const source = new Doc();
+    source.getMap('users').set(serialized, true);
+    source.getMap('users').delete(serialized);
+    const acl = new YjsACL();
+    await acl.add(key2);
+    const before = acl.current();
+
+    expect(() => acl.merge(encodeStateAsUpdateV2(source))).toThrow(
+      /erased membership value that cannot be authenticated/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('merge accepts a complete non-GC removal history', async () => {
+    const source = new YjsACL();
+    await source.add(key1);
+    await source.remove(key1);
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(source.current())).not.toThrow();
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.users()).toEqual([]);
+  });
+
+  test('merge accepts cross-realm updates and rejects byte lookalikes and shared backing', async () => {
+    const source = new YjsACL();
+    await source.add(key1);
+    const history = source.current();
+    const crossRealm = runInNewContext(
+      `new Uint8Array([${Array.from(history).join(',')}])`,
+    ) as Uint8Array;
+    expect(crossRealm).not.toBeInstanceOf(Uint8Array);
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(crossRealm)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    const before = receiver.current();
+    let lookalikeAccessorRead = false;
+    const lookalike = new Proxy(
+      {},
+      {
+        get() {
+          lookalikeAccessorRead = true;
+          void receiver.add(key2);
+          return 1;
+        },
+      },
+    );
+    expect(() =>
+      receiver.merge(lookalike as unknown as Uint8Array),
+    ).toThrow('Yjs ACL update must be a genuine Uint8Array');
+    expect(lookalikeAccessorRead).toBe(false);
+    expect(receiver.current()).toEqual(before);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(1));
+      expect(() => receiver.merge(shared)).toThrow(
+        'Yjs ACL update has an invalid length or backing buffer',
+      );
+      expect(receiver.current()).toEqual(before);
+    }
+  });
+
+  test('merge bounds update bytes before Yjs parsing', () => {
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    expect(() =>
+      acl.merge(new Uint8Array(MAX_YJS_ACL_UPDATE_BYTES + 1)),
+    ).toThrow(/invalid length/);
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge bounds coalesced logical structures atomically', () => {
+    const source = new Doc();
+    source
+      .getArray('padding')
+      .insert(0, new Array(MAX_YJS_ACL_STRUCTURES + 1).fill(true));
+    const update = encodeStateAsUpdateV2(source);
+    const decoded = decodeUpdateV2(update);
+    expect(decoded.structs).toHaveLength(1);
+    expect(decoded.structs[0]?.length).toBe(
+      MAX_YJS_ACL_STRUCTURES + 1,
+    );
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    expect(() => acl.merge(update)).toThrow(/structure limit/);
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge rejects retained Yjs ACL state growth atomically', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const padding = new Doc();
+    const chunks: Uint8Array[] = [];
+    for (let index = 0; index < 5; index++) {
+      const beforeSV = encodeStateVector(padding);
+      padding.getMap('padding').set(`chunk-${index}`, 'x'.repeat(900_000));
+      chunks.push(encodeStateAsUpdateV2(padding, beforeSV));
+    }
+
+    for (const chunk of chunks.slice(0, 4)) {
+      expect(() => acl.merge(chunk)).not.toThrow();
+    }
+    const before = acl.current();
+    expect(before.byteLength).toBeLessThanOrEqual(MAX_YJS_ACL_UPDATE_BYTES);
+
+    expect(() => acl.merge(chunks[4]!)).toThrow(/retained state exceeds/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge() preserves dependency-incomplete updates until dependencies arrive', async () => {
+    const source = new Doc();
+    const users = source.getMap('users');
+    users.set(await serializeKey(key1), true);
+    const dependency = encodeStateAsUpdateV2(source);
+    const beforeDependent = encodeStateVector(source);
+    users.set(await serializeKey(key2), true);
+    const dependent = encodeStateAsUpdateV2(source, beforeDependent);
+    const receiver = new YjsACL();
+
+    receiver.merge(dependent);
+    await expect(receiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(receiver.check(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+
+    receiver.merge(dependency);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('a new dependency-incomplete update still stales prepared removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+    const { dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+
+    acl.merge(dependent);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(() => acl.current()).toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+  });
+
+  test('current(), check(), and users() reject a known-incomplete ACL history', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+
+    acl.merge(dependent);
+
+    expect(() => acl.current()).toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(acl.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(acl.users()).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+  });
+
+  test('ACL reads recover after an out-of-order removal predecessor arrives', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+    acl.merge(dependent);
+
+    acl.merge(predecessor);
+
+    expect(acl.current()).toBeInstanceOf(Uint8Array);
+    await expect(acl.check(key1)).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+  });
+
+  test('add() rejects a known-incomplete ACL history without reviving a member', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
+      acl.current(),
+      key1,
+      key2,
+    );
+    acl.merge(dependent);
+
+    await expect(acl.add(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+
+    acl.merge(predecessor);
+    await expect(acl.check(key1)).resolves.toBe(false);
+    await expect(acl.check(key2)).resolves.toBe(false);
+  });
+
+  test('check() rejects when a merge changes the ACL during key serialization', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const remote = new YjsACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = acl.check(key1);
+      await started;
+      acl.merge(remoteChanges);
+      releaseExport();
+
+      await expect(authorization).rejects.toThrow(
+        'ACL changed while membership was being checked',
+      );
+    } finally {
+      releaseExport();
+      exportSpy.mockRestore();
+    }
+  });
+
+  test('users() rejects when a removal commits during key import', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    let importStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      importStarted = resolve;
+    });
+    let releaseImport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const originalImportKey = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementationOnce(
+        async (format, keyData, algorithm, extractable, keyUsages) => {
+          importStarted();
+          await release;
+          return originalImportKey(
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    try {
+      const listing = acl.users();
+      await started;
+      await acl.remove(key1);
+      releaseImport();
+
+      await expect(listing).rejects.toThrow(
+        'ACL changed while members were being listed',
+      );
+      await expect(acl.check(key1)).resolves.toBe(false);
+    } finally {
+      releaseImport();
+      importSpy.mockRestore();
+    }
+  });
+
+  test('merge() preserves pending deletes until their dependencies arrive', async () => {
+    const source = new YjsACL();
+    const dependency = await source.add(key1);
+    const pendingDelete = await source.remove(key1);
+    const receiver = new YjsACL();
+
+    receiver.merge(pendingDelete);
+    await expect(receiver.prepareRemove(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+
+    receiver.merge(dependency);
+    expect(await receiver.check(key1)).toBe(false);
+    await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
+  });
+
+  test('prepareRemove() commits private state after returned changes are mutated', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test.each(['missing structs', 'pending deletes'] as const)(
+    'prepareRemove() rejects ACL history with %s',
+    async (dependencyType) => {
+      const source = new Doc();
+      const users = source.getMap('users');
+      users.set('first', true);
+      const beforeDependentUpdate = encodeStateVector(source);
+      if (dependencyType === 'missing structs') {
+        users.set('second', true);
+      } else {
+        users.delete('first');
+      }
+      const dependencyIncomplete = encodeStateAsUpdateV2(
+        source,
+        beforeDependentUpdate,
+      );
+      const acl = new YjsACL();
+      acl.merge(dependencyIncomplete);
+
+      await expect(acl.prepareRemove(key1)).rejects.toThrow(
+        'Yjs ACL has unresolved update dependencies',
+      );
+    },
+  );
 
   test('check() returns false for unknown key', async () => {
     const acl = new YjsACL();
