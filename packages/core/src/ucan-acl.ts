@@ -54,6 +54,13 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
  * merge cannot create such a tombstone, so this wrapper does not provide
  * distributed strong-removal semantics by itself.
  *
+ * Backing membership mutations are globally FIFO, including mutations for
+ * different identities. The generic ACL contract exposes one opaque mutable
+ * state and does not promise key-isolated commits, so overlapping backing
+ * calls could derive changes from the same document-wide baseline. Identity
+ * codecs start eagerly, but invocation-order admission and backing execution
+ * are global, so a slow earlier codec or backing call delays later mutations.
+ *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
  * first asynchronous suspension. Object and function identities additionally
@@ -66,6 +73,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _revokedKeys: Set<string> = new Set(); // set of revoked public key base64 strings
   private _metadataRevisions: Map<string, object> = new Map();
   private _pendingGrants: Set<string> = new Set();
+  private _pendingRemovals: Map<string, number> = new Map();
   private _membershipMutationTail: Promise<void> = Promise.resolve();
   private _membershipAdmissionTail: Promise<void> = Promise.resolve();
   private _pendingMembershipMutations = 0;
@@ -189,6 +197,21 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     this._metadataRevisions.set(keyBase64, {});
   }
 
+  private _reservePendingRemoval(keyBase64: string): () => void {
+    this._pendingRemovals.set(
+      keyBase64,
+      (this._pendingRemovals.get(keyBase64) ?? 0) + 1,
+    );
+    return () => {
+      const remaining = (this._pendingRemovals.get(keyBase64) ?? 1) - 1;
+      if (remaining === 0) {
+        this._pendingRemovals.delete(keyBase64);
+      } else {
+        this._pendingRemovals.set(keyBase64, remaining);
+      }
+    };
+  }
+
   private _assertMetadataRevision(
     keyBase64: string,
     expected: object | undefined,
@@ -233,6 +256,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         this._markMetadataMutation(snapshot.keyBase64);
         return changes;
       },
+      (snapshot) => this._reservePendingRemoval(snapshot.keyBase64),
     );
   }
 
@@ -257,11 +281,18 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
     const snapshot = await this._snapshotPublicKey(publicKey, 'ACL check');
 
+    if (this._pendingRemovals.has(snapshot.keyBase64)) {
+      return false;
+    }
+
     if ((await this._backing.check(snapshot.publicKey)) !== true) {
       return false;
     }
 
-    if (this._pendingGrants.has(snapshot.keyBase64)) {
+    if (
+      this._pendingRemovals.has(snapshot.keyBase64) ||
+      this._pendingGrants.has(snapshot.keyBase64)
+    ) {
       return false;
     }
 
