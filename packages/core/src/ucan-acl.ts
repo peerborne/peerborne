@@ -61,6 +61,8 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
 const MAX_STABLE_READ_ATTEMPTS = 3;
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
+/** Hard limit that keeps one backing listing's identity-codec fanout bounded. */
+export const MAX_UCAN_ACL_LISTING_IDENTITIES = 4096;
 const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
   maxDepth: 8,
   maxObjects: 16,
@@ -115,7 +117,9 @@ interface CachedListingIdentity<PublicKey> {
  * canonical encoding. Listing caches retain only bounded, private canonical
  * templates for one backing revision, and every identity returned to a caller
  * is freshly detached. Primitive identities are immutable and remain
- * supported with the two-argument constructor.
+ * supported with the two-argument constructor. Backing listings above
+ * {@link MAX_UCAN_ACL_LISTING_IDENTITIES} fail before identity codecs start,
+ * so sparse or proxied arrays cannot schedule unbounded snapshot work.
  */
 export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicKey> {
   private _entries: Map<string, UCANACLEntry> = new Map(); // publicKeyBase64 -> entry
@@ -320,15 +324,17 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey: PublicKey;
       keyBase64: string;
     }) => (() => void) | undefined,
+    captureInputs?: () => void,
   ): Promise<T> {
     this._assertPublicOperationAvailable(operationName);
     const finishPublicOperation = this._beginPublicOperation();
-    // Reserve the operation before invoking a caller-supplied codec. A
-    // serializer can execute synchronously before returning its promise and
-    // must not reenter the wrapper around the operation it is serializing.
-    const snapshot = this._snapshotPublicKey(publicKey, operationName);
 
     const mutation = (async () => {
+      // Reserve the operation before capturing caller-owned iterables or
+      // invoking a caller-supplied codec. Both can execute synchronously and
+      // must not reenter the wrapper around this operation.
+      captureInputs?.();
+      const snapshot = this._snapshotPublicKey(publicKey, operationName);
       let releaseReservation: (() => void) | undefined;
       try {
         const stableSnapshot = await snapshot;
@@ -819,6 +825,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
               'Backing ACL listing must return a stable array',
             );
           }
+          if ((length as number) > MAX_UCAN_ACL_LISTING_IDENTITIES) {
+            throw new RangeError(
+              `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
+            );
+          }
           for (let index = 0; index < (length as number); index++) {
             const user = reflectGet(allUsers, String(index)) as PublicKey;
             snapshotTasks.push(
@@ -875,8 +886,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     proofs: string[] = [],
     epochId?: Uint8Array,
   ): Promise<ChangesType> {
-    const stableProofs = [...proofs];
-    const stableEpochId = copyOptionalEpochId(epochId);
+    let stableProofs!: string[];
+    let stableEpochId: Uint8Array | undefined;
     return this._startMembershipMutation(
       publicKey,
       'Capability grant',
@@ -927,6 +938,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         }
         this._pendingGrants.add(snapshot.keyBase64);
         return () => this._pendingGrants.delete(snapshot.keyBase64);
+      },
+      () => {
+        stableProofs = [...proofs];
+        stableEpochId = copyOptionalEpochId(epochId);
       },
     );
   }
