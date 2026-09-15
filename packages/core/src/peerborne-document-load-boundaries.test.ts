@@ -198,6 +198,9 @@ describe('document load response boundaries', () => {
         }),
       },
     };
+    document._changesSerializer = {
+      deserializeChanges: jest.fn(() => ({ prefetched: true })),
+    };
     document._syncUnlocked = jest.fn(
       async (appliedMessage: any, verifySignature: boolean) => {
         expect(verifySignature).toBe(false);
@@ -219,6 +222,131 @@ describe('document load response boundaries', () => {
     expect(verifiedRaw).toEqual([[1], [1]]);
     expect(serialize).toHaveBeenCalledTimes(1);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('reuses a validated prefetched block under one aggregate byte budget', async () => {
+    const message = {
+      documentId: '/prefetch-cache',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: { kind: crdtDocumentChangeNode, change: { inline: true } },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    const get = jest.fn(async function* () {
+      yield new Uint8Array([1, 2, 3]);
+    });
+    const decodedChanges = { value: 'decoded-once' };
+    const remoteChange = jest.fn((state: unknown) => state);
+    document.swarm.heliaNode = { blockstore: { get } };
+    document._writers = { users: jest.fn(async () => []) };
+    document._changesSerializer = {
+      deserializeChanges: jest.fn(() => decodedChanges),
+    };
+    document._document = {};
+    document._referencedAncestors = new Set<string>();
+    document._mergeSyncTree = jest.fn(async () => [
+      ['HEAD', crdtDocumentChangeNode, undefined],
+    ]);
+    document._crdtProvider = { remoteChange };
+    document._documentChangeCount = 0;
+    document._changesSinceSnapshot = 0;
+    document._recentTips = [];
+    document._fireOrDeferRemoteUpdateHandlers = jest.fn(async () => undefined);
+    document._refreshLastSyncMessageFromSync = jest.fn();
+    document._bootstrapCompactionDeferred = false;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart: (() => void) | undefined,
+        _continuePending: boolean,
+        _onLogicalKeychainChange: (() => void) | undefined,
+        fetchOptions: any,
+      ) => {
+        onStateApplicationStart?.();
+        await (PeerborneDocument.prototype as any)._syncDocumentChanges.call(
+          document,
+          'HEAD',
+          { kind: crdtDocumentChangeNode },
+          fetchOptions,
+        );
+        return true;
+      },
+    );
+    document._completeBootstrapStateApplicationUnlocked = jest.fn(
+      async () => document._markBootstrapStateApplicationComplete(),
+    );
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+        undefined,
+        3,
+      ),
+    ).resolves.toBe(true);
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(document._changesSerializer.deserializeChanges).toHaveBeenCalledTimes(1);
+    expect(remoteChange).toHaveBeenCalledWith(document._document, decodedChanges);
+  });
+
+  test('does not classify a prefetch provider RangeError as a byte limit', async () => {
+    const secret = 'prefetch-provider-private-sentinel';
+    const message = {
+      documentId: '/prefetch-provider-range-error',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: { kind: crdtDocumentChangeNode, change: { inline: true } },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    document._writers = { users: jest.fn(async () => []) };
+    document.swarm.heliaNode = {
+      blockstore: {
+        get: jest.fn(() => {
+          throw new RangeError(secret);
+        }),
+      },
+    };
+    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+    let rejection: unknown;
+
+    try {
+      await document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      );
+    } catch (error) {
+      rejection = error;
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toMatch(/could not retrieve/);
+    expect((rejection as Error).message).not.toMatch(/limits exceeded/);
+    expect(document._hashes).toEqual(new Set());
+    expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(secret);
   });
 
   test('accepts encrypted-channel bootstrap only for a pristine empty-writer document', async () => {
@@ -1789,6 +1917,96 @@ describe('document load response boundaries', () => {
     expect(sink).toHaveBeenCalledWith([]);
   });
 
+  test.each([
+    'handleLoadRequestData',
+    'handleSnapshotLoadRequestData',
+    'handleTipAdvertiseRequestData',
+  ] as const)(
+    '%s rechecks the requester against the queued current ACL before send',
+    async (methodName) => {
+      let readerQuery = 0;
+      const sink = jest.fn(async () => undefined);
+      const document = fakeDocument({
+        documentPath: '/response-revocation',
+        _bootstrapLoadApplicationState: 'complete',
+        _bootstrapLoadApplicationRevision: 2,
+        _encoder: new TextEncoder(),
+        _mutationQueue: {
+          run: (operation: () => Promise<unknown>) => operation(),
+        },
+        swarm: { config: { enableSigning: true } },
+        _readers: {
+          users: jest.fn(async () =>
+            ++readerQuery === 1 ? ['revoked-reader'] : [],
+          ),
+        },
+        _writers: { users: jest.fn(async () => []) },
+        _createSyncMessage: jest.fn(() => ({
+          documentId: '/response-revocation',
+        })),
+        _keychainChangesForVisibility: jest.fn(async () => ({ keys: [] })),
+        _latestSnapshot: { lastChangeNodeCID: 'SNAPSHOT' },
+        _servedFrontier: jest.fn(() => []),
+        _signAsWriter: jest.fn(async () => 'response-signature'),
+        _syncMessageSerializer: {
+          serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
+        },
+        _keychainProvider: { keyIDLength: 1 },
+        _keychain: {
+          current: jest.fn(async () => [new Uint8Array([1]), {}]),
+        },
+        _authProvider: {
+          nonceBits: 1,
+          verify: jest.fn(async () => true),
+          encrypt: jest.fn(async () => ({
+            nonce: new Uint8Array([2]),
+            data: new Uint8Array([3]),
+          })),
+        },
+      });
+
+      await expect(
+        document[methodName](
+          { documentId: '/response-revocation', signature: 'AAAA' },
+          { sink },
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(document._readers.users).toHaveBeenCalledTimes(2);
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(sink).toHaveBeenCalledWith([]);
+    },
+  );
+
+  test('poisons an accepted invitation when activation catch-up fails', async () => {
+    const close = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/failed-invitation-activation',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _invitationBootstrapReady: false,
+      open: jest.fn(async () => true),
+      _loadInvitationCatchUp: jest.fn(async () => false),
+      _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
+      close,
+    });
+
+    await expect(
+      document._activateAcceptedInvitationBootstrap(
+        '/founder',
+        'issuer',
+        'reader',
+      ),
+    ).rejects.toThrow(/catch-up load failed/);
+
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._bootstrapLoadApplicationRevision).toBe(3);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(() => document._assertNoIncompleteBootstrapLoad()).toThrow(
+      /discard this document instance/,
+    );
+  });
+
   test('blocks invitation activation and acceptance on a poisoned instance', async () => {
     const computeTopic = jest.fn(() => '/topic');
     const load = jest.fn(async () => true);
@@ -1853,6 +2071,9 @@ describe('document load response boundaries', () => {
           yield new Uint8Array([1]);
         }),
       },
+    };
+    document._changesSerializer = {
+      deserializeChanges: jest.fn(() => ({ prefetched: true })),
     };
     document._syncUnlocked = jest.fn(
       async (
@@ -2240,6 +2461,9 @@ describe('document load response boundaries', () => {
         }),
       },
     };
+    document._changesSerializer = {
+      deserializeChanges: jest.fn(() => ({ prefetched: true })),
+    };
     document._syncUnlocked = jest.fn(
       async (
         _message: unknown,
@@ -2486,9 +2710,9 @@ describe('document load response boundaries', () => {
         ['SECRET-CID', crdtDocumentChangeNode, undefined],
       ]),
       _getBlock: jest.fn(async () => {
-        // A provider may use RangeError for malformed decrypted data. Without
-        // explicit load limits this remains an ordinary redacted block miss,
-        // not a new failure mode for public live sync().
+        // A provider may use RangeError for malformed decrypted data. It must
+        // remain an ordinary redacted block miss even when load limits are
+        // active, rather than being confused with the internal limit sentinel.
         throw new RangeError(secret);
       }),
       _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
@@ -2499,9 +2723,11 @@ describe('document load response boundaries', () => {
 
     try {
       await expect(
-        document._syncDocumentChanges('HEAD', {
-          kind: crdtDocumentChangeNode,
-        }),
+        document._syncDocumentChanges(
+          'HEAD',
+          { kind: crdtDocumentChangeNode },
+          { maxBlockBytes: 64, maxAggregateBlockBytes: 64 },
+        ),
       ).resolves.toBeUndefined();
       expect(consoleError.mock.calls).toEqual([
         [
