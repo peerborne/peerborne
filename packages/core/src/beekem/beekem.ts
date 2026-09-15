@@ -111,6 +111,15 @@ async function assertExactWelcomePathKeyPair(
   }
 }
 
+interface StagedWelcomeCandidate {
+  nodes: Map<number, TreeNode>;
+  numLeaves: number;
+  leafIndex: number;
+  rootSecret: Uint8Array;
+  resolve: (rootSecret: Uint8Array) => void;
+  reject: (error: Error) => void;
+}
+
 /**
  * BeeKEM: Binary ratchet tree for decentralized group key agreement.
  *
@@ -128,6 +137,8 @@ export class BeeKEM {
   private _numLeaves: number = 0;
   private _myLeafIndex: number = -1;
   private _welcomeAttemptRevision = 0n;
+  private _pendingWelcomeAttempts = new Set<bigint>();
+  private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
 
   /** @internal Create a detached copy for validating before commit. */
   clone(): BeeKEM {
@@ -154,6 +165,7 @@ export class BeeKEM {
       privateKey,
     };
     this._nodes.set(0, leaf);
+    this._settleWelcomeCandidates();
   }
 
   /**
@@ -441,7 +453,29 @@ export class BeeKEM {
     // descriptor trap can invoke processWelcome reentrantly; in that case the
     // nested, later invocation must retain the higher revision and win.
     const attemptRevision = ++this._welcomeAttemptRevision;
+    this._pendingWelcomeAttempts.add(attemptRevision);
 
+    try {
+      return await this._processWelcomeAttempt(
+        attemptRevision,
+        welcome,
+        privateKey,
+        publicKey,
+      );
+    } catch (error) {
+      if (this._pendingWelcomeAttempts.delete(attemptRevision)) {
+        this._settleWelcomeCandidates();
+      }
+      throw error;
+    }
+  }
+
+  private async _processWelcomeAttempt(
+    attemptRevision: bigint,
+    welcome: BeeKEMWelcome,
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+  ): Promise<Uint8Array> {
     // This public method can be called without passing through the strict wire
     // decoder. Snapshot and bound the complete legacy tree synchronously
     // before the first WebCrypto await so caller mutation cannot change what
@@ -561,18 +595,16 @@ export class BeeKEM {
     // they succeed so every malformed-input or WebCrypto failure leaves the
     // receiver's prior tree intact and a retry starts from that exact state.
     const rootSecret = await staged.getRootSecret();
-    if (
-      attemptRevision !== this._welcomeAttemptRevision ||
-      !this._isFreshWelcomeTarget()
-    ) {
+    if (!this._isFreshWelcomeTarget()) {
       throw new Error(
         'Cannot process Welcome: the attempt was superseded or receiver state changed',
       );
     }
-    this._nodes = staged._nodes;
-    this._numLeaves = staged._numLeaves;
-    this._myLeafIndex = staged._myLeafIndex;
-    return rootSecret;
+    return await this._registerWelcomeCandidate(
+      attemptRevision,
+      staged,
+      rootSecret,
+    );
   }
 
   /**
@@ -721,6 +753,82 @@ export class BeeKEM {
       this._numLeaves === 0 &&
       this._myLeafIndex === -1
     );
+  }
+
+  private _registerWelcomeCandidate(
+    revision: bigint,
+    staged: BeeKEM,
+    rootSecret: Uint8Array,
+  ): Promise<Uint8Array> {
+    return new Promise<Uint8Array>((resolve, reject) => {
+      this._pendingWelcomeAttempts.delete(revision);
+      if (!this._isFreshWelcomeTarget()) {
+        reject(
+          new Error(
+            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+          ),
+        );
+        this._settleWelcomeCandidates();
+        return;
+      }
+      this._stagedWelcomeCandidates.set(revision, {
+        nodes: staged._nodes,
+        numLeaves: staged._numLeaves,
+        leafIndex: staged._myLeafIndex,
+        rootSecret,
+        resolve,
+        reject,
+      });
+      this._settleWelcomeCandidates();
+    });
+  }
+
+  private _settleWelcomeCandidates(): void {
+    if (this._stagedWelcomeCandidates.size === 0) return;
+
+    if (!this._isFreshWelcomeTarget()) {
+      const candidates = [...this._stagedWelcomeCandidates.values()];
+      this._stagedWelcomeCandidates.clear();
+      for (const candidate of candidates) {
+        candidate.reject(
+          new Error(
+            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+          ),
+        );
+      }
+      return;
+    }
+
+    let winnerRevision = -1n;
+    let winner: StagedWelcomeCandidate | undefined;
+    for (const [revision, candidate] of this._stagedWelcomeCandidates) {
+      if (revision > winnerRevision) {
+        winnerRevision = revision;
+        winner = candidate;
+      }
+    }
+    if (
+      winner === undefined ||
+      [...this._pendingWelcomeAttempts].some(
+        (revision) => revision > winnerRevision,
+      )
+    ) {
+      return;
+    }
+
+    const candidates = [...this._stagedWelcomeCandidates.entries()];
+    this._stagedWelcomeCandidates.clear();
+    this._nodes = winner.nodes;
+    this._numLeaves = winner.numLeaves;
+    this._myLeafIndex = winner.leafIndex;
+    winner.resolve(winner.rootSecret);
+    for (const [revision, candidate] of candidates) {
+      if (revision !== winnerRevision) {
+        candidate.reject(
+          new Error('Cannot process Welcome: the attempt was superseded'),
+        );
+      }
+    }
   }
 
   /**

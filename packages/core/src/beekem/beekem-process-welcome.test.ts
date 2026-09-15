@@ -346,6 +346,38 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     expect(await target.getRootSecret()).not.toEqual(older.rootSecret);
   });
 
+  test('keeps an in-flight valid Welcome eligible when a later attempt is malformed', async () => {
+    const recipientKeys = await generateKeyPair();
+    const valid = await createTwoMemberWelcome(recipientKeys);
+    const malformed = copyWelcome(valid.welcome);
+    malformed.leafIndex = Number.MAX_SAFE_INTEGER;
+    const target = new BeeKEM();
+    const digest = pauseNextDigest();
+    const validProcessing = target.processWelcome(
+      copyWelcome(valid.welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    try {
+      await digest.entered;
+      await expect(
+        target.processWelcome(
+          malformed,
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow(/leafIndex/);
+      digest.release();
+      await expect(validProcessing).resolves.toEqual(valid.rootSecret);
+    } finally {
+      digest.release();
+      digest.restore();
+    }
+
+    expect(await target.getRootSecret()).toEqual(valid.rootSecret);
+  });
+
   test('reserves reentrant attempts before inspecting Proxy descriptors', async () => {
     const recipientKeys = await generateKeyPair();
     const older = await createTwoMemberWelcome(recipientKeys);
@@ -515,6 +547,55 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
       ),
     ).resolves.toEqual(rootSecret);
   });
+
+  test('rejects inherited v2 markers at the legacy runtime boundary', async () => {
+    const { welcome, recipientKeys } = await createTwoMemberWelcome();
+    const target = new BeeKEM();
+    Object.defineProperty(Object.prototype, 'generation', {
+      configurable: true,
+      value: 1,
+    });
+
+    try {
+      await expect(
+        target.processWelcome(
+          copyWelcome(welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow(/unexpected field 'generation'/);
+    } finally {
+      delete (Object.prototype as { generation?: unknown }).generation;
+    }
+    await expectTargetPristine(target);
+  });
+
+  test.each([124, 4097])(
+    'rejects a %i-byte legacy path ciphertext before cryptography',
+    async (ciphertextBytes) => {
+      const { welcome, recipientKeys } = await createTwoMemberWelcome();
+      const forged = copyWelcome(welcome);
+      forged.pathKeys[0].encryptedPrivateKey = new Uint8Array(
+        ciphertextBytes,
+      );
+      const target = new BeeKEM();
+      const generateSpy = jest.spyOn(crypto.subtle, 'generateKey');
+
+      try {
+        await expect(
+          target.processWelcome(
+            forged,
+            recipientKeys.privateKey,
+            recipientKeys.publicKey,
+          ),
+        ).rejects.toThrow(/encryptedPrivateKey.*125 to 4096 bytes/);
+        expect(generateSpy).not.toHaveBeenCalled();
+      } finally {
+        generateSpy.mockRestore();
+      }
+      await expectTargetPristine(target);
+    },
+  );
 
   test('leaves a fresh receiver retryable after malformed key, ciphertext, and hash input', async () => {
     const { welcome, recipientKeys, rootSecret: invitedRoot } =
