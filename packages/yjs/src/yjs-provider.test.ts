@@ -254,6 +254,22 @@ describe('UCANACL over YjsACL', () => {
 });
 
 describe('YjsACL', () => {
+  test('add rejects a non-P-384 identity before emitting changes', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    await expect(acl.add(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(keyPair.publicKey)).toBe(false);
+  });
+
   test('add() adds user and check() returns true', async () => {
     const acl = new YjsACL();
     const changes = await acl.add(key1);
