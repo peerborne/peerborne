@@ -346,6 +346,8 @@ export class BeeKEM {
   private _welcomeAttemptRevision = 0n;
   private _pendingWelcomeAttempts = new Set<bigint>();
   private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
+  private _welcomeSettlement: Promise<void> = Promise.resolve();
+  private _resolveWelcomeSettlement: (() => void) | undefined;
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
 
@@ -622,12 +624,17 @@ export class BeeKEM {
 
   /**
    * Process a path update from another member.
-   * Detaches the update at admission, validates it against the tree when its
-   * reserved turn begins, and commits a staged tree only on success.
+   * Detaches the update at admission, waits for any already-admitted Welcome
+   * cohort, validates it against the resulting tree when its reserved turn
+   * begins, and commits a staged tree only on success.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
     this._assertInitializedForMutation('process a PathUpdate');
-    const validateAgainstCurrentTree = this._pendingMutations === 0;
+    const welcomeSettlement = this._resolveWelcomeSettlement
+      ? this._welcomeSettlement
+      : undefined;
+    const validateAgainstCurrentTree =
+      this._pendingMutations === 0 && welcomeSettlement === undefined;
     const runReservedMutation = this._reserveMutation();
     try {
       let detachedUpdate: PathUpdate;
@@ -640,9 +647,10 @@ export class BeeKEM {
       } else {
         detachedUpdate = snapshotPathUpdate(update);
       }
-      return runReservedMutation(() =>
-        this._processPathUpdate(detachedUpdate),
-      );
+      return runReservedMutation(async () => {
+        await welcomeSettlement;
+        return this._processPathUpdate(detachedUpdate);
+      });
     } catch (error) {
       return runReservedMutation(async () => {
         throw error;
@@ -855,6 +863,7 @@ export class BeeKEM {
     // Reserve this attempt before inspecting caller-controlled input. A Proxy
     // descriptor trap can invoke processWelcome reentrantly; in that case the
     // nested, later invocation must retain the higher revision and win.
+    this._beginWelcomeSettlement();
     const attemptRevision = ++this._welcomeAttemptRevision;
     const receiverGeneration = this._receiverGeneration;
     this._pendingWelcomeAttempts.add(attemptRevision);
@@ -1226,8 +1235,32 @@ export class BeeKEM {
     });
   }
 
+  private _beginWelcomeSettlement(): void {
+    if (this._resolveWelcomeSettlement !== undefined) return;
+    this._welcomeSettlement = new Promise<void>((resolve) => {
+      this._resolveWelcomeSettlement = resolve;
+    });
+  }
+
+  private _finishWelcomeSettlementIfPossible(): void {
+    if (
+      this._resolveWelcomeSettlement === undefined ||
+      (this._isFreshWelcomeTarget() &&
+        (this._pendingWelcomeAttempts.size !== 0 ||
+          this._stagedWelcomeCandidates.size !== 0))
+    ) {
+      return;
+    }
+    const resolve = this._resolveWelcomeSettlement;
+    this._resolveWelcomeSettlement = undefined;
+    resolve();
+  }
+
   private _settleWelcomeCandidates(): void {
-    if (this._stagedWelcomeCandidates.size === 0) return;
+    if (this._stagedWelcomeCandidates.size === 0) {
+      this._finishWelcomeSettlementIfPossible();
+      return;
+    }
 
     for (const [revision, candidate] of this._stagedWelcomeCandidates) {
       if (candidate.receiverGeneration !== this._receiverGeneration) {
@@ -1253,6 +1286,7 @@ export class BeeKEM {
           ),
         );
       }
+      this._finishWelcomeSettlementIfPossible();
       return;
     }
 
@@ -1288,6 +1322,7 @@ export class BeeKEM {
         );
       }
     }
+    this._finishWelcomeSettlementIfPossible();
   }
 
   /**
