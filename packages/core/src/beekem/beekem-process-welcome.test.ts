@@ -378,6 +378,79 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     expect(await target.getRootSecret()).toEqual(valid.rootSecret);
   });
 
+  test('commits a staged valid candidate after a later pending attempt fails', async () => {
+    const recipientKeys = await generateKeyPair();
+    const valid = await createTwoMemberWelcome(recipientKeys);
+    const target = new BeeKEM();
+    const internals = target as unknown as {
+      _processWelcomeAttempt(
+        revision: bigint,
+        welcome: BeeKEMWelcome,
+        privateKey: CryptoKey,
+        publicKey: CryptoKey,
+      ): Promise<Uint8Array>;
+      _registerWelcomeCandidate(
+        revision: bigint,
+        staged: BeeKEM,
+        rootSecret: Uint8Array,
+      ): Promise<Uint8Array>;
+      _pendingWelcomeAttempts: Set<bigint>;
+      _stagedWelcomeCandidates: Map<bigint, unknown>;
+    };
+    const originalProcessAttempt =
+      internals._processWelcomeAttempt.bind(target);
+    const originalRegisterCandidate =
+      internals._registerWelcomeCandidate.bind(target);
+    let releaseLater!: () => void;
+    const laterGate = new Promise<void>((resolve) => {
+      releaseLater = resolve;
+    });
+    let markCandidateRegistered!: () => void;
+    const candidateRegistered = new Promise<void>((resolve) => {
+      markCandidateRegistered = resolve;
+    });
+    internals._processWelcomeAttempt = async (revision, ...args) => {
+      if (revision === 2n) {
+        await laterGate;
+        throw new Error('injected delayed later failure');
+      }
+      return originalProcessAttempt(revision, ...args);
+    };
+    internals._registerWelcomeCandidate = (revision, staged, rootSecret) => {
+      markCandidateRegistered();
+      return originalRegisterCandidate(revision, staged, rootSecret);
+    };
+
+    const earlier = target.processWelcome(
+      copyWelcome(valid.welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+    const later = target.processWelcome(
+      copyWelcome(valid.welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    try {
+      await candidateRegistered;
+      expect(internals._stagedWelcomeCandidates.size).toBe(1);
+      await expectTargetPristine(target);
+
+      releaseLater();
+      await expect(later).rejects.toThrow('injected delayed later failure');
+      await expect(earlier).resolves.toEqual(valid.rootSecret);
+    } finally {
+      releaseLater();
+      await Promise.allSettled([earlier, later]);
+      internals._processWelcomeAttempt = originalProcessAttempt;
+      internals._registerWelcomeCandidate = originalRegisterCandidate;
+    }
+    expect(await target.getRootSecret()).toEqual(valid.rootSecret);
+    expect(internals._pendingWelcomeAttempts.size).toBe(0);
+    expect(internals._stagedWelcomeCandidates.size).toBe(0);
+  });
+
   test('reserves reentrant attempts before inspecting Proxy descriptors', async () => {
     const recipientKeys = await generateKeyPair();
     const older = await createTwoMemberWelcome(recipientKeys);
