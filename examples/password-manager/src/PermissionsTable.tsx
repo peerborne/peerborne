@@ -155,15 +155,14 @@ export function PermissionsTable({
 
                       switch (draftPermission) {
                         case 'r': {
-                          addReader(key).then(() =>
-                            console.log('Added reader: ', draftUserKey),
-                          );
+                          await addReader(key);
+                          console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          addWriter(key).then(() =>
-                            console.log('Added writer: ', draftUserKey),
-                          );
+                          await addReader(key);
+                          await addWriter(key);
+                          console.log('Added writer');
                           break;
                         }
                         default: {
@@ -175,7 +174,8 @@ export function PermissionsTable({
                       }
                     } catch {
                       alert(
-                        `The entered key: "${draftUserKey}" is not a valid User public key!`,
+                        'Unable to update document permissions. Verify the ' +
+                          'public key and membership configuration.',
                       );
                       return;
                     }
