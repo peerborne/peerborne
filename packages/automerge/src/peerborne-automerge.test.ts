@@ -5,6 +5,7 @@ import {
   Change as BinaryChange,
   clone as automergeClone,
   change as automergeChange,
+  decodeChange as decodeAutomergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
@@ -18,6 +19,10 @@ import {
   AutomergeKeychain,
   AutomergeKeychainProvider,
   AutomergeJSONSerializer,
+  MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+  MAX_AUTOMERGE_ACL_CHANGES,
+  MAX_AUTOMERGE_ACL_HISTORY_BYTES,
+  MAX_AUTOMERGE_ACL_OPERATIONS,
   serializeKey,
   deserializeKey,
 } from './peerborne-automerge.js';
@@ -320,6 +325,123 @@ describe('AutomergeACL', () => {
     expect(committed).toBe(true);
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('merge accepts detached cross-realm changes and rejects byte lookalikes and shared backing', async () => {
+    const source = new AutomergeACL();
+    await source.add(key1);
+    const crossRealm = source
+      .current()
+      .map(
+        (binaryChange) =>
+          runInNewContext(
+            `new Uint8Array([${Array.from(binaryChange).join(',')}])`,
+          ) as Uint8Array,
+      );
+    expect(crossRealm[0]).not.toBeInstanceOf(Uint8Array);
+    const receiver = new AutomergeACL();
+
+    expect(() => receiver.merge(crossRealm)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    const before = receiver.current();
+    expect(() =>
+      receiver.merge([
+        { 0: 0, length: 1 } as unknown as BinaryChange,
+      ]),
+    ).toThrow('Automerge ACL change must be a genuine Uint8Array');
+    expect(receiver.current()).toEqual(before);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(1));
+      expect(() => receiver.merge([shared as BinaryChange])).toThrow(
+        'Automerge ACL change has an invalid length or backing buffer',
+      );
+      expect(receiver.current()).toEqual(before);
+    }
+  });
+
+  test('merge bounds change count and bytes before Automerge parsing', async () => {
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    expect(() =>
+      acl.merge(
+        new Array(MAX_AUTOMERGE_ACL_CHANGES + 1) as BinaryChange[],
+      ),
+    ).toThrow(/change limit/);
+    expect(() =>
+      acl.merge([
+        new Uint8Array(MAX_AUTOMERGE_ACL_CHANGE_BYTES + 1) as BinaryChange,
+      ]),
+    ).toThrow(/invalid length/);
+    expect(() =>
+      acl.merge([
+        ...Array.from(
+          {
+            length:
+              MAX_AUTOMERGE_ACL_HISTORY_BYTES /
+              MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+          },
+          () =>
+            new Uint8Array(
+              MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+            ) as BinaryChange,
+        ),
+        new Uint8Array(1) as BinaryChange,
+      ]),
+    ).toThrow(/aggregate limit/);
+    const operationBombBase = automergeInit<{ padding?: number[] }>();
+    const operationBomb = automergeChange(operationBombBase, (doc) => {
+      doc.padding = [];
+      for (let index = 0; index <= MAX_AUTOMERGE_ACL_OPERATIONS; index++) {
+        doc.padding.push(index);
+      }
+    });
+    const operationBombChanges = getAutomergeChanges(
+      operationBombBase,
+      operationBomb,
+    );
+    expect(operationBombChanges).toHaveLength(1);
+    expect(operationBombChanges[0]!.byteLength).toBeLessThan(
+      MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+    );
+    expect(
+      decodeAutomergeChange(operationBombChanges[0]!).ops.length,
+    ).toBeGreaterThan(MAX_AUTOMERGE_ACL_OPERATIONS);
+    expect(() => acl.merge(operationBombChanges)).toThrow(/operation limit/);
+
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge rejects retained Automerge ACL history growth atomically', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    let padding = automergeInit<Record<string, Uint8Array>>();
+    const chunks: BinaryChange[][] = [];
+    for (let index = 0; index < 5; index++) {
+      const previous = padding;
+      padding = automergeChange(padding, (doc) => {
+        doc[`padding-${index}`] = new Uint8Array(900_000).fill(index + 1);
+      });
+      const chunk = getAutomergeChanges(previous, padding);
+      expect(chunk).toHaveLength(1);
+      expect(chunk[0]!.byteLength).toBeLessThanOrEqual(
+        MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+      );
+      chunks.push(chunk);
+    }
+
+    for (const chunk of chunks.slice(0, 4)) {
+      expect(() => acl.merge(chunk)).not.toThrow();
+    }
+    const before = acl.current();
+    expect(
+      before.reduce((total, change) => total + change.byteLength, 0),
+    ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_HISTORY_BYTES);
+
+    expect(() => acl.merge(chunks[4]!)).toThrow(/history exceeds.*byte limit/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
   });
 
   test('rejects conflicting independent ACL roots without changing membership', async () => {
