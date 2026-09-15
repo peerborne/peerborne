@@ -4,6 +4,11 @@ import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
 } from './peerborne-document.js';
+import {
+  crdtDocumentChangeNode,
+  crdtReaderChangeNode,
+  crdtWriterChangeNode,
+} from './crdt-change-node.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
 jest.mock(
@@ -82,6 +87,7 @@ function signedLoadHarness(
       run: (operation: () => Promise<unknown>) => operation(),
     },
     _hashes: new Set<string>(),
+    _bootstrapLoadApplicationState: 'pristine',
   });
   const stream = {
     sink: jest.fn(async () => undefined),
@@ -260,6 +266,286 @@ describe('document load response boundaries', () => {
     expect(document._authProvider.verify).not.toHaveBeenCalled();
   });
 
+  test('does not restore bootstrap trust after a failed load partially applies ACL state', async () => {
+    const firstMessage = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'document-head',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'attacker-controlled' },
+        children: {
+          'reader-acl': {
+            kind: crdtReaderChangeNode,
+            change: { reader: 'partially-applied' },
+          },
+        },
+      },
+    };
+    const secondMessage = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'attacker-head',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'replacement-bootstrap' },
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      firstMessage,
+    );
+    const mergeReaders = jest.fn();
+    document._mergeReaders = mergeReaders;
+    document._mergeWriters = jest.fn();
+    document._syncDocumentChanges = jest.fn(async () => {
+      throw new Error('CRDT provider failed after ACL pre-pass');
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/provider failed/);
+    expect(mergeReaders).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set());
+    expect(document._lastSyncMessage).toBeUndefined();
+    expect(document._latestSnapshot).toBeUndefined();
+
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+      secondMessage,
+    );
+    const attackerStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(
+        attackerStream,
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+    expect(mergeReaders).toHaveBeenCalledTimes(1);
+    expect(document._syncDocumentChanges).toHaveBeenCalledTimes(1);
+    expect(document._authProvider.verify).not.toHaveBeenCalled();
+    await expect(document.load()).rejects.toThrow(
+      /failed after state application began/,
+    );
+  });
+
+  test('does not trust a writer left by a failed bootstrap ACL pre-pass', async () => {
+    let currentWriters: string[] = [];
+    const firstMessage = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'document-head',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'fails-after-acl' },
+        children: {
+          'writer-acl': {
+            kind: crdtWriterChangeNode,
+            change: { writer: 'attacker' },
+          },
+        },
+      },
+    };
+    const secondMessage = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'attacker-head',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'attacker-retry' },
+      },
+    };
+    const verify = jest.fn(async (_raw, key) => key === 'attacker');
+    const { document, stream } = signedLoadHarness(
+      async () => [...currentWriters],
+      verify,
+      firstMessage,
+    );
+    document._mergeReaders = jest.fn();
+    document._mergeWriters = jest.fn(() => {
+      currentWriters = ['attacker'];
+    });
+    document._syncDocumentChanges = jest.fn(async () => {
+      throw new Error('CRDT provider failed after writer ACL pre-pass');
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/provider failed/);
+    expect(currentWriters).toEqual(['attacker']);
+
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+      secondMessage,
+    );
+    const attackerStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(
+        attackerStream,
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+    expect(verify).not.toHaveBeenCalled();
+    expect(document._syncDocumentChanges).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps bootstrap retryable when a response is rejected before state application', async () => {
+    const validMessage = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'valid-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      validMessage,
+    );
+    document._syncMessageSerializer.deserializeSyncMessage
+      .mockReturnValueOnce({ ...validMessage, documentId: '/wrong-document' })
+      .mockReturnValueOnce(validMessage);
+    document._syncUnlocked = jest.fn(async () => true);
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    const retryStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps bootstrap retryable when sync rejects before mutating state', async () => {
+    const unsignedMessage = {
+      documentId: '/load-race',
+      changeId: 'unsigned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const validMessage = {
+      ...unsignedMessage,
+      signature: 'AAAA',
+      changeId: 'valid-head',
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      unsignedMessage,
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changes: { kind: crdtDocumentChangeNode },
+    });
+    const malformedStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(
+        malformedStream,
+        new Uint8Array([1]),
+      ),
+    ).rejects.toThrow(/missing its root CID/);
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+      validMessage,
+    );
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        return true;
+      },
+    );
+    const retryStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+  });
+
+  test('allows current-writer loads after bootstrap application completes', async () => {
+    let currentWriters: string[] = [];
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      changeId: 'valid-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const verify = jest.fn(async (_raw, key) => key === 'writer');
+    const { document, stream } = signedLoadHarness(
+      async () => [...currentWriters],
+      verify,
+      message,
+    );
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        currentWriters = ['writer'];
+        return true;
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+
+    const writerStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(writerStream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(2);
+  });
+
   test('preserves an explicitly pinned load signer outside the writer ACL', async () => {
     const { document, stream } = signedLoadHarness(
       async () => {
@@ -267,6 +553,7 @@ describe('document load response boundaries', () => {
       },
       async (_raw, key) => key === 'pinned-writer',
     );
+    document._bootstrapLoadApplicationState = 'pending';
 
     await expect(
       document._sendLoadRequestAndSync(
