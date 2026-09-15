@@ -217,6 +217,7 @@ describe('BeeKEM mutation atomicity', () => {
 
     for (const target of [
       -1,
+      -0,
       1,
       2.5,
       3,
@@ -225,7 +226,7 @@ describe('BeeKEM mutation atomicity', () => {
       Number.MAX_SAFE_INTEGER + 1,
     ]) {
       await expect(alice.removeMember(target)).rejects.toThrow(
-        /target must identify a leaf in the current tree/,
+        /invalid leaf index/,
       );
       expect(nodesOf(alice)).toBe(originalNodes);
       await expect(alice.getRootSecret()).resolves.toEqual(originalRoot);
@@ -260,13 +261,13 @@ describe('BeeKEM mutation atomicity', () => {
     const pristineNodes = nodesOf(target);
 
     await expect(target.update()).rejects.toThrow(
-      /Cannot update: BeeKEM tree state is invalid/,
+      /Cannot update: BeeKEM tree is not initialized/,
     );
     await expect(target.removeMember(0)).rejects.toThrow(
-      /Cannot remove member: BeeKEM tree state is invalid/,
+      /Cannot remove a member: BeeKEM tree is not initialized/,
     );
     await expect(target.addMember(recipientKeys.publicKey)).rejects.toThrow(
-      /Cannot add member: BeeKEM tree state is invalid/,
+      /Cannot add a member: BeeKEM tree is not initialized/,
     );
     expect(nodesOf(target)).toBe(pristineNodes);
     expect(target.memberCount).toBe(0);
