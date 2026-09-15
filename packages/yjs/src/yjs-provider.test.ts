@@ -13,6 +13,7 @@ import {
   snapshotDeepEnumerableData,
   type CRDTChangeNode,
   MAX_MERKLE_DAG_DEPTH,
+  UCANACL,
 } from '@peerborne/core';
 import {
   YjsProvider,
@@ -23,6 +24,7 @@ import {
   YjsJSONSerializer,
   MAX_YJS_ACL_STRUCTURES,
   MAX_YJS_ACL_UPDATE_BYTES,
+  deserializeKey,
   serializeKey,
 } from './peerborne-yjs.js';
 
@@ -340,6 +342,27 @@ describe('YjsACL', () => {
     expect(internals._revision).toBe(1);
     expect(internals._stagedAdditionOperations).toEqual(operations);
     expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('UCAN claim composes a real Yjs addition with wrapper metadata at finalize', async () => {
+    const backing = new YjsACL();
+    const acl = new UCANACL(
+      backing,
+      serializeKey,
+      deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, ['verify']),
+    );
+    await acl.remove(key1);
+    const prepared = await acl.prepareAdd(key1);
+
+    const claim = prepared.claimCommit!();
+
+    expect(await backing.check(key1)).toBe(false);
+    expect(await acl.check(key1)).toBe(false);
+
+    claim.finalize();
+
+    expect(await backing.check(key1)).toBe(true);
     expect(await acl.check(key1)).toBe(true);
   });
 
@@ -1924,6 +1947,29 @@ describe('YjsKeychain', () => {
       set.mockRestore();
     }
 
+    expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
+    expect(keychain.getKey(epochId)).toBe(key);
+  });
+
+  test('legacy epoch commit ignores an accessor replacing the returned claim method', async () => {
+    const keychain = new YjsKeychain();
+    const epochId = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const prepared = await keychain.prepareEpochKey(epochId, key);
+    const replacement = jest.fn(() => {
+      throw new Error('replaceable epoch claim was invoked');
+    });
+    Object.defineProperty(prepared, 'claimCommit', {
+      get: replacement,
+    });
+
+    expect(() => prepared.commit()).not.toThrow();
+
+    expect(replacement).not.toHaveBeenCalled();
     expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
     expect(keychain.getKey(epochId)).toBe(key);
   });
