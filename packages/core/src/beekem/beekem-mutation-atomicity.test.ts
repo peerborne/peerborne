@@ -307,4 +307,198 @@ describe('BeeKEM mutation atomicity', () => {
       target.findLeafByPublicKey(founderKeys.publicKey),
     ).resolves.toBe(0);
   });
+
+  test('does not commit a Welcome ahead of an earlier initialization', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+    const recipientKeys = await generateKeyPair();
+    const { welcome } = await founder.addMember(recipientKeys.publicKey);
+    const initializationKeys = await generateKeyPair();
+    const target = new BeeKEM();
+    const internals = target as unknown as {
+      _registerWelcomeCandidate(
+        revision: bigint,
+        staged: BeeKEM,
+        rootSecret: Uint8Array,
+      ): Promise<Uint8Array>;
+    };
+
+    let initializationEntered!: () => void;
+    let releaseInitialization!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      initializationEntered = resolve;
+    });
+    const initializationGate = new Promise<void>((resolve) => {
+      releaseInitialization = resolve;
+    });
+    let candidateReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      candidateReady = resolve;
+    });
+    const originalRegister = internals._registerWelcomeCandidate.bind(target);
+    internals._registerWelcomeCandidate = (revision, staged, rootSecret) => {
+      candidateReady();
+      return originalRegister(revision, staged, rootSecret);
+    };
+
+    const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
+    let generateCalls = 0;
+    const generateSpy = jest
+      .spyOn(crypto.subtle, 'generateKey')
+      .mockImplementation(async (algorithm, extractable, keyUsages) => {
+        generateCalls++;
+        if (generateCalls === 1) {
+          initializationEntered();
+          await initializationGate;
+        }
+        return originalGenerateKey(algorithm, extractable, keyUsages);
+      });
+
+    const initialization = target.initialize(
+      initializationKeys.privateKey,
+      initializationKeys.publicKey,
+    );
+    let joining:
+      | Promise<
+          | { kind: 'fulfilled'; value: Uint8Array }
+          | { kind: 'rejected'; error: unknown }
+        >
+      | undefined;
+    try {
+      await entered;
+      let joiningSettled = false;
+      joining = target.processWelcome(
+        welcome,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ).then(
+        (value) => {
+          joiningSettled = true;
+          return { kind: 'fulfilled' as const, value };
+        },
+        (error: unknown) => {
+          joiningSettled = true;
+          return { kind: 'rejected' as const, error };
+        },
+      );
+      await ready;
+      await Promise.resolve();
+      expect(joiningSettled).toBe(false);
+
+      releaseInitialization();
+      await expect(initialization).resolves.toBeUndefined();
+      await expect(joining).resolves.toEqual({
+        kind: 'rejected',
+        error: expect.objectContaining({
+          message: expect.stringMatching(/superseded|receiver state changed/),
+        }),
+      });
+    } finally {
+      releaseInitialization();
+      await Promise.allSettled(
+        joining === undefined ? [initialization] : [initialization, joining],
+      );
+      generateSpy.mockRestore();
+    }
+
+    await expect(
+      target.findLeafByPublicKey(initializationKeys.publicKey),
+    ).resolves.toBe(0);
+    await expect(
+      target.findLeafByPublicKey(recipientKeys.publicKey),
+    ).resolves.toBeUndefined();
+  });
+
+  test('releases a staged Welcome when an earlier initialization fails', async () => {
+    const founder = new BeeKEM();
+    const founderKeys = await generateKeyPair();
+    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+    const recipientKeys = await generateKeyPair();
+    const { welcome, rootSecret } = await founder.addMember(
+      recipientKeys.publicKey,
+    );
+    const initializationKeys = await generateKeyPair();
+    const unrelatedKeys = await generateKeyPair();
+    const target = new BeeKEM();
+    const internals = target as unknown as {
+      _registerWelcomeCandidate(
+        revision: bigint,
+        staged: BeeKEM,
+        rootSecret: Uint8Array,
+      ): Promise<Uint8Array>;
+    };
+
+    let initializationEntered!: () => void;
+    let releaseInitialization!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      initializationEntered = resolve;
+    });
+    const initializationGate = new Promise<void>((resolve) => {
+      releaseInitialization = resolve;
+    });
+    let candidateReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      candidateReady = resolve;
+    });
+    const originalRegister = internals._registerWelcomeCandidate.bind(target);
+    internals._registerWelcomeCandidate = (revision, staged, candidateRoot) => {
+      candidateReady();
+      return originalRegister(revision, staged, candidateRoot);
+    };
+
+    const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
+    let generateCalls = 0;
+    const generateSpy = jest
+      .spyOn(crypto.subtle, 'generateKey')
+      .mockImplementation(async (algorithm, extractable, keyUsages) => {
+        generateCalls++;
+        if (generateCalls === 1) {
+          initializationEntered();
+          await initializationGate;
+        }
+        return originalGenerateKey(algorithm, extractable, keyUsages);
+      });
+
+    const initialization = target.initialize(
+      initializationKeys.privateKey,
+      unrelatedKeys.publicKey,
+    );
+    let joining: Promise<Uint8Array> | undefined;
+    try {
+      await entered;
+      let joiningSettled = false;
+      joining = target.processWelcome(
+        welcome,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      );
+      void joining.then(
+        () => {
+          joiningSettled = true;
+        },
+        () => {
+          joiningSettled = true;
+        },
+      );
+      await ready;
+      await Promise.resolve();
+      expect(joiningSettled).toBe(false);
+
+      releaseInitialization();
+      await expect(initialization).rejects.toThrow(/not ECDH-compatible/);
+      await expect(joining).resolves.toEqual(rootSecret);
+    } finally {
+      releaseInitialization();
+      await Promise.allSettled(
+        joining === undefined ? [initialization] : [initialization, joining],
+      );
+      generateSpy.mockRestore();
+    }
+
+    await expect(target.getRootSecret()).resolves.toEqual(rootSecret);
+    await expect(
+      target.findLeafByPublicKey(recipientKeys.publicKey),
+    ).resolves.toBe(2);
+  });
 });
