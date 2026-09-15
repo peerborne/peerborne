@@ -531,19 +531,44 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _acl = new Doc();
   private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    })();
+  }
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
-    const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    this._acl.getMap('users').set(hash, true);
-    const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
-    this._revision++;
-    return changes;
+    return this._runMutation(async () => {
+      const hash = await serializeKey(publicKey);
+      const beforeSV = encodeStateVector(this._acl);
+      this._acl.getMap('users').set(hash, true);
+      const changes = encodeStateAsUpdateV2(this._acl, beforeSV);
+      this._revision++;
+      return changes;
+    });
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
-    const prepared = await this.prepareRemove(publicKey);
-    prepared.commit();
-    return prepared.changes;
+    return this._runMutation(async () => {
+      const prepared = await this.prepareRemove(publicKey);
+      prepared.commit();
+      return prepared.changes;
+    });
   }
   async prepareRemove(
     publicKey: CryptoKey,
@@ -582,6 +607,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot merge during a local ACL mutation');
+    }
     applyUpdateV2(this._acl, change);
     this._revision++;
   }
