@@ -109,7 +109,11 @@ import {
   serializeUCAN,
   deserializeUCAN,
 } from './ucan.js';
-import { UCANACL, UCANACLProvider } from './ucan-acl.js';
+import {
+  MAX_UCAN_ACL_LISTING_IDENTITIES,
+  UCANACL,
+  UCANACLProvider,
+} from './ucan-acl.js';
 import {
   ACLChain,
   canonicalEntryPayload,
@@ -269,6 +273,7 @@ export {
   serializeUCAN,
   deserializeUCAN,
   // UCAN ACL
+  MAX_UCAN_ACL_LISTING_IDENTITIES,
   UCANACL,
   UCANACLProvider,
   // ACL chain-of-trust

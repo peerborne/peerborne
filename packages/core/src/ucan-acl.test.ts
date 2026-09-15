@@ -1,6 +1,7 @@
 import { describe, expect, test, jest, beforeEach } from '@jest/globals';
 
 const ucanAcl = require('./ucan-acl');
+const { MAX_UCAN_ACL_LISTING_IDENTITIES } = ucanAcl;
 const UCANACLImpl = ucanAcl.UCANACL;
 const UCANACLProviderImpl = ucanAcl.UCANACLProvider;
 const {
@@ -436,7 +437,74 @@ describe('UCANACL', () => {
     expect(backing.remove).not.toHaveBeenCalled();
   });
 
-  test('settles started listing codecs after an index getter throws', async () => {
+  test('does not invoke a backing listing map override', async () => {
+    const listedUsers = ['key1'];
+    Object.defineProperty(listedUsers, 'map', {
+      configurable: true,
+      get: () => {
+        throw new Error('hostile listing map');
+      },
+    });
+    backing.users.mockResolvedValue(listedUsers);
+
+    await expect(acl.users()).resolves.toEqual(['key1']);
+  });
+
+  test('rejects oversized sparse and proxied listings before starting codecs', async () => {
+    const serialize = jest.fn(async (key: string) => `serialized:${key}`);
+    const boundedAcl = new UCANACLImpl(backing, serialize);
+    backing.users.mockResolvedValueOnce(
+      new Array(MAX_UCAN_ACL_LISTING_IDENTITIES + 1),
+    );
+
+    await expect(boundedAcl.users()).rejects.toThrow(
+      `exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
+    );
+
+    let indexed = false;
+    const oversizedProxy = new Proxy([], {
+      get: (target, property, receiver) => {
+        if (property === 'length') {
+          return MAX_UCAN_ACL_LISTING_IDENTITIES + 1;
+        }
+        if (typeof property === 'string' && /^\d+$/.test(property)) {
+          indexed = true;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    backing.users.mockResolvedValueOnce(oversizedProxy);
+
+    await expect(boundedAcl.users()).rejects.toThrow(
+      `exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
+    );
+    expect(indexed).toBe(false);
+    expect(serialize).not.toHaveBeenCalled();
+  });
+
+  test('preserves a throwing listing length and releases admission', async () => {
+    const serialize = jest.fn(async (key: string) => `serialized:${key}`);
+    const boundedAcl = new UCANACLImpl(backing, serialize);
+    const hostileLength = new Proxy([], {
+      get: (target, property, receiver) => {
+        if (property === 'length') {
+          throw new Error('unstable listing length');
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    backing.users
+      .mockResolvedValueOnce(hostileLength)
+      .mockResolvedValueOnce(['key1']);
+
+    await expect(boundedAcl.users()).rejects.toThrow(
+      'unstable listing length',
+    );
+    expect(serialize).not.toHaveBeenCalled();
+    await expect(boundedAcl.users()).resolves.toEqual(['key1']);
+  });
+
+  test('settles started listing codecs before preserving an undefined index failure', async () => {
     let releaseSlowCodec!: () => void;
     const releaseSlow = new Promise<void>((resolve) => {
       releaseSlowCodec = resolve;
@@ -463,7 +531,7 @@ describe('UCANACL', () => {
     Object.defineProperty(listedUsers, '1', {
       enumerable: true,
       get: () => {
-        throw new Error('unstable listing index');
+        throw undefined;
       },
     });
     backing.users.mockResolvedValue(listedUsers);
@@ -473,7 +541,10 @@ describe('UCANACL', () => {
     expect(await settleWithinMicrotasks(listing)).toBeUndefined();
     releaseSlowCodec();
 
-    await expect(listing).rejects.toThrow('unstable listing index');
+    await expect(settleWithinMicrotasks(listing)).resolves.toEqual({
+      status: 'rejected',
+      reason: undefined,
+    });
     expect(reentryError).toBeInstanceOf(ACLOperationInProgressError);
     expect(backing.remove).not.toHaveBeenCalled();
   });
@@ -1364,6 +1435,87 @@ describe('UCANACL', () => {
     expect(readResult).toBe(true);
     const adminResult = await acl.check('user1', '/doc/admin');
     expect(adminResult).toBe(false);
+  });
+
+  test('reserves a grant before iterating caller-owned proofs', async () => {
+    let reentryError: unknown;
+    const proofs = ['proof-1'];
+    Object.defineProperty(proofs, Symbol.iterator, {
+      configurable: true,
+      value: function* () {
+        try {
+          acl.merge('reentrant-merge');
+        } catch (error) {
+          reentryError = error;
+        }
+        yield 'proof-1';
+      },
+    });
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+        proofs: ['proof-1'],
+      }),
+    );
+    backing.add.mockResolvedValue('changes');
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+        proofs,
+      ),
+    ).resolves.toBe('changes');
+
+    expect(reentryError).toBeInstanceOf(ACLOperationInProgressError);
+    expect(backing.merge).not.toHaveBeenCalled();
+    expect(mockCreateUCAN).toHaveBeenCalledWith(
+      expect.anything(),
+      'issuer',
+      'serialized:user1',
+      [{ resource: 'doc-1', ability: '/doc/write' }],
+      ['proof-1'],
+    );
+  });
+
+  test('releases grant admission after abrupt proof iteration', async () => {
+    let reentrantRemoval!: Promise<string>;
+    const proofs: string[] = [];
+    Object.defineProperty(proofs, Symbol.iterator, {
+      configurable: true,
+      value: function* () {
+        reentrantRemoval = acl.remove('key2');
+        throw undefined;
+      },
+    });
+
+    const grant = acl.grant(
+      'user1',
+      '/doc/write',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+      proofs,
+    );
+    const grantOutcome = settleWithinMicrotasks(grant);
+    const removalOutcome = expect(reentrantRemoval).rejects.toBeInstanceOf(
+      ACLOperationInProgressError,
+    );
+
+    await removalOutcome;
+    await expect(grantOutcome).resolves.toEqual({
+      status: 'rejected',
+      reason: undefined,
+    });
+    expect(mockCreateUCAN).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    backing.add.mockResolvedValue('add-changes');
+    await expect(acl.add('key3')).resolves.toBe('add-changes');
   });
 
   test('grant stays unavailable until backing membership succeeds', async () => {
