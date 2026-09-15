@@ -561,6 +561,81 @@ describe('AutomergeACL', () => {
     await expect(acl.users()).resolves.toEqual([]);
   });
 
+  test('rejects a tombstoned non-P-384 membership key atomically', async () => {
+    const nonP384Point = new Uint8Array(65);
+    nonP384Point[0] = 0x04;
+    const nonP384Key = Buffer.from(nonP384Point).toString('base64');
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<AutomergeACLShape>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![nonP384Key] = true;
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![nonP384Key];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[nonP384Key]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects a tombstoned invalid membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<{
+      users?: Record<string, unknown>;
+    }>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![serialized] = false;
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![serialized];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[serialized]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects a tombstoned structured membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<{
+      users?: Record<string, unknown>;
+    }>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![serialized] = {};
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![serialized];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[serialized]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
