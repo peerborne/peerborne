@@ -943,8 +943,13 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         // the opaque commit. A contract-violating backing implementation can
         // otherwise remove and partially re-add that identity reentrantly
         // before throwing, reviving stale UCAN metadata.
-        this._quarantineAddition(keyBase64);
-        this._runBackingCommit(() => prepared.commit());
+        this._runBackingCommit(() => {
+          // Quarantine only after the backing-commit preflight succeeds. A
+          // busy/poisoned wrapper rejection is known to precede any backing
+          // call and must leave wrapper metadata untouched.
+          this._quarantineAddition(keyBase64);
+          prepared.commit();
+        });
         this._revokedKeys.delete(keyBase64);
         this._failedAdditions.delete(keyBase64);
         this._markMetadataMutation();
