@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
 
+import { ACLOperationInProgressError } from './acl.js';
 import {
   crdtDocumentChangeNode,
   crdtWriterChangeNode,
@@ -179,6 +180,8 @@ function publicationHarness(
     _writerPublicationsInFlight: 0,
     _writerKeysVersion: 0,
     _cachedWriterKeys: ['cached-owner'],
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set(['parent-cid', 'remote-tip-cid']),
     _referencedAncestors: new Set(['older-ancestor-cid']),
     _recentTips: initialRecentTips.map((tip) => ({ ...tip })),
@@ -228,18 +231,16 @@ function childCids(message: any): string[] {
 }
 
 describe('writer ACL publication boundary', () => {
-  test('rolls back DAG bookkeeping when the post-publication commit rejects', async () => {
+  test('poisons the document when a post-publication ACL commit is indeterminate', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const originalPrepareAdd = writers.prepareAdd.bind(writers);
-    let preparation = 0;
     writers.prepareAdd = jest.fn(async (publicKey: string) => {
       const prepared = await originalPrepareAdd(publicKey);
-      preparation++;
-      if (preparation !== 1) return prepared;
       return {
         ...prepared,
         commit: () => {
-          throw new Error('stale writer commit');
+          writers.members.add(publicKey);
+          throw new Error('indeterminate writer commit');
         },
       };
     });
@@ -252,29 +253,68 @@ describe('writer ACL publication boundary', () => {
     } = publicationHarness(
       writers,
       publish,
-      ['rejected-commit-cid', 'committed-retry-cid'],
+      ['rejected-commit-cid'],
     );
 
     await expect(document.addWriter('candidate')).rejects.toThrow(
-      'stale writer commit',
+      'indeterminate writer commit',
     );
 
-    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
     expect(document._hashes).not.toContain('rejected-commit-cid');
     expect(document._referencedAncestors).toEqual(
       new Set(['older-ancestor-cid']),
     );
     expect(document._recentTips).toEqual(initialRecentTips);
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
-
-    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
-
-    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
-    expect(document._hashes).toContain('committed-retry-cid');
-    expect(serializedMessages).toHaveLength(2);
-    expect(childCids(serializedMessages[1])).not.toContain(
-      'rejected-commit-cid',
+    expect(serializedMessages).toHaveLength(1);
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    document._markBootstrapStateApplicationPending();
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    expect(() => document._markBootstrapStateApplicationComplete()).toThrow(
+      /requires pending state/,
     );
+    await expect(
+      document._completeBootstrapStateApplicationUnlocked(),
+    ).rejects.toThrow(/requires pending state/);
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    expect(() => document.document).toThrow(/discard this document instance/);
+    await expect(document.getWriters()).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(document.addWriter('another-writer')).rejects.toThrow(
+      /discard this document instance/,
+    );
+    await expect(
+      document.sync(
+        {
+          documentId: '/writer-publication',
+          changeId: 'poison-bypass-cid',
+          changes: {
+            kind: crdtDocumentChangeNode,
+            change: { attackerControlled: true },
+          },
+        },
+        false,
+      ),
+    ).rejects.toThrow(/indeterminate authorization state/);
+    expect(document._hashes).toEqual(
+      new Set(['parent-cid', 'remote-tip-cid']),
+    );
+    expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
+    const sink = jest.fn(async () => undefined);
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      await document.handleLoadRequestData(
+        { documentId: '/writer-publication', signature: 'AA==' },
+        { sink },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(sink).toHaveBeenCalledWith([]);
   });
 
   test('invalidates a writer lookup at the synchronous commit boundary', async () => {
@@ -373,6 +413,116 @@ describe('writer ACL publication boundary', () => {
       expect.arrayContaining(['parent-cid', 'remote-tip-cid']),
     );
   });
+
+  test.each([
+    ['addition', 'addWriter', ['owner'], 'prepareAdd', ['owner', 'candidate']],
+    [
+      'removal',
+      'removeWriter',
+      ['owner', 'candidate'],
+      'prepareRemove',
+      ['owner'],
+    ],
+  ] as const)(
+    'retries staged writer %s preparation after an ACL conflict settles',
+    async (
+      _transition,
+      operation,
+      initialMembers,
+      prepareMethod,
+      expectedMembers,
+    ) => {
+      const writers = new StagedWriterACL(new Set(initialMembers));
+      const originalPrepare = writers[prepareMethod].bind(writers);
+      const conflictObserved = deferred<void>();
+      const settlement = deferred<void>();
+      let firstAttempt = true;
+      const prepare = jest.fn((publicKey: string) => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          conflictObserved.resolve();
+          throw new ACLOperationInProgressError(
+            `${prepareMethod} conflict`,
+            settlement.promise,
+          );
+        }
+        return originalPrepare(publicKey);
+      });
+      (writers as any)[prepareMethod] = prepare;
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        [`retried-${operation}-cid`],
+      );
+
+      const transition = document[operation]('candidate');
+      await conflictObserved.promise;
+      expect(publish).not.toHaveBeenCalled();
+
+      settlement.resolve();
+      await expect(transition).resolves.toBeUndefined();
+
+      expect(prepare).toHaveBeenCalledTimes(2);
+      expect(writers.members).toEqual(new Set(expectedMembers));
+      expect(publish).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
+    {
+      transition: 'addition',
+      operation: 'addWriter',
+      initialMembers: ['owner'],
+      acl: 'writers',
+      expectedMembers: ['owner', 'candidate'],
+    },
+    {
+      transition: 'removal',
+      operation: 'removeWriter',
+      initialMembers: ['owner', 'candidate'],
+      acl: 'readers',
+      expectedMembers: ['owner'],
+    },
+  ] as const)(
+    'retries the $transition admission check after an ACL conflict settles',
+    async ({ operation, initialMembers, acl, expectedMembers }) => {
+      const writers = new StagedWriterACL(new Set(initialMembers));
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        [`retried-${operation}-check-cid`],
+      );
+      const checkedAcl = acl === 'writers' ? writers : document._readers;
+      const originalCheck = checkedAcl.check.bind(checkedAcl);
+      const conflictObserved = deferred<void>();
+      const settlement = deferred<void>();
+      let firstAttempt = true;
+      checkedAcl.check = jest.fn((publicKey: string) => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          conflictObserved.resolve();
+          throw new ACLOperationInProgressError(
+            `${acl} check conflict`,
+            settlement.promise,
+          );
+        }
+        return originalCheck(publicKey);
+      });
+
+      const transition = document[operation]('candidate');
+      await conflictObserved.promise;
+      expect(publish).not.toHaveBeenCalled();
+
+      settlement.resolve();
+      await expect(transition).resolves.toBeUndefined();
+
+      expect(checkedAcl.check).toHaveBeenCalledTimes(2);
+      expect(writers.members).toEqual(new Set(expectedMembers));
+      expect(publish).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test('does not serve a staged writer grant while encryption is pending', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
@@ -961,7 +1111,8 @@ describe('writer ACL publication boundary', () => {
         publish,
         [`committed-${operation}-cid`],
       );
-      const handlerError = new Error('observer failed');
+      const handlerSecret = 'decrypted-observer-secret';
+      const handlerError = { secret: handlerSecret };
       document._localHandlers = {
         throwingObserver: (
           _current: unknown,
@@ -983,7 +1134,11 @@ describe('writer ACL publication boundary', () => {
         await expect(document[operation]('candidate')).resolves.toBeUndefined();
         expect(consoleError).toHaveBeenCalledWith(
           expect.stringContaining('not a retryable ACL publication failure'),
-          handlerError,
+        );
+        expect(consoleError).toHaveBeenCalledTimes(1);
+        expect(consoleError.mock.calls[0]).toHaveLength(1);
+        expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+          handlerSecret,
         );
       } finally {
         consoleError.mockRestore();
@@ -1008,7 +1163,8 @@ describe('writer ACL publication boundary', () => {
     const handlerStarted = deferred<void>();
     const handlerResult = deferred<void>();
     const rejectionLogged = deferred<void>();
-    const handlerError = new Error('asynchronous observer failed');
+    const handlerSecret = 'decrypted-asynchronous-observer-secret';
+    const handlerError = { secret: handlerSecret };
     document._localHandlers = {
       asynchronousObserver: () => {
         handlerStarted.resolve();
@@ -1030,7 +1186,11 @@ describe('writer ACL publication boundary', () => {
 
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('not a retryable ACL publication failure'),
-        handlerError,
+      );
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(consoleError.mock.calls[0]).toHaveLength(1);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+        handlerSecret,
       );
     } finally {
       consoleError.mockRestore();
