@@ -409,6 +409,7 @@ describe('YjsACL', () => {
 
   test('ordinary additions stage and commit in invocation order', async () => {
     const acl = new YjsACL();
+    const external = await acl.prepareAdd(key2);
     const prepareAdd = acl.prepareAdd.bind(acl);
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
@@ -434,12 +435,53 @@ describe('YjsACL', () => {
     await Promise.resolve();
 
     expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
     releaseFirst();
     await expect(first).resolves.toBeInstanceOf(Uint8Array);
     await expect(second).resolves.toBeInstanceOf(Uint8Array);
     expect(acl.prepareAdd).toHaveBeenCalledTimes(2);
     expect(await acl.check(key1)).toBe(true);
     expect(await acl.check(key2)).toBe(true);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+  });
+
+  test('prepareAdd() commit cannot overtake an admitted removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const external = await acl.prepareAdd(key2);
+    const prepareRemove = acl.prepareRemove.bind(acl);
+    let releaseRemoval!: () => void;
+    const removalGate = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let removalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      removalStarted();
+      await removalGate;
+      return prepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
+    expect(await acl.check(key2)).toBe(false);
+
+    releaseRemoval();
+    await expect(removal).resolves.toBeInstanceOf(Uint8Array);
+    expect(await acl.check(key1)).toBe(false);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
   });
 
   test('remove() removes user and check() returns false', async () => {
