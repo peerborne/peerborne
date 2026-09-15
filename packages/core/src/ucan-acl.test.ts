@@ -234,6 +234,100 @@ describe('UCANACL', () => {
     expect(hasAccess).toBe(false);
   });
 
+  test('denies checks and user listings while backing removal is pending', async () => {
+    let removalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let resolveRemoval!: (changes: string) => void;
+    const pendingRemoval = new Promise<string>((resolve) => {
+      resolveRemoval = resolve;
+    });
+    backing.remove.mockImplementation(() => {
+      removalStarted();
+      return pendingRemoval;
+    });
+    backing.check.mockResolvedValue(true);
+    backing.users.mockResolvedValue(['key1']);
+
+    const removal = acl.remove('key1');
+    await started;
+
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
+    await expect(acl.users('/doc/read')).resolves.toEqual([]);
+    expect(backing.check).not.toHaveBeenCalled();
+
+    resolveRemoval('changes');
+    await expect(removal).resolves.toBe('changes');
+    await expect(acl.check('key1')).resolves.toBe(false);
+  });
+
+  test('denies an in-flight check when removal starts during its backing await', async () => {
+    let checkStarted!: () => void;
+    const checkWasStarted = new Promise<void>((resolve) => {
+      checkStarted = resolve;
+    });
+    let resolveCheck!: (allowed: boolean) => void;
+    const pendingCheck = new Promise<boolean>((resolve) => {
+      resolveCheck = resolve;
+    });
+    let removalStarted!: () => void;
+    const removalWasStarted = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let resolveRemoval!: (changes: string) => void;
+    const pendingRemoval = new Promise<string>((resolve) => {
+      resolveRemoval = resolve;
+    });
+    backing.check.mockImplementation(() => {
+      checkStarted();
+      return pendingCheck;
+    });
+    backing.remove.mockImplementation(() => {
+      removalStarted();
+      return pendingRemoval;
+    });
+
+    const authorization = acl.check('key1');
+    await checkWasStarted;
+    const removal = acl.remove('key1');
+    await removalWasStarted;
+
+    resolveCheck(true);
+    await expect(authorization).resolves.toBe(false);
+
+    resolveRemoval('changes');
+    await expect(removal).resolves.toBe('changes');
+  });
+
+  test('restores access after a pending backing removal fails', async () => {
+    let removalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let rejectRemoval!: (error: Error) => void;
+    const pendingRemoval = new Promise<string>((_resolve, reject) => {
+      rejectRemoval = reject;
+    });
+    backing.remove.mockImplementation(() => {
+      removalStarted();
+      return pendingRemoval;
+    });
+    backing.check.mockResolvedValue(true);
+    backing.users.mockResolvedValue(['key1']);
+
+    const removal = acl.remove('key1');
+    await started;
+    await expect(acl.check('key1')).resolves.toBe(false);
+
+    rejectRemoval(new Error('backing remove failed'));
+    await expect(removal).rejects.toThrow('backing remove failed');
+    await expect(acl.check('key1')).resolves.toBe(true);
+    await expect(acl.users()).resolves.toEqual(['key1']);
+  });
+
   test('current delegates to backing ACL', () => {
     backing.current.mockReturnValue('current-state');
     expect(acl.current()).toBe('current-state');
