@@ -35,7 +35,6 @@ const MAX_V2_PATH_KEYS = 64;
 const MAX_V2_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_V2_AGGREGATE_WORK_ITEMS = 4 * MAX_BEEKEM_TREE_LEAVES;
-const MAX_WELCOME_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
 
 function isCanonicalNonNegativeSafeInteger(value: unknown): value is number {
   return (
@@ -316,6 +315,18 @@ export function snapshotBeeKEMWelcomeForProcessing(
     throw new Error(`${context}: treeNodePublicKeys must be an array`);
   }
 
+  const leafIndex = raw.leafIndex;
+  if (!TreeMath.isLeaf(leafIndex)) {
+    throw new Error(`${context}: leafIndex must be the appended rightmost leaf`);
+  }
+  const numLeaves = leafIndex / 2 + 1;
+  if (numLeaves < 2 || numLeaves > MAX_BEEKEM_TREE_LEAVES) {
+    throw new Error(
+      `${context}: leafIndex exceeds the supported tree leaf bound`,
+    );
+  }
+  const treeWidth = 2 * numLeaves - 1;
+
   const rawPathKeys = snapshotBoundedArray(
     raw.pathKeys,
     MAX_V2_PATH_KEYS,
@@ -326,27 +337,16 @@ export function snapshotBeeKEMWelcomeForProcessing(
   if (rawPathKeys.length === 0) {
     throw new Error(`${context}: pathKeys has invalid length`);
   }
+  // Legacy senders can omit compacted blank nodes. The appended rightmost
+  // leaf fixes the complete tree width; any unlisted non-path slots remain
+  // blank, while the tree hash still binds every advertised public key.
   const rawTreeNodePublicKeys = snapshotBoundedArray(
     raw.treeNodePublicKeys,
-    MAX_WELCOME_TREE_WIDTH - 2,
+    treeWidth - rawPathKeys.length - 1,
     `${context}: treeNodePublicKeys`,
     budget,
     `${context}: treeNodePublicKeys exceeds the supported tree width`,
   );
-  const treeWidth =
-    rawPathKeys.length + rawTreeNodePublicKeys.length + 1;
-  if (
-    treeWidth < 3 ||
-    treeWidth > MAX_WELCOME_TREE_WIDTH ||
-    treeWidth % 2 === 0
-  ) {
-    throw new Error(
-      `${context}: pathKeys and treeNodePublicKeys do not describe a supported complete tree`,
-    );
-  }
-
-  const numLeaves = (treeWidth + 1) / 2;
-  const leafIndex = raw.leafIndex;
   if (leafIndex !== TreeMath.leafToNodeIndex(numLeaves - 1)) {
     throw new Error(`${context}: leafIndex must be the appended rightmost leaf`);
   }
@@ -421,17 +421,6 @@ export function snapshotBeeKEMWelcomeForProcessing(
     }
     return { nodeIndex, publicKey: node.publicKey };
   });
-
-  if (
-    covered.size !== treeWidth ||
-    Array.from({ length: treeWidth }, (_, index) => index).some(
-      (index) => !covered.has(index),
-    )
-  ) {
-    throw new Error(
-      `${context}: pathKeys and treeNodePublicKeys must cover the complete tree exactly once`,
-    );
-  }
 
   const pathKeys: PathNodeUpdate[] = pathKeySnapshots.map((node, offset) => ({
     nodeIndex: node.nodeIndex,
