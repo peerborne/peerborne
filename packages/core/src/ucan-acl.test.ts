@@ -3,6 +3,7 @@ import { describe, expect, test, jest, beforeEach } from '@jest/globals';
 const ucanAcl = require('./ucan-acl');
 const UCANACLImpl = ucanAcl.UCANACL;
 const UCANACLProviderImpl = ucanAcl.UCANACLProvider;
+const { EPOCH_ID_LENGTH } = require('./epoch');
 
 jest.mock('./ucan', () => ({ createUCAN: jest.fn() }));
 const mockCreateUCAN = require('./ucan').createUCAN;
@@ -1488,10 +1489,47 @@ describe('UCANACL', () => {
     mockCreateUCAN.mockResolvedValue(fakeUcan);
     backing.add.mockResolvedValue('changes');
 
-    const epochId = new Uint8Array([10, 20, 30]);
+    const epochId = new Uint8Array(EPOCH_ID_LENGTH).fill(10);
     await (acl.grant as any)('user2', '/doc/admin', 'doc-1', {} as CryptoKey, 'issuer-b64', [], epochId);
     const entry = await acl.getEntry('user2');
     expect(entry!.epochId).toEqual(epochId);
+  });
+
+  test('rejects unsafe or incorrectly sized epoch IDs before grant side effects', async () => {
+    const invalidEpochIds: unknown[] = [
+      new Uint8Array(EPOCH_ID_LENGTH - 1),
+      new Uint8Array(EPOCH_ID_LENGTH + 1),
+      new Uint16Array(EPOCH_ID_LENGTH / 2),
+      new Proxy(new Uint8Array(EPOCH_ID_LENGTH), {}),
+      {
+        byteLength: EPOCH_ID_LENGTH,
+        buffer: new ArrayBuffer(EPOCH_ID_LENGTH),
+        [Symbol.toStringTag]: 'Uint8Array',
+      },
+      null,
+    ];
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      invalidEpochIds.push(
+        new Uint8Array(new SharedArrayBuffer(EPOCH_ID_LENGTH)),
+      );
+    }
+
+    for (const epochId of invalidEpochIds) {
+      await expect(
+        acl.grant(
+          'user2',
+          '/doc/admin',
+          'doc-1',
+          {} as CryptoKey,
+          'issuer-b64',
+          [],
+          epochId,
+        ),
+      ).rejects.toThrow(/UCAN ACL epoch ID/);
+    }
+    expect(mockCreateUCAN).not.toHaveBeenCalled();
+    expect(backing.add).not.toHaveBeenCalled();
+    await expect(acl.getEntry('user2')).resolves.toBeUndefined();
   });
 
   test('detaches stored grants from mutable token inputs and lookup results', async () => {
@@ -1504,7 +1542,11 @@ describe('UCANACL', () => {
       capabilities: tokenCapabilities,
       proofs,
     });
-    const epochId = new Uint8Array([10, 20, 30]);
+    const epochId = Uint8Array.from(
+      { length: EPOCH_ID_LENGTH },
+      (_, index) => index,
+    );
+    const originalEpochId = new Uint8Array(epochId);
     let resolveAdd!: (changes: string) => void;
     const addPending = new Promise<string>((resolve) => {
       resolveAdd = resolve;
@@ -1548,7 +1590,7 @@ describe('UCANACL', () => {
       { resource: 'doc-1', ability: '/doc/write' },
     ]);
     expect(second!.ucan.proofs).toEqual(['proof-1']);
-    expect(second!.epochId).toEqual(new Uint8Array([10, 20, 30]));
+    expect(second!.epochId).toEqual(originalEpochId);
     expect(await acl.check('user1', '/doc/admin')).toBe(false);
   });
 
