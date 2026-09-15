@@ -600,15 +600,22 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   private async _runBackingPreparation<T>(
     operation: () => Promise<T>,
-  ): Promise<T> {
+    onInvokedFailure?: () => void,
+  ): Promise<{ result: T; backingRevision: object }> {
     this._assertBackingOperationAvailable('ACL backing preparation');
     const finishBackingOperation = this._beginBackingOperation();
+    let result!: T;
+    let backingRevision!: object;
     try {
-      return await this._invokeBacking(operation);
+      result = await this._invokeBacking(operation);
     } catch (error) {
+      const foreignConflict = this._isForeignOperationConflict(error);
+      if (!foreignConflict) {
+        onInvokedFailure?.();
+      }
       if (
         error instanceof ACLOperationInProgressError &&
-        !this._isForeignOperationConflict(error)
+        !foreignConflict
       ) {
         throw new Error(
           'Backing ACL preparation cannot reenter this UCAN ACL while its preparation is unresolved',
@@ -620,19 +627,32 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       // live membership. This makes a later backing operation stale this
       // preparation and accounts for opaque private staging on every outcome.
       this._markBackingMutation();
+      backingRevision = this._backingRevision;
       finishBackingOperation();
     }
+    return { result, backingRevision };
   }
 
   private _runBackingInspection<T>(
     operationName: string,
     operation: () => T,
   ): T {
+    return this._runBackingCapture(operationName, operation).result;
+  }
+
+  private _runBackingCapture<T>(
+    operationName: string,
+    operation: () => T,
+    onInvokedFailure?: () => void,
+  ): { result: T; backingRevision: object } {
     this._assertBackingOperationAvailable(operationName);
     const finishBackingOperation = this._beginBackingOperation();
+    let result!: T;
+    let backingRevision!: object;
     try {
-      return this._invokeBacking(operation);
+      result = this._invokeBacking(operation);
     } catch (error) {
+      onInvokedFailure?.();
       this._backingStateUncertain = true;
       if (error instanceof ACLOperationInProgressError) {
         throw new Error(
@@ -642,8 +662,36 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       throw error;
     } finally {
       this._markBackingMutation();
+      backingRevision = this._backingRevision;
       finishBackingOperation();
     }
+    return { result, backingRevision };
+  }
+
+  private _backingPrepareAdd():
+    | NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>
+    | undefined {
+    return this._runBackingInspection(
+      'Backing ACL addition preparation lookup',
+      () => {
+        const property = this._backingDataProperty(
+          this._backing,
+          'prepareAdd',
+          'Backing ACL prepareAdd',
+        );
+        if (!property.found) return undefined;
+        const prepareAdd = property.value;
+        if (prepareAdd === undefined) return undefined;
+        if (typeof prepareAdd !== 'function') {
+          throw new TypeError(
+            'Backing ACL prepareAdd property must be a function when present',
+          );
+        }
+        return prepareAdd as NonNullable<
+          ACL<ChangesType, PublicKey>['prepareAdd']
+        >;
+      },
+    );
   }
 
   private _backingPrepareRemove():
@@ -706,42 +754,48 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return { found: false };
   }
 
-  private _captureBackingPreparedRemoval(
-    prepared: PreparedACLRemoval<ChangesType>,
+  private _captureBackingPreparedChange(
+    prepared: unknown,
+    changeName: 'addition' | 'removal',
+    onInvokedFailure?: () => void,
   ): {
-    readonly changes: ChangesType;
-    readonly commit: () => void;
+    readonly result: {
+      readonly changes: ChangesType;
+      readonly commit: () => void;
+    };
+    readonly backingRevision: object;
   } {
-    return this._runBackingInspection(
-      'Backing ACL prepared-removal capture',
+    const preparedName = `prepared-${changeName}`;
+    return this._runBackingCapture(
+      `Backing ACL ${preparedName} capture`,
       () => {
         if (
           (typeof prepared !== 'object' || prepared === null) &&
           typeof prepared !== 'function'
         ) {
           throw new TypeError(
-            'Backing ACL prepared removal must be an object or function',
+            `Backing ACL prepared ${changeName} must be an object or function`,
           );
         }
         const changesProperty = this._backingDataProperty(
           prepared,
           'changes',
-          'Backing ACL prepared-removal changes',
+          `Backing ACL ${preparedName} changes`,
         );
         if (!changesProperty.found) {
           throw new TypeError(
-            'Backing ACL prepared removal must provide changes',
+            `Backing ACL prepared ${changeName} must provide changes`,
           );
         }
         const commitProperty = this._backingDataProperty(
           prepared,
           'commit',
-          'Backing ACL prepared-removal commit',
+          `Backing ACL ${preparedName} commit`,
         );
         const commit = commitProperty.value;
         if (!commitProperty.found || typeof commit !== 'function') {
           throw new TypeError(
-            'Backing ACL prepared removal must provide a commit function',
+            `Backing ACL prepared ${changeName} must provide a commit function`,
           );
         }
         return {
@@ -749,6 +803,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           commit: () => reflectApply(commit, prepared, []),
         };
       },
+      onInvokedFailure,
     );
   }
 
@@ -846,12 +901,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'ACL addition',
       async (snapshot) => {
+        const prepareAdd = this._backingPrepareAdd();
         const preservePriorEntry = await this._hasStablePriorEntry(
           snapshot.publicKey,
           snapshot.keyBase64,
           'ACL addition',
         );
-        const prepareAdd = this._backing.prepareAdd;
         if (typeof prepareAdd === 'function') {
           const prepared = await this._prepareBackingAddition(
             snapshot.publicKey,
@@ -884,20 +939,20 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareAdd(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>> {
-    this._assertReadable('Prepared ACL addition');
-    const prepareAdd = this._backing.prepareAdd;
-    if (typeof prepareAdd !== 'function') {
-      throw new Error('Backing ACL does not support staged addition');
-    }
-    const snapshot = await this._snapshotPublicKey(
+    return this._startMembershipMutation(
       publicKey,
       'Prepared ACL addition',
-    );
-    this._assertReadable('Prepared ACL addition');
-    return this._prepareBackingAddition(
-      snapshot.publicKey,
-      snapshot.keyBase64,
-      prepareAdd,
+      async (snapshot) => {
+        const prepareAdd = this._backingPrepareAdd();
+        if (typeof prepareAdd !== 'function') {
+          throw new Error('Backing ACL does not support staged addition');
+        }
+        return this._prepareBackingAddition(
+          snapshot.publicKey,
+          snapshot.keyBase64,
+          prepareAdd,
+        );
+      },
     );
   }
 
@@ -908,26 +963,28 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     allowActiveMutation = false,
     preservePriorEntry?: boolean,
   ): Promise<PreparedACLChange<ChangesType>> {
-    this._assertReadable('Prepared ACL addition');
+    this._assertBackingOperationAvailable('Prepared ACL addition');
     preservePriorEntry ??= await this._hasStablePriorEntry(
       publicKey,
       keyBase64,
       'Prepared ACL addition',
     );
-    this._assertReadable('Prepared ACL addition');
+    this._assertBackingOperationAvailable('Prepared ACL addition');
     const metadataRevision = this._metadataRevision;
-    const prepared = await this._runBackingPreparation(async () => {
-      try {
-        return await prepareAdd.call(this._backing, publicKey);
-      } catch (error) {
-        if (!preservePriorEntry) {
-          this._quarantineAddition(keyBase64);
-        }
-        throw error;
-      }
-    });
-    const backingRevision = this._backingRevision;
-    this._assertReadable('Prepared ACL addition');
+    const quarantineUnprovenAddition = preservePriorEntry
+      ? undefined
+      : () => this._quarantineAddition(keyBase64);
+    const { result: prepared } = await this._runBackingPreparation(
+      () => reflectApply(prepareAdd, this._backing, [publicKey]),
+      quarantineUnprovenAddition,
+    );
+    const { result: captured, backingRevision } =
+      this._captureBackingPreparedChange(
+        prepared,
+        'addition',
+        quarantineUnprovenAddition,
+      );
+    this._assertBackingOperationAvailable('Prepared ACL addition');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
@@ -936,18 +993,15 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
     let committed = false;
     return {
-      changes: prepared.changes,
+      changes: captured.changes,
       commit: () => {
         this._assertHealthy('Prepared ACL addition');
         if (committed) {
           throw new Error('Prepared ACL addition was already committed');
         }
-        if (
-          !allowActiveMutation &&
-          this._hasMembershipMutationInFlight()
-        ) {
-          throw new Error(
-            'Prepared ACL addition cannot commit during an active membership mutation',
+        if (!allowActiveMutation) {
+          this._assertPublicOperationAvailable(
+            'Prepared ACL addition commit',
           );
         }
         this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
@@ -965,7 +1019,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           // busy/poisoned wrapper rejection is known to precede any backing
           // call and must leave wrapper metadata untouched.
           this._quarantineAddition(keyBase64);
-          prepared.commit();
+          return captured.commit();
         });
         this._revokedKeys.delete(keyBase64);
         this._failedAdditions.delete(keyBase64);
@@ -1038,11 +1092,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): Promise<PreparedACLRemoval<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL removal');
     const metadataRevision = this._metadataRevision;
-    const prepared = await this._runBackingPreparation(() =>
+    const { result: prepared } = await this._runBackingPreparation(() =>
       reflectApply(prepareRemove, this._backing, [publicKey]),
     );
-    const captured = this._captureBackingPreparedRemoval(prepared);
-    const backingRevision = this._backingRevision;
+    const { result: captured, backingRevision } =
+      this._captureBackingPreparedChange(prepared, 'removal');
     this._assertBackingOperationAvailable('Prepared ACL removal');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
     if (this._backingRevision !== backingRevision) {
