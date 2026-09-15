@@ -12,16 +12,16 @@ import * as TreeMath from './tree-math.js';
 import { eciesSeal, eciesOpen } from '../ecies.js';
 import { snapshotBeeKEMWelcomeForProcessing } from '../beekem-welcome-wire.js';
 import { snapshotDeepEnumerableData } from '../utils.js';
+import {
+  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+  MAX_V1_PATH_NODES,
+  MAX_V1_PATH_UPDATE_BYTES,
+  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+} from './path-update-limits.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
 const ECDH_ALGO = { name: 'ECDH', namedCurve: ECDH_CURVE };
-const MAX_LEGACY_PATH_NODES = 13;
-const MIN_LEGACY_PATH_CIPHERTEXT_BYTES = 125;
-const MAX_LEGACY_PATH_CIPHERTEXT_BYTES = 4096;
-const MAX_LEGACY_PATH_UPDATE_BYTES =
-  65 +
-  MAX_LEGACY_PATH_NODES * (65 + MAX_LEGACY_PATH_CIPHERTEXT_BYTES);
 
 /** Cast Uint8Array to ArrayBuffer for WebCrypto API compatibility. */
 function toBuffer(data: Uint8Array): ArrayBuffer {
@@ -219,8 +219,8 @@ function snapshotPathUpdateForTree(
       maxDepth: 3,
       maxObjects: 64,
       maxProperties: 64,
-      maxArrayLength: MAX_LEGACY_PATH_NODES,
-      maxValueBytes: MAX_LEGACY_PATH_UPDATE_BYTES,
+      maxArrayLength: MAX_V1_PATH_NODES,
+      maxValueBytes: MAX_V1_PATH_UPDATE_BYTES,
     });
   } catch (error) {
     throw new Error('Invalid PathUpdate: could not safely detach input', {
@@ -276,15 +276,15 @@ function snapshotPathUpdateForTree(
     const encryptedPrivateKey = requireDetachedBytes(
       node.encryptedPrivateKey,
       0,
-      MAX_LEGACY_PATH_CIPHERTEXT_BYTES,
+      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
       `node[${index}].encryptedPrivateKey`,
     );
     if (
       encryptedPrivateKey.byteLength !== 0 &&
-      encryptedPrivateKey.byteLength < MIN_LEGACY_PATH_CIPHERTEXT_BYTES
+      encryptedPrivateKey.byteLength < MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES
     ) {
       throw new Error(
-        `Invalid PathUpdate: 'node[${index}].encryptedPrivateKey' must be empty or ${MIN_LEGACY_PATH_CIPHERTEXT_BYTES}..${MAX_LEGACY_PATH_CIPHERTEXT_BYTES} bytes`,
+        `Invalid PathUpdate: 'node[${index}].encryptedPrivateKey' must be empty or ${MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES}..${MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES} bytes`,
       );
     }
     return {
