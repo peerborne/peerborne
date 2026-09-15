@@ -50,7 +50,7 @@
     "jest": "^30.5.0",
     "redux": "^5.0.1",
     "redux-thunk": "^3.1.0",
-    "ts-jest": "^29.2.5",
+    "ts-jest": "^29.4.12",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
