@@ -3302,7 +3302,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/identify@npm:^4.1.0, @libp2p/identify@npm:^4.1.12, @libp2p/identify@npm:^4.1.7":
+"@libp2p/identify@npm:^4.1.0, @libp2p/identify@npm:^4.1.7":
   version: 4.1.12
   resolution: "@libp2p/identify@npm:4.1.12"
   dependencies:
@@ -3321,6 +3321,28 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/d1a519bddbe5f3c80c159e746fa617992f19f8852043038e4c773164e9ec321da1d1a16e789bea6913824a774dc5d98b43511711f740edc4043f4d6bea17bd28
+  languageName: node
+  linkType: hard
+
+"@libp2p/identify@npm:^4.1.14":
+  version: 4.1.14
+  resolution: "@libp2p/identify@npm:4.1.14"
+  dependencies:
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.13"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/peer-record": "npm:^9.0.16"
+    "@libp2p/utils": "npm:^7.4.1"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@multiformats/multiaddr-matcher": "npm:^3.0.2"
+    it-drain: "npm:^3.0.10"
+    it-parallel: "npm:^3.0.13"
+    main-event: "npm:^1.0.1"
+    protons-runtime: "npm:^7.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/fb5d9d176cc53319d4f869755e932ec02f2ca16e96086ec35ade112b4d6af09e35fe43a903e1f4dbab78ea0e9c67b513a5ae7752f498cbf5ab40d2bbb78899f6
   languageName: node
   linkType: hard
 
@@ -3602,6 +3624,23 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/b938200b6cf1988e658d4de9de56e0a5a3e7716e6ab8fea955ab21bb8482abd56c6bdc6e52366c41ba26b71ec34a4f5efe318d9d78bcd66be7fc537678c50745
+  languageName: node
+  linkType: hard
+
+"@libp2p/peer-record@npm:^9.0.16":
+  version: 9.0.16
+  resolution: "@libp2p/peer-record@npm:9.0.16"
+  dependencies:
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    multiformats: "npm:^14.0.0"
+    protons-runtime: "npm:^7.0.0"
+    uint8-varint: "npm:^3.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/ead5eb7a946dec4ceb53edad12174234de716581c57bf8de68bf282d64beafc6ef5093bc281f4b423c39125d218a4ba1956dd45995fbb324a161a0e692ba1e84
   languageName: node
   linkType: hard
 
@@ -4546,7 +4585,7 @@ __metadata:
     "@libp2p/autonat": "npm:^3.0.27"
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/gossipsub": "npm:^17.0.0"
-    "@libp2p/identify": "npm:^4.1.12"
+    "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/tcp": "npm:^11.0.27"
     "@libp2p/websockets": "npm:^10.1.19"
@@ -4597,7 +4636,7 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/dcutr": "npm:^3.0.26"
     "@libp2p/gossipsub": "npm:^17.0.0"
-    "@libp2p/identify": "npm:^4.1.12"
+    "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/kad-dht": "npm:^16.4.5"
     "@libp2p/mdns": "npm:^12.0.29"
