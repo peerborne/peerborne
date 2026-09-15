@@ -678,6 +678,105 @@ describe('document load response boundaries', () => {
     expect(document._hashes).toEqual(new Set(['DOC', 'READER', 'WRITER']));
   });
 
+  test('releases the queue when abort races a poisoned missing ACL merge', async () => {
+    const secret = 'partially-applied-writer-merge-secret';
+    const writers = new Set(['owner']);
+    const refresh = jest.fn();
+    const mergeMutated = deferred<void>();
+    const finishMerge = deferred<void>();
+    const stalledFetchStarted = deferred<void>();
+    const stalledFetchAborted = deferred<void>();
+    const loadController = new AbortController();
+    const mutationQueue = new InvitationMembershipQueue();
+    const document = fakeDocument({
+      documentPath: '/missing-writer-poison',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['WRITER', crdtWriterChangeNode, undefined],
+        ['STALLED', crdtDocumentChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(
+        async (
+          cid: { toString(): string },
+          options: { signal: AbortSignal },
+        ) => {
+          if (cid.toString() === 'WRITER') {
+            return { add: 'injected-writer' };
+          }
+          stalledFetchStarted.resolve();
+          options.signal.addEventListener(
+            'abort',
+            () => stalledFetchAborted.resolve(),
+            { once: true },
+          );
+          return new Promise<never>(() => undefined);
+        },
+      ),
+      _writers: {
+        merge: jest.fn(async () => {
+          writers.add('injected-writer');
+          mergeMutated.resolve();
+          await finishMerge.promise;
+          throw new Error(secret);
+        }),
+        users: jest.fn(async () => [...writers]),
+      },
+      _writerPublicationsInFlight: 0,
+      _writerMutationsInFlight: 0,
+      _writerKeysVersion: 0,
+      _cachedWriterKeys: null,
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: {},
+      _mutationQueue: mutationQueue,
+      _refreshLastSyncMessageFromSync: refresh,
+      _bootstrapCompactionDeferred: false,
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      const syncing = mutationQueue.run(() =>
+        document._syncDocumentChanges(
+          'HEAD',
+          { kind: crdtDocumentChangeNode },
+          { signal: loadController.signal },
+        ),
+      );
+      await Promise.all([stalledFetchStarted.promise, mergeMutated.promise]);
+      loadController.abort();
+      finishMerge.resolve();
+
+      await expect(syncing).rejects.toThrow(
+        /indeterminate authorization state/,
+      );
+      await expect(stalledFetchAborted.promise).resolves.toBeUndefined();
+      await expect(
+        mutationQueue.run(async () => 'queue released'),
+      ).resolves.toBe('queue released');
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(writers).toContain('injected-writer');
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    expect(document._hashes).not.toContain('WRITER');
+    expect(refresh).not.toHaveBeenCalled();
+    await expect(document.getWriters()).rejects.toThrow(
+      /discard this document instance/,
+    );
+  });
+
   test('retries ACL conflicts while authorizing a load requester', async () => {
     const readers = jest
       .fn<() => Promise<string[]>>()
