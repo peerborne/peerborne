@@ -270,8 +270,12 @@ describe('bounded iterative change-tree consumers', () => {
     expect(mergeWriters).not.toHaveBeenCalled();
   });
 
-  test('ACL pre-pass reaches a maximum-depth membership leaf exactly once', () => {
-    const mergeReaders = jest.fn();
+  test('ACL pre-pass reaches a maximum-depth membership leaf exactly once', async () => {
+    let settleMerge!: () => void;
+    const mergeSettlement = new Promise<void>((resolve) => {
+      settleMerge = resolve;
+    });
+    const mergeReaders = jest.fn(() => mergeSettlement);
     const mergeWriters = jest.fn();
     const root = chain(MAX_CHANGE_TREE_DEPTH, crdtReaderChangeNode);
     let leaf = root;
@@ -284,9 +288,19 @@ describe('bounded iterative change-tree consumers', () => {
       _mergeWriters: mergeWriters,
     });
 
-    expect(() => document._applyACLFromTree(root)).not.toThrow();
+    const applying = document._applyACLFromTree(root);
+    let applied = false;
+    void applying.then(() => {
+      applied = true;
+    });
+    await Promise.resolve();
     expect(mergeReaders).toHaveBeenCalledTimes(1);
     expect(mergeWriters).not.toHaveBeenCalled();
+    expect(applied).toBe(false);
+
+    settleMerge();
+    await expect(applying).resolves.toBeUndefined();
+    expect(applied).toBe(true);
   });
 
   test('ACL pre-pass waits to retry a conflicted merge before advancing', async () => {
