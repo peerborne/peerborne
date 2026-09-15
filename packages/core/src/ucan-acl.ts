@@ -854,7 +854,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             snapshot.keyBase64,
             prepareAdd,
             true,
-            preservePriorEntry,
           );
           prepared.commit();
           return prepared.changes;
@@ -880,7 +879,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   async prepareAdd(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>> {
-    this._assertHealthy('Prepared ACL addition');
+    this._assertReadable('Prepared ACL addition');
     const prepareAdd = this._backing.prepareAdd;
     if (typeof prepareAdd !== 'function') {
       throw new Error('Backing ACL does not support staged addition');
@@ -889,7 +888,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'Prepared ACL addition',
     );
-    this._assertHealthy('Prepared ACL addition');
+    this._assertReadable('Prepared ACL addition');
     return this._prepareBackingAddition(
       snapshot.publicKey,
       snapshot.keyBase64,
@@ -902,19 +901,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     keyBase64: string,
     prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
     allowActiveMutation = false,
-    preservePriorEntry?: boolean,
   ): Promise<PreparedACLChange<ChangesType>> {
-    this._assertHealthy('Prepared ACL addition');
-    preservePriorEntry ??= await this._hasStablePriorEntry(
-      publicKey,
-      keyBase64,
-      'Prepared ACL addition',
-    );
-    this._assertHealthy('Prepared ACL addition');
+    this._assertReadable('Prepared ACL addition');
     const metadataRevision = this._metadataRevision;
     const backingRevision = this._backingRevision;
     const prepared = await prepareAdd.call(this._backing, publicKey);
-    this._assertHealthy('Prepared ACL addition');
+    this._assertReadable('Prepared ACL addition');
     this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
     if (this._backingRevision !== backingRevision) {
       throw new Error(
@@ -943,14 +935,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             'Prepared ACL addition became stale after backing ACL changed',
           );
         }
-        try {
-          if (!preservePriorEntry) {
-            this._quarantineAddition(keyBase64);
-          }
-          prepared.commit();
-        } finally {
-          this._markBackingMutation();
-        }
+        // Even a previously-valid capability is hidden for the duration of
+        // the opaque commit. A contract-violating backing implementation can
+        // otherwise remove and partially re-add that identity reentrantly
+        // before throwing, reviving stale UCAN metadata.
+        this._quarantineAddition(keyBase64);
+        this._runBackingCommit(() => prepared.commit());
         this._revokedKeys.delete(keyBase64);
         this._failedAdditions.delete(keyBase64);
         this._markMetadataMutation();
