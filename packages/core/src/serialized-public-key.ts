@@ -13,33 +13,34 @@ function bytesToBigInt(bytes: Uint8Array): bigint {
   return value;
 }
 
-/** Validate the canonical ACL identity encoding without asynchronous Web Crypto. */
-export function assertCanonicalP384PublicKeyEncoding(
+/** Decode and validate a canonical P-384 public-key encoding. */
+export function decodeCanonicalP384PublicKeyEncoding(
   serialized: unknown,
-): asserts serialized is string {
+  description: string,
+): Uint8Array {
   if (typeof serialized !== 'string') {
-    throw new TypeError('Serialized ACL member key must be a string');
+    throw new TypeError(`${description} must be a string`);
   }
 
   let raw: Uint8Array;
   try {
     raw = Base64.toUint8Array(serialized);
   } catch {
-    throw new Error('Serialized ACL member key must be canonical base64');
+    throw new Error(`${description} must be canonical base64`);
   }
   if (Base64.fromUint8Array(raw) !== serialized) {
-    throw new Error('Serialized ACL member key must be canonical base64');
+    throw new Error(`${description} must be canonical base64`);
   }
   if (raw.byteLength !== 97 || raw[0] !== 0x04) {
     throw new Error(
-      'Serialized ACL member key must be a 97-byte uncompressed P-384 point',
+      `${description} must be a 97-byte uncompressed P-384 point`,
     );
   }
 
   const x = bytesToBigInt(raw.subarray(1, 49));
   const y = bytesToBigInt(raw.subarray(49));
   if (x >= P384_PRIME || y >= P384_PRIME) {
-    throw new Error('Serialized ACL member key is not a valid P-384 point');
+    throw new Error(`${description} is not a valid P-384 point`);
   }
   const left = (y * y) % P384_PRIME;
   const xSquared = (x * x) % P384_PRIME;
@@ -47,6 +48,17 @@ export function assertCanonicalP384PublicKeyEncoding(
     (xSquared * x - 3n * x + P384_B + 3n * P384_PRIME) %
     P384_PRIME;
   if (left !== right) {
-    throw new Error('Serialized ACL member key is not a valid P-384 point');
+    throw new Error(`${description} is not a valid P-384 point`);
   }
+  return raw;
+}
+
+/** Validate the canonical ACL identity encoding without asynchronous Web Crypto. */
+export function assertCanonicalP384PublicKeyEncoding(
+  serialized: unknown,
+): asserts serialized is string {
+  void decodeCanonicalP384PublicKeyEncoding(
+    serialized,
+    'Serialized ACL member key',
+  );
 }
