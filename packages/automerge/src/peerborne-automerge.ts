@@ -153,6 +153,27 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    })();
+  }
 
   private _assertComplete(operation: string): void {
     if (getMissingDeps(this._acl, []).length > 0) {
@@ -165,23 +186,27 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   async add(publicKey: CryptoKey): Promise<BinaryChange[]> {
-    this._assertComplete('add an ACL member');
-    const hash = await serializeKey(publicKey);
-    const aclNew = change(this._acl, (doc) => {
-      if (!doc.users) {
-        doc.users = {};
-      }
-      doc.users[hash] = true;
+    return this._runMutation(async () => {
+      this._assertComplete('add an ACL member');
+      const hash = await serializeKey(publicKey);
+      const aclNew = change(this._acl, (doc) => {
+        if (!doc.users) {
+          doc.users = {};
+        }
+        doc.users[hash] = true;
+      });
+      const aclChanges = getChanges(this._acl, aclNew);
+      this._acl = aclNew;
+      if (aclChanges.length > 0) this._revision++;
+      return aclChanges;
     });
-    const aclChanges = getChanges(this._acl, aclNew);
-    this._acl = aclNew;
-    if (aclChanges.length > 0) this._revision++;
-    return aclChanges;
   }
   async remove(publicKey: CryptoKey): Promise<BinaryChange[]> {
-    const prepared = await this.prepareRemove(publicKey);
-    prepared.commit();
-    return prepared.changes;
+    return this._runMutation(async () => {
+      const prepared = await this.prepareRemove(publicKey);
+      prepared.commit();
+      return prepared.changes;
+    });
   }
   async prepareRemove(
     publicKey: CryptoKey,
@@ -223,6 +248,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return getAllChanges(this._acl);
   }
   merge(change: BinaryChange[]): void {
+    if (this._pendingMutations !== 0) {
+      throw new Error('Cannot merge during a local ACL mutation');
+    }
     const [doc] = applyChanges(this._acl, change);
     this._acl = doc;
     this._revision++;
