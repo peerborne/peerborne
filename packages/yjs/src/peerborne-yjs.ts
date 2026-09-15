@@ -28,6 +28,7 @@ import {
   serializeInitialLoadChallengeForWire,
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
+  assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
@@ -562,6 +563,17 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
   return state;
 }
 
+function assertValidYjsACLMembers(doc: Doc, operation: string): void {
+  for (const [key, value] of doc.getMap('users')) {
+    assertCanonicalP384PublicKeyEncoding(key);
+    if (value !== true) {
+      throw new Error(
+        `Cannot ${operation}: Yjs ACL membership values must be true`,
+      );
+    }
+  }
+}
+
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _acl = new Doc();
   private _revision = 0;
@@ -720,6 +732,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     staged.clientID = base.clientID;
     applyUpdateV2(staged, detachedChange);
     snapshotBoundedYjsACLState(staged, 'merge ACL changes');
+    assertValidYjsACLMembers(staged, 'merge ACL changes');
     if (
       this._pendingMutations !== 0 ||
       this._revision !== baseRevision ||
