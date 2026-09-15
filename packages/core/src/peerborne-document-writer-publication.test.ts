@@ -163,7 +163,6 @@ function publicationHarness(
       { keychain: 'changes' },
     ]),
   };
-  const distributeKeyUpdate = jest.fn(async () => undefined);
   const readers = new Set(['candidate']);
   let nextHash = 0;
   const document = fakeDocument({
@@ -213,7 +212,6 @@ function publicationHarness(
     _maybeCompact: jest.fn(async () => undefined),
     _documentChangeCount: 0,
     _changesSinceSnapshot: 0,
-    _distributeKeyUpdate: distributeKeyUpdate,
   });
   return {
     document,
@@ -221,7 +219,6 @@ function publicationHarness(
     initialRecentTips,
     serializedMessages,
     keychain,
-    distributeKeyUpdate,
     readers,
   };
 }
@@ -412,6 +409,46 @@ describe('writer ACL publication boundary', () => {
     expect(childCids(serializedMessages[1])).toEqual(
       expect.arrayContaining(['parent-cid', 'remote-tip-cid']),
     );
+  });
+
+  test('requires explicit reader authorization before writer promotion', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document, readers } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+    readers.delete('candidate');
+
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      /must already be explicitly authorized as a reader.*addReader first/i,
+    );
+
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.prepareAddCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('promotes a reader and later downgrades the same identity', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document, readers } = publicationHarness(
+      writers,
+      publish,
+      ['promote-reader-cid', 'downgrade-writer-cid'],
+    );
+
+    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+
+    await expect(document.removeWriter('candidate')).resolves.toBeUndefined();
+
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(readers).toContain('candidate');
+    expect(writers.prepareAddCalls).toBe(1);
+    expect(writers.prepareRemoveCalls).toBe(1);
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 
   test.each([
@@ -622,7 +659,6 @@ describe('writer ACL publication boundary', () => {
       document,
       serializedMessages,
       keychain,
-      distributeKeyUpdate,
     } = publicationHarness(
       writers,
       publish,
@@ -635,7 +671,6 @@ describe('writer ACL publication boundary', () => {
 
     expect(writers.members).toContain('candidate');
     expect(keychain.add).not.toHaveBeenCalled();
-    expect(distributeKeyUpdate).not.toHaveBeenCalled();
 
     await expect(document.removeWriter('candidate')).resolves.toBeUndefined();
 
@@ -649,14 +684,13 @@ describe('writer ACL publication boundary', () => {
     );
     expect(keychain.current).toHaveBeenCalledTimes(2);
     expect(keychain.add).not.toHaveBeenCalled();
-    expect(distributeKeyUpdate).not.toHaveBeenCalled();
     expect(await document._readers.check('candidate')).toBe(true);
   });
 
   test('writer downgrade never enters the fallible key-rotation path', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);
-    const { document, keychain, distributeKeyUpdate, readers } =
+    const { document, keychain, readers } =
       publicationHarness(writers, publish, ['writer-downgrade-cid']);
     keychain.add.mockRejectedValue(new Error('keychain unavailable'));
 
@@ -667,14 +701,13 @@ describe('writer ACL publication boundary', () => {
     expect(readers).toContain('candidate');
     expect(keychain.current).toHaveBeenCalledTimes(1);
     expect(keychain.add).not.toHaveBeenCalled();
-    expect(distributeKeyUpdate).not.toHaveBeenCalled();
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
   test('rejects removal of a writer without explicit reader authorization', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);
-    const { document, keychain, distributeKeyUpdate, readers } =
+    const { document, keychain, readers } =
       publicationHarness(writers, publish, ['must-not-publish']);
     readers.delete('candidate');
 
@@ -687,7 +720,6 @@ describe('writer ACL publication boundary', () => {
     expect(publish).not.toHaveBeenCalled();
     expect(keychain.current).not.toHaveBeenCalled();
     expect(keychain.add).not.toHaveBeenCalled();
-    expect(distributeKeyUpdate).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -1011,6 +1043,150 @@ describe('writer ACL publication boundary', () => {
     expect(writers.members).toEqual(
       new Set(['owner', 'candidate', 'remote-writer']),
     );
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test.each(['readers', 'writers'] as const)(
+    'poisons the document when a custom %s merge mutates and then throws',
+    async (aclKind) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document, readers } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      const failure = new Error(`indeterminate ${aclKind} merge`);
+      if (aclKind === 'readers') {
+        document._readers.merge = jest.fn(() => {
+          readers.add('injected-member');
+          throw failure;
+        });
+      } else {
+        writers.merge = jest.fn(() => {
+          writers.members.add('injected-member');
+          throw failure;
+        });
+      }
+
+      await expect(
+        aclKind === 'readers'
+          ? document._mergeReaders({ remote: true })
+          : document._mergeWriters({ remote: true }),
+      ).rejects.toBe(failure);
+
+      expect(
+        aclKind === 'readers'
+          ? readers.has('injected-member')
+          : writers.members.has('injected-member'),
+      ).toBe(true);
+      expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+      expect(() => document.document).toThrow(/discard this document instance/);
+      await expect(document.getReaders()).rejects.toThrow(
+        /discard this document instance/,
+      );
+      await expect(document.getWriters()).rejects.toThrow(
+        /discard this document instance/,
+      );
+      await expect(
+        document.sync({ documentId: '/writer-publication' }),
+      ).rejects.toThrow(/discard this document instance/);
+    },
+  );
+
+  test.each(['readers', 'writers'] as const)(
+    'retries a certified %s merge conflict without poisoning the document',
+    async (aclKind) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document, readers } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      const settlement = Promise.resolve();
+      let attempts = 0;
+      const merge = jest.fn(() => {
+        if (attempts++ === 0) {
+          throw new ACLOperationInProgressError(
+            `${aclKind} merge conflict`,
+            settlement,
+          );
+        }
+        if (aclKind === 'readers') {
+          readers.add('remote-member');
+        } else {
+          writers.members.add('remote-member');
+        }
+      });
+      if (aclKind === 'readers') {
+        document._readers.merge = merge;
+        document._schedulePendingWelcomeDrain = jest.fn();
+      } else {
+        writers.merge = merge;
+      }
+
+      await expect(
+        aclKind === 'readers'
+          ? document._mergeReaders({ remote: true })
+          : document._mergeWriters({ remote: true }),
+      ).resolves.toBeUndefined();
+
+      expect(merge).toHaveBeenCalledTimes(2);
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    },
+  );
+
+  test('rechecks publication exclusion after a writer merge conflict settles', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const mergeObserved = deferred<void>();
+    const settlement = deferred<void>();
+    const publishObserved = deferred<void>();
+    const publication = deferred<void>();
+    const originalMerge = writers.merge.bind(writers);
+    let firstAttempt = true;
+    writers.merge = jest.fn((changes: ACLChange) => {
+      if (firstAttempt) {
+        firstAttempt = false;
+        mergeObserved.resolve();
+        throw new ACLOperationInProgressError(
+          'writer merge conflict',
+          settlement.promise,
+        );
+      }
+      originalMerge(changes);
+    });
+    const publish = jest.fn(() => {
+      publishObserved.resolve();
+      return publication.promise;
+    });
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['local-writer-cid'],
+    );
+    const remoteChange: ACLChange = {
+      operation: 'add',
+      publicKey: 'remote-writer',
+      sequence: 101,
+    };
+
+    const remoteMerge = document._mergeWriters(remoteChange);
+    await mergeObserved.promise;
+    const localAddition = document.addWriter('candidate');
+    await publishObserved.promise;
+    settlement.resolve();
+
+    await expect(remoteMerge).rejects.toThrow(
+      /staged local writer publication is in flight/,
+    );
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    expect(writers.members).toEqual(new Set(['owner']));
+
+    publication.resolve();
+    await expect(localAddition).resolves.toBeUndefined();
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+    expect(writers.merge).toHaveBeenCalledTimes(1);
   });
 
   test('queued remote ACL and DAG bookkeeping run after rejected-publication rollback', async () => {
