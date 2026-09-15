@@ -605,11 +605,11 @@ describe('tip-advertisement writer verification', () => {
 });
 
 describe('writer ACL re-merges', () => {
-  test('keeps writer authorization stable when a merge changes nothing', () => {
+  test('keeps writer authorization stable when a merge changes nothing', async () => {
     const { document } = writerDocument(['founder', 'invitee']);
 
-    document._mergeWriters(['founder']);
-    document._mergeWriters(['invitee', 'founder']);
+    await document._mergeWriters(['founder']);
+    await document._mergeWriters(['invitee', 'founder']);
 
     expect(document._writers.merge).toHaveBeenCalledTimes(2);
     expect(document._writerKeysVersion).toBe(7);
@@ -617,24 +617,24 @@ describe('writer ACL re-merges', () => {
     expect(document._cachedWriterKeys).not.toBeNull();
   });
 
-  test('never serializes the ACL to classify a merge', () => {
+  test('never serializes the ACL to classify a merge', async () => {
     const { document } = writerDocument(['founder']);
     const serialize = jest.spyOn(
       document._changesSerializer,
       'serializeChanges',
     );
 
-    document._mergeWriters(['founder']);
-    document._mergeWriters(['invitee']);
+    await document._mergeWriters(['founder']);
+    await document._mergeWriters(['invitee']);
 
     expect(document._writers.current).not.toHaveBeenCalled();
     expect(serialize).not.toHaveBeenCalled();
   });
 
-  test('invalidates writer authorization when a merge changes the ACL', () => {
+  test('invalidates writer authorization when a merge changes the ACL', async () => {
     const { document } = writerDocument(['founder']);
 
-    document._mergeWriters(['invitee']);
+    await document._mergeWriters(['invitee']);
 
     expect(document._writerKeysVersion).toBe(8);
     expect(document._cachedWriterKeys).toBeNull();
@@ -646,25 +646,25 @@ describe('writer ACL re-merges', () => {
     ['a non-boolean', 0],
   ])(
     'invalidates writer authorization when merge returns %s',
-    (_label, result) => {
+    async (_label, result) => {
       const { document } = writerDocument(['founder']);
       document._writers.merge = jest.fn(() => result);
 
-      document._mergeWriters(['founder']);
+      await document._mergeWriters(['founder']);
 
       expect(document._writerKeysVersion).toBe(8);
       expect(document._cachedWriterKeys).toBeNull();
     },
   );
 
-  test('invalidates writer authorization when a merge throws after mutating', () => {
+  test('invalidates writer authorization when a merge throws after mutating', async () => {
     const { document, writers } = writerDocument(['founder']);
     document._writers.merge = () => {
       writers.add('partial');
       throw new Error('merge failed');
     };
 
-    expect(() => document._mergeWriters(['partial', 'bad'])).toThrow(
+    await expect(document._mergeWriters(['partial', 'bad'])).rejects.toThrow(
       'merge failed',
     );
     expect(document._writerKeysVersion).toBe(8);
@@ -676,7 +676,7 @@ describe('writer ACL re-merges', () => {
     installSetWriterAcl(harness.document, ['founder', 'invitee']);
     harness.document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
-        harness.document._applyCollectedACL([
+        await harness.document._applyCollectedACL([
           { kind: 'writer', change: ['founder'] },
           { kind: 'writer', change: ['invitee'] },
         ]);
@@ -699,7 +699,7 @@ describe('writer ACL re-merges', () => {
     installSetWriterAcl(harness.document, ['founder']);
     harness.document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
-        harness.document._applyCollectedACL([
+        await harness.document._applyCollectedACL([
           { kind: 'writer', change: ['intruder'] },
         ]);
         return operation();
@@ -720,7 +720,7 @@ describe('writer ACL re-merges', () => {
     const harness = tipHarness();
     installSetWriterAcl(harness.document, ['founder']);
     harness.verify.mockImplementation(async () => {
-      harness.document._mergeWriters(['founder']);
+      await harness.document._mergeWriters(['founder']);
       return true;
     });
 
