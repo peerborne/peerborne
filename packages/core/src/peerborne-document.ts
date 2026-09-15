@@ -12,9 +12,11 @@ import type { CreateInvitationOptions } from './peerborne.js';
 import {
   assertSharedProtocolRequestSize,
   concatUint8Arrays,
+  copyUnsharedUint8Array,
   firstTrue,
   readUint8Iterable,
   shuffleArray,
+  snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
@@ -33,7 +35,6 @@ import {
 } from './change-tree-walk.js';
 import {
   collectReferencedAncestors,
-  collectAllCidsInTree,
   computeServedFrontier,
   stripInlineChanges,
   MAX_CROSS_LINKS,
@@ -99,7 +100,7 @@ import {
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
-import { retryACLConflict } from './acl.js';
+import { ACLOperationInProgressError, retryACLConflict } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrFull } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
@@ -122,6 +123,7 @@ import type {
 import { EventHandler, PeerId } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
 import {
+  collectInvitationCidsToInstall,
   syncInvitationMessageCompletely,
   withIssuerPinnedInvitationStream,
 } from './invitation-catch-up.js';
@@ -175,11 +177,105 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
+function throwIfLoadAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Document load was aborted');
+}
+
+function assertPositiveSafeByteLimit(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${field} must be a positive safe integer`);
+  }
+  return value;
+}
+
+const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
+
+class _LoadFetchLimitExceededError extends RangeError {}
+
+interface DocumentChangeFetchBudget {
+  readonly maxBytes: number;
+  consumedBytes: number;
+}
+
+function consumeDocumentChangeFetchBytes(
+  budget: DocumentChangeFetchBudget,
+  byteLength: number,
+): void {
+  const nextTotal = budget.consumedBytes + byteLength;
+  if (!Number.isSafeInteger(nextTotal) || nextTotal > budget.maxBytes) {
+    throw new _LoadFetchLimitExceededError(
+      'Missing change block byte budget exceeded',
+    );
+  }
+  budget.consumedBytes = nextTotal;
+}
+
 /** Opaque, recipient-bound material returned by the invitation join handler. */
 export interface InvitationBootstrapBundle {
   welcomeEpochId: Uint8Array;
   sealedWelcome: Uint8Array;
   encryptedBootstrap: Uint8Array;
+}
+
+const reflectOwnKeys = Reflect.ownKeys;
+
+/** @internal Validate and detach every caller-owned invitation byte field. */
+export function snapshotInvitationBootstrapBundle(
+  bundle: InvitationBootstrapBundle,
+  keyIDLength: number,
+  nonceLength: number,
+): Readonly<InvitationBootstrapBundle> {
+  assertPositiveSafeByteLimit(keyIDLength, 'Invitation key ID length');
+  assertPositiveSafeByteLimit(nonceLength, 'Invitation nonce length');
+  const candidate = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
+    bundle,
+    'Invitation bootstrap bundle',
+  );
+  const keys = reflectOwnKeys(candidate);
+  let recognizedKeys = 0;
+  for (const key of keys) {
+    if (
+      key !== 'welcomeEpochId' &&
+      key !== 'sealedWelcome' &&
+      key !== 'encryptedBootstrap'
+    ) {
+      throw new TypeError(
+        'Invitation bootstrap bundle must contain exactly its three byte fields',
+      );
+    }
+    recognizedKeys += 1;
+  }
+  if (recognizedKeys !== 3) {
+    throw new TypeError(
+      'Invitation bootstrap bundle must contain exactly its three byte fields',
+    );
+  }
+  const welcomeEpochId = copyUnsharedUint8Array(
+    candidate.welcomeEpochId,
+    keyIDLength,
+    keyIDLength,
+    'Invitation welcome epoch',
+  );
+  const sealedWelcome = copyUnsharedUint8Array(
+    candidate.sealedWelcome,
+    1,
+    MAX_INVITATION_MESSAGE_BYTES,
+    'Invitation sealed Welcome',
+  );
+  const encryptedBootstrap = copyUnsharedUint8Array(
+    candidate.encryptedBootstrap,
+    keyIDLength + nonceLength + 1,
+    MAX_INVITATION_MESSAGE_BYTES,
+    'Invitation encrypted bootstrap',
+  );
+  return Object.freeze({
+    welcomeEpochId,
+    sealedWelcome,
+    encryptedBootstrap,
+  });
 }
 
 interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
@@ -200,6 +296,30 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   writers: PublicKey[],
   hashes: string[],
 ) => void;
+
+interface RemoteUpdateNotification<DocType, PublicKey> {
+  readonly handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[];
+  readonly document: DocType;
+  readonly readers: PublicKey[];
+  readonly writers: PublicKey[];
+  readonly hashes: string[];
+}
+
+interface MissingBlockFetchOptions {
+  readonly signal?: AbortSignal;
+  readonly maxBlockBytes?: number;
+  readonly consumeBytes?: (byteLength: number) => void;
+}
+
+interface DocumentChangeFetchOptions<DocumentKey> {
+  readonly signal?: AbortSignal;
+  readonly maxBlockBytes?: number;
+  readonly maxAggregateBlockBytes?: number;
+  readonly aggregateBudget?: DocumentChangeFetchBudget;
+  readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
+  readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
+  readonly assertStillActive?: () => void;
+}
 
 /**
  * A peerborne "document" represents a single CRDT document.
@@ -369,6 +489,20 @@ class _QuorumBindCheckFailedError extends Error {
   }
 }
 
+const invitationBootstrapContinuationBrand = Symbol(
+  'invitation-bootstrap-continuation-brand',
+);
+
+interface InvitationBootstrapContinuation {
+  readonly [invitationBootstrapContinuationBrand]: true;
+}
+
+function createInvitationBootstrapContinuation(): InvitationBootstrapContinuation {
+  return Object.freeze({
+    [invitationBootstrapContinuationBrand]: true as const,
+  });
+}
+
 export class PeerborneDocument<
   DocType,
   ChangesType,
@@ -384,6 +518,7 @@ export class PeerborneDocument<
   // Only store/cache the full automerge document.
   private _document: DocType;
   get document(): DocType {
+    this._assertNoIncompleteBootstrapLoad();
     return this._document;
   }
 
@@ -521,7 +656,7 @@ export class PeerborneDocument<
     // Snapshot synchronously before queueing. A caller-owned CryptoKeyPair is
     // an ordinary mutable record even though its CryptoKey handles are not.
     const snapshot = keyPair && snapshotKemKeyPair(keyPair);
-    return this._mutationQueue.run(() => this._setKemKeyPairUnlocked(snapshot));
+    return this._runStateMutation(() => this._setKemKeyPairUnlocked(snapshot));
   }
 
   private async _setKemKeyPairUnlocked(
@@ -570,11 +705,13 @@ export class PeerborneDocument<
   public async createInvitation(
     options: CreateInvitationOptions,
   ): Promise<InvitationOfferV1> {
+    this._assertNoIncompleteBootstrapLoad();
     return this.swarm.createInvitationForDocument(this, options);
   }
 
   /** @internal Validate the deliberately narrow initial membership topology. */
   public async assertCanCreateInitialInvitation(): Promise<void> {
+    this._assertNoIncompleteBootstrapLoad();
     this._assertInitialInvitationCapacityProfile();
     await this._ensureCurrentUserCanWrite();
     if (!this._createdLocally) {
@@ -652,8 +789,8 @@ export class PeerborneDocument<
   private _beekem: BeeKEM | null = null;
   private _beekemInitPromise: Promise<BeeKEM> | null = null;
   // Local membership changes, ACL-bearing remote sync, and invitation
-  // bootstrap construction share one queue. This keeps the ACL topology,
-  // BeeKEM tree, keychain, and signed bootstrap attestation coherent.
+  // bootstrap construction/application share one queue. This keeps the ACL
+  // topology, BeeKEM tree, keychain, and signed bootstrap attestation coherent.
   // One FIFO freezes every state writer while an invitation sizes and builds
   // its bootstrap. Internal helpers called from an admitted operation remain
   // unlocked to avoid reentrant waits on the same queue.
@@ -727,6 +864,30 @@ export class PeerborneDocument<
 
   // Set of already-merged change blocks.
   private _hashes = new Set<string>();
+
+  // Fail-closed bootstrap admission state. A bootstrap load can mutate
+  // ACL/keychain state before a later CRDT/provider operation throws, without
+  // necessarily reaching `_hashes`, `_lastSyncMessage`, or `_latestSnapshot`.
+  // `pending` is deliberately durable after any failed application attempt;
+  // `complete` is set only after the entire response passes its post-sync
+  // checks. This prevents a partial ACL merge from manufacturing authority for
+  // a retry or from being consumed by any other public state transition. There
+  // is no safe in-place recovery because the pre-failure state is not retained.
+  private _bootstrapLoadApplicationState:
+    | 'pristine'
+    | 'pending'
+    | 'complete' = 'pristine';
+
+  // Monotonic generation for bootstrap state transitions. Response handlers
+  // capture this before assembling a payload and require it to remain stable
+  // before sending, so a pending -> complete transition cannot masquerade as
+  // the same healthy state they admitted against.
+  private _bootstrapLoadApplicationRevision = 0;
+
+  // Automatic compaction is unsafe while a bootstrap response is only
+  // partially applied. Remember the request and run it during successful
+  // bootstrap finalization instead.
+  private _bootstrapCompactionDeferred = false;
 
   // Set of CIDs that have been seen as a `children` key in any sync tree we
   // have processed (locally created or remotely received) -- i.e. every CID
@@ -809,6 +970,13 @@ export class PeerborneDocument<
   // the ambiguous network-load/new-document branch.
   private _invitationBootstrapReady = false;
 
+  // Per-acceptance capability for the only internal path allowed to continue
+  // while bootstrap state is pending. Exact identity and prompt clearing keep
+  // it from becoming a reusable bypass of the public fail-closed boundary.
+  private _activeInvitationBootstrapContinuation:
+    | InvitationBootstrapContinuation
+    | undefined;
+
   // Explicit creation provenance for BeeKEM founder initialization. Change
   // count is not a valid proxy because open() replicates the founder-writer
   // ACL before the first invitation is created.
@@ -828,6 +996,18 @@ export class PeerborneDocument<
   private _remoteHandlers: {
     [id: string]: PeerborneDocumentChangeHandler<DocType, PublicKey>;
   } = {};
+
+  // Remote state is committed before its observer audience is resolved. Keep
+  // conflicted notifications on a separate FIFO so waiting for an ACL
+  // operation never retains the document mutation queue or prevents frontier
+  // refresh. Later notifications join the same FIFO to preserve event order.
+  private _remoteUpdateNotificationTail?: Promise<void>;
+
+  // A bootstrap response can apply several remote changes before its
+  // completeness checks finish. Keep those notifications private until the
+  // response is known to be complete so application callbacks can never
+  // observe partially-applied bootstrap state.
+  private _pendingBootstrapRemoteUpdateHashes = new Set<string>();
 
   // Handlers registered by users of `PeerborneDocument` that fire on local changes.
   private _localHandlers: {
@@ -958,13 +1138,145 @@ export class PeerborneDocument<
     return shuffledPeers;
   }
 
+  private _assertNoIncompleteBootstrapLoad(): void {
+    if (this._activeInvitationBootstrapContinuation !== undefined) {
+      throw new Error(
+        `Invitation bootstrap validation for ${this.documentPath} is in progress`,
+      );
+    }
+    if (this._bootstrapLoadApplicationState === 'pending') {
+      throw new Error(
+        `Document load for ${this.documentPath} failed after state application began; ` +
+          `discard this document instance before continuing`,
+      );
+    }
+  }
+
+  private _markBootstrapStateApplicationPending(): void {
+    this._bootstrapLoadApplicationState = 'pending';
+    this._bootstrapLoadApplicationRevision++;
+  }
+
+  private _markBootstrapStateApplicationComplete(): void {
+    this._bootstrapLoadApplicationState = 'complete';
+    this._bootstrapLoadApplicationRevision++;
+  }
+
+  private _captureBootstrapResponseRevision(): number {
+    this._assertNoIncompleteBootstrapLoad();
+    return this._bootstrapLoadApplicationRevision;
+  }
+
+  private _assertBootstrapResponseRevision(revision: number): void {
+    this._assertNoIncompleteBootstrapLoad();
+    if (revision !== this._bootstrapLoadApplicationRevision) {
+      throw new Error(
+        `Document state changed while constructing a response for ${this.documentPath}`,
+      );
+    }
+  }
+
+  private _isActiveInvitationBootstrapContinuation(
+    continuation?: InvitationBootstrapContinuation,
+  ): boolean {
+    return (
+      continuation !== undefined &&
+      continuation === this._activeInvitationBootstrapContinuation
+    );
+  }
+
+  /** Serialize a public state transition and recheck bootstrap integrity. */
+  private _runStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+    return this._mutationQueue.run(() => {
+      this._assertNoIncompleteBootstrapLoad();
+      return operation();
+    });
+  }
+
+  private _runInvitationBootstrapStateApplication<T>(
+    operation: (
+      beginStateApplication: () => void,
+      continuation: InvitationBootstrapContinuation,
+    ) => Promise<T>,
+    assertCanApply?: () => void,
+  ): Promise<T> {
+    return this._mutationQueue.run(async () => {
+      if (
+        this._bootstrapLoadApplicationState !== 'pristine' ||
+        this._hashes.size > 0 ||
+        this._lastSyncMessage !== undefined ||
+        this._latestSnapshot !== undefined ||
+        this._subscribed ||
+        this._createdLocally
+      ) {
+        throw new Error(
+          `Invitation bootstrap for ${this.documentPath} requires a pristine document instance`,
+        );
+      }
+      assertCanApply?.();
+      let stateApplicationStarted = false;
+      const beginStateApplication = (): void => {
+        if (stateApplicationStarted) return;
+        stateApplicationStarted = true;
+        // Reserve the instance immediately before the first live write. Any
+        // later failure may have partially changed state and therefore
+        // remains fail-closed, while purely detached validation can reject a
+        // malformed invitation without poisoning this fresh instance.
+        this._markBootstrapStateApplicationPending();
+      };
+      const continuation = createInvitationBootstrapContinuation();
+      this._activeInvitationBootstrapContinuation = continuation;
+      try {
+        return await operation(beginStateApplication, continuation);
+      } finally {
+        if (this._activeInvitationBootstrapContinuation === continuation) {
+          this._activeInvitationBootstrapContinuation = undefined;
+        }
+      }
+    });
+  }
+
+  /** Finalize a verified bootstrap while holding `_mutationQueue`. */
+  private async _completeBootstrapStateApplicationUnlocked(
+    beforeComplete?: () => Promise<void>,
+    assertStillActive?: () => void,
+  ): Promise<void> {
+    if (this._bootstrapLoadApplicationState !== 'pending') {
+      throw new Error(
+        `Bootstrap finalization for ${this.documentPath} requires pending state`,
+      );
+    }
+    if (this._pendingWelcomes.size > 0) {
+      await this._drainPendingWelcomesUnlocked(true);
+    }
+    if (this._bootstrapCompactionDeferred) {
+      this._bootstrapCompactionDeferred = false;
+      await this._maybeCompact();
+    }
+    await beforeComplete?.();
+    const deferredNotification =
+      await this._prepareDeferredBootstrapRemoteUpdateNotification();
+    // Preparing the notification can await ACL providers. Recheck the caller's
+    // deadline immediately before publishing completion; after this point the
+    // notification dispatch is deliberately synchronous and cannot escape as
+    // late background work after a timed-out invitation has been rejected.
+    assertStillActive?.();
+    this._markBootstrapStateApplicationComplete();
+    if (deferredNotification) {
+      this._pendingBootstrapRemoteUpdateHashes.clear();
+      this._dispatchRemoteUpdateHandlers(deferredNotification);
+    }
+  }
+
   private async _decryptBlock(
     blockKeyID: Uint8Array,
     nonce: Uint8Array,
     data: Uint8Array,
+    getKey: (keyID: Uint8Array) => DocumentKey | undefined = (keyID) =>
+      this._keychain.getKey(keyID),
   ) {
     try {
-      const key = this._keychain.getKey(blockKeyID);
+      const key = getKey(blockKeyID);
       if (key) {
         return this._authProvider.decrypt(data, key, nonce);
       } else {
@@ -975,12 +1287,61 @@ export class PeerborneDocument<
     }
   }
 
-  private async _getBlock(hash: CID): Promise<ChangesType> {
+  private async _readBlock(
+    hash: CID,
+    options?: MissingBlockFetchOptions,
+  ): Promise<Uint8Array> {
     // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
     // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
     // rather than a single `Uint8Array`. Consume the generator into a
     // contiguous buffer here before slicing the encryption header off.
-    const block = await readUint8Iterable(this.swarm.heliaNode.blockstore.get(hash));
+    throwIfLoadAborted(options?.signal);
+    const signal = options?.signal;
+    const maxBlockBytes = options?.maxBlockBytes;
+    const consumeBytes = options?.consumeBytes;
+    const rawBlock = this.swarm.heliaNode.blockstore.get(
+      hash,
+      signal ? { signal } : undefined,
+    );
+    const boundedBlock =
+      maxBlockBytes !== undefined || consumeBytes !== undefined
+        ? (async function* () {
+            let byteLength = 0;
+            let chunkCount = 0;
+            for await (const chunk of rawBlock) {
+              throwIfLoadAborted(signal);
+              chunkCount += 1;
+              if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
+                throw new _LoadFetchLimitExceededError(
+                  'Block stream chunk budget exceeded',
+                );
+              }
+              const nextByteLength = byteLength + chunk.byteLength;
+              if (
+                !Number.isSafeInteger(nextByteLength) ||
+                (maxBlockBytes !== undefined && nextByteLength > maxBlockBytes)
+              ) {
+                throw new _LoadFetchLimitExceededError(
+                  'Block stream byte budget exceeded',
+                );
+              }
+              consumeBytes?.(chunk.byteLength);
+              byteLength = nextByteLength;
+              yield chunk;
+            }
+          })()
+        : rawBlock;
+    const block = await readUint8Iterable(boundedBlock);
+    throwIfLoadAborted(options?.signal);
+    return block;
+  }
+
+  private async _decodeBlock(
+    hash: CID,
+    block: Uint8Array,
+    signal?: AbortSignal,
+    getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
+  ): Promise<ChangesType> {
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
@@ -989,11 +1350,32 @@ export class PeerborneDocument<
     const blockData = block.slice(
       this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
     );
-    const content = await this._decryptBlock(blockKeyID, blockNonce, blockData);
+    const content = await this._decryptBlock(
+      blockKeyID,
+      blockNonce,
+      blockData,
+      getKey,
+    );
+    throwIfLoadAborted(signal);
     if (!content) {
       throw new Error(`Failed to decrypt block (CID: ${hash})`);
     }
-    return this._changesSerializer.deserializeChanges(content);
+    const changes = this._changesSerializer.deserializeChanges(content);
+    throwIfLoadAborted(signal);
+    return changes;
+  }
+
+  private async _getBlock(
+    hash: CID,
+    options?: MissingBlockFetchOptions,
+    getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
+  ): Promise<ChangesType> {
+    return this._decodeBlock(
+      hash,
+      await this._readBlock(hash, options),
+      options?.signal,
+      getKey,
+    );
   }
 
   private async _putBlock(block: ChangesType): Promise<string> {
@@ -1036,20 +1418,162 @@ export class PeerborneDocument<
     );
   }
 
-  private async _fireRemoteUpdateHandlers(hashes: string[]) {
-    for (const handler of Object.values(this._remoteHandlers)) {
-      handler(
-        this.document,
-        await this.getReaders(),
-        await this.getWriters(),
+  private _dispatchRemoteUpdateHandlers(
+    notification: RemoteUpdateNotification<DocType, PublicKey>,
+  ): void {
+    for (const handler of notification.handlers) {
+      try {
+        void Promise.resolve(
+          handler(
+            notification.document,
+            [...notification.readers],
+            [...notification.writers],
+            [...notification.hashes],
+          ) as void | Promise<void>,
+        ).catch(() => {
+          console.error(
+            `Remote update handler failed for ${this.documentPath}`,
+          );
+        });
+      } catch {
+        console.error(`Remote update handler failed for ${this.documentPath}`);
+      }
+    }
+  }
+
+  private async _prepareRemoteUpdateNotification(
+    hashes: string[],
+    handlers = Object.values(this._remoteHandlers),
+  ): Promise<RemoteUpdateNotification<DocType, PublicKey>> {
+    if (handlers.length === 0) {
+      return {
+        handlers,
+        document: this._document,
+        readers: [],
+        writers: [],
         hashes,
+      };
+    }
+    const [readers, writers] = await Promise.all([
+      this._readers.users(),
+      this._writers.users(),
+    ]);
+    // ACL implementations may reject overlapping operations, so keep at most
+    // one read against the reader ACL in flight.
+    const filteredWriters: PublicKey[] = [];
+    for (const writer of writers) {
+      if ((await this._readers.check(writer)) !== true) {
+        filteredWriters.push(writer);
+      }
+    }
+    return {
+      handlers,
+      document: this._document,
+      readers: [...readers, ...filteredWriters],
+      writers: [...writers],
+      hashes: [...hashes],
+    };
+  }
+
+  private _appendRemoteUpdateNotificationTask(
+    task: () => void | Promise<void>,
+  ): void {
+    const previous = this._remoteUpdateNotificationTail ?? Promise.resolve();
+    let queued!: Promise<void>;
+    queued = previous
+      .then(task)
+      .catch(() => {
+        console.error(
+          `Failed to prepare remote update notification for ${this.documentPath}`,
+        );
+      })
+      .finally(() => {
+        if (this._remoteUpdateNotificationTail === queued) {
+          this._remoteUpdateNotificationTail = undefined;
+        }
+      });
+    this._remoteUpdateNotificationTail = queued;
+  }
+
+  private _enqueueRemoteUpdateNotification(
+    hashes: string[],
+    handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[],
+    initialConflict?: ACLOperationInProgressError,
+  ): void {
+    const capturedHashes = [...hashes];
+    const capturedHandlers = [...handlers];
+    this._appendRemoteUpdateNotificationTask(async () => {
+      let conflict = initialConflict;
+      for (;;) {
+        if (conflict) {
+          await conflict.waitForSettlement();
+          conflict = undefined;
+        }
+        try {
+          await this._mutationQueue.run(async () => {
+            this._assertNoIncompleteBootstrapLoad();
+            const notification = await this._prepareRemoteUpdateNotification(
+              capturedHashes,
+              capturedHandlers,
+            );
+            this._dispatchRemoteUpdateHandlers(notification);
+          });
+          return;
+        } catch (error) {
+          if (!(error instanceof ACLOperationInProgressError)) throw error;
+          conflict = error;
+        }
+      }
+    });
+  }
+
+  private async _fireRemoteUpdateHandlers(hashes: string[]): Promise<void> {
+    const handlers = Object.values(this._remoteHandlers);
+    if (handlers.length === 0) return;
+    if (this._remoteUpdateNotificationTail) {
+      this._enqueueRemoteUpdateNotification(hashes, handlers);
+      return;
+    }
+    try {
+      const notification = await this._prepareRemoteUpdateNotification(
+        hashes,
+        handlers,
+      );
+      this._dispatchRemoteUpdateHandlers(notification);
+    } catch (error) {
+      if (error instanceof ACLOperationInProgressError) {
+        this._enqueueRemoteUpdateNotification(hashes, handlers, error);
+        return;
+      }
+      console.error(
+        `Failed to prepare remote update notification for ${this.documentPath}`,
       );
     }
   }
+
+  private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
+    if (this._bootstrapLoadApplicationState === 'pending') {
+      for (const hash of hashes) {
+        this._pendingBootstrapRemoteUpdateHashes.add(hash);
+      }
+      return;
+    }
+    await this._fireRemoteUpdateHandlers(hashes);
+  }
+
+  private async _prepareDeferredBootstrapRemoteUpdateNotification(): Promise<
+    RemoteUpdateNotification<DocType, PublicKey> | undefined
+  > {
+    if (this._pendingBootstrapRemoteUpdateHashes.size === 0) return undefined;
+    return this._prepareRemoteUpdateNotification([
+      ...this._pendingBootstrapRemoteUpdateHashes,
+    ]);
+  }
+
   private async _fireLocalUpdateHandlers(hashes: string[]) {
     for (const handler of Object.values(this._localHandlers)) {
       handler(
-        this.document,
+        this._document,
         await this.getReaders(),
         await this.getWriters(),
         hashes,
@@ -1215,7 +1739,56 @@ export class PeerborneDocument<
   private async _syncDocumentChanges(
     changeId: string | undefined,
     changes: CRDTChangeNode<ChangesType>,
+    fetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
   ) {
+    const signal = fetchOptions.signal;
+    const assertStillActive = (): void => {
+      throwIfLoadAborted(signal);
+      fetchOptions.assertStillActive?.();
+    };
+    const maxBlockBytes = fetchOptions.maxBlockBytes;
+    const maxAggregateBlockBytes = fetchOptions.maxAggregateBlockBytes;
+    const enforceFetchLimits =
+      maxBlockBytes !== undefined ||
+      maxAggregateBlockBytes !== undefined ||
+      fetchOptions.aggregateBudget !== undefined;
+    if (maxBlockBytes !== undefined) {
+      assertPositiveSafeByteLimit(maxBlockBytes, 'Missing block byte limit');
+    }
+    if (maxAggregateBlockBytes !== undefined) {
+      assertPositiveSafeByteLimit(
+        maxAggregateBlockBytes,
+        'Missing block aggregate byte limit',
+      );
+    }
+    const aggregateBudget =
+      fetchOptions.aggregateBudget ??
+      (maxAggregateBlockBytes === undefined
+        ? undefined
+        : { maxBytes: maxAggregateBlockBytes, consumedBytes: 0 });
+    if (aggregateBudget !== undefined) {
+      assertPositiveSafeByteLimit(
+        aggregateBudget.maxBytes,
+        'Missing block aggregate byte limit',
+      );
+      if (
+        !Number.isSafeInteger(aggregateBudget.consumedBytes) ||
+        aggregateBudget.consumedBytes < 0 ||
+        aggregateBudget.consumedBytes > aggregateBudget.maxBytes
+      ) {
+        throw new RangeError(
+          'Missing block aggregate byte consumption must be in range',
+        );
+      }
+    }
+    const consumeBytes =
+      aggregateBudget === undefined
+        ? undefined
+        : (byteLength: number): void => {
+            assertStillActive();
+            consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
+          };
+    assertStillActive();
     // Walk the incoming sync tree once and record every CID that appears
     // as a `children` key. Those CIDs are referenced ancestors -- by
     // definition no longer heads of the local DAG. Doing this BEFORE the
@@ -1236,13 +1809,15 @@ export class PeerborneDocument<
       this._lastSyncMessage && this._lastSyncMessage.changeId,
       this._hashes,
     );
+    assertStillActive();
 
     // First apply changes that were sent directly.
-    let newDocument = this.document;
+    let newDocument = this._document;
     const newDocumentHashes: string[] = [];
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
     for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
+      assertStillActive();
       if (sentChanges) {
         switch (sentChangeKind) {
           case crdtDocumentChangeNode: {
@@ -1261,14 +1836,16 @@ export class PeerborneDocument<
             // Apply the changes that were sent directly. Use the
             // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
             // drained immediately after the ACL update lands.
-            await this._mergeReaders(sentChanges);
+            await this._mergeReaders(sentChanges, assertStillActive);
+            assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
             break;
           }
           case crdtWriterChangeNode: {
             // Apply the changes that were sent directly.
-            await this._mergeWriters(sentChanges);
+            await this._mergeWriters(sentChanges, assertStillActive);
+            assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
             break;
@@ -1279,6 +1856,7 @@ export class PeerborneDocument<
       }
     }
     if (newDocumentHashes.length) {
+      assertStillActive();
       this._document = newDocument;
       for (const newHash of newDocumentHashes) {
         this._hashes.add(newHash);
@@ -1304,73 +1882,152 @@ export class PeerborneDocument<
         const [cid, kind] = newDocumentTips[i]!;
         this._trackTip(cid, kind);
       }
-      await this._fireRemoteUpdateHandlers(newDocumentHashes);
+      assertStillActive();
+      await this._fireOrDeferRemoteUpdateHandlers(newDocumentHashes);
     }
 
-    // Then apply missing hashes by fetching them from the blockstore.
-    // Track all fetch promises so we can compact only after all complete,
-    // avoiding premature snapshots of incomplete state.
-    const fetchPromises: Promise<void>[] = [];
-    for (const [missingHash, missingHashKind] of missingDocumentHashes) {
-      const cid = CID.parse(missingHash);
-      fetchPromises.push(
-        this._getBlock(cid)
-          .then(async (missingChanges) => {
-            if (missingChanges) {
-              switch (missingHashKind) {
-                case crdtDocumentChangeNode: {
-                  this._document = this._crdtProvider.remoteChange(
-                    this._document,
-                    missingChanges,
-                  );
-                  this._hashes.add(missingHash);
-                  this._documentChangeCount++;
-                  this._changesSinceSnapshot++;
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtReaderChangeNode: {
-                  // Go through `_mergeReaders` to drain any pending
-                  // BeeKEM Welcomes parked while waiting for this ACL
-                  // update.
-                  await this._mergeReaders(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-                case crdtWriterChangeNode: {
-                  await this._mergeWriters(missingChanges);
-                  this._hashes.add(missingHash);
-                  this._trackTip(missingHash, missingHashKind);
-                  await this._fireRemoteUpdateHandlers([missingHash]);
-                  return;
-                }
-              }
-            } else {
-              console.error(
-                `Block '${missingHash}' returned nothing`,
-                missingChanges,
-              );
+    // Then apply missing hashes through a bounded worker pool. Every worker
+    // receives the enclosing load signal, and all workers are awaited even
+    // after cancellation so no queued fetch can apply state after the caller's
+    // deadline has rejected.
+    if (missingDocumentHashes.length > 0) {
+      let nextIndex = 0;
+      let fetchLimitExceeded = false;
+      const appliedMissingDocumentHashes = new Array<string | undefined>(
+        missingDocumentHashes.length,
+      );
+      const fetchController =
+        signal !== undefined || enforceFetchLimits
+          ? new AbortController()
+          : undefined;
+      const forwardAbort = (): void => {
+        if (!fetchController?.signal.aborted) {
+          fetchController?.abort(signal?.reason);
+        }
+      };
+      if (signal?.aborted) {
+        forwardAbort();
+      } else {
+        signal?.addEventListener('abort', forwardAbort, { once: true });
+      }
+      const fetchSignal = fetchController?.signal;
+      const worker = async (): Promise<void> => {
+        while (!fetchLimitExceeded) {
+          assertStillActive();
+          const index = nextIndex++;
+          if (index >= missingDocumentHashes.length) return;
+          const [missingHash, missingHashKind] =
+            missingDocumentHashes[index]!;
+          try {
+            const cid = CID.parse(missingHash);
+            const prefetched = fetchOptions.prefetchedBlocks;
+            const missingChanges = prefetched?.has(missingHash)
+              ? await this._decodeBlock(
+                  cid,
+                  prefetched.get(missingHash)!,
+                  fetchSignal,
+                  fetchOptions.getKey,
+                )
+              : await this._getBlock(
+                  cid,
+                  {
+                    signal: fetchSignal,
+                    maxBlockBytes,
+                    consumeBytes,
+                  },
+                  fetchOptions.getKey,
+                );
+            assertStillActive();
+            if (!missingChanges) {
+              console.error(`Block '${missingHash}' returned nothing`);
+              continue;
             }
-          })
-          .catch((err) => {
+            switch (missingHashKind) {
+              case crdtDocumentChangeNode: {
+                this._document = this._crdtProvider.remoteChange(
+                  this._document,
+                  missingChanges,
+                );
+                this._hashes.add(missingHash);
+                this._documentChangeCount++;
+                this._changesSinceSnapshot++;
+                this._trackTip(missingHash, missingHashKind);
+                break;
+              }
+              case crdtReaderChangeNode: {
+                // Go through `_mergeReaders` to drain any pending BeeKEM
+                // Welcomes parked while waiting for this ACL update.
+                await this._mergeReaders(missingChanges, assertStillActive);
+                assertStillActive();
+                this._hashes.add(missingHash);
+                this._trackTip(missingHash, missingHashKind);
+                break;
+              }
+              case crdtWriterChangeNode: {
+                await this._mergeWriters(missingChanges, assertStillActive);
+                assertStillActive();
+                this._hashes.add(missingHash);
+                this._trackTip(missingHash, missingHashKind);
+                break;
+              }
+            }
+            appliedMissingDocumentHashes[index] = missingHash;
+            assertStillActive();
+          } catch (error) {
+            if (signal?.aborted) throwIfLoadAborted(signal);
+            if (fetchLimitExceeded && fetchController?.signal.aborted) return;
+            if (error instanceof _LoadFetchLimitExceededError) {
+              fetchLimitExceeded = true;
+              if (!fetchController?.signal.aborted) {
+                fetchController?.abort(
+                  new _LoadFetchLimitExceededError(
+                    'Missing change block fetch limits exceeded',
+                  ),
+                );
+              }
+              return;
+            }
+            // A provider/serializer can throw arbitrary values derived from
+            // decrypted document bytes. Never pass that value to a logger.
             console.error(
               'Failed to fetch missing change from blockstore:',
               missingHash,
-              err,
             );
-          }),
+          }
+        }
+      };
+      const workerCount = Math.min(
+        LOAD_PREFETCH_MAX_CONCURRENCY,
+        missingDocumentHashes.length,
       );
+      let workerResults: PromiseSettledResult<void>[];
+      try {
+        workerResults = await Promise.allSettled(
+          Array.from({ length: workerCount }, () => worker()),
+        );
+      } finally {
+        signal?.removeEventListener('abort', forwardAbort);
+      }
+      assertStillActive();
+      const workerFailure = workerResults.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (workerFailure) throw workerFailure.reason;
+      if (fetchLimitExceeded) {
+        throw new _LoadFetchLimitExceededError(
+          'Missing change block fetch limits exceeded',
+        );
+      }
+      const appliedHashes = appliedMissingDocumentHashes.filter(
+        (hash): hash is string => hash !== undefined,
+      );
+      if (appliedHashes.length > 0) {
+        assertStillActive();
+        await this._fireOrDeferRemoteUpdateHandlers(appliedHashes);
+      }
     }
-
-    // Wait for all missing block fetches to complete before checking compaction.
-    // This ensures the snapshot reflects the full document state rather than
-    // a partial view from incomplete fetches.
-    if (fetchPromises.length > 0) {
-      await Promise.all(fetchPromises);
-    }
+    assertStillActive();
 
     // Refresh `_lastSyncMessage` so the served frontier reflects what we now
     // hold. Without this, a relay peer that joined via `load()` (or that has
@@ -1392,7 +2049,12 @@ export class PeerborneDocument<
     // on the next local write.
     this._refreshLastSyncMessageFromSync(changeId, changes);
 
-    await this._maybeCompact();
+    assertStillActive();
+    if (this._bootstrapLoadApplicationState === 'pending') {
+      this._bootstrapCompactionDeferred = true;
+    } else {
+      await this._maybeCompact();
+    }
   }
 
   /**
@@ -1513,14 +2175,17 @@ export class PeerborneDocument<
 
   private async _applyCollectedACL(
     entries: readonly BoundedChangeTreeEntry<ChangesType>[],
+    assertStillActive?: () => void,
   ): Promise<void> {
     for (const { kind, change } of entries) {
+      assertStillActive?.();
       if (change === undefined) continue;
       if (kind === crdtWriterChangeNode) {
-        await this._mergeWriters(change);
+        await this._mergeWriters(change, assertStillActive);
       } else if (kind === crdtReaderChangeNode) {
-        await this._mergeReaders(change);
+        await this._mergeReaders(change, assertStillActive);
       }
+      assertStillActive?.();
     }
   }
 
@@ -1543,6 +2208,8 @@ export class PeerborneDocument<
    * drain, leaving a Welcome parked until the next merge (or TTL
    * eviction) and re-introducing the readers-ACL / Welcome reordering
    * wedge that this buffering / drain pair is designed to close.
+   * During a bootstrap load, draining is deferred until the response passes
+   * its completeness checks so buffered state cannot build on a partial ACL.
    *
    * Drain is scheduled through the mutation queue because accepting a
    * buffered Welcome mutates keychain and BeeKEM state. It remains
@@ -1553,18 +2220,26 @@ export class PeerborneDocument<
    *
    * @internal
    */
-  private async _mergeReaders(changes: ChangesType): Promise<void> {
-    await retryACLConflict(() => this._readers.merge(changes));
-    if (this._pendingWelcomes.size > 0) {
-      void this._mutationQueue
-        .run(() => this._drainPendingWelcomesUnlocked())
-        .catch((err) => {
-          console.error(
-            `Failed to drain pending BeeKEM Welcomes for ${this.documentPath}:`,
-            err,
-          );
-        });
+  private async _mergeReaders(
+    changes: ChangesType,
+    assertStillActive?: () => void,
+  ): Promise<void> {
+    await retryACLConflict(() => {
+      assertStillActive?.();
+      return this._readers.merge(changes);
+    });
+    assertStillActive?.();
+    if (this._bootstrapLoadApplicationState !== 'pending') {
+      this._schedulePendingWelcomeDrain();
     }
+  }
+
+  private _schedulePendingWelcomeDrain(): void {
+    if (this._pendingWelcomes.size === 0) return;
+    void this._runStateMutation(() => this._drainPendingWelcomesUnlocked())
+      .catch(() => {
+        console.error('Failed to drain pending BeeKEM Welcomes');
+      });
   }
 
   /**
@@ -1573,6 +2248,63 @@ export class PeerborneDocument<
    */
   private _isSigningEnabled(): boolean {
     return this.swarm.config?.enableSigning !== false;
+  }
+
+  private async _isLoadRequesterAuthorized(
+    message: CRDTLoadRequest,
+    retryConflicts = true,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    if (!message.signature) return false;
+
+    let signature: Uint8Array;
+    try {
+      signature = this._deserializeSignature(message.signature);
+    } catch {
+      return false;
+    }
+    const requestBytes = this._encoder.encode(message.documentId);
+    const authorizedKeys = (
+      await Promise.all(
+        retryConflicts
+          ? [
+              retryACLConflict(() => this._readers.users()),
+              retryACLConflict(() => this._writers.users()),
+            ]
+          : [this._readers.users(), this._writers.users()],
+      )
+    ).flat();
+    for (const key of authorizedKeys) {
+      if (
+        (await this._authProvider.verify(requestBytes, key, signature)) === true
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async _sendAuthorizedLoadResponse(
+    message: CRDTLoadRequest,
+    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    data: Iterable<Uint8Array>,
+    bootstrapRevision: number,
+    admission?: SharedProtocolHandlerAdmission,
+  ): Promise<void> {
+    const dispatch = await this._runStateMutation(async () => {
+      if (!isSharedProtocolHandlerActive(admission)) return;
+      // A provider-reported conflict cannot be awaited while this operation
+      // owns the document FIFO. Fail closed so a hung provider cannot retain
+      // the queue after the request deadline.
+      if (!(await this._isLoadRequesterAuthorized(message, false))) {
+        if (!isSharedProtocolHandlerActive(admission)) return;
+        return { completion: stream.sink([] as Iterable<Uint8Array>) };
+      }
+      if (!isSharedProtocolHandlerActive(admission)) return;
+      this._assertBootstrapResponseRevision(bootstrapRevision);
+      return { completion: stream.sink(data) };
+    });
+    await dispatch?.completion;
   }
 
   /**
@@ -1666,14 +2398,21 @@ export class PeerborneDocument<
   }
 
   /** Apply a writer ACL change and invalidate the cached key list. */
-  private async _mergeWriters(changes: ChangesType): Promise<void> {
+  private async _mergeWriters(
+    changes: ChangesType,
+    assertStillActive?: () => void,
+  ): Promise<void> {
     // Keep the mutation marker set while a transient ACL conflict settles and
     // the synchronous `merge()` is retried. Both invalidations (pre and post)
     // match the async helper's behavior.
     this._writerMutationsInFlight++;
     this._invalidateWriterKeyCache();
     try {
-      await retryACLConflict(() => this._writers.merge(changes));
+      await retryACLConflict(() => {
+        assertStillActive?.();
+        return this._writers.merge(changes);
+      });
+      assertStillActive?.();
     } finally {
       this._writerMutationsInFlight--;
       this._invalidateWriterKeyCache();
@@ -2261,6 +3000,7 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
+      const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
       if (message.documentId !== this.documentPath) {
         console.warn('Shared doc-load request targeted the wrong document');
@@ -2268,41 +3008,7 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn('Shared doc-load request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared doc-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -2375,8 +3081,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared doc-load response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared doc-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -2404,6 +3115,7 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
+      const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
       if (message.documentId !== this.documentPath) {
         console.warn(
@@ -2413,41 +3125,7 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        // Bypass: signing disabled, no signature verification needed.
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          // Reject requests with missing/empty signatures (e.g. from peers
-          // that have signing disabled -- they cannot interoperate).
-          console.warn('Shared snapshot-load request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared snapshot-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -2504,8 +3182,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared snapshot-load response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared snapshot-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -2551,6 +3234,7 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
+      const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
       // Tip-advertise runs on every `open()` from every peer that opens
       // this document, so a per-request log line scales with mesh size.
@@ -2567,40 +3251,9 @@ export class PeerborneDocument<
         return;
       }
 
-      // Authorize the requestor. When signing is disabled, skip ACL/signature
-      // checks entirely -- any peer is treated as authorized. Mirrors the
-      // load handlers above so the gate is symmetrical: a deployment that
-      // disables signing keeps the same trust posture across all protocols.
-      let authorized = false;
-      if (!this._isSigningEnabled()) {
-        authorized = true;
-      } else {
-        if (!message.signature) {
-          console.warn('Shared tip-advertise request is missing a signature');
-          await stream.sink([] as Iterable<Uint8Array>);
-          return;
-        }
-        const readers = (
-          await Promise.all([
-            retryACLConflict(() => this._readers.users()),
-            retryACLConflict(() => this._writers.users()),
-          ])
-        ).flat();
-        for (const reader of readers) {
-          if (
-            (await this._authProvider.verify(
-              this._encoder.encode(message.documentId),
-              reader,
-              this._deserializeSignature(message.signature),
-            )) === true
-          ) {
-            authorized = true;
-            break;
-          }
-        }
-      }
-
-      if (authorized !== true) {
+      // Signing-disabled deployments retain the same trust posture across
+      // all shared load protocols through the common authorization helper.
+      if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared tip-advertise request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await stream.sink([] as Iterable<Uint8Array>);
@@ -2667,8 +3320,13 @@ export class PeerborneDocument<
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
       console.log('Sending encrypted shared tip-advertise response');
 
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      await stream.sink([assembled] as Iterable<Uint8Array>);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared tip-advertise request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -2786,9 +3444,50 @@ export class PeerborneDocument<
     maxResponseBytes?: number,
     requireCompleteCids = false,
     configuredResponseTimeoutMs?: number,
+    beforeBootstrapComplete?: () => Promise<void>,
+    signal?: AbortSignal,
+    bootstrapContinuation?: InvitationBootstrapContinuation,
   ): Promise<boolean> {
-    const responseLimit =
-      maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE;
+    const continuingInvitationBootstrap =
+      this._isActiveInvitationBootstrapContinuation(bootstrapContinuation);
+    if (continuingInvitationBootstrap && requiredResponseSigner === undefined) {
+      throw new Error(
+        'Invitation bootstrap continuation requires a pinned response signer',
+      );
+    }
+    const canUseCurrentBootstrapState = (): boolean =>
+      continuingInvitationBootstrap
+        ? this._bootstrapLoadApplicationState === 'pending' &&
+          this._isActiveInvitationBootstrapContinuation(
+            bootstrapContinuation,
+          )
+        : this._bootstrapLoadApplicationState !== 'pending' &&
+          this._activeInvitationBootstrapContinuation === undefined;
+    const responseLimit = assertPositiveSafeByteLimit(
+      maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
+      'Document load response byte limit',
+    );
+    const aggregateBudget: DocumentChangeFetchBudget = {
+      maxBytes: responseLimit,
+      consumedBytes: 0,
+    };
+    const prefetchedBlocks = new Map<string, Uint8Array>();
+    const changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {
+      signal,
+      maxBlockBytes: responseLimit,
+      maxAggregateBlockBytes: responseLimit,
+      aggregateBudget,
+      prefetchedBlocks,
+      assertStillActive: continuingInvitationBootstrap
+        ? () => {
+            if (!canUseCurrentBootstrapState()) {
+              throw new Error(
+                `Invitation bootstrap continuation for ${this.documentPath} is no longer active`,
+              );
+            }
+          }
+        : undefined,
+    };
     const responseTimeoutMs = documentLoadResponseTimeoutMs(
       configuredResponseTimeoutMs ?? this.swarm.config?.loadQuorumTimeoutMs,
     );
@@ -2809,6 +3508,15 @@ export class PeerborneDocument<
         // The stream may already have been reset by the transport.
       }
     };
+    // Reject a poisoned instance before sending or consuming any more load
+    // protocol traffic. Abort the already-dialed stream so this overlap does
+    // not leak transport resources. The second check after response parsing
+    // closes the race where another bootstrap becomes pending in flight.
+    throwIfLoadAborted(signal);
+    if (!canUseCurrentBootstrapState()) {
+      abortResponse(new Error('Document load rejected on poisoned instance'));
+      return false;
+    }
     const deadline = new Promise<never>((_resolve, reject) => {
       responseDeadline = setTimeout(() => {
         const error = new Error('Document load response deadline exceeded');
@@ -2837,6 +3545,8 @@ export class PeerborneDocument<
         } finally {
           clearResponseDeadline();
         }
+        throwIfLoadAborted(signal);
+        if (!canUseCurrentBootstrapState()) return false;
 
         // Empty response means the peer couldn't serve this request.
         if (assembled.length === 0) {
@@ -2878,12 +3588,69 @@ export class PeerborneDocument<
         }
 
         const message = this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+        throwIfLoadAborted(signal);
         if (message.documentId !== this.documentPath) {
           console.warn(
             `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
           );
           return false;
         }
+        // A partially-applied bootstrap cannot be repaired in place because
+        // later trusted state would merge atop the prior live poison. Reject
+        // every response, including an explicitly signer-pinned one, before
+        // consulting the potentially attacker-shaped writer ACL.
+        if (!canUseCurrentBootstrapState()) {
+          return false;
+        }
+        let loadWriterAdmission:
+          | 'unsigned'
+          | 'pinned'
+          | 'bootstrap'
+          | 'current-writer' = this._isSigningEnabled()
+            ? 'bootstrap'
+            : 'unsigned';
+        const originalSignature = message.signature;
+        let originalSignedRaw: Uint8Array | undefined;
+        if (
+          (requiredResponseSigner !== undefined || this._isSigningEnabled()) &&
+          originalSignature
+        ) {
+          const { signature: _signature, ...messageWithoutSignature } =
+            message;
+          originalSignedRaw = new Uint8Array(
+            this._syncMessageSerializer.serializeSyncMessage(
+              messageWithoutSignature,
+            ),
+          );
+        }
+        let originalSignatureBytes: Uint8Array | undefined;
+        const getOriginalSignatureBytes = (): Uint8Array | undefined => {
+          if (originalSignatureBytes) return originalSignatureBytes;
+          if (!originalSignature) return undefined;
+          try {
+            originalSignatureBytes = this._deserializeSignature(
+              originalSignature,
+            );
+            return originalSignatureBytes;
+          } catch {
+            return undefined;
+          }
+        };
+        const verifyOriginalLoadSignature = async (
+          writerKeys: readonly PublicKey[],
+        ): Promise<boolean> => {
+          const signatureBytes = getOriginalSignatureBytes();
+          if (!originalSignedRaw || !signatureBytes) return false;
+          return firstTrue(
+            writerKeys.map((writerKey) =>
+              this._authProvider.verify(
+                originalSignedRaw!,
+                writerKey,
+                signatureBytes,
+              ),
+            ),
+          );
+        };
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the
         // existing trusted writer set BEFORE sync() mutates state. This
@@ -2897,30 +3664,29 @@ export class PeerborneDocument<
             requiredResponseSigner === undefined
               ? await this._getWriterKeys()
               : [];
+          loadWriterAdmission = requiredResponseSigner === undefined
+            ? preLoadWriters.length > 0
+              ? 'current-writer'
+              : 'bootstrap'
+            : 'pinned';
           if (
             requiredResponseSigner !== undefined ||
             preLoadWriters.length > 0
           ) {
-            if (!message.signature) {
+            if (!originalSignature || !originalSignedRaw) {
               console.warn(
                 `Load response for ${this.documentPath}: missing signature, skipping peer`,
               );
               return false;
             }
-            const { signature, ...messageWithoutSignature } = message;
-            const raw = this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
-            );
             // Mirror `_verifyWriterSignature`: a malformed/non-string signature
             // can cause `js-base64` to throw. Treat decode failure as a
             // verification failure for this peer (skip and let the caller try
             // the next one) rather than letting the exception escape -- the
             // outer snapshot-load attempt swallows errors via a blanket
             // catch{}, which would hide the malformed input entirely.
-            let signatureBytes: Uint8Array;
-            try {
-              signatureBytes = this._deserializeSignature(signature);
-            } catch {
+            const signatureBytes = getOriginalSignatureBytes();
+            if (!signatureBytes) {
               console.warn(
                 `Load response for ${this.documentPath}: malformed signature, skipping peer`,
               );
@@ -2928,13 +3694,9 @@ export class PeerborneDocument<
             }
             const verified =
               requiredResponseSigner === undefined
-                ? await firstTrue(
-                    preLoadWriters.map((writerKey) =>
-                      this._authProvider.verify(raw, writerKey, signatureBytes),
-                    ),
-                  )
+                ? await verifyOriginalLoadSignature(preLoadWriters)
                 : await this._authProvider.verify(
-                    raw,
+                    originalSignedRaw,
                     requiredResponseSigner,
                     signatureBytes,
                   );
@@ -2946,6 +3708,188 @@ export class PeerborneDocument<
             }
           }
         }
+        const trackedBootstrapLoad =
+          loadWriterAdmission === 'bootstrap' ||
+          loadWriterAdmission === 'pinned' ||
+          loadWriterAdmission === 'unsigned';
+        let beganBootstrapStateApplication = false;
+        let trackedLoadHadEstablishedState = false;
+        let trackedLoadMadeReplicatedProgress = false;
+        let trackedLoadMadeLogicalKeychainProgress = false;
+        const assertBootstrapCanComplete = async (): Promise<void> => {
+          throwIfLoadAborted(signal);
+          if (
+            continuingInvitationBootstrap &&
+            !canUseCurrentBootstrapState()
+          ) {
+            throw new Error(
+              `Invitation bootstrap continuation for ${this.documentPath} is no longer active`,
+            );
+          }
+          await beforeBootstrapComplete?.();
+          throwIfLoadAborted(signal);
+          if (
+            continuingInvitationBootstrap &&
+            !canUseCurrentBootstrapState()
+          ) {
+            throw new Error(
+              `Invitation bootstrap continuation for ${this.documentPath} is no longer active`,
+            );
+          }
+        };
+        const completeBootstrapStateApplication = async (): Promise<void> => {
+          if (beganBootstrapStateApplication) {
+            await this._mutationQueue.run(() => {
+              throwIfLoadAborted(signal);
+              return this._completeBootstrapStateApplicationUnlocked(
+                assertBootstrapCanComplete,
+                () => throwIfLoadAborted(signal),
+              );
+            });
+          }
+        };
+        const beginBootstrapStateApplication = (): void => {
+          throwIfLoadAborted(signal);
+          this._markBootstrapStateApplicationPending();
+          beganBootstrapStateApplication = true;
+        };
+        const hasReplicatedState = (): boolean =>
+          this._hashes.size > 0 ||
+          this._lastSyncMessage !== undefined ||
+          this._latestSnapshot !== undefined;
+        const syncTrackedLoadMessageUnlocked = async (): Promise<boolean> => {
+          // Established pinned/unsigned catch-up can temporarily return a
+          // complete document to the pending bootstrap state. Do not begin
+          // that transition while an older observer notification is waiting:
+          // finalization cannot await the observer without retaining this
+          // queue slot, and dispatching first would overtake it.
+          if (this._remoteUpdateNotificationTail) return false;
+          const hashesBefore = this._hashes.size;
+          const lastSyncMessageBefore = this._lastSyncMessage;
+          const latestSnapshotBefore = this._latestSnapshot;
+          trackedLoadHadEstablishedState =
+            this._bootstrapLoadApplicationState === 'complete' ||
+            hasReplicatedState();
+
+          throwIfLoadAborted(signal);
+          if (!canUseCurrentBootstrapState()) return false;
+          const synced = await this._syncUnlocked(
+            message,
+            false,
+            continuingInvitationBootstrap
+              ? undefined
+              : beginBootstrapStateApplication,
+            continuingInvitationBootstrap,
+            () => {
+              trackedLoadMadeLogicalKeychainProgress = true;
+            },
+            changeFetchOptions,
+          );
+          throwIfLoadAborted(signal);
+          if (
+            continuingInvitationBootstrap &&
+            !canUseCurrentBootstrapState()
+          ) {
+            return false;
+          }
+          trackedLoadMadeReplicatedProgress =
+            ((loadWriterAdmission === 'pinned' ||
+              loadWriterAdmission === 'unsigned') &&
+              trackedLoadMadeLogicalKeychainProgress) ||
+            this._hashes.size > hashesBefore ||
+            this._lastSyncMessage !== lastSyncMessageBefore ||
+            this._latestSnapshot !== latestSnapshotBefore;
+
+          if (
+            synced === true &&
+            loadWriterAdmission === 'pinned' &&
+            !beganBootstrapStateApplication &&
+            trackedLoadHadEstablishedState
+          ) {
+            await assertBootstrapCanComplete();
+          }
+          return synced;
+        };
+        const trackedLoadIsVacuous = (): boolean =>
+          trackedBootstrapLoad &&
+          !trackedLoadHadEstablishedState &&
+          (!beganBootstrapStateApplication ||
+            !trackedLoadMadeReplicatedProgress);
+        const syncLoadMessage = (): Promise<boolean> => {
+          if (loadWriterAdmission === 'current-writer') {
+            // Reverify while holding the membership queue. The writer set may
+            // have changed after the early load-response admission check.
+            return this._mutationQueue.run(async () => {
+              if (!canUseCurrentBootstrapState()) {
+                return false;
+              }
+              const currentWriters = await this._getWriterKeys();
+              if (
+                (await verifyOriginalLoadSignature(currentWriters)) !== true
+              ) {
+                return false;
+              }
+              return this._syncUnlocked(
+                message,
+                false,
+                undefined,
+                false,
+                undefined,
+                changeFetchOptions,
+              );
+            });
+          }
+          if (loadWriterAdmission === 'bootstrap') {
+            // First-load encrypted-channel bootstrap is valid only while the
+            // writer ACL and local DAG are still pristine at the queued
+            // application boundary. An existing document whose raw/legacy ACL
+            // reached zero writers must not regain bootstrap authority merely
+            // because a peer still holds an old document key.
+            return this._mutationQueue.run(async () => {
+              if (!canUseCurrentBootstrapState()) {
+                return false;
+              }
+              const currentWriters = await this._getWriterKeys();
+              if (currentWriters.length > 0) {
+                if (
+                  (await verifyOriginalLoadSignature(currentWriters)) !== true
+                ) {
+                  return false;
+                }
+                return syncTrackedLoadMessageUnlocked();
+              }
+              if (
+                this._bootstrapLoadApplicationState !== 'pristine' ||
+                this._hashes.size > 0 ||
+                this._lastSyncMessage !== undefined ||
+                this._latestSnapshot !== undefined ||
+                this._subscribed ||
+                this._createdLocally
+              ) {
+                return false;
+              }
+              return syncTrackedLoadMessageUnlocked();
+            });
+          }
+          // Pinned invitation catch-up and signing-disabled loads still use
+          // the same fail-closed application marker. A pinned signer cannot
+          // recover an instance after a partial bootstrap because that would
+          // merge trusted data atop unknown live state.
+          if (continuingInvitationBootstrap) {
+            // Invitation acceptance already owns the mutation FIFO across
+            // open and catch-up. Re-entering it here would deadlock; the
+            // unforgeable continuation capability confines this unlocked
+            // path to that one in-progress transaction.
+            return canUseCurrentBootstrapState()
+              ? syncTrackedLoadMessageUnlocked()
+              : Promise.resolve(false);
+          }
+          return this._mutationQueue.run(() =>
+            canUseCurrentBootstrapState()
+              ? syncTrackedLoadMessageUnlocked()
+              : Promise.resolve(false),
+          );
+        };
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
         // structurally describe the same tip set the responder voted
@@ -3117,9 +4061,14 @@ export class PeerborneDocument<
           // every captured CID is now in `_hashes`; any missing CID is
           // surfaced as a per-peer bind failure so the loader can retry
           // the next peer in the agreeing cohort.
-          const expectedCids = collectAllCidsInTree(
+          const provenSnapshotBoundariesBeforeSync =
+            this._latestSnapshot?.lastChangeNodeCID === undefined
+              ? new Set<string>()
+              : new Set([this._latestSnapshot.lastChangeNodeCID]);
+          const expectedCids = collectInvitationCidsToInstall(
             message.changeId,
             message.changes,
+            provenSnapshotBoundariesBeforeSync,
           );
 
           stripInlineChanges(message.changes);
@@ -3198,42 +4147,116 @@ export class PeerborneDocument<
           // the loader. Block bytes are cached locally on success; the
           // subsequent `sync()` call only does local lookups for those
           // CIDs and applies them.
+          let cidsToPrefetch: string[] = [];
           if (expectedCids.length > 0) {
+            // Snapshot only committed-known hashes while serialized with state
+            // mutation. Reading the live Set outside the queue could observe a
+            // hash installed by a mutation that later rolls back, skip its
+            // prefetch, and let sync partially mutate before discovering the
+            // block is unavailable. Invitation catch-up already owns this
+            // queue slot, so its direct snapshot is equally stable.
+            const knownHashesBeforePrefetch = continuingInvitationBootstrap
+              ? canUseCurrentBootstrapState()
+                ? new Set(this._hashes)
+                : undefined
+              : await this._mutationQueue.run(async () =>
+                  canUseCurrentBootstrapState()
+                    ? new Set(this._hashes)
+                    : undefined,
+                );
+            if (knownHashesBeforePrefetch === undefined) return false;
+            cidsToPrefetch = expectedCids.filter(
+              (cid) => !knownHashesBeforePrefetch.has(cid),
+            );
+          }
+          if (cidsToPrefetch.length > 0) {
             const missingCids: string[] = [];
             let nextIndex = 0;
+            let prefetchLimitExceeded = false;
+            const consumePrefetchedBytes = (byteLength: number): void =>
+              consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
+            const prefetchController = new AbortController();
+            const forwardPrefetchAbort = (): void => {
+              if (!prefetchController.signal.aborted) {
+                prefetchController.abort(signal?.reason);
+              }
+            };
+            if (signal?.aborted) {
+              forwardPrefetchAbort();
+            } else {
+              signal?.addEventListener('abort', forwardPrefetchAbort, {
+                once: true,
+              });
+            }
+            const prefetchSignal = prefetchController.signal;
             const workerCount = Math.min(
               LOAD_PREFETCH_MAX_CONCURRENCY,
-              expectedCids.length,
+              cidsToPrefetch.length,
             );
             const worker = async (): Promise<void> => {
-              while (true) {
+              while (!prefetchLimitExceeded) {
+                throwIfLoadAborted(signal);
                 const i = nextIndex++;
-                if (i >= expectedCids.length) return;
-                const cidStr = expectedCids[i]!;
+                if (i >= cidsToPrefetch.length) return;
+                const cidStr = cidsToPrefetch[i]!;
                 try {
                   const cid = CID.parse(cidStr);
-                  // Force the blockstore to retrieve the block. Helia
-                  // validates content vs CID on `get`; draining the
-                  // returned async-iterable triggers the actual fetch.
-                  // Discard the chunks (no concat) — we only need
-                  // content-validation here, not the bytes.
-                  for await (const _chunk of this.swarm.heliaNode.blockstore.get(
-                    cid,
-                  )) {
-                    void _chunk;
+                  // Fetch once before state application. Helia validates
+                  // content vs CID on `get`; caching the bounded raw block lets
+                  // `_syncDocumentChanges` decrypt and deserialize that exact
+                  // value without a second blockstore read or byte budget.
+                  const block = await this._readBlock(cid, {
+                    signal: prefetchSignal,
+                    maxBlockBytes: responseLimit,
+                    consumeBytes: consumePrefetchedBytes,
+                  });
+                  prefetchedBlocks.set(cidStr, block);
+                  throwIfLoadAborted(signal);
+                } catch (error) {
+                  if (signal?.aborted) throwIfLoadAborted(signal);
+                  if (
+                    prefetchLimitExceeded &&
+                    prefetchController.signal.aborted
+                  ) {
+                    return;
                   }
-                } catch {
+                  if (error instanceof _LoadFetchLimitExceededError) {
+                    prefetchLimitExceeded = true;
+                    prefetchController.abort(
+                      new _LoadFetchLimitExceededError(
+                        'Load pre-fetch limits exceeded',
+                      ),
+                    );
+                    return;
+                  }
                   missingCids.push(cidStr);
                 }
               }
             };
-            await Promise.all(
-              Array.from({ length: workerCount }, () => worker()),
+            let prefetchResults: PromiseSettledResult<void>[];
+            try {
+              prefetchResults = await Promise.allSettled(
+                Array.from({ length: workerCount }, () => worker()),
+              );
+            } finally {
+              signal?.removeEventListener('abort', forwardPrefetchAbort);
+            }
+            throwIfLoadAborted(signal);
+            const prefetchFailure = prefetchResults.find(
+              (result): result is PromiseRejectedResult =>
+                result.status === 'rejected',
             );
+            if (prefetchFailure) throw prefetchFailure.reason;
+            if (prefetchLimitExceeded) {
+              throw new _QuorumBindCheckFailedError(
+                '(prefetch-limits-exceeded)',
+                'Quorum-bound load pre-fetch exceeded block retrieval limits',
+              );
+            }
             if (missingCids.length > 0) {
               console.warn(
                 `[${this.documentPath}] Quorum-bound load pre-fetch ` +
-                  `failed: ${missingCids.length} of ${expectedCids.length} ` +
+                  `failed: ${missingCids.length} of ${cidsToPrefetch.length} ` +
                   `expected CIDs were not retrievable from Helia (e.g. ` +
                   `${missingCids
                     .slice(0, 3)
@@ -3245,14 +4268,15 @@ export class PeerborneDocument<
               throw new _QuorumBindCheckFailedError(
                 '(prefetch-missing-blocks)',
                 `Quorum-bound load pre-fetch could not retrieve ` +
-                  `${missingCids.length} of ${expectedCids.length} expected ` +
+                  `${missingCids.length} of ${cidsToPrefetch.length} expected ` +
                   `CIDs from Helia; aborting before sync() so document ` +
                   `state is unchanged.`,
               );
             }
           }
 
-          const syncResult = await this.sync(message, false);
+          const syncResult = await syncLoadMessage();
+          throwIfLoadAborted(signal);
           if (syncResult !== true) {
             console.warn(
               `sync rejected message during load for ${this.documentPath}`,
@@ -3260,7 +4284,6 @@ export class PeerborneDocument<
             // Return false so the caller tries the next peer.
             return false;
           }
-
           // Post-sync verification: every
           // CID we expected from the (stripped) served tree must have
           // landed in `_hashes` via either inline application (for the
@@ -3292,17 +4315,30 @@ export class PeerborneDocument<
             );
           }
 
+          if (trackedLoadIsVacuous()) {
+            console.warn(
+              `Bootstrap load for ${this.documentPath} applied no state; skipping peer`,
+            );
+            return false;
+          }
+
+          await completeBootstrapStateApplication();
+          throwIfLoadAborted(signal);
           return true;
         }
 
         const snapshotBoundaryBeforeSync =
           this._latestSnapshot?.lastChangeNodeCID;
-        const syncResult = requireCompleteCids
+        // Legacy/non-quorum loads need the same advertised-CID completeness
+        // gate as invitation catch-up. `_syncDocumentChanges` deliberately
+        // logs and swallows individual block fetch failures, so `true` alone
+        // is not evidence that a bootstrap installed its entire tree.
+        const syncResult = requireCompleteCids || trackedBootstrapLoad
           ? await syncInvitationMessageCompletely(
               message,
               this._hashes,
-              () => this.sync(message, false),
-              'catch-up',
+              syncLoadMessage,
+              loadWriterAdmission === 'pinned' ? 'catch-up' : 'bootstrap',
               {
                 provenSnapshotBoundariesBeforeSync:
                   snapshotBoundaryBeforeSync === undefined
@@ -3312,7 +4348,8 @@ export class PeerborneDocument<
                   this._latestSnapshot === message.snapshot,
               },
             )
-          : await this.sync(message, false);
+          : await syncLoadMessage();
+        throwIfLoadAborted(signal);
         if (syncResult !== true) {
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
@@ -3320,6 +4357,14 @@ export class PeerborneDocument<
           // Return false so the caller tries the next peer.
           return false;
         }
+        if (trackedLoadIsVacuous()) {
+          console.warn(
+            `Bootstrap load for ${this.documentPath} applied no state; skipping peer`,
+          );
+          return false;
+        }
+        await completeBootstrapStateApplication();
+        throwIfLoadAborted(signal);
         return true;
       },
     );
@@ -3590,7 +4635,18 @@ export class PeerborneDocument<
   private async _loadInvitationCatchUp(
     founderAddress: string,
     issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+    bootstrapContinuation?: InvitationBootstrapContinuation,
   ): Promise<boolean> {
+    if (
+      !this._isActiveInvitationBootstrapContinuation(bootstrapContinuation) ||
+      this._bootstrapLoadApplicationState !== 'pending'
+    ) {
+      this._assertNoIncompleteBootstrapLoad();
+      throw new Error(
+        `Invitation catch-up for ${this.documentPath} requires an active bootstrap transaction`,
+      );
+    }
     const signatureBytes = await this._authProvider.sign(
       this._encoder.encode(this.documentPath),
       this._userKey,
@@ -3607,7 +4663,7 @@ export class PeerborneDocument<
           runOnLimitedConnection: true,
           signal,
         }),
-      (rawStream) =>
+      (rawStream, signal) =>
         this._sendLoadRequestAndSync(
           wrapStream(rawStream),
           serializedRequest,
@@ -3616,6 +4672,14 @@ export class PeerborneDocument<
           MAX_INVITATION_MESSAGE_BYTES,
           true,
           INVITATION_STREAM_TIMEOUT_MS,
+          () =>
+            this._assertAcceptedInvitationMembership(
+              issuerPublicKey,
+              role,
+              signal,
+            ),
+          signal,
+          bootstrapContinuation,
         ),
     );
   }
@@ -3697,16 +4761,25 @@ export class PeerborneDocument<
    *   raised inside `load()`. The original single-peer
    *   "return false on no peers" behaviour is preserved when the quorum
    *   gate is disabled (`loadQuorumEnabled: false`).
+   * @throws {Error} When an earlier encrypted-channel bootstrap began
+   *   applying state but did not complete. The document instance remains
+   *   fail-closed and must be discarded.
    */
   // Key exchange happens during:
   // - Load messages.
   // - ACL updates via /collabswarm/key-update/1.0.0 protocol
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+    // A failed bootstrap may have partially changed ACL/keychain state without
+    // producing a DAG head. Do not let a later load retry or `open()` interpret
+    // that state as a safe new-document result.
+    this._assertNoIncompleteBootstrapLoad();
+
     // Pick a peer. All peers come from getConnections() so they already have
     // open connections. dialProtocol reuses existing connections internally,
     // so no additional connection management is needed here.
     const shuffledPeers = await this._shuffledPeers();
     if (shuffledPeers.length === 0) {
+      this._assertNoIncompleteBootstrapLoad();
       return false;
     }
 
@@ -3861,6 +4934,7 @@ export class PeerborneDocument<
       // `open()` time instead of silently forking the document.
       const quorumWasEnabled = this.swarm.config?.loadQuorumEnabled ?? true;
       if (quorumWasEnabled && quorumPeers.length === 0) {
+        this._assertNoIncompleteBootstrapLoad();
         return false;
       }
       // Else: gate disabled. Fall through with the original (un-deduped)
@@ -3873,6 +4947,7 @@ export class PeerborneDocument<
       // unknown-doc with partition / timeout and surfaced
       // `LoadQuorumFailedError` -- preventing new-document creation in
       // any swarm with online peers.
+      this._assertNoIncompleteBootstrapLoad();
       return false;
     } else {
       winningHashHex = quorumResult.winningHashHex;
@@ -3953,10 +5028,12 @@ export class PeerborneDocument<
             winningHashHex,
           );
           if (loaded) {
+            this._assertNoIncompleteBootstrapLoad();
             return true;
           }
           // Empty response -- peer has no snapshot, try doc-load below.
         } catch (err) {
+          this._assertNoIncompleteBootstrapLoad();
           if (err instanceof _QuorumBindCheckFailedError) {
             // This peer voted hash X in the probe round but the structural
             // frontier of their served payload hashes to something else
@@ -3995,9 +5072,11 @@ export class PeerborneDocument<
           winningHashHex,
         );
         if (loaded) {
+          this._assertNoIncompleteBootstrapLoad();
           return true;
         }
       } catch (err) {
+        this._assertNoIncompleteBootstrapLoad();
         if (err instanceof _QuorumBindCheckFailedError) {
           console.warn(
             `[${this.documentPath}] Agreeing peer ${peer.toString()} failed ` +
@@ -4010,7 +5089,6 @@ export class PeerborneDocument<
         console.warn(
           `Failed to load document via ${documentLoadV3}:`,
           peer.toString(),
-          err,
         );
       }
     }
@@ -4075,6 +5153,7 @@ export class PeerborneDocument<
     }
 
     // No peer could provide the document -- assume new document.
+    this._assertNoIncompleteBootstrapLoad();
     console.log(`No connected peer served ${this.documentPath}`);
     return false;
   }
@@ -4120,6 +5199,31 @@ export class PeerborneDocument<
    *   registering protocol handlers, so no cleanup is needed on rejection.
    */
   public async open(): Promise<boolean> {
+    return this._open();
+  }
+
+  private async _open(
+    bootstrapContinuation?: InvitationBootstrapContinuation,
+  ): Promise<boolean> {
+    const continuingInvitationBootstrap =
+      this._isActiveInvitationBootstrapContinuation(bootstrapContinuation);
+    const assertCanOpen = (): void => {
+      if (continuingInvitationBootstrap) {
+        if (this._bootstrapLoadApplicationState !== 'pending') {
+          throw new Error(
+            `Invitation activation for ${this.documentPath} requires pending bootstrap state`,
+          );
+        }
+        return;
+      }
+      this._assertNoIncompleteBootstrapLoad();
+    };
+    assertCanOpen();
+    if (continuingInvitationBootstrap && !this._invitationBootstrapReady) {
+      throw new Error(
+        `Invitation activation for ${this.documentPath} requires verified bootstrap state`,
+      );
+    }
     // Cache the topic once so that subscribe and unsubscribe always target
     // the same string, even if config.pubsubDocumentPrefix changes later.
     this._topic = this._computeTopic();
@@ -4134,6 +5238,7 @@ export class PeerborneDocument<
     const loadedFromPeer = bootstrappedFromInvitation
       ? true
       : await this.load();
+    assertCanOpen();
     const isExisting = loadedFromPeer || this._hashes.size > 0;
 
     // Validate document path BEFORE subscribing to pubsub or registering
@@ -4156,6 +5261,7 @@ export class PeerborneDocument<
         }
       }
     }
+    assertCanOpen();
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
@@ -4201,6 +5307,7 @@ export class PeerborneDocument<
       .pubsub as GossipSub;
 
     try {
+      assertCanOpen();
       // Register this document with the swarm BEFORE subscribing to pubsub.
       // registerDocument() throws on duplicate document paths; doing this first
       // avoids subscribing to a topic that would then be unsubscribed by close()
@@ -4225,17 +5332,21 @@ export class PeerborneDocument<
               message: Message,
             ): Promise<TopicValidatorResult> => {
               try {
-                // Decrypt the message to access the signature.
+                // Keep attacker-controlled decryption and decoding outside the
+                // shared state queue. Only the final health and current-writer
+                // authorization decision must be serialized with mutations.
                 const blockKeyID = message.data.slice(
                   0,
                   this._keychainProvider.keyIDLength,
                 );
                 const blockNonce = message.data.slice(
                   this._keychainProvider.keyIDLength,
-                  this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+                  this._keychainProvider.keyIDLength +
+                    this._authProvider.nonceBits,
                 );
                 const blockData = message.data.slice(
-                  this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+                  this._keychainProvider.keyIDLength +
+                    this._authProvider.nonceBits,
                 );
                 const rawContent = await this._decryptBlock(
                   blockKeyID,
@@ -4244,7 +5355,9 @@ export class PeerborneDocument<
                 );
                 if (!rawContent) {
                   // Decryption failed -- key may not be in keychain yet
-                  console.warn(`[${this.documentPath}] Topic validator: decryption failed, ignoring message`);
+                  console.warn(
+                    `[${this.documentPath}] Topic validator: decryption failed, ignoring message`,
+                  );
                   return TopicValidatorResult.Ignore;
                 }
 
@@ -4256,18 +5369,20 @@ export class PeerborneDocument<
                 }
 
                 const { signature, ...messageWithoutSignature } = syncMessage;
-                const raw =
-                  this._syncMessageSerializer.serializeSyncMessage(
-                    messageWithoutSignature,
-                  );
+                const raw = this._syncMessageSerializer.serializeSyncMessage(
+                  messageWithoutSignature,
+                );
 
-                // Verify the message was signed by an authorized writer for this document
-                if (
-                  (await this._verifyWriterSignature(raw, signature)) === true
-                ) {
-                  return TopicValidatorResult.Accept;
-                }
-                return TopicValidatorResult.Reject;
+                return await this._runStateMutation(async () => {
+                  // Verify against the writer set in the same queue slot as
+                  // the bootstrap-health check performed by _runStateMutation.
+                  if (
+                    (await this._verifyWriterSignature(raw, signature)) === true
+                  ) {
+                    return TopicValidatorResult.Accept;
+                  }
+                  return TopicValidatorResult.Reject;
+                });
               } catch {
                 console.warn(`[${this.documentPath}] Topic validator: unexpected error, ignoring message`);
                 return TopicValidatorResult.Ignore;
@@ -4279,19 +5394,33 @@ export class PeerborneDocument<
       }
 
       if (!isExisting) {
-        this._createdLocally = true;
-        // Add current user as a writer.
-        const founderWriterChanges = await this._addWriter(this._userPublicKey);
+        await this._runStateMutation(async () => {
+          if (
+            this._bootstrapLoadApplicationState !== 'pristine' ||
+            this._hashes.size > 0 ||
+            this._lastSyncMessage !== undefined ||
+            this._latestSnapshot !== undefined
+          ) {
+            throw new Error(
+              `Document state changed while opening ${this.documentPath}`,
+            );
+          }
+          this._createdLocally = true;
+          // Add current user as a writer.
+          const founderWriterChanges = await this._addWriter(
+            this._userPublicKey,
+          );
 
-        // Add initial document key.
-        console.log(`Adding a key to ${this.documentPath}`);
-        await this._keychain.add();
+          // Add initial document key.
+          console.log(`Adding a key to ${this.documentPath}`);
+          await this._keychain.add();
 
-        // The founder ACL must be part of the replicated change DAG. Keeping
-        // it only in the creator's in-memory ACL lets first-load peers decrypt
-        // document state but leaves them unable to authenticate later writer
-        // updates (or write as the same restored identity).
-        await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+          // The founder ACL must be part of the replicated change DAG. Keeping
+          // it only in the creator's in-memory ACL lets first-load peers decrypt
+          // document state but leaves them unable to authenticate later writer
+          // updates (or write as the same restored identity).
+          await this._makeChange(founderWriterChanges, crdtWriterChangeNode);
+        });
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -4362,7 +5491,7 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature = true,
   ): Promise<boolean> {
-    return this._mutationQueue.run(() =>
+    return this._runStateMutation(() =>
       this._syncUnlocked(message, verifySignature),
     );
   }
@@ -4371,7 +5500,25 @@ export class PeerborneDocument<
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature: boolean,
+    onStateApplicationStart?: () => void,
+    continuePendingBootstrapApplication = false,
+    onLogicalKeychainChange?: () => void,
+    changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
   ): Promise<boolean> {
+    const assertStillActive = (): void => {
+      throwIfLoadAborted(changeFetchOptions.signal);
+      changeFetchOptions.assertStillActive?.();
+    };
+    assertStillActive();
+    if (continuePendingBootstrapApplication) {
+      if (this._bootstrapLoadApplicationState !== 'pending') {
+        throw new Error(
+          `Bootstrap sync for ${this.documentPath} requires pending state`,
+        );
+      }
+    } else {
+      this._assertNoIncompleteBootstrapLoad();
+    }
     const { signature, ...messageWithoutSignature } = message;
     const signingEnabled = this._isSigningEnabled();
     if (signingEnabled && !signature) {
@@ -4409,16 +5556,71 @@ export class PeerborneDocument<
         incomingChangeId,
       );
     }
+    assertStillActive();
 
+    let stateApplicationStarted = false;
+    const beginStateApplication = (): void => {
+      assertStillActive();
+      if (stateApplicationStarted) return;
+      stateApplicationStarted = true;
+      onStateApplicationStart?.();
+    };
+
+    // Keychain changes are provider-opaque. Only an absent wire field is a
+    // generic no-op; concrete providers decide whether any present value is a
+    // semantic no-op through a staged state commitment below.
+    const keychainChanges = message.keychainChanges;
+    const hasKeychainChanges = keychainChanges !== undefined;
+
+    // The built-in providers do not share one byte-level empty encoding. When
+    // staging and logical commitments are available,
+    // compare the live and projected key sequences before reserving a bootstrap
+    // instance. A semantic no-op is still committed atomically so providers
+    // retain causal metadata, but it does not expose new logical key state.
+    // Opaque legacy keychains retain the conservative begin-before-merge behavior.
+    const preparedKeychainMerge =
+      hasKeychainChanges &&
+      onStateApplicationStart !== undefined &&
+      this._keychain.prepareMerge
+        ? this._keychain.prepareMerge(keychainChanges)
+        : undefined;
+    let logicalKeychainStateChanged: boolean | undefined;
+    if (
+      preparedKeychainMerge?.stateCommitment &&
+      this._keychain.stateCommitment
+    ) {
+      const [liveCommitment, preparedCommitment] = await Promise.all([
+        this._keychain.stateCommitment(),
+        preparedKeychainMerge.stateCommitment(),
+      ]);
+      logicalKeychainStateChanged = !constantTimeEqual(
+        liveCommitment,
+        preparedCommitment,
+      );
+    }
+    assertStillActive();
     // Update/replace list of document keys (if provided).
-    if (message.keychainChanges) {
+    if (hasKeychainChanges) {
       try {
-        this._keychain.merge(message.keychainChanges);
+        if (preparedKeychainMerge) {
+          if (logicalKeychainStateChanged !== false) {
+            await preparedKeychainMerge.hydrateKeys();
+            assertStillActive();
+            beginStateApplication();
+          }
+          assertStillActive();
+          preparedKeychainMerge.commit();
+        } else {
+          beginStateApplication();
+          this._keychain.merge(keychainChanges);
+        }
+        if (logicalKeychainStateChanged === true) {
+          onLogicalKeychainChange?.();
+        }
         console.log(`Updated keychain in ${this.documentPath}`);
       } catch (e) {
         console.error(
           `Failed to merge keychain changes in ${this.documentPath}`,
-          e,
         );
         throw e;
       }
@@ -4428,8 +5630,13 @@ export class PeerborneDocument<
     // _writers/_readers. This is needed before snapshot verification since
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    if (changeTreePreflight) {
-      await this._applyCollectedACL(changeTreePreflight.aclEntries);
+    if (changeTreePreflight && changeTreePreflight.aclEntries.length > 0) {
+      beginStateApplication();
+      await this._applyCollectedACL(
+        changeTreePreflight.aclEntries,
+        assertStillActive,
+      );
+      assertStillActive();
     }
 
     // Apply snapshot if present and more recent than ours.
@@ -4463,10 +5670,9 @@ export class PeerborneDocument<
             snapshotSignatureValid = await this._verifySnapshotSignature(
               signPayload, incoming.signature,
             );
-          } catch (e) {
+          } catch {
             console.warn(
               `Rejected snapshot for ${this.documentPath}: malformed snapshot fields`,
-              e,
             );
           }
         }
@@ -4478,6 +5684,7 @@ export class PeerborneDocument<
           // Apply the snapshot state. Use applySnapshot when available (e.g.
           // Automerge save format differs from incremental changes), otherwise
           // fall back to remoteChange (works for Yjs where snapshots are valid updates).
+          beginStateApplication();
           this._document = this._crdtProvider.applySnapshot
             ? this._crdtProvider.applySnapshot(this._document, incoming.state)
             : this._crdtProvider.remoteChange(this._document, incoming.state);
@@ -4507,12 +5714,16 @@ export class PeerborneDocument<
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
     if (changeTreePreflight) {
+      beginStateApplication();
       await this._syncDocumentChanges(
         message.changeId,
         changeTreePreflight.changes,
+        changeFetchOptions,
       );
+      assertStillActive();
     }
 
+    assertStillActive();
     return true;
   }
 
@@ -4532,6 +5743,7 @@ export class PeerborneDocument<
     handler: PeerborneDocumentChangeHandler<DocType, PublicKey>,
     originFilter: 'all' | 'remote' | 'local' = 'all',
   ) {
+    this._assertNoIncompleteBootstrapLoad();
     switch (originFilter) {
       case 'all': {
         this._remoteHandlers[id] = handler;
@@ -4571,6 +5783,7 @@ export class PeerborneDocument<
    * and applied atomically when `endChange()` is called.
    */
   public startChange() {
+    this._assertNoIncompleteBootstrapLoad();
     if (this._inTransaction) {
       throw new Error('Transaction already in progress');
     }
@@ -4583,6 +5796,7 @@ export class PeerborneDocument<
    * Must be called between `startChange()` and `endChange()`.
    */
   public addChange(changeFn: ChangeFnType) {
+    this._assertNoIncompleteBootstrapLoad();
     if (!this._inTransaction) {
       throw new Error('No transaction in progress. Call startChange() first.');
     }
@@ -4662,7 +5876,7 @@ export class PeerborneDocument<
    * @throws {Error} If any step in the commit pipeline fails.
    */
   public async endChange(message?: string) {
-    return this._mutationQueue.run(() => this._endChangeUnlocked(message));
+    return this._runStateMutation(() => this._endChangeUnlocked(message));
   }
 
   private async _endChangeUnlocked(message?: string) {
@@ -4682,7 +5896,7 @@ export class PeerborneDocument<
       return;
     }
 
-    const originalDocument = this.document;
+    const originalDocument = this._document;
     // Snapshot internal metadata so we can restore on failure.
     // Only track the Set size (O(1)) instead of cloning the entire Set (O(n)):
     // _makeChange adds at most one CID, and JS Sets iterate in insertion order,
@@ -4712,7 +5926,7 @@ export class PeerborneDocument<
       // the same reference, so rollback on failure is best-effort for Yjs.
       // Automerge returns a new immutable document, so rollback is reliable.
       const [newDocument, changes] = this._crdtProvider.localChange(
-        this.document,
+        this._document,
         message || '',
         composedFn,
       );
@@ -4786,7 +6000,7 @@ export class PeerborneDocument<
    * @param message An optional change message/description to include.
    */
   public async change(changeFn: ChangeFnType, message?: string) {
-    return this._mutationQueue.run(() =>
+    return this._runStateMutation(() =>
       this._changeUnlocked(changeFn, message),
     );
   }
@@ -4798,7 +6012,7 @@ export class PeerborneDocument<
     await this._ensureCurrentUserCanWrite();
 
     const [newDocument, changes] = this._crdtProvider.localChange(
-      this.document,
+      this._document,
       message || '',
       changeFn,
     );
@@ -4814,6 +6028,7 @@ export class PeerborneDocument<
    * not the depth of the longest path in the DAG.
    */
   public historySize(): number {
+    this._assertNoIncompleteBootstrapLoad();
     return this._hashes.size;
   }
 
@@ -4821,6 +6036,7 @@ export class PeerborneDocument<
    * Returns the current snapshot, if one exists.
    */
   public get latestSnapshot(): CRDTSnapshotNode<ChangesType, PublicKey> | undefined {
+    this._assertNoIncompleteBootstrapLoad();
     return this._latestSnapshot;
   }
 
@@ -4849,7 +6065,8 @@ export class PeerborneDocument<
    * @returns The deserialized change payload, or `undefined` if unavailable.
    */
   public async loadChangeBlock(cid: string): Promise<ChangesType | undefined> {
-    return lazyLoadChangeBlock<CID, ChangesType>(
+    this._assertNoIncompleteBootstrapLoad();
+    const changes = await lazyLoadChangeBlock<CID, ChangesType>(
       cid,
       this._hashes,
       (c) => CID.parse(c),
@@ -4858,6 +6075,8 @@ export class PeerborneDocument<
       // for the lazy-load path (audit UIs, diff viewers) and should not spam
       // logs. Callers that want visibility can detect `undefined` themselves.
     );
+    this._assertNoIncompleteBootstrapLoad();
+    return changes;
   }
 
   /**
@@ -4873,6 +6092,7 @@ export class PeerborneDocument<
    * resolving to `undefined` (and may need to fall back to dialing peers).
    */
   public hasChange(cid: string): boolean {
+    this._assertNoIncompleteBootstrapLoad();
     return this._hashes.has(cid);
   }
 
@@ -4887,7 +6107,7 @@ export class PeerborneDocument<
    *   Only writers are authorized to create snapshots.
    */
   public async snapshot(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
-    return this._mutationQueue.run(() => this._snapshotUnlocked());
+    return this._runStateMutation(() => this._snapshotUnlocked());
   }
 
   private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
@@ -4980,7 +6200,10 @@ export class PeerborneDocument<
    * @return List of public keys with write access.
    */
   public async getWriters(): Promise<PublicKey[]> {
-    return await retryACLConflict(() => this._writers.users());
+    this._assertNoIncompleteBootstrapLoad();
+    const writers = await retryACLConflict(() => this._writers.users());
+    this._assertNoIncompleteBootstrapLoad();
+    return writers;
   }
 
   /**
@@ -4989,7 +6212,7 @@ export class PeerborneDocument<
    * @param writer User's public key
    */
   public async addWriter(writer: PublicKey) {
-    return this._mutationQueue.run(() => this._addWriterUnlocked(writer));
+    return this._runStateMutation(() => this._addWriterUnlocked(writer));
   }
 
   private async _addWriterUnlocked(
@@ -5018,7 +6241,7 @@ export class PeerborneDocument<
    * @param writer User's public key
    */
   public async removeWriter(writer: PublicKey) {
-    return this._mutationQueue.run(() => this._removeWriterUnlocked(writer));
+    return this._runStateMutation(() => this._removeWriterUnlocked(writer));
   }
 
   private async _removeWriterUnlocked(writer: PublicKey): Promise<void> {
@@ -5056,12 +6279,19 @@ export class PeerborneDocument<
    * @return List of public keys with read access.
    */
   public async getReaders(): Promise<PublicKey[]> {
+    this._assertNoIncompleteBootstrapLoad();
     const [readers, writers] = await Promise.all([
       retryACLConflict(() => this._readers.users()),
       retryACLConflict(() => this._writers.users()),
     ]);
-    if (writers.length === 0) return [...readers];
-    if (readers.length === 0) return [...writers];
+    if (writers.length === 0) {
+      this._assertNoIncompleteBootstrapLoad();
+      return [...readers];
+    }
+    if (readers.length === 0) {
+      this._assertNoIncompleteBootstrapLoad();
+      return [...writers];
+    }
     const serializer = this._authProvider.serializePublicKey;
     if (serializer !== undefined) {
       if (typeof serializer !== 'function') {
@@ -5084,6 +6314,7 @@ export class PeerborneDocument<
         assertCanonicalACLIdentity(identity);
         if (!readerIdentities.has(identity)) filteredWriters.push(writer);
       }
+      this._assertNoIncompleteBootstrapLoad();
       return [...readers, ...filteredWriters];
     }
 
@@ -5099,6 +6330,7 @@ export class PeerborneDocument<
         filteredWriters.push(writer);
       }
     }
+    this._assertNoIncompleteBootstrapLoad();
     return [...readers, ...filteredWriters];
   }
 
@@ -5142,7 +6374,7 @@ export class PeerborneDocument<
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
   ): Promise<BeeKEMWelcome | null> {
-    return this._mutationQueue.run(() =>
+    return this._runStateMutation(() =>
       this._addReaderUnlocked(reader, readerKemPublicKey),
     );
   }
@@ -5401,7 +6633,7 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
   ): Promise<InvitationBootstrapBundle> {
-    return this._mutationQueue.run(() =>
+    return this._runStateMutation(() =>
       this._buildInvitationBootstrapUnlocked(
         reader,
         readerKemPublicKey,
@@ -5690,7 +6922,9 @@ export class PeerborneDocument<
   private async _assertAcceptedInvitationMembership(
     issuerPublicKey: PublicKey,
     role: 'reader' | 'editor',
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfLoadAborted(signal);
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'Public invitations',
@@ -5705,6 +6939,7 @@ export class PeerborneDocument<
       Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
       Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
     ]);
+    throwIfLoadAborted(signal);
     assertAcceptedInvitationMembershipTopology(
       {
         issuer,
@@ -5714,6 +6949,52 @@ export class PeerborneDocument<
       },
       role,
     );
+  }
+
+  private async _activateAcceptedInvitationBootstrap(
+    founderAddress: string,
+    issuerPublicKey: PublicKey,
+    role: 'reader' | 'editor',
+    bootstrapContinuation: InvitationBootstrapContinuation,
+  ): Promise<void> {
+    try {
+      const existing = await this._open(bootstrapContinuation);
+      if (!existing) {
+        throw new Error('Invitation bootstrap attempted to create a new document');
+      }
+      if (
+        !(await this._loadInvitationCatchUp(
+          founderAddress,
+          issuerPublicKey,
+          role,
+          bootstrapContinuation,
+        ))
+      ) {
+        throw new Error('Invitation bootstrap catch-up load failed');
+      }
+      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+      if (
+        !this._isActiveInvitationBootstrapContinuation(bootstrapContinuation)
+      ) {
+        throw new Error('Invitation bootstrap continuation is no longer active');
+      }
+      // No continuation path is needed beyond this point. Retire the exact
+      // capability while state is still pending so completion can publish a
+      // healthy document to synchronous handlers and reentrant public reads.
+      // If finalization fails, the pending marker remains the durable gate.
+      this._activeInvitationBootstrapContinuation = undefined;
+      await this._completeBootstrapStateApplicationUnlocked();
+    } catch (error) {
+      this._invitationBootstrapReady = false;
+      // The invitation remains pending throughout open and catch-up. Cleanup
+      // never publishes a transient complete state, so synchronous getters,
+      // observers, and queued public mutations remain fail-closed.
+      if (this._bootstrapLoadApplicationState !== 'pending') {
+        this._markBootstrapStateApplicationPending();
+      }
+      await this.close().catch(() => {});
+      throw error;
+    }
   }
 
   /**
@@ -5732,6 +7013,11 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     founderAddress: string,
   ): Promise<void> {
+    if (this._bootstrapLoadApplicationState !== 'pristine') {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires a pristine document instance`,
+      );
+    }
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
     }
@@ -5746,18 +7032,21 @@ export class PeerborneDocument<
           'installed via setKemKeyPair',
       );
     }
-    if (bundle.welcomeEpochId.byteLength !== this._keychainProvider.keyIDLength) {
-      throw new Error(
-        `Invitation welcome epoch must be ${this._keychainProvider.keyIDLength} bytes`,
-      );
-    }
+    const invitationKemKeyPair = this._kemKeyPair;
+    const invitationKemPublicKeyRaw = new Uint8Array(this._kemPublicKeyRaw);
+    const invitationBundle = snapshotInvitationBootstrapBundle(
+      bundle,
+      this._keychainProvider.keyIDLength,
+      this._authProvider.nonceBits,
+    );
+    const invitationEpoch = new Uint8Array(invitationBundle.welcomeEpochId);
 
     let welcomeEnvelope;
     try {
       welcomeEnvelope = decodeWelcomeSealedPayload(
         await eciesOpen(
-          bundle.sealedWelcome,
-          this._kemKeyPair.privateKey,
+          invitationBundle.sealedWelcome,
+          invitationKemKeyPair.privateKey,
         ),
       );
     } catch {
@@ -5775,8 +7064,8 @@ export class PeerborneDocument<
     try {
       await beekem.processWelcome(
         welcomeEnvelope.beekemWelcome,
-        this._kemKeyPair.privateKey,
-        this._kemKeyPair.publicKey,
+        invitationKemKeyPair.privateKey,
+        invitationKemKeyPair.publicKey,
       );
     } catch {
       throw new Error('Invitation BeeKEM bootstrap could not be processed');
@@ -5790,121 +7079,190 @@ export class PeerborneDocument<
     const keychainChanges = this._changesSerializer.deserializeChanges(
       welcomeEnvelope.keychainChanges,
     );
-    this._keychain.merge(keychainChanges);
-    const hydratedKeys = await this._keychain.keys();
-    const epochPresent = hydratedKeys.some(([keyId]) =>
-      constantTimeEqual(keyId, bundle.welcomeEpochId),
-    );
-    if (!epochPresent || !this._keychain.getKey(bundle.welcomeEpochId)) {
-      throw new Error('Invitation Welcome did not install its advertised epoch key');
-    }
-
-    this._beekem = beekem;
-    this._beekemInitialized = true;
-
-    const headerLength =
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
-    if (bundle.encryptedBootstrap.byteLength <= headerLength) {
-      throw new Error('Invitation encrypted bootstrap is truncated');
-    }
-    const bootstrapKeyId = bundle.encryptedBootstrap.subarray(
-      0,
-      this._keychainProvider.keyIDLength,
-    );
-    assertInvitationBootstrapEpochBinding(
-      bundle.welcomeEpochId,
-      bootstrapKeyId,
-    );
-    const bootstrapKey = this._keychain.getKey(bootstrapKeyId);
-    if (!bootstrapKey) {
-      throw new Error('Invitation encrypted bootstrap uses an unknown key');
-    }
-    const nonce = bundle.encryptedBootstrap.subarray(
-      this._keychainProvider.keyIDLength,
-      headerLength,
-    );
-    const ciphertext = bundle.encryptedBootstrap.subarray(headerLength);
-    let bootstrapPlaintext: Uint8Array;
-    try {
-      bootstrapPlaintext = await this._authProvider.decrypt(
-        ciphertext,
-        bootstrapKey,
-        nonce,
+    const prepareKeychainMerge = this._keychain.prepareMerge;
+    if (!prepareKeychainMerge) {
+      throw new Error(
+        `Invitation bootstrap for ${this.documentPath} requires transactional keychain merge support`,
       );
-    } catch {
-      throw new Error('Invitation encrypted bootstrap could not be decrypted');
     }
+    await this._runInvitationBootstrapStateApplication(
+      async (beginStateApplication, bootstrapContinuation) => {
+        const preparedKeychainMerge = prepareKeychainMerge.call(
+          this._keychain,
+          keychainChanges,
+        );
+        if (
+          preparedKeychainMerge.currentKeyId === undefined ||
+          !constantTimeEqual(
+            preparedKeychainMerge.currentKeyId,
+            invitationBundle.welcomeEpochId,
+          )
+        ) {
+          throw new Error(
+            'Invitation Welcome epoch is not the staged keychain current epoch',
+          );
+        }
+        const hydratedKeys = await preparedKeychainMerge.hydrateKeys();
+        const epochPresent = hydratedKeys.some(([keyId]) =>
+          constantTimeEqual(keyId, invitationBundle.welcomeEpochId),
+        );
+        if (
+          !epochPresent ||
+          !preparedKeychainMerge.getKey(invitationBundle.welcomeEpochId)
+        ) {
+          throw new Error(
+            'Invitation Welcome did not install its advertised epoch key',
+          );
+        }
 
-    const bootstrapMessage =
-      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext);
-    if (bootstrapMessage.documentId !== this.documentPath) {
-      throw new Error('Invitation bootstrap document binding does not match');
-    }
-    if (!bootstrapMessage.signature) {
-      throw new Error('Invitation bootstrap is missing its issuer signature');
-    }
-    const { signature, ...unsignedBootstrap } = bootstrapMessage;
-    let signatureBytes: Uint8Array;
-    try {
-      signatureBytes = this._deserializeSignature(signature);
-    } catch {
-      throw new Error('Invitation bootstrap signature is malformed');
-    }
-    const signedBytes =
-      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
-    if (
-      (await this._authProvider.verify(
-        signedBytes,
-        issuerPublicKey,
-        signatureBytes,
-      )) !== true
-    ) {
-      throw new Error('Invitation bootstrap signature does not match the offer issuer');
-    }
+        const headerLength =
+          this._keychainProvider.keyIDLength + this._authProvider.nonceBits;
+        const bootstrapKeyId = invitationBundle.encryptedBootstrap.subarray(
+          0,
+          this._keychainProvider.keyIDLength,
+        );
+        assertInvitationBootstrapEpochBinding(
+          invitationBundle.welcomeEpochId,
+          bootstrapKeyId,
+        );
+        const bootstrapKey = preparedKeychainMerge.getKey(bootstrapKeyId);
+        if (!bootstrapKey) {
+          throw new Error('Invitation encrypted bootstrap uses an unknown key');
+        }
+        const nonce = invitationBundle.encryptedBootstrap.subarray(
+          this._keychainProvider.keyIDLength,
+          headerLength,
+        );
+        const ciphertext =
+          invitationBundle.encryptedBootstrap.subarray(headerLength);
+        let bootstrapPlaintext: Uint8Array;
+        try {
+          bootstrapPlaintext = await this._authProvider.decrypt(
+            ciphertext,
+            bootstrapKey,
+            nonce,
+          );
+        } catch {
+          throw new Error(
+            'Invitation encrypted bootstrap could not be decrypted',
+          );
+        }
 
-    if (
-      !(await syncInvitationMessageCompletely(
-        bootstrapMessage,
-        this._hashes,
-        () => this.sync(bootstrapMessage, false),
-        'bootstrap',
-        {
-          provenSnapshotBoundariesBeforeSync:
-            this._latestSnapshot?.lastChangeNodeCID === undefined
-              ? undefined
-              : new Set([
-                  this._latestSnapshot.lastChangeNodeCID,
-                ]),
-          isSnapshotApplied: () =>
-            this._latestSnapshot === bootstrapMessage.snapshot,
-        },
-      ))
-    ) {
-      throw new Error('Invitation bootstrap state was rejected');
-    }
-    await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+        const bootstrapMessage =
+          this._syncMessageSerializer.deserializeSyncMessage(
+            bootstrapPlaintext,
+          );
+        if (bootstrapMessage.documentId !== this.documentPath) {
+          throw new Error('Invitation bootstrap document binding does not match');
+        }
+        if (!bootstrapMessage.signature) {
+          throw new Error('Invitation bootstrap is missing its issuer signature');
+        }
+        const { signature, ...unsignedBootstrap } = bootstrapMessage;
+        let signatureBytes: Uint8Array;
+        try {
+          signatureBytes = this._deserializeSignature(signature);
+        } catch {
+          throw new Error('Invitation bootstrap signature is malformed');
+        }
+        const signedBytes =
+          this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
+        if (
+          (await this._authProvider.verify(
+            signedBytes,
+            issuerPublicKey,
+            signatureBytes,
+          )) !== true
+        ) {
+          throw new Error(
+            'Invitation bootstrap signature does not match the offer issuer',
+          );
+        }
 
-    this._invitationEpoch = new Uint8Array(bundle.welcomeEpochId);
-    this._invitationBootstrapReady = true;
-    try {
-      const existing = await this.open();
-      if (!existing) {
-        throw new Error('Invitation bootstrap attempted to create a new document');
-      }
-      if (
-        !(await this._loadInvitationCatchUp(
+        if (
+          bootstrapMessage.keychainChanges === undefined ||
+          !constantTimeEqual(
+            this._changesSerializer.serializeChanges(
+              bootstrapMessage.keychainChanges,
+            ),
+            welcomeEnvelope.keychainChanges,
+          )
+        ) {
+          throw new Error(
+            'Invitation bootstrap keychain does not match its sealed Welcome',
+          );
+        }
+        // The original signed payload above authenticated this exact keychain
+        // delta. Apply it only through the detached transaction, not a second
+        // time through `_syncUnlocked` before the bootstrap gates have passed.
+        const bootstrapMessageForSync = { ...bootstrapMessage };
+        delete bootstrapMessageForSync.keychainChanges;
+
+        beginStateApplication();
+        if (
+          !(await syncInvitationMessageCompletely(
+            bootstrapMessageForSync,
+            this._hashes,
+            () =>
+              this._syncUnlocked(
+                bootstrapMessageForSync,
+                false,
+                undefined,
+                true,
+                undefined,
+                {
+                  maxBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                  maxAggregateBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                  getKey: (keyID) => preparedKeychainMerge.getKey(keyID),
+                },
+              ),
+            'bootstrap',
+            {
+              isSnapshotApplied: () =>
+                this._latestSnapshot === bootstrapMessageForSync.snapshot,
+            },
+          ))
+        ) {
+          throw new Error('Invitation bootstrap state was rejected');
+        }
+        await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+
+        // The pinned catch-up response is encrypted under the installed live
+        // current key, so this staged merge must commit before activation can
+        // dial and decrypt it. A custom provider that mutates and then throws
+        // has an indeterminate live state; the already-pending document must
+        // therefore remain permanently discard-only on every later failure.
+        preparedKeychainMerge.commit();
+        this._beekem = beekem;
+        this._beekemInitialized = true;
+        this._invitationEpoch = invitationEpoch;
+        this._invitationBootstrapReady = true;
+        await this._activateAcceptedInvitationBootstrap(
           founderAddress,
           issuerPublicKey,
-        ))
-      ) {
-        throw new Error('Invitation bootstrap catch-up load failed');
-      }
-      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
-    } catch (error) {
-      this._invitationBootstrapReady = false;
-      await this.close().catch(() => {});
-      throw error;
-    }
+          role,
+          bootstrapContinuation,
+        );
+      },
+      () => {
+        const currentKemKeyPair = this._kemKeyPair;
+        const currentKemPublicKeyRaw = this._kemPublicKeyRaw;
+        if (
+          !currentKemKeyPair ||
+          currentKemKeyPair.privateKey !== invitationKemKeyPair.privateKey ||
+          currentKemKeyPair.publicKey !== invitationKemKeyPair.publicKey ||
+          !currentKemPublicKeyRaw ||
+          !constantTimeEqual(
+            currentKemPublicKeyRaw,
+            invitationKemPublicKeyRaw,
+          )
+        ) {
+          throw new Error(
+            `Invitation bootstrap for ${this.documentPath} requires the KEM key pair to remain unchanged`,
+          );
+        }
+      },
+    );
   }
 
   /**
@@ -6134,7 +7492,7 @@ export class PeerborneDocument<
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
-    return this._mutationQueue.run(async () => {
+    return this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
       await this._handleBeeKEMWelcomeRequestDataUnlocked(
         payload,
@@ -6177,7 +7535,7 @@ export class PeerborneDocument<
    */
   private async _evaluateAndApplyBeeKEMWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
-    opts: { fromBuffer: boolean },
+    opts: { fromBuffer: boolean; failClosedOnCommitError?: boolean },
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<boolean> {
     // Run the pure validation gates (extracted to
@@ -6433,8 +7791,11 @@ export class PeerborneDocument<
         },
       );
       if (!committed.admitted) return false;
-    } catch {
+    } catch (error) {
       console.error('Failed to commit BeeKEM Welcome state');
+      if (opts.failClosedOnCommitError) {
+        throw error;
+      }
       return false;
     }
     return true;
@@ -6503,7 +7864,9 @@ export class PeerborneDocument<
    *
    * @internal
    */
-  private async _drainPendingWelcomesUnlocked(): Promise<void> {
+  private async _drainPendingWelcomesUnlocked(
+    failClosedOnCommitError = false,
+  ): Promise<void> {
     if (this._pendingWelcomes.size === 0) return;
     const now = this._now();
     // Iterate over a snapshot of entries because we mutate the Map
@@ -6521,6 +7884,7 @@ export class PeerborneDocument<
       }
       const accepted = await this._evaluateAndApplyBeeKEMWelcome(entry.message, {
         fromBuffer: true,
+        failClosedOnCommitError,
       });
       if (accepted) {
         this._pendingWelcomes.delete(key);
@@ -6580,6 +7944,7 @@ export class PeerborneDocument<
    * alter subsequent `since_invited` filtering behavior.
    */
   public get invitationEpoch(): Uint8Array | undefined {
+    this._assertNoIncompleteBootstrapLoad();
     return this._invitationEpoch === undefined
       ? undefined
       : new Uint8Array(this._invitationEpoch);
@@ -6762,7 +8127,7 @@ export class PeerborneDocument<
    *   failures in steps 4-5 do NOT throw (they log warnings).
    */
   public async removeReader(reader: PublicKey) {
-    return this._mutationQueue.run(() =>
+    return this._runStateMutation(() =>
       this._removeReaderUnlocked(reader),
     );
   }
@@ -7367,7 +8732,7 @@ export class PeerborneDocument<
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
-    return this._mutationQueue.run(async () => {
+    return this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
       await this._handleBeeKEMPathUpdateRequestDataUnlocked(
         payload,
@@ -7635,7 +9000,7 @@ export class PeerborneDocument<
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
-    return this._mutationQueue.run(async () => {
+    return this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
       await this._handleKeyUpdateRequestDataUnlocked(payload, admission);
     });
