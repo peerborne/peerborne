@@ -99,6 +99,7 @@ import {
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
+import { retryACLConflict } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { keychainHistorySinceOrFull } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
@@ -276,6 +277,32 @@ const MAX_TIP_ADVERTISE_RESPONSE_SIZE = 6 * 1024;
 
 /** Bound ordinary encrypted snapshot/document responses before decoding. */
 export const MAX_DOCUMENT_LOAD_RESPONSE_SIZE = 10 * 1024 * 1024;
+
+function assertCanonicalACLIdentity(
+  value: unknown,
+): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(
+      'AuthProvider.serializePublicKey must return a non-empty string',
+    );
+  }
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError(
+          'AuthProvider.serializePublicKey must return well-formed UTF-16',
+        );
+      }
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new TypeError(
+        'AuthProvider.serializePublicKey must return well-formed UTF-16',
+      );
+    }
+  }
+}
 
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_DOCUMENT_LOAD_RESPONSE_TIMEOUT_MS = 5000;
@@ -557,8 +584,8 @@ export class PeerborneDocument<
       );
     }
     const [readers, writers] = await Promise.all([
-      this._readers.users(),
-      this._writers.users(),
+      retryACLConflict(() => this._readers.users()),
+      retryACLConflict(() => this._writers.users()),
     ]);
     if (writers.length !== 1) {
       throw new Error(
@@ -1234,14 +1261,14 @@ export class PeerborneDocument<
             // Apply the changes that were sent directly. Use the
             // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
             // drained immediately after the ACL update lands.
-            this._mergeReaders(sentChanges);
+            await this._mergeReaders(sentChanges);
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
             break;
           }
           case crdtWriterChangeNode: {
             // Apply the changes that were sent directly.
-            this._mergeWriters(sentChanges);
+            await this._mergeWriters(sentChanges);
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
             break;
@@ -1307,14 +1334,14 @@ export class PeerborneDocument<
                   // Go through `_mergeReaders` to drain any pending
                   // BeeKEM Welcomes parked while waiting for this ACL
                   // update.
-                  this._mergeReaders(missingChanges);
+                  await this._mergeReaders(missingChanges);
                   this._hashes.add(missingHash);
                   this._trackTip(missingHash, missingHashKind);
                   await this._fireRemoteUpdateHandlers([missingHash]);
                   return;
                 }
                 case crdtWriterChangeNode: {
-                  this._mergeWriters(missingChanges);
+                  await this._mergeWriters(missingChanges);
                   this._hashes.add(missingHash);
                   this._trackTip(missingHash, missingHashKind);
                   await this._fireRemoteUpdateHandlers([missingHash]);
@@ -1484,21 +1511,24 @@ export class PeerborneDocument<
     };
   }
 
-  private _applyCollectedACL(
+  private async _applyCollectedACL(
     entries: readonly BoundedChangeTreeEntry<ChangesType>[],
-  ): void {
+  ): Promise<void> {
     for (const { kind, change } of entries) {
       if (change === undefined) continue;
       if (kind === crdtWriterChangeNode) {
-        this._mergeWriters(change);
+        await this._mergeWriters(change);
       } else if (kind === crdtReaderChangeNode) {
-        this._mergeReaders(change);
+        await this._mergeReaders(change);
       }
     }
   }
 
-  private _applyACLFromTree(node: CRDTChangeNode<ChangesType>): void {
-    this._applyCollectedACL(this._collectACLFromTree(node).aclEntries);
+  private _applyACLFromTree(
+    node: CRDTChangeNode<ChangesType>,
+  ): Promise<void> {
+    const { aclEntries } = this._collectACLFromTree(node);
+    return this._applyCollectedACL(aclEntries);
   }
 
   /**
@@ -1516,15 +1546,15 @@ export class PeerborneDocument<
    *
    * Drain is scheduled through the mutation queue because accepting a
    * buffered Welcome mutates keychain and BeeKEM state. It remains
-   * fire-and-forget so synchronous ACL-merge call sites do not await a
-   * reentrant queue slot while their enclosing `sync()` still owns the
-   * current one. Errors are caught and logged so a malformed buffered
-   * Welcome cannot starve the receive path.
+   * fire-and-forget so ACL-merge callers do not await a reentrant queue slot
+   * while their enclosing `sync()` still owns the current one. Errors are
+   * caught and logged so a malformed buffered Welcome cannot starve the
+   * receive path.
    *
    * @internal
    */
-  private _mergeReaders(changes: ChangesType): void {
-    this._readers.merge(changes);
+  private async _mergeReaders(changes: ChangesType): Promise<void> {
+    await retryACLConflict(() => this._readers.merge(changes));
     if (this._pendingWelcomes.size > 0) {
       void this._mutationQueue
         .run(() => this._drainPendingWelcomesUnlocked())
@@ -1576,7 +1606,7 @@ export class PeerborneDocument<
         return this._cachedWriterKeys;
       }
       const versionAtStart = this._writerKeysVersion;
-      const fetched = await this._writers.users();
+      const fetched = await retryACLConflict(() => this._writers.users());
       // Only commit to the cache if (a) the version is still current AND
       // (b) no mutations are in flight. Either condition means the fetch
       // could be racing a still-incomplete mutation; in that case return
@@ -1636,15 +1666,14 @@ export class PeerborneDocument<
   }
 
   /** Apply a writer ACL change and invalidate the cached key list. */
-  private _mergeWriters(changes: ChangesType): void {
-    // Synchronous mutation: increment-mutate-decrement around the
-    // `merge()` call so any concurrent `_getWriterKeys` running on
-    // another microtask sees the in-flight flag. Both invalidations
-    // (pre and post) match the async helper's behavior.
+  private async _mergeWriters(changes: ChangesType): Promise<void> {
+    // Keep the mutation marker set while a transient ACL conflict settles and
+    // the synchronous `merge()` is retried. Both invalidations (pre and post)
+    // match the async helper's behavior.
     this._writerMutationsInFlight++;
     this._invalidateWriterKeyCache();
     try {
-      this._writers.merge(changes);
+      await retryACLConflict(() => this._writers.merge(changes));
     } finally {
       this._writerMutationsInFlight--;
       this._invalidateWriterKeyCache();
@@ -1653,12 +1682,16 @@ export class PeerborneDocument<
 
   /** Add a writer and invalidate the cached key list. */
   private async _addWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() => this._writers.add(publicKey));
+    return this._runWriterMutation(() =>
+      retryACLConflict(() => this._writers.add(publicKey)),
+    );
   }
 
   /** Remove a writer and invalidate the cached key list. */
   private async _removeWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._runWriterMutation(() => this._writers.remove(publicKey));
+    return this._runWriterMutation(() =>
+      retryACLConflict(() => this._writers.remove(publicKey)),
+    );
   }
 
   private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
@@ -1994,7 +2027,11 @@ export class PeerborneDocument<
     }
 
     // Only writers can create snapshots; read-only peers must not attempt compaction.
-    if ((await this._writers.check(this._userPublicKey)) !== true) {
+    if (
+      (await retryACLConflict(() =>
+        this._writers.check(this._userPublicKey),
+      )) !== true
+    ) {
       return;
     }
     this._compactionInProgress = true;
@@ -2246,7 +2283,10 @@ export class PeerborneDocument<
           return;
         }
         const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
+          await Promise.all([
+            retryACLConflict(() => this._readers.users()),
+            retryACLConflict(() => this._writers.users()),
+          ])
         ).flat();
         for (const reader of readers) {
           if (
@@ -2388,7 +2428,10 @@ export class PeerborneDocument<
           return;
         }
         const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
+          await Promise.all([
+            retryACLConflict(() => this._readers.users()),
+            retryACLConflict(() => this._writers.users()),
+          ])
         ).flat();
         for (const reader of readers) {
           if (
@@ -2538,7 +2581,10 @@ export class PeerborneDocument<
           return;
         }
         const readers = (
-          await Promise.all([this._readers.users(), this._writers.users()])
+          await Promise.all([
+            retryACLConflict(() => this._readers.users()),
+            retryACLConflict(() => this._writers.users()),
+          ])
         ).flat();
         for (const reader of readers) {
           if (
@@ -2704,7 +2750,11 @@ export class PeerborneDocument<
 
   private async _ensureCurrentUserCanWrite() {
     // Check that we are a writer (allowed to write to this document).
-    if ((await this._writers.check(this._userPublicKey)) !== true) {
+    if (
+      (await retryACLConflict(() =>
+        this._writers.check(this._userPublicKey),
+      )) !== true
+    ) {
       throw new Error(
         `Current user does not have write permissions for: ${this.documentPath}`,
       );
@@ -3073,7 +3123,9 @@ export class PeerborneDocument<
           );
 
           stripInlineChanges(message.changes);
-          const preLoadWriterCount = (await this._writers.users()).length;
+          const preLoadWriterCount = (
+            await retryACLConflict(() => this._writers.users())
+          ).length;
           if (preLoadWriterCount === 0 && message.snapshot) {
             console.warn(
               `[${this.documentPath}] Dropping snapshot from quorum-bound ` +
@@ -4377,7 +4429,7 @@ export class PeerborneDocument<
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
     if (changeTreePreflight) {
-      this._applyCollectedACL(changeTreePreflight.aclEntries);
+      await this._applyCollectedACL(changeTreePreflight.aclEntries);
     }
 
     // Apply snapshot if present and more recent than ours.
@@ -4928,7 +4980,7 @@ export class PeerborneDocument<
    * @return List of public keys with write access.
    */
   public async getWriters(): Promise<PublicKey[]> {
-    return await this._writers.users();
+    return await retryACLConflict(() => this._writers.users());
   }
 
   /**
@@ -4947,7 +4999,9 @@ export class PeerborneDocument<
     await this._ensureCurrentUserCanWrite();
 
     // Check that the writer is not already a writer.
-    if ((await this._writers.check(writer)) === true) {
+    if (
+      (await retryACLConflict(() => this._writers.check(writer))) === true
+    ) {
       return;
     }
 
@@ -4971,7 +5025,9 @@ export class PeerborneDocument<
     await this._ensureCurrentUserCanWrite();
 
     // Check that the writer is already a writer.
-    if ((await this._writers.check(writer)) !== true) {
+    if (
+      (await retryACLConflict(() => this._writers.check(writer))) !== true
+    ) {
       return;
     }
 
@@ -5001,17 +5057,48 @@ export class PeerborneDocument<
    */
   public async getReaders(): Promise<PublicKey[]> {
     const [readers, writers] = await Promise.all([
-      this._readers.users(),
-      this._writers.users(),
+      retryACLConflict(() => this._readers.users()),
+      retryACLConflict(() => this._writers.users()),
     ]);
-    // Filter out any writers that also appear in the readers list to avoid duplicates.
-    // Run checks in parallel to avoid sequential async overhead with many writers.
-    const checkResults = await Promise.all(
-      writers.map(writer => this._readers.check(writer))
-    );
-    const filteredWriters = writers.filter(
-      (_, i) => checkResults[i] !== true,
-    );
+    if (writers.length === 0) return [...readers];
+    if (readers.length === 0) return [...writers];
+    const serializer = this._authProvider.serializePublicKey;
+    if (serializer !== undefined) {
+      if (typeof serializer !== 'function') {
+        throw new TypeError(
+          'AuthProvider.serializePublicKey must be a function',
+        );
+      }
+      const serializePublicKey = serializer.bind(this._authProvider);
+      const readerIdentities = new Set<string>();
+      // Keep identity-codec work bounded to one in-flight call. Custom auth
+      // providers are not required to support unbounded parallel invocation.
+      for (const reader of readers) {
+        const identity = await serializePublicKey(reader);
+        assertCanonicalACLIdentity(identity);
+        readerIdentities.add(identity);
+      }
+      const filteredWriters: PublicKey[] = [];
+      for (const writer of writers) {
+        const identity = await serializePublicKey(writer);
+        assertCanonicalACLIdentity(identity);
+        if (!readerIdentities.has(identity)) filteredWriters.push(writer);
+      }
+      return [...readers, ...filteredWriters];
+    }
+
+    // Legacy providers without canonical serialization must use ACL.check.
+    // Keep those calls serial because serialized ACLs reject overlap; a
+    // Promise.all fan-out would turn N checks into a quadratic retry storm.
+    const filteredWriters: PublicKey[] = [];
+    for (const writer of writers) {
+      if (
+        (await retryACLConflict(() => this._readers.check(writer))) !==
+        true
+      ) {
+        filteredWriters.push(writer);
+      }
+    }
     return [...readers, ...filteredWriters];
   }
 
@@ -5147,8 +5234,12 @@ export class PeerborneDocument<
     // Welcome so the existing ACL row can be paired with keychain
     // material. Without this branch the warning emitted below on the
     // first call would point at a recovery path that is itself a no-op.
-    const alreadyReader = (await this._readers.check(reader)) === true;
-    if (!alreadyReader && (await this._readers.users()).length > 0) {
+    const alreadyReader =
+      (await retryACLConflict(() => this._readers.check(reader))) === true;
+    if (
+      !alreadyReader &&
+      (await retryACLConflict(() => this._readers.users())).length > 0
+    ) {
       throw new Error(
         `[${this.documentPath}] addReader: the initial release supports ` +
           `one active collaborator per document (founder plus one reader). ` +
@@ -5192,7 +5283,9 @@ export class PeerborneDocument<
     if (!alreadyReader) {
       // Send change over network.
       beginMutation?.();
-      const changes = await this._readers.add(reader);
+      const changes = await retryACLConflict(() =>
+        this._readers.add(reader),
+      );
       await this._makeChange(changes, crdtReaderChangeNode);
     }
 
@@ -5328,8 +5421,8 @@ export class PeerborneDocument<
     const [founder, serializedRecipient, readers, writers] = await Promise.all([
       serializePublicKey(this._userPublicKey),
       serializePublicKey(recipient),
-      this._readers.users(),
-      this._writers.users(),
+      retryACLConflict(() => this._readers.users()),
+      retryACLConflict(() => this._writers.users()),
     ]);
     const [serializedReaders, serializedWriters] = await Promise.all([
       Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
@@ -5386,17 +5479,17 @@ export class PeerborneDocument<
         return welcome;
       },
       addWriter: () => this._addWriterUnlocked(reader, beginMutation),
-      repairReaders: () => {
+      repairReaders: async () => {
         beginMutation();
         return this._makeChange(
-          this._readers.current(),
+          await retryACLConflict(() => this._readers.current()),
           crdtReaderChangeNode,
         );
       },
-      repairWriters: () => {
+      repairWriters: async () => {
         beginMutation();
         return this._makeChange(
-          this._writers.current(),
+          await retryACLConflict(() => this._writers.current()),
           crdtWriterChangeNode,
         );
       },
@@ -5532,7 +5625,7 @@ export class PeerborneDocument<
     );
 
     const readerAlreadyPresent =
-      (await this._readers.check(reader)) === true;
+      (await retryACLConflict(() => this._readers.check(reader))) === true;
     let hasRetryLeaf = false;
     let hasRetryWelcome = false;
     if (this._beekem?.memberCount === 2 && readerAlreadyPresent) {
@@ -5605,8 +5698,8 @@ export class PeerborneDocument<
     const [issuer, recipient, readers, writers] = await Promise.all([
       serializePublicKey(issuerPublicKey),
       serializePublicKey(this._userPublicKey),
-      this._readers.users(),
-      this._writers.users(),
+      retryACLConflict(() => this._readers.users()),
+      retryACLConflict(() => this._writers.users()),
     ]);
     const [serializedReaders, serializedWriters] = await Promise.all([
       Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
@@ -6102,7 +6195,8 @@ export class PeerborneDocument<
       documentPath: this.documentPath,
       localUserPublicKey: this._userPublicKey,
       serializePublicKey,
-      isReader: (pk) => this._readers.check(pk),
+      isReader: (pk) =>
+        retryACLConflict(() => this._readers.check(pk)),
       // Welcomes always require writer-auth, independent of the
       // swarm-wide `enableSigning` toggle -- wire the unconditional
       // verifier so the validator can't be downgraded by config.
@@ -6683,7 +6777,9 @@ export class PeerborneDocument<
     await this._ensureCurrentUserCanWrite();
 
     // Check that the reader is already a reader.
-    if ((await this._readers.check(reader)) !== true) {
+    if (
+      (await retryACLConflict(() => this._readers.check(reader))) !== true
+    ) {
       return;
     }
 
@@ -6822,7 +6918,9 @@ export class PeerborneDocument<
     //    transport-level issue that the caller is better placed to
     //    diagnose than this routine.
     try {
-      const changes = await this._readers.remove(reader);
+      const changes = await retryACLConflict(() =>
+        this._readers.remove(reader),
+      );
       await this._makeChange(changes, crdtReaderChangeNode);
     } catch (err) {
       console.warn(
