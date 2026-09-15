@@ -38,7 +38,13 @@ jest.mock(
 jest.mock('@helia/unixfs', () => ({ unixfs: jest.fn() }), { virtual: true });
 jest.mock(
   '@libp2p/gossipsub',
-  () => ({ TopicValidatorResult: { Accept: 'accept', Reject: 'reject' } }),
+  () => ({
+    TopicValidatorResult: {
+      Accept: 'accept',
+      Reject: 'reject',
+      Ignore: 'ignore',
+    },
+  }),
   { virtual: true },
 );
 jest.mock('@multiformats/multiaddr', () => ({ multiaddr: jest.fn() }), {
@@ -92,6 +98,7 @@ function signedLoadHarness(
     _remoteHandlers: {},
     _localHandlers: {},
     _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
   });
   const stream = {
     sink: jest.fn(async () => undefined),
@@ -217,6 +224,17 @@ describe('document load response boundaries', () => {
       async () => [],
       async () => {
         throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        document._hashes.add('bootstrap-head');
+        return true;
       },
     );
 
@@ -564,7 +582,17 @@ describe('document load response boundaries', () => {
       },
       async (_raw, key) => key === 'pinned-writer',
     );
-    document._syncUnlocked = jest.fn(async () => true);
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        document._hashes.add('pinned-head');
+        return true;
+      },
+    );
 
     await expect(
       document._sendLoadRequestAndSync(
@@ -578,6 +606,56 @@ describe('document load response boundaries', () => {
     expect(document._getWriterKeys).not.toHaveBeenCalled();
     expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('validates an established pinned no-op atomically without a bootstrap transition', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+      {
+        documentId: '/load-race',
+        signature: 'AAAA',
+        keychainChanges: [],
+      },
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('existing-head');
+    let queueDepth = 0;
+    const run = jest.fn(async (operation: () => Promise<unknown>) => {
+      queueDepth += 1;
+      try {
+        return await operation();
+      } finally {
+        queueDepth -= 1;
+      }
+    });
+    document._mutationQueue = { run };
+    const assertMembership = jest.fn(async () => {
+      expect(queueDepth).toBe(1);
+      expect(document._bootstrapLoadApplicationState).toBe('complete');
+      expect(document._bootstrapLoadApplicationRevision).toBe(2);
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'pinned-writer',
+        undefined,
+        true,
+        undefined,
+        assertMembership,
+      ),
+    ).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(assertMembership).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document._bootstrapLoadApplicationRevision).toBe(2);
   });
 
   test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
@@ -840,6 +918,66 @@ describe('document load response boundaries', () => {
     expect(document._syncUnlocked).not.toHaveBeenCalled();
   });
 
+  test('rejects a tracked bootstrap response that applies no state', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+    document._syncUnlocked = jest.fn(async () => true);
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('rejects an empty keychain merge through the real bootstrap sync path', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: [],
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    const merge = jest.fn();
+    document._keychain.merge = merge;
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(document._hashes).toEqual(new Set());
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('does not admit bootstrap state on an already-subscribed instance', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+    document._subscribed = true;
+    document._syncUnlocked = jest.fn(async () => true);
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
   test('rechecks invitation pristine state at its queued application boundary', async () => {
     const queued = deferred<void>();
     const release = deferred<void>();
@@ -1033,6 +1171,51 @@ describe('document load response boundaries', () => {
     expect(document.document).toEqual({ value: 'verified-but-not-finalized' });
   });
 
+  test('isolates deferred observer failures after successful finalization', async () => {
+    const laterHandler = jest.fn();
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const document = fakeDocument({
+      documentPath: '/observer-isolation',
+      _bootstrapLoadApplicationState: 'pending',
+      _bootstrapLoadApplicationRevision: 1,
+      _document: { value: 'complete' },
+      _pendingWelcomes: new Map(),
+      _pendingBootstrapRemoteUpdateHashes: new Set(['HEAD']),
+      _bootstrapCompactionDeferred: false,
+      _readers: {
+        users: jest.fn(async () => ['reader']),
+        check: jest.fn(async () => true),
+      },
+      _writers: { users: jest.fn(async () => ['writer']) },
+      _remoteHandlers: {
+        failing: () => {
+          throw new Error('observer failed');
+        },
+        later: laterHandler,
+      },
+    });
+
+    try {
+      await expect(
+        document._completeBootstrapStateApplicationUnlocked(),
+      ).resolves.toBeUndefined();
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(laterHandler).toHaveBeenCalledTimes(1);
+    expect(laterHandler).toHaveBeenCalledWith(
+      document._document,
+      ['reader'],
+      ['writer'],
+      ['HEAD'],
+    );
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(new Set());
+  });
+
   test('keeps bootstrap pending when buffered Welcome finalization partially fails', async () => {
     const liveKeychain = { partiallyMerged: false };
     const drainPendingWelcomes = jest.fn(async () => {
@@ -1091,6 +1274,211 @@ describe('document load response boundaries', () => {
 
     await expect(open).rejects.toThrow(/discard this document instance/);
     expect(registerDocument).not.toHaveBeenCalled();
+  });
+
+  test('topic validation ignores messages while bootstrap state is incomplete', async () => {
+    const topicValidators = new Map<string, (...args: any[]) => Promise<unknown>>();
+    const order: string[] = [];
+    const decrypt = jest.fn(async () => {
+      order.push('decrypt');
+      return new Uint8Array([1]);
+    });
+    const deserializeSyncMessage = jest.fn(() => {
+      order.push('deserialize');
+      return { documentId: '/validator-bootstrap', signature: 'AAAA' };
+    });
+    const serializeSyncMessage = jest.fn(() => {
+      order.push('serialize');
+      return new Uint8Array([2]);
+    });
+    const verifyWriterSignature = jest.fn(async () => {
+      order.push('verify');
+      return true;
+    });
+    const document = fakeDocument({
+      documentPath: '/validator-bootstrap',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _invitationBootstrapReady: false,
+      _hashes: new Set(['HEAD']),
+      _computeTopic: jest.fn(() => '/topic'),
+      load: jest.fn(async () => true),
+      _mutationQueue: {
+        run: (operation: () => Promise<unknown>) => {
+          order.push('queue');
+          return operation();
+        },
+      },
+      _keychain: { getKey: jest.fn(() => ({})) },
+      _authProvider: { nonceBits: 1, decrypt },
+      _keychainProvider: { keyIDLength: 1 },
+      _syncMessageSerializer: {
+        deserializeSyncMessage,
+        serializeSyncMessage,
+      },
+      _verifyWriterSignature: verifyWriterSignature,
+      swarm: {
+        config: { enableSigning: true, enableTopicValidators: true },
+        registerDocument: jest.fn(),
+        heliaNode: {
+          libp2p: {
+            services: {
+              pubsub: {
+                addEventListener: jest.fn(),
+                subscribe: jest.fn(),
+                topicValidators,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await expect(document.open()).resolves.toBe(true);
+    const validator = topicValidators.get('/topic');
+    expect(validator).toBeDefined();
+
+    document._bootstrapLoadApplicationState = 'pending';
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      await expect(
+        validator!({}, { data: new Uint8Array([1, 2, 3]) }),
+      ).resolves.toBe('ignore');
+    } finally {
+      consoleWarn.mockRestore();
+    }
+    expect(order).toEqual(['decrypt', 'deserialize', 'serialize', 'queue']);
+    expect(verifyWriterSignature).not.toHaveBeenCalled();
+  });
+
+  test('serializes the topic validator current-writer authorization gate', async () => {
+    const topicValidators = new Map<string, (...args: any[]) => Promise<unknown>>();
+    const order: string[] = [];
+    const document = fakeDocument({
+      documentPath: '/validator-authorization',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _invitationBootstrapReady: false,
+      _hashes: new Set(['HEAD']),
+      _computeTopic: jest.fn(() => '/topic'),
+      load: jest.fn(async () => true),
+      _mutationQueue: {
+        run: async (operation: () => Promise<unknown>) => {
+          order.push('queue');
+          return operation();
+        },
+      },
+      _keychain: { getKey: jest.fn(() => ({})) },
+      _authProvider: {
+        nonceBits: 1,
+        decrypt: jest.fn(async () => {
+          order.push('decrypt');
+          return new Uint8Array([1]);
+        }),
+      },
+      _keychainProvider: { keyIDLength: 1 },
+      _syncMessageSerializer: {
+        deserializeSyncMessage: jest.fn(() => {
+          order.push('deserialize');
+          return {
+            documentId: '/validator-authorization',
+            signature: 'AAAA',
+          };
+        }),
+        serializeSyncMessage: jest.fn(() => {
+          order.push('serialize');
+          return new Uint8Array([2]);
+        }),
+      },
+      _verifyWriterSignature: jest.fn(async () => {
+        order.push('verify');
+        return true;
+      }),
+      swarm: {
+        config: { enableSigning: true, enableTopicValidators: true },
+        registerDocument: jest.fn(),
+        heliaNode: {
+          libp2p: {
+            services: {
+              pubsub: {
+                addEventListener: jest.fn(),
+                subscribe: jest.fn(),
+                topicValidators,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await expect(document.open()).resolves.toBe(true);
+    const validator = topicValidators.get('/topic');
+    expect(validator).toBeDefined();
+
+    await expect(
+      validator!({}, { data: new Uint8Array([1, 2, 3]) }),
+    ).resolves.toBe('accept');
+
+    expect(order).toEqual([
+      'decrypt',
+      'deserialize',
+      'serialize',
+      'queue',
+      'verify',
+    ]);
+  });
+
+  test('does not send a response assembled across a bootstrap ABA transition', async () => {
+    const signingStarted = deferred<void>();
+    const releaseSigning = deferred<string>();
+    const sink = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/response-aba',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      swarm: { config: { enableSigning: false } },
+      _servedFrontier: jest.fn(() => []),
+      _signAsWriter: jest.fn(async () => {
+        signingStarted.resolve();
+        return releaseSigning.promise;
+      }),
+      _syncMessageSerializer: {
+        serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
+      },
+      _keychainProvider: { keyIDLength: 1 },
+      _keychain: {
+        current: jest.fn(async () => [new Uint8Array([1]), {}]),
+      },
+      _authProvider: {
+        nonceBits: 1,
+        encrypt: jest.fn(async () => ({
+          nonce: new Uint8Array([2]),
+          data: new Uint8Array([3]),
+        })),
+      },
+    });
+
+    const response = document.handleTipAdvertiseRequestData(
+      { documentId: '/response-aba' },
+      { sink },
+    );
+    await signingStarted.promise;
+    document._markBootstrapStateApplicationPending();
+    document._markBootstrapStateApplicationComplete();
+    releaseSigning.resolve('');
+
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      await expect(response).resolves.toBeUndefined();
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(sink).toHaveBeenCalledWith([]);
   });
 
   test('blocks invitation activation and acceptance on a poisoned instance', async () => {
@@ -1186,6 +1574,60 @@ describe('document load response boundaries', () => {
     expect(handler).not.toHaveBeenCalled();
     expect(document._readers.users).not.toHaveBeenCalled();
     expect(document._drainPendingWelcomesUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('validates pinned catch-up membership before completion and notification', async () => {
+    const message = {
+      documentId: '/load-race',
+      signature: 'AAAA',
+      keychainChanges: {},
+    };
+    const handler = jest.fn();
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._document = { value: 'policy-invalid' };
+    document._writers = { users: jest.fn(async () => ['unexpected-writer']) };
+    document._readers = { users: jest.fn(async () => ['recipient']) };
+    document._remoteHandlers.preBootstrap = handler;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        await document._fireOrDeferRemoteUpdateHandlers(['ACL']);
+        document._hashes.add('ACL');
+        return true;
+      },
+    );
+    const assertMembership = jest.fn(async () => {
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      throw new Error('invitation membership topology is invalid');
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        stream,
+        new Uint8Array([1]),
+        null,
+        'issuer',
+        undefined,
+        true,
+        undefined,
+        assertMembership,
+      ),
+    ).rejects.toThrow(/membership topology is invalid/);
+
+    expect(assertMembership).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(
+      new Set(['ACL']),
+    );
+    expect(handler).not.toHaveBeenCalled();
   });
 
   test('defers buffered Welcome drain while bootstrap state is pending', () => {
