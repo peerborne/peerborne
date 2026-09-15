@@ -578,6 +578,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
     }
+    if (accounting.length === 0) return;
     this._acl = doc;
     this._commitChangeAccounting(accounting);
     this._revision++;

@@ -2,6 +2,7 @@ import { AuthProvider, AesAlgorithmName } from './auth-provider.js';
 import { concatUint8Arrays } from './utils.js';
 import { Base64 } from 'js-base64';
 import { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
+import { decodeCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
 
 /** HMAC-SHA256 tag length in bytes. */
 const HMAC_TAG_LENGTH = 32;
@@ -331,20 +332,10 @@ export class SubtleCrypto
    * `AuthProvider.deserializePublicKey` implementation.
    */
   public async deserializePublicKey(serialized: string): Promise<CryptoKey> {
-    let raw: Uint8Array;
-    try {
-      raw = Base64.toUint8Array(serialized);
-    } catch {
-      throw new Error('Serialized public key must be canonical base64');
-    }
-    if (Base64.fromUint8Array(raw) !== serialized) {
-      throw new Error('Serialized public key must be canonical base64');
-    }
-    if (raw.byteLength !== 97 || raw[0] !== 0x04) {
-      throw new Error(
-        'Serialized public key must be a 97-byte uncompressed P-384 point',
-      );
-    }
+    const raw = decodeCanonicalP384PublicKeyEncoding(
+      serialized,
+      'Serialized public key',
+    );
     try {
       return await crypto.subtle.importKey(
         'raw',
