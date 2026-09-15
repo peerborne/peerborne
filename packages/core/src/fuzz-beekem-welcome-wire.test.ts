@@ -35,7 +35,9 @@ describe('beekem-welcome-wire fuzz', () => {
           const pathKeys = directPath.map((nodeIndex, index) => ({
             nodeIndex,
             publicKey: new Uint8Array(65).fill((index % 254) + 1),
-            encryptedPrivateKey: new Uint8Array([(index % 254) + 1]),
+            encryptedPrivateKey: new Uint8Array(125).fill(
+              (index % 254) + 1,
+            ),
           }));
           const covered = new Set([leafIndex, ...directPath]);
           const treeNodePublicKeys = Array.from(

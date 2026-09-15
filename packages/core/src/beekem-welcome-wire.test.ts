@@ -104,7 +104,7 @@ describe('beekem-welcome-wire', () => {
     ).toThrow(/leafIndex.*non-negative/);
     expect(() =>
       deserializeBeeKEMWelcomeFromWire({
-        leafIndex: 0,
+        leafIndex: 2,
         pathKeys: 'oops',
         treeNodePublicKeys: [],
         treeHash: '',
@@ -112,7 +112,7 @@ describe('beekem-welcome-wire', () => {
     ).toThrow(/pathKeys.*array/);
     expect(() =>
       deserializeBeeKEMWelcomeFromWire({
-        leafIndex: 0,
+        leafIndex: 2,
         pathKeys: [],
         treeNodePublicKeys: [],
         treeHash: 42,
@@ -122,14 +122,15 @@ describe('beekem-welcome-wire', () => {
       leafIndex: 2,
       pathKeys: [
         {
-          nodeIndex: -1,
+          nodeIndex: 1,
           publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array([1]),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
         },
       ],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
       treeHash: new Uint8Array(32),
     });
+    malformedPath.pathKeys[0].nodeIndex = -1;
     expect(() => deserializeBeeKEMWelcomeFromWire(malformedPath)).toThrow(
       /pathKeys\[0\]\.nodeIndex.*non-negative/,
     );
@@ -170,7 +171,7 @@ describe('beekem-welcome-wire', () => {
     const pathKeys = [9, 7].map((nodeIndex) => ({
       nodeIndex,
       publicKey: new Uint8Array(65).fill(nodeIndex),
-      encryptedPrivateKey: new Uint8Array([nodeIndex]),
+      encryptedPrivateKey: new Uint8Array(125).fill(nodeIndex),
     }));
     const treeNodePublicKeys = [0, 1, 2, 3, 4, 5, 6, 8].map(
       (nodeIndex) => ({
@@ -230,19 +231,32 @@ describe('beekem-welcome-wire', () => {
       const restored = deserializeBeeKEMWelcomeFromWire(
         JSON.parse(JSON.stringify(wire)),
       );
+      const withoutExplicitBlanks = deserializeBeeKEMWelcomeFromWire({
+        ...JSON.parse(JSON.stringify(wire)),
+        treeNodePublicKeys: wire.treeNodePublicKeys.filter(
+          (node) => node.publicKey !== null,
+        ),
+      });
       const joined = new BeeKEM();
+      const joinedFromSparseWire = new BeeKEM();
       const joinedRoot = await joined.processWelcome(
         restored,
         memberKeys.privateKey,
         memberKeys.publicKey,
       );
+      const sparseRoot = await joinedFromSparseWire.processWelcome(
+        withoutExplicitBlanks,
+        memberKeys.privateKey,
+        memberKeys.publicKey,
+      );
       expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(true);
+      expect(Buffer.from(sparseRoot).equals(Buffer.from(joinedRoot))).toBe(true);
     },
   );
 
   test('rejects over-capacity arrays before reading their elements', () => {
     let getterCalls = 0;
-    const pathKeys = new Array(65);
+    const pathKeys = new Array(14);
     Object.defineProperty(pathKeys, '0', {
       enumerable: true,
       get() {
@@ -257,6 +271,16 @@ describe('beekem-welcome-wire', () => {
         pathKeys,
         treeNodePublicKeys: [],
         treeHash: '',
+      }),
+    ).toThrow(/pathKeys has invalid length/);
+    expect(getterCalls).toBe(0);
+
+    expect(() =>
+      serializeBeeKEMWelcomeForWire({
+        leafIndex: 2,
+        pathKeys: pathKeys as never[],
+        treeNodePublicKeys: [],
+        treeHash: new Uint8Array(32),
       }),
     ).toThrow(/pathKeys has invalid length/);
     expect(getterCalls).toBe(0);
@@ -281,7 +305,7 @@ describe('beekem-welcome-wire', () => {
         {
           nodeIndex: 1,
           publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array([1]),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
         },
       ],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
@@ -302,7 +326,7 @@ describe('beekem-welcome-wire', () => {
           {
             nodeIndex: 1,
             publicKey: new Uint8Array(65),
-            encryptedPrivateKey: new Uint8Array([1]),
+            encryptedPrivateKey: new Uint8Array(125).fill(1),
           },
         ],
         treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
@@ -331,7 +355,7 @@ describe('beekem-welcome-wire', () => {
     );
   });
 
-  test('enforces the aggregate decoded-byte budget across valid fields', () => {
+  test('rejects oversized ciphertext before traversing the supplied topology', () => {
     const numLeaves = MAX_BEEKEM_TREE_LEAVES;
     const treeWidth = 2 * numLeaves - 1;
     const leafIndex = TreeMath.leafToNodeIndex(numLeaves - 1);
@@ -357,7 +381,35 @@ describe('beekem-welcome-wire', () => {
         ).filter((node) => node !== null),
         treeHash: Buffer.alloc(32).toString('base64'),
       }),
-    ).toThrow(/aggregate decoded-byte budget exceeded/);
+    ).toThrow(/encryptedPrivateKey exceeds the encoded size limit/);
+  });
+
+  test('enforces legacy ciphertext bounds on inbound and outbound data', () => {
+    const welcome = {
+      leafIndex: 2,
+      pathKeys: [
+        {
+          nodeIndex: 1,
+          publicKey: new Uint8Array(65),
+          encryptedPrivateKey: new Uint8Array(125),
+        },
+      ],
+      treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+      treeHash: new Uint8Array(32),
+    };
+    const wire = serializeBeeKEMWelcomeForWire(welcome);
+    wire.pathKeys[0].encryptedPrivateKey = Buffer.alloc(124).toString('base64');
+    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(
+      /encryptedPrivateKey must decode to 125 to 4096 bytes/,
+    );
+    expect(() =>
+      serializeBeeKEMWelcomeForWire({
+        ...welcome,
+        pathKeys: [
+          { ...welcome.pathKeys[0], encryptedPrivateKey: new Uint8Array(124) },
+        ],
+      }),
+    ).toThrow(/encryptedPrivateKey.*125 to 4096 bytes/);
   });
 
   test('rejects sparse arrays, extra fields, and accessors without invoking them', () => {
@@ -367,7 +419,7 @@ describe('beekem-welcome-wire', () => {
         {
           nodeIndex: 1,
           publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array([1]),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
         },
       ],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
@@ -390,7 +442,7 @@ describe('beekem-welcome-wire', () => {
         {
           nodeIndex: 1,
           publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array([1]),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
         },
       ],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
@@ -414,7 +466,7 @@ describe('beekem-welcome-wire', () => {
         {
           nodeIndex: 1,
           publicKey: new Uint8Array(65),
-          encryptedPrivateKey: new Uint8Array([1]),
+          encryptedPrivateKey: new Uint8Array(125).fill(1),
         },
       ],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
