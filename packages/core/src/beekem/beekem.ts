@@ -654,9 +654,9 @@ export class BeeKEM {
 
   /**
    * Process a path update from another member.
-   * Detaches the update at admission, waits for any already-admitted Welcome
-   * cohort, validates it against the resulting tree when its reserved turn
-   * begins, and commits a staged tree only on success.
+   * Requires an initialized tree at admission, detaches the update, validates
+   * it against the tree when its reserved turn begins, and commits a staged
+   * tree only on success.
    *
    * This is the legacy v1 shape. It has no generation or parent-tree binding,
    * so structural validation and FIFO application do not make captured valid
