@@ -6,6 +6,7 @@ import {
   decodeChange,
   getChanges,
   getConflicts,
+  getActorId,
   getObjectId,
   applyChanges,
   getMissingDeps,
@@ -154,6 +155,8 @@ export const MAX_AUTOMERGE_ACL_HISTORY_BYTES = 4 * 1024 * 1024;
 export const MAX_AUTOMERGE_ACL_CHANGES = 4096;
 export const MAX_AUTOMERGE_ACL_OPERATIONS = 8192;
 export const MAX_AUTOMERGE_ACL_MEMBERS = 4096;
+// First 32 bits of SHA-256("peerborne:automerge-acl:prepared-users-root:v1").
+const AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR = '375c6f0a';
 
 type AutomergeACLChangeRecord = {
   readonly hash: string;
@@ -163,7 +166,7 @@ type AutomergeACLChangeRecord = {
 
 type AutomergeACLKeyWrite = {
   readonly changeIndex: number;
-  readonly action: string;
+  readonly effect: 'add' | 'remove' | 'invalid';
 };
 
 function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
@@ -243,10 +246,8 @@ function assertAutomergeACLResourceLimits(
 }
 
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  // Start without a local `users` root. The first add creates the map and its
-  // membership in one self-contained Automerge change, while complete ACL
-  // histories produced by older random-seed releases apply without a
-  // competing root assignment.
+  // Start without a local `users` root so complete ACL histories produced by
+  // older random-seed releases apply without a competing root assignment.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
   private readonly _retainedChanges = new Map<
@@ -264,6 +265,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<BinaryChange[]>
   >();
+  private readonly _stagedAdditionActors = new Set<string>();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -303,6 +305,39 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       prepared.commit();
     } finally {
       this._queuedAdditionCommits.delete(prepared);
+    }
+  }
+
+  private _stagedAdditionBase(base: AutomergeACLDoc): AutomergeACLDoc {
+    if (base.users !== undefined) return base;
+    return change(
+      clone(base, { actor: AUTOMERGE_ACL_STAGED_USERS_ROOT_ACTOR }),
+      { time: undefined },
+      (doc) => {
+        doc.users = {};
+      },
+    );
+  }
+
+  private _reserveStagedAdditionActor(base: AutomergeACLDoc): string {
+    if (this._stagedAdditionActors.size >= MAX_AUTOMERGE_ACL_CHANGES) {
+      throw new RangeError(
+        'Automerge ACL has too many staged addition actors',
+      );
+    }
+
+    let attempts = 0;
+    for (;;) {
+      if (attempts++ >= 32) {
+        throw new Error(
+          'Could not reserve a distinct Automerge ACL addition actor',
+        );
+      }
+      const actor = getActorId(clone(base));
+      if (!this._stagedAdditionActors.has(actor)) {
+        this._stagedAdditionActors.add(actor);
+        return actor;
+      }
     }
   }
 
@@ -359,7 +394,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       }
       ancestryByHash.set(decoded.hash, ancestry);
 
-      const writesInChange = new Map<string, string>();
+      const writesInChange = new Map<
+        string,
+        AutomergeACLKeyWrite['effect']
+      >();
       for (const operationEntry of decoded.ops) {
         if (
           operationEntry.obj === '_root' &&
@@ -378,26 +416,29 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         ) {
           const key = operationEntry.key;
           assertCanonicalP384PublicKeyEncoding(key);
-          if (
-            operationEntry.action !== 'del' &&
-            (operationEntry.action !== 'set' ||
-              operationEntry.value !== true)
-          ) {
+          const effect =
+            operationEntry.action === 'del'
+              ? 'remove'
+              : operationEntry.action === 'set' &&
+                  operationEntry.value === true
+                ? 'add'
+                : 'invalid';
+          if (effect === 'invalid') {
             throw new Error(
               `Cannot ${operation}: Automerge ACL membership values must be true`,
             );
           }
-          writesInChange.set(key, operationEntry.action);
+          writesInChange.set(key, effect);
         }
       }
 
-      for (const [key, action] of writesInChange) {
+      for (const [key, effect] of writesInChange) {
         const frontier = writesByKey.get(key) ?? [];
         const surviving = frontier.filter(
           ({ changeIndex: priorIndex }) =>
             (ancestry & (1n << BigInt(priorIndex))) === 0n,
         );
-        surviving.push({ changeIndex, action });
+        surviving.push({ changeIndex, effect });
         writesByKey.set(key, surviving);
       }
     }
@@ -410,9 +451,13 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (users === undefined) return;
 
     for (const [key, frontier] of writesByKey) {
+      // Homogeneous additions and removals are idempotent. A mixed or invalid
+      // frontier can make authorization depend on Automerge's winning value.
+      const firstEffect = frontier[0]?.effect;
       if (
         frontier.length > 1 &&
-        frontier.some(({ action }) => action !== 'del')
+        (firstEffect === 'invalid' ||
+          frontier.some(({ effect }) => effect !== firstEffect))
       ) {
         throw new Error(
           `Cannot ${operation}: Automerge ACL history contains conflicting membership for ${key}`,
@@ -508,13 +553,20 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const baseRevision = this._revision;
     const base = this._acl;
     assertAutomergeACLResourceLimits(base, 'stage an ACL addition');
-    const stagedBase = clone(base);
-    const staged = change(stagedBase, (doc) => {
-      if (!doc.users) {
-        doc.users = {};
-      }
-      doc.users[hash] = true;
-    });
+    const hadMember = base.users?.[hash] !== undefined;
+    const stagingBase = hadMember ? undefined : this._stagedAdditionBase(base);
+    const staged =
+      stagingBase === undefined
+        ? base
+        : change(
+            clone(stagingBase, {
+              actor: this._reserveStagedAdditionActor(stagingBase),
+            }),
+            { time: undefined },
+            (doc) => {
+              doc.users![hash] = true;
+            },
+          );
     const privateChanges = getChanges(base, staged);
     const accounting = this._prepareChangeAccounting(privateChanges);
     assertAutomergeACLResourceLimits(staged, 'stage an ACL addition');
