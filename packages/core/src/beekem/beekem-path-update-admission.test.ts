@@ -331,6 +331,12 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     try {
       await entered;
       queuedUpdate = target.processPathUpdate(pathUpdate);
+      await expect(
+        target.initialize(
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow(/mutation is waiting for Welcome settlement/);
       pathUpdate.senderLeafPublicKey.fill(0);
       for (const node of pathUpdate.nodes) {
         node.publicKey.fill(0);
