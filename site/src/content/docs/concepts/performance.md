@@ -53,7 +53,9 @@ One fresh BeeKEM ratchet-tree rotation excludes the removed leaf from the newly
 generated key instead of encrypting that key under the old document key. This
 is a primitive-level property, not an end-to-end revocation guarantee: the
 active PathUpdate v1 protocol has no generation or parent-tree binding, accepts
-valid delayed/replayed updates, and has no delivery guarantee. Source:
+previously unseen delayed updates out of order, and has no delivery guarantee.
+Shipped keychains may incidentally reject an exact repeat of an already-installed
+epoch ID, which does not provide an ordering guarantee. Source:
 [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts)
 and
 [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).
