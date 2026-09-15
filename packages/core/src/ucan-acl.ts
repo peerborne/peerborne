@@ -43,7 +43,7 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
   };
 }
 
-const MAX_STABLE_USER_LISTING_ATTEMPTS = 3;
+const MAX_STABLE_READ_ATTEMPTS = 3;
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
 const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
@@ -81,12 +81,14 @@ interface CachedListingIdentity<PublicKey> {
  * document-wide baseline. Identity codecs start eagerly, but invocation-order
  * admission and backing execution are global to the instance, so a slow
  * earlier codec or backing call delays later mutations.
- * A backing mutation is hidden from reads while unresolved. Any rejected
- * opaque mutation poisons the instance because the generic ACL contract does
- * not identify which memberships may already have changed. A failed backing
- * addition also quarantines its requested identity, while a previously granted
- * UCAN is preserved only when stable backing membership was proven before the
- * attempt.
+ * A backing mutation is hidden from reads while unresolved. Asynchronous
+ * checks, listings, and entry lookups wait for a stable FIFO boundary and
+ * retry revision races; the synchronous `current()` snapshot rejects while a
+ * backing mutation is suspended. Any rejected opaque mutation poisons the
+ * instance because the generic ACL contract does not identify which
+ * memberships may already have changed. A failed backing addition also
+ * quarantines its requested identity, while a previously granted UCAN is
+ * preserved only when stable backing membership was proven before the attempt.
  *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
@@ -384,6 +386,22 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
+  /** Wait for an already-running opaque backing mutation to become readable. */
+  private async _awaitReadable(operation: string): Promise<void> {
+    for (;;) {
+      this._assertHealthy(operation);
+      if (this._backingMutationsInFlight === 0) return;
+
+      // Every awaited backing mutation runs inside this FIFO turn. Capture the
+      // current tail so a read never spins while the backing provider is
+      // suspended, then recheck health because a rejected opaque mutation
+      // poisons the wrapper.
+      const mutationTail = this._membershipMutationTail;
+      await mutationTail;
+      this._assertHealthy(operation);
+    }
+  }
+
   private _quarantineAddition(keyBase64: string): void {
     this._failedAdditions.add(keyBase64);
     this._markMetadataMutation();
@@ -593,38 +611,50 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   }
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
-    this._assertReadable('ACL check');
+    await this._awaitReadable('ACL check');
     const snapshot = await this._snapshotPublicKey(publicKey, 'ACL check');
-    this._assertReadable('ACL check');
+    for (
+      let attempt = 0;
+      attempt < MAX_STABLE_READ_ATTEMPTS;
+      attempt++
+    ) {
+      await this._awaitReadable('ACL check');
+      if (this._pendingRemovals.has(snapshot.keyBase64)) {
+        return false;
+      }
 
-    if (this._pendingRemovals.has(snapshot.keyBase64)) {
-      return false;
-    }
+      const backingRevision = this._backingRevision;
+      const metadataRevision = this._metadataRevision;
+      const isMember = (await this._backing.check(snapshot.publicKey)) === true;
+      await this._awaitReadable('ACL check');
+      if (
+        this._backingRevision !== backingRevision ||
+        this._metadataRevision !== metadataRevision
+      ) {
+        continue;
+      }
+      if (!isMember) {
+        return false;
+      }
 
-    const backingRevision = this._backingRevision;
-    const isMember = (await this._backing.check(snapshot.publicKey)) === true;
-    this._assertReadable('ACL check');
-    if (this._backingRevision !== backingRevision) {
-      return false;
+      return this._isLocallyAuthorized(snapshot.keyBase64, capability);
     }
-    if (!isMember) {
-      return false;
-    }
-
-    return this._isLocallyAuthorized(snapshot.keyBase64, capability);
+    throw new Error(
+      `ACL check remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
+    );
   }
 
   async users(capability?: string): Promise<PublicKey[]> {
     for (
       let attempt = 0;
-      attempt < MAX_STABLE_USER_LISTING_ATTEMPTS;
+      attempt < MAX_STABLE_READ_ATTEMPTS;
       attempt++
     ) {
-      this._assertReadable('ACL listing');
+      await this._awaitReadable('ACL listing');
       const backingRevision = this._backingRevision;
       const metadataRevision = this._metadataRevision;
       const allUsers = await this._backing.users();
-      this._assertReadable('ACL listing');
+      await this._awaitReadable('ACL listing');
       if (
         this._backingRevision !== backingRevision ||
         this._metadataRevision !== metadataRevision
@@ -640,7 +670,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           ),
         ),
       );
-      this._assertReadable('ACL listing');
+      await this._awaitReadable('ACL listing');
       if (
         this._backingRevision !== backingRevision ||
         this._metadataRevision !== metadataRevision
@@ -654,7 +684,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         .map(({ publicKey }) => publicKey);
     }
     throw new Error(
-      `ACL listing remained stale after ${MAX_STABLE_USER_LISTING_ATTEMPTS} attempts`,
+      `ACL listing remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
     );
   }
 
@@ -736,12 +766,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
    * Get the ACL entry for a specific user.
    */
   async getEntry(publicKey: PublicKey): Promise<UCANACLEntry | undefined> {
-    this._assertReadable('ACL entry lookup');
+    await this._awaitReadable('ACL entry lookup');
     const snapshot = await this._snapshotPublicKey(
       publicKey,
       'ACL entry lookup',
     );
-    this._assertReadable('ACL entry lookup');
+    await this._awaitReadable('ACL entry lookup');
     const entry = this._entries.get(snapshot.keyBase64);
     return entry && copyUCANEntry(entry);
   }
