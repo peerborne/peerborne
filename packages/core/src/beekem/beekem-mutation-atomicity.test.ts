@@ -256,4 +256,31 @@ describe('BeeKEM mutation atomicity', () => {
       ),
     ).resolves.toEqual(rootSecret);
   });
+
+  test('rejects ECDH-incompatible founder keys without initializing', async () => {
+    const target = new BeeKEM();
+    const founderKeys = (await crypto.subtle.generateKey(
+      ECDH_ALGO,
+      false,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const unrelatedKeys = await generateKeyPair();
+    const pristineNodes = nodesOf(target);
+
+    await expect(
+      target.initialize(founderKeys.privateKey, unrelatedKeys.publicKey),
+    ).rejects.toThrow(
+      /founder leaf 0 public and private keys are not ECDH-compatible/,
+    );
+    expect(nodesOf(target)).toBe(pristineNodes);
+    expect(target.memberCount).toBe(0);
+    expect(target.myLeafIndex).toBe(-1);
+
+    await expect(
+      target.initialize(founderKeys.privateKey, founderKeys.publicKey),
+    ).resolves.toBeUndefined();
+    await expect(
+      target.findLeafByPublicKey(founderKeys.publicKey),
+    ).resolves.toBe(0);
+  });
 });
