@@ -572,6 +572,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
+  private readonly _queuedRemovalCommits = new WeakSet<
+    PreparedACLRemoval<Uint8Array>
+  >();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -590,6 +593,17 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
         release();
       }
     })();
+  }
+
+  private _commitQueuedRemoval(
+    prepared: PreparedACLRemoval<Uint8Array>,
+  ): void {
+    this._queuedRemovalCommits.add(prepared);
+    try {
+      prepared.commit();
+    } finally {
+      this._queuedRemovalCommits.delete(prepared);
+    }
   }
 
   private _assertComplete(operation: string): void {
@@ -616,7 +630,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
       const prepared = await this.prepareRemove(publicKey);
-      prepared.commit();
+      this._commitQueuedRemoval(prepared);
       return prepared.changes;
     });
   }
@@ -639,11 +653,19 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const changes = new Uint8Array(privateChanges);
     let committed = false;
-    return {
+    const prepared: PreparedACLRemoval<Uint8Array> = {
       changes,
       commit: () => {
         if (committed) {
           throw new Error('Prepared ACL removal was already committed');
+        }
+        if (
+          this._pendingMutations !== 0 &&
+          !this._queuedRemovalCommits.has(prepared)
+        ) {
+          throw new Error(
+            'Prepared ACL removal cannot commit during a local ACL mutation',
+          );
         }
         if (this._revision !== baseRevision || this._acl !== base) {
           throw new Error('ACL changed while removal was staged');
@@ -654,6 +676,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
         this._revision++;
       },
     };
+    return prepared;
   }
   current(): Uint8Array {
     return encodeStateAsUpdateV2(this._acl);
