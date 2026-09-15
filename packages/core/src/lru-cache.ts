@@ -2,15 +2,10 @@
  * Simple LRU cache with bounded size using Map insertion order.
  * Evicts the least-recently-used entry when the cache is full.
  */
-type DeferredCacheEntry<K, V> = {
-  readonly key: K;
-  readonly value: V;
-};
-
 export class LRUCache<K, V> {
   private readonly _map = new Map<K, V>();
   private readonly _maxSize: number;
-  private _deferredEntry: DeferredCacheEntry<K, V> | undefined;
+  private _deferredEntries: Map<K, V> | undefined;
 
   constructor(maxSize: number = 1000) {
     if (!Number.isFinite(maxSize) || maxSize < 1) {
@@ -20,11 +15,14 @@ export class LRUCache<K, V> {
   }
 
   get(key: K): V | undefined {
-    const deferred = this._deferredEntry;
-    if (deferred !== undefined && sameValueZero(deferred.key, key)) {
-      return deferred.value;
+    const deferred = this._deferredEntries;
+    if (deferred !== undefined && deferred.has(key)) {
+      const value = deferred.get(key)!;
+      deferred.delete(key);
+      deferred.set(key, value);
+      return value;
     }
-    this._flushDeferredEntry();
+    this._flushDeferredEntries();
     // get() returns undefined for both missing keys and stored undefined;
     // use has() to distinguish those cases before updating recency.
     const value = this._map.get(key);
@@ -38,7 +36,7 @@ export class LRUCache<K, V> {
   }
 
   set(key: K, value: V): void {
-    this._flushDeferredEntry();
+    this._flushDeferredEntries();
     this._setMapEntry(key, value);
   }
 
@@ -50,52 +48,66 @@ export class LRUCache<K, V> {
    * competing prepared insertions.
    */
   prepareSet(key: K, value: V): () => void {
-    this._flushDeferredEntry();
-    const entry: DeferredCacheEntry<K, V> = { key, value };
+    return this.prepareSetMany(new Map([[key, value]]));
+  }
+
+  /**
+   * Stage a bounded batch insertion as a deferred overlay. All Map work needed
+   * to build the overlay happens before this method returns; the returned
+   * finalizer only exposes the prebuilt overlay. Cache activity before
+   * finalization is retained when the overlay is later materialized. Callers
+   * must not finalize competing prepared insertions.
+   */
+  prepareSetMany(entries: ReadonlyMap<K, V>): () => void {
+    this._flushDeferredEntries();
+    const deferredEntries = new Map<K, V>();
+    for (const [key, value] of entries) {
+      this._setMapEntry(key, value, deferredEntries);
+    }
     let finalized = false;
     return () => {
       if (finalized) return;
-      this._deferredEntry = entry;
+      this._deferredEntries = deferredEntries;
       finalized = true;
     };
   }
 
-  private _setMapEntry(key: K, value: V): void {
-    if (this._map.has(key)) {
-      this._map.delete(key);
-    } else if (this._map.size >= this._maxSize) {
+  private _setMapEntry(key: K, value: V, map = this._map): void {
+    if (map.has(key)) {
+      map.delete(key);
+    } else if (map.size >= this._maxSize) {
       // Evict oldest (first) entry
-      const firstKey = this._map.keys().next().value!;
-      this._map.delete(firstKey);
+      const firstKey = map.keys().next().value!;
+      map.delete(firstKey);
     }
-    this._map.set(key, value);
+    map.set(key, value);
   }
 
-  private _flushDeferredEntry(): void {
-    const deferred = this._deferredEntry;
+  private _flushDeferredEntries(): void {
+    const deferred = this._deferredEntries;
     if (deferred === undefined) return;
-    this._setMapEntry(deferred.key, deferred.value);
-    this._deferredEntry = undefined;
+    for (const [key, value] of deferred) {
+      this._setMapEntry(key, value);
+    }
+    this._deferredEntries = undefined;
   }
 
   has(key: K): boolean {
-    const deferred = this._deferredEntry;
+    const deferred = this._deferredEntries;
     if (deferred !== undefined) {
-      if (sameValueZero(deferred.key, key)) return true;
-      this._flushDeferredEntry();
+      if (deferred.has(key)) return true;
+      this._flushDeferredEntries();
     }
     return this._map.has(key);
   }
 
   get size(): number {
-    const deferred = this._deferredEntry;
-    if (deferred === undefined || this._map.has(deferred.key)) {
-      return this._map.size;
+    const deferred = this._deferredEntries;
+    if (deferred === undefined) return this._map.size;
+    let additions = 0;
+    for (const key of deferred.keys()) {
+      if (!this._map.has(key)) additions++;
     }
-    return Math.min(this._maxSize, this._map.size + 1);
+    return Math.min(this._maxSize, this._map.size + additions);
   }
-}
-
-function sameValueZero(left: unknown, right: unknown): boolean {
-  return left === right || (left !== left && right !== right);
 }

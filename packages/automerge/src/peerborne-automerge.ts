@@ -1662,47 +1662,96 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
         ? undefined
         : new Uint8Array(committedKeyIds[committedKeyIds.length - 1]);
     const stagedKeyCache = new Map<string, CryptoKey>();
-    let committed = false;
+    let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+    let hydrationInProgress = false;
+    let hydrationPromise: Promise<void> | undefined;
+    const hydrateKeys = async (): Promise<[Uint8Array, CryptoKey][]> => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      let pending = hydrationPromise;
+      if (pending === undefined) {
+        hydrationInProgress = true;
+        const newHydration = (async () => {
+          const hydrated = new Map<string, CryptoKey>();
+          for (const [keyID, serialized] of stagedEntries) {
+            const key = await deserializeKey(
+              { name: 'AES-GCM', length: 256 },
+              ['encrypt', 'decrypt'],
+            )(serialized);
+            hydrated.set(keyID, key);
+          }
+          for (const [keyID, key] of hydrated) {
+            stagedKeyCache.set(keyID, key);
+          }
+        })();
+        hydrationPromise = newHydration;
+        void newHydration.then(
+          () => {
+            hydrationInProgress = false;
+          },
+          () => {
+            hydrationInProgress = false;
+            if (hydrationPromise === newHydration) {
+              hydrationPromise = undefined;
+            }
+          },
+        );
+        pending = newHydration;
+      }
+      await pending;
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      return stagedEntries.map(([keyID]) => [
+        cacheKeyToKeyId(keyID),
+        stagedKeyCache.get(keyID)!,
+      ]);
+    };
+    const claimCommit = () => {
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared keychain merge was already committed or claimed',
+        );
+      }
+      if (this._keychain !== base || this._revision !== baseRevision) {
+        throw new Error('Keychain changed while merge was staged');
+      }
+      if (hydrationInProgress) {
+        throw new Error(
+          'Prepared keychain merge cannot be claimed while key hydration is in progress',
+        );
+      }
+      const finalizeCache = this._keyCache.prepareSetMany(stagedKeyCache);
+      const claim = {
+        finalize: () => {
+          if (state === 'committed') return;
+          finalizeCache();
+          this._keychain = merged;
+          this._revision = baseRevision + 1;
+          state = 'committed';
+        },
+      };
+      state = 'claimed';
+      return claim;
+    };
     return {
       changes: stableChanges.map(
         (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
       ),
       keyIds: returnedKeyIds,
       currentKeyId,
-      hydrateKeys: async () => {
-        const hydrated: [Uint8Array, CryptoKey][] = [];
-        for (const [keyID, serialized] of stagedEntries) {
-          let key = stagedKeyCache.get(keyID);
-          if (!key) {
-            key = await deserializeKey({ name: 'AES-GCM', length: 256 }, [
-              'encrypt',
-              'decrypt',
-            ])(serialized);
-            stagedKeyCache.set(keyID, key);
-          }
-          hydrated.push([cacheKeyToKeyId(keyID), key]);
-        }
-        return hydrated;
-      },
+      hydrateKeys,
       getKey: (keyID: Uint8Array) =>
         stagedKeyCache.get(keyIdToCacheKey(keyID)),
       stateCommitment: async () =>
         await automergeKeychainStateCommitment(stagedEntries),
-      commit: () => {
-        if (committed) {
-          throw new Error('Prepared keychain merge was already committed');
-        }
-        if (this._keychain !== base || this._revision !== baseRevision) {
-          throw new Error('Keychain changed while merge was staged');
-        }
-        const liveCache = this._keyCache;
-        for (const [keyID, key] of stagedKeyCache) {
-          liveCache.set(keyID, key);
-        }
-        this._keychain = merged;
-        this._revision++;
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
   async keys(): Promise<[Uint8Array, CryptoKey][]> {
