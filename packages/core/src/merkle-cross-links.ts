@@ -198,7 +198,9 @@ function sameChangePayload(
     rightValues.add(right);
 
     const leftByteView = snapshotComparableByteView(left);
-    const rightByteView = snapshotComparableByteView(right);
+    // Identical references still need validation for unsafe backing buffers.
+    const rightByteView =
+      left === right ? leftByteView : snapshotComparableByteView(right);
     if (
       leftByteView.kind === 'invalid-view' ||
       rightByteView.kind === 'invalid-view'
@@ -219,6 +221,7 @@ function sameChangePayload(
       const rightBytes = rightByteView.bytes;
       if (leftBytes.byteLength !== rightBytes.byteLength) return false;
       consumeComparisonBudget(budget, leftBytes.byteLength);
+      if (leftBytes === rightBytes) continue;
       for (let index = 0; index < leftBytes.byteLength; index++) {
         if (leftBytes[index] !== rightBytes[index]) return false;
       }
