@@ -689,6 +689,7 @@ export class BeeKEM {
       });
     } catch (error) {
       return runReservedMutation(async () => {
+        await welcomeSettlement;
         throw error;
       });
     }
