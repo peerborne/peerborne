@@ -6657,14 +6657,7 @@ export class PeerborneDocument<
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
           if (!rawContent) {
-            // If we're unable to decrypt the document, try a fresh document load.
-            console.warn(
-              'Trying to re-load document... Unable to decrypt incoming message',
-            );
-            // Prefer loading from the sending peer -- they created this change
-            // and should have the document key(s) needed to read it.
-            const senderPeer = rawMessage.detail.type === 'signed' ? rawMessage.detail.from : undefined;
-            return this.load(senderPeer);
+            return false;
           }
 
           const message = snapshotSyncMessageForContext<
