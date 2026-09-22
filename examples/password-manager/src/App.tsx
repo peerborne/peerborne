@@ -1,9 +1,9 @@
 import React, { useEffect } from 'react';
 import {
   BrowserRouter as Router,
-  Switch,
+  Routes,
   Route,
-  Redirect,
+  Navigate,
   Link,
 } from 'react-router-dom';
 import { Container, Nav } from 'react-bootstrap';
@@ -117,32 +117,37 @@ function App() {
             </Nav.Item>
           </Nav>
 
-          <Switch>
-            <Route path="/login">
-              <Login
-                privateKey={privateKey}
-                setPrivateKey={setPrivateKey}
-                publicKey={publicKey}
-                setPublicKey={setPublicKey}
-                userId={userId}
-                setUserId={setUserId}
-                bootstrapPeers={bootstrapPeers}
-                setBootstrapPeers={setBootstrapPeers}
-              />
-            </Route>
-            <Route path="/secrets">
-              {loggedIn ? (
+          <Routes>
+            <Route
+              path="/login"
+              element={
+                <Login
+                  privateKey={privateKey}
+                  setPrivateKey={setPrivateKey}
+                  publicKey={publicKey}
+                  setPublicKey={setPublicKey}
+                  userId={userId}
+                  setUserId={setUserId}
+                  bootstrapPeers={bootstrapPeers}
+                  setBootstrapPeers={setBootstrapPeers}
+                />
+              }
+            />
+            <Route
+              path="/secrets"
+              element={loggedIn ? (
                 peerborne && userId ? (
                   <PasswordList userId={userId} peerborne={peerborne} />
                 ) : (
                   <i>Loading peerborne...</i>
                 )
               ) : (
-                <Redirect to="/login" />
+                <Navigate to="/login" replace />
               )}
-            </Route>
-            <Route path="/settings">
-              {loggedIn ? (
+            />
+            <Route
+              path="/settings"
+              element={loggedIn ? (
                 peerborne ? (
                   <Settings
                     peerborne={peerborne}
@@ -152,13 +157,14 @@ function App() {
                   <i>Loading peerborne...</i>
                 )
               ) : (
-                <Redirect to="/login" />
+                <Navigate to="/login" replace />
               )}
-            </Route>
-            <Route exact path="/">
-              {loggedIn ? <Redirect to="/secrets" /> : <Redirect to="/login" />}
-            </Route>
-          </Switch>
+            />
+            <Route
+              path="/"
+              element={<Navigate to={loggedIn ? '/secrets' : '/login'} replace />}
+            />
+          </Routes>
         </Container>
       </Router>
     </PeerborneContext.Provider>

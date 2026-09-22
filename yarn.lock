@@ -4631,7 +4631,6 @@ __metadata:
     "@types/react": "npm:^19.2.18"
     "@types/react-bootstrap": "npm:^1.1.0"
     "@types/react-dom": "npm:^19.2.4"
-    "@types/react-router-dom": "npm:^5.3.3"
     "@types/uuid": "npm:^11.0.0"
     "@vitejs/plugin-react": "npm:^4.3.4"
     bootstrap: "npm:^5.3.8"
@@ -4750,7 +4749,6 @@ __metadata:
     "@types/react-bootstrap": "npm:^1.1.0"
     "@types/react-dom": "npm:^19.2.4"
     "@types/react-redux": "npm:^7.1.34"
-    "@types/react-router-dom": "npm:^5.3.3"
     "@types/slate": "npm:^0.47.16"
     "@vitejs/plugin-react": "npm:^4.3.4"
     bootstrap: "npm:^5.3.8"
@@ -5744,13 +5742,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/history@npm:^4.7.11":
-  version: 4.7.11
-  resolution: "@types/history@npm:4.7.11"
-  checksum: 10/1da529a3485f3015daf794effa3185493bf7dd2551c26932389c614f5a0aab76ab97645897d1eef9c74ead216a3848fcaa019f165bbd6e4b71da6eff164b4c68
-  languageName: node
-  linkType: hard
-
 "@types/hoist-non-react-statics@npm:^3.3.0":
   version: 3.3.5
   resolution: "@types/hoist-non-react-statics@npm:3.3.5"
@@ -5925,27 +5916,6 @@ __metadata:
     hoist-non-react-statics: "npm:^3.3.0"
     redux: "npm:^4.0.0"
   checksum: 10/febcd1db0c83c5002c6bee0fdda9e70da0653454ffbb72d6c37cbf2f5c005e06fb5271cff344d7164c385c944526565282de9a95ff379e040476b71d27fc2512
-  languageName: node
-  linkType: hard
-
-"@types/react-router-dom@npm:^5.3.3":
-  version: 5.3.3
-  resolution: "@types/react-router-dom@npm:5.3.3"
-  dependencies:
-    "@types/history": "npm:^4.7.11"
-    "@types/react": "npm:*"
-    "@types/react-router": "npm:*"
-  checksum: 10/28c4ea48909803c414bf5a08502acbb8ba414669b4b43bb51297c05fe5addc4df0b8fd00e0a9d1e3535ec4073ef38aaafac2c4a2b95b787167d113bc059beff3
-  languageName: node
-  linkType: hard
-
-"@types/react-router@npm:*":
-  version: 5.1.20
-  resolution: "@types/react-router@npm:5.1.20"
-  dependencies:
-    "@types/history": "npm:^4.7.11"
-    "@types/react": "npm:*"
-  checksum: 10/72d78d2f4a4752ec40940066b73d7758a0824c4d0cbeb380ae24c8b1cdacc21a6fc835a99d6849b5b295517a3df5466fc28be038f1040bd870f8e39e5ded43a4
   languageName: node
   linkType: hard
 
