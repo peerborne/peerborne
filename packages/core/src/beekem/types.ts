@@ -39,18 +39,6 @@ export interface InternalNode {
   conflictKeys?: CryptoKey[];
 }
 
-/**
- * Path update message: encrypted key pairs along a path from leaf to root.
- */
-export interface PathUpdate {
-  /** Index of the leaf that initiated the update. */
-  senderLeafIndex: number;
-  /** Sender's new leaf public key (raw exported ECDH public key). */
-  senderLeafPublicKey: Uint8Array;
-  /** Encrypted node updates along the path to root. */
-  nodes: PathNodeUpdate[];
-}
-
 /** One authenticated ancestor-key bundle sealed to a copath resolution node. */
 export interface EncryptedPathKeyBundle {
   /** Tree node whose public key was used to seal the bundle. */
@@ -86,14 +74,14 @@ export interface PathUpdateV2 {
 }
 
 /**
- * A single node update in a path update message.
+ * A private ancestor key delivered in a Welcome.
  */
-export interface PathNodeUpdate {
+export interface WelcomePathKey {
   /** Tree node index. */
   nodeIndex: number;
   /** New public key for this node (raw exported ECDH public key). */
   publicKey: Uint8Array;
-  /** Encrypted private key for the sibling subtree. */
+  /** Private key sealed to the recipient or preceding Welcome path key. */
   encryptedPrivateKey: Uint8Array;
 }
 
@@ -107,12 +95,12 @@ export interface WelcomeNodePublicKey {
   publicKey: Uint8Array | null;
 }
 
-/** Fields shared by every BeeKEM Welcome protocol version. */
-export interface BeeKEMWelcomeFields {
+/** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
+export interface BeeKEMWelcomeV2 {
   /** The new member's leaf index. */
   leafIndex: number;
-  /** Path keys from the new leaf to root, encrypted to the new member. */
-  pathKeys: PathNodeUpdate[];
+  /** Path keys from the new leaf to root, sealed to the new member. */
+  pathKeys: WelcomePathKey[];
   /**
    * Public keys for all tree nodes not covered by pathKeys or the new member's
    * own leaf. Includes peer leaves and internal nodes so the joiner can
@@ -121,21 +109,6 @@ export interface BeeKEMWelcomeFields {
   treeNodePublicKeys: WelcomeNodePublicKey[];
   /** Serialized tree state hash for verification. */
   treeHash: Uint8Array;
-}
-
-/**
- * Legacy v1 Welcome message for a new member joining the group. The v2-only
- * fields are typed `never` so a v2 Welcome cannot be passed where v1 is
- * expected.
- */
-export interface BeeKEMWelcome extends BeeKEMWelcomeFields {
-  version?: never;
-  generation?: never;
-  numLeaves?: never;
-}
-
-/** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
-export interface BeeKEMWelcomeV2 extends BeeKEMWelcomeFields {
   /** Explicit protocol version. */
   version: 2;
   /** Sender generation. */

@@ -1,3 +1,4 @@
+import { welcomeFixture } from './__mocks__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
 import {
@@ -1282,12 +1283,7 @@ describe('writer ACL publication boundary', () => {
           readerAclAdd(reader);
           expect(serializedReader).toBe('candidate');
           expect(kem).toEqual(expectedKem);
-          return {
-            leafIndex: 2,
-            pathKeys: [],
-            treeNodePublicKeys: [],
-            treeHash: new Uint8Array([6]),
-          };
+          return welcomeFixture();
         },
       ),
       _addWriterUnlocked: jest.fn(

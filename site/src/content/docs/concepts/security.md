@@ -223,14 +223,14 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate** is a best-effort mechanism to notify peers about ACL changes
+- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
 - Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
 
 ```ts
 // Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
-`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
+`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort. Receivers reject skipped generations, stale updates, and updates from a different parent tree before committing an epoch. Every member must apply transitions in order; a gap requires ordered redelivery, persisted ratchet recovery, or a fresh authenticated Welcome. An ordinary document load cannot reconstruct private ratchet state. Only the current V2 PathUpdate and generation-bearing Welcome formats are supported; earlier formats and key-only Welcome payloads are rejected.
 
 The bundled Yjs and Automerge providers compose the local reader-ACL removal,
 epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through

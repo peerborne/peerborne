@@ -1,6 +1,5 @@
 import { CRDTChangeNode } from './crdt-change-node.js';
 import {
-  SerializedPathUpdate,
   SerializedPathUpdateV2,
 } from './path-update-wire.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
@@ -173,16 +172,10 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   eciesSealed?: Uint8Array;
 
   /**
-   * Optional BeeKEM ratchet-tree update reserved for the distinct V1 and V2
-   * PathUpdate wire protocols. V1 carries `SerializedPathUpdate`; V2 carries
-   * the explicit generation, tree snapshot, and resolution bundles in
-   * `SerializedPathUpdateV2`. Integrations MUST select the decoder from the
-   * negotiated protocol; neither version may be reinterpreted as the other.
-   *
-   * Only populated on a BeeKEM PathUpdate wire path; absent on
-   * sync messages flowing over GossipSub / document-load / Welcome.
+   * Parent-bound BeeKEM V2 ratchet-tree update. Only the PathUpdate protocol
+   * carries this value; document sync, load, and Welcome messages omit it.
    */
-  pathUpdate?: SerializedPathUpdate | SerializedPathUpdateV2;
+  pathUpdate?: SerializedPathUpdateV2;
 
   /**
    * Optional 32-byte epoch identifier paired with `pathUpdate`. The
@@ -191,7 +184,7 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * `BeeKEM.processPathUpdate` and validates that the two match
    * byte-for-byte before installing the new key. Mismatch means the
    * receiver derived a different root than the sender (e.g. stale
-   * local tree state) and the PathUpdate is rejected rather than
+   * local tree state) and the PathUpdateV2 is rejected rather than
    * installing a key under the wrong epoch ID.
    *
    * Both ends key the on-wire encrypted-block prefix on this exact

@@ -47,8 +47,8 @@ import {
   validateLoadQuorumConfig,
 } from './load-quorum.js';
 import {
-  beekemPathUpdateV1,
-  beekemWelcomeV1,
+  beekemPathUpdateV2,
+  beekemWelcomeV2,
   documentLoadV3,
   documentKeyUpdateV2,
   invitationJoinV1,
@@ -1118,7 +1118,7 @@ export class Peerborne<
       });
     };
 
-    // Handler for BeeKEM Welcome v1. Wire format mirrors key-update v2:
+    // Handler for BeeKEM Welcome V2. Wire format mirrors key-update v2:
     // 4-byte big-endian path length, then UTF-8 path, then the serialized
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
@@ -1175,13 +1175,13 @@ export class Peerborne<
       });
     };
 
-    // Handler for BeeKEM PathUpdate v1 (reader-revocation rotations).
-    // Wire format mirrors key-update v2 / BeeKEM Welcome v1: 4-byte
+    // Handler for BeeKEM PathUpdateV2 v1 (reader-revocation rotations).
+    // Wire format mirrors key-update v2 / BeeKEM Welcome V2: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
     // `pathUpdateEpochId` / `signature` fields. After routing by path
     // the per-document handler verifies the writer signature, applies
-    // the PathUpdate via `BeeKEM.processPathUpdate`, and installs the
+    // the PathUpdateV2 via `BeeKEM.processPathUpdate`, and installs the
     // freshly-derived document key in the keychain.
     // See note on `docLoadHandler` above re: the v3 StreamHandler
     // signature.
@@ -1344,8 +1344,8 @@ export class Peerborne<
       this.libp2p.handle(documentLoadV3, docLoadHandler, relayProtocolOptions),
       this.libp2p.handle(snapshotLoadV3, snapshotLoadHandler, relayProtocolOptions),
       this.libp2p.handle(documentKeyUpdateV2, keyUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(beekemWelcomeV1, beekemWelcomeHandler, relayProtocolOptions),
-      this.libp2p.handle(beekemPathUpdateV1, beekemPathUpdateHandler, relayProtocolOptions),
+      this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
+      this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
       this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
       this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);

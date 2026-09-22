@@ -301,7 +301,7 @@ describe('concrete inbound handler log redaction', () => {
     }
   });
 
-  test('redacts a serializer failure in the real BeeKEM PathUpdate handler', async () => {
+  test('redacts a serializer failure in the real BeeKEM PathUpdateV2 handler', async () => {
     const document = fakeDocument({
       _syncMessageSerializer: {
         deserializeSyncMessage: () => {
@@ -314,7 +314,7 @@ describe('concrete inbound handler log redaction', () => {
     try {
       await document.handleBeeKEMPathUpdateRequestData(new Uint8Array([2]));
       expect(logs.warn).toHaveBeenCalledWith(
-        'Dropping malformed BeeKEM PathUpdate',
+        'Dropping malformed BeeKEM PathUpdateV2',
       );
       expect(logs.text()).not.toContain(privateFailure);
       expect(logs.text()).not.toContain(privatePath);
