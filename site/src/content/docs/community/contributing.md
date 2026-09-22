@@ -63,7 +63,7 @@ Use `yarn exec playwright install chromium --with-deps` when Linux system browse
 
 The test command alone does not create the required service topology. GitHub CI is the canonical sequence.
 
-Define bounded readiness helpers in Bash:
+Define the bounded HTTP readiness helper in Bash:
 
 ```bash
 wait_http() {
@@ -75,14 +75,6 @@ wait_http() {
   done
 }
 
-wait_tcp() {
-  local attempts=0
-  until (echo > "/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; do
-    attempts=$((attempts + 1))
-    [ "$attempts" -ge 60 ] && return 1
-    sleep 2
-  done
-}
 ```
 
 Run one topology at a time and always tear it down afterward:
@@ -99,12 +91,12 @@ CI=true yarn test:nat
 docker compose -f docker-compose.nat-test.yaml down -v
 
 docker compose -f docker-compose.peerborne-nat.yaml up -d --build
-for port in 3101 3102; do wait_tcp "$port"; done
+node scripts/wait-remote-chromium.mjs ws://127.0.0.1:3101/ ws://127.0.0.1:3102/
 CI=true yarn test:peerborne-nat
 docker compose -f docker-compose.peerborne-nat.yaml down -v
 ```
 
-These helpers mirror CI's 120-second readiness budget. The workflow remains the canonical sequence, including failure logs and unconditional cleanup.
+These helpers mirror CI's 120-second readiness budget. Remote browsers must complete a Playwright connection; an open Docker TCP port alone does not establish readiness. The workflow remains the canonical sequence, including failure logs and unconditional cleanup.
 
 Integration checks transport discovery, bidirectional messaging, resilience,
 and NAT behavior through the test app. The real Peerborne cross-NAT job uses

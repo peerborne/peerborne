@@ -35,7 +35,10 @@ import {
   requireDeserializePublicKey,
   requireSerializePublicKey,
 } from './auth-provider.js';
-import { LoadMessageSerializer } from './load-request-serializer.js';
+import {
+  LoadMessageSerializer,
+  LoadRequestCompletionDetector,
+} from './load-request-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
 import {
   CRDTChangeNodeKind,
@@ -45,6 +48,7 @@ import {
 } from './crdt-change-node.js';
 import {
   CRDTChangeNodeWire,
+  MAX_MERKLE_DAG_DEPTH,
   describeValue,
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
@@ -158,6 +162,7 @@ export {
   CRDTChangeNode,
   crdtChangeNodeDeferred,
   CRDTChangeNodeWire,
+  MAX_MERKLE_DAG_DEPTH,
   describeValue,
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
@@ -187,6 +192,7 @@ export {
   requireSerializePublicKey,
   SyncMessageSerializer,
   LoadMessageSerializer,
+  LoadRequestCompletionDetector,
   JSONSerializer,
   validateChangeBlockMetadata,
   defaultConfig,
@@ -289,3 +295,5 @@ export type {
   ACLState,
   SerializePublicKey,
 } from './acl-chain.js';
+export { copyUnsharedUint8Array, snapshotDeepEnumerableData } from './utils.js';
+export type { DeepDataSnapshotLimits } from './utils.js';

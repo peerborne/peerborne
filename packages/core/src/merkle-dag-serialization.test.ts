@@ -1,13 +1,12 @@
 import { describe, expect, test } from '@jest/globals';
-import {
-  CRDTChangeNode,
-  crdtChangeNodeDeferred,
-} from './crdt-change-node.js';
+import { CRDTChangeNode, crdtChangeNodeDeferred } from './crdt-change-node.js';
 import {
   CRDTChangeNodeWire,
+  MAX_MERKLE_DAG_DEPTH,
   deserializeChangeNodeFromJSON,
   serializeChangeNodeForJSON,
 } from './merkle-dag-serialization.js';
+import { MAX_CHANGE_TREE_NODES } from './change-tree-walk.js';
 
 // --- Test encoders -------------------------------------------------------
 
@@ -67,7 +66,10 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     const restored = deserializeChangeNodeFromJSON(wire, decodeBytes);
     expect(restored.kind).toBe('document');
     expect(restored.change).toBeDefined();
-    expectBytesEqual(restored.change as Uint8Array, original.change as Uint8Array);
+    expectBytesEqual(
+      restored.change as Uint8Array,
+      original.change as Uint8Array,
+    );
     expect(restored.children).toBeUndefined();
   });
 
@@ -96,7 +98,11 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     const original: CRDTChangeNode<Uint8Array> = { kind: 'reader' };
 
     const wire = serializeChangeNodeForJSON(original, encodeBytes);
-    expect(wire).toEqual({ kind: 'reader', change: undefined, children: undefined });
+    expect(wire).toEqual({
+      kind: 'reader',
+      change: undefined,
+      children: undefined,
+    });
 
     const restored = deserializeChangeNodeFromJSON(wire, decodeBytes);
     expect(restored.kind).toBe('reader');
@@ -172,9 +178,15 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     expect(Object.keys(h1Children).sort()).toEqual(['h1a', 'h1b']);
     expect(h1Children.h1a.kind).toBe('writer');
     expect(h1Children.h1a.keyID).toBe('k-1');
-    expectBytesEqual(h1Children.h1a.change as Uint8Array, new Uint8Array([0x01]));
+    expectBytesEqual(
+      h1Children.h1a.change as Uint8Array,
+      new Uint8Array([0x01]),
+    );
     expect(h1Children.h1b.kind).toBe('reader');
-    expectBytesEqual(h1Children.h1b.change as Uint8Array, new Uint8Array([0x02]));
+    expectBytesEqual(
+      h1Children.h1b.change as Uint8Array,
+      new Uint8Array([0x02]),
+    );
 
     const h2Children = children.h2.children as Record<
       string,
@@ -263,19 +275,18 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       string,
       CRDTChangeNode<Uint8Array[]>
     >;
-    expectBytesArrayEqual(
-      children.a.change as Uint8Array[],
-      [new Uint8Array([2]), new Uint8Array([3, 4])],
-    );
+    expectBytesArrayEqual(children.a.change as Uint8Array[], [
+      new Uint8Array([2]),
+      new Uint8Array([3, 4]),
+    ]);
     const aChildren = children.a.children as Record<
       string,
       CRDTChangeNode<Uint8Array[]>
     >;
     expect(aChildren['a.1'].keyID).toBe('reader-key');
-    expectBytesArrayEqual(
-      aChildren['a.1'].change as Uint8Array[],
-      [new Uint8Array([5, 6, 7])],
-    );
+    expectBytesArrayEqual(aChildren['a.1'].change as Uint8Array[], [
+      new Uint8Array([5, 6, 7]),
+    ]);
     // Empty array leaves must round-trip as empty arrays (not undefined).
     expect(children.b.change).toEqual([]);
   });
@@ -402,10 +413,182 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       // Simulate a peer message that omits `kind` entirely. Cast through
       // unknown because the field is required by the type, but malformed
       // JSON has no such guarantee at runtime.
-      const malformed = { change: '01' } as unknown as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"kind" must be one of/,
+      const malformed = {
+        change: '01',
+      } as unknown as CRDTChangeNodeWire<string>;
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"kind" must be an own property/);
+    });
+
+    test('throws without reading an inherited "kind"', () => {
+      let inheritedReads = 0;
+      const prototype = Object.create(null) as Record<string, unknown>;
+      Object.defineProperty(prototype, 'kind', {
+        get: () => {
+          inheritedReads += 1;
+          return 'document';
+        },
+      });
+      const malformed = Object.assign(Object.create(prototype), {
+        change: '01',
+      }) as CRDTChangeNodeWire<string>;
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/plain object/);
+      expect(inheritedReads).toBe(0);
+    });
+
+    test('rejects own accessors without invoking them', () => {
+      let reads = 0;
+      const malformed = { change: '01' } as Record<string, unknown>;
+      Object.defineProperty(malformed, 'kind', {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return 'document';
+        },
+      });
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          malformed as CRDTChangeNodeWire<string>,
+          decodeBytes,
+        ),
+      ).toThrow(/data properties/);
+      expect(reads).toBe(0);
+    });
+
+    test('decodes only from one descriptor snapshot of each node', () => {
+      let propertyReads = 0;
+      const source = new Proxy(
+        { kind: 'document' as const, change: '01' },
+        {
+          get(target, property, receiver) {
+            propertyReads += 1;
+            return Reflect.get(target, property, receiver);
+          },
+        },
       );
+
+      const restored = deserializeChangeNodeFromJSON(source, decodeBytes);
+      expect(restored.kind).toBe('document');
+      expectBytesEqual(restored.change!, new Uint8Array([1]));
+      expect(propertyReads).toBe(0);
+    });
+
+    test('rejects children-map accessors without invoking them', () => {
+      let reads = 0;
+      const children = {};
+      Object.defineProperty(children, 'child', {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return { kind: 'document' };
+        },
+      });
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          { kind: 'document', children } as CRDTChangeNodeWire<string>,
+          decodeBytes,
+        ),
+      ).toThrow(/data properties/);
+      expect(reads).toBe(0);
+    });
+
+    test('snapshots every node before a decoder callback can mutate input', () => {
+      const child: CRDTChangeNodeWire<string> = {
+        kind: 'writer',
+        change: '02',
+      };
+      const wire: CRDTChangeNodeWire<string> = {
+        kind: 'document',
+        change: '01',
+        children: { child },
+      };
+
+      const restored = deserializeChangeNodeFromJSON(wire, (value) => {
+        if (value === '01') child.kind = 'reader';
+        return decodeBytes(value);
+      });
+      const restoredChild = (
+        restored.children as Record<string, CRDTChangeNode<Uint8Array>>
+      ).child;
+      expect(restoredChild.kind).toBe('writer');
+      expectBytesEqual(restoredChild.change!, new Uint8Array([2]));
+    });
+
+    test('detaches aliased Automerge payloads before decoder callbacks run', () => {
+      const sharedChange = ['01'];
+      const wire: CRDTChangeNodeWire<string[]> = {
+        kind: 'document',
+        change: sharedChange,
+        children: {
+          child: { kind: 'writer', change: sharedChange },
+        },
+      };
+      const decodedInputs: string[][] = [];
+
+      const restored = deserializeChangeNodeFromJSON(wire, (value) => {
+        decodedInputs.push(value);
+        const original = value[0]!;
+        value[0] = 'ff';
+        return original;
+      });
+      const restoredChild = (
+        restored.children as Record<string, CRDTChangeNode<string>>
+      ).child;
+
+      expect(restored.change).toBe('01');
+      expect(restoredChild.change).toBe('01');
+      expect(decodedInputs[0]).not.toBe(decodedInputs[1]);
+      expect(sharedChange).toEqual(['01']);
+    });
+
+    test('rejects payload accessors without invoking them or the decoder', () => {
+      let getterCalls = 0;
+      const change = new Array<string>(1);
+      Object.defineProperty(change, '0', {
+        enumerable: true,
+        get: () => {
+          getterCalls++;
+          return '01';
+        },
+      });
+      const decoder = jest.fn((value: string[]) => value);
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          { kind: 'document', change },
+          decoder,
+        ),
+      ).toThrow(/own data elements/);
+      expect(getterCalls).toBe(0);
+      expect(decoder).not.toHaveBeenCalled();
+    });
+
+    test('applies one aggregate byte budget across all change payloads', () => {
+      const oneMiB = 'x'.repeat(1024 * 1024);
+      const decoder = jest.fn((value: string[]) => value);
+
+      expect(() =>
+        deserializeChangeNodeFromJSON(
+          {
+            kind: 'document',
+            change: new Array(17).fill(oneMiB),
+            children: {
+              child: {
+                kind: 'writer',
+                change: new Array(17).fill(oneMiB),
+              },
+            },
+          },
+          decoder,
+        ),
+      ).toThrow(/67108864 detached value bytes/);
+      expect(decoder).not.toHaveBeenCalled();
     });
 
     test('throws when "kind" is an unknown string', () => {
@@ -413,9 +596,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         kind: 'evil' as unknown as 'document',
         change: '01',
       };
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"kind" must be one of.*got "evil"/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"kind" must be one of.*got "evil"/);
     });
 
     test('throws when "kind" is the wrong type (e.g. a number)', () => {
@@ -423,9 +606,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         kind: 7,
         change: '01',
       } as unknown as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"kind" must be one of/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"kind" must be one of/);
     });
 
     test('accepts all three documented kinds: document, writer, reader', () => {
@@ -440,27 +623,27 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       const malformed = JSON.parse(
         '{"kind":"document","change":"01","children":{"h1":null}}',
       ) as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /child at key "h1" must be a plain object.*got null/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/child at key "h1" must be a plain object.*got null/);
     });
 
     test('throws when a child node is an array', () => {
       const malformed = JSON.parse(
         '{"kind":"document","change":"01","children":{"h1":[1,2]}}',
       ) as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /child at key "h1" must be a plain object.*got array/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/child at key "h1" must be a plain object.*got array/);
     });
 
     test('throws when a child node is a primitive (string)', () => {
       const malformed = JSON.parse(
         '{"kind":"document","change":"01","children":{"h1":"not-an-object"}}',
       ) as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /child at key "h1" must be a plain object.*got string/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/child at key "h1" must be a plain object.*got string/);
     });
 
     test('throws when a nested child has an invalid "kind"', () => {
@@ -468,9 +651,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         '{"kind":"document","change":"01","children":' +
           '{"h1":{"kind":"hacker","change":"02"}}}',
       ) as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"kind" must be one of.*got "hacker"/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"kind" must be one of.*got "hacker"/);
     });
 
     test('throws when "keyID" is a number', () => {
@@ -483,9 +666,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         keyID: 123,
         change: '01',
       } as unknown as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"keyID" must be a string when present.*got number/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"keyID" must be a string when present.*got number/);
     });
 
     test('throws when "keyID" is null', () => {
@@ -494,9 +677,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         keyID: null,
         change: '01',
       } as unknown as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"keyID" must be a string when present.*got null/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"keyID" must be a string when present.*got null/);
     });
 
     test('throws when "keyID" is an object', () => {
@@ -505,9 +688,9 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         keyID: { evil: true },
         change: '01',
       } as unknown as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"keyID" must be a string when present.*got object/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"keyID" must be a string when present.*got object/);
     });
 
     test('throws when a nested child has an invalid "keyID"', () => {
@@ -515,18 +698,23 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
         '{"kind":"document","change":"01","children":' +
           '{"h1":{"kind":"writer","keyID":42,"change":"02"}}}',
       ) as CRDTChangeNodeWire<string>;
-      expect(() => deserializeChangeNodeFromJSON(malformed, decodeBytes)).toThrow(
-        /"keyID" must be a string when present.*got number/,
-      );
+      expect(() =>
+        deserializeChangeNodeFromJSON(malformed, decodeBytes),
+      ).toThrow(/"keyID" must be a string when present.*got number/);
     });
 
     test('accepts omitted "keyID" (optional field)', () => {
-      const node: CRDTChangeNodeWire<string> = { kind: 'document', change: '01' };
+      const node: CRDTChangeNodeWire<string> = {
+        kind: 'document',
+        change: '01',
+      };
       const restored = deserializeChangeNodeFromJSON(node, decodeBytes);
       expect(restored.keyID).toBeUndefined();
       // Explicit construction must not set `keyID` as an own property when
       // omitted; consumers iterating own keys should not see it.
-      expect(Object.prototype.hasOwnProperty.call(restored, 'keyID')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(restored, 'keyID')).toBe(
+        false,
+      );
     });
 
     test('accepts a string "keyID"', () => {
@@ -595,5 +783,136 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       restoredChildren.only.change as Uint8Array,
       new Uint8Array([42]),
     );
+  });
+
+  test('iteratively round-trips a tree at the JSON-safe depth limit', () => {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    let cursor = root;
+    for (let depth = 2; depth <= MAX_MERKLE_DAG_DEPTH; depth++) {
+      const child: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+      cursor.children = { [`N${depth}`]: child };
+      cursor = child;
+    }
+
+    const wire = serializeChangeNodeForJSON(root, hexEncode);
+    const restored = deserializeChangeNodeFromJSON(wire, hexDecode);
+    let actualDepth = 1;
+    let current = restored;
+    while (
+      current.children !== undefined &&
+      current.children !== crdtChangeNodeDeferred
+    ) {
+      current = Object.values(current.children)[0]!;
+      actualDepth++;
+    }
+    expect(actualDepth).toBe(MAX_MERKLE_DAG_DEPTH);
+  });
+
+  test('rejects a tree beyond the JSON-safe depth limit', () => {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    let cursor = root;
+    for (let depth = 2; depth <= MAX_MERKLE_DAG_DEPTH + 1; depth++) {
+      const child: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+      cursor.children = { [`N${depth}`]: child };
+      cursor = child;
+    }
+
+    expect(() => serializeChangeNodeForJSON(root, hexEncode)).toThrow(
+      /maximum depth/,
+    );
+    expect(() =>
+      deserializeChangeNodeFromJSON(
+        root as unknown as CRDTChangeNodeWire<Uint8Array>,
+        (value) => value,
+      ),
+    ).toThrow(/maximum depth/);
+  });
+
+  test('rejects an inbound tree over the aggregate node budget', () => {
+    const root: CRDTChangeNodeWire<string> = { kind: 'document' };
+    const children: Record<string, CRDTChangeNodeWire<string>> = {};
+    for (let index = 0; index < MAX_CHANGE_TREE_NODES; index++) {
+      children[`N${index}`] = { kind: 'document' };
+    }
+    root.children = children;
+    expect(() => deserializeChangeNodeFromJSON(root, hexDecode)).toThrow(
+      /exceeds/,
+    );
+  });
+
+  test('rejects object cycles while allowing a shared node in sibling branches', () => {
+    const root: CRDTChangeNode<Uint8Array> = { kind: 'document' };
+    root.children = { SELF: root };
+
+    expect(() => serializeChangeNodeForJSON(root, hexEncode)).toThrow(/cycles/);
+    expect(() =>
+      deserializeChangeNodeFromJSON(
+        root as unknown as CRDTChangeNodeWire<Uint8Array>,
+        (value) => value,
+      ),
+    ).toThrow(/cycles/);
+
+    const shared: CRDTChangeNode<Uint8Array> = {
+      kind: 'writer',
+      change: new Uint8Array([7]),
+    };
+    const dag: CRDTChangeNode<Uint8Array> = {
+      kind: 'document',
+      children: { FIRST: shared, SECOND: shared },
+    };
+    const wire = serializeChangeNodeForJSON(dag, hexEncode);
+    expect(
+      Object.keys(wire.children as Record<string, CRDTChangeNodeWire<string>>),
+    ).toEqual(['FIRST', 'SECOND']);
+    expect(() => deserializeChangeNodeFromJSON(wire, hexDecode)).not.toThrow();
+  });
+
+  test('preserves non-schema nested field order across re-encoding', () => {
+    const child = {} as CRDTChangeNode<Uint8Array>;
+    child.change = new Uint8Array([2]);
+    child.kind = 'writer';
+    const original = {} as CRDTChangeNode<Uint8Array>;
+    original.children = { PARENT: child };
+    original.change = new Uint8Array([1]);
+    original.keyID = 'epoch-7';
+    original.kind = 'document';
+
+    const first = JSON.stringify(
+      serializeChangeNodeForJSON(original, hexEncode),
+    );
+    const decoded = deserializeChangeNodeFromJSON(
+      JSON.parse(first) as CRDTChangeNodeWire<string>,
+      hexDecode,
+    );
+    const second = JSON.stringify(
+      serializeChangeNodeForJSON(decoded, hexEncode),
+    );
+    expect(second).toBe(first);
+  });
+
+  test('preserves signed JSON bytes across nested encode/decode/re-encode', () => {
+    // Production creates nodes as { kind, change } and appends children when
+    // a prior head exists. Node-level keyID is not currently populated by the
+    // shipped producer, but its documented canonical position is before change.
+    // The receiver must preserve both forms because signatures cover JSON bytes.
+    const original: CRDTChangeNode<Uint8Array> = {
+      kind: 'document',
+      keyID: 'epoch-7',
+      change: new Uint8Array([1]),
+    };
+    original.children = {
+      PARENT: { kind: 'writer', change: new Uint8Array([2]) },
+    };
+    const first = JSON.stringify(
+      serializeChangeNodeForJSON(original, hexEncode),
+    );
+    const decoded = deserializeChangeNodeFromJSON(
+      JSON.parse(first) as CRDTChangeNodeWire<string>,
+      hexDecode,
+    );
+    const second = JSON.stringify(
+      serializeChangeNodeForJSON(decoded, hexEncode),
+    );
+    expect(second).toBe(first);
   });
 });

@@ -236,7 +236,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // Welcome that exhausts the TTL without an unblocking ACL update
   // is discarded and the recipient must rely on a fresh
   // document-load against an authorized peer to recover.
-  if (!(await deps.isReader(deps.localUserPublicKey))) {
+  if ((await deps.isReader(deps.localUserPublicKey)) !== true) {
     return { kind: 'drop-unauthorized', reason: 'not-in-readers-acl' };
   }
 
@@ -264,7 +264,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   const raw = deps.syncMessageSerializer.serializeSyncMessage(
     messageWithoutSignature,
   );
-  if (!(await deps.verifyWriterSignature(raw, signature))) {
+  if ((await deps.verifyWriterSignature(raw, signature)) !== true) {
     return { kind: 'drop-unauthorized', reason: 'invalid-signature' };
   }
 

@@ -79,9 +79,9 @@ describe('deserializeChangeNodeFromJSON valid inputs', () => {
   });
   test('children map resists __proto__ pollution', () => {
     const wire: any = { kind: crdtDocumentChangeNode, children: { __proto__: { kind: crdtWriterChangeNode, change: 'evil' }, legit: { kind: crdtWriterChangeNode, change: 'good' } } };
-    const result: any = deserializeChangeNodeFromJSON(wire, id);
-    expect(Object.getPrototypeOf(result.children)).toBeNull();
-    expect(result.children.legit).toBeDefined();
+    expect(() => deserializeChangeNodeFromJSON(wire, id)).toThrow(
+      /children must be a plain object/,
+    );
     expect((Object.prototype as any).polluted).toBeUndefined();
   });
 });
