@@ -177,7 +177,7 @@ function invitationHarness(options: {
     _keychainProvider: { keyIDLength: 1 },
     _keychain: {
       getKey: jest.fn(),
-      keys: jest.fn(),
+      keys: jest.fn(async () => []),
       merge,
       ...(options.transactional === false ? {} : { prepareMerge }),
     },
