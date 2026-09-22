@@ -58,6 +58,7 @@ import {
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
 import {
   PendingWelcomeBuffer,
+  PendingWelcomeBodyLimitError,
   PENDING_WELCOME_MAX_BODY_BYTES,
   PENDING_WELCOMES_TTL_MS,
 } from './pending-welcome-buffer.js';
@@ -6550,7 +6551,8 @@ export class PeerborneDocument<
             }`,
         );
       }
-    } catch {
+    } catch (error) {
+      if (!(error instanceof PendingWelcomeBodyLimitError)) throw error;
       console.warn(
         'Dropping authenticated BeeKEM Welcome that cannot fit the pending ' +
           `buffer's ${PENDING_WELCOME_MAX_BODY_BYTES}-byte body limit`,

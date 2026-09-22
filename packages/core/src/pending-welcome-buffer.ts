@@ -8,6 +8,21 @@ export const PENDING_WELCOMES_MAX_RETAINED_BYTES = 4 * 1024 * 1024;
 export const PENDING_WELCOMES_MAX_ENTRIES = 16;
 export const PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
 
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype), 'byteLength',
+)?.get;
+if (typeof typedArrayByteLength !== 'function') {
+  throw new Error('PendingWelcomeBuffer requires TypedArray.byteLength');
+}
+const getByteLength = typedArrayByteLength;
+
+export class PendingWelcomeBodyLimitError extends RangeError {
+  constructor() {
+    super(`Pending BeeKEM Welcome body exceeds ${PENDING_WELCOME_MAX_BODY_BYTES} bytes`);
+    this.name = 'PendingWelcomeBodyLimitError';
+  }
+}
+
 interface PendingWelcomeEntry {
   readonly body: Uint8Array;
   readonly bufferedAtMs: number;
@@ -85,6 +100,9 @@ export class PendingWelcomeBuffer {
     }
     if (!Number.isSafeInteger(bufferedAtMs) || bufferedAtMs < 0) {
       throw new TypeError('Pending BeeKEM Welcome timestamp is invalid');
+    }
+    if (Reflect.apply(getByteLength, body, []) > PENDING_WELCOME_MAX_BODY_BYTES) {
+      throw new PendingWelcomeBodyLimitError();
     }
     const stableBody = copyUnsharedUint8Array(
       body,
