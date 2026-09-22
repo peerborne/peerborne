@@ -1,91 +1,55 @@
-import { describe, expect, test } from '@jest/globals';
-import { runInNewContext } from 'node:vm';
+import { describe,expect,test } from '@jest/globals';
 import {
-  AppliedGroupMembershipDelta,
-  CreateGroupCommitInput,
-  CreateGroupInput,
-  CreateKeyPackageInput,
-  EncryptedKeyPackageState,
-  EncryptedGroupState,
-  ExportGroupSecretInput,
-  GroupKeyPackage,
-  GroupSecurityApplyResult,
-  GroupSecurityCommit,
-  GroupSecurityCommitResult,
-  GroupSecurityCreateResult,
-  GroupSecurityProvider,
-  GroupSecurityPublicState,
-  GroupStateProtector,
-  GroupWelcome,
-  JoinGroupInput,
+AdversarialStore,
+AuthorizationPolicy,
+ContractTestProvider,
+ControlledRollbackAnchor,
+StaticSnapshotStore,
+TestContext,
+bootstrap,
+cloneContextWithProvider,
+config,
+context,
+control,
+createGroupInput,
+createInvitation,
+createTransition,
+encoder,
+flushAndCollect,
+groupId,
+id,
+privateBytes,
+protocol,
+publicState,
+replaceReplayHead,
+restoreFromSignedSnapshot,
+rewriteSignedReplayChain,
+storeKey,
+toHex,
+} from './__testutils__/group-security-coordinator.js';
+import {
+GroupSecurityCoordinator,
+canonicalGroupSecurityCommit
+} from './group-security-coordinator.js';
+import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
+import {
+EncryptedGroupState,
+EncryptedKeyPackageState,
+GroupSecurityPublicState
 } from './group-security-provider.js';
 import {
-  GroupSecurityCoordinator,
-  GroupSecurityCoordinatorConfig,
-  GroupSecurityDelivery,
-  GroupSecurityJoinInvitation,
-  GroupSecurityOutboxCodec,
-  CreatePendingKeyPackageInput,
-  GROUP_SECURITY_OUTBOX_KIND,
-  canonicalGroupSecurityCommit,
-  canonicalGroupSecurityState,
-} from './group-security-coordinator.js';
-import {
-  DurableGroupStateStore,
-  GroupStateStoreKey,
-  GroupStateStoreSnapshot,
-  GroupStateStoreTransaction,
-  InMemoryGroupStateStore,
-} from './group-state-store.js';
-import {
-  DurableGroupSecurityRollbackAnchor,
-  GroupSecurityRollbackForkPoison,
-  GroupSecurityRollbackAnchorValue,
-  InMemoryGroupSecurityRollbackAnchor,
+InMemoryGroupSecurityRollbackAnchor
 } from './group-security-rollback-anchor.js';
-import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import { groupSecurityStoreSnapshotCommitment } from './group-security-store-commitment.js';
 import {
-  MembershipControlAuthorizationContext,
-  MembershipControlAuthorizer,
-  MembershipControlRecord,
-  MembershipControlSignatureVerifier,
-  MembershipControlSigner,
-  UnsignedMembershipControlRecord,
-  deserializeMembershipControlRecord,
-  membershipControlRecordId,
-  serializeMembershipControlRecord,
-  signMembershipControlRecord,
-} from './membership-control-record.js';
-import { WebCryptoGroupStateProtector } from './webcrypto-group-state-protector.js';
+GroupStateStoreSnapshot,
+GroupStateStoreTransaction,
+InMemoryGroupStateStore
+} from './group-state-store.js';
 import {
-  protocol,
-  groupId,
-  storeKey,
-  createGroupInput,
-  id,
-  publicState,
-  ContractTestProvider,
-  privateBytes,
-  AuthorizationPolicy,
-  AdversarialStore,
-  StaticSnapshotStore,
-  ControlledRollbackAnchor,
-  TestContext,
-  context,
-  config,
-  bootstrap,
-  control,
-  createTransition,
-  flushAndCollect,
-  cloneContextWithProvider,
-  createInvitation,
-  replaceReplayHead,
-  rewriteSignedReplayChain,
-  restoreFromSignedSnapshot,
-  toHex,
-  encoder,
-} from './__mocks__/group-security-coordinator.js';
+MembershipControlRecord,
+signMembershipControlRecord
+} from './membership-control-record.js';
 
 describe('GroupSecurityCoordinator restore', () => {
   test('restores the signed chain before provider import and supplies previousRecord authorization context', async () => {
