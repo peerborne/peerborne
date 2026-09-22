@@ -65,6 +65,10 @@ export function serializeBeeKEMWelcomeV2ForWire(
       'treeHash',
     ],
     'Invalid BeeKEMWelcomeV2',
+    {
+      treeHash: (bytes) =>
+        snapshotRuntimeBytes(bytes, 32, 32, 'treeHash', budget),
+    },
   );
   if (raw.version !== 2) {
     throw new Error("Invalid BeeKEMWelcomeV2: 'version' must be 2");
@@ -123,6 +127,24 @@ export function serializeBeeKEMWelcomeV2ForWire(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `Invalid BeeKEMWelcomeV2: pathKeys[${offset}]`,
+      {
+        publicKey: (bytes) =>
+          snapshotRuntimeBytes(
+            bytes,
+            65,
+            65,
+            `pathKeys[${offset}].publicKey`,
+            budget,
+          ),
+        encryptedPrivateKey: (bytes) =>
+          snapshotRuntimeBytes(
+            bytes,
+            1,
+            MAX_V2_CIPHERTEXT_BYTES,
+            `pathKeys[${offset}].encryptedPrivateKey`,
+            budget,
+          ),
+      },
     );
     requireNonNegativeInteger(node.nodeIndex, `pathKeys[${offset}].nodeIndex`);
     const nodeIndex = node.nodeIndex as number;
@@ -153,6 +175,18 @@ export function serializeBeeKEMWelcomeV2ForWire(
       value,
       ['nodeIndex', 'publicKey'],
       `Invalid BeeKEMWelcomeV2: treeNodePublicKeys[${offset}]`,
+      {
+        publicKey: (bytes) =>
+          bytes === null
+            ? null
+            : snapshotRuntimeBytes(
+                bytes,
+                65,
+                65,
+                `treeNodePublicKeys[${offset}].publicKey`,
+                budget,
+              ),
+      },
     );
     requireNonNegativeInteger(
       node.nodeIndex,
@@ -180,62 +214,26 @@ export function serializeBeeKEMWelcomeV2ForWire(
     }
   }
 
-  const detachedPathKeys = pathKeySnapshots.map((node, offset) => ({
-    nodeIndex: node.nodeIndex,
-    publicKey: snapshotRuntimeBytes(
-      node.publicKey,
-      65,
-      65,
-      `pathKeys[${offset}].publicKey`,
-      budget,
-    ),
-    encryptedPrivateKey: snapshotRuntimeBytes(
-      node.encryptedPrivateKey,
-      1,
-      MAX_V2_CIPHERTEXT_BYTES,
-      `pathKeys[${offset}].encryptedPrivateKey`,
-      budget,
-    ),
-  }));
-  const detachedTreeNodePublicKeys = treeNodeSnapshots.map((node, offset) => ({
-    nodeIndex: node.nodeIndex,
-    publicKey:
-      node.publicKey === null
-        ? null
-        : snapshotRuntimeBytes(
-            node.publicKey,
-            65,
-            65,
-            `treeNodePublicKeys[${offset}].publicKey`,
-            budget,
-          ),
-  }));
-  const treeHash = snapshotRuntimeBytes(
-    raw.treeHash,
-    32,
-    32,
-    'treeHash',
-    budget,
-  );
-
   const wire: SerializedBeeKEMWelcomeV2 = {
     version: raw.version,
     generation: raw.generation as number,
     numLeaves,
     leafIndex,
-    pathKeys: detachedPathKeys.map((node) => ({
+    pathKeys: pathKeySnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
-      publicKey: Base64.fromUint8Array(node.publicKey),
-      encryptedPrivateKey: Base64.fromUint8Array(node.encryptedPrivateKey),
+      publicKey: Base64.fromUint8Array(node.publicKey as Uint8Array),
+      encryptedPrivateKey: Base64.fromUint8Array(
+        node.encryptedPrivateKey as Uint8Array,
+      ),
     })),
-    treeNodePublicKeys: detachedTreeNodePublicKeys.map((node) => ({
+    treeNodePublicKeys: treeNodeSnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey:
         node.publicKey === null
           ? null
-          : Base64.fromUint8Array(node.publicKey),
+          : Base64.fromUint8Array(node.publicKey as Uint8Array),
     })),
-    treeHash: Base64.fromUint8Array(treeHash),
+    treeHash: Base64.fromUint8Array(raw.treeHash as Uint8Array),
   };
   // SECURITY BOUNDARY: this exported encoder accepts structurally typed input
   // from JavaScript callers. The runtime snapshot above validates and detaches
@@ -244,6 +242,7 @@ export function serializeBeeKEMWelcomeV2ForWire(
   deserializeBeeKEMWelcomeV2FromWire(wire);
   return wire;
 }
+
 
 export function deserializeBeeKEMWelcomeV2FromWire(
   wire: unknown,
@@ -462,17 +461,18 @@ function snapshotPlainObject(
   value: unknown,
   allowedKeys: readonly string[],
   context: string,
+  captureBytes: Readonly<Record<string, (value: unknown) => unknown>> = {},
 ): Record<string, unknown> {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value)
-  ) {
-    throw new Error(`${context}: expected a plain object, got ${describe(value)}`);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${context}: expected a plain object, got ${describe(value)}`,
+    );
   }
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) {
-    throw new Error(`${context}: expected a plain object, got ${describe(value)}`);
+    throw new Error(
+      `${context}: expected a plain object, got ${describe(value)}`,
+    );
   }
   const allowed = new Set(allowedKeys);
   const keys = Reflect.ownKeys(value);
@@ -490,9 +490,20 @@ function snapshotPlainObject(
       !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
       descriptor.enumerable !== true
     ) {
-      throw new Error(`${context}: field '${key}' must be an own enumerable data property`);
+      throw new Error(
+        `${context}: field '${key}' must be an own enumerable data property`,
+      );
     }
-    snapshot[key] = descriptor.value;
+    const capture = Object.prototype.hasOwnProperty.call(captureBytes, key)
+      ? captureBytes[key]
+      : undefined;
+    // Detach bytes before inspecting any later untrusted descriptor.
+    snapshot[key] = capture ? capture(descriptor.value) : descriptor.value;
+  }
+  for (const key of Object.keys(captureBytes)) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      captureBytes[key](undefined);
+    }
   }
   return snapshot;
 }
