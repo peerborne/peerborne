@@ -382,7 +382,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@automerge/automerge@npm:^3.4.1":
+"@automerge/automerge@npm:3.4.1, @automerge/automerge@npm:^3.4.1":
   version: 3.4.1
   resolution: "@automerge/automerge@npm:3.4.1"
   checksum: 10/836a05facefecfda8a3041d53733d277caafddb85e13f2147054982a2e82fde8f3d12ead0d40b94d9220eaf2d12dbd0989e15d885af89b302e72142c5101e4ff
@@ -4506,7 +4506,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/automerge@workspace:packages/automerge"
   dependencies:
-    "@automerge/automerge": "npm:^3.4.1"
+    "@automerge/automerge": "npm:3.4.1"
     "@peculiar/webcrypto": "npm:^1.7.1"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^22.7.5"
@@ -4516,7 +4516,7 @@ __metadata:
     ts-node: "npm:^10.1.0"
     typescript: "npm:^5.9.3"
   peerDependencies:
-    "@automerge/automerge": ^3.4.1
+    "@automerge/automerge": 3.4.1
   bin:
     peerborne-automerge-d: dist/esm/bin/peerborne-automerge-d.js
   languageName: unknown

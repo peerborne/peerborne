@@ -448,6 +448,21 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     SyncMessageSerializer<ChangesType, PublicKey>,
     LoadMessageSerializer
 {
+  /** Keep authenticated JSON field order while dropping unknown wire fields. */
+  protected orderDecodedSyncFields(
+    wire: Record<string, unknown>,
+    decoded: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): CRDTSyncMessage<ChangesType, PublicKey> {
+    const result = {} as CRDTSyncMessage<ChangesType, PublicKey>;
+    for (const field of Object.keys(wire)) {
+      const descriptor = Object.getOwnPropertyDescriptor(decoded, field);
+      if (descriptor !== undefined && descriptor.value !== undefined) {
+        Object.defineProperty(result, field, descriptor);
+      }
+    }
+    return result;
+  }
+
   createLoadRequestCompletionDetector(): LoadRequestCompletionDetector {
     return createJSONObjectCompletionDetector();
   }
