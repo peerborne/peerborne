@@ -41,7 +41,9 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
 const arrayConstructor = Array;
+const uint8ArrayConstructor = Uint8Array;
 const arrayIsArray = Array.isArray;
+const numberIsSafeInteger = Number.isSafeInteger;
 const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
@@ -689,7 +691,7 @@ export function copyUnsharedUint8Array(
   }
   if (
     tag !== 'Uint8Array' ||
-    !Number.isSafeInteger(byteLength) ||
+    !numberIsSafeInteger(byteLength) ||
     byteLength < minimumLength ||
     byteLength > maximumLength ||
     shared
@@ -697,7 +699,7 @@ export function copyUnsharedUint8Array(
     throw new TypeError(`${field} has an invalid length or backing buffer`);
   }
 
-  const copy = new Uint8Array(byteLength);
+  const copy = new uint8ArrayConstructor(byteLength);
   try {
     reflectApply(uint8ArraySet, copy, [value, 0]);
   } catch {
