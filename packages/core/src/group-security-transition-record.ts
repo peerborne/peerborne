@@ -117,8 +117,8 @@ export function serializeGroupSecurityTransitionRecord(
   value: GroupSecurityTransitionRecord,
 ): Uint8Array {
   const record = snapshotTransitionRecord(value);
-  const codecId = encodeDeliveryCodecId(record.deliveryCodec.id);
-  const controlRecord = serializeMembershipControlRecord(record.controlRecord);
+  const codecId = record.deliveryCodec.idBytes;
+  const controlRecord = record.controlBytes;
   const codecIdLength = byteLength(codecId);
   const controlLength = byteLength(controlRecord);
   const deliveryLength = byteLength(record.deliveryPayload);
@@ -227,9 +227,12 @@ export function deserializeGroupSecurityTransitionRecord(
   });
 }
 
-function snapshotTransitionRecord(
-  value: GroupSecurityTransitionRecord,
-): GroupSecurityTransitionRecord {
+function snapshotTransitionRecord(value: GroupSecurityTransitionRecord): {
+  version: number;
+  deliveryCodec: { version: number; idBytes: Uint8Array };
+  controlBytes: Uint8Array;
+  deliveryPayload: Uint8Array;
+} {
   const object = exactRecord(
     value,
     ['version', 'deliveryCodec', 'controlRecord', 'deliveryPayload'],
@@ -240,23 +243,23 @@ function snapshotTransitionRecord(
     throw new Error('unsupported group-security transition version');
   }
   const deliveryCodec = snapshotDeliveryCodec(object.deliveryCodec);
-  const controlRecord = deserializeMembershipControlRecord(
-    serializeMembershipControlRecord(
-      object.controlRecord as MembershipControlRecord,
-    ),
+  const controlBytes = serializeMembershipControlRecord(
+    object.controlRecord as MembershipControlRecord,
   );
+  // Require decoder acceptance too, then frame the same canonical bytes.
+  deserializeMembershipControlRecord(controlBytes);
   const deliveryPayload = copyUnsharedUint8Array(
     object.deliveryPayload,
     0,
     MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES,
     'group-security transition delivery payload',
   );
-  return { version, deliveryCodec, controlRecord, deliveryPayload };
+  return { version, deliveryCodec, controlBytes, deliveryPayload };
 }
 
 function snapshotDeliveryCodec(
   value: unknown,
-): GroupSecurityTransitionDeliveryCodec {
+): { version: number; idBytes: Uint8Array } {
   const object = exactRecord(
     value,
     ['id', 'version'],
@@ -268,7 +271,7 @@ function snapshotDeliveryCodec(
       'group-security transition delivery codec id must be a string',
     );
   }
-  encodeDeliveryCodecId(id);
+  const idBytes = encodeDeliveryCodecId(id);
   const version = object.version;
   if (
     typeof version !== 'number' ||
@@ -281,7 +284,7 @@ function snapshotDeliveryCodec(
       'group-security transition delivery codec version must be an unsigned 16-bit integer',
     );
   }
-  return objectFreeze({ id, version });
+  return objectFreeze({ idBytes, version });
 }
 
 function exactRecord(
@@ -409,7 +412,7 @@ function buffer(value: Uint8Array): ArrayBufferLike {
 
 function dataView(value: Uint8Array): DataView {
   return new dataViewConstructor(
-    buffer(value) as ArrayBuffer,
+    buffer(value),
     byteOffset(value),
     byteLength(value),
   );
