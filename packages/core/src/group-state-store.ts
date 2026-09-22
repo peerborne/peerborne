@@ -1,3 +1,4 @@
+import { trackQueuedOperation } from './queued-operation.js';
 import {
   EncryptedGroupState,
   EncryptedKeyPackageState,
@@ -25,18 +26,21 @@ const COMMITTED_STATE_FIXED_OVERHEAD = 1024;
 const typedArrayPrototype = Object.getPrototypeOf(
   Uint8Array.prototype,
 ) as object;
-const typedArrayByteLength = Object.getOwnPropertyDescriptor(
+const typedArrayByteLength = requireGetter(
   typedArrayPrototype,
   'byteLength',
-)!.get!;
-const typedArrayBuffer = Object.getOwnPropertyDescriptor(
+  'TypedArray.byteLength',
+);
+const typedArrayBuffer = requireGetter(
   typedArrayPrototype,
   'buffer',
-)!.get!;
-const typedArrayTag = Object.getOwnPropertyDescriptor(
+  'TypedArray.buffer',
+);
+const typedArrayTag = requireGetter(
   typedArrayPrototype,
   Symbol.toStringTag,
-)!.get!;
+  'TypedArray.toStringTag',
+);
 const uint8ArraySet = Uint8Array.prototype.set;
 const arrayJoin = Array.prototype.join;
 const HEX_BYTE_LOOKUP = Object.freeze(
@@ -47,24 +51,50 @@ const HEX_BYTE_LOOKUP = Object.freeze(
 const sharedArrayBufferByteLength =
   typeof SharedArrayBuffer === 'undefined'
     ? undefined
-    : Object.getOwnPropertyDescriptor(
+    : requireGetter(
         SharedArrayBuffer.prototype,
         'byteLength',
-      )!.get!;
+        'SharedArrayBuffer.byteLength',
+      );
 const serializeEncryptedGroupState = EncryptedGroupState.prototype.serialize;
 const deserializeEncryptedGroupState = EncryptedGroupState.deserialize;
-const encryptedGroupStateValue = Object.getOwnPropertyDescriptor(
+const encryptedGroupStateValue = requireGetter(
   EncryptedGroupState.prototype,
   'state',
-)!.get!;
+  'EncryptedGroupState.state',
+);
 const serializeEncryptedKeyPackageState =
   EncryptedKeyPackageState.prototype.serialize;
 const deserializeEncryptedKeyPackageState =
   EncryptedKeyPackageState.deserialize;
-const encryptedKeyPackageValue = Object.getOwnPropertyDescriptor(
+const encryptedKeyPackageValue = requireGetter(
   EncryptedKeyPackageState.prototype,
   'keyPackage',
-)!.get!;
+  'EncryptedKeyPackageState.keyPackage',
+);
+
+for (const [name, method] of [
+  ['EncryptedGroupState.serialize', serializeEncryptedGroupState],
+  ['EncryptedGroupState.deserialize', deserializeEncryptedGroupState],
+  ['EncryptedKeyPackageState.serialize', serializeEncryptedKeyPackageState],
+  ['EncryptedKeyPackageState.deserialize', deserializeEncryptedKeyPackageState],
+] as const) {
+  if (typeof method !== 'function') {
+    throw new Error(`group-state-store requires callable ${name}`);
+  }
+}
+
+function requireGetter(
+  target: object,
+  property: PropertyKey,
+  name: string,
+): NonNullable<PropertyDescriptor['get']> {
+  const getter = Object.getOwnPropertyDescriptor(target, property)?.get;
+  if (typeof getter !== 'function') {
+    throw new Error(`group-state-store requires getter ${name}`);
+  }
+  return getter;
+}
 
 export interface GroupStateStoreKey {
   readonly protocol: GroupSecurityProtocol;
@@ -180,9 +210,7 @@ export interface DurableGroupStateStore {
   load(key: GroupStateStoreKey): Promise<GroupStateStoreSnapshot | undefined>;
   transaction<T>(
     key: GroupStateStoreKey,
-    operation: (
-      transaction: GroupStateStoreTransaction,
-    ) => T | Promise<T>,
+    operation: (transaction: GroupStateStoreTransaction) => T | Promise<T>,
   ): Promise<T>;
 }
 
@@ -204,8 +232,7 @@ export class InMemoryGroupStateStore implements DurableGroupStateStore {
   private readonly tails = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly maximumCommittedBytes =
-      MAX_GROUP_STATE_STORE_COMMITTED_BYTES,
+    private readonly maximumCommittedBytes = MAX_GROUP_STATE_STORE_COMMITTED_BYTES,
   ) {
     if (
       !Number.isSafeInteger(maximumCommittedBytes) ||
@@ -228,9 +255,7 @@ export class InMemoryGroupStateStore implements DurableGroupStateStore {
 
   transaction<T>(
     key: GroupStateStoreKey,
-    operation: (
-      transaction: GroupStateStoreTransaction,
-    ) => T | Promise<T>,
+    operation: (transaction: GroupStateStoreTransaction) => T | Promise<T>,
   ): Promise<T> {
     const stableKey = validateAndCloneStoreKey(key);
     const encodedKey = encodeStoreKey(stableKey);
@@ -282,10 +307,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       working.encryptedState === undefined
         ? undefined
         : getEncryptedGroupStateValue(working.encryptedState).epoch;
-    this.#committedBytes = committedStateBytes(
-      working,
-      maximumCommittedBytes,
-    );
+    this.#committedBytes = committedStateBytes(working, maximumCommittedBytes);
   }
 
   static validateBeforeCommit(transaction: MemoryTransaction): void {
@@ -404,8 +426,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       return false;
     }
     if (
-      this.#working.pendingKeyPackages.size >=
-      MAX_PENDING_KEY_PACKAGE_ENTRIES
+      this.#working.pendingKeyPackages.size >= MAX_PENDING_KEY_PACKAGE_ENTRIES
     ) {
       throw new Error('pending KeyPackage entry limit reached');
     }
@@ -443,9 +464,8 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     const stableRequest = validateAndClonePendingKeyPackageRequest(request);
     const encodedOperationId = toHex(stableRequest.operationId);
     const encodedReference = toHex(stableRequest.keyPackageReference);
-    const existing = this.#working.pendingKeyPackageRequests.get(
-      encodedOperationId,
-    );
+    const existing =
+      this.#working.pendingKeyPackageRequests.get(encodedOperationId);
     if (existing !== undefined) {
       if (!samePendingKeyPackageRequest(existing, stableRequest)) {
         throw new Error(
@@ -477,9 +497,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     ) {
       throw new Error('pending KeyPackage request limit reached');
     }
-    this.#adjustCommittedBytes(
-      pendingRequestCommittedBytes(stableRequest),
-    );
+    this.#adjustCommittedBytes(pendingRequestCommittedBytes(stableRequest));
     this.#working.pendingKeyPackageRequests.set(
       encodedOperationId,
       stableRequest,
@@ -493,9 +511,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     return this.#working.consumedKeyPackageRefs.has(toHex(stableReference));
   }
 
-  consumePendingKeyPackage(
-    reference: Uint8Array,
-  ): EncryptedKeyPackageState {
+  consumePendingKeyPackage(reference: Uint8Array): EncryptedKeyPackageState {
     this.#assertActive();
     const stableReference = cloneKeyPackageReference(reference);
     const encodedReference = toHex(stableReference);
@@ -513,21 +529,19 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       throw new Error('consumed KeyPackage marker limit reached');
     }
     this.#adjustCommittedBytes(
-      intrinsicByteLength(stableReference) + 2 -
+      intrinsicByteLength(stableReference) +
+        2 -
         pendingEntryCommittedBytes(pending),
     );
-    for (const [operationId, request] of
-      this.#working.pendingKeyPackageRequests) {
+    for (const [operationId, request] of this.#working
+      .pendingKeyPackageRequests) {
       if (equalBytes(request.keyPackageReference, stableReference)) {
         this.#adjustCommittedBytes(-pendingRequestCommittedBytes(request));
         this.#working.pendingKeyPackageRequests.delete(operationId);
       }
     }
     this.#working.pendingKeyPackages.delete(encodedReference);
-    this.#working.consumedKeyPackageRefs.set(
-      encodedReference,
-      stableReference,
-    );
+    this.#working.consumedKeyPackageRefs.set(encodedReference, stableReference);
     return cloneEncryptedKeyPackageState(pending);
   }
 
@@ -663,8 +677,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       throw new Error('group-state metadata entry limit exceeded');
     }
     if (
-      this.#working.pendingKeyPackages.size >
-      MAX_PENDING_KEY_PACKAGE_ENTRIES ||
+      this.#working.pendingKeyPackages.size > MAX_PENDING_KEY_PACKAGE_ENTRIES ||
       this.#working.pendingKeyPackageRequests.size >
         MAX_PENDING_KEY_PACKAGE_ENTRIES ||
       pendingKeyPackageBytes(this.#working.pendingKeyPackages.values()) >
@@ -684,8 +697,8 @@ class MemoryTransaction implements GroupStateStoreTransaction {
         throw new Error('pending KeyPackage map key does not match reference');
       }
     }
-    for (const [encodedOperationId, request] of
-      this.#working.pendingKeyPackageRequests) {
+    for (const [encodedOperationId, request] of this.#working
+      .pendingKeyPackageRequests) {
       const validated = validateAndClonePendingKeyPackageRequest(request);
       if (toHex(validated.operationId) !== encodedOperationId) {
         throw new Error(
@@ -693,8 +706,8 @@ class MemoryTransaction implements GroupStateStoreTransaction {
         );
       }
     }
-    for (const [encodedReference, reference] of
-      this.#working.consumedKeyPackageRefs) {
+    for (const [encodedReference, reference] of this.#working
+      .consumedKeyPackageRefs) {
       cloneKeyPackageReference(reference);
       if (toHex(reference) !== encodedReference) {
         throw new Error('consumed KeyPackage map key does not match reference');
@@ -728,30 +741,6 @@ class MemoryTransaction implements GroupStateStoreTransaction {
 const validateMemoryTransactionBeforeCommit =
   MemoryTransaction.validateBeforeCommit;
 const closeMemoryTransaction = MemoryTransaction.close;
-
-function trackQueuedOperation<T>(
-  tails: Map<string, Promise<void>>,
-  encodedKey: string,
-  run: Promise<T>,
-): Promise<T> {
-  let settledTail!: Promise<void>;
-  const result = run.then(
-    (value) => {
-      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
-      return value;
-    },
-    (error: unknown) => {
-      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
-      throw error;
-    },
-  );
-  settledTail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  tails.set(encodedKey, settledTail);
-  return result;
-}
 
 function emptyState(): MutableState {
   return {
@@ -852,18 +841,14 @@ export function validateGroupStateStoreSnapshotSemantics(
   const encryptedState =
     snapshotValue.encryptedState === undefined
       ? undefined
-      : validateAndCloneEncryptedGroupState(
-          snapshotValue.encryptedState,
-          key,
-        );
+      : validateAndCloneEncryptedGroupState(snapshotValue.encryptedState, key);
   const epoch =
     encryptedState === undefined
       ? undefined
       : getEncryptedGroupStateValue(encryptedState).epoch;
 
   if (
-    snapshotValue.pendingKeyPackages.length >
-      MAX_PENDING_KEY_PACKAGE_ENTRIES ||
+    snapshotValue.pendingKeyPackages.length > MAX_PENDING_KEY_PACKAGE_ENTRIES ||
     snapshotValue.pendingKeyPackageRequests.length >
       MAX_PENDING_KEY_PACKAGE_ENTRIES ||
     snapshotValue.consumedKeyPackageRefs.length >
@@ -913,15 +898,14 @@ export function validateGroupStateStoreSnapshotSemantics(
     )
   ) {
     throw new Error(
-      'every pending KeyPackage must have exactly one request binding',
+      'every pending KeyPackage must have exactly one request binding ' +
+        `(pending=${pendingReferences.size}, bound=${requestedReferences.size})`,
     );
   }
 
   const consumedReferences = new Set<string>();
   for (const referenceValue of snapshotValue.consumedKeyPackageRefs) {
-    const encodedReference = toHex(
-      cloneKeyPackageReference(referenceValue),
-    );
+    const encodedReference = toHex(cloneKeyPackageReference(referenceValue));
     if (consumedReferences.has(encodedReference)) {
       throw new Error('consumed KeyPackage reference is duplicated');
     }
@@ -1063,9 +1047,7 @@ function pendingKeyPackageBytes(
   return total;
 }
 
-function serializedEncryptedGroupState(
-  state: EncryptedGroupState,
-): Uint8Array {
+function serializedEncryptedGroupState(state: EncryptedGroupState): Uint8Array {
   if (!isEncryptedGroupState(state)) {
     throw new Error(
       'group-state store accepts only EncryptedGroupState; plaintext private state is forbidden',
@@ -1117,9 +1099,7 @@ export function cloneGroupStateStoreKey(
     ['protocol', 'groupId'],
     'store key',
   );
-  const protocol = validateAndCloneProtocol(
-    dataProperty(record, 'protocol'),
-  );
+  const protocol = validateAndCloneProtocol(dataProperty(record, 'protocol'));
   const groupId = cloneBytes(
     dataProperty(record, 'groupId'),
     'groupId',
@@ -1224,10 +1204,7 @@ function validateAndCloneReplayEntry(
   const epoch = dataProperty(entry, 'epoch');
   validateU64(epoch as bigint, 'replay epoch');
   return {
-    recordId: cloneFixedId(
-      dataProperty(entry, 'recordId'),
-      'replay recordId',
-    ),
+    recordId: cloneFixedId(dataProperty(entry, 'recordId'), 'replay recordId'),
     operationId:
       operationId === undefined
         ? undefined
@@ -1369,10 +1346,7 @@ function sameForkEvidence(
   );
 }
 
-function committedStateBytes(
-  state: MutableState,
-  maximum: number,
-): number {
+function committedStateBytes(state: MutableState, maximum: number): number {
   let total = COMMITTED_STATE_FIXED_OVERHEAD;
   if (state.encryptedState !== undefined) {
     total = addCommittedBytes(
@@ -1403,18 +1377,10 @@ function committedStateBytes(
     );
   }
   for (const entry of state.outbox.values()) {
-    total = addCommittedBytes(
-      total,
-      outboxEntryCommittedBytes(entry),
-      maximum,
-    );
+    total = addCommittedBytes(total, outboxEntryCommittedBytes(entry), maximum);
   }
   for (const entry of state.replay.values()) {
-    total = addCommittedBytes(
-      total,
-      replayEntryCommittedBytes(entry),
-      maximum,
-    );
+    total = addCommittedBytes(total, replayEntryCommittedBytes(entry), maximum);
   }
   if (state.forkEvidence !== undefined) {
     total = addCommittedBytes(
@@ -1442,9 +1408,7 @@ function encryptedStateCommittedBytes(state: EncryptedGroupState): number {
   return intrinsicByteLength(serializedEncryptedGroupState(state)) + 4;
 }
 
-function pendingEntryCommittedBytes(
-  state: EncryptedKeyPackageState,
-): number {
+function pendingEntryCommittedBytes(state: EncryptedKeyPackageState): number {
   const reference = getEncryptedKeyPackageValue(state).reference;
   return (
     intrinsicByteLength(serializedEncryptedKeyPackageState(state)) +
