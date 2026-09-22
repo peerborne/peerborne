@@ -352,9 +352,9 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
   /** Detached ID of the staged current/final key, or undefined when empty. */
   readonly currentKeyId: Uint8Array | undefined;
   /**
-   * Validate, import, and hydrate the detached staged keychain. When
-   * `claimCommit()` is supported, hydration must finish before claiming;
-   * hydration started after a successful claim must reject.
+   * Validate, import, and hydrate the detached staged keychain. If hydration
+   * is started, it must complete before claiming. Hydration started after a
+   * successful claim must reject.
    */
   hydrateKeys(): Promise<[Uint8Array, DocumentKey][]>;
   /** Look up a key hydrated by `hydrateKeys()` without mutating live state. */
