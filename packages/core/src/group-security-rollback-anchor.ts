@@ -1,3 +1,4 @@
+import { trackQueuedOperation } from './queued-operation.js';
 import type { GroupSecurityProtocol } from './group-security-provider.js';
 import type { GroupStateStoreKey } from './group-state-store.js';
 
@@ -23,10 +24,8 @@ const uint8ArraySet = Uint8Array.prototype.set;
 const sharedArrayBufferByteLengthGetter =
   typeof SharedArrayBuffer === 'undefined'
     ? undefined
-    : Object.getOwnPropertyDescriptor(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-      )?.get;
+    : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')
+        ?.get;
 
 if (
   typedArrayByteLengthGetterValue === undefined ||
@@ -133,10 +132,7 @@ export interface DurableGroupSecurityRollbackAnchor {
 export class InMemoryGroupSecurityRollbackAnchor
   implements DurableGroupSecurityRollbackAnchor
 {
-  private readonly values = new Map<
-    string,
-    GroupSecurityRollbackAnchorValue
-  >();
+  private readonly values = new Map<string, GroupSecurityRollbackAnchorValue>();
   private readonly tails = new Map<string, Promise<void>>();
 
   async load(
@@ -209,30 +205,6 @@ export class InMemoryGroupSecurityRollbackAnchor
   }
 }
 
-function trackQueuedOperation<T>(
-  tails: Map<string, Promise<void>>,
-  encodedKey: string,
-  run: Promise<T>,
-): Promise<T> {
-  let settledTail!: Promise<void>;
-  const result = run.then(
-    (value) => {
-      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
-      return value;
-    },
-    (error: unknown) => {
-      if (tails.get(encodedKey) === settledTail) tails.delete(encodedKey);
-      throw error;
-    },
-  );
-  settledTail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  tails.set(encodedKey, settledTail);
-  return result;
-}
-
 export function cloneGroupSecurityRollbackAnchor(
   value: GroupSecurityRollbackAnchorValue,
 ): GroupSecurityRollbackAnchorValue {
@@ -264,12 +236,12 @@ function validateAdvance(
     throw new Error('poisoned rollback anchor is terminal');
   }
   if (next.forkPoison !== undefined) {
-    throw new Error('rollback anchor poisoning requires the atomic poison method');
+    throw new Error(
+      'rollback anchor poisoning requires the atomic poison method',
+    );
   }
   if (next.revision !== expected.revision + 1) {
-    throw new Error(
-      'rollback anchor revision must advance by exactly one',
-    );
+    throw new Error('rollback anchor revision must advance by exactly one');
   }
   if (next.epoch < expected.epoch || next.epoch > expected.epoch + 1n) {
     throw new Error(
@@ -289,13 +261,11 @@ function validateAdvance(
 function cloneAndValidateAnchor(
   value: GroupSecurityRollbackAnchorValue,
 ): GroupSecurityRollbackAnchorValue {
-  const object = exactPlainObject(value, [
-    'revision',
-    'epoch',
-    'controlHead',
-    'storeCommitment',
-    'forkPoison',
-  ], 'rollback anchor');
+  const object = exactPlainObject(
+    value,
+    ['revision', 'epoch', 'controlHead', 'storeCommitment', 'forkPoison'],
+    'rollback anchor',
+  );
   const revision = dataProperty(object, 'revision');
   const epoch = dataProperty(object, 'epoch');
   const controlHead = dataProperty(object, 'controlHead');
@@ -345,13 +315,8 @@ function optionalAnchorEqual(
   );
 }
 
-function cloneForkPoison(
-  value: unknown,
-): GroupSecurityRollbackForkPoison {
-  const snapshot = snapshotPlainObject(
-    value,
-    'rollback anchor fork poison',
-  );
+function cloneForkPoison(value: unknown): GroupSecurityRollbackForkPoison {
+  const snapshot = snapshotPlainObject(value, 'rollback anchor fork poison');
   if (Object.prototype.hasOwnProperty.call(snapshot, 'reason')) {
     const reason = dataProperty(snapshot, 'reason');
     if (reason === 'unreconciled-first-anchor-candidate') {
@@ -422,7 +387,9 @@ function cloneForkPoison(
     }
     const epoch = dataProperty(snapshot, 'epoch');
     if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
-      throw new Error('rollback anchor ambiguity epoch must be unsigned 64-bit');
+      throw new Error(
+        'rollback anchor ambiguity epoch must be unsigned 64-bit',
+      );
     }
     const baseRevision = dataProperty(snapshot, 'baseRevision');
     if (!Number.isSafeInteger(baseRevision) || (baseRevision as number) < 1) {
@@ -530,10 +497,7 @@ function optionalForkPoisonEqual(
       left.baseRevision === right.baseRevision &&
       equalBytes(left.baseControlHead, right.baseControlHead) &&
       equalBytes(left.baseStoreCommitment, right.baseStoreCommitment) &&
-      equalBytes(
-        left.candidateParentRecordId,
-        right.candidateParentRecordId,
-      ) &&
+      equalBytes(left.candidateParentRecordId, right.candidateParentRecordId) &&
       equalBytes(left.candidateRecordId, right.candidateRecordId) &&
       equalBytes(left.observationHash, right.observationHash)
     );
@@ -608,9 +572,7 @@ function requireExactKeys(
   const keys = Reflect.ownKeys(object);
   if (
     keys.length !== expectedKeys.length ||
-    keys.some(
-      (key) => typeof key !== 'string' || !expectedKeys.includes(key),
-    )
+    keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key))
   ) {
     throw new Error(`${field} has unexpected or missing fields`);
   }
@@ -642,7 +604,11 @@ function cloneBytes(
   let tag: unknown;
   try {
     length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-    buffer = Reflect.apply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
+    buffer = Reflect.apply(
+      typedArrayBufferGetter,
+      value,
+      [],
+    ) as ArrayBufferLike;
     tag = Reflect.apply(typedArrayTagGetter, value, []);
   } catch {
     throw new Error(`${field} must be a genuine Uint8Array`);
@@ -673,10 +639,9 @@ function cloneExactBytes(
   try {
     return cloneBytes(value, field, expectedLength, expectedLength);
   } catch (error) {
-    throw new Error(
-      `${field} must contain ${expectedLength} unshared bytes`,
-      { cause: error },
-    );
+    throw new Error(`${field} must contain ${expectedLength} unshared bytes`, {
+      cause: error,
+    });
   }
 }
 
