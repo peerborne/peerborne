@@ -744,6 +744,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   }
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {
+    if (capability !== undefined && (typeof capability !== 'string' || capability.length === 0)) {
+      throw new TypeError('capability must be a non-empty string when provided');
+    }
     return this._runPublicOperation('ACL check', async () => {
       const snapshot = await this._snapshotPublicKey(
         publicKey,
@@ -785,6 +788,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   }
 
   async users(capability?: string): Promise<PublicKey[]> {
+    if (capability !== undefined && (typeof capability !== 'string' || capability.length === 0)) {
+      throw new TypeError('capability must be a non-empty string when provided');
+    }
     return this._runPublicOperation('ACL listing', async () => {
       for (
         let attempt = 0;
