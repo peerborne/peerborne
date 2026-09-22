@@ -590,7 +590,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       { name: 'ECDSA', namedCurve: 'P-384' },
       ['verify'],
     );
-    const entries = Object.keys(this._acl.users ?? {});
+    const entries = Object.keys(base.users ?? {});
     const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
