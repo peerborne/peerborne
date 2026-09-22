@@ -81,6 +81,9 @@ export function serializeBeeKEMWelcomeV2ForWire(
     welcome,
     WELCOME_V2_FIELDS,
     'Invalid BeeKEMWelcomeV2',
+    {
+      treeHash: (bytes) => encodeRuntimeBytes(bytes, 32, 32, 'treeHash', budget),
+    },
   );
   const numLeaves = requirePositiveInteger(
     raw.numLeaves,
@@ -104,23 +107,29 @@ export function serializeBeeKEMWelcomeV2ForWire(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `Invalid BeeKEMWelcomeV2: pathKeys[${offset}]`,
+      {
+        publicKey: (bytes) =>
+          encodeRuntimeBytes(
+            bytes,
+            65,
+            65,
+            `pathKeys[${offset}].publicKey`,
+            budget,
+          ),
+        encryptedPrivateKey: (bytes) =>
+          encodeRuntimeBytes(
+            bytes,
+            1,
+            MAX_V2_CIPHERTEXT_BYTES,
+            `pathKeys[${offset}].encryptedPrivateKey`,
+            budget,
+          ),
+      },
     );
     return {
       nodeIndex: node.nodeIndex as number,
-      publicKey: encodeRuntimeBytes(
-        node.publicKey,
-        65,
-        65,
-        `pathKeys[${offset}].publicKey`,
-        budget,
-      ),
-      encryptedPrivateKey: encodeRuntimeBytes(
-        node.encryptedPrivateKey,
-        1,
-        MAX_V2_CIPHERTEXT_BYTES,
-        `pathKeys[${offset}].encryptedPrivateKey`,
-        budget,
-      ),
+      publicKey: node.publicKey as string,
+      encryptedPrivateKey: node.encryptedPrivateKey as string,
     };
   });
   const treeNodePublicKeys: SerializedWelcomeNodePublicKey[] =
@@ -135,19 +144,22 @@ export function serializeBeeKEMWelcomeV2ForWire(
         value,
         ['nodeIndex', 'publicKey'],
         `Invalid BeeKEMWelcomeV2: treeNodePublicKeys[${offset}]`,
+        {
+          publicKey: (bytes) =>
+            bytes === null
+              ? null
+              : encodeRuntimeBytes(
+                  bytes,
+                  65,
+                  65,
+                  `treeNodePublicKeys[${offset}].publicKey`,
+                  budget,
+                ),
+        },
       );
       return {
         nodeIndex: node.nodeIndex as number,
-        publicKey:
-          node.publicKey === null
-            ? null
-            : encodeRuntimeBytes(
-                node.publicKey,
-                65,
-                65,
-                `treeNodePublicKeys[${offset}].publicKey`,
-                budget,
-              ),
+        publicKey: node.publicKey as string | null,
       };
     });
 
@@ -170,7 +182,7 @@ export function serializeBeeKEMWelcomeV2ForWire(
     leafIndex: raw.leafIndex as number,
     pathKeys,
     treeNodePublicKeys,
-    treeHash: encodeRuntimeBytes(raw.treeHash, 32, 32, 'treeHash', budget),
+    treeHash: raw.treeHash as string,
   };
   deserializeBeeKEMWelcomeV2FromWire(wire);
   return wire;

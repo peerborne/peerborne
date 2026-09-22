@@ -1,6 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import * as protocols from './wire-protocols.js';
-import { welcomeFixture, pathUpdateFixture } from './__mocks__/beekem-v2.js';
+import { welcomeFixture, pathUpdateFixture } from './__testutils__/beekem-v2.js';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire } from './beekem-welcome-wire.js';
 import { serializePathUpdateV2ForWire, deserializePathUpdateV2FromWire } from './path-update-wire.js';
 

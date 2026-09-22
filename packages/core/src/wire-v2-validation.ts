@@ -11,6 +11,10 @@ import {
 } from './utils.js';
 
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectHasOwn = Object.hasOwn;
+const objectKeys = Object.keys;
+const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
 const reflectOwnKeys = Reflect.ownKeys;
 
@@ -32,16 +36,27 @@ export function createV2DecodeBudget(codec: V2WireCodec): V2DecodeBudget {
   return { codec, decodedBytes: 0, workItems: 0 };
 }
 
+/** Encoders applied to a field as soon as its descriptor is read. */
+export type V2FieldCaptures = Readonly<
+  Record<string, (value: unknown) => unknown>
+>;
+
 /**
  * Detach a plain object whose own fields are all enumerable data properties
  * drawn from `allowedKeys`. The snapshot has a null prototype so absent
- * fields never resolve through `Object.prototype`.
+ * fields never resolve through `Object.prototype`. A `captures` entry replaces
+ * its field with the result of capturing the value immediately after that
+ * field's descriptor is read, before any later descriptor can run caller code.
  */
 export function snapshotPlainObject(
   value: unknown,
   allowedKeys: readonly string[],
   context: string,
+  captures?: V2FieldCaptures,
 ): Record<string, unknown> {
+  if (captures !== undefined) {
+    return snapshotCapturedPlainObject(value, allowedKeys, context, captures);
+  }
   let detached: Record<string, unknown>;
   try {
     detached = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
@@ -65,6 +80,69 @@ export function snapshotPlainObject(
       throw new Error(`${context}: unexpected field '${key}'`);
     }
     snapshot[key] = detached[key];
+  }
+  return snapshot;
+}
+
+function snapshotCapturedPlainObject(
+  value: unknown,
+  allowedKeys: readonly string[],
+  context: string,
+  captures: V2FieldCaptures,
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${context}: expected a plain object, got ${describe(value)}`,
+    );
+  }
+  let keys: (string | symbol)[];
+  try {
+    const prototype = reflectApply(objectGetPrototypeOf, Object, [value]);
+    if (prototype !== objectPrototype && prototype !== null) {
+      throw new Error(
+        `${context}: expected a plain object, got ${describe(value)}`,
+      );
+    }
+    keys = reflectOwnKeys(value);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith(`${context}:`)) {
+      throw err;
+    }
+    throw new Error(`${context}: must expose stable own data properties`);
+  }
+  const allowed = new Set(allowedKeys);
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    if (typeof key !== 'string') {
+      throw new Error(`${context}: must not contain symbol properties`);
+    }
+    if (!allowed.has(key)) {
+      throw new Error(`${context}: unexpected field '${key}'`);
+    }
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        key,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new Error(`${context}: must expose stable own data properties`);
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new Error(
+        `${context}: field '${key}' must be an own enumerable data property`,
+      );
+    }
+    const capture = objectHasOwn(captures, key) ? captures[key] : undefined;
+    snapshot[key] =
+      capture === undefined ? descriptor.value : capture(descriptor.value);
+  }
+  for (const key of objectKeys(captures)) {
+    if (!objectHasOwn(snapshot, key)) captures[key](undefined);
   }
   return snapshot;
 }

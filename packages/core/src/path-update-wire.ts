@@ -86,6 +86,13 @@ export function serializePathUpdateV2ForWire(
     update,
     PATH_UPDATE_V2_FIELDS,
     'Invalid PathUpdateV2',
+    {
+      parentTreeHash: (bytes) =>
+        encodeRuntimeBytes(bytes, 32, 32, 'parentTreeHash', budget),
+      senderLeafPublicKey: (bytes) =>
+        encodeRuntimeBytes(bytes, 65, 65, 'senderLeafPublicKey', budget),
+      treeHash: (bytes) => encodeRuntimeBytes(bytes, 32, 32, 'treeHash', budget),
+    },
   );
   const numLeaves = requirePositiveInteger(
     raw.numLeaves,
@@ -107,16 +114,20 @@ export function serializePathUpdateV2ForWire(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPathKeyBundles'],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
+      {
+        publicKey: (bytes) =>
+          encodeRuntimeBytes(
+            bytes,
+            65,
+            65,
+            `node[${nodeOffset}].publicKey`,
+            budget,
+          ),
+      },
     );
     return {
       nodeIndex: node.nodeIndex as number,
-      publicKey: encodeRuntimeBytes(
-        node.publicKey,
-        65,
-        65,
-        `node[${nodeOffset}].publicKey`,
-        budget,
-      ),
+      publicKey: node.publicKey as string,
       encryptedPathKeyBundles: snapshotBoundedArray(
         node.encryptedPathKeyBundles,
         numLeaves,
@@ -128,16 +139,20 @@ export function serializePathUpdateV2ForWire(
           value,
           ['recipientNodeIndex', 'ciphertext'],
           `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
+          {
+            ciphertext: (bytes) =>
+              encodeRuntimeBytes(
+                bytes,
+                1,
+                MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+                `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
+                budget,
+              ),
+          },
         );
         return {
           recipientNodeIndex: bundle.recipientNodeIndex as number,
-          ciphertext: encodeRuntimeBytes(
-            bundle.ciphertext,
-            1,
-            MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-            `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
-            budget,
-          ),
+          ciphertext: bundle.ciphertext as string,
         };
       }),
     };
@@ -152,44 +167,35 @@ export function serializePathUpdateV2ForWire(
       value,
       ['nodeIndex', 'publicKey'],
       `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}]`,
+      {
+        publicKey: (bytes) =>
+          bytes === null
+            ? null
+            : encodeRuntimeBytes(
+                bytes,
+                65,
+                65,
+                `treeNodePublicKeys[${nodeOffset}].publicKey`,
+                budget,
+              ),
+      },
     );
     return {
       nodeIndex: node.nodeIndex as number,
-      publicKey:
-        node.publicKey === null
-          ? null
-          : encodeRuntimeBytes(
-              node.publicKey,
-              65,
-              65,
-              `treeNodePublicKeys[${nodeOffset}].publicKey`,
-              budget,
-            ),
+      publicKey: node.publicKey as string | null,
     };
   });
 
   const wire: SerializedPathUpdateV2 = {
     version: raw.version as 2,
     generation: raw.generation as number,
-    parentTreeHash: encodeRuntimeBytes(
-      raw.parentTreeHash,
-      32,
-      32,
-      'parentTreeHash',
-      budget,
-    ),
+    parentTreeHash: raw.parentTreeHash as string,
     numLeaves,
     senderLeafIndex: raw.senderLeafIndex as number,
-    senderLeafPublicKey: encodeRuntimeBytes(
-      raw.senderLeafPublicKey,
-      65,
-      65,
-      'senderLeafPublicKey',
-      budget,
-    ),
+    senderLeafPublicKey: raw.senderLeafPublicKey as string,
     nodes,
     treeNodePublicKeys,
-    treeHash: encodeRuntimeBytes(raw.treeHash, 32, 32, 'treeHash', budget),
+    treeHash: raw.treeHash as string,
   };
   deserializePathUpdateV2FromWire(wire);
   return wire;
