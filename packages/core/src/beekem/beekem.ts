@@ -123,6 +123,9 @@ async function assertExactWelcomePathKeyPair(
 const WELCOME_SUPERSEDED_MESSAGE =
   'Cannot process Welcome: the attempt was superseded or receiver state changed';
 
+// Only internally decrypted path keys reach this check; _decryptNodeKey imports
+// them extractably. Leaf keys supplied by callers may remain non-extractable.
+// Exact public coordinates matter: ECDH alone also accepts a negated public point.
 async function assertMatchingPathKeyPair(
   publicKey: CryptoKey,
   privateKey: CryptoKey,
@@ -398,6 +401,14 @@ export class BeeKEM {
     return copy;
   }
 
+  // Queue and Welcome settlement bookkeeping belong to the live receiver.
+  // Staged helpers can publish only these three tree-state fields.
+  private _publishStagedTree(staged: BeeKEM): void {
+    this._nodes = staged._nodes;
+    this._numLeaves = staged._numLeaves;
+    this._myLeafIndex = staged._myLeafIndex;
+  }
+
   /** @internal Create a detached copy for validating before commit. */
   clone(): BeeKEM {
     if (this._pendingMutations !== 0) {
@@ -511,9 +522,7 @@ export class BeeKEM {
       memberPublicKey,
     );
 
-    this._nodes = staged._nodes;
-    this._numLeaves = staged._numLeaves;
-    this._myLeafIndex = staged._myLeafIndex;
+    this._publishStagedTree(staged);
     return { pathUpdate, welcome, rootSecret };
   }
 
@@ -605,7 +614,7 @@ export class BeeKEM {
 
     // Re-derive path keys from our leaf to root
     const result = await staged._updatePath();
-    this._nodes = staged._nodes;
+    this._publishStagedTree(staged);
     return result;
   }
 
@@ -641,7 +650,7 @@ export class BeeKEM {
 
     // Re-derive all internal node keys on our path to root
     const result = await staged._updatePath();
-    this._nodes = staged._nodes;
+    this._publishStagedTree(staged);
     return result;
   }
 
@@ -804,7 +813,7 @@ export class BeeKEM {
     }
 
     const rootSecret = await staged.getRootSecret();
-    this._nodes = staged._nodes;
+    this._publishStagedTree(staged);
     return rootSecret;
   }
 
@@ -1515,7 +1524,7 @@ export class BeeKEM {
   ): Promise<CryptoKey> {
     const plaintext = await eciesOpen(encryptedData, recipientPrivateKey);
 
-    // Import as ECDH private key.
+    // Internal path keys must be exportable for exact public/private matching.
     return crypto.subtle.importKey(
       'pkcs8',
       toBuffer(plaintext),
