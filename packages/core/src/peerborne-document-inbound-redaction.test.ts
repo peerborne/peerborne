@@ -111,11 +111,7 @@ describe('concrete inbound handler log redaction', () => {
 
       expect(load).not.toHaveBeenCalled();
       expect(deserializeSyncMessage).not.toHaveBeenCalled();
-      expect(logs.warn).toHaveBeenCalledWith(
-        'Dropping an incoming document message whose key is not in the ' +
-          'local keychain; explicit recipient-bound recovery or ' +
-          're-invitation is required',
-      );
+      expect(logs.warn).not.toHaveBeenCalled();
       expect(logs.text()).not.toContain(privatePath);
     } finally {
       logs.restore();

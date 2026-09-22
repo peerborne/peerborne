@@ -4265,11 +4265,6 @@ export class PeerborneDocument<
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
           if (!rawContent) {
-            console.warn(
-              'Dropping an incoming document message whose key is not in the ' +
-                'local keychain; explicit recipient-bound recovery or ' +
-                're-invitation is required',
-            );
             return false;
           }
 
