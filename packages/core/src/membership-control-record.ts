@@ -25,7 +25,7 @@ const stringCharCodeAt = String.prototype.charCodeAt;
 const stringFromCharCode = String.fromCharCode;
 const uint8ArraySet = Uint8Array.prototype.set;
 const uint8ArraySubarray = Uint8Array.prototype.subarray;
-const regExpTest = RegExp.prototype.test;
+const regExpExec = RegExp.prototype.exec;
 const dataViewGetBigUint64 = DataView.prototype.getBigUint64;
 const dataViewGetUint16 = DataView.prototype.getUint16;
 const dataViewGetUint32 = DataView.prototype.getUint32;
@@ -507,7 +507,7 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
     protocol === null ||
     typeof protocol !== 'object' ||
     typeof protocol.id !== 'string' ||
-    !reflectApply(regExpTest, canonicalProtocolIdPattern, [protocol.id]) ||
+    reflectApply(regExpExec, canonicalProtocolIdPattern, [protocol.id]) === null ||
     !numberIsInteger(protocol.version) ||
     protocol.version < 0 ||
     protocol.version > 0xffff
@@ -942,7 +942,7 @@ class Reader {
 
   protocolId(): string {
     const value = decodeProtocolId(this.bytes16('protocol.id', 1, 128));
-    if (!reflectApply(regExpTest, canonicalProtocolIdPattern, [value])) {
+    if (reflectApply(regExpExec, canonicalProtocolIdPattern, [value]) === null) {
       throw new Error('invalid canonical protocol identifier');
     }
     return value;
