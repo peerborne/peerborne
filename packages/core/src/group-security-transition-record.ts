@@ -73,7 +73,7 @@ export const MAX_GROUP_SECURITY_TRANSITION_RECORD_BYTES =
  * Persistable framing for one group-security transition.
  *
  * `deliveryPayload` is the exact output of the coordinator's configured
- * delivery codec. `deliveryCodec` selects an application-allowlisted decoder;
+ * delivery codec, including an empty output. `deliveryCodec` selects an application-allowlisted decoder;
  * it is distinct from the group-security protocol and is not authenticated by
  * this frame. Restoring code must treat decoder selection as untrusted, decode
  * the payload, and verify that the decoded Commit and Welcome set match the
@@ -162,7 +162,7 @@ export function deserializeGroupSecurityTransitionRecord(
 ): GroupSecurityTransitionRecord {
   const input = copyUnsharedUint8Array(
     value,
-    GROUP_SECURITY_TRANSITION_MAGIC_BYTES + 2 + 2 + 1 + 2 + 4 + 1 + 4 + 1,
+    GROUP_SECURITY_TRANSITION_MAGIC_BYTES + 2 + 2 + 1 + 2 + 4 + 1 + 4,
     MAX_GROUP_SECURITY_TRANSITION_RECORD_BYTES,
     'group-security transition record',
   );
@@ -185,7 +185,7 @@ export function deserializeGroupSecurityTransitionRecord(
   if (
     codecIdLength === 0 ||
     codecIdLength > MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES ||
-    codecIdLength > inputLength - offset - 2 - 4 - 1 - 4 - 1
+    codecIdLength > inputLength - offset - 2 - 4 - 1 - 4
   ) {
     throw new Error('invalid group-security transition delivery codec length');
   }
@@ -209,7 +209,6 @@ export function deserializeGroupSecurityTransitionRecord(
   const deliveryLength = reflectApply(dataViewGetUint32, view, [offset, false]);
   offset += 4;
   if (
-    deliveryLength === 0 ||
     deliveryLength > MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES ||
     deliveryLength !== inputLength - offset
   ) {
@@ -253,7 +252,7 @@ function snapshotTransitionRecord(
   );
   const deliveryPayload = copyUnsharedUint8Array(
     object.deliveryPayload,
-    1,
+    0,
     MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES,
     'group-security transition delivery payload',
   );

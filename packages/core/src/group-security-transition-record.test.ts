@@ -50,6 +50,27 @@ async function fixture(deliveryPayload = new Uint8Array([9, 8, 7])) {
 }
 
 describe('group-security transition records', () => {
+  test('round-trips an empty delivery while rejecting inconsistent lengths', async () => {
+    const record = await fixture(new Uint8Array());
+    const serialized = serializeGroupSecurityTransitionRecord(record);
+    const decoded = deserializeGroupSecurityTransitionRecord(serialized);
+    expect(decoded.deliveryPayload).toEqual(new Uint8Array());
+    expect(serializeGroupSecurityTransitionRecord(decoded)).toEqual(serialized);
+    expect(() =>
+      deserializeGroupSecurityTransitionRecord(serialized.subarray(0, -1)),
+    ).toThrow();
+    const trailing = new Uint8Array(serialized.length + 1);
+    trailing.set(serialized);
+    expect(() => deserializeGroupSecurityTransitionRecord(trailing)).toThrow(
+      /delivery length/,
+    );
+    const truncatedDelivery = new Uint8Array(serialized);
+    new DataView(truncatedDelivery.buffer).setUint32(serialized.length - 4, 1);
+    expect(() =>
+      deserializeGroupSecurityTransitionRecord(truncatedDelivery),
+    ).toThrow(/delivery length/);
+  });
+
   test('strictly round-trips and detaches complete transition bytes', async () => {
     const record = await fixture();
     const serialized = serializeGroupSecurityTransitionRecord(record);
