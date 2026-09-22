@@ -3,7 +3,7 @@ import {
   computeKeychainStateCommitment,
   isTransactionalKeychain,
   Keychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
   MAX_KEYCHAIN_EPOCHS,
 } from './keychain.js';
 
@@ -84,7 +84,7 @@ describe('computeKeychainStateCommitment', () => {
   });
 });
 
-describe('keychainHistorySinceOrFull', () => {
+describe('keychainHistorySinceOrReject', () => {
   test('calls historySince when the implementation provides it', async () => {
     const historySinceMock = jest
       .fn<(keyID: Uint8Array) => Promise<string>>()
@@ -100,7 +100,7 @@ describe('keychainHistorySinceOrFull', () => {
       addEpochKey: async () => 'epoch-change',
       historySince: historySinceMock as any,
     };
-    const fn = keychainHistorySinceOrFull(keychain);
+    const fn = keychainHistorySinceOrReject(keychain);
     const keyID = new Uint8Array([1, 2, 3]);
     const result = await fn(keyID);
     expect(historySinceMock).toHaveBeenCalledWith(keyID);
@@ -122,7 +122,7 @@ describe('keychainHistorySinceOrFull', () => {
       currentKeyChange,
       addEpochKey: async () => 'epoch-change',
     };
-    const fn = keychainHistorySinceOrFull(keychain);
+    const fn = keychainHistorySinceOrReject(keychain);
     await expect(fn(new Uint8Array([1]))).rejects.toThrow(
       'Keychain does not support replay-safe history slicing',
     );

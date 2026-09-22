@@ -355,11 +355,11 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
 /**
  * Returns a function that invokes `keychain.historySince` when the
  * implementation provides it, and returns a rejecting function otherwise.
- * The historical export name is retained for source compatibility. Rejecting
- * is deliberately fail-closed: core cannot know whether an arbitrary legacy
- * provider's newly generated `currentKeyChange()` is operation-idempotent.
+ * Missing history slicing is rejected: a newly generated `currentKeyChange()`
+ * is not guaranteed to be operation-idempotent. No full-history fallback is
+ * safe for an invitation that grants access only from its epoch onward.
  */
-export function keychainHistorySinceOrFull<KeychainChange, DocumentKey>(
+export function keychainHistorySinceOrReject<KeychainChange, DocumentKey>(
   keychain: Keychain<KeychainChange, DocumentKey>,
 ): (keyID: Uint8Array) => Promise<KeychainChange> {
   const impl = keychain.historySince;
