@@ -639,12 +639,10 @@ export function snapshotDeepEnumerableData<T>(
       }
       accountBytes(key.length * 2);
     }
+    const stringKeys = keys as string[];
     const copy: Record<string, unknown> = {};
     const children: SnapshotTask[] = [];
-    for (const key of keys) {
-      if (typeof key !== 'string') {
-        throw new TypeError(`${field} must not contain symbol properties`);
-      }
+    for (const key of stringKeys) {
       let descriptor: PropertyDescriptor | undefined;
       try {
         descriptor = reflectApply(
