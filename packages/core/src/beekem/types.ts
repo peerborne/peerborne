@@ -60,7 +60,9 @@ export interface EncryptedPathKeyBundle {
 }
 
 /** A v2 path node with one bundle per non-blank copath resolution node. */
-export interface PathNodeUpdateV2 extends PathNodeUpdate {
+export interface PathNodeUpdateV2 {
+  nodeIndex: number;
+  publicKey: Uint8Array;
   encryptedPathKeyBundles: EncryptedPathKeyBundle[];
 }
 
@@ -70,7 +72,9 @@ export interface PathNodeUpdateV2 extends PathNodeUpdate {
  * `parentTreeHash` prevents a higher-generation stale fork from replacing the
  * receiver's current membership state.
  */
-export interface PathUpdateV2 extends PathUpdate {
+export interface PathUpdateV2 {
+  senderLeafIndex: number;
+  senderLeafPublicKey: Uint8Array;
   version: 2;
   generation: number;
   /** Hash of the exact generation immediately preceding this update. */
