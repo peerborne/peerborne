@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem.js';
 import {
   BeeKEMWelcomeV2,
@@ -7,6 +7,8 @@ import {
   TreeNode,
 } from './types.js';
 import { generateEciesKeyPair } from '../ecies.js';
+
+afterEach(() => jest.restoreAllMocks());
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -194,10 +196,12 @@ describe('BeeKEM transactional state changes', () => {
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
     const beforeRoot = await alice.getRootSecret();
     const bobKeys = await keyPair();
-    const mutable = alice as unknown as { _buildWelcome: () => Promise<never> };
-    mutable._buildWelcome = async () => {
-      throw new Error('injected Welcome failure');
+    const mutable = BeeKEM.prototype as unknown as {
+      _buildWelcome: () => Promise<never>;
     };
+    jest
+      .spyOn(mutable, '_buildWelcome')
+      .mockRejectedValue(new Error('injected Welcome failure'));
 
     await expect(alice.addMember(bobKeys.publicKey)).rejects.toThrow(
       /injected/,
@@ -282,10 +286,12 @@ describe('BeeKEM transactional state changes', () => {
     const { welcome } = await alice.addMember(bobKeys.publicKey);
     const beforeRoot = await alice.getRootSecret();
     const beforeGeneration = alice.generation;
-    const mutable = alice as unknown as { _updatePath: () => Promise<never> };
-    mutable._updatePath = async () => {
-      throw new Error('injected path failure');
+    const mutable = BeeKEM.prototype as unknown as {
+      _updatePath: () => Promise<never>;
     };
+    jest
+      .spyOn(mutable, '_updatePath')
+      .mockRejectedValue(new Error('injected path failure'));
 
     await expect(alice.removeMember(welcome.leafIndex)).rejects.toThrow(
       /injected/,
@@ -514,20 +520,22 @@ describe('BeeKEM transactional state changes', () => {
     const mutableA = clonePathUpdate(forkA.pathUpdate);
     const digestCaptured = deferred();
     const releaseDigest = deferred();
-    const internals = carol as unknown as {
+    const internals = BeeKEM.prototype as unknown as {
       _computePathUpdateDigest(update: PathUpdateV2): Promise<Uint8Array>;
     };
-    const computeDigest = internals._computePathUpdateDigest.bind(carol);
+    const computeDigest = internals._computePathUpdateDigest;
     let firstDigest = true;
-    internals._computePathUpdateDigest = async (update) => {
-      const digest = await computeDigest(update);
-      if (firstDigest) {
-        firstDigest = false;
-        digestCaptured.resolve();
-        await releaseDigest.promise;
-      }
-      return digest;
-    };
+    jest
+      .spyOn(internals, '_computePathUpdateDigest')
+      .mockImplementation(async function (this: BeeKEM, update) {
+        const digest = await computeDigest.call(this, update);
+        if (firstDigest) {
+          firstDigest = false;
+          digestCaptured.resolve();
+          await releaseDigest.promise;
+        }
+        return digest;
+      });
 
     const applying = carol.processPathUpdate(mutableA);
     await digestCaptured.promise;
@@ -554,23 +562,25 @@ describe('BeeKEM transactional state changes', () => {
     const digestCaptured = deferred();
     const releaseDigest = deferred();
     const bob = new BeeKEM();
-    const internals = bob as unknown as {
+    const internals = BeeKEM.prototype as unknown as {
       _computeTreeHashV2(
         nodes: Map<number, TreeNode>,
         numLeaves: number,
       ): Promise<Uint8Array>;
     };
-    const computeTreeHash = internals._computeTreeHashV2.bind(bob);
+    const computeTreeHash = internals._computeTreeHashV2;
     let firstDigest = true;
-    internals._computeTreeHashV2 = async (nodes, numLeaves) => {
-      const digest = await computeTreeHash(nodes, numLeaves);
-      if (firstDigest) {
-        firstDigest = false;
-        digestCaptured.resolve();
-        await releaseDigest.promise;
-      }
-      return digest;
-    };
+    jest
+      .spyOn(internals, '_computeTreeHashV2')
+      .mockImplementation(async function (this: BeeKEM, nodes, numLeaves) {
+        const digest = await computeTreeHash.call(this, nodes, numLeaves);
+        if (firstDigest) {
+          firstDigest = false;
+          digestCaptured.resolve();
+          await releaseDigest.promise;
+        }
+        return digest;
+      });
 
     const joining = bob.processWelcome(
       mutableWelcome,
