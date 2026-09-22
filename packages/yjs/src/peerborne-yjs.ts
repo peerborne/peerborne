@@ -1089,8 +1089,32 @@ function cacheKeyToKeyId(cacheKey: string): Uint8Array {
 }
 
 const KEY_ID_LENGTH_BYTES = 32;
+const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
+  'peerborne:yjs-keychain-projection:v1\0';
 
 type CanonicalKeychainEntry = readonly [string, string];
+
+async function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+): Promise<Uint8Array> {
+  const identity = new TextEncoder().encode(
+    `${KEYCHAIN_PROJECTION_CLIENT_DOMAIN}${JSON.stringify(entry)}`,
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', identity),
+  );
+  let clientID = digest[0] & 0x1f;
+  for (let index = 1; index < 7; index++) {
+    clientID = clientID * 256 + digest[index];
+  }
+  const projection = new Doc();
+  projection.clientID = clientID;
+  projection
+    .getArray<[string, string]>('keys')
+    .push([[entry[0], entry[1]]]);
+  validateYjsKeychain(projection);
+  return new Uint8Array(encodeStateAsUpdateV2(projection));
+}
 
 function assertAesGcmDocumentKey(key: CryptoKey): void {
   try {
@@ -1473,15 +1497,10 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const commitChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const history = encodeStateAsUpdateV2(staged);
-    // This exact projection is safe to cache and replay because retries reuse
-    // its existing client operation. It must not be regenerated later from a
-    // multi-key live history under a fresh client ID.
-    const currentProjection = new Doc();
-    currentProjection
-      .getArray<[string, string]>('keys')
-      .push([[epochIdHex, serialized]]);
-    validateYjsKeychain(currentProjection);
-    const currentKeyChange = encodeStateAsUpdateV2(currentProjection);
+    const currentKeyChange = await currentKeyProjection([
+      epochIdHex,
+      serialized,
+    ]);
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
     const claimCommit = () => {
       if (state !== 'prepared') {
@@ -1800,16 +1819,12 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<Uint8Array> {
-    validateYjsKeychain(this._keychain);
-    const yarr = this._keychain.getArray<[string, string]>('keys');
-    if (yarr.length === 0) {
+    const entries = validateYjsKeychain(this._keychain);
+    if (entries.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (yarr.length !== 1) {
-      throw new Error('Yjs cannot export the current key replay-safely');
-    }
-    return this.history();
+    return currentKeyProjection(entries[entries.length - 1]);
   }
 
   /**
