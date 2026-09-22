@@ -55,7 +55,9 @@ export interface SerializedEncryptedPathKeyBundle {
   ciphertext: string;
 }
 
-export interface SerializedPathNodeUpdateV2 extends SerializedPathNodeUpdate {
+export interface SerializedPathNodeUpdateV2 {
+  nodeIndex: number;
+  publicKey: string;
   encryptedPathKeyBundles: SerializedEncryptedPathKeyBundle[];
 }
 
@@ -201,7 +203,6 @@ export function serializePathUpdateV2ForWire(
       [
         'nodeIndex',
         'publicKey',
-        'encryptedPrivateKey',
         'encryptedPathKeyBundles',
       ],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
@@ -263,7 +264,6 @@ export function serializePathUpdateV2ForWire(
     return {
       nodeIndex,
       publicKey: node.publicKey,
-      encryptedPrivateKey: node.encryptedPrivateKey,
       encryptedPathKeyBundles: bundles,
     };
   });
@@ -313,13 +313,6 @@ export function serializePathUpdateV2ForWire(
       `node[${nodeOffset}].publicKey`,
       budget,
     ),
-    encryptedPrivateKey: snapshotRuntimeBytes(
-      node.encryptedPrivateKey,
-      0,
-      MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-      `node[${nodeOffset}].encryptedPrivateKey`,
-      budget,
-    ),
     encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
       (bundle, bundleOffset) => ({
         recipientNodeIndex: bundle.recipientNodeIndex,
@@ -366,7 +359,6 @@ export function serializePathUpdateV2ForWire(
     nodes: detachedNodes.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey: Base64.fromUint8Array(node.publicKey),
-      encryptedPrivateKey: Base64.fromUint8Array(node.encryptedPrivateKey),
       encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
         (bundle) => ({
           recipientNodeIndex: bundle.recipientNodeIndex,
@@ -591,7 +583,6 @@ export function deserializePathUpdateV2FromWire(
       [
         'nodeIndex',
         'publicKey',
-        'encryptedPrivateKey',
         'encryptedPathKeyBundles',
       ],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
@@ -615,11 +606,6 @@ export function deserializePathUpdateV2FromWire(
     if (typeof node.publicKey !== 'string') {
       throw new Error(
         `Invalid PathUpdateV2: node[${nodeOffset}].publicKey must be a base64 string (got ${describe(node.publicKey)})`,
-      );
-    }
-    if (typeof node.encryptedPrivateKey !== 'string') {
-      throw new Error(
-        `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPrivateKey must be a base64 string (got ${describe(node.encryptedPrivateKey)})`,
       );
     }
     if (!Array.isArray(node.encryptedPathKeyBundles)) {
@@ -694,21 +680,9 @@ export function deserializePathUpdateV2FromWire(
         `Invalid PathUpdateV2: node[${nodeOffset}].publicKey must decode to 65 bytes`,
       );
     }
-    const encryptedPrivateKey = decodeCanonicalBase64(
-      node.encryptedPrivateKey,
-      `node[${nodeOffset}].encryptedPrivateKey`,
-      MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-      budget,
-    );
-    if (encryptedPrivateKey.byteLength > MAX_V2_BUNDLE_CIPHERTEXT_BYTES) {
-      throw new Error(
-        `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPrivateKey is too large`,
-      );
-    }
     return {
       nodeIndex,
       publicKey,
-      encryptedPrivateKey,
       encryptedPathKeyBundles,
     };
   });

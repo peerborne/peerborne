@@ -59,7 +59,7 @@ describe('BeeKEM wire-version separation', () => {
       treeNodePublicKeys: [],
       treeHash: bytes,
     };
-    expect(() => serializePathUpdateForWire(v2)).toThrow(/v2-only.*v1/);
+    expect(() => serializePathUpdateForWire(v2 as unknown as PathUpdate)).toThrow(/v2-only.*v1/);
 
     const nestedMarker = {
       ...pathUpdateV1(),
