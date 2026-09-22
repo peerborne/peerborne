@@ -2162,9 +2162,9 @@ export class PeerborneDocument<
           poisonedWorkerPool.then(() => ({ kind: 'poisoned' as const })),
         ]);
         if (workerPoolOutcome.kind === 'poisoned') {
-          this._assertDocumentStateNotPoisoned();
           throw new Error(
-            `Missing change worker pool for ${this.documentPath} entered an invalid state`,
+            `Document ${this.documentPath} has indeterminate authorization state; ` +
+              'discard this document instance before continuing',
           );
         }
         workerResults = workerPoolOutcome.results;
@@ -2392,6 +2392,7 @@ export class PeerborneDocument<
     await retryLoadACLConflict(async () => {
       assertStillActive?.();
       try {
+        // Once an opaque merge starts, abort cannot prove that it stopped mutating.
         await awaitLoadWork(this._readers.merge(changes), signal);
       } catch (error) {
         if (!(error instanceof ACLOperationInProgressError)) {
@@ -2614,6 +2615,7 @@ export class PeerborneDocument<
         }
         assertStillActive?.();
         try {
+          // Once an opaque merge starts, abort cannot prove that it stopped mutating.
           return await awaitLoadWork(this._writers.merge(changes), signal);
         } catch (error) {
           if (!(error instanceof ACLOperationInProgressError)) {
