@@ -70,6 +70,17 @@ export function serializePathUpdateV2ForWire(
       'treeHash',
     ],
     'Invalid PathUpdateV2',
+    {
+      parentTreeHash: (bytes) => snapshotRuntimeBytes(
+        bytes, 32, 32, 'parentTreeHash', budget,
+      ),
+      senderLeafPublicKey: (bytes) => snapshotRuntimeBytes(
+        bytes, 65, 65, 'senderLeafPublicKey', budget,
+      ),
+      treeHash: (bytes) => snapshotRuntimeBytes(
+        bytes, 32, 32, 'treeHash', budget,
+      ),
+    },
   );
   if (raw.version !== 2) {
     throw new Error("Invalid PathUpdateV2: 'version' must be 2");
@@ -135,6 +146,11 @@ export function serializePathUpdateV2ForWire(
         'encryptedPathKeyBundles',
       ],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
+      {
+        publicKey: (bytes) => snapshotRuntimeBytes(
+          bytes, 65, 65, `node[${nodeOffset}].publicKey`, budget,
+        ),
+      },
     );
     requireNonNegativeInteger(
       node.nodeIndex,
@@ -170,6 +186,13 @@ export function serializePathUpdateV2ForWire(
         value,
         ['recipientNodeIndex', 'ciphertext'],
         `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
+        {
+          ciphertext: (bytes) => snapshotRuntimeBytes(
+            bytes, 1, MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+            `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
+            budget,
+          ),
+        },
       );
       requireNonNegativeInteger(
         bundle.recipientNodeIndex,
@@ -203,6 +226,11 @@ export function serializePathUpdateV2ForWire(
       value,
       ['nodeIndex', 'publicKey'],
       `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}]`,
+      {
+        publicKey: (bytes) => bytes === null ? null : snapshotRuntimeBytes(
+          bytes, 65, 65, `treeNodePublicKeys[${nodeOffset}].publicKey`, budget,
+        ),
+      },
     );
     requireNonNegativeInteger(
       node.nodeIndex,
@@ -219,90 +247,31 @@ export function serializePathUpdateV2ForWire(
     return { nodeIndex, publicKey: node.publicKey };
   });
 
-  const parentTreeHash = snapshotRuntimeBytes(
-    raw.parentTreeHash,
-    32,
-    32,
-    'parentTreeHash',
-    budget,
-  );
-  const senderLeafPublicKey = snapshotRuntimeBytes(
-    raw.senderLeafPublicKey,
-    65,
-    65,
-    'senderLeafPublicKey',
-    budget,
-  );
-  const detachedNodes = nodeSnapshots.map((node, nodeOffset) => ({
-    nodeIndex: node.nodeIndex,
-    publicKey: snapshotRuntimeBytes(
-      node.publicKey,
-      65,
-      65,
-      `node[${nodeOffset}].publicKey`,
-      budget,
-    ),
-    encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
-      (bundle, bundleOffset) => ({
-        recipientNodeIndex: bundle.recipientNodeIndex,
-        ciphertext: snapshotRuntimeBytes(
-          bundle.ciphertext,
-          1,
-          MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-          `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
-          budget,
-        ),
-      }),
-    ),
-  }));
-  const detachedTreeNodePublicKeys = treeNodeSnapshots.map(
-    (node, nodeOffset) => ({
-      nodeIndex: node.nodeIndex,
-      publicKey:
-        node.publicKey === null
-          ? null
-          : snapshotRuntimeBytes(
-              node.publicKey,
-              65,
-              65,
-              `treeNodePublicKeys[${nodeOffset}].publicKey`,
-              budget,
-            ),
-    }),
-  );
-  const treeHash = snapshotRuntimeBytes(
-    raw.treeHash,
-    32,
-    32,
-    'treeHash',
-    budget,
-  );
-
   const wire: SerializedPathUpdateV2 = {
     version: raw.version,
     generation: raw.generation as number,
-    parentTreeHash: Base64.fromUint8Array(parentTreeHash),
+    parentTreeHash: Base64.fromUint8Array(raw.parentTreeHash as Uint8Array),
     numLeaves,
     senderLeafIndex,
-    senderLeafPublicKey: Base64.fromUint8Array(senderLeafPublicKey),
-    nodes: detachedNodes.map((node) => ({
+    senderLeafPublicKey: Base64.fromUint8Array(raw.senderLeafPublicKey as Uint8Array),
+    nodes: nodeSnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
-      publicKey: Base64.fromUint8Array(node.publicKey),
+      publicKey: Base64.fromUint8Array(node.publicKey as Uint8Array),
       encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
         (bundle) => ({
           recipientNodeIndex: bundle.recipientNodeIndex,
-          ciphertext: Base64.fromUint8Array(bundle.ciphertext),
+          ciphertext: Base64.fromUint8Array(bundle.ciphertext as Uint8Array),
         }),
       ),
     })),
-    treeNodePublicKeys: detachedTreeNodePublicKeys.map((node) => ({
+    treeNodePublicKeys: treeNodeSnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey:
         node.publicKey === null
           ? null
-          : Base64.fromUint8Array(node.publicKey),
+          : Base64.fromUint8Array(node.publicKey as Uint8Array),
     })),
-    treeHash: Base64.fromUint8Array(treeHash),
+    treeHash: Base64.fromUint8Array(raw.treeHash as Uint8Array),
   };
   // Keep the outbound boundary fail-closed even if runtime validation and the
   // canonical wire decoder evolve independently.
@@ -714,17 +683,18 @@ function snapshotPlainObject(
   value: unknown,
   allowedKeys: readonly string[],
   context: string,
+  captureBytes: Readonly<Record<string, (value: unknown) => unknown>> = {},
 ): Record<string, unknown> {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value)
-  ) {
-    throw new Error(`${context}: expected a plain object, got ${describe(value)}`);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${context}: expected a plain object, got ${describe(value)}`,
+    );
   }
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) {
-    throw new Error(`${context}: expected a plain object, got ${describe(value)}`);
+    throw new Error(
+      `${context}: expected a plain object, got ${describe(value)}`,
+    );
   }
   const allowed = new Set(allowedKeys);
   const keys = Reflect.ownKeys(value);
@@ -742,9 +712,20 @@ function snapshotPlainObject(
       !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
       descriptor.enumerable !== true
     ) {
-      throw new Error(`${context}: field '${key}' must be an own enumerable data property`);
+      throw new Error(
+        `${context}: field '${key}' must be an own enumerable data property`,
+      );
     }
-    snapshot[key] = descriptor.value;
+    const capture = Object.prototype.hasOwnProperty.call(captureBytes, key)
+      ? captureBytes[key]
+      : undefined;
+    // Detach bytes before inspecting any later untrusted descriptor.
+    snapshot[key] = capture ? capture(descriptor.value) : descriptor.value;
+  }
+  for (const key of Object.keys(captureBytes)) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      captureBytes[key](undefined);
+    }
   }
   return snapshot;
 }
