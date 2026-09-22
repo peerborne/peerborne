@@ -90,7 +90,7 @@ export interface CaptureInitialLoadSignerAuthoritiesOptions<PublicKey> {
 function validateAuthorityId(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new TypeError(
-      'AuthProvider.serializePublicKey must return a non-empty string',
+      'serializePublicKey must return a non-empty string',
     );
   }
   for (let index = 0; index < value.length; index++) {
@@ -99,13 +99,13 @@ function validateAuthorityId(value: unknown): asserts value is string {
       const next = value.charCodeAt(index + 1);
       if (!(next >= 0xdc00 && next <= 0xdfff)) {
         throw new TypeError(
-          'AuthProvider.serializePublicKey must return well-formed UTF-16',
+          'serializePublicKey must return well-formed UTF-16',
         );
       }
       index++;
     } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
       throw new TypeError(
-        'AuthProvider.serializePublicKey must return well-formed UTF-16',
+        'serializePublicKey must return well-formed UTF-16',
       );
     }
   }
