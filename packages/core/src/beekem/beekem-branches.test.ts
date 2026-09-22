@@ -1,5 +1,7 @@
-import { describe, expect, test } from '@jest/globals';
+import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem.js';
+
+afterEach(() => jest.restoreAllMocks());
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -104,12 +106,12 @@ describe('BeeKEM branch coverage', () => {
       await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
       const memberKeys = await generateKeyPair();
       const { welcome } = await founder.addMember(memberKeys.publicKey);
-      const internals = founder as unknown as {
+      const internals = BeeKEM.prototype as unknown as {
         _updatePath: (
           parentTreeHash: Uint8Array,
         ) => ReturnType<BeeKEM['update']>;
       };
-      const updatePath = internals._updatePath.bind(founder);
+      const updatePath = internals._updatePath;
       let entered!: () => void;
       let release!: () => void;
       const enteredBarrier = new Promise<void>((resolve) => {
@@ -118,11 +120,14 @@ describe('BeeKEM branch coverage', () => {
       const releaseBarrier = new Promise<void>((resolve) => {
         release = resolve;
       });
-      internals._updatePath = async (parentTreeHash) => {
+      jest.spyOn(internals, '_updatePath').mockImplementation(async function (
+        this: BeeKEM,
+        parentTreeHash,
+      ) {
         entered();
         await releaseBarrier;
-        return updatePath(parentTreeHash);
-      };
+        return updatePath.call(this, parentTreeHash);
+      });
 
       const removal = founder.removeMember(welcome.leafIndex);
       await enteredBarrier;
