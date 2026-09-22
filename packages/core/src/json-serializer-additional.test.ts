@@ -37,7 +37,7 @@ describe('JSONSerializer additional coverage', () => {
         changes: { kind: 'document' as const, change: { foo: 'bar' } },
         nonce: 'AQIDBA==',
         keyUpdate: { epoch: 3 },
-        eciesSealed: 'base64-sealed',
+        eciesSealed: new Uint8Array([1, 2, 3]),
       };
       const encoded = serializer.serializeSyncMessage(msg);
       const decoded = serializer.deserializeSyncMessage(encoded);
