@@ -10430,7 +10430,7 @@ export class PeerborneDocument<
         new Uint8Array(readerKemPublicKey),
       );
       if (liveLeaf === this._beekem.myLeafIndex) {
-        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+        throw new Error(`[${this.documentPath}] _prepareBeeKEMReaderRegistration: Cannot register a remote reader at the local BeeKEM leaf`);
       }
       if (liveLeaf !== existingLeaf) {
         throw new Error(
@@ -10468,7 +10468,7 @@ export class PeerborneDocument<
         );
       }
       if (recoveredLeaf === this._beekem.myLeafIndex) {
-        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+        throw new Error(`[${this.documentPath}] _prepareBeeKEMReaderRegistration: Cannot register a remote reader at the local BeeKEM leaf`);
       }
       const committedReaderLeafIndices = new Map(this._readerLeafIndices);
       committedReaderLeafIndices.set(serializedReader, recoveredLeaf);
