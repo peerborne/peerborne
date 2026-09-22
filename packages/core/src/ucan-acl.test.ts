@@ -93,6 +93,15 @@ describe('UCANACL', () => {
     expect(backing.users).not.toHaveBeenCalled();
   });
 
+  test.each(['\ud800', '\udc00', 'key\ud800suffix'])(
+    'rejects ill-formed canonical identity %p before backing work',
+    async (encoding) => {
+      const guarded = new UCANACLImpl(backing, async () => encoding);
+      await expect(guarded.check('key1')).rejects.toThrow(/well-formed UTF-16/);
+      expect(backing.check).not.toHaveBeenCalled();
+    },
+  );
+
   test('add delegates to backing ACL', async () => {
     backing.add.mockResolvedValue('changes');
     const result = await acl.add('key1');
