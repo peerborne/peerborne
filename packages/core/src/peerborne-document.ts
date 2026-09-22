@@ -52,6 +52,7 @@ import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
   snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
   type SyncMessageContext,
 } from './sync-message-context.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
@@ -4465,6 +4466,7 @@ export class PeerborneDocument<
     // Only serialize for signature verification -- skip when signing is disabled
     // to avoid expensive serialization of large messages.
     if (signingEnabled && verifySignature) {
+      const { signature: _signature, ...expectedUnsigned } = message;
       let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
         const verificationMessage = snapshotSyncMessageForContext<
@@ -4489,6 +4491,9 @@ export class PeerborneDocument<
       } catch {
         return false;
       }
+      if (!syncMessageMatchesSnapshot(expectedUnsigned, messageWithoutSignature, context)) {
+        return false;
+      }
       if ((await this._verifyWriterSignature(raw, signature!)) !== true) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
@@ -4508,7 +4513,7 @@ export class PeerborneDocument<
       } catch {
         return false;
       }
-      if (!constantTimeEqual(raw, rawAfterVerification)) {
+      if (!constantTimeEqual(raw, rawAfterVerification) || !syncMessageMatchesSnapshot(expectedUnsigned, messageWithoutSignature, context)) {
         return false;
       }
     }
