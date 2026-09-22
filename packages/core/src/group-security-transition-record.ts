@@ -55,18 +55,21 @@ const GROUP_SECURITY_TRANSITION_MAGIC_BYTES = byteLength(
   GROUP_SECURITY_TRANSITION_MAGIC,
 );
 
+const UINT16_BYTES = 2;
+const UINT32_BYTES = 4;
+const MIN_CODEC_ID_BYTES = 1;
+const MIN_CONTROL_BYTES = 1;
+const FRAME_FIXED_BYTES = GROUP_SECURITY_TRANSITION_MAGIC_BYTES + 3 * UINT16_BYTES + 2 * UINT32_BYTES;
+const MIN_FRAME_BYTES = FRAME_FIXED_BYTES + MIN_CODEC_ID_BYTES + MIN_CONTROL_BYTES;
+const MIN_REMAINING_AFTER_CODEC_ID_BYTES = UINT16_BYTES + UINT32_BYTES + MIN_CONTROL_BYTES + UINT32_BYTES;
+
 export const GROUP_SECURITY_TRANSITION_RECORD_VERSION = 1;
 export const MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES = 128;
 export const MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES = 16 * 1024 * 1024;
 export const MAX_GROUP_SECURITY_TRANSITION_RECORD_BYTES =
-  GROUP_SECURITY_TRANSITION_MAGIC_BYTES +
-  2 +
-  2 +
+  FRAME_FIXED_BYTES +
   MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES +
-  2 +
-  4 +
   MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES +
-  4 +
   MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES;
 
 /**
@@ -120,24 +123,16 @@ export function serializeGroupSecurityTransitionRecord(
   const controlLength = byteLength(controlRecord);
   const deliveryLength = byteLength(record.deliveryPayload);
   const output = new uint8ArrayConstructor(
-    GROUP_SECURITY_TRANSITION_MAGIC_BYTES +
-      2 +
-      2 +
-      codecIdLength +
-      2 +
-      4 +
-      controlLength +
-      4 +
-      deliveryLength,
+    FRAME_FIXED_BYTES + codecIdLength + controlLength + deliveryLength,
   );
   const view = dataView(output);
   let offset = 0;
   setBytes(output, GROUP_SECURITY_TRANSITION_MAGIC, offset);
   offset += GROUP_SECURITY_TRANSITION_MAGIC_BYTES;
   reflectApply(dataViewSetUint16, view, [offset, record.version, false]);
-  offset += 2;
+  offset += UINT16_BYTES;
   reflectApply(dataViewSetUint16, view, [offset, codecIdLength, false]);
-  offset += 2;
+  offset += UINT16_BYTES;
   setBytes(output, codecId, offset);
   offset += codecIdLength;
   reflectApply(dataViewSetUint16, view, [
@@ -145,13 +140,13 @@ export function serializeGroupSecurityTransitionRecord(
     record.deliveryCodec.version,
     false,
   ]);
-  offset += 2;
+  offset += UINT16_BYTES;
   reflectApply(dataViewSetUint32, view, [offset, controlLength, false]);
-  offset += 4;
+  offset += UINT32_BYTES;
   setBytes(output, controlRecord, offset);
   offset += controlLength;
   reflectApply(dataViewSetUint32, view, [offset, deliveryLength, false]);
-  offset += 4;
+  offset += UINT32_BYTES;
   setBytes(output, record.deliveryPayload, offset);
   return output;
 }
@@ -162,7 +157,7 @@ export function deserializeGroupSecurityTransitionRecord(
 ): GroupSecurityTransitionRecord {
   const input = copyUnsharedUint8Array(
     value,
-    GROUP_SECURITY_TRANSITION_MAGIC_BYTES + 2 + 2 + 1 + 2 + 4 + 1 + 4,
+    MIN_FRAME_BYTES,
     MAX_GROUP_SECURITY_TRANSITION_RECORD_BYTES,
     'group-security transition record',
   );
@@ -176,16 +171,16 @@ export function deserializeGroupSecurityTransitionRecord(
   }
   offset += GROUP_SECURITY_TRANSITION_MAGIC_BYTES;
   const version = reflectApply(dataViewGetUint16, view, [offset, false]);
-  offset += 2;
+  offset += UINT16_BYTES;
   if (version !== GROUP_SECURITY_TRANSITION_RECORD_VERSION) {
     throw new Error(`unsupported group-security transition version ${version}`);
   }
   const codecIdLength = reflectApply(dataViewGetUint16, view, [offset, false]);
-  offset += 2;
+  offset += UINT16_BYTES;
   if (
     codecIdLength === 0 ||
     codecIdLength > MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES ||
-    codecIdLength > inputLength - offset - 2 - 4 - 1 - 4
+    codecIdLength > inputLength - offset - MIN_REMAINING_AFTER_CODEC_ID_BYTES
   ) {
     throw new Error('invalid group-security transition delivery codec length');
   }
@@ -194,20 +189,20 @@ export function deserializeGroupSecurityTransitionRecord(
   );
   offset += codecIdLength;
   const codecVersion = reflectApply(dataViewGetUint16, view, [offset, false]);
-  offset += 2;
+  offset += UINT16_BYTES;
   const controlLength = reflectApply(dataViewGetUint32, view, [offset, false]);
-  offset += 4;
+  offset += UINT32_BYTES;
   if (
     controlLength === 0 ||
     controlLength > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES ||
-    controlLength > inputLength - offset - 4
+    controlLength > inputLength - offset - UINT32_BYTES
   ) {
     throw new Error('invalid group-security transition control length');
   }
   const serializedControl = copyRange(input, offset, controlLength);
   offset += controlLength;
   const deliveryLength = reflectApply(dataViewGetUint32, view, [offset, false]);
-  offset += 4;
+  offset += UINT32_BYTES;
   if (
     deliveryLength > MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES ||
     deliveryLength !== inputLength - offset

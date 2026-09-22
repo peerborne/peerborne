@@ -74,6 +74,23 @@ function unsigned(
 }
 
 describe('membership control records', () => {
+  test('rejects invalid protocol identifiers after RegExp.exec is replaced', () => {
+    const invalid = { ...unsigned(0n, 1), protocol: { id: '!invalid', version: 1 } };
+    const original = RegExp.prototype.exec;
+    let rejected = false;
+    try {
+      RegExp.prototype.exec = () => ['accepted'] as RegExpExecArray;
+      try {
+        canonicalMembershipControlPayload(invalid);
+      } catch {
+        rejected = true;
+      }
+    } finally {
+      RegExp.prototype.exec = original;
+    }
+    expect(rejected).toBe(true);
+  });
+
   test('strictly round-trips canonical records across the u64 epoch range', async () => {
     const identity = await HmacIdentity.create();
     const maximum = (1n << 64n) - 1n;
