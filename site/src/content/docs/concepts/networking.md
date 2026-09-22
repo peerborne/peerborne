@@ -44,20 +44,14 @@ Document updates are announced and delivered via **GossipSub** — a pubsub prot
 // Changes published to this topic reach all subscribed peers.
 ```
 
-The versioned default keeps default-configured older peers from sharing one
-topic with incompatible document envelopes. Publish notifications used by
-custom pinning integrations likewise default to `/peerborne/documents/v3`
-instead of legacy `/documents`. A custom or empty `pubsubDocumentPrefix` opts
-out of that default separation; all peers using it must be upgraded together,
-and every relay must allow the resulting topics. For a non-empty custom prefix,
-add its slash-terminated namespace to `TOPIC_ALLOWLIST` (for example,
-`/acme/v3/` for either `/acme/v3` or `/acme/v3/`). With an empty prefix, allow
-each concrete bare document topic or explicitly use unrestricted `*` mode;
-there is no prefix entry to add. A custom
-`pubsubDocumentPublishPath` must match the relay's `DOCUMENT_PUBLISH_PATH` or
-`EXTRA_TOPICS`, or match its allowlist. Allowlist entries ending in `/` are
-namespace prefixes; entries without a trailing slash match one exact topic.
-Relays do not bridge legacy and v3 topics.
+Relays admit the current document namespace and the exact
+`/peerborne/documents/v3` notification topic by default. Earlier default topics
+are rejected. A custom `pubsubDocumentPrefix` requires a matching
+slash-terminated namespace in every relay's `TOPIC_ALLOWLIST`. With an empty
+prefix, allow each concrete document topic or explicitly select unrestricted
+`*` mode. A custom `pubsubDocumentPublishPath` must match the relay's
+`DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or an exact allowlist entry. All peers
+must use the same current runtime; custom topics do not select an older format.
 
 Topic names are public routing labels, not authenticated version negotiation,
 authorization, or wire validation. Application URLs such as `/document/:id`

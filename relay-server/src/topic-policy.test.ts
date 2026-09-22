@@ -14,7 +14,7 @@ const trackedSet = (...topics: string[]) => {
 describe('shouldAutoSubscribe', () => {
   describe('open mode (allowlist === null)', () => {
     it('subscribes to a fresh topic when below the cap', () => {
-      const decision = shouldAutoSubscribe('/document/my-doc', {
+      const decision = shouldAutoSubscribe('/custom/my-doc', {
         allowlist: null,
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
@@ -36,8 +36,8 @@ describe('shouldAutoSubscribe', () => {
 
   describe('allowlist filtering', () => {
     it('subscribes when a topic matches an allowlist prefix', () => {
-      const decision = shouldAutoSubscribe('/document/abc', {
-        allowlist: ['/document/', '/peerborne/'],
+      const decision = shouldAutoSubscribe('/custom/abc', {
+        allowlist: ['/custom/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -47,7 +47,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('subscribes when topic matches the second prefix', () => {
       const decision = shouldAutoSubscribe('/peerborne/xyz', {
-        allowlist: ['/document/', '/peerborne/'],
+        allowlist: ['/custom/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -57,7 +57,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('rejects topics that do not match any prefix', () => {
       const decision = shouldAutoSubscribe('/other/abc', {
-        allowlist: ['/document/', '/peerborne/'],
+        allowlist: ['/custom/', '/peerborne/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -90,7 +90,7 @@ describe('shouldAutoSubscribe', () => {
     it('rejects when the allowlist is empty (effectively closed mode)', () => {
       // Note: loadConfig collapses an empty allowlist to null, but the
       // policy fn must still handle an explicit empty list as "closed".
-      const decision = shouldAutoSubscribe('/document/abc', {
+      const decision = shouldAutoSubscribe('/custom/abc', {
         allowlist: [],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
@@ -100,8 +100,8 @@ describe('shouldAutoSubscribe', () => {
     })
 
     it('uses prefix match, not equality', () => {
-      const decision = shouldAutoSubscribe('/document/abc/sub', {
-        allowlist: ['/document/'],
+      const decision = shouldAutoSubscribe('/custom/abc/sub', {
+        allowlist: ['/custom/'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -111,7 +111,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('treats entries without a trailing slash as exact topics', () => {
       const input = {
-        allowlist: ['/peerborne/documents/v3', '/documents'],
+        allowlist: ['/peerborne/documents/v3', '/announcements'],
         maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -120,13 +120,13 @@ describe('shouldAutoSubscribe', () => {
       expect(
         shouldAutoSubscribe('/peerborne/documents/v3', input),
       ).toEqual({ action: 'subscribe' })
-      expect(shouldAutoSubscribe('/documents', input)).toEqual({
+      expect(shouldAutoSubscribe('/announcements', input)).toEqual({
         action: 'subscribe',
       })
       expect(
         shouldAutoSubscribe('/peerborne/documents/v30', input),
       ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
-      expect(shouldAutoSubscribe('/documents-v2', input)).toEqual({
+      expect(shouldAutoSubscribe('/announcements-extra', input)).toEqual({
         action: 'skip',
         reason: 'NotInAllowlist',
       })
@@ -135,7 +135,7 @@ describe('shouldAutoSubscribe', () => {
 
   describe('cap enforcement', () => {
     it('subscribes when one slot remains', () => {
-      const decision = shouldAutoSubscribe('/document/abc', {
+      const decision = shouldAutoSubscribe('/custom/abc', {
         allowlist: null,
         maxAutoTopics: 10,
         autoTopicCount: 9,
@@ -145,7 +145,7 @@ describe('shouldAutoSubscribe', () => {
     })
 
     it('rejects when at the cap', () => {
-      const decision = shouldAutoSubscribe('/document/abc', {
+      const decision = shouldAutoSubscribe('/custom/abc', {
         allowlist: null,
         maxAutoTopics: 10,
         autoTopicCount: 10,
@@ -155,7 +155,7 @@ describe('shouldAutoSubscribe', () => {
     })
 
     it('rejects when above the cap', () => {
-      const decision = shouldAutoSubscribe('/document/abc', {
+      const decision = shouldAutoSubscribe('/custom/abc', {
         allowlist: null,
         maxAutoTopics: 10,
         autoTopicCount: 99,
@@ -178,11 +178,11 @@ describe('shouldAutoSubscribe', () => {
 
     it('skips tracked topics even if the cap is at zero', () => {
       // No-op subscription should still be a no-op regardless of cap.
-      const decision = shouldAutoSubscribe('/documents', {
+      const decision = shouldAutoSubscribe('/announcements', {
         allowlist: null,
         maxAutoTopics: 0,
         autoTopicCount: 0,
-        isTracked: trackedSet('/documents'),
+        isTracked: trackedSet('/announcements'),
       })
       expect(decision).toEqual({ action: 'skip', reason: 'AlreadyTracked' })
     })
@@ -259,7 +259,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('NotInAllowlist beats CapReached', () => {
       const decision = shouldAutoSubscribe('/other/abc', {
-        allowlist: ['/document/'],
+        allowlist: ['/custom/'],
         maxAutoTopics: 0,
         autoTopicCount: 0,
         isTracked: neverTracked,
@@ -280,7 +280,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('throws when maxAutoTopics is negative', () => {
       expect(() =>
-        shouldAutoSubscribe('/document/abc', {
+        shouldAutoSubscribe('/custom/abc', {
           ...baseInput,
           maxAutoTopics: -1,
           autoTopicCount: 0,
@@ -290,7 +290,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('throws when autoTopicCount is negative', () => {
       expect(() =>
-        shouldAutoSubscribe('/document/abc', {
+        shouldAutoSubscribe('/custom/abc', {
           ...baseInput,
           maxAutoTopics: 10,
           autoTopicCount: -1,
@@ -300,7 +300,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('throws when maxAutoTopics is NaN', () => {
       expect(() =>
-        shouldAutoSubscribe('/document/abc', {
+        shouldAutoSubscribe('/custom/abc', {
           ...baseInput,
           maxAutoTopics: Number.NaN,
           autoTopicCount: 0,
@@ -310,7 +310,7 @@ describe('shouldAutoSubscribe', () => {
 
     it('throws when autoTopicCount is Infinity', () => {
       expect(() =>
-        shouldAutoSubscribe('/document/abc', {
+        shouldAutoSubscribe('/custom/abc', {
           ...baseInput,
           maxAutoTopics: 10,
           autoTopicCount: Number.POSITIVE_INFINITY,
@@ -319,7 +319,7 @@ describe('shouldAutoSubscribe', () => {
     })
 
     it('accepts zero counters (cap-of-zero is a valid closed-mode config)', () => {
-      const decision = shouldAutoSubscribe('/document/abc', {
+      const decision = shouldAutoSubscribe('/custom/abc', {
         ...baseInput,
         maxAutoTopics: 0,
         autoTopicCount: 0,
