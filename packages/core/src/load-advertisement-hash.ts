@@ -30,6 +30,10 @@ function concatenate(parts: readonly Uint8Array[]): Uint8Array {
 /**
  * Hash a legacy served frontier, or the complete security-aware load tuple.
  * The legacy branch intentionally delegates to `tipsHash` byte-for-byte.
+ * This is a quorum comparison digest, not a signature payload. V4 responders
+ * must sign the response envelope including its fresh `loadChallenge`; putting
+ * a per-responder request challenge in this digest would prevent equal
+ * document states from agreeing in the same quorum round.
  * V4 additionally commits to a locally-derived complete load-response
  * manifest. This prevents a responder from retaining the voted frontier while
  * smuggling extra nodes, different node classifications/edges, snapshot state,
