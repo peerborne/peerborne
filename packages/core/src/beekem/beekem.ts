@@ -652,10 +652,7 @@ export class BeeKEM {
       const node = nextNodes.get(entry.nodeIndex);
       if (
         !node?.publicKey ||
-        !(await this._privateKeyMatchesPublicKey(
-          entry.privateKey,
-          node.publicKey,
-        ))
+        !(await this._pathKeyPairMatches(entry.privateKey, node.publicKey))
       ) {
         throw new Error(
           `BeeKEM v2 private key does not match path node ${entry.nodeIndex}`,
@@ -733,12 +730,7 @@ export class BeeKEM {
           pathKey.encryptedPrivateKey,
           currentPrivateKey,
         );
-        if (
-          !(await this._privateKeyMatchesPublicKey(
-            nodePrivateKey,
-            nodePublicKey,
-          ))
-        ) {
+        if (!(await this._pathKeyPairMatches(nodePrivateKey, nodePublicKey))) {
           throw new Error(
             `Welcome decrypted private key does not match path node ${pathKey.nodeIndex}`,
           );
@@ -1482,6 +1474,26 @@ export class BeeKEM {
       crypto.subtle.exportKey('raw', right),
     ]);
     return bytesEqual(new Uint8Array(leftRaw), new Uint8Array(rightRaw));
+  }
+
+  private async _pathKeyPairMatches(
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+  ): Promise<boolean> {
+    // ECDH agreement alone cannot distinguish a point from its negation.
+    // Decrypted path keys are extractable so their exact public point can be checked.
+    const { kty, crv, x, y } = await crypto.subtle.exportKey('jwk', privateKey);
+    const advertised = await crypto.subtle.exportKey('jwk', publicKey);
+    return (
+      kty === 'EC' &&
+      crv === ECDH_CURVE &&
+      advertised.kty === kty &&
+      advertised.crv === crv &&
+      typeof x === 'string' &&
+      typeof y === 'string' &&
+      advertised.x === x &&
+      advertised.y === y
+    );
   }
 
   private async _privateKeyMatchesPublicKey(
