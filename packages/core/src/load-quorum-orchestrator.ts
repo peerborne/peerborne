@@ -21,10 +21,10 @@
  *
  *   1. Computing the peer list (already-deduped by libp2p PeerId so a single
  *      peer with multiple open connections cannot cast multiple votes).
- *   2. Passing a `probeFn` that returns either legacy `tipsHash` bytes, a V4
- *      `{ hash, signerAuthority }` vote whose authority the caller has already
- *      authenticated, or `null` for any non-vote outcome (timeout, decline,
- *      decryption failure, etc.).
+ *   2. Selecting one `protocol` for the whole round and passing a `probeFn`
+ *      that returns that family's response or `null` for a non-vote. V4
+ *      requires `{ hash, signerAuthority }` with caller-authenticated authority;
+ *      bare hashes and the unknown-document sentinel cannot count in V4.
  *   3. Passing a `peerIdOf` extractor so this module can narrow the peer list
  *      down to the agreeing cohort without knowing about Multiaddrs.
  *
@@ -63,6 +63,8 @@ export interface SignerAttributedLoadQuorumVote {
   readonly signerAuthority: string;
 }
 
+export type LoadQuorumProtocol = 'tip-advertise-v1' | 'security-advertise-v1';
+
 export type LoadQuorumProbeResult =
   | Uint8Array
   | SignerAttributedLoadQuorumVote
@@ -80,12 +82,12 @@ type NormalizedLoadQuorumProbeResult =
 
 function normalizeLoadQuorumProbeResult(
   result: unknown,
+  protocol: LoadQuorumProtocol,
 ): NormalizedLoadQuorumProbeResult {
-  if (result === 'unknown-doc') return { kind: 'unknown-doc' };
-
-  const legacyHash = snapshotVoteHash(result);
-  if (legacyHash !== undefined) {
-    return { kind: 'vote', hash: legacyHash };
+  if (protocol === 'tip-advertise-v1') {
+    if (result === 'unknown-doc') return { kind: 'unknown-doc' };
+    const hash = snapshotVoteHash(result);
+    return hash === undefined ? { kind: 'non-vote' } : { kind: 'vote', hash };
   }
   if (result === null || typeof result !== 'object') {
     return { kind: 'non-vote' };
@@ -195,13 +197,21 @@ export type LoadQuorumOrchestratorResult<T> =
  *   insufficient single-peer probe).
  */
 export async function runLoadQuorum<T>(opts: {
+  /** Select once for the entire round; results from another family are non-votes. */
+  protocol: LoadQuorumProtocol;
   peers: readonly T[];
   peerIdOf: (peer: T) => string;
   probeFn: (peer: T) => Promise<LoadQuorumProbeResult>;
   documentPath: string;
   config?: LoadQuorumOrchestratorConfig;
 }): Promise<LoadQuorumOrchestratorResult<T>> {
-  const { peers, peerIdOf, probeFn, documentPath, config } = opts;
+  const { peers, peerIdOf, probeFn, documentPath, config, protocol } = opts;
+  if (protocol !== 'tip-advertise-v1' && protocol !== 'security-advertise-v1') {
+    throw new LoadQuorumFailedError({
+      documentPath, reason: 'invalid-config', respondingCount: 0, requiredQ: 0,
+      detail: 'A load-quorum protocol family must be selected before probing',
+    });
+  }
   const enabled = config?.enabled ?? true;
 
   // Re-validate booleans/K/Q/timeoutMs on every `runLoadQuorum` call as
@@ -368,7 +378,7 @@ export async function runLoadQuorum<T>(opts: {
       );
       probe = null;
     }
-    const normalizedProbe = normalizeLoadQuorumProbeResult(probe);
+    const normalizedProbe = normalizeLoadQuorumProbeResult(probe, protocol);
     if (normalizedProbe.kind === 'non-vote') {
       throw new LoadQuorumFailedError({
         documentPath,
@@ -424,15 +434,15 @@ export async function runLoadQuorum<T>(opts: {
         );
         result = null;
       }
-      return { peer, result: normalizeLoadQuorumProbeResult(result) };
+      return { peer, result: normalizeLoadQuorumProbeResult(result, protocol) };
     }),
   );
   // V4 votes are attributed to the signing authority that `probeFn` already
   // verified, not merely to the transport's libp2p PeerId. This orchestrator
   // does not perform that verification. Keep only the first vote from each
   // authority so one credential reused across many Sybil PeerIds cannot
-  // satisfy Q by itself. Legacy probes still return bare Uint8Array values and
-  // retain their historical PeerId-based tally unchanged.
+  // satisfy Q by itself. Normalization rejects responses from the other
+  // protocol family before either tally, including unauthenticated sentinels.
   const seenSignerAuthorities = new Set<string>();
   const advertisements: PeerTipAdvertisement[] = probeResults.map(
     ({ peer, result }) => {
