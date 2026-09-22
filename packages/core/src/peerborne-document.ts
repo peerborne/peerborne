@@ -184,6 +184,47 @@ function throwIfLoadAborted(signal?: AbortSignal): void {
     : new Error('Document load was aborted');
 }
 
+async function awaitLoadWork<T>(
+  work: T | PromiseLike<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return await work;
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      try {
+        throwIfLoadAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function retryLoadACLConflict<T>(
+  operation: () => T | PromiseLike<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return retryACLConflict(operation);
+  for (;;) {
+    throwIfLoadAborted(signal);
+    try {
+      return await awaitLoadWork(operation(), signal);
+    } catch (error) {
+      throwIfLoadAborted(signal);
+      if (!(error instanceof ACLOperationInProgressError)) throw error;
+      await awaitLoadWork(error.waitForSettlement(), signal);
+    }
+  }
+}
+
 function assertPositiveSafeByteLimit(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${field} must be a positive safe integer`);
@@ -1214,6 +1255,18 @@ export class PeerborneDocument<
         );
       }
       assertCanApply?.();
+      const invitationKeychain = this._keychain;
+      const existingKeys = await invitationKeychain.keys();
+      assertCanApply?.();
+      if (
+        this._keychain !== invitationKeychain ||
+        !Array.isArray(existingKeys) ||
+        existingKeys.length !== 0
+      ) {
+        throw new Error(
+          'Invitation bootstrap requires a pristine, empty keychain',
+        );
+      }
       let stateApplicationStarted = false;
       const beginStateApplication = (): void => {
         if (stateApplicationStarted) return;
@@ -1331,7 +1384,7 @@ export class PeerborneDocument<
             }
           })()
         : rawBlock;
-    const block = await readUint8Iterable(boundedBlock);
+    const block = await awaitLoadWork(readUint8Iterable(boundedBlock), signal);
     throwIfLoadAborted(options?.signal);
     return block;
   }
@@ -1350,11 +1403,9 @@ export class PeerborneDocument<
     const blockData = block.slice(
       this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
     );
-    const content = await this._decryptBlock(
-      blockKeyID,
-      blockNonce,
-      blockData,
-      getKey,
+    const content = await awaitLoadWork(
+      this._decryptBlock(blockKeyID, blockNonce, blockData, getKey),
+      signal,
     );
     throwIfLoadAborted(signal);
     if (!content) {
@@ -1803,11 +1854,14 @@ export class PeerborneDocument<
     collectReferencedAncestors(changeId, changes, this._referencedAncestors);
 
     // Only process hashes that we haven't seen yet.
-    const newChangeEntries = await this._mergeSyncTree(
-      changeId,
-      changes,
-      this._lastSyncMessage && this._lastSyncMessage.changeId,
-      this._hashes,
+    const newChangeEntries = await awaitLoadWork(
+      this._mergeSyncTree(
+        changeId,
+        changes,
+        this._lastSyncMessage && this._lastSyncMessage.changeId,
+        this._hashes,
+      ),
+      signal,
     );
     assertStillActive();
 
@@ -1836,7 +1890,7 @@ export class PeerborneDocument<
             // Apply the changes that were sent directly. Use the
             // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
             // drained immediately after the ACL update lands.
-            await this._mergeReaders(sentChanges, assertStillActive);
+            await this._mergeReaders(sentChanges, assertStillActive, signal);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -1844,7 +1898,7 @@ export class PeerborneDocument<
           }
           case crdtWriterChangeNode: {
             // Apply the changes that were sent directly.
-            await this._mergeWriters(sentChanges, assertStillActive);
+            await this._mergeWriters(sentChanges, assertStillActive, signal);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -1911,9 +1965,13 @@ export class PeerborneDocument<
         signal?.addEventListener('abort', forwardAbort, { once: true });
       }
       const fetchSignal = fetchController?.signal;
+      const assertWorkerActive = (): void => {
+        assertStillActive();
+        throwIfLoadAborted(fetchSignal);
+      };
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded) {
-          assertStillActive();
+          assertWorkerActive();
           const index = nextIndex++;
           if (index >= missingDocumentHashes.length) return;
           const [missingHash, missingHashKind] =
@@ -1921,23 +1979,26 @@ export class PeerborneDocument<
           try {
             const cid = CID.parse(missingHash);
             const prefetched = fetchOptions.prefetchedBlocks;
-            const missingChanges = prefetched?.has(missingHash)
-              ? await this._decodeBlock(
-                  cid,
-                  prefetched.get(missingHash)!,
-                  fetchSignal,
-                  fetchOptions.getKey,
-                )
-              : await this._getBlock(
-                  cid,
-                  {
-                    signal: fetchSignal,
-                    maxBlockBytes,
-                    consumeBytes,
-                  },
-                  fetchOptions.getKey,
-                );
-            assertStillActive();
+            const missingChanges = await awaitLoadWork(
+              prefetched?.has(missingHash)
+                ? this._decodeBlock(
+                    cid,
+                    prefetched.get(missingHash)!,
+                    fetchSignal,
+                    fetchOptions.getKey,
+                  )
+                : this._getBlock(
+                    cid,
+                    {
+                      signal: fetchSignal,
+                      maxBlockBytes,
+                      consumeBytes,
+                    },
+                    fetchOptions.getKey,
+                  ),
+              fetchSignal,
+            );
+            assertWorkerActive();
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
               continue;
@@ -1957,22 +2018,30 @@ export class PeerborneDocument<
               case crdtReaderChangeNode: {
                 // Go through `_mergeReaders` to drain any pending BeeKEM
                 // Welcomes parked while waiting for this ACL update.
-                await this._mergeReaders(missingChanges, assertStillActive);
-                assertStillActive();
+                await this._mergeReaders(
+                  missingChanges,
+                  assertWorkerActive,
+                  fetchSignal,
+                );
+                assertWorkerActive();
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
                 break;
               }
               case crdtWriterChangeNode: {
-                await this._mergeWriters(missingChanges, assertStillActive);
-                assertStillActive();
+                await this._mergeWriters(
+                  missingChanges,
+                  assertWorkerActive,
+                  fetchSignal,
+                );
+                assertWorkerActive();
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
                 break;
               }
             }
             appliedMissingDocumentHashes[index] = missingHash;
-            assertStillActive();
+            assertWorkerActive();
           } catch (error) {
             if (signal?.aborted) throwIfLoadAborted(signal);
             if (fetchLimitExceeded && fetchController?.signal.aborted) return;
@@ -2176,14 +2245,15 @@ export class PeerborneDocument<
   private async _applyCollectedACL(
     entries: readonly BoundedChangeTreeEntry<ChangesType>[],
     assertStillActive?: () => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     for (const { kind, change } of entries) {
       assertStillActive?.();
       if (change === undefined) continue;
       if (kind === crdtWriterChangeNode) {
-        await this._mergeWriters(change, assertStillActive);
+        await this._mergeWriters(change, assertStillActive, signal);
       } else if (kind === crdtReaderChangeNode) {
-        await this._mergeReaders(change, assertStillActive);
+        await this._mergeReaders(change, assertStillActive, signal);
       }
       assertStillActive?.();
     }
@@ -2223,11 +2293,12 @@ export class PeerborneDocument<
   private async _mergeReaders(
     changes: ChangesType,
     assertStillActive?: () => void,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await retryACLConflict(() => {
+    await retryLoadACLConflict(() => {
       assertStillActive?.();
       return this._readers.merge(changes);
-    });
+    }, signal);
     assertStillActive?.();
     if (this._bootstrapLoadApplicationState !== 'pending') {
       this._schedulePendingWelcomeDrain();
@@ -2401,6 +2472,7 @@ export class PeerborneDocument<
   private async _mergeWriters(
     changes: ChangesType,
     assertStillActive?: () => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     // Keep the mutation marker set while a transient ACL conflict settles and
     // the synchronous `merge()` is retried. Both invalidations (pre and post)
@@ -2408,10 +2480,10 @@ export class PeerborneDocument<
     this._writerMutationsInFlight++;
     this._invalidateWriterKeyCache();
     try {
-      await retryACLConflict(() => {
+      await retryLoadACLConflict(() => {
         assertStillActive?.();
         return this._writers.merge(changes);
-      });
+      }, signal);
       assertStillActive?.();
     } finally {
       this._writerMutationsInFlight--;
@@ -3472,11 +3544,8 @@ export class PeerborneDocument<
       consumedBytes: 0,
     };
     const prefetchedBlocks = new Map<string, Uint8Array>();
-    const changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {
+    let changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {
       signal,
-      maxBlockBytes: responseLimit,
-      maxAggregateBlockBytes: responseLimit,
-      aggregateBudget,
       prefetchedBlocks,
       assertStillActive: continuingInvitationBootstrap
         ? () => {
@@ -3571,7 +3640,10 @@ export class PeerborneDocument<
         if (key) {
           const blockNonce = assembled.slice(this._keychainProvider.keyIDLength, headerLength);
           const blockData = assembled.slice(headerLength);
-          const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
+          const decrypted = await awaitLoadWork(
+            this._authProvider.decrypt(blockData, key, blockNonce),
+            signal,
+          );
           if (!decrypted) {
             throw new Error(
               `Failed to decrypt load response for ${this.documentPath}`,
@@ -3662,7 +3734,7 @@ export class PeerborneDocument<
         if (requiredResponseSigner !== undefined || this._isSigningEnabled()) {
           const preLoadWriters =
             requiredResponseSigner === undefined
-              ? await this._getWriterKeys()
+              ? await awaitLoadWork(this._getWriterKeys(), signal)
               : [];
           loadWriterAdmission = requiredResponseSigner === undefined
             ? preLoadWriters.length > 0
@@ -3694,11 +3766,17 @@ export class PeerborneDocument<
             }
             const verified =
               requiredResponseSigner === undefined
-                ? await verifyOriginalLoadSignature(preLoadWriters)
-                : await this._authProvider.verify(
-                    originalSignedRaw,
-                    requiredResponseSigner,
-                    signatureBytes,
+                ? await awaitLoadWork(
+                    verifyOriginalLoadSignature(preLoadWriters),
+                    signal,
+                  )
+                : await awaitLoadWork(
+                    this._authProvider.verify(
+                      originalSignedRaw,
+                      requiredResponseSigner,
+                      signatureBytes,
+                    ),
+                    signal,
                   );
             if (verified !== true) {
               console.warn(
@@ -3712,6 +3790,14 @@ export class PeerborneDocument<
           loadWriterAdmission === 'bootstrap' ||
           loadWriterAdmission === 'pinned' ||
           loadWriterAdmission === 'unsigned';
+        if (trackedBootstrapLoad) {
+          changeFetchOptions = {
+            ...changeFetchOptions,
+            maxBlockBytes: responseLimit,
+            maxAggregateBlockBytes: responseLimit,
+            aggregateBudget,
+          };
+        }
         let beganBootstrapStateApplication = false;
         let trackedLoadHadEstablishedState = false;
         let trackedLoadMadeReplicatedProgress = false;
@@ -3726,7 +3812,7 @@ export class PeerborneDocument<
               `Invitation bootstrap continuation for ${this.documentPath} is no longer active`,
             );
           }
-          await beforeBootstrapComplete?.();
+          await awaitLoadWork(beforeBootstrapComplete?.(), signal);
           throwIfLoadAborted(signal);
           if (
             continuingInvitationBootstrap &&
@@ -3823,9 +3909,15 @@ export class PeerborneDocument<
               if (!canUseCurrentBootstrapState()) {
                 return false;
               }
-              const currentWriters = await this._getWriterKeys();
+              const currentWriters = await awaitLoadWork(
+                this._getWriterKeys(),
+                signal,
+              );
               if (
-                (await verifyOriginalLoadSignature(currentWriters)) !== true
+                (await awaitLoadWork(
+                  verifyOriginalLoadSignature(currentWriters),
+                  signal,
+                )) !== true
               ) {
                 return false;
               }
@@ -3849,10 +3941,16 @@ export class PeerborneDocument<
               if (!canUseCurrentBootstrapState()) {
                 return false;
               }
-              const currentWriters = await this._getWriterKeys();
+              const currentWriters = await awaitLoadWork(
+                this._getWriterKeys(),
+                signal,
+              );
               if (currentWriters.length > 0) {
                 if (
-                  (await verifyOriginalLoadSignature(currentWriters)) !== true
+                  (await awaitLoadWork(
+                  verifyOriginalLoadSignature(currentWriters),
+                  signal,
+                )) !== true
                 ) {
                   return false;
                 }
@@ -3947,7 +4045,7 @@ export class PeerborneDocument<
             message.changes,
             message.snapshot?.lastChangeNodeCID,
           );
-          const servedBytes = await tipsHash(servedFrontier);
+          const servedBytes = await awaitLoadWork(tipsHash(servedFrontier), signal);
           const servedHex = tipsHashToHex(servedBytes);
           if (!constantTimeHexEquals(expectedTipsHashHex, servedHex)) {
             console.warn(
@@ -3995,7 +4093,7 @@ export class PeerborneDocument<
           // frontier. A peer whose attested `tips` contradicts their
           // own served payload (e.g. claims extra heads that are not
           // present in the served tree) is misbehaving.
-          const advertisedBytes = await tipsHash(message.tips);
+          const advertisedBytes = await awaitLoadWork(tipsHash(message.tips), signal);
           const advertisedHex = tipsHashToHex(advertisedBytes);
           if (!constantTimeHexEquals(servedHex, advertisedHex)) {
             console.warn(
@@ -4073,7 +4171,7 @@ export class PeerborneDocument<
 
           stripInlineChanges(message.changes);
           const preLoadWriterCount = (
-            await retryACLConflict(() => this._writers.users())
+            await retryLoadACLConflict(() => this._writers.users(), signal)
           ).length;
           if (preLoadWriterCount === 0 && message.snapshot) {
             console.warn(
@@ -4207,11 +4305,15 @@ export class PeerborneDocument<
                   // value without a second blockstore read or byte budget.
                   const block = await this._readBlock(cid, {
                     signal: prefetchSignal,
-                    maxBlockBytes: responseLimit,
-                    consumeBytes: consumePrefetchedBytes,
+                    maxBlockBytes: trackedBootstrapLoad
+                      ? responseLimit
+                      : undefined,
+                    consumeBytes: trackedBootstrapLoad
+                      ? consumePrefetchedBytes
+                      : undefined,
                   });
+                  throwIfLoadAborted(prefetchSignal);
                   prefetchedBlocks.set(cidStr, block);
-                  throwIfLoadAborted(signal);
                 } catch (error) {
                   if (signal?.aborted) throwIfLoadAborted(signal);
                   if (
@@ -5531,7 +5633,12 @@ export class PeerborneDocument<
       const raw = this._syncMessageSerializer.serializeSyncMessage(
         messageWithoutSignature,
       );
-      if ((await this._verifyWriterSignature(raw, signature!)) !== true) {
+      if (
+        (await awaitLoadWork(
+          this._verifyWriterSignature(raw, signature!),
+          changeFetchOptions.signal,
+        )) !== true
+      ) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
         );
@@ -5589,10 +5696,13 @@ export class PeerborneDocument<
       preparedKeychainMerge?.stateCommitment &&
       this._keychain.stateCommitment
     ) {
-      const [liveCommitment, preparedCommitment] = await Promise.all([
-        this._keychain.stateCommitment(),
-        preparedKeychainMerge.stateCommitment(),
-      ]);
+      const [liveCommitment, preparedCommitment] = await awaitLoadWork(
+        Promise.all([
+          this._keychain.stateCommitment(),
+          preparedKeychainMerge.stateCommitment(),
+        ]),
+        changeFetchOptions.signal,
+      );
       logicalKeychainStateChanged = !constantTimeEqual(
         liveCommitment,
         preparedCommitment,
@@ -5604,7 +5714,10 @@ export class PeerborneDocument<
       try {
         if (preparedKeychainMerge) {
           if (logicalKeychainStateChanged !== false) {
-            await preparedKeychainMerge.hydrateKeys();
+            await awaitLoadWork(
+              preparedKeychainMerge.hydrateKeys(),
+              changeFetchOptions.signal,
+            );
             assertStillActive();
             beginStateApplication();
           }
@@ -5635,6 +5748,7 @@ export class PeerborneDocument<
       await this._applyCollectedACL(
         changeTreePreflight.aclEntries,
         assertStillActive,
+        changeFetchOptions.signal,
       );
       assertStillActive();
     }
@@ -5667,8 +5781,9 @@ export class PeerborneDocument<
             const signPayload = this._buildSnapshotSignPayload(
               stateBytes, incoming.lastChangeNodeCID, incoming.timestamp, incoming.compactedCount,
             );
-            snapshotSignatureValid = await this._verifySnapshotSignature(
-              signPayload, incoming.signature,
+            snapshotSignatureValid = await awaitLoadWork(
+              this._verifySnapshotSignature(signPayload, incoming.signature),
+              changeFetchOptions.signal,
             );
           } catch {
             console.warn(
@@ -6929,16 +7044,22 @@ export class PeerborneDocument<
       this._authProvider,
       'Public invitations',
     );
-    const [issuer, recipient, readers, writers] = await Promise.all([
-      serializePublicKey(issuerPublicKey),
-      serializePublicKey(this._userPublicKey),
-      retryACLConflict(() => this._readers.users()),
-      retryACLConflict(() => this._writers.users()),
-    ]);
-    const [serializedReaders, serializedWriters] = await Promise.all([
-      Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
-      Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
-    ]);
+    const [issuer, recipient, readers, writers] = await awaitLoadWork(
+      Promise.all([
+        serializePublicKey(issuerPublicKey),
+        serializePublicKey(this._userPublicKey),
+        retryLoadACLConflict(() => this._readers.users(), signal),
+        retryLoadACLConflict(() => this._writers.users(), signal),
+      ]),
+      signal,
+    );
+    const [serializedReaders, serializedWriters] = await awaitLoadWork(
+      Promise.all([
+        Promise.all(readers.map((readerKey) => serializePublicKey(readerKey))),
+        Promise.all(writers.map((writerKey) => serializePublicKey(writerKey))),
+      ]),
+      signal,
+    );
     throwIfLoadAborted(signal);
     assertAcceptedInvitationMembershipTopology(
       {
