@@ -473,6 +473,27 @@ export function snapshotDeepEnumerableData<T>(
       );
     }
 
+    const forbiddenFields = options.forbiddenFields;
+    if (forbiddenFields !== undefined) {
+      for (let index = 0; index < forbiddenFields.length; index++) {
+        const forbiddenField = forbiddenFields[index]!;
+        let present: boolean;
+        try {
+          present = reflectApply(reflectHas, Reflect, [
+            objectCandidate,
+            forbiddenField,
+          ]) as boolean;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (present) {
+          throw new TypeError(
+            `${field} contains forbidden field '${forbiddenField}'`,
+          );
+        }
+      }
+    }
+
     // Brand-check through captured typed-array intrinsics. A Proxy around a
     // view fails these getters and an SAB-backed genuine view is rejected by
     // `copyUnsharedUint8Array` before allocation.
@@ -576,27 +597,6 @@ export function snapshotDeepEnumerableData<T>(
         pending.push(children[index]!);
       }
       continue;
-    }
-
-    const forbiddenFields = options.forbiddenFields;
-    if (forbiddenFields !== undefined) {
-      for (let index = 0; index < forbiddenFields.length; index++) {
-        const forbiddenField = forbiddenFields[index]!;
-        let present: boolean;
-        try {
-          present = reflectApply(reflectHas, Reflect, [
-            objectCandidate,
-            forbiddenField,
-          ]) as boolean;
-        } catch {
-          throw new TypeError(`${field} contains an unstable object`);
-        }
-        if (present) {
-          throw new TypeError(
-            `${field} contains forbidden field '${forbiddenField}'`,
-          );
-        }
-      }
     }
 
     let prototype: object | null;
