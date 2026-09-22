@@ -17,6 +17,8 @@ import type {
   GroupStateStoreSnapshot,
 } from './group-state-store.js';
 
+const textEncoder = new TextEncoder();
+
 const DOMAIN = asciiBytes('peerborne/group-security-store-snapshot/v2\0');
 const MAX_ENTRIES = 65_536;
 const MAX_PENDING_ENTRIES = 32;
@@ -241,7 +243,6 @@ function canonicalSnapshot(
     parts.push(u16(reference.byteLength), reference);
   }
   parts.push(u32(outbox.length));
-  const textEncoder = new TextEncoder();
   for (const entry of outbox) {
     const kind = textEncoder.encode(entry.kind);
     parts.push(
