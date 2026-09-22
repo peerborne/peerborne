@@ -219,6 +219,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _cloneCacheableListingIdentity(
     publicKey: PublicKey,
   ): PublicKey | undefined {
+    // Callable identities require the codec to reconstruct them on each read.
+    if (typeof publicKey === 'function') return undefined;
     let clone: PublicKey;
     try {
       clone = snapshotDeepEnumerableData(
