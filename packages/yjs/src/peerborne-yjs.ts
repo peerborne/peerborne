@@ -1481,6 +1481,9 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
       const finalizeCache = this._keyCache.prepareSetMany(stagedKeyCache);
       const claim = {
         finalize: () => {
+          // PreparedCommitClaim requires the caller to reserve this revision
+          // through finalization. A stale check here could throw after another
+          // provider has committed, breaking the shared atomic boundary.
           if (state === 'committed') return;
           finalizeCache();
           this._keychain = staged;
