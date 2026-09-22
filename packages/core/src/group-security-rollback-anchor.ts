@@ -717,6 +717,9 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 
 function toHex(value: Uint8Array): string {
   let result = '';
-  for (const byte of value) result += byte.toString(16).padStart(2, '0');
+  const length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
+  for (let index = 0; index < length; index++) {
+    result += value[index].toString(16).padStart(2, '0');
+  }
   return result;
 }

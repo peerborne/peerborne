@@ -53,7 +53,7 @@ import {
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -244,7 +244,7 @@ export {
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,

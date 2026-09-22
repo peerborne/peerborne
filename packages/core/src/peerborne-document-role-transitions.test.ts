@@ -1245,6 +1245,31 @@ describe('writer promotion preconditions', () => {
 });
 
 describe('reader registration retry', () => {
+  test.each([0, undefined])(
+    'rejects a remote identity bound to the local leaf with cached index %p',
+    async (cachedLeafIndex) => {
+      const recordedKemPublicKey = kemPublicKey();
+      const document = fakeDocument({
+        readers: ['target'],
+        liveLeafIndex: 0,
+        recordedKemPublicKey,
+        cachedLeafIndex,
+      });
+      document._beekem.myLeafIndex = 0;
+      const originalTree = document._beekem;
+      await expect(
+        document._prepareBeeKEMReaderRegistration(
+          'target',
+          new Uint8Array(recordedKemPublicKey),
+        ),
+      ).rejects.toThrow(/local BeeKEM leaf/);
+      expect(document._readerLeafIndices.get('target')).toBe(cachedLeafIndex);
+      expect(document._beekem).toBe(originalTree);
+      expect(document._testState.makeChange).not.toHaveBeenCalled();
+      expect(document._testState.prepareReaderAdd).not.toHaveBeenCalled();
+    },
+  );
+
   test('recovers a lost leaf-index cache from the retained KEM binding', async () => {
     const recordedKemPublicKey = kemPublicKey();
     const document = fakeDocument({

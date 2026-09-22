@@ -1,84 +1,41 @@
-import { describe, expect, test } from '@jest/globals';
-import { runInNewContext } from 'node:vm';
+import { describe,expect,test } from '@jest/globals';
 import {
-  AppliedGroupMembershipDelta,
-  CreateGroupCommitInput,
-  CreateGroupInput,
-  CreateKeyPackageInput,
-  EncryptedKeyPackageState,
-  EncryptedGroupState,
-  ExportGroupSecretInput,
-  GroupKeyPackage,
-  GroupSecurityApplyResult,
-  GroupSecurityCommit,
-  GroupSecurityCommitResult,
-  GroupSecurityCreateResult,
-  GroupSecurityProvider,
-  GroupSecurityPublicState,
-  GroupStateProtector,
-  GroupWelcome,
-  JoinGroupInput,
-} from './group-security-provider.js';
+AuthorizationPolicy,
+ContractTestProvider,
+FailOnceStore,
+TestContext,
+bootstrap,
+cloneContextWithProvider,
+config,
+context,
+control,
+createTransition,
+deltaFromCommitPayload,
+flushAndCollect,
+groupId,
+id,
+storeKey,
+toHex,
+transitionInput
+} from './__testutils__/group-security-coordinator.js';
 import {
-  GroupSecurityCoordinator,
-  GroupSecurityCoordinatorConfig,
-  GroupSecurityDelivery,
-  GroupSecurityJoinInvitation,
-  GroupSecurityOutboxCodec,
-  CreatePendingKeyPackageInput,
-  GROUP_SECURITY_OUTBOX_KIND,
-  canonicalGroupSecurityCommit,
-  canonicalGroupSecurityState,
+GroupSecurityCoordinator
 } from './group-security-coordinator.js';
 import {
-  DurableGroupStateStore,
-  GroupStateStoreKey,
-  GroupStateStoreSnapshot,
-  GroupStateStoreTransaction,
-  InMemoryGroupStateStore,
+CreateGroupCommitInput,
+CreateGroupInput,
+GroupSecurityCommitResult
+} from './group-security-provider.js';
+import {
+InMemoryGroupSecurityRollbackAnchor
+} from './group-security-rollback-anchor.js';
+import {
+InMemoryGroupStateStore
 } from './group-state-store.js';
 import {
-  DurableGroupSecurityRollbackAnchor,
-  GroupSecurityRollbackForkPoison,
-  GroupSecurityRollbackAnchorValue,
-  InMemoryGroupSecurityRollbackAnchor,
-} from './group-security-rollback-anchor.js';
-import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
-import { groupSecurityStoreSnapshotCommitment } from './group-security-store-commitment.js';
-import {
-  MembershipControlAuthorizationContext,
-  MembershipControlAuthorizer,
-  MembershipControlRecord,
-  MembershipControlSignatureVerifier,
-  MembershipControlSigner,
-  UnsignedMembershipControlRecord,
-  deserializeMembershipControlRecord,
-  membershipControlRecordId,
-  serializeMembershipControlRecord,
-  signMembershipControlRecord,
+MembershipControlRecord,
+serializeMembershipControlRecord
 } from './membership-control-record.js';
-import { WebCryptoGroupStateProtector } from './webcrypto-group-state-protector.js';
-import {
-  protocol,
-  groupId,
-  storeKey,
-  id,
-  publicState,
-  deltaFromCommitPayload,
-  ContractTestProvider,
-  AuthorizationPolicy,
-  FailOnceStore,
-  TestContext,
-  context,
-  config,
-  bootstrap,
-  control,
-  transitionInput,
-  createTransition,
-  flushAndCollect,
-  cloneContextWithProvider,
-  toHex,
-} from './__mocks__/group-security-coordinator.js';
 
 describe('GroupSecurityCoordinator transitions', () => {
   test('serializes concurrent transitions for one group', async () => {

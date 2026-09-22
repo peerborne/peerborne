@@ -1,3 +1,4 @@
+import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 /**
  * Document  is just for opening documents right now
  * @remarks
@@ -123,7 +124,7 @@ import {
 } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
   MAX_KEYCHAIN_EPOCHS,
   type Keychain,
 } from './keychain.js';
@@ -805,62 +806,6 @@ function finalizePreparedCommitClaim(
   }
 }
 
-/** @internal Validate and detach every caller-owned invitation byte field. */
-export function snapshotInvitationBootstrapBundle(
-  bundle: InvitationBootstrapBundle,
-  keyIDLength: number,
-  nonceLength: number,
-): Readonly<InvitationBootstrapBundle> {
-  assertPositiveSafeByteLimit(keyIDLength, 'Invitation key ID length');
-  assertPositiveSafeByteLimit(nonceLength, 'Invitation nonce length');
-  const candidate = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
-    bundle,
-    'Invitation bootstrap bundle',
-  );
-  const invalidFieldsMessage = 'Invitation bootstrap bundle must contain exactly its three byte fields';
-  const keys = reflectOwnKeys(candidate);
-  let recognizedKeys = 0;
-  for (const key of keys) {
-    if (
-      key !== 'welcomeEpochId' &&
-      key !== 'sealedWelcome' &&
-      key !== 'encryptedBootstrap'
-    ) {
-      throw new TypeError(
-        invalidFieldsMessage,
-      );
-    }
-    recognizedKeys += 1;
-  }
-  if (recognizedKeys !== 3) {
-    throw new TypeError(
-      invalidFieldsMessage,
-    );
-  }
-  const welcomeEpochId = copyUnsharedUint8Array(
-    candidate.welcomeEpochId,
-    keyIDLength,
-    keyIDLength,
-    'Invitation welcome epoch',
-  );
-  const sealedWelcome = copyUnsharedUint8Array(
-    candidate.sealedWelcome,
-    1,
-    MAX_INVITATION_MESSAGE_BYTES,
-    'Invitation sealed Welcome',
-  );
-  const encryptedBootstrap = copyUnsharedUint8Array(
-    candidate.encryptedBootstrap,
-    keyIDLength + nonceLength + 1,
-    MAX_INVITATION_MESSAGE_BYTES,
-    'Invitation encrypted bootstrap',
-  );
-  return Object.freeze({
-    welcomeEpochId,
-    sealedWelcome,
-    encryptedBootstrap,
-  });
-}
 
 interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
   readonly keychainChanges: ChangesType;
@@ -3863,7 +3808,7 @@ export class PeerborneDocument<
         // compatibility. The helper rejects when the provider omits it because
         // core cannot assume a freshly synthesized current-key delta is safe to
         // regenerate or replay.
-        return await keychainHistorySinceOrFull(this._keychain)(
+        return await keychainHistorySinceOrReject(this._keychain)(
           this._invitationEpoch,
         );
       case 'current_only':
@@ -6272,6 +6217,7 @@ export class PeerborneDocument<
     // single-peer fallback all happen in pure code.
     const timeoutMs = this.swarm.config?.loadQuorumTimeoutMs ?? 5000;
     const quorumResult = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers: quorumPeers,
       peerIdOf: (p) => this._peerIdOf(p),
       probeFn: (peer) =>
@@ -10247,6 +10193,9 @@ export class PeerborneDocument<
       const liveLeaf = await this._beekem.findLeafByPublicKey(
         new Uint8Array(readerKemPublicKey),
       );
+      if (liveLeaf === this._beekem.myLeafIndex) {
+        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+      }
       if (liveLeaf !== existingLeaf) {
         throw new Error(
           `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the cached reader ` +
@@ -10281,6 +10230,9 @@ export class PeerborneDocument<
           `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the existing reader ` +
             'KEM binding does not resolve to exactly one live BeeKEM leaf',
         );
+      }
+      if (recoveredLeaf === this._beekem.myLeafIndex) {
+        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
       }
       const committedReaderLeafIndices = new Map(this._readerLeafIndices);
       committedReaderLeafIndices.set(serializedReader, recoveredLeaf);

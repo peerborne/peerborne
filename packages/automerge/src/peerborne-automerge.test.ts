@@ -3977,13 +3977,15 @@ describe('bounded initial invitation profile', () => {
     const keychain = new AutomergeKeychain();
     await keychain.add();
     const keychainBytes = serializer.serializeChanges(keychain.history());
-    const withoutBeeKEMBytes = '{"k":"","bk":}'.length +
-      Math.ceil(keychainBytes.byteLength / 3) * 4;
+    const welcomePlaintext = encodeWelcomeSealedPayloadV2({
+      keychainChanges: keychainBytes,
+      beekemWelcome: welcome,
+    });
+    const encodedTree = JSON.parse(new TextDecoder().decode(welcomePlaintext)).bk;
+    const withoutBeeKEMBytes = welcomePlaintext.byteLength -
+      new TextEncoder().encode(JSON.stringify(encodedTree)).byteLength;
     const sealedWelcome = await eciesSeal(
-      encodeWelcomeSealedPayloadV2({
-        keychainChanges: keychainBytes,
-        beekemWelcome: welcome,
-      }),
+      welcomePlaintext,
       recipientKemPair.publicKey,
     );
 

@@ -167,6 +167,18 @@ describe('path-update-wire', () => {
 });
 
 describe('path-update-wire V2 outbound boundary', () => {
+  test.each([new Uint8Array(), new Uint8Array([1])])(
+    'rejects the obsolete per-node ciphertext field even when populated',
+    (obsoleteCiphertext) => {
+      const update = validPathUpdateV2();
+      const wire = serializePathUpdateV2ForWire(update);
+      Object.assign(update.nodes[0], { encryptedPrivateKey: obsoleteCiphertext });
+      Object.assign(wire.nodes[0], { encryptedPrivateKey: '' });
+      expect(() => serializePathUpdateV2ForWire(update)).toThrow(/field|propert/i);
+      expect(() => deserializePathUpdateV2FromWire(wire)).toThrow(/field|propert/i);
+    },
+  );
+
   test('round-trips a strictly validated runtime value', () => {
     const update = validPathUpdateV2();
     const wire = serializePathUpdateV2ForWire(update);

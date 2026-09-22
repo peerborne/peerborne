@@ -1,75 +1,23 @@
-import { describe, expect, test } from '@jest/globals';
-import { runInNewContext } from 'node:vm';
+import { describe,expect,test } from '@jest/globals';
 import {
-  AppliedGroupMembershipDelta,
-  CreateGroupCommitInput,
-  CreateGroupInput,
-  CreateKeyPackageInput,
-  EncryptedKeyPackageState,
-  EncryptedGroupState,
-  ExportGroupSecretInput,
-  GroupKeyPackage,
-  GroupSecurityApplyResult,
-  GroupSecurityCommit,
-  GroupSecurityCommitResult,
-  GroupSecurityCreateResult,
-  GroupSecurityProvider,
-  GroupSecurityPublicState,
-  GroupStateProtector,
-  GroupWelcome,
-  JoinGroupInput,
-} from './group-security-provider.js';
+bootstrap,
+cloneContextWithProvider,
+config,
+context,
+control,
+createTransition,
+flushAndCollect,
+mutateOnlyOutbox,
+storeKey
+} from './__testutils__/group-security-coordinator.js';
 import {
-  GroupSecurityCoordinator,
-  GroupSecurityCoordinatorConfig,
-  GroupSecurityDelivery,
-  GroupSecurityJoinInvitation,
-  GroupSecurityOutboxCodec,
-  CreatePendingKeyPackageInput,
-  GROUP_SECURITY_OUTBOX_KIND,
-  canonicalGroupSecurityCommit,
-  canonicalGroupSecurityState,
+GroupSecurityCoordinator,
+GroupSecurityDelivery
 } from './group-security-coordinator.js';
-import {
-  DurableGroupStateStore,
-  GroupStateStoreKey,
-  GroupStateStoreSnapshot,
-  GroupStateStoreTransaction,
-  InMemoryGroupStateStore,
-} from './group-state-store.js';
-import {
-  DurableGroupSecurityRollbackAnchor,
-  GroupSecurityRollbackForkPoison,
-  GroupSecurityRollbackAnchorValue,
-  InMemoryGroupSecurityRollbackAnchor,
-} from './group-security-rollback-anchor.js';
 import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
-import { groupSecurityStoreSnapshotCommitment } from './group-security-store-commitment.js';
 import {
-  MembershipControlAuthorizationContext,
-  MembershipControlAuthorizer,
-  MembershipControlRecord,
-  MembershipControlSignatureVerifier,
-  MembershipControlSigner,
-  UnsignedMembershipControlRecord,
-  deserializeMembershipControlRecord,
-  membershipControlRecordId,
-  serializeMembershipControlRecord,
-  signMembershipControlRecord,
-} from './membership-control-record.js';
-import { WebCryptoGroupStateProtector } from './webcrypto-group-state-protector.js';
-import {
-  storeKey,
-  publicState,
-  context,
-  config,
-  bootstrap,
-  control,
-  createTransition,
-  flushAndCollect,
-  cloneContextWithProvider,
-  mutateOnlyOutbox,
-} from './__mocks__/group-security-coordinator.js';
+GroupWelcome
+} from './group-security-provider.js';
 
 describe('GroupSecurityCoordinator outbox', () => {
   test('times out a stalled outbox delivery without blocking later operations', async () => {

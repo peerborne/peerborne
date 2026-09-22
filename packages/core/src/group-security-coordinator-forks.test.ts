@@ -1,85 +1,38 @@
-import { describe, expect, test } from '@jest/globals';
-import { runInNewContext } from 'node:vm';
+import { describe,expect,test } from '@jest/globals';
 import {
-  AppliedGroupMembershipDelta,
-  CreateGroupCommitInput,
-  CreateGroupInput,
-  CreateKeyPackageInput,
-  EncryptedKeyPackageState,
-  EncryptedGroupState,
-  ExportGroupSecretInput,
-  GroupKeyPackage,
-  GroupSecurityApplyResult,
-  GroupSecurityCommit,
-  GroupSecurityCommitResult,
-  GroupSecurityCreateResult,
-  GroupSecurityProvider,
-  GroupSecurityPublicState,
-  GroupStateProtector,
-  GroupWelcome,
-  JoinGroupInput,
-} from './group-security-provider.js';
+AdversarialStore,
+AuthorizationPolicy,
+ContractTestProvider,
+ControlledRollbackAnchor,
+FailOnceStore,
+ReconciliationLoadFailureStore,
+TestContext,
+bootstrap,
+cloneContextWithProvider,
+config,
+context,
+control,
+createGroupInput,
+createTransition,
+flushAndCollect,
+id,
+publicState,
+storeKey
+} from './__testutils__/group-security-coordinator.js';
 import {
-  GroupSecurityCoordinator,
-  GroupSecurityCoordinatorConfig,
-  GroupSecurityDelivery,
-  GroupSecurityJoinInvitation,
-  GroupSecurityOutboxCodec,
-  CreatePendingKeyPackageInput,
-  GROUP_SECURITY_OUTBOX_KIND,
-  canonicalGroupSecurityCommit,
-  canonicalGroupSecurityState,
+GroupSecurityCoordinator,
+canonicalGroupSecurityState
 } from './group-security-coordinator.js';
 import {
-  DurableGroupStateStore,
-  GroupStateStoreKey,
-  GroupStateStoreSnapshot,
-  GroupStateStoreTransaction,
-  InMemoryGroupStateStore,
-} from './group-state-store.js';
-import {
-  DurableGroupSecurityRollbackAnchor,
-  GroupSecurityRollbackForkPoison,
-  GroupSecurityRollbackAnchorValue,
-  InMemoryGroupSecurityRollbackAnchor,
+InMemoryGroupSecurityRollbackAnchor
 } from './group-security-rollback-anchor.js';
-import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import { groupSecurityStoreSnapshotCommitment } from './group-security-store-commitment.js';
 import {
-  MembershipControlAuthorizationContext,
-  MembershipControlAuthorizer,
-  MembershipControlRecord,
-  MembershipControlSignatureVerifier,
-  MembershipControlSigner,
-  UnsignedMembershipControlRecord,
-  deserializeMembershipControlRecord,
-  membershipControlRecordId,
-  serializeMembershipControlRecord,
-  signMembershipControlRecord,
-} from './membership-control-record.js';
-import { WebCryptoGroupStateProtector } from './webcrypto-group-state-protector.js';
+InMemoryGroupStateStore
+} from './group-state-store.js';
 import {
-  protocol,
-  groupId,
-  storeKey,
-  createGroupInput,
-  id,
-  publicState,
-  ContractTestProvider,
-  AuthorizationPolicy,
-  FailOnceStore,
-  AdversarialStore,
-  ReconciliationLoadFailureStore,
-  ControlledRollbackAnchor,
-  TestContext,
-  context,
-  config,
-  bootstrap,
-  control,
-  createTransition,
-  flushAndCollect,
-  cloneContextWithProvider,
-} from './__mocks__/group-security-coordinator.js';
+signMembershipControlRecord
+} from './membership-control-record.js';
 
 describe('GroupSecurityCoordinator forks', () => {
   test('durably fails closed when partitioned coordinators rejoin with same-parent siblings', async () => {

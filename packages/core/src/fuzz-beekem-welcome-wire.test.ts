@@ -1,7 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire } from './beekem-welcome-wire.js';
-import { welcomeFixture } from './__mocks__/beekem-v2.js';
+import { welcomeFixture } from './__testutils__/beekem-v2.js';
 
 describe('beekem-welcome-wire current-format fuzz', () => {
   test('rejects arbitrary malformed records with a bounded validation error', () => {

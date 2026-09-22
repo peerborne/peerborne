@@ -26,8 +26,7 @@ const WIRE_KEYS = [
   'treeHash',
   'confirmedTranscriptHash',
 ] as const;
-const WIRE_KEYS_DESCRIPTION =
-  'version, controlHead, groupId, epoch, treeHash, confirmedTranscriptHash';
+const WIRE_KEYS_DESCRIPTION = WIRE_KEYS.join(', ');
 const reflectOwnKeys = Reflect.ownKeys;
 
 function canonicalBase64(name: string, value: unknown): Uint8Array {

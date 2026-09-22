@@ -17,6 +17,7 @@ export class LRUCache<K, V> {
   get(key: K): V | undefined {
     const finalized = this._finalizedEntries;
     if (finalized !== undefined && finalized.has(key)) {
+      // The overlay is newer than backing entries; refresh recency within it.
       const value = finalized.get(key)!;
       finalized.delete(key);
       finalized.set(key, value);
@@ -47,6 +48,7 @@ export class LRUCache<K, V> {
    * entries into the backing Map afterward. The finalizer
    * is idempotent and performs no Map work. Callers must not finalize
    * competing prepared insertions.
+   * @internal Used within an externally reserved commit boundary.
    */
   prepareSet(key: K, value: V): () => void {
     return this.prepareSetMany(new Map([[key, value]]));
@@ -57,7 +59,10 @@ export class LRUCache<K, V> {
    * to build the overlay happens before this method returns; the returned
    * finalizer only exposes the prebuilt overlay. Cache activity before
    * finalization is retained when the overlay is later materialized. Callers
-   * must not finalize competing prepared insertions.
+   * must reserve the cache from claim through finalization and must not compose
+   * competing prepared insertions. Finalization cannot check or throw after
+   * another provider may already have committed; validate before obtaining it.
+   * @internal Used within an externally reserved commit boundary.
    */
   prepareSetMany(entries: ReadonlyMap<K, V>): () => void {
     this._materializeFinalizedEntries();

@@ -1,9 +1,9 @@
+import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
 import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
-  snapshotInvitationBootstrapBundle,
 } from './peerborne-document.js';
 import { ACLOperationInProgressError } from './acl.js';
 import {
