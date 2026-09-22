@@ -14,6 +14,7 @@ describe('JSON sync security fields', () => {
       ['sign', 'verify'],
     );
     const unsigned = {
+      signatureContext: 'beekem-welcome-v1' as const,
       welcomeEpochId: new Uint8Array(32).fill(1),
       documentId: '/welcome',
       welcomeRecipient: 'recipient',
