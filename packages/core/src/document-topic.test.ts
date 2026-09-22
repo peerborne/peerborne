@@ -2,7 +2,6 @@ import { describe, expect, test } from '@jest/globals';
 import {
   copyDocumentPubsubConfig,
   documentTopic,
-  DEFAULT_DOCUMENT_PUBLISH_PATH,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
 } from './document-topic.js';
 
@@ -15,20 +14,13 @@ describe('documentTopic', () => {
     expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/peerborne/document/v3/');
   });
 
-  test('publish notifications use a separate v3 topic by default', () => {
-    expect(DEFAULT_DOCUMENT_PUBLISH_PATH).toBe('/peerborne/documents/v3');
-    expect(DEFAULT_DOCUMENT_PUBLISH_PATH).not.toBe('/documents');
-  });
-
-  test('copies explicit legacy topics without replacing them with defaults', () => {
+  test('copies explicit custom topics without replacing them with defaults', () => {
     expect(
       copyDocumentPubsubConfig({
-        pubsubDocumentPrefix: '/document/',
-        pubsubDocumentPublishPath: '/documents',
+        pubsubDocumentPrefix: '/custom/',
       }),
     ).toEqual({
-      pubsubDocumentPrefix: '/document/',
-      pubsubDocumentPublishPath: '/documents',
+      pubsubDocumentPrefix: '/custom/',
     });
   });
 
@@ -36,9 +28,9 @@ describe('documentTopic', () => {
     expect(documentTopic('/my-doc')).toBe('/peerborne/document/v3/my-doc');
   });
 
-  test('keeps an explicitly configured legacy prefix isolated from v3', () => {
-    expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
-    expect(documentTopic('my-doc', '/document/')).not.toBe(
+  test('keeps an explicitly configured custom namespace isolated', () => {
+    expect(documentTopic('my-doc', '/custom/')).toBe('/custom/my-doc');
+    expect(documentTopic('my-doc', '/custom/')).not.toBe(
       documentTopic('my-doc'),
     );
   });

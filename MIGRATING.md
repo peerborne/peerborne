@@ -76,16 +76,11 @@ CRDT state, and keychain entries are unchanged.
 
 ## Document GossipSub v3 namespaces
 
-The current document GossipSub prefix is `/peerborne/document/v3/`; the
-publish-notification topic is `/peerborne/documents/v3`. Peerborne has no
-existing users requiring old-topic compatibility. Relays allow these current
-defaults and reject the earlier `/document/` and `/documents` defaults.
-
-Every peer must use the same runtime and topic configuration. To use a custom
-document prefix, add its slash-terminated namespace to every relay's
-`TOPIC_ALLOWLIST`; a custom notification topic must match
-`DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or an exact allowlist entry. An empty
-prefix requires allowing each concrete document topic or explicitly selecting
+The current document GossipSub prefix is `/peerborne/document/v3/`.
+Relays admit this namespace by default. Every peer must use the same runtime
+and topic configuration. To use a custom document prefix, add its
+slash-terminated namespace to every relay's `TOPIC_ALLOWLIST`. An empty prefix
+requires allowing each concrete document topic or explicitly selecting
 unrestricted `*` mode. Custom topics do not negotiate alternate wire formats.
 
 Topic names are public routing labels, not authentication or an authorization

@@ -1,12 +1,8 @@
 /** Default topic prefix for version-isolated document pubsub messages. */
 export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
-/** Default topic for version-bound document publish notifications. */
-export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/peerborne/documents/v3';
-
 export interface DocumentPubsubConfig {
   readonly pubsubDocumentPrefix: string;
-  readonly pubsubDocumentPublishPath: string;
 }
 
 /** Return a detached document-topic configuration without replacing overrides. */
@@ -15,7 +11,6 @@ export function copyDocumentPubsubConfig(
 ): DocumentPubsubConfig {
   return {
     pubsubDocumentPrefix: config.pubsubDocumentPrefix,
-    pubsubDocumentPublishPath: config.pubsubDocumentPublishPath,
   };
 }
 
@@ -23,7 +18,6 @@ export function copyDocumentPubsubConfig(
 export function defaultDocumentPubsubConfig(): DocumentPubsubConfig {
   return copyDocumentPubsubConfig({
     pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
-    pubsubDocumentPublishPath: DEFAULT_DOCUMENT_PUBLISH_PATH,
   });
 }
 
@@ -32,12 +26,10 @@ export function defaultDocumentPubsubConfig(): DocumentPubsubConfig {
  * the configured topic prefix. This separates document pubsub traffic
  * from other topics on the same network.
  *
- * The default prefix is `'/peerborne/document/v3/'`, which keeps
- * default-configured peers using older document envelopes on a different
- * topic. Topic names are routing labels, not authenticated version
- * negotiation. A custom prefix is a protocol compatibility boundary: every
- * peer sharing it must be upgraded together. Pass an empty string to disable
- * prefixing (the topic will be the bare document path).
+ * The default prefix is `'/peerborne/document/v3/'`. Topic names are routing
+ * labels, not authenticated version negotiation. Every peer on a custom
+ * namespace must use the current protocol. Pass an empty string to use the
+ * bare document path.
  *
  * @param documentPath - The path identifying the document.
  * @param topicPrefix - Prefix to prepend (defaults to
