@@ -1,13 +1,14 @@
+import { welcomeFixture } from './__mocks__/beekem-v2.js';
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { encodeWelcomeSealedPayload, decodeWelcomeSealedPayload } from './welcome-sealed-payload';
+import { encodeWelcomeSealedPayloadV2, decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload';
 
 describe('welcome-sealed-payload fuzz', () => {
   test('decode never throws unexpectedly on random bytes', () => {
     fc.assert(
       fc.property(fc.uint8Array(), (bytes) => {
         try {
-          decodeWelcomeSealedPayload(bytes);
+          decodeWelcomeSealedPayloadV2(bytes);
         } catch (err) {
           if (err instanceof Error) {
             expect(err.message).toMatch(
@@ -24,33 +25,16 @@ describe('welcome-sealed-payload fuzz', () => {
     fc.assert(
       fc.property(
         fc.uint8Array({ minLength: 1, maxLength: 256 }),
-        fc.option(fc.uint8Array({ minLength: 32, maxLength: 32 }), {
-          nil: null,
-        }),
-        (keychainBytes, beekemWelcomeHint) => {
+        fc.integer({ min: 1, max: 0xffffffff }),
+        (keychainBytes, generation) => {
           const payload = {
             keychainChanges: keychainBytes,
-            beekemWelcome: beekemWelcomeHint === null ? null : {
-              leafIndex: 2,
-              pathKeys: [
-                {
-                  nodeIndex: 1,
-                  publicKey: new Uint8Array(65).fill(1),
-                  encryptedPrivateKey: new Uint8Array(125).fill(2),
-                },
-              ],
-              treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
-              treeHash: beekemWelcomeHint,
-            },
+            beekemWelcome: welcomeFixture(generation),
           };
-          const encoded = encodeWelcomeSealedPayload(payload);
-          const decoded = decodeWelcomeSealedPayload(encoded);
+          const encoded = encodeWelcomeSealedPayloadV2(payload);
+          const decoded = decodeWelcomeSealedPayloadV2(encoded);
           expect(decoded.keychainChanges).toEqual(keychainBytes);
-          if (beekemWelcomeHint === null) {
-            expect(decoded.beekemWelcome).toBeNull();
-          } else {
-            expect(decoded.beekemWelcome).not.toBeNull();
-          }
+          expect(decoded.beekemWelcome).toEqual(payload.beekemWelcome);
         },
       ),
       { numRuns: 500 },
@@ -66,7 +50,7 @@ describe('welcome-sealed-payload fuzz', () => {
       new Uint8Array(1024).fill(0xff),
     ];
     for (const bytes of boundaries) {
-      try { decodeWelcomeSealedPayload(bytes); } catch {}
+      try { decodeWelcomeSealedPayloadV2(bytes); } catch {}
     }
   });
 });

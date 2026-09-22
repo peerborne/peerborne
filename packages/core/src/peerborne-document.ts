@@ -91,22 +91,23 @@ import {
   ECIES_P256_PUBLIC_KEY_LENGTH,
 } from './ecies.js';
 import {
-  beekemPathUpdateV1,
-  beekemWelcomeV1,
+  beekemPathUpdateV2,
+  beekemWelcomeV2,
   documentLoadV3,
   snapshotLoadV3,
   tipAdvertiseV1,
 } from './wire-protocols.js';
 import { BeeKEM } from './beekem/beekem.js';
-import { BeeKEMWelcome, PathUpdate } from './beekem/types.js';
+import { BeeKEMWelcomeV2, PathUpdateV2 } from './beekem/types.js';
 import {
-  deserializePathUpdateFromWire,
-  serializePathUpdateForWire,
+  deserializePathUpdateV2FromWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 import {
   assertWelcomeSealedPlaintextSize,
-  decodeWelcomeSealedPayload,
-  encodeWelcomeSealedPayload,
+  decodeWelcomeSealedPayloadV2,
+  encodeWelcomeSealedPayloadV2,
+  welcomeKeychainEnvelopeBytes,
 } from './welcome-sealed-payload.js';
 import {
   deriveDocumentKeyFromRootSecret,
@@ -651,12 +652,15 @@ interface CapturedPreparedWriterChange<ChangesType> {
 }
 
 interface PreparedBeeKEMReaderRegistration {
-  readonly welcome: BeeKEMWelcome | null;
+  readonly welcome: BeeKEMWelcomeV2;
   readonly install?: () => void;
 }
 
-function copyBeeKEMWelcome(welcome: BeeKEMWelcome): BeeKEMWelcome {
-  const copy: BeeKEMWelcome = {
+function copyBeeKEMWelcome(welcome: BeeKEMWelcomeV2): BeeKEMWelcomeV2 {
+  const copy: BeeKEMWelcomeV2 = {
+    version: 2,
+    generation: welcome.generation,
+    numLeaves: welcome.numLeaves,
     leafIndex: welcome.leafIndex,
     pathKeys: welcome.pathKeys.map((node) => ({
       nodeIndex: node.nodeIndex,
@@ -670,15 +674,6 @@ function copyBeeKEMWelcome(welcome: BeeKEMWelcome): BeeKEMWelcome {
     })),
     treeHash: new Uint8Array(welcome.treeHash),
   };
-  if (Object.prototype.hasOwnProperty.call(welcome, 'generation')) {
-    copy.generation = welcome.generation;
-  }
-  if (Object.prototype.hasOwnProperty.call(welcome, 'numLeaves')) {
-    copy.numLeaves = welcome.numLeaves;
-  }
-  if (Object.prototype.hasOwnProperty.call(welcome, 'version')) {
-    copy.version = welcome.version;
-  }
   return copy;
 }
 
@@ -1193,7 +1188,7 @@ export class PeerborneDocument<
   // BeeKEM ratchet-tree state for cryptographic reader revocation.
   //
   // `removeReader` blanks the removed reader's BeeKEM leaf, re-keys the
-  // path, and broadcasts a `PathUpdate` over `beekemPathUpdateV1`.
+  // path, and broadcasts a `PathUpdateV2` over `beekemPathUpdateV2`.
   // Surviving readers feed the update into `processPathUpdate` and
   // re-derive the document encryption key from the fresh root secret
   // (see `derive-doc-key.ts`). The removed reader's leaf is blanked,
@@ -1214,11 +1209,11 @@ export class PeerborneDocument<
   //     fresh `BeeKEM` instance, populating their leaf and the path
   //     keys from the inviter's tree state.
   //
-  // The PathUpdate receive handler MUST NOT initialize a fresh founder
+  // The PathUpdateV2 receive handler MUST NOT initialize a fresh founder
   // tree on a peer that has not gone through either path: a
   // freshly-initialized tree would produce a different root secret
   // than the writer's, and the epoch-ID mismatch gate would drop the
-  // PathUpdate anyway. Surface that as a clean drop-with-warning; recovery
+  // PathUpdateV2 anyway. Surface that as a clean drop-with-warning; recovery
   // requires a valid Welcome or another explicit key-recovery path.
   private _beekem: BeeKEM | null = null;
   // Local membership changes, ACL-bearing remote sync, and invitation
@@ -1257,7 +1252,7 @@ export class PeerborneDocument<
   // surfaces the gap with a clear error.
   private _readerKemPublicKeys = new Map<string, Uint8Array>();
 
-  // BeeKEM leaf node index -> the `BeeKEMWelcome` produced when that
+  // BeeKEM leaf node index -> the `BeeKEMWelcomeV2` produced when that
   // leaf was first registered via `_prepareBeeKEMReaderRegistration`. Used by
   // `addReader` to re-emit a Welcome when a previous invitation was
   // dropped: re-invoking `addReader(reader, kemPub)` for an existing
@@ -1273,7 +1268,7 @@ export class PeerborneDocument<
   // in `_prepareBeeKEMReaderRegistration`. Recipients in that state need a new
   // recipient-bound Welcome or another explicit recovery path; a normal load
   // response cannot bootstrap a peer that lacks the current document key.
-  private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcome>();
+  private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcomeV2>();
 
   /**
    * Set the history visibility for this document.
@@ -8194,7 +8189,7 @@ export class PeerborneDocument<
    * for the document's `historyVisibility` setting (so they can decrypt at
    * least the current state), and (b) the invitation epoch ID they should
    * record for subsequent `since_invited` history filtering. The Welcome
-   * is delivered via the `beekemWelcomeV1` protocol to every
+   * is delivered via the `beekemWelcomeV2` protocol to every
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
@@ -8230,7 +8225,7 @@ export class PeerborneDocument<
   public async addReader(
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
-  ): Promise<BeeKEMWelcome | null> {
+  ): Promise<BeeKEMWelcomeV2 | null> {
     this._assertNoIncompleteBootstrapLoad();
     const stableReaderKemPublicKey =
       readerKemPublicKey === undefined
@@ -8259,7 +8254,7 @@ export class PeerborneDocument<
     readerKemPublicKey?: Uint8Array,
     broadcastWelcome = true,
     beginMutation?: () => void,
-  ): Promise<BeeKEMWelcome | null> {
+  ): Promise<BeeKEMWelcomeV2 | null> {
     await this._ensureCurrentUserCanWrite();
 
     if (this._beekemInitialized !== (this._beekem !== null)) {
@@ -8352,7 +8347,7 @@ export class PeerborneDocument<
       throw new Error(
         `[${this.documentPath}] addReader: the initial release supports ` +
           `one active collaborator per document (founder plus one reader). ` +
-          `Adding another reader would require an add-side BeeKEM PathUpdate ` +
+          `Adding another reader would require an add-side BeeKEM PathUpdateV2 ` +
           `that is not implemented yet.`,
       );
     }
@@ -8374,7 +8369,7 @@ export class PeerborneDocument<
     // key once the keychain has more than one epoch; discovering that only
     // while sending the Welcome would leave an authorized reader without key
     // material. Invitation bootstrap performs its own complete capacity
-    // preflight and suppresses this legacy fan-out.
+    // preflight and supplies the Welcome in its signed response.
     let preparedWelcomeKeychain: Uint8Array | undefined;
     if (broadcastWelcome && validatedReaderKemPublicKey) {
       const keychainChanges = await this._keychainChangesForWelcome();
@@ -8385,12 +8380,11 @@ export class PeerborneDocument<
         'BeeKEM Welcome keychain preflight',
       );
       preparedWelcomeKeychain = new Uint8Array(serializedKeychain);
-      const envelopeWithoutBeeKEM = encodeWelcomeSealedPayload({
-        keychainChanges: preparedWelcomeKeychain,
-        beekemWelcome: null,
-      });
+      const envelopeWithoutBeeKEM = welcomeKeychainEnvelopeBytes(
+        preparedWelcomeKeychain.byteLength,
+      );
       assertProjectedInitialInvitationWelcomeCapacity(
-        envelopeWithoutBeeKEM.byteLength,
+        envelopeWithoutBeeKEM,
         this.documentPath,
       );
     }
@@ -8481,15 +8475,15 @@ export class PeerborneDocument<
     }
 
     // The signed invitation acceptance carries this same recipient-bound
-    // Welcome directly. Skip the legacy fan-out in that path: awaiting every
+    // Welcome directly. Skip fan-out in that path: awaiting every
     // connected peer would let an unrelated non-draining stream stall the
     // membership lock and the invitation response.
     if (!broadcastWelcome) {
       return beekemWelcomeForJoiner;
     }
 
-    if (!preparedWelcomeKeychain) {
-      throw new Error('BeeKEM Welcome keychain preflight was not completed');
+    if (!preparedWelcomeKeychain || !beekemWelcomeForJoiner) {
+      throw new Error('BeeKEM Welcome preflight was not completed');
     }
 
     // Send a BeeKEM Welcome with the visibility-filtered epoch keys + BeeKEM
@@ -8642,7 +8636,7 @@ export class PeerborneDocument<
 
     const [welcomeEpochId, documentKey] = await this._keychain.current();
     const keychainChanges = capacityPlan.keychainChanges;
-    const sealedPayload = encodeWelcomeSealedPayload({
+    const sealedPayload = encodeWelcomeSealedPayloadV2({
       keychainChanges:
         this._changesSerializer.serializeChanges(keychainChanges),
       beekemWelcome,
@@ -8815,20 +8809,18 @@ export class PeerborneDocument<
       this.documentPath,
     );
 
-    const welcomeWithoutBeeKEM = encodeWelcomeSealedPayload({
-      keychainChanges:
-        this._changesSerializer.serializeChanges(keychainChanges),
-      beekemWelcome: null,
-    });
+    const welcomeWithoutBeeKEM = welcomeKeychainEnvelopeBytes(
+      this._changesSerializer.serializeChanges(keychainChanges).byteLength,
+    );
     assertProjectedInitialInvitationWelcomeCapacity(
-      welcomeWithoutBeeKEM.byteLength,
+      welcomeWithoutBeeKEM,
       this.documentPath,
     );
     return {
       keychainChanges,
       snapshot,
       serializedBootstrapBaselineBytes: projection.serializedBaselineBytes,
-      welcomeWithoutBeeKEMBytes: welcomeWithoutBeeKEM.byteLength,
+      welcomeWithoutBeeKEMBytes: welcomeWithoutBeeKEM,
     };
   }
 
@@ -9026,7 +9018,7 @@ export class PeerborneDocument<
 
     let welcomeEnvelope;
     try {
-      welcomeEnvelope = decodeWelcomeSealedPayload(
+      welcomeEnvelope = decodeWelcomeSealedPayloadV2(
         await eciesOpen(
           invitationBundle.sealedWelcome,
           kemKeyPair.privateKey,
@@ -9346,7 +9338,7 @@ export class PeerborneDocument<
   private async _sendBeeKEMWelcome(
     reader: PublicKey,
     readerKemPublicKey: Uint8Array,
-    beekemWelcome: BeeKEMWelcome | null,
+    beekemWelcome: BeeKEMWelcomeV2,
     keychainPlaintextBytes: Uint8Array,
   ): Promise<void> {
     // Validate the recipient KEM public key length up front so a
@@ -9404,20 +9396,7 @@ export class PeerborneDocument<
     // latter would, in `since_invited` mode, leak the inviter's
     // post-invite slice (or, for founders, the full history) to a
     // reader whose invitation epoch starts at this moment.
-    // Build the structured sealed-payload envelope. The plaintext
-    // inside `eciesSealed` is now a JSON envelope carrying both the
-    // keychain delta and (when available) the BeeKEM `Welcome` the
-    // joiner needs to bootstrap their local ratchet state. The
-    // wire-level field on `CRDTSyncMessage` is still a single
-    // `Uint8Array`; only its decoded shape grows. See
-    // `welcome-sealed-payload.ts` for the envelope format.
-    //
-    // `beekemWelcome` is `null` here only on a re-emit path where
-    // `addReader` was invoked without the KEM key on a previous
-    // call -- the recipient will still recover the document key but
-    // cannot apply future PathUpdates without an out-of-band BeeKEM
-    // bootstrap.
-    const sealedPayloadBytes = encodeWelcomeSealedPayload({
+    const sealedPayloadBytes = encodeWelcomeSealedPayloadV2({
       keychainChanges: keychainPlaintextBytes,
       beekemWelcome,
     });
@@ -9451,9 +9430,9 @@ export class PeerborneDocument<
     const serialized =
       this._syncMessageSerializer.serializeSyncMessage(welcomeMessage);
 
-    // Build the V1 path-prefixed payload that the shared handler routes.
+    // Build the path-prefixed payload that the shared handler routes.
     const payload = this._buildPathPrefixedFrame(
-      'BeeKEM Welcome v1',
+      'BeeKEM Welcome V2',
       serialized,
     );
 
@@ -9469,7 +9448,7 @@ export class PeerborneDocument<
     for (const peer of peers) {
       try {
         const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemWelcomeV1], {
+          await this.libp2p.dialProtocol(peer, [beekemWelcomeV2], {
             runOnLimitedConnection: true,
           }),
         );
@@ -9707,32 +9686,20 @@ export class PeerborneDocument<
     }
 
     let keychainPlaintext: ChangesType;
-    let bootstrapWelcome: BeeKEMWelcome | null = null;
+    let bootstrapWelcome: BeeKEMWelcomeV2;
     try {
       const sealed = message.eciesSealed as Uint8Array;
       const plaintextBytes = await eciesOpen(
         sealed,
         this._kemKeyPair.privateKey,
       );
-      // The plaintext is now a structured envelope carrying the
-      // keychain delta AND (optionally) a BeeKEM `Welcome` so the
-      // joiner can bootstrap their local ratchet state. The
-      // wire-level field remains a single `Uint8Array`; only the
-      // decoded shape grows. See `welcome-sealed-payload.ts`.
-      const envelope = decodeWelcomeSealedPayload(plaintextBytes);
+      const envelope = decodeWelcomeSealedPayloadV2(plaintextBytes);
       keychainPlaintext = this._changesSerializer.deserializeChanges(
         envelope.keychainChanges,
       );
       bootstrapWelcome = envelope.beekemWelcome;
+      if (!bootstrapWelcome) throw new Error('Welcome tree is required');
     } catch {
-      // ECIES open failure typically means: the sealed payload is
-      // tampered (AES-GCM tag check fails), or the writer encrypted
-      // under a different ECDH public key than the one we hold (so
-      // ECDH produces a different shared secret and the HKDF-derived
-      // AES key cannot decrypt). Decode failure means the inviter
-      // emitted a malformed envelope (e.g. a legacy unstructured
-      // plaintext from a non-upgraded peer). Both are
-      // security-relevant; log and drop.
       console.warn('Failed to open sealed BeeKEM Welcome payload');
       return 'terminal';
     }
@@ -9814,28 +9781,21 @@ export class PeerborneDocument<
       return 'retry';
     }
 
-    // A non-null Welcome must yield a complete detached ratchet tree. Installing
-    // its keychain without that tree would make the next PathUpdate unrecoverable.
-    let stagedBeeKEM: BeeKEM | undefined;
-    if (bootstrapWelcome !== null) {
-      try {
-        const beekem = new BeeKEM();
-        await beekem.processWelcome(
-          bootstrapWelcome,
-          this._kemKeyPair.privateKey,
-          this._kemKeyPair.publicKey,
-        );
-        stagedBeeKEM = beekem;
-      } catch {
-        console.warn('Dropping BeeKEM Welcome with invalid bootstrap state');
+    let stagedBeeKEM: BeeKEM;
+    try {
+      stagedBeeKEM = new BeeKEM();
+      await stagedBeeKEM.processWelcome(
+        bootstrapWelcome,
+        this._kemKeyPair.privateKey,
+        this._kemKeyPair.publicKey,
+      );
+      const currentGeneration = this._beekem?.generation;
+      if (currentGeneration != null && bootstrapWelcome.generation <= currentGeneration) {
+        console.warn('Dropping non-increasing BeeKEM Welcome generation');
         return 'terminal';
       }
-    }
-
-    // A legacy key-only Welcome may already have installed this epoch without
-    // a ratchet tree. Do not recommit an identical key-only replay, but allow a
-    // later non-null Welcome for the same epoch to repair the missing tree.
-    if (sameInvitationEpoch && stagedBeeKEM === undefined) {
+    } catch {
+      console.warn('Dropping BeeKEM Welcome with invalid bootstrap state');
       return 'terminal';
     }
 
@@ -9855,10 +9815,8 @@ export class PeerborneDocument<
               keychainCommit,
               'Welcome keychain commit claim',
             );
-            if (stagedBeeKEM !== undefined) {
-              this._beekem = stagedBeeKEM;
-              this._beekemInitialized = true;
-            }
+            this._beekem = stagedBeeKEM;
+            this._beekemInitialized = true;
             this._invitationEpoch = newEpochId;
           } catch (error) {
             this._markDocumentStatePoisoned();
@@ -10100,7 +10058,7 @@ export class PeerborneDocument<
    * contract and poisons this document instance because partial application
    * cannot be ruled out.
    *
-   * PathUpdate delivery remains best effort after the local transition. A
+   * PathUpdateV2 delivery remains best effort after the local transition. A
    * surviving member that misses it needs an explicit recipient-bound recovery
    * or re-invitation; an ordinary load is encrypted under the unknown new key.
    * BeeKEM state is not persisted across restarts. These are cooperative
@@ -10239,7 +10197,7 @@ export class PeerborneDocument<
 
     // 1. Blank the leaf and re-key our path. `removeMember` re-derives
     //    key material along the entire path and returns the
-    //    `PathUpdate` to broadcast plus the new root secret. We use
+    //    `PathUpdateV2` to broadcast plus the new root secret. We use
     //    those return values directly -- no follow-up `update()` is
     //    needed (it would only discard `removeMember`'s fresh
     //    material in favour of yet-another rotation).
@@ -10252,7 +10210,7 @@ export class PeerborneDocument<
     //    new key, and the ACL-change broadcast in step 3 (which goes
     //    through `_makeChange`) would then encrypt the readers-ACL
     //    removal under the **new** key. Surviving readers would not
-    //    yet have the new key (they get it from the PathUpdate in
+    //    yet have the new key (they get it from the PathUpdateV2 in
     //    step 4, delivered separately and possibly out of order
     //    relative to the gossipsub-broadcast ACL change), and so
     //    would be unable to decrypt the ACL change.
@@ -10340,14 +10298,14 @@ export class PeerborneDocument<
       }
     }
 
-    // PathUpdate delivery is best effort after the complete local transition.
+    // PathUpdateV2 delivery is best effort after the complete local transition.
     // A survivor that misses it needs recipient-bound recovery or a fresh
     // invitation; an ordinary load is encrypted under the unknown new key.
     try {
       await this._distributeBeeKEMPathUpdate(pathUpdate, derivedEpochId32);
     } catch {
       console.warn(
-        'removeReader: PathUpdate broadcast failed; ' +
+        'removeReader: PathUpdateV2 broadcast failed; ' +
           'BeeKEM state and the new key committed locally. Affected readers ' +
           'need explicit recipient-bound recovery or re-invitation.',
       );
@@ -10417,7 +10375,7 @@ export class PeerborneDocument<
    * Existing members therefore cannot safely track a second active joiner.
    * `addReader` enforces the initial-release founder-plus-one limit before
    * mutating the ACL; lifting that limit requires a verified add-side
-   * PathUpdate delivery and convergence path.
+   * PathUpdateV2 delivery and convergence path.
    */
   private async _prepareBeeKEMReaderRegistration(
     serializedReader: string,
@@ -10483,11 +10441,11 @@ export class PeerborneDocument<
         );
       }
       const cachedWelcome = this._beekemWelcomeByLeaf.get(existingLeaf);
+      if (!cachedWelcome) {
+        throw new Error('Cannot resend BeeKEM Welcome without the complete cached tree');
+      }
       return {
-        welcome:
-          cachedWelcome === undefined
-            ? null
-            : copyBeeKEMWelcome(cachedWelcome),
+        welcome: copyBeeKEMWelcome(cachedWelcome),
       };
     }
 
@@ -10517,11 +10475,11 @@ export class PeerborneDocument<
       const committedReaderLeafIndices = new Map(this._readerLeafIndices);
       committedReaderLeafIndices.set(serializedReader, recoveredLeaf);
       const cachedWelcome = this._beekemWelcomeByLeaf.get(recoveredLeaf);
+      if (!cachedWelcome) {
+        throw new Error('Cannot resend BeeKEM Welcome without the complete cached tree');
+      }
       return {
-        welcome:
-          cachedWelcome === undefined
-            ? null
-            : copyBeeKEMWelcome(cachedWelcome),
+        welcome: copyBeeKEMWelcome(cachedWelcome),
         install: () => {
           this._readerLeafIndices = committedReaderLeafIndices;
         },
@@ -10615,7 +10573,7 @@ export class PeerborneDocument<
       serializedReader,
       new Uint8Array(readerKemPublicKey),
     );
-    // `BeeKEMWelcome.leafIndex` is the node index of the new leaf
+    // `BeeKEMWelcomeV2.leafIndex` is the node index of the new leaf
     // (even-numbered slot in the tree-math layout), which is exactly
     // what `removeMember` consumes.
     const committedReaderLeafIndices = new Map(this._readerLeafIndices);
@@ -10646,8 +10604,8 @@ export class PeerborneDocument<
   }
 
   /**
-   * Broadcast a BeeKEM `PathUpdate` to every connected peer over the
-   * `beekemPathUpdateV1` protocol. Used by `removeReader` after a
+   * Broadcast a BeeKEM `PathUpdateV2` to every connected peer over the
+   * `beekemPathUpdateV2` protocol. Used by `removeReader` after a
    * successful `removeMember` rotation (the leaf-blank + path re-key
    * are both performed inside `removeMember`; no follow-up
    * `BeeKEM.update()` call is involved).
@@ -10658,35 +10616,35 @@ export class PeerborneDocument<
    * `pathUpdateEpochId` / `signature` fields). The message is
    * **writer-signed unconditionally** (independent of the swarm-wide
    * `enableSigning` toggle) so a malicious peer cannot inject a
-   * forged PathUpdate that steers surviving readers onto an
+   * forged PathUpdateV2 that steers surviving readers onto an
    * attacker-controlled ratchet state.
    *
    * Best-effort fan-out: each failed dial is logged but does not
    * abort the broadcast. A surviving reader that misses the
-   * PathUpdate cannot recover the new epoch with an ordinary load;
+   * PathUpdateV2 cannot recover the new epoch with an ordinary load;
    * recovery requires a recipient-bound re-invitation or explicit
    * key-recovery flow.
    */
   private async _distributeBeeKEMPathUpdate(
-    pathUpdate: PathUpdate,
+    pathUpdate: PathUpdateV2,
     pathUpdateEpochId: Uint8Array,
   ): Promise<void> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
       signatureContext: 'beekem-path-update-v1',
-      pathUpdate: serializePathUpdateForWire(pathUpdate),
+      pathUpdate: serializePathUpdateV2ForWire(pathUpdate),
       pathUpdateEpochId,
     };
 
     // Always writer-sign (mirrors the BeeKEM Welcome flow). Signing
-    // is mandatory here: an unsigned PathUpdate would let any
+    // is mandatory here: an unsigned PathUpdateV2 would let any
     // connected peer rewrite every surviving reader's BeeKEM state.
     message.signature = await this._signAsWriterUnconditional(message);
 
     const serialized = this._syncMessageSerializer.serializeSyncMessage(message);
 
     const payload = this._buildPathPrefixedFrame(
-      'BeeKEM PathUpdate v1',
+      'BeeKEM PathUpdateV2',
       serialized,
     );
 
@@ -10699,7 +10657,7 @@ export class PeerborneDocument<
     for (const peer of peers) {
       try {
         const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemPathUpdateV1], {
+          await this.libp2p.dialProtocol(peer, [beekemPathUpdateV2], {
             runOnLimitedConnection: true,
           }),
         );
@@ -10707,7 +10665,7 @@ export class PeerborneDocument<
       } catch (err) {
         failedPeers.push(peer.toString());
         console.warn(
-          `Failed to send BeeKEM PathUpdate to peer:`,
+          `Failed to send BeeKEM PathUpdateV2 to peer:`,
           peer.toString(),
           err,
         );
@@ -10716,26 +10674,26 @@ export class PeerborneDocument<
 
     if (failedPeers.length > 0) {
       console.warn(
-        `BeeKEM PathUpdate failed to reach ${failedPeers.length} peer(s).`,
+        `BeeKEM PathUpdateV2 failed to reach ${failedPeers.length} peer(s).`,
         'Affected peers cannot decrypt subsequent messages until they receive a recipient-bound re-invitation or other explicit recovery; reloading the document does not deliver the key.',
       );
     }
   }
 
   /**
-   * Handle an inbound `beekemPathUpdateV1` payload (already
+   * Handle an inbound `beekemPathUpdateV2` payload (already
    * de-framed of the path-prefix header by the shared handler in
    * `peerborne.ts`).
    *
    * Validates the writer signature, deserializes the carried
-   * `PathUpdate`, applies it to the local BeeKEM tree via
+   * `PathUpdateV2`, applies it to the local BeeKEM tree via
    * `processPathUpdate`, and installs the resulting document key
    * under the supplied epoch ID. Mirrors the wire framing used by
    * `handleKeyUpdateRequestData` and `handleBeeKEMWelcomeRequestData`.
    *
    * SECURITY: the writer signature is **always** verified, regardless
    * of the swarm-wide `enableSigning` toggle. An unsigned or
-   * invalid-signature PathUpdate is dropped without applying any
+   * invalid-signature PathUpdateV2 is dropped without applying any
    * state change. The receiver also validates that the epoch ID it
    * derives locally matches the sender's `pathUpdateEpochId` -- a
    * mismatch indicates either a peer with stale local BeeKEM state
@@ -10767,26 +10725,26 @@ export class PeerborneDocument<
           payload,
           1,
           MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'BeeKEM PathUpdate message',
+          'BeeKEM PathUpdateV2 message',
         );
         message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
           this._syncMessageSerializer.deserializeSyncMessage(stablePayload),
           'beekem-path-update-v1',
         );
       } catch {
-        console.warn('Dropping malformed BeeKEM PathUpdate');
+        console.warn('Dropping malformed BeeKEM PathUpdateV2');
         return;
       }
 
       // Defense-in-depth against misrouted payloads (the shared
       // handler already routes by document path).
       if (message.documentId !== this.documentPath) {
-        console.warn('Ignoring BeeKEM PathUpdate for the wrong document');
+        console.warn('Ignoring BeeKEM PathUpdateV2 for the wrong document');
         return;
       }
 
       if (!message.pathUpdate) {
-        console.warn('Dropping BeeKEM PathUpdate without an update payload');
+        console.warn('Dropping BeeKEM PathUpdateV2 without an update payload');
         return;
       }
       let senderEpochId32: Uint8Array;
@@ -10795,10 +10753,10 @@ export class PeerborneDocument<
           message.pathUpdateEpochId,
           EPOCH_ID_LENGTH,
           EPOCH_ID_LENGTH,
-          'BeeKEM PathUpdate epoch ID',
+          'BeeKEM PathUpdateV2 epoch ID',
         );
       } catch {
-        console.warn('Dropping BeeKEM PathUpdate with a missing or invalid epoch ID');
+        console.warn('Dropping BeeKEM PathUpdateV2 with a missing or invalid epoch ID');
         return;
       }
 
@@ -10810,21 +10768,21 @@ export class PeerborneDocument<
       if (authentication.kind !== 'authenticated') {
         console.warn(
           {
-            'missing-signature': 'Dropping BeeKEM PathUpdate without a signature',
-            malformed: 'Dropping malformed BeeKEM PathUpdate',
-            'invalid-signature': 'Dropping BeeKEM PathUpdate with an invalid signature',
-            changed: 'Dropping BeeKEM PathUpdate after payload or writer ACL changed during verification',
+            'missing-signature': 'Dropping BeeKEM PathUpdateV2 without a signature',
+            malformed: 'Dropping malformed BeeKEM PathUpdateV2',
+            'invalid-signature': 'Dropping BeeKEM PathUpdateV2 with an invalid signature',
+            changed: 'Dropping BeeKEM PathUpdateV2 after payload or writer ACL changed during verification',
           }[authentication.kind],
         );
         return;
       }
       const { writerKeysVersion } = authentication;
 
-      let pathUpdate: PathUpdate;
+      let pathUpdate: PathUpdateV2;
       try {
-        pathUpdate = deserializePathUpdateFromWire(message.pathUpdate);
+        pathUpdate = deserializePathUpdateV2FromWire(message.pathUpdate);
       } catch {
-        console.warn('Dropping malformed authenticated BeeKEM PathUpdate');
+        console.warn('Dropping malformed authenticated BeeKEM PathUpdateV2');
         return;
       }
 
@@ -10838,7 +10796,7 @@ export class PeerborneDocument<
       //    epoch-ID gate further down would reject it, but that
       //    would also do unnecessary cryptographic work and (worse)
       //    leave a stranded fresh tree behind for the next
-      //    PathUpdate to confuse. Drop the message explicitly and
+      //    PathUpdateV2 to confuse. Drop the message explicitly and
       //    log. A document load cannot recover the key because the
       //    load response is encrypted under it; the peer needs a
       //    recipient-bound Welcome or another explicit key-recovery
@@ -10850,7 +10808,7 @@ export class PeerborneDocument<
       //    do not crash the inbound handler.
       if (!this._beekemInitialized || !this._beekem) {
         console.warn(
-          'Dropping BeeKEM PathUpdate without initialized local BeeKEM state',
+          'Dropping BeeKEM PathUpdateV2 without initialized local BeeKEM state',
         );
         return;
       }
@@ -10860,7 +10818,7 @@ export class PeerborneDocument<
         rootSecret = await beekem.processPathUpdate(pathUpdate);
       } catch {
         console.warn(
-          'Failed to apply BeeKEM PathUpdate; recovering the new epoch requires a recipient-bound re-invitation',
+          'Failed to apply BeeKEM PathUpdateV2; recovering the new epoch requires a recipient-bound re-invitation',
         );
         return;
       }
@@ -10877,7 +10835,7 @@ export class PeerborneDocument<
       // encrypted-block lookups.
       const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
       if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
-        console.warn('Dropping BeeKEM PathUpdate with a mismatched epoch ID');
+        console.warn('Dropping BeeKEM PathUpdateV2 with a mismatched epoch ID');
         return;
       }
 
@@ -10887,7 +10845,7 @@ export class PeerborneDocument<
         const prepareEpochKey = capturePreparedDataMethod(
           this._keychain,
           'prepareEpochKey',
-          'PathUpdate keychain prepareEpochKey',
+          'PathUpdateV2 keychain prepareEpochKey',
         );
         const preparedEpoch = await documentReflectApply(
           prepareEpochKey.method,
@@ -10897,7 +10855,7 @@ export class PeerborneDocument<
         epochClaimCommit = capturePreparedDataMethod(
           preparedEpoch,
           'claimCommit',
-          'Prepared PathUpdate epoch claimCommit',
+          'Prepared PathUpdateV2 epoch claimCommit',
         );
       } catch {
         console.error('Failed to stage BeeKEM-derived epoch key');
@@ -10915,12 +10873,12 @@ export class PeerborneDocument<
           }
           const epochCommit = this._claimPreparedCommit(
             epochClaimCommit,
-            'PathUpdate epoch commit claim',
+            'PathUpdateV2 epoch commit claim',
           );
           try {
             finalizePreparedCommitClaim(
               epochCommit,
-              'PathUpdate epoch commit claim',
+              'PathUpdateV2 epoch commit claim',
             );
             this._beekem = beekem;
           } catch (error) {
@@ -10934,9 +10892,9 @@ export class PeerborneDocument<
         return;
       }
 
-      console.log('Installed BeeKEM-derived epoch key via PathUpdate');
+      console.log('Installed BeeKEM-derived epoch key via PathUpdateV2');
     } catch {
-      console.error('Shared BeeKEM PathUpdate handling failed');
+      console.error('Shared BeeKEM PathUpdateV2 handling failed');
     }
   }
 

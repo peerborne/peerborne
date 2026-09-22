@@ -31,6 +31,9 @@ function kemPublicKey(fill = 7): Uint8Array {
 
 function beekemWelcome(leafIndex = 2) {
   return {
+    version: 2 as const,
+    generation: 1,
+    numLeaves: 2,
     leafIndex,
     pathKeys: [],
     treeNodePublicKeys: [],
