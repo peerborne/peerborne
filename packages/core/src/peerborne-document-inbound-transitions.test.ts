@@ -128,6 +128,8 @@ function welcomeHarness(
     readonly keyIdsShape?: 'duplicate' | 'sparse';
     readonly malformedPreparedId?: 'currentKeyId' | 'keyIds';
     readonly omitHydratedCurrent?: boolean;
+    readonly hydratedShape?: 'missing-old' | 'undefined-old' | 'duplicate-old' | 'sparse' | 'unexpected' | 'reordered';
+    readonly omitOldLookup?: boolean;
     readonly onGetKey?: (keyId: Uint8Array) => void;
     readonly onHydrate?: (
       prepared: Record<string, unknown>,
@@ -160,6 +162,7 @@ function welcomeHarness(
     const prepared: Record<string, unknown> = {
       changes: changeToken,
       getKey: jest.fn((id: Uint8Array) => {
+        if (options.omitOldLookup && sameBytes(id, oldEpoch)) return undefined;
         const key = stagedIds.some((candidate) => sameBytes(candidate, id))
           ? derivedDocumentKey
           : undefined;
@@ -172,13 +175,22 @@ function welcomeHarness(
     };
     const hydrateKeys = jest.fn(async () => {
       await options.onHydrate?.(prepared);
-      return stagedIds
+      const hydrated: unknown[] = stagedIds
         .filter(
           (id) =>
             !options.omitHydratedCurrent ||
             !sameBytes(id, plan.currentId),
         )
         .map((id) => [new Uint8Array(id), derivedDocumentKey] as const);
+      switch (options.hydratedShape) {
+        case 'missing-old': hydrated.shift(); break;
+        case 'undefined-old': hydrated[0] = [new Uint8Array(oldEpoch), undefined]; break;
+        case 'duplicate-old': hydrated.splice(1, 0, hydrated[0]); break;
+        case 'sparse': delete hydrated[0]; break;
+        case 'unexpected': hydrated[0] = [new Uint8Array(nextEpoch), derivedDocumentKey]; break;
+        case 'reordered': hydrated.reverse(); break;
+      }
+      return hydrated;
     });
     prepared.hydrateKeys = hydrateKeys;
     hydrators.push(hydrateKeys);
@@ -436,6 +448,26 @@ afterEach(() => {
 });
 
 describe('inbound legacy BeeKEM Welcome transaction', () => {
+  test.each([
+    { hydratedShape: 'missing-old' as const },
+    { hydratedShape: 'undefined-old' as const },
+    { hydratedShape: 'duplicate-old' as const },
+    { hydratedShape: 'sparse' as const },
+    { hydratedShape: 'unexpected' as const },
+    { hydratedShape: 'reordered' as const },
+    { omitOldLookup: true },
+  ])('rejects an incomplete full-history projection: %j', async (options) => {
+    const harness = welcomeHarness(options);
+    harness.register(19, { ids: [oldEpoch, currentEpoch], currentId: currentEpoch });
+    await expect(harness.document._evaluateAndApplyBeeKEMWelcome(
+      welcomeMessage(currentEpoch, 19), { fromBuffer: false },
+    )).resolves.toBe('retry');
+    expect(harness.claims[0]).not.toHaveBeenCalled();
+    expect(harness.liveIds()).toEqual([]);
+    expect(harness.document._invitationEpoch).toBeUndefined();
+    expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
   test('does not let duplicate or older signed Welcomes regress the keychain or replace the live tree', async () => {
     const harness = welcomeHarness();
     harness.register(1, {
@@ -995,6 +1027,33 @@ describe('inbound legacy BeeKEM Welcome transaction', () => {
 });
 
 describe('inbound BeeKEM PathUpdate transaction', () => {
+  test.each(['documentId', 'signature', 'pathUpdate', 'pathUpdateEpochId'])(
+    'rejects an accessor-backed %s before routing or authentication', async (field) => {
+      const harness = pathUpdateHarness();
+      const original = harness.message[field];
+      const getter = jest.fn(() => original);
+      Object.defineProperty(harness.message, field, { enumerable: true, get: getter });
+      harness.document._verifyWelcomeWriterSignature = jest.fn(async () => true);
+      await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(new Uint8Array([1]));
+      expect(getter).not.toHaveBeenCalled();
+      expect(harness.document._verifyWelcomeWriterSignature).not.toHaveBeenCalled();
+      expect(harness.document._syncMessageSerializer.serializeSyncMessage).not.toHaveBeenCalled();
+      expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects nested PathUpdate accessors before calling the serializer', async () => {
+    const harness = pathUpdateHarness();
+    const getter = jest.fn(() => []);
+    Object.defineProperty(harness.message.pathUpdate, 'nodes', { enumerable: true, get: getter });
+    harness.document._verifyWelcomeWriterSignature = jest.fn(async () => true);
+    await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(new Uint8Array([1]));
+    expect(getter).not.toHaveBeenCalled();
+    expect(harness.document._verifyWelcomeWriterSignature).not.toHaveBeenCalled();
+    expect(harness.document._syncMessageSerializer.serializeSyncMessage).not.toHaveBeenCalled();
+    expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
+  });
+
   test('isolates verification bytes for every candidate writer', async () => {
     const firstWriter = { id: 'first-writer' };
     const secondWriter = { id: 'second-writer' };
