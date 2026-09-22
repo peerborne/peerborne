@@ -30,6 +30,42 @@ async function generateECDHKeyPair(): Promise<CryptoKeyPair> {
 }
 
 describe('beekem-welcome-wire', () => {
+  test.each([1, 2])(
+    'V%i captures runtime bytes before inspecting later descriptors',
+    async (version) => {
+      const alice = new BeeKEM();
+      const aliceKeys = await generateECDHKeyPair();
+      await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+      const bobKeys = await generateECDHKeyPair();
+      const { welcome } = await alice.addMember(bobKeys.publicKey);
+      const encode = () =>
+        version === 1
+          ? serializeBeeKEMWelcomeForWire(welcome)
+          : serializeBeeKEMWelcomeV2ForWire({
+              ...welcome,
+              version: 2,
+              generation: 1,
+              numLeaves: 2,
+            });
+      const expected = encode();
+      const pathNode = welcome.pathKeys[0];
+      welcome.pathKeys[0] = new Proxy(pathNode, {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === 'encryptedPrivateKey') pathNode.publicKey.fill(7);
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+      welcome.treeNodePublicKeys[0] = new Proxy(welcome.treeNodePublicKeys[0], {
+        getOwnPropertyDescriptor(target, key) {
+          pathNode.encryptedPrivateKey.fill(8);
+          welcome.treeHash.fill(9);
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+      expect(encode()).toEqual(expected);
+    },
+  );
+
   test('materializes omitted blank slots in a three-leaf V2 Welcome', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();
@@ -59,7 +95,11 @@ describe('beekem-welcome-wire', () => {
     const { version, generation, numLeaves, ...legacyWelcome } = decoded;
     const carol = new BeeKEM();
     await expect(
-      carol.processWelcome(legacyWelcome, carolKeys.privateKey, carolKeys.publicKey),
+      carol.processWelcome(
+        legacyWelcome,
+        carolKeys.privateKey,
+        carolKeys.publicKey,
+      ),
     ).resolves.toEqual(rootSecret);
     expect(() =>
       deserializeBeeKEMWelcomeV2FromWire({
@@ -86,8 +126,12 @@ describe('beekem-welcome-wire', () => {
     expect(restored.leafIndex).toBe(welcome.leafIndex);
     expect(restored.pathKeys.length).toBe(welcome.pathKeys.length);
     for (let i = 0; i < welcome.pathKeys.length; i++) {
-      expect(restored.pathKeys[i].nodeIndex).toBe(welcome.pathKeys[i].nodeIndex);
-      expect(restored.pathKeys[i].publicKey).toEqual(welcome.pathKeys[i].publicKey);
+      expect(restored.pathKeys[i].nodeIndex).toBe(
+        welcome.pathKeys[i].nodeIndex,
+      );
+      expect(restored.pathKeys[i].publicKey).toEqual(
+        welcome.pathKeys[i].publicKey,
+      );
       expect(restored.pathKeys[i].encryptedPrivateKey).toEqual(
         welcome.pathKeys[i].encryptedPrivateKey,
       );
@@ -136,7 +180,9 @@ describe('beekem-welcome-wire', () => {
   });
 
   test('rejects malformed wire inputs with descriptive errors', () => {
-    expect(() => deserializeBeeKEMWelcomeFromWire(null)).toThrow(/plain object/);
+    expect(() => deserializeBeeKEMWelcomeFromWire(null)).toThrow(
+      /plain object/,
+    );
     expect(() => deserializeBeeKEMWelcomeFromWire([])).toThrow(/plain object/);
     expect(() =>
       deserializeBeeKEMWelcomeFromWire({
@@ -231,36 +277,33 @@ describe('beekem-welcome-wire', () => {
     );
   });
 
-  test(
-    'round-trips and applies real trees across non-power-of-two growth',
-    async () => {
-      let inviter = new BeeKEM();
-      const inviterKeys = await generateECDHKeyPair();
-      await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
+  test('round-trips and applies real trees across non-power-of-two growth', async () => {
+    let inviter = new BeeKEM();
+    const inviterKeys = await generateECDHKeyPair();
+    await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
 
-      for (let leafCount = 2; leafCount <= 12; leafCount++) {
-        const memberKeys = await generateECDHKeyPair();
-        const { welcome, rootSecret } = await inviter.addMember(
-          memberKeys.publicKey,
-        );
-        const restored = deserializeBeeKEMWelcomeFromWire(
-          JSON.parse(JSON.stringify(serializeBeeKEMWelcomeForWire(welcome))),
-        );
-        const joined = new BeeKEM();
-        const joinedRoot = await joined.processWelcome(
-          restored,
-          memberKeys.privateKey,
-          memberKeys.publicKey,
-        );
+    for (let leafCount = 2; leafCount <= 12; leafCount++) {
+      const memberKeys = await generateECDHKeyPair();
+      const { welcome, rootSecret } = await inviter.addMember(
+        memberKeys.publicKey,
+      );
+      const restored = deserializeBeeKEMWelcomeFromWire(
+        JSON.parse(JSON.stringify(serializeBeeKEMWelcomeForWire(welcome))),
+      );
+      const joined = new BeeKEM();
+      const joinedRoot = await joined.processWelcome(
+        restored,
+        memberKeys.privateKey,
+        memberKeys.publicKey,
+      );
 
-        expect(joined.memberCount).toBe(leafCount);
-        expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(
-          true,
-        );
-        inviter = joined;
-      }
-    },
-  );
+      expect(joined.memberCount).toBe(leafCount);
+      expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(
+        true,
+      );
+      inviter = joined;
+    }
+  });
 
   test('accepts the fixed legacy topology for a six-leaf tree', () => {
     const pathKeys = [9, 7].map((nodeIndex) => ({
@@ -268,13 +311,11 @@ describe('beekem-welcome-wire', () => {
       publicKey: new Uint8Array(65).fill(nodeIndex),
       encryptedPrivateKey: new Uint8Array(125).fill(nodeIndex),
     }));
-    const treeNodePublicKeys = [0, 1, 2, 3, 4, 5, 6, 8].map(
-      (nodeIndex) => ({
-        nodeIndex,
-        publicKey:
-          nodeIndex === 3 ? null : new Uint8Array(65).fill(nodeIndex + 1),
-      }),
-    );
+    const treeNodePublicKeys = [0, 1, 2, 3, 4, 5, 6, 8].map((nodeIndex) => ({
+      nodeIndex,
+      publicKey:
+        nodeIndex === 3 ? null : new Uint8Array(65).fill(nodeIndex + 1),
+    }));
 
     const restored = deserializeBeeKEMWelcomeFromWire(
       serializeBeeKEMWelcomeForWire({
@@ -358,9 +399,9 @@ describe('beekem-welcome-wire', () => {
     for (const { mutate, error } of malformed) {
       const processingInput = makeWelcome();
       mutate(processingInput);
-      expect(() =>
-        snapshotBeeKEMWelcomeForProcessing(processingInput),
-      ).toThrow(error);
+      expect(() => snapshotBeeKEMWelcomeForProcessing(processingInput)).toThrow(
+        error,
+      );
 
       const serializationInput = makeWelcome();
       mutate(serializationInput);
@@ -426,62 +467,59 @@ describe('beekem-welcome-wire', () => {
     );
   });
 
-  test(
-    'round-trips and applies a real Welcome containing blanked nodes',
-    async () => {
-      let inviter = new BeeKEM();
-      const inviterKeys = await generateECDHKeyPair();
-      await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
+  test('round-trips and applies a real Welcome containing blanked nodes', async () => {
+    let inviter = new BeeKEM();
+    const inviterKeys = await generateECDHKeyPair();
+    await inviter.initialize(inviterKeys.privateKey, inviterKeys.publicKey);
 
-      for (let leafCount = 2; leafCount <= 5; leafCount++) {
-        const memberKeys = await generateECDHKeyPair();
-        const { welcome } = await inviter.addMember(memberKeys.publicKey);
-        const joined = new BeeKEM();
-        await joined.processWelcome(
-          welcome,
-          memberKeys.privateKey,
-          memberKeys.publicKey,
-        );
-        inviter = joined;
-      }
-
-      await inviter.removeMember(0);
-      inviter.compact();
-
+    for (let leafCount = 2; leafCount <= 5; leafCount++) {
       const memberKeys = await generateECDHKeyPair();
-      const { welcome, rootSecret } = await inviter.addMember(
-        memberKeys.publicKey,
-      );
-      const wire = serializeBeeKEMWelcomeForWire(welcome);
-      expect(
-        wire.treeNodePublicKeys.some((node) => node.publicKey === null),
-      ).toBe(true);
-
-      const restored = deserializeBeeKEMWelcomeFromWire(
-        JSON.parse(JSON.stringify(wire)),
-      );
-      const withoutExplicitBlanks = deserializeBeeKEMWelcomeFromWire({
-        ...JSON.parse(JSON.stringify(wire)),
-        treeNodePublicKeys: wire.treeNodePublicKeys.filter(
-          (node) => node.publicKey !== null,
-        ),
-      });
+      const { welcome } = await inviter.addMember(memberKeys.publicKey);
       const joined = new BeeKEM();
-      const joinedFromSparseWire = new BeeKEM();
-      const joinedRoot = await joined.processWelcome(
-        restored,
+      await joined.processWelcome(
+        welcome,
         memberKeys.privateKey,
         memberKeys.publicKey,
       );
-      const sparseRoot = await joinedFromSparseWire.processWelcome(
-        withoutExplicitBlanks,
-        memberKeys.privateKey,
-        memberKeys.publicKey,
-      );
-      expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(true);
-      expect(Buffer.from(sparseRoot).equals(Buffer.from(joinedRoot))).toBe(true);
-    },
-  );
+      inviter = joined;
+    }
+
+    await inviter.removeMember(0);
+    inviter.compact();
+
+    const memberKeys = await generateECDHKeyPair();
+    const { welcome, rootSecret } = await inviter.addMember(
+      memberKeys.publicKey,
+    );
+    const wire = serializeBeeKEMWelcomeForWire(welcome);
+    expect(
+      wire.treeNodePublicKeys.some((node) => node.publicKey === null),
+    ).toBe(true);
+
+    const restored = deserializeBeeKEMWelcomeFromWire(
+      JSON.parse(JSON.stringify(wire)),
+    );
+    const withoutExplicitBlanks = deserializeBeeKEMWelcomeFromWire({
+      ...JSON.parse(JSON.stringify(wire)),
+      treeNodePublicKeys: wire.treeNodePublicKeys.filter(
+        (node) => node.publicKey !== null,
+      ),
+    });
+    const joined = new BeeKEM();
+    const joinedFromSparseWire = new BeeKEM();
+    const joinedRoot = await joined.processWelcome(
+      restored,
+      memberKeys.privateKey,
+      memberKeys.publicKey,
+    );
+    const sparseRoot = await joinedFromSparseWire.processWelcome(
+      withoutExplicitBlanks,
+      memberKeys.privateKey,
+      memberKeys.publicKey,
+    );
+    expect(Buffer.from(joinedRoot).equals(Buffer.from(rootSecret))).toBe(true);
+    expect(Buffer.from(sparseRoot).equals(Buffer.from(joinedRoot))).toBe(true);
+  });
 
   test('rejects over-capacity arrays before reading their elements', () => {
     let getterCalls = 0;
@@ -600,9 +638,9 @@ describe('beekem-welcome-wire', () => {
     const directPath = TreeMath.directPath(leafIndex, numLeaves);
     const excluded = new Set([leafIndex, ...directPath]);
     const publicKey = Buffer.alloc(65).toString('base64');
-    const maximumCiphertext = Buffer.alloc(
-      64 * (4096 + 8) + 4096,
-    ).toString('base64');
+    const maximumCiphertext = Buffer.alloc(64 * (4096 + 8) + 4096).toString(
+      'base64',
+    );
 
     expect(() =>
       deserializeBeeKEMWelcomeFromWire({
@@ -612,10 +650,8 @@ describe('beekem-welcome-wire', () => {
           publicKey,
           encryptedPrivateKey: maximumCiphertext,
         })),
-        treeNodePublicKeys: Array.from(
-          { length: treeWidth },
-          (_, nodeIndex) =>
-            excluded.has(nodeIndex) ? null : { nodeIndex, publicKey },
+        treeNodePublicKeys: Array.from({ length: treeWidth }, (_, nodeIndex) =>
+          excluded.has(nodeIndex) ? null : { nodeIndex, publicKey },
         ).filter((node) => node !== null),
         treeHash: Buffer.alloc(32).toString('base64'),
       }),
@@ -771,19 +807,25 @@ describe('welcome-sealed-payload', () => {
   });
 
   test('tolerates `bk` omitted (legacy/optional)', () => {
-    const keychainB64 = Buffer.from(new Uint8Array([7, 7, 7])).toString('base64');
-    const encoded = new TextEncoder().encode(JSON.stringify({ k: keychainB64 }));
+    const keychainB64 = Buffer.from(new Uint8Array([7, 7, 7])).toString(
+      'base64',
+    );
+    const encoded = new TextEncoder().encode(
+      JSON.stringify({ k: keychainB64 }),
+    );
     const decoded = decodeWelcomeSealedPayload(encoded);
     expect(decoded.beekemWelcome).toBeNull();
   });
 
-  test("names the bad field when `bk` deserialization throws", () => {
+  test('names the bad field when `bk` deserialization throws', () => {
     // Module docstring promises errors that "name the bad field". A
     // malformed `bk` lets `deserializeBeeKEMWelcomeFromWire` raise
     // its own field-level message (e.g. about `leafIndex`), but the
     // envelope-level field name (`bk`) must also be present so the
     // operator can locate the problem in the envelope schema.
-    const keychainB64 = Buffer.from(new Uint8Array([1, 2, 3])).toString('base64');
+    const keychainB64 = Buffer.from(new Uint8Array([1, 2, 3])).toString(
+      'base64',
+    );
     // `bk` is a non-null object but missing the required `leafIndex`
     // field -- `deserializeBeeKEMWelcomeFromWire` throws.
     const encoded = new TextEncoder().encode(

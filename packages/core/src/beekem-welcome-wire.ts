@@ -162,7 +162,9 @@ function snapshotLegacyWelcome<T>(
   readers: LegacyWelcomeFieldReaders<T>,
 ): LegacyWelcomeSnapshot<T> {
   const context = WELCOME_V1_CONTEXT;
-  const raw = snapshotPlainObject(value, WELCOME_V1_FIELDS, context);
+  const raw = snapshotPlainObject(value, WELCOME_V1_FIELDS, context, {
+    treeHash: (bytes) => readers.treeHash(bytes),
+  });
   const leafIndex = requireNonNegativeInteger(
     raw.leafIndex,
     'leafIndex',
@@ -195,7 +197,7 @@ function snapshotLegacyWelcome<T>(
       )})`,
     );
   }
-  const treeHash = readers.treeHash(raw.treeHash);
+  const treeHash = raw.treeHash as T;
   const rawPathKeys = snapshotBoundedArray(
     raw.pathKeys,
     MAX_V1_PATH_NODES,
@@ -226,6 +228,11 @@ function snapshotLegacyWelcome<T>(
       entry,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `${context}: ${field}`,
+      {
+        publicKey: (bytes) => readers.publicKey(bytes, `${field}.publicKey`),
+        encryptedPrivateKey: (bytes) =>
+          readers.encryptedPrivateKey(bytes, `${field}.encryptedPrivateKey`),
+      },
     );
     return {
       nodeIndex: requireNonNegativeInteger(
@@ -233,11 +240,8 @@ function snapshotLegacyWelcome<T>(
         `${field}.nodeIndex`,
         WELCOME_V1.typeName,
       ),
-      publicKey: readers.publicKey(node.publicKey, `${field}.publicKey`),
-      encryptedPrivateKey: readers.encryptedPrivateKey(
-        node.encryptedPrivateKey,
-        `${field}.encryptedPrivateKey`,
-      ),
+      publicKey: node.publicKey as T,
+      encryptedPrivateKey: node.encryptedPrivateKey as T,
     };
   });
   const treeNodePublicKeys = rawTreeNodePublicKeys.map((entry, offset) => {
@@ -246,6 +250,12 @@ function snapshotLegacyWelcome<T>(
       entry,
       ['nodeIndex', 'publicKey'],
       `${context}: ${field}`,
+      {
+        publicKey: (bytes) =>
+          bytes === null
+            ? null
+            : readers.publicKey(bytes, `${field}.publicKey`),
+      },
     );
     return {
       nodeIndex: requireNonNegativeInteger(
@@ -253,10 +263,7 @@ function snapshotLegacyWelcome<T>(
         `${field}.nodeIndex`,
         WELCOME_V1.typeName,
       ),
-      publicKey:
-        node.publicKey === null
-          ? null
-          : readers.publicKey(node.publicKey, `${field}.publicKey`),
+      publicKey: node.publicKey as T | null,
     };
   });
 
@@ -332,6 +339,10 @@ export function serializeBeeKEMWelcomeV2ForWire(
     welcome,
     WELCOME_V2_FIELDS,
     'Invalid BeeKEMWelcomeV2',
+    {
+      treeHash: (bytes) =>
+        encodeRuntimeBytes(bytes, 32, 32, 'treeHash', budget),
+    },
   );
   const numLeaves = requirePositiveInteger(
     raw.numLeaves,
@@ -355,23 +366,29 @@ export function serializeBeeKEMWelcomeV2ForWire(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
       `Invalid BeeKEMWelcomeV2: pathKeys[${offset}]`,
+      {
+        publicKey: (bytes) =>
+          encodeRuntimeBytes(
+            bytes,
+            65,
+            65,
+            `pathKeys[${offset}].publicKey`,
+            budget,
+          ),
+        encryptedPrivateKey: (bytes) =>
+          encodeRuntimeBytes(
+            bytes,
+            1,
+            MAX_V2_CIPHERTEXT_BYTES,
+            `pathKeys[${offset}].encryptedPrivateKey`,
+            budget,
+          ),
+      },
     );
     return {
       nodeIndex: node.nodeIndex as number,
-      publicKey: encodeRuntimeBytes(
-        node.publicKey,
-        65,
-        65,
-        `pathKeys[${offset}].publicKey`,
-        budget,
-      ),
-      encryptedPrivateKey: encodeRuntimeBytes(
-        node.encryptedPrivateKey,
-        1,
-        MAX_V2_CIPHERTEXT_BYTES,
-        `pathKeys[${offset}].encryptedPrivateKey`,
-        budget,
-      ),
+      publicKey: node.publicKey as string,
+      encryptedPrivateKey: node.encryptedPrivateKey as string,
     };
   });
   const treeNodePublicKeys: SerializedWelcomeNodePublicKey[] =
@@ -386,19 +403,22 @@ export function serializeBeeKEMWelcomeV2ForWire(
         value,
         ['nodeIndex', 'publicKey'],
         `Invalid BeeKEMWelcomeV2: treeNodePublicKeys[${offset}]`,
+        {
+          publicKey: (bytes) =>
+            bytes === null
+              ? null
+              : encodeRuntimeBytes(
+                  bytes,
+                  65,
+                  65,
+                  `treeNodePublicKeys[${offset}].publicKey`,
+                  budget,
+                ),
+        },
       );
       return {
         nodeIndex: node.nodeIndex as number,
-        publicKey:
-          node.publicKey === null
-            ? null
-            : encodeRuntimeBytes(
-                node.publicKey,
-                65,
-                65,
-                `treeNodePublicKeys[${offset}].publicKey`,
-                budget,
-              ),
+        publicKey: node.publicKey as string | null,
       };
     });
 
@@ -421,7 +441,7 @@ export function serializeBeeKEMWelcomeV2ForWire(
     leafIndex: raw.leafIndex as number,
     pathKeys,
     treeNodePublicKeys,
-    treeHash: encodeRuntimeBytes(raw.treeHash, 32, 32, 'treeHash', budget),
+    treeHash: raw.treeHash as string,
   };
   deserializeBeeKEMWelcomeV2FromWire(wire);
   return wire;

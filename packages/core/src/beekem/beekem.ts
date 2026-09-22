@@ -599,7 +599,7 @@ export class BeeKEM {
     const computedHash = await staged._computeTreeHash();
     if (
       computedHash.byteLength !== validated.welcome.treeHash.byteLength ||
-      !computedHash.every((b, i) => b === validated.welcome.treeHash[i])
+      !constantTimeEqual(computedHash, validated.welcome.treeHash)
     ) {
       throw new Error(
         'Welcome tree hash mismatch: reconstructed tree does not match sender state',
@@ -877,7 +877,7 @@ export class BeeKEM {
     for (const [revision, candidate] of candidates) {
       if (revision !== winnerRevision) {
         candidate.reject(
-          new Error('Cannot process Welcome: the attempt was superseded'),
+          new Error(WELCOME_SUPERSEDED_MESSAGE),
         );
       }
     }
