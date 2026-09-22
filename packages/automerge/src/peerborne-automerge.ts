@@ -988,6 +988,9 @@ function newKeychainDoc(actor?: string): AutomergeKeychainDoc {
 
 type CanonicalKeychainEntry = readonly [string, string];
 
+// This independently rooted current-key view is reconciled by prepareMerge:
+// a matching current tuple preserves the receiver's existing linear history
+// without applying the projection's unrelated CRDT root operations.
 async function currentKeyProjection(
   entry: CanonicalKeychainEntry,
 ): Promise<BinaryChange[]> {
