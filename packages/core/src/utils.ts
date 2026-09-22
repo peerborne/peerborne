@@ -230,15 +230,13 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
     maxKeyBytes: 64 * 1024 * 1024,
   },
 ): T {
-  if (
-    !Number.isSafeInteger(limits.maxProperties) ||
-    limits.maxProperties < 0 ||
-    !Number.isSafeInteger(limits.maxKeyBytes) ||
-    limits.maxKeyBytes < 0
-  ) {
-    throw new TypeError(
-      'Snapshot property and key-byte limits must be non-negative safe integers',
-    );
+  for (const [name, limit] of [
+    ['maxProperties', limits.maxProperties],
+    ['maxKeyBytes', limits.maxKeyBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new TypeError(`${name} must be a non-negative safe integer`);
+    }
   }
   if (value === null || typeof value !== 'object') {
     throw new TypeError(`${field} must be a plain object`);
@@ -550,6 +548,11 @@ export function snapshotDeepEnumerableData<T>(
         keys = reflectOwnKeys(objectCandidate);
       } catch {
         throw new TypeError(`${field} contains an unstable array`);
+      }
+      for (const key of keys) {
+        if (typeof key !== 'string') {
+          throw new TypeError(`${field} must not contain symbol properties`);
+        }
       }
       if (keys.length !== length + 1) {
         throw new TypeError(`${field} arrays must be dense data arrays`);

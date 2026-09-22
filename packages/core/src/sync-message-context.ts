@@ -134,7 +134,12 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
 ): CRDTSyncMessage<ChangesType, PublicKey> {
   const allowed = allowedFields[context];
   let maxRootKeyBytes = 0;
-  for (const field of allowed) maxRootKeyBytes += field.length * 2;
+  for (const field of allowed) {
+    maxRootKeyBytes += field.length * 2;
+    if (!Number.isSafeInteger(maxRootKeyBytes)) {
+      throw new RangeError('Sync message root key-byte limit exceeds the safe integer range');
+    }
+  }
   const message = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
     value,
     `${context} message`,
