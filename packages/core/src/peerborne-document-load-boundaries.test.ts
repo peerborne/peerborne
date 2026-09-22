@@ -4432,3 +4432,18 @@ describe('document load response boundaries', () => {
     expect(rawStream.closeRead).not.toHaveBeenCalled();
   });
 });
+
+
+test('discards deferred and incoming notifications once document state is poisoned', async () => {
+  const pending = new Set(['deferred']);
+  const notify = jest.fn();
+  const document = fakeDocument({
+    _bootstrapLoadApplicationState: 'poisoned',
+    _pendingBootstrapRemoteUpdateHashes: pending,
+    _fireRemoteUpdateHandlers: notify,
+  });
+  await document._fireOrDeferRemoteUpdateHandlers(['incoming']);
+  await document._fireOrDeferRemoteUpdateHandlers(['later']);
+  expect(pending.size).toBe(0);
+  expect(notify).not.toHaveBeenCalled();
+});
