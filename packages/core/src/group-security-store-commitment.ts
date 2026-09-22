@@ -98,10 +98,7 @@ const typedArrayByteLengthGetter = intrinsicGetter(
   typedArrayPrototype,
   'byteLength',
 );
-const typedArrayBufferGetter = intrinsicGetter(
-  typedArrayPrototype,
-  'buffer',
-);
+const typedArrayBufferGetter = intrinsicGetter(typedArrayPrototype, 'buffer');
 const typedArrayTagGetter = intrinsicGetter(
   typedArrayPrototype,
   Symbol.toStringTag,
@@ -110,10 +107,8 @@ const uint8ArraySet = Uint8Array.prototype.set;
 const sharedArrayBufferByteLengthGetter =
   typeof SharedArrayBuffer === 'undefined'
     ? undefined
-    : Object.getOwnPropertyDescriptor(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-      )?.get;
+    : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')
+        ?.get;
 
 export const GROUP_SECURITY_STORE_COMMITMENT_LENGTH = 32;
 
@@ -280,11 +275,7 @@ function canonicalSnapshot(
   if (fork === undefined) {
     parts.push(new Uint8Array([0]));
   } else {
-    parts.push(
-      new Uint8Array([1]),
-      u32(fork.encoded.byteLength),
-      fork.encoded,
-    );
+    parts.push(new Uint8Array([1]), u32(fork.encoded.byteLength), fork.encoded);
   }
   const encoded = concat(parts);
   if (encoded.byteLength !== budget.used) {
@@ -295,11 +286,9 @@ function canonicalSnapshot(
     encryptedState:
       encryptedState === undefined
         ? undefined
-        : Reflect.apply(
-            encryptedGroupStateDeserialize,
-            EncryptedGroupState,
-            [encryptedState],
-          ) as EncryptedGroupState,
+        : (Reflect.apply(encryptedGroupStateDeserialize, EncryptedGroupState, [
+            encryptedState,
+          ]) as EncryptedGroupState),
     pendingKeyPackages: pending.map(
       (entry) =>
         Reflect.apply(
@@ -344,7 +333,11 @@ function canonicalPending(
   value: unknown,
   budget: ByteBudget,
 ): CanonicalPending[] {
-  const entries = strictArray(value, 'pending KeyPackages', MAX_PENDING_ENTRIES);
+  const entries = strictArray(
+    value,
+    'pending KeyPackages',
+    MAX_PENDING_ENTRIES,
+  );
   const pendingBudget = new ByteBudget(
     MAX_PENDING_TOTAL_BYTES,
     'pending KeyPackage bytes',
@@ -372,7 +365,9 @@ function canonicalPending(
     );
     canonical.push({ reference, serialized });
   }
-  canonical.sort((left, right) => compareBytes(left.reference, right.reference));
+  canonical.sort((left, right) =>
+    compareBytes(left.reference, right.reference),
+  );
   return canonical;
 }
 
@@ -420,10 +415,7 @@ function canonicalPendingRequests(
   return snapshots;
 }
 
-function canonicalConsumed(
-  value: unknown,
-  budget: ByteBudget,
-): Uint8Array[] {
+function canonicalConsumed(value: unknown, budget: ByteBudget): Uint8Array[] {
   const values = strictArray(
     value,
     'consumed KeyPackage references',
@@ -810,11 +802,9 @@ function strictArray(
   maximum: number,
 ): unknown[] {
   let isArray: boolean;
-  let prototype: object | null;
   let lengthDescriptor: PropertyDescriptor | undefined;
   try {
     isArray = Array.isArray(value);
-    prototype = isArray ? Object.getPrototypeOf(value) : null;
     lengthDescriptor = isArray
       ? Object.getOwnPropertyDescriptor(value, 'length')
       : undefined;
@@ -823,7 +813,6 @@ function strictArray(
   }
   if (
     !isArray ||
-    prototype !== Array.prototype ||
     lengthDescriptor === undefined ||
     !('value' in lengthDescriptor) ||
     !Number.isSafeInteger(lengthDescriptor.value) ||
@@ -876,7 +865,9 @@ function canonicalEncryptedGroupState(
   budget: ByteBudget,
 ): Uint8Array {
   if (!isEncryptedGroupState(value)) {
-    throw new Error('store encryptedState is not a branded EncryptedGroupState');
+    throw new Error(
+      'store encryptedState is not a branded EncryptedGroupState',
+    );
   }
   const serializedValue = Reflect.apply(
     encryptedGroupStateSerialize,
@@ -918,7 +909,10 @@ function canonicalEncryptedKeyPackageState(
   field: string,
   budget: ByteBudget,
   pendingBudget: ByteBudget,
-): { readonly state: EncryptedKeyPackageState; readonly serialized: Uint8Array } {
+): {
+  readonly state: EncryptedKeyPackageState;
+  readonly serialized: Uint8Array;
+} {
   if (!isEncryptedKeyPackageState(value)) {
     throw new Error(`${field} is not branded encrypted state`);
   }
@@ -1050,11 +1044,7 @@ function intrinsicGetter(
   return getter;
 }
 
-function safeInteger(
-  value: unknown,
-  field: string,
-  minimum: number,
-): number {
+function safeInteger(value: unknown, field: string, minimum: number): number {
   if (
     typeof value !== 'number' ||
     !Number.isSafeInteger(value) ||

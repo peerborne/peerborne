@@ -22,6 +22,36 @@ function commitment(value: number): Uint8Array {
 }
 
 describe('InMemoryGroupSecurityRollbackAnchor', () => {
+  test('keeps store keys stable when the typed-array iterator is replaced', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    const initial = {
+      revision: 1,
+      epoch: 0n,
+      controlHead: head(1),
+      storeCommitment: commitment(1),
+      forkPoison: undefined,
+    };
+    await anchor.advance(key, undefined, initial);
+    const prototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const descriptor = Object.getOwnPropertyDescriptor(
+      prototype,
+      Symbol.iterator,
+    )!;
+    let loaded;
+    try {
+      Object.defineProperty(prototype, Symbol.iterator, {
+        ...descriptor,
+        value() {
+          throw new Error('untrusted byte iterator');
+        },
+      });
+      loaded = await anchor.load(key);
+    } finally {
+      Object.defineProperty(prototype, Symbol.iterator, descriptor);
+    }
+    expect(loaded).toEqual(initial);
+  });
+
   test('advances with compare-and-set semantics and defensive copies', async () => {
     const anchor = new InMemoryGroupSecurityRollbackAnchor();
     const first = {
@@ -438,7 +468,11 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
     const misses = Array.from({ length: 1000 }, (_, index) => {
       const groupId = new Uint8Array(4);
       new DataView(groupId.buffer).setUint32(0, index, false);
-      return anchor.advance({ protocol: key.protocol, groupId }, expected, next);
+      return anchor.advance(
+        { protocol: key.protocol, groupId },
+        expected,
+        next,
+      );
     });
 
     await expect(Promise.all(misses)).resolves.toEqual(
@@ -450,9 +484,8 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
 
   test('preserves a queued successor when the prior tail settles', async () => {
     const anchor = new InMemoryGroupSecurityRollbackAnchor();
-    const tails = (
-      anchor as unknown as { tails: Map<string, Promise<void>> }
-    ).tails;
+    const tails = (anchor as unknown as { tails: Map<string, Promise<void>> })
+      .tails;
     const nativeDelete = tails.delete.bind(tails);
     let deleteCalls = 0;
     Object.defineProperty(tails, 'delete', {
