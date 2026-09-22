@@ -161,7 +161,7 @@ export default defineConfig({
             'reference',
             'reference/comparisons',
             {
-              label: 'Security design decisions',
+              label: 'Security ADRs',
               collapsed: true,
               items: [
                 'reference/security-design/0001-mls-document-security-architecture',
