@@ -4,7 +4,7 @@ import {
   MAX_CHANGE_TREE_EDGES,
   MAX_CHANGE_TREE_NODES,
 } from './change-tree-walk.js';
-import { snapshotSyncMessageForContext } from './sync-message-context.js';
+import { snapshotSyncMessageForContext, syncMessageMatchesSnapshot } from './sync-message-context.js';
 
 describe('sync message wire-context separation', () => {
   test.each([
@@ -296,4 +296,12 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
+});
+
+test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
+  expect(syncMessageMatchesSnapshot(
+    { documentId: '/doc', changes: new Array(2) } as any,
+    { documentId: '/doc', changes: [] },
+    'ordinary-sync-v1',
+  )).toBe(false);
 });
