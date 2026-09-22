@@ -119,8 +119,8 @@ UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core`
 - Encode delegation proofs
 
 But the document change path does not check UCAN tokens. UCAN integration is a future capability.
-The optional UCAN ACL wrapper keeps capability metadata in process-local
-memory. That metadata is not replicated, and the wrapper does not provide
+The optional [`UCANACL`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/ucan-acl.ts)
+wrapper in `@peerborne/core` keeps capability metadata in process-local memory. That metadata is not replicated, and the wrapper does not provide
 distributed strong-removal semantics.
 
 ## Encryption and history visibility
@@ -196,7 +196,7 @@ The quorum check:
 When a writer is removed from the ACL:
 - With document signing enabled, after a replica applies the update it invalidates its cached writer set and rejects subsequently verified ordinary sync envelopes signed only by the removed key
 - There is no globally simultaneous cutover: a replica that has not applied the best-effort ACL update still evaluates against its older writer set, and an in-flight message is judged against the set current when that replica verifies it
-- The causal ACL chain is not integrated, so a stale or partitioned writer can race the removal with a signed re-grant; writer revocation is not Byzantine-safe
+- The causal ACL chain is not integrated, so a stale or partitioned writer can race the removal with a signed re-grant; writer revocation does not protect against a malicious writer equivocating across partitions
 - `removeWriter()` revokes write authorization, not BeeKEM reader membership; an identity that remains a reader retains its existing read access, while `removeReader()` separately attempts a BeeKEM key rotation
 - With `enableSigning: false`, ordinary inbound sync does not enforce writer signatures, so removing an ACL entry is not an adversarial remote-writer revocation boundary
 - Past contributions remain in the document; stored payloads do not carry persistent per-block writer attribution
