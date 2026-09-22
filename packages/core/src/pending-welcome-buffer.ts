@@ -75,7 +75,7 @@ export class PendingWelcomeBuffer {
   ): PendingWelcomeStoreResult {
     const detached = snapshotSyncMessageForContext<ChangesType, PublicKey>(
       message,
-      'beekem-welcome-v1',
+      'beekem-welcome-v2',
     );
     return this.store(
       key,
