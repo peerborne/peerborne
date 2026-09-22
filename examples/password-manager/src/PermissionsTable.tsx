@@ -62,11 +62,15 @@ export function PermissionsTable({
 
   return (
     <>
+      <p>
+        These controls change authorization roles only. This example does not
+        deliver the encryption keys a new member needs to open the document.
+      </p>
       <Table striped bordered hover>
         <thead>
           <tr>
             <th>User</th>
-            <th colSpan={2}>Permisssions</th>
+            <th colSpan={2}>Authorization role</th>
           </tr>
         </thead>
         <tbody>
@@ -81,7 +85,7 @@ export function PermissionsTable({
                   {permission.publicKey}
                 </td>
                 <td>
-                  {permission.permissions === 'rw' ? 'Read/Write' : 'Read'}
+                  {permission.permissions === 'rw' ? 'Editor' : 'Reader'}
                 </td>
                 <td>
                   <Button
@@ -135,8 +139,8 @@ export function PermissionsTable({
                   setDraftPermission(e.target.value as 'r' | 'rw')
                 }
               >
-                <option value="r">Read</option>
-                <option value="rw">Read/Write</option>
+                <option value="r">Reader</option>
+                <option value="rw">Editor</option>
               </Form.Control>
             </td>
             <td>
@@ -182,7 +186,7 @@ export function PermissionsTable({
                   })();
                 }}
               >
-                Add
+                Set role
               </Button>
             </td>
           </tr>
