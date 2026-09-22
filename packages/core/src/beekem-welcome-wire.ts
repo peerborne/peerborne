@@ -595,7 +595,7 @@ function snapshotRuntimeBytes(
     );
   } catch {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} must be an unshared Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' must be an unshared Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
     );
   }
   const encodedLength = Math.ceil(bytes.byteLength / 3) * 4;
@@ -630,13 +630,13 @@ function decodeBoundedBase64(
 ): Uint8Array {
   if (value.length > Math.ceil(maxBytes / 3) * 4 + 4) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} exceeds the encoded size limit`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' exceeds the encoded size limit`,
     );
   }
   const decoded = decodeCanonicalBase64(value, fieldName, maxBytes, budget);
   if (decoded.byteLength > maxBytes) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} exceeds the decoded size limit`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' exceeds the decoded size limit`,
     );
   }
   return decoded;
@@ -653,7 +653,7 @@ function decodeCanonicalBase64(
     value.length > Math.ceil(maxBytes / 3) * 4 + 4
   ) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} exceeds the encoded size limit`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' exceeds the encoded size limit`,
     );
   }
   if (budget !== undefined) {
@@ -666,23 +666,23 @@ function decodeCanonicalBase64(
     )
   ) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} must use canonical padded base64`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' must use canonical padded base64`,
     );
   }
   let decoded: Uint8Array;
   try {
     decoded = Base64.toUint8Array(value);
   } catch {
-    throw new Error(`Invalid BeeKEMWelcomeV2: ${fieldName} must use canonical padded base64`);
+    throw new Error(`Invalid BeeKEMWelcomeV2: '${fieldName}' must use canonical padded base64`);
   }
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} exceeds the decoded size limit`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' exceeds the decoded size limit`,
     );
   }
   if (Base64.fromUint8Array(decoded) !== value) {
     throw new Error(
-      `Invalid BeeKEMWelcomeV2: ${fieldName} must use canonical padded base64`,
+      `Invalid BeeKEMWelcomeV2: '${fieldName}' must use canonical padded base64`,
     );
   }
   return decoded;
