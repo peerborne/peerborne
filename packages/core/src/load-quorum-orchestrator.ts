@@ -209,6 +209,7 @@ export async function runLoadQuorum<T>(opts: {
   if (protocol !== 'tip-advertise-v1' && protocol !== 'security-advertise-v1') {
     throw new LoadQuorumFailedError({
       documentPath, reason: 'invalid-config', respondingCount: 0, requiredQ: 0,
+      agreement: new Map(),
       detail: 'A load-quorum protocol family must be selected before probing',
     });
   }

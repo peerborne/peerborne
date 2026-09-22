@@ -93,7 +93,7 @@ describe('trusted V4 security tuple quorum primitives', () => {
 
     await expect(
       runLoadQuorum({
-      protocol: 'security-advertise-v1',
+        protocol: 'security-advertise-v1',
         peers,
         peerIdOf: (peer) => peer.id,
         probeFn: (peer) => trustedProbe(peer, trusted),
