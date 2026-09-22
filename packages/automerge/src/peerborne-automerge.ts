@@ -291,12 +291,12 @@ function newKeychainDoc(actor?: string): AutomergeKeychainDoc {
 // This independently rooted current-key view is reconciled by prepareMerge:
 // a matching current tuple preserves the receiver's existing linear history
 // without applying the projection's unrelated CRDT root operations.
-const projectionTextEncoder = new TextEncoder();
+let projectionTextEncoder: TextEncoder | undefined;
 
 async function currentKeyProjection(
   entry: CanonicalKeychainEntry,
 ): Promise<BinaryChange[]> {
-  const identity = projectionTextEncoder.encode(
+  const identity = (projectionTextEncoder ??= new TextEncoder()).encode(
     `${KEYCHAIN_PROJECTION_ACTOR_DOMAIN}${JSON.stringify(entry)}`,
   );
   const actor = toHex(
