@@ -96,22 +96,23 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   rejected by the invitation path.
 - **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync/load signature gates are disabled for peers holding the needed document key; BeeKEM membership-control messages remain writer-signed.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
+- **The ACL chain is not wired into document synchronization.** The standalone
+  `ACLChain` implementation has focused tests, but `PeerborneDocument` still
+  authorizes an outer envelope against its current local writer set before
+  merging any enclosed ACL nodes. A stale or partitioned writer can therefore
+  race a removal with a signed re-grant. Do not treat writer removal as a
+  Byzantine or globally causal cutover.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
-- **PathUpdate is best-effort and v1 is not state-bound.** There is no guarantee that
-  ACL change notifications reach all peers. The active v1 protocol has no
-  generation or parent-tree binding. Shipped keychains reject an exact repeat
-  of an already-installed epoch ID before committing the cloned BeeKEM tree,
-  but this is only an incidental duplicate check: a previously unseen delayed
-  writer-signed update can still be accepted out of order and roll a receiver
-  back to an earlier root. The state-bound v2 codec is reserved but not wired
-  into the runtime handler. V1 also rejects local rotations when a blank
-  sibling subtree expands to multiple resolution nodes, and receivers reject
-  updates whose first sender/receiver path intersection is below the root.
-  Its single ciphertext per level cannot safely cover either case, so some
-  multi-level group rotations fail closed.
+- **PathUpdate is best-effort and has no automatic catch-up.** There is no
+  acknowledgment or retry. A surviving reader that misses the new epoch cannot
+  use an ordinary load response encrypted under that unknown epoch to recover;
+  it needs an explicit recipient-bound recovery or re-invitation flow.
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
-- **UCAN capabilities are standalone.** The UCAN module can issue and verify capability tokens, but the document change path does not check them.
+- **UCAN capabilities are standalone and locally cached.** The UCAN module can
+  issue and verify capability tokens, but the document change path does not
+  check them and capability metadata is not replicated. Revocation is not
+  enforced across replicas through a shared, authenticated membership state.
 - **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
 
 ## Convergence and verification
