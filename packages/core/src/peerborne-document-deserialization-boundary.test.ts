@@ -54,11 +54,17 @@ const documentPath = '/detached-load';
 
 function loadHarness(message: any, context = 'load-response-v3') {
   message.signatureContext = context;
+  message.tips = [];
   const verify = jest.fn(async () => true);
   const sync = jest.fn(async () => true);
   const document = fakeDocument({
     documentPath,
-    swarm: { config: { loadQuorumTimeoutMs: 1000 } },
+    swarm: {
+      config: { loadQuorumTimeoutMs: 1000 },
+      isPendingInvitationDocument: () => true,
+    },
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
     _authProvider: {
@@ -116,6 +122,15 @@ async function invitationHarness(message: any) {
       getKey: () => ({}),
     },
   });
+  document._keychainProvider.initialize = () => ({
+    prepareMerge: () => ({
+      hydrateKeys: async () => [[epoch, {}]],
+      currentKeyId: epoch,
+      keyIds: [epoch],
+      getKey: () => ({}),
+      commit: () => undefined,
+    }),
+  });
   return {
     document, verify,
     bundle: {
@@ -136,7 +151,7 @@ describe('deserialized load message boundaries', () => {
       const { document, stream, verify, sync } = loadHarness(message);
       await expect(
         document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-      ).rejects.toThrow(/data propert/);
+      ).resolves.toBe(false);
       expect(getter).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
       expect(sync).not.toHaveBeenCalled();
@@ -164,6 +179,7 @@ describe('deserialized load message boundaries', () => {
         changes: { kind: 'document', change: { value: 1 } },
       }),
       'load-response-v3',
+      0,
     );
   });
 
@@ -176,7 +192,7 @@ describe('deserialized load message boundaries', () => {
       const { document, bundle, verify } = await invitationHarness(message);
       await expect(
         document.acceptInvitationBootstrap(bundle, 'issuer', 'reader', '/founder'),
-      ).rejects.toThrow(/invalid wire context/);
+      ).rejects.toThrow(/malformed or cross-context fields/);
       expect(getter).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
     },
