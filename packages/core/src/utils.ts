@@ -543,11 +543,6 @@ export function snapshotDeepEnumerableData<T>(
       } catch {
         throw new TypeError(`${field} contains an unstable array`);
       }
-      for (const key of keys) {
-        if (typeof key !== 'string') {
-          throw new TypeError(`${field} must not contain symbol properties`);
-        }
-      }
       if (keys.length !== length + 1) {
         throw new TypeError(`${field} arrays must be dense data arrays`);
       }
@@ -629,6 +624,8 @@ export function snapshotDeepEnumerableData<T>(
     } catch {
       throw new TypeError(`${field} contains an unstable object`);
     }
+    // Reject over-budget objects before scanning their keys, regardless of
+    // which shape error a smaller object would report.
     accountProperties(keys.length);
     for (const key of keys) {
       if (typeof key !== 'string') {
