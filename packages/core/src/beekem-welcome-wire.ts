@@ -1,3 +1,5 @@
+const CANONICAL_BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 /**
  * Wire serialization for BeeKEM `BeeKEMWelcome` payloads.
  *
@@ -1060,7 +1062,7 @@ function reserveEncodedField(
   }
   if (
     value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+    !CANONICAL_BASE64_RE.test(
       value,
     )
   ) {
@@ -1091,7 +1093,7 @@ function decodeReservedCanonicalBase64(
 ): Uint8Array {
   if (
     value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+    !CANONICAL_BASE64_RE.test(
       value,
     )
   ) {
@@ -1099,7 +1101,7 @@ function decodeReservedCanonicalBase64(
       `${context}: ${fieldName} must use canonical padded base64`,
     );
   }
-  const decoded = decodeBase64(value, fieldName);
+  const decoded = decodeBase64(value, fieldName, context);
   if (
     decoded.byteLength < minimumBytes ||
     decoded.byteLength > maximumBytes
@@ -1158,7 +1160,7 @@ function decodeCanonicalBase64(
   }
   if (
     value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+    !CANONICAL_BASE64_RE.test(
       value,
     )
   ) {
@@ -1166,7 +1168,7 @@ function decodeCanonicalBase64(
       `${context}: ${fieldName} must use canonical padded base64`,
     );
   }
-  const decoded = decodeBase64(value, fieldName);
+  const decoded = decodeBase64(value, fieldName, context);
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(
       `${context}: ${fieldName} exceeds the decoded size limit`,
@@ -1180,16 +1182,15 @@ function decodeCanonicalBase64(
   return decoded;
 }
 
-function decodeBase64(value: string, fieldName: string): Uint8Array {
+function decodeBase64(
+  value: string,
+  fieldName: string,
+  context = 'Invalid BeeKEMWelcome',
+): Uint8Array {
   try {
     return Base64.toUint8Array(value);
-  } catch (err) {
-    throw new Error(
-      `BeeKEMWelcome wire: invalid base64 for field ${fieldName}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
+  } catch {
+    throw new Error(`${context}: '${fieldName}' must use canonical padded base64`);
   }
 }
 
