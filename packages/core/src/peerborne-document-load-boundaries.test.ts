@@ -60,7 +60,10 @@ jest.mock('./peerborne.js', () => ({
 }));
 
 function fakeDocument(fields: Record<string, unknown>): any {
-  return Object.assign(Object.create(PeerborneDocument.prototype), fields);
+  return Object.assign(Object.create(PeerborneDocument.prototype), {
+    _keychain: { keys: async () => [] },
+    ...fields,
+  });
 }
 
 function deferred<T>() {
@@ -115,6 +118,158 @@ function signedLoadHarness(
 }
 
 describe('document load response boundaries', () => {
+  test('rejects keychain-only state at the queued invitation pristine check', async () => {
+    const apply = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/invitation-keychain-only',
+      _bootstrapLoadApplicationState: 'pristine',
+      _hashes: new Set(),
+      _subscribed: false,
+      _keychain: { keys: async () => [[new Uint8Array([1]), {}]] },
+      _mutationQueue: new InvitationMembershipQueue(),
+    });
+    await expect(
+      document._runInvitationBootstrapStateApplication(apply),
+    ).rejects.toThrow(/pristine.*keychain/);
+    expect(apply).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('does not apply a late missing block after another worker exceeds the budget', async () => {
+    const lateStarted = deferred<void>();
+    const internalAbort = deferred<void>();
+    const releaseLate = deferred<void>();
+    const lateFinished = deferred<void>();
+    const remoteChange = jest.fn((state: unknown) => state);
+    const document = fakeDocument({
+      documentPath: '/internal-fetch-abort',
+      _bootstrapLoadApplicationState: 'pending',
+      _document: {},
+      _hashes: new Set(),
+      _referencedAncestors: new Set(),
+      _mergeSyncTree: async () => [
+        ['LIMIT', crdtDocumentChangeNode, undefined],
+        ['LATE', crdtDocumentChangeNode, undefined],
+      ],
+      _getBlock: async (cid: { toString(): string }, options: any) => {
+        if (cid.toString() === 'LIMIT') {
+          await lateStarted.promise;
+          options.consumeBytes(2);
+          throw new Error('unreachable');
+        }
+        options.signal.addEventListener('abort', () => internalAbort.resolve());
+        lateStarted.resolve();
+        await releaseLate.promise;
+        lateFinished.resolve();
+        return { late: true };
+      },
+      _crdtProvider: { remoteChange },
+      _recentTips: [],
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+    });
+    const syncing = document._syncDocumentChanges(
+      'HEAD', { kind: crdtDocumentChangeNode },
+      { maxBlockBytes: 1, maxAggregateBlockBytes: 1 },
+    );
+    const rejected = expect(syncing).rejects.toThrow(/fetch limits exceeded/);
+    await internalAbort.promise;
+    releaseLate.resolve();
+    await lateFinished.promise;
+    await rejected;
+    expect(remoteChange).not.toHaveBeenCalled();
+    expect(document._hashes).toEqual(new Set());
+  });
+
+  test.each(['Readers', 'Writers'])(
+    'cancels a hung %s ACL conflict without another provider call',
+    async (kind) => {
+      const controller = new AbortController();
+      const settlement = deferred<void>();
+      const started = deferred<void>();
+      const merge = jest.fn(() => {
+        started.resolve();
+        throw new ACLOperationInProgressError('merge', settlement.promise);
+      });
+      const document = fakeDocument({
+        _readers: { merge }, _writers: { merge },
+        _bootstrapLoadApplicationState: 'pending',
+        _writerKeysVersion: 0, _writerMutationsInFlight: 0,
+      });
+      const assertActive = () => {
+        if (controller.signal.aborted) throw controller.signal.reason;
+      };
+      const work = document[`_merge${kind}`]({}, assertActive, controller.signal);
+      const outcome = work.then(() => 'resolved', (error: Error) => error.message);
+      try {
+        await started.promise;
+        controller.abort(new Error('cancelled ACL wait'));
+        const result = await Promise.race([
+          outcome,
+          new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 25)),
+        ]);
+        expect(result).toBe('cancelled ACL wait');
+        expect(merge).toHaveBeenCalledTimes(1);
+      } finally {
+        settlement.resolve();
+        await outcome;
+      }
+    },
+  );
+
+  test('does not impose bootstrap fetch limits on an established writer load', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => ['writer'], async () => true,
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._syncUnlocked = jest.fn(async (...args: any[]) => {
+      const options = args[5];
+      expect(options.maxBlockBytes).toBeUndefined();
+      expect(options.maxAggregateBlockBytes).toBeUndefined();
+      expect(options.aggregateBudget).toBeUndefined();
+      return true;
+    });
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+  });
+
+  test('cancels post-EOF decryption and releases its enclosing queue', async () => {
+    const controller = new AbortController();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const { document, stream } = signedLoadHarness(
+      async () => ['writer'], async () => true,
+    );
+    document._authProvider.decrypt = async () => {
+      started.resolve();
+      await release.promise;
+      return new Uint8Array([1]);
+    };
+    const sync = jest.fn(async () => true);
+    document._syncUnlocked = sync;
+    const queue = new InvitationMembershipQueue();
+    const loading = queue.run(() => document._sendLoadRequestAndSync(
+      stream, new Uint8Array([1]), null, 'issuer', undefined,
+      true, undefined, undefined, controller.signal,
+    ));
+    const outcome = loading.then(() => 'resolved', (error: Error) => error.message);
+    try {
+      await started.promise;
+      controller.abort(new Error('cancelled decryption'));
+      expect(await Promise.race([
+        outcome,
+        new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 25)),
+      ])).toBe('cancelled decryption');
+      await expect(queue.run(async () => 'released')).resolves.toBe('released');
+      expect(sync).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await outcome;
+    }
+    expect(sync).not.toHaveBeenCalled();
+  });
+
   test('serializes reader checks while preparing a remote-update audience', async () => {
     const readers = jest.fn(async () => ['reader']);
     const writers = jest.fn(async () => [
@@ -3440,8 +3595,11 @@ describe('document load response boundaries', () => {
       await hydrationStarted.promise;
       jest.advanceTimersByTime(25);
       await expect(load).rejects.toThrow(/deadline exceeded/);
-      releaseHydration.resolve();
       await backgroundFinished.promise;
+      await expect(
+        document._mutationQueue.run(async () => 'released'),
+      ).resolves.toBe('released');
+      releaseHydration.resolve();
 
       expect(commit).not.toHaveBeenCalled();
       expect(document._bootstrapLoadApplicationState).toBe('complete');
