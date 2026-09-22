@@ -42,7 +42,6 @@ const allowedFields: Readonly<
     'snapshot',
     'signature',
   ]),
-  'document-publish-v1': new Set(['documentId', 'signatureContext']),
   'load-response-v3': new Set([
     'documentId',
     'signatureContext',
