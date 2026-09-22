@@ -5,7 +5,8 @@ description: Evaluation procedure, findings, and acceptance gates for selecting 
 
 - Status: Proposed; no dependency selected
 - Date: 2026-08-21
-- Dependency facts revalidated: 2026-09-10
+- Broader dependency review: 2026-09-10
+- `webcrypto-mls` artifact metadata rechecked: 2026-09-22
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
 - Parent decision: [ADR 0001](../0001-mls-document-security-architecture/)
 
@@ -90,9 +91,9 @@ selection gate below.
 
 ### `@vanishing.page/webcrypto-mls`
 
-The 2026-09-22 metadata recheck pins
+The 2026-09-22 metadata recheck records
 [`@vanishing.page/webcrypto-mls` 0.0.11](https://registry.npmjs.org/@vanishing.page/webcrypto-mls/0.0.11),
-published on 2026-08-13, to the registry's source revision
+published on 2026-08-13, with the registry's source revision
 [`87af3eb1b1ea4a81e37b1daf5aa2329c75974f15`](https://github.com/vanishing-page/webcrypto-mls/tree/87af3eb1b1ea4a81e37b1daf5aa2329c75974f15).
 Its [immutable npm artifact](https://registry.npmjs.org/@vanishing.page/webcrypto-mls/-/webcrypto-mls-0.0.11.tgz)
 contains 1,182 files with a reported unpacked size of 25,332,557 bytes. This is
