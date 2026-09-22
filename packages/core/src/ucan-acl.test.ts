@@ -2179,6 +2179,24 @@ describe('UCANACL', () => {
     expect(deserialize).toHaveBeenCalledTimes(1);
   });
 
+  test('reconstructs callable listing identities instead of caching references', async () => {
+    const identity = (id: string) => Object.assign(() => id, { id });
+    const backingIdentity = identity('user-a');
+    const serialize = jest.fn(async (key: ReturnType<typeof identity>) => key.id);
+    const deserialize = jest.fn(async (id: string) => identity(id));
+    backing.users.mockResolvedValue([backingIdentity]);
+    const functionAcl = new UCANACLImpl(backing, serialize, deserialize);
+
+    const first = (await functionAcl.users())[0];
+    first.id = 'mutated-by-caller';
+    const second = (await functionAcl.users())[0];
+    expect(second).not.toBe(first);
+    expect(second).not.toBe(backingIdentity);
+    expect(second.id).toBe('user-a');
+    expect(backingIdentity.id).toBe('user-a');
+    expect(deserialize).toHaveBeenCalledTimes(2);
+  });
+
   test('does not cache identities whose canonical representation cannot be cloned', async () => {
     type Identity = { id: string; canonicalMarker: string };
     const makeIdentity = (id: string): Identity =>
