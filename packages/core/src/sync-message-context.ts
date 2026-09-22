@@ -19,8 +19,7 @@ const syncMessageSnapshotLimits = {
   // collection, and one binary change value, plus fixed message metadata.
   maxObjects: 4 * MAX_CHANGE_TREE_NODES + 1_024,
   // Cover maximum tree edges, node fields, and adapter collection entries.
-  maxProperties:
-    MAX_CHANGE_TREE_EDGES + 6 * MAX_CHANGE_TREE_NODES + 1_024,
+  maxProperties: MAX_CHANGE_TREE_EDGES + 6 * MAX_CHANGE_TREE_NODES + 1_024,
   maxArrayLength: MAX_CHANGE_TREE_EDGES,
   // A bounded UTF-8 request may expand to two-byte JS strings while binary
   // adapter values shrink when decoded from base64.
@@ -39,84 +38,75 @@ export type SyncMessageContext =
   | 'beekem-path-update-v1'
   | 'key-update-v2';
 
-const allowedFields: Readonly<
-  Record<SyncMessageContext, ReadonlySet<string>>
-> = {
-  'ordinary-sync-v1': new Set([
-    'documentId',
-    'changeId',
-    'changes',
-    'snapshot',
-    'signature',
-  ]),
-  'document-publish-v1': new Set([
-    'documentId',
-    'changeId',
-    'changes',
-    'signature',
-  ]),
-  'load-response-v3': new Set([
-    'documentId',
-    'changeId',
-    'changes',
-    'snapshot',
-    'keychainChanges',
-    'tips',
-    'signature',
-  ]),
-  'load-response-v4': new Set([
-    'documentId',
-    'changeId',
-    'changes',
-    'snapshot',
-    'keychainChanges',
-    'tipsHash',
-    'tips',
-    'loadSecurityState',
-    'loadChallenge',
-    'signature',
-  ]),
-  'tip-advertisement-v1': new Set([
-    'documentId',
-    'tipsHash',
-    'signature',
-  ]),
-  'security-advertisement-v1': new Set([
-    'documentId',
-    'tipsHash',
-    'loadSecurityState',
-    'loadChallenge',
-    'signature',
-  ]),
-  'invitation-bootstrap-v1': new Set([
-    'documentId',
-    'changeId',
-    'changes',
-    'snapshot',
-    'keychainChanges',
-    'tips',
-    'signature',
-  ]),
-  'beekem-welcome-v1': new Set([
-    'documentId',
-    'welcomeEpochId',
-    'welcomeRecipient',
-    'welcomeRecipientKemPublicKey',
-    'eciesSealed',
-    'signature',
-  ]),
-  'beekem-path-update-v1': new Set([
-    'documentId',
-    'pathUpdate',
-    'pathUpdateEpochId',
-    'signature',
-  ]),
-  'key-update-v2': new Set([
-    'documentId',
-    'keychainChanges',
-    'signature',
-  ]),
-};
+const allowedFields: Readonly<Record<SyncMessageContext, ReadonlySet<string>>> =
+  {
+    'ordinary-sync-v1': new Set([
+      'documentId',
+      'changeId',
+      'changes',
+      'snapshot',
+      'signature',
+    ]),
+    'document-publish-v1': new Set([
+      'documentId',
+      'changeId',
+      'changes',
+      'signature',
+    ]),
+    'load-response-v3': new Set([
+      'documentId',
+      'changeId',
+      'changes',
+      'snapshot',
+      'keychainChanges',
+      'tips',
+      'signature',
+    ]),
+    'load-response-v4': new Set([
+      'documentId',
+      'changeId',
+      'changes',
+      'snapshot',
+      'keychainChanges',
+      'tipsHash',
+      'tips',
+      'loadSecurityState',
+      'loadChallenge',
+      'signature',
+    ]),
+    'tip-advertisement-v1': new Set(['documentId', 'tipsHash', 'signature']),
+    'security-advertisement-v1': new Set([
+      'documentId',
+      'tipsHash',
+      'loadSecurityState',
+      'loadChallenge',
+      'signature',
+    ]),
+    'invitation-bootstrap-v1': new Set([
+      'documentId',
+      'changeId',
+      'changes',
+      'snapshot',
+      'keychainChanges',
+      'tips',
+      'signature',
+    ]),
+    'beekem-welcome-v1': new Set([
+      'documentId',
+      'welcomeEpochId',
+      'welcomeRecipient',
+      'welcomeRecipientKemPublicKey',
+      'eciesSealed',
+      'signature',
+    ]),
+    'beekem-path-update-v1': new Set([
+      'documentId',
+      'pathUpdate',
+      'pathUpdateEpochId',
+      'signature',
+    ]),
+    'key-update-v2': new Set(['documentId', 'keychainChanges', 'signature']),
+  };
 
 /**
  * Deeply detach a deserialized sync message and reject fields owned by another
@@ -150,4 +140,55 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
     `${context} message`,
     syncMessageSnapshotLimits,
   ) as CRDTSyncMessage<ChangesType, PublicKey>;
+}
+
+/** @internal Compare an untrusted serializer input with the detached state to apply. */
+export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
+  expected: CRDTSyncMessage<ChangesType, PublicKey>,
+  candidate: unknown,
+  context: SyncMessageContext,
+): boolean {
+  let actual: CRDTSyncMessage<ChangesType, PublicKey>;
+  try {
+    actual = snapshotSyncMessageForContext(candidate, context);
+  } catch {
+    return false;
+  }
+  const pending: [unknown, unknown][] = [[expected, actual]];
+  while (pending.length > 0) {
+    const [left, right] = pending.pop()!;
+    if (Object.is(left, right)) continue;
+    if (
+      left === null ||
+      right === null ||
+      typeof left !== 'object' ||
+      typeof right !== 'object'
+    )
+      return false;
+    if (left instanceof Uint8Array || right instanceof Uint8Array) {
+      if (
+        !(left instanceof Uint8Array) ||
+        !(right instanceof Uint8Array) ||
+        left.length !== right.length
+      )
+        return false;
+      for (let index = 0; index < left.length; index++) {
+        if (left[index] !== right[index]) return false;
+      }
+      continue;
+    }
+    if (Array.isArray(left) !== Array.isArray(right)) return false;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (let index = 0; index < leftKeys.length; index++) {
+      const key = leftKeys[index];
+      if (key !== rightKeys[index]) return false;
+      pending.push([
+        (left as Record<string, unknown>)[key],
+        (right as Record<string, unknown>)[key],
+      ]);
+    }
+  }
+  return true;
 }

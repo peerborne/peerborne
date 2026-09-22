@@ -206,7 +206,7 @@ describe('ordinary sync-message context confinement', () => {
     expect(collectACL).not.toHaveBeenCalled();
   });
 
-  test('never exposes the state copy to a mutating serializer', async () => {
+  test.each([1, 2])('rejects a serializer that mutates on call %i', async (mutationCall) => {
     let serializationCount = 0;
     const collectACL = jest.fn(() => undefined);
     const document = fakeDocument({
@@ -215,7 +215,7 @@ describe('ordinary sync-message context confinement', () => {
           changes?: { change?: { value: number } };
         }) => {
           serializationCount += 1;
-          if (serializationCount === 2) {
+          if (serializationCount === mutationCall) {
             message.changes!.change!.value = 9;
           }
           return new Uint8Array([1]);
@@ -233,11 +233,8 @@ describe('ordinary sync-message context confinement', () => {
         changes: { kind: 'document', change: { value: 1 } },
         signature: 'AQ==',
       }),
-    ).resolves.toBe(true);
-    expect(collectACL).toHaveBeenCalledWith(
-      { kind: 'document', change: { value: 1 } },
-      'root',
-    );
+    ).resolves.toBe(false);
+    expect(collectACL).not.toHaveBeenCalled();
   });
 
   test('GossipSub validator rejects a specialized body before signature work', async () => {
