@@ -896,7 +896,12 @@ function decodeCanonicalBase64(
       `Invalid PathUpdateV2: '${fieldName}' must use canonical padded base64`,
     );
   }
-  const decoded = Base64.toUint8Array(value);
+  let decoded: Uint8Array;
+  try {
+    decoded = Base64.toUint8Array(value);
+  } catch {
+    throw new Error(`Invalid PathUpdateV2: ${fieldName} must use canonical padded base64`);
+  }
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(`Invalid PathUpdateV2: '${fieldName}' exceeds size limit`);
   }
