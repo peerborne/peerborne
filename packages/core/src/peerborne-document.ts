@@ -1,3 +1,4 @@
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 /**
  * Document  is just for opening documents right now
  * @remarks
@@ -176,12 +177,7 @@ export type { HistoryVisibility } from './invitation-policy.js';
  * matched. Returns `false` for mismatched lengths (also in constant
  * time across same-length inputs).
  */
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
+
 
 /** Opaque, recipient-bound material returned by the invitation join handler. */
 export interface InvitationBootstrapBundle {

@@ -1,3 +1,4 @@
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 /**
  * Pure validation logic for incoming BeeKEM Welcome messages.
  *
@@ -365,13 +366,4 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   }
 
   return { kind: 'accept', message };
-}
-
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  let diff = a.byteLength ^ b.byteLength;
-  const length = Math.max(a.byteLength, b.byteLength);
-  for (let index = 0; index < length; index++) {
-    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  }
-  return diff === 0;
 }
