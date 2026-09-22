@@ -1,3 +1,4 @@
+import { defineEnumerableDataProperty } from './internal/data-property.js';
 import {
   CRDTChangeNode,
   CRDTChangeNodeKind,
@@ -36,27 +37,12 @@ const LOAD_RESPONSE_MANIFEST_SNAPSHOT_FIELDS = [
 ] as const;
 const arrayIsArray = Array.isArray;
 const objectCreate = Object.create;
-const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
 
-function defineEnumerableDataProperty(
-  target: object,
-  key: PropertyKey,
-  value: unknown,
-): void {
-  reflectApply(objectDefineProperty, Object, [
-    target,
-    key,
-    {
-      configurable: true,
-      enumerable: true,
-      value,
-      writable: true,
-    },
-  ]);
-}
+
 
 function encodeUtf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -175,7 +161,7 @@ function kindByte(kind: CRDTChangeNodeKind): number {
 function requirePlainNode<ChangesType>(
   node: CRDTChangeNode<ChangesType>,
 ): void {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+  if (node === null || typeof node !== 'object' || reflectApply(arrayIsArray, Array, [node])) {
     throw new TypeError('load response manifest node must be an object');
   }
   kindByte(node.kind);
@@ -189,14 +175,14 @@ function requirePlainNode<ChangesType>(
     if (
       node.children === null ||
       typeof node.children !== 'object' ||
-      Array.isArray(node.children)
+      reflectApply(arrayIsArray, Array, [node.children])
     ) {
       throw new TypeError(
         'change-node children must be an object, false, or undefined',
       );
     }
-    const prototype = Object.getPrototypeOf(node.children);
-    if (prototype !== Object.prototype && prototype !== null) {
+    const prototype = reflectApply(objectGetPrototypeOf, Object, [node.children]);
+    if (prototype !== objectPrototype && prototype !== null) {
       throw new TypeError('change-node children must be a plain object');
     }
   }
