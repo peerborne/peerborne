@@ -603,6 +603,7 @@ describe('AutomergeKeychain', () => {
     const establishedReceiver = new AutomergeKeychain();
     establishedReceiver.merge(source.history());
     establishedReceiver.merge(first);
+    expect(establishedReceiver.history()).toEqual(source.history());
     expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
       oldID,
       currentID,

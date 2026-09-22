@@ -591,6 +591,9 @@ const KEY_ID_LENGTH_BYTES = 32;
 const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
   'peerborne:yjs-keychain-projection:v1\0';
 
+// This independently rooted current-key view is reconciled by prepareMerge:
+// a matching current tuple preserves the receiver's existing linear history
+// without applying the projection's unrelated CRDT root operations.
 async function currentKeyProjection(
   entry: CanonicalKeychainEntry,
 ): Promise<Uint8Array> {
