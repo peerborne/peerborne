@@ -56,6 +56,8 @@ const sharedArrayBufferByteLength =
         'byteLength',
         'SharedArrayBuffer.byteLength',
       );
+// Lengths belong only to internally decoded envelopes with immutable private fields.
+const clonedEnvelopeLengths = new WeakMap<object, number>();
 const serializeEncryptedGroupState = EncryptedGroupState.prototype.serialize;
 const deserializeEncryptedGroupState = EncryptedGroupState.deserialize;
 const encryptedGroupStateValue = requireGetter(
@@ -432,7 +434,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     }
     const projectedBytes =
       pendingKeyPackageBytes(this.#working.pendingKeyPackages.values()) +
-      intrinsicByteLength(serializedEncryptedKeyPackageState(snapshot));
+      encryptedKeyPackageSerializedLength(snapshot);
     if (projectedBytes > MAX_PENDING_KEY_PACKAGE_BYTES) {
       throw new Error('pending KeyPackage byte limit reached');
     }
@@ -970,19 +972,25 @@ export function validateGroupStateStoreSnapshotSemantics(
 }
 
 function cloneEncryptedState(state: EncryptedGroupState): EncryptedGroupState {
-  return deserializeEncryptedGroupState.call(
+  const bytes = serializedEncryptedGroupState(state);
+  const snapshot = deserializeEncryptedGroupState.call(
     EncryptedGroupState,
-    serializedEncryptedGroupState(state),
+    bytes,
   );
+  clonedEnvelopeLengths.set(snapshot, intrinsicByteLength(bytes));
+  return snapshot;
 }
 
 function cloneEncryptedKeyPackageState(
   state: EncryptedKeyPackageState,
 ): EncryptedKeyPackageState {
-  return deserializeEncryptedKeyPackageState.call(
+  const bytes = serializedEncryptedKeyPackageState(state);
+  const snapshot = deserializeEncryptedKeyPackageState.call(
     EncryptedKeyPackageState,
-    serializedEncryptedKeyPackageState(state),
+    bytes,
   );
+  clonedEnvelopeLengths.set(snapshot, intrinsicByteLength(bytes));
+  return snapshot;
 }
 
 function validateAndCloneEncryptedGroupState(
@@ -1041,7 +1049,7 @@ function pendingKeyPackageBytes(
 ): number {
   let total = 0;
   for (const state of states) {
-    total += intrinsicByteLength(serializedEncryptedKeyPackageState(state));
+    total += encryptedKeyPackageSerializedLength(state);
     if (total > MAX_PENDING_KEY_PACKAGE_BYTES) return total;
   }
   return total;
@@ -1405,13 +1413,25 @@ function addCommittedBytes(
 }
 
 function encryptedStateCommittedBytes(state: EncryptedGroupState): number {
-  return intrinsicByteLength(serializedEncryptedGroupState(state)) + 4;
+  return (
+    (clonedEnvelopeLengths.get(state) ??
+      intrinsicByteLength(serializedEncryptedGroupState(state))) + 4
+  );
+}
+
+function encryptedKeyPackageSerializedLength(
+  state: EncryptedKeyPackageState,
+): number {
+  return (
+    clonedEnvelopeLengths.get(state) ??
+    intrinsicByteLength(serializedEncryptedKeyPackageState(state))
+  );
 }
 
 function pendingEntryCommittedBytes(state: EncryptedKeyPackageState): number {
   const reference = getEncryptedKeyPackageValue(state).reference;
   return (
-    intrinsicByteLength(serializedEncryptedKeyPackageState(state)) +
+    encryptedKeyPackageSerializedLength(state) +
     intrinsicByteLength(reference) +
     6
   );

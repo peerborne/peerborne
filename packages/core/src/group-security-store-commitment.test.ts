@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 
 import {
   EncryptedGroupState,
@@ -23,8 +24,7 @@ const storeKey: GroupStateStoreKey = { protocol, groupId };
 
 const canonicalGroupSecurityStoreSnapshot = (
   snapshot: GroupStateStoreSnapshot,
-): Uint8Array =>
-  canonicalGroupSecurityStoreSnapshotForKey(snapshot, storeKey);
+): Uint8Array => canonicalGroupSecurityStoreSnapshotForKey(snapshot, storeKey);
 const groupSecurityStoreSnapshotCommitment = (
   snapshot: GroupStateStoreSnapshot,
 ): Promise<Uint8Array> =>
@@ -58,7 +58,8 @@ function keyPackage(reference: number): GroupKeyPackage {
 }
 
 async function fixture(): Promise<GroupStateStoreSnapshot> {
-  const protector = await WebCryptoGroupStateProtector.generate('commitment-key');
+  const protector =
+    await WebCryptoGroupStateProtector.generate('commitment-key');
   return {
     revision: 7,
     encryptedState: await EncryptedGroupState.seal(
@@ -133,6 +134,26 @@ async function fixture(): Promise<GroupStateStoreSnapshot> {
 }
 
 describe('group-security store snapshot commitment', () => {
+  test('commits cross-realm dense arrays using only their own data', async () => {
+    const source = await fixture();
+    const foreign = { ...source };
+    for (const field of [
+      'pendingKeyPackages',
+      'pendingKeyPackageRequests',
+      'consumedKeyPackageRefs',
+      'outbox',
+      'replay',
+    ] as const) {
+      foreign[field] = runInNewContext('Array.from(entries)', {
+        entries: source[field],
+      });
+    }
+    expect(canonicalGroupSecurityStoreSnapshot(foreign)).toEqual(
+      canonicalGroupSecurityStoreSnapshot(source),
+    );
+    expect(validateAndCloneGroupStateStoreSnapshot(foreign)).toEqual(source);
+  });
+
   test('preserves the exact canonical outbox encoding', async () => {
     const protector = await WebCryptoGroupStateProtector.generate(
       'canonical-outbox-key',
@@ -244,9 +265,9 @@ describe('group-security store snapshot commitment', () => {
       secondControlRecord: reordered.forkEvidence!.firstControlRecord,
     };
 
-    await expect(groupSecurityStoreSnapshotCommitment(reordered)).resolves.toEqual(
-      await groupSecurityStoreSnapshotCommitment(original),
-    );
+    await expect(
+      groupSecurityStoreSnapshotCommitment(reordered),
+    ).resolves.toEqual(await groupSecurityStoreSnapshotCommitment(original));
   });
 
   test('binds same-revision pending requests, consumed, outbox, replay, and fork metadata', async () => {
@@ -300,8 +321,7 @@ describe('group-security store snapshot commitment', () => {
     const duplicateRequest = cloneSnapshot(await fixture());
     duplicateRequest.pendingKeyPackageRequests[1] = {
       ...duplicateRequest.pendingKeyPackageRequests[1],
-      operationId:
-        duplicateRequest.pendingKeyPackageRequests[0].operationId,
+      operationId: duplicateRequest.pendingKeyPackageRequests[0].operationId,
     };
     await expect(
       groupSecurityStoreSnapshotCommitment(duplicateRequest),
@@ -318,17 +338,17 @@ describe('group-security store snapshot commitment', () => {
 
     const overlap = cloneSnapshot(await fixture());
     overlap.consumedKeyPackageRefs.push(new Uint8Array([1]));
-    await expect(
-      groupSecurityStoreSnapshotCommitment(overlap),
-    ).rejects.toThrow(/both pending and consumed/);
+    await expect(groupSecurityStoreSnapshotCommitment(overlap)).rejects.toThrow(
+      /both pending and consumed/,
+    );
 
     const nonFork = cloneSnapshot(await fixture());
     nonFork.forkEvidence!.secondRecordId = new Uint8Array(
       nonFork.forkEvidence!.firstRecordId,
     );
-    await expect(
-      groupSecurityStoreSnapshotCommitment(nonFork),
-    ).rejects.toThrow(/fork record IDs must be distinct/);
+    await expect(groupSecurityStoreSnapshotCommitment(nonFork)).rejects.toThrow(
+      /fork record IDs must be distinct/,
+    );
 
     const extra = {
       ...(await fixture()),
@@ -347,29 +367,27 @@ describe('group-security store snapshot commitment', () => {
       'semantic-snapshot-key',
     );
     const foreignGroup = cloneSnapshot(original);
-    foreignGroup.pendingKeyPackages[0] =
-      await EncryptedKeyPackageState.seal(
-        {
-          ...keyPackage(1),
-          groupId: new Uint8Array([9, 9, 9]),
-        },
-        new Uint8Array([1]),
-        protector,
-      );
+    foreignGroup.pendingKeyPackages[0] = await EncryptedKeyPackageState.seal(
+      {
+        ...keyPackage(1),
+        groupId: new Uint8Array([9, 9, 9]),
+      },
+      new Uint8Array([1]),
+      protector,
+    );
     await expect(
       groupSecurityStoreSnapshotCommitment(foreignGroup),
     ).rejects.toThrow(/groupId does not match store key/);
 
     const foreignProtocol = cloneSnapshot(original);
-    foreignProtocol.pendingKeyPackages[0] =
-      await EncryptedKeyPackageState.seal(
-        {
-          ...keyPackage(1),
-          protocol: { id: 'other.protocol', version: 1 },
-        },
-        new Uint8Array([1]),
-        protector,
-      );
+    foreignProtocol.pendingKeyPackages[0] = await EncryptedKeyPackageState.seal(
+      {
+        ...keyPackage(1),
+        protocol: { id: 'other.protocol', version: 1 },
+      },
+      new Uint8Array([1]),
+      protector,
+    );
     expect(() =>
       validateAndCloneGroupStateStoreSnapshot(foreignProtocol),
     ).toThrow(/protocol does not match store key/);
@@ -391,9 +409,9 @@ describe('group-security store snapshot commitment', () => {
       replay: [],
       forkEvidence: undefined,
     };
-    expect(() =>
-      validateAndCloneGroupStateStoreSnapshot(withoutState),
-    ).toThrow(/without encrypted group state/);
+    expect(() => validateAndCloneGroupStateStoreSnapshot(withoutState)).toThrow(
+      /without encrypted group state/,
+    );
 
     const futureSnapshots = [
       mutate(original, (value) => {
@@ -407,9 +425,9 @@ describe('group-security store snapshot commitment', () => {
       }),
     ];
     for (const future of futureSnapshots) {
-      expect(() =>
-        validateAndCloneGroupStateStoreSnapshot(future),
-      ).toThrow(/newer than encrypted state/);
+      expect(() => validateAndCloneGroupStateStoreSnapshot(future)).toThrow(
+        /newer than encrypted state/,
+      );
     }
 
     const pendingOnly: GroupStateStoreSnapshot = {
@@ -423,8 +441,7 @@ describe('group-security store snapshot commitment', () => {
       forkEvidence: undefined,
     };
     expect(
-      validateAndCloneGroupStateStoreSnapshot(pendingOnly)
-        .pendingKeyPackages,
+      validateAndCloneGroupStateStoreSnapshot(pendingOnly).pendingKeyPackages,
     ).toHaveLength(2);
   });
 
@@ -450,15 +467,15 @@ describe('group-security store snapshot commitment', () => {
     source.outbox[0].payload.fill(0xff);
     source.pendingKeyPackageRequests[0].requestCommitment.fill(0xee);
     source.replay.reverse();
-    await expect(
-      groupSecurityStoreSnapshotCommitment(stable),
-    ).resolves.toEqual(expected);
+    await expect(groupSecurityStoreSnapshotCommitment(stable)).resolves.toEqual(
+      expected,
+    );
 
     const sparse = cloneSnapshot(await fixture());
     sparse.outbox = new Array(1) as never;
-    expect(() =>
-      validateAndCloneGroupStateStoreSnapshot(sparse),
-    ).toThrow(/sparse|array index|data property|missing/i);
+    expect(() => validateAndCloneGroupStateStoreSnapshot(sparse)).toThrow(
+      /sparse|array index|data property|missing/i,
+    );
   });
 
   test('rejects oversized arrays before requesting their property keys', async () => {
@@ -494,12 +511,11 @@ describe('group-security store snapshot commitment', () => {
     ).not.toEqual(expected);
 
     const changedPending = cloneSnapshot(original);
-    changedPending.pendingKeyPackages[0] =
-      await EncryptedKeyPackageState.seal(
-        keyPackage(1),
-        new Uint8Array([0xff]),
-        protector,
-      );
+    changedPending.pendingKeyPackages[0] = await EncryptedKeyPackageState.seal(
+      keyPackage(1),
+      new Uint8Array([0xff]),
+      protector,
+    );
     expect(
       await groupSecurityStoreSnapshotCommitment(changedPending),
     ).not.toEqual(expected);
@@ -507,8 +523,9 @@ describe('group-security store snapshot commitment', () => {
 
   test('rejects forged, uninitialized, and overridden encrypted envelopes', async () => {
     const forgedGroup = cloneSnapshot(await fixture());
-    const forgedGroupState = Object.create(EncryptedGroupState.prototype) as
-      EncryptedGroupState & { serialize: () => Uint8Array };
+    const forgedGroupState = Object.create(
+      EncryptedGroupState.prototype,
+    ) as EncryptedGroupState & { serialize: () => Uint8Array };
     Object.defineProperty(forgedGroupState, 'serialize', {
       value: () => forgedGroup.encryptedState!.serialize(),
     });
@@ -540,9 +557,9 @@ describe('group-security store snapshot commitment', () => {
       value: keyPackage(0xfe),
     });
 
-    await expect(
-      groupSecurityStoreSnapshotCommitment(value),
-    ).rejects.toThrow(/not branded encrypted state/);
+    await expect(groupSecurityStoreSnapshotCommitment(value)).rejects.toThrow(
+      /not branded encrypted state/,
+    );
   });
 
   test('uses intrinsic typed-array length and buffer brands', async () => {
@@ -564,9 +581,9 @@ describe('group-security store snapshot commitment', () => {
     const shortId = cloneSnapshot(await fixture());
     shortId.outbox[0].id = bytes(0x22, 31);
     Object.defineProperty(shortId.outbox[0].id, 'byteLength', { value: 32 });
-    await expect(
-      groupSecurityStoreSnapshotCommitment(shortId),
-    ).rejects.toThrow(/outbox entry 0 id.*invalid length/);
+    await expect(groupSecurityStoreSnapshotCommitment(shortId)).rejects.toThrow(
+      /outbox entry 0 id.*invalid length/,
+    );
 
     if (typeof SharedArrayBuffer !== 'undefined') {
       const shared = cloneSnapshot(await fixture());
@@ -633,7 +650,9 @@ describe('group-security store snapshot commitment', () => {
 interface MutableSnapshot {
   revision: number;
   encryptedState?: GroupStateStoreSnapshot['encryptedState'];
-  pendingKeyPackages: Array<GroupStateStoreSnapshot['pendingKeyPackages'][number]>;
+  pendingKeyPackages: Array<
+    GroupStateStoreSnapshot['pendingKeyPackages'][number]
+  >;
   pendingKeyPackageRequests: Array<
     GroupStateStoreSnapshot['pendingKeyPackageRequests'][number]
   >;
