@@ -2862,7 +2862,7 @@ export class PeerborneDocument<
       !Number.isSafeInteger(requestedResponseLimit) ||
       requestedResponseLimit <= 0
     ) {
-      return false;
+      throw new RangeError('maxResponseBytes must be a positive safe integer');
     }
     const responseLimit = Math.min(
       requestedResponseLimit,
@@ -3828,7 +3828,7 @@ export class PeerborneDocument<
         }
       }
     }
-    return false;
+    throw new Error('Invitation catch-up exhausted its retry limit');
   }
 
   // https://gist.github.com/alanshaw/591dc7dd54e4f99338a347ef568d6ee9#duplex-it

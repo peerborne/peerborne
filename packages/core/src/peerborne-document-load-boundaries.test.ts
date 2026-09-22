@@ -262,3 +262,15 @@ describe('document load response boundaries', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 });
+
+test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+  'rejects invalid configured response limit %p before stream work',
+  async (limit) => {
+    const document = Object.create(PeerborneDocument.prototype) as any;
+    const sink = jest.fn();
+    await expect(document._sendLoadRequestAndSync(
+      { sink }, new Uint8Array([1]), null, undefined, limit,
+    )).rejects.toThrow(RangeError);
+    expect(sink).not.toHaveBeenCalled();
+  },
+);
