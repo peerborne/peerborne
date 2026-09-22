@@ -263,6 +263,15 @@ describe('UCANACL over YjsACL', () => {
 });
 
 describe('YjsACL', () => {
+  test('failed merge validation does not create or replace live shared types', () => {
+    const acl = new YjsACL();
+    const live = (acl as any)._acl as Doc;
+    const before = new Map(live.share);
+    expect(() => acl.merge(new Uint8Array([255]))).toThrow();
+    expect(live.share).toEqual(before);
+    expect(live.share.has('users')).toBe(false);
+  });
+
   test('add rejects a non-P-384 identity before emitting changes', async () => {
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
