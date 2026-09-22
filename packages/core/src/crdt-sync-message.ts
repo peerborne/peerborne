@@ -6,38 +6,28 @@ import {
 import { CRDTSnapshotNode } from './snapshot-node.js';
 import type { LoadSecurityCommitments } from './load-security-state.js';
 
+const signatureContexts = [
+  'ordinary-sync-v1',
+  'document-publish-v1',
+  'load-response-v3',
+  'load-response-v4',
+  'tip-advertisement-v1',
+  'security-advertisement-v1',
+  'invitation-bootstrap-v1',
+  'beekem-welcome-v1',
+  'beekem-path-update-v1',
+  'key-update-v2',
+] as const;
+const signatureContextSet = new Set<string>(signatureContexts);
+
 /** Wire-purpose tag signed by authenticated sync-message operations. */
-export type SyncMessageSignatureContext =
-  | 'ordinary-sync-v1'
-  | 'document-publish-v1'
-  | 'load-response-v3'
-  | 'load-response-v4'
-  | 'tip-advertisement-v1'
-  | 'security-advertisement-v1'
-  | 'invitation-bootstrap-v1'
-  | 'beekem-welcome-v1'
-  | 'beekem-path-update-v1'
-  | 'key-update-v2';
+export type SyncMessageSignatureContext = (typeof signatureContexts)[number];
 
 /** Return whether an untrusted value is one exact supported signature tag. */
 export function isSyncMessageSignatureContext(
   value: unknown,
 ): value is SyncMessageSignatureContext {
-  switch (value) {
-    case 'ordinary-sync-v1':
-    case 'document-publish-v1':
-    case 'load-response-v3':
-    case 'load-response-v4':
-    case 'tip-advertisement-v1':
-    case 'security-advertisement-v1':
-    case 'invitation-bootstrap-v1':
-    case 'beekem-welcome-v1':
-    case 'beekem-path-update-v1':
-    case 'key-update-v2':
-      return true;
-    default:
-      return false;
-  }
+  return typeof value === 'string' && signatureContextSet.has(value);
 }
 
 /**
