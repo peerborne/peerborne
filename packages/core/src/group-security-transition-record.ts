@@ -185,7 +185,7 @@ export function deserializeGroupSecurityTransitionRecord(
     throw new Error('invalid group-security transition delivery codec length');
   }
   const codecId = decodeDeliveryCodecId(
-    copyRange(input, offset, codecIdLength),
+    rangeView(input, offset, codecIdLength),
   );
   offset += codecIdLength;
   const codecVersion = reflectApply(dataViewGetUint16, view, [offset, false]);
@@ -199,7 +199,7 @@ export function deserializeGroupSecurityTransitionRecord(
   ) {
     throw new Error('invalid group-security transition control length');
   }
-  const serializedControl = copyRange(input, offset, controlLength);
+  const serializedControl = rangeView(input, offset, controlLength);
   offset += controlLength;
   const deliveryLength = reflectApply(dataViewGetUint32, view, [offset, false]);
   offset += UINT32_BYTES;
@@ -431,12 +431,13 @@ function copyRange(
   offset: number,
   length: number,
 ): Uint8Array {
-  const source = new uint8ArrayConstructor(
-    buffer(input),
-    byteOffset(input) + offset,
-    length,
-  );
+  const source = rangeView(input, offset, length);
   const output = new uint8ArrayConstructor(length);
   setBytes(output, source, 0);
   return output;
+}
+
+// Only for private, already bounded input; never expose the enclosing frame.
+function rangeView(input: Uint8Array, offset: number, length: number): Uint8Array {
+  return new uint8ArrayConstructor(buffer(input), byteOffset(input) + offset, length);
 }
