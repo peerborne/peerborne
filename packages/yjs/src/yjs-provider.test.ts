@@ -223,9 +223,15 @@ describe('YjsACL delta encoding', () => {
     const acl = new YjsACL();
     // Remove a key that was never added -- should produce a no-op delta
     const changes = await acl.remove(key1);
+    expect(changes.byteLength).toBeGreaterThan(0);
+    const emptyDoc = new Doc();
+    expect(changes).toEqual(encodeStateAsUpdateV2(emptyDoc, encodeStateVector(emptyDoc)));
     // Applying a no-op delta should not add any users
     const acl2 = new YjsACL();
     acl2.merge(changes);
+    const accepted = acl2.current();
+    expect(() => acl2.merge(new Uint8Array())).toThrow(/Yjs ACL update/);
+    expect(acl2.current()).toEqual(accepted);
     const users = await acl2.users();
     expect(users).toHaveLength(0);
   });
