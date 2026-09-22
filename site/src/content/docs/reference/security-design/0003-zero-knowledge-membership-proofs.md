@@ -3,7 +3,8 @@ title: "ADR 0003: Zero-knowledge membership proofs"
 description: Decision not to add a zero-knowledge proof system to the MLS migration without a concrete privacy statement and threat model.
 ---
 
-- Status: Proposed; rejected from the current MLS scope
+- Status: Proposed
+- Proposed decision: Exclude zero-knowledge membership proofs from the current MLS scope
 - Date: 2026-08-21
 - Dependency facts revalidated: 2026-09-10
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
