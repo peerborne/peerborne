@@ -1,4 +1,4 @@
-import { welcomeFixture } from './__mocks__/beekem-v2.js';
+import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { encodeWelcomeSealedPayloadV2, decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload';

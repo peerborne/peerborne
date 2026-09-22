@@ -1,7 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { serializePathUpdateV2ForWire, deserializePathUpdateV2FromWire } from './path-update-wire.js';
-import { pathUpdateFixture } from './__mocks__/beekem-v2.js';
+import { pathUpdateFixture } from './__testutils__/beekem-v2.js';
 
 describe('path-update-wire current-format fuzz', () => {
   test('rejects arbitrary malformed records with a bounded validation error', () => {
