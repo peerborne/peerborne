@@ -5,6 +5,46 @@ import {
 } from './initial-load-trust.js';
 
 describe('captureInitialLoadSignerAuthorities', () => {
+  test.each(['existing', 'bootstrap'] as const)(
+    'does not invoke a caller-supplied iterator for %s writers',
+    async (source) => {
+      const iterator = jest.fn(() => {
+        throw new Error('untrusted iterator');
+      });
+      const keys = ['writer'];
+      Object.defineProperty(keys, Symbol.iterator, { value: iterator });
+      await expect(
+        captureInitialLoadSignerAuthorities({
+          documentPath: '/doc',
+          existingWriterKeys: source === 'existing' ? keys : [],
+          resolveTrustedDocumentWriters: async () => keys,
+          serializePublicKey: async (key) => key,
+        }),
+      ).resolves.toEqual([{ authorityId: 'writer', publicKey: 'writer' }]);
+      expect(iterator).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['existing', 'bootstrap'] as const)(
+    'rejects accessor entries without invoking them for %s writers',
+    async (source) => {
+      const getter = jest.fn(() => 'writer');
+      const serializePublicKey = jest.fn(async (key: string) => key);
+      const keys = ['writer'];
+      Object.defineProperty(keys, '0', { get: getter, enumerable: true });
+      await expect(
+        captureInitialLoadSignerAuthorities({
+          documentPath: '/doc',
+          existingWriterKeys: source === 'existing' ? keys : [],
+          resolveTrustedDocumentWriters: async () => keys,
+          serializePublicKey,
+        }),
+      ).rejects.toThrow(/own data entries/);
+      expect(getter).not.toHaveBeenCalled();
+      expect(serializePublicKey).not.toHaveBeenCalled();
+    },
+  );
+
   test('uses existing writers without invoking the bootstrap resolver', async () => {
     const resolver = jest.fn(async () => ['bootstrap']);
     await expect(
@@ -112,7 +152,7 @@ describe('captureInitialLoadSignerAuthorities', () => {
         ),
         serializePublicKey,
       }),
-    ).rejects.toThrow(/authority count exceeds/);
+    ).rejects.toThrow(/exceeds 256 entries/);
     expect(serializePublicKey).not.toHaveBeenCalled();
   });
 });
