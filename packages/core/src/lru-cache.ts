@@ -6,6 +6,7 @@ export class LRUCache<K, V> {
   private readonly _map = new Map<K, V>();
   private readonly _maxSize: number;
   private _finalizedEntries: Map<K, V> | undefined;
+  private _finalizedSize: number | undefined;
 
   constructor(maxSize: number = 1000) {
     if (!Number.isFinite(maxSize) || maxSize < 1) {
@@ -55,8 +56,8 @@ export class LRUCache<K, V> {
   }
 
   /**
-   * Stage a bounded batch insertion as a closure-local overlay. All Map work needed
-   * to build the overlay happens before this method returns; the returned
+   * Flush any previously finalized overlay, then stage a bounded batch insertion.
+   * All Map work happens before this method returns; the returned
    * finalizer only exposes the prebuilt overlay. Cache activity before
    * finalization is retained when the overlay is later materialized. Callers
    * must reserve the cache from claim through finalization and must not compose
@@ -74,6 +75,7 @@ export class LRUCache<K, V> {
     return () => {
       if (finalized) return;
       this._finalizedEntries = preparedEntries;
+      this._finalizedSize = undefined;
       finalized = true;
     };
   }
@@ -110,10 +112,12 @@ export class LRUCache<K, V> {
   get size(): number {
     const finalized = this._finalizedEntries;
     if (finalized === undefined) return this._map.size;
+    if (this._finalizedSize !== undefined) return this._finalizedSize;
     let additions = 0;
     for (const key of finalized.keys()) {
       if (!this._map.has(key)) additions++;
     }
-    return Math.min(this._maxSize, this._map.size + additions);
+    this._finalizedSize = Math.min(this._maxSize, this._map.size + additions);
+    return this._finalizedSize;
   }
 }
