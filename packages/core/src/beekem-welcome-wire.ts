@@ -210,7 +210,7 @@ function snapshotLegacyWelcome(
     !TreeMath.isLeaf(raw.leafIndex)
   ) {
     throw new Error(
-      `${context}: 'leafIndex' must be an even non-negative safe integer identifying the appended rightmost leaf`,
+      `${context}: 'leafIndex' must be an even non-negative safe integer identifying the appended rightmost leaf (got ${describe(raw.leafIndex)})`,
     );
   }
   const leafIndex = raw.leafIndex;
@@ -252,7 +252,7 @@ function snapshotLegacyWelcome(
     treeWidth - rawPathKeys.length - 1,
     `${context}: treeNodePublicKeys`,
     budget,
-    `${context}: treeNodePublicKeys exceeds the supported tree width or contains duplicate topology`,
+    `${context}: treeNodePublicKeys exceeds the supported tree width`,
   );
 
   const covered = new Set<number>([leafIndex]);

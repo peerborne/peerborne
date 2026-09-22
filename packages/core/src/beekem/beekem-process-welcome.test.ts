@@ -1099,3 +1099,27 @@ test('wipes a derived compatibility secret when the second derivation rejects', 
     derive.mockRestore();
   }
 });
+
+test('retains only the newest valid staged Welcome while newer work is pending', async () => {
+  const keys = await generateKeyPair();
+  const valid = await createTwoMemberWelcome(keys);
+  const staged = new BeeKEM();
+  await staged.processWelcome(copyWelcome(valid.welcome), keys.privateKey, keys.publicKey);
+  const target = new BeeKEM() as any;
+  target._pendingWelcomeAttempts.add(100n);
+  const olderRoot = new Uint8Array(valid.rootSecret);
+  const winnerRoot = new Uint8Array(valid.rootSecret);
+  const lateOlderRoot = new Uint8Array(valid.rootSecret);
+  const older = target._registerWelcomeCandidate(1n, staged, olderRoot, 0n).catch((error: Error) => error);
+  const winner = target._registerWelcomeCandidate(2n, staged, winnerRoot, 0n);
+  const lateOlder = target._registerWelcomeCandidate(0n, staged, lateOlderRoot, 0n).catch((error: Error) => error);
+  expect(target._stagedWelcomeCandidates.size).toBe(1);
+  expect([...target._stagedWelcomeCandidates.keys()]).toEqual([2n]);
+  expect(await older).toBeInstanceOf(Error);
+  expect(await lateOlder).toBeInstanceOf(Error);
+  expect(olderRoot.every((byte) => byte === 0)).toBe(true);
+  expect(lateOlderRoot.every((byte) => byte === 0)).toBe(true);
+  target._pendingWelcomeAttempts.clear();
+  target._settleWelcomeCandidates();
+  await expect(winner).resolves.toEqual(valid.rootSecret);
+});

@@ -378,6 +378,12 @@ describe('beekem-welcome-wire', () => {
             nodeIndex: welcome.treeNodePublicKeys[0].nodeIndex,
           });
         },
+        error: /tree width/,
+      },
+      {
+        mutate: (welcome) => {
+          welcome.treeNodePublicKeys[1].nodeIndex = welcome.treeNodePublicKeys[0].nodeIndex;
+        },
         error: /duplicate/,
       },
       {
@@ -456,7 +462,7 @@ describe('beekem-welcome-wire', () => {
       serializeBeeKEMWelcomeForWire({
         ...welcome,
         treeNodePublicKeys: [
-          ...welcome.treeNodePublicKeys,
+          ...welcome.treeNodePublicKeys.slice(0, -1),
           welcome.treeNodePublicKeys[0],
         ],
       }),
