@@ -4265,7 +4265,7 @@ export class PeerborneDocument<
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
           if (!rawContent) {
-            return false;
+            return;
           }
 
           const message = snapshotSyncMessageForContext<
@@ -4275,7 +4275,7 @@ export class PeerborneDocument<
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             'ordinary-sync-v1',
           ) as OrdinarySyncMessage<ChangesType, PublicKey>;
-          if (message.documentId !== this.documentPath) return false;
+          if (message.documentId !== this.documentPath) return;
 
           return this.sync(message);
         })

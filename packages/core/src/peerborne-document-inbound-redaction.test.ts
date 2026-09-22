@@ -98,6 +98,8 @@ describe('concrete inbound handler log redaction', () => {
 
     try {
       await document.open();
+      load.mockClear();
+      deserializeSyncMessage.mockClear();
       document._pubsubHandler({
         detail: {
           data: new Uint8Array([1, 2, 3]),
@@ -106,8 +108,7 @@ describe('concrete inbound handler log redaction', () => {
           from: { toString: () => 'untrusted-sender' },
         },
       });
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(load).not.toHaveBeenCalled();
       expect(deserializeSyncMessage).not.toHaveBeenCalled();
@@ -156,8 +157,7 @@ describe('concrete inbound handler log redaction', () => {
           type: 'unsigned',
         },
       });
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(logs.error).toHaveBeenCalledWith(
         'Inbound sync message handling failed',
