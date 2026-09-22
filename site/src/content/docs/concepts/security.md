@@ -126,8 +126,9 @@ UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core`
 
 But the document change path does not check UCAN tokens. UCAN integration is a future capability.
 The optional [`UCANACL`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/ucan-acl.ts)
-wrapper in `@peerborne/core` keeps capability metadata in process-local memory. That metadata is not replicated, and the wrapper does not provide
-distributed strong-removal semantics.
+wrapper in `@peerborne/core` keeps capability metadata in process-local memory.
+That metadata is not replicated. The wrapper does not provide distributed
+strong-removal semantics.
 
 ## Encryption and history visibility
 
@@ -218,7 +219,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
+- **PathUpdate V2** carries writer-signed tree and key-rotation state bound to the exact parent tree and next generation
 - Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
 
 ```ts
