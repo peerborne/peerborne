@@ -826,7 +826,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   ): YjsACLAdditionIdentifierReservation {
     if (this._stagedAdditionOperations.size >= MAX_YJS_ACL_STRUCTURES) {
       throw new RangeError(
-        `Yjs ACL has too many staged addition identifiers`,
+        `Cannot stage an ACL addition: Yjs ACL exceeds the ${MAX_YJS_ACL_STRUCTURES}-identifier reservation limit`,
       );
     }
 
