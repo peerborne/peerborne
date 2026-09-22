@@ -1,16 +1,10 @@
+import { assertPositiveSafeByteLimit } from './byte-limits.js';
 import type { InvitationBootstrapBundle } from '../peerborne-document.js';
 import { MAX_INVITATION_MESSAGE_BYTES } from '../invitation-wire.js';
 import {
   copyUnsharedUint8Array,
   snapshotEnumerableOwnDataObject,
 } from '../utils.js';
-
-function assertPositiveSafeByteLimit(value: number, field: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`${field} must be a positive safe integer`);
-  }
-  return value;
-}
 
 const reflectOwnKeys = Reflect.ownKeys;
 
