@@ -209,7 +209,6 @@ export function serializePathUpdateForWire(
     JSON.stringify(wire).length,
     'BeeKEM PathUpdate v1 wire payload',
   );
-  deserializePathUpdateFromWire(wire);
   return wire;
 }
 
