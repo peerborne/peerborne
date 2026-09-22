@@ -24,7 +24,10 @@ import { ipnsValidator } from 'ipns/validator';
 import { IDBDatastore } from 'datastore-idb';
 import { IDBBlockstore } from 'blockstore-idb';
 import { CompactionConfig } from './compaction-config.js';
-import { DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
+import {
+  DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  defaultDocumentPubsubConfig,
+} from './document-topic.js';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 
 /**
@@ -237,8 +240,7 @@ export const defaultConfig = (
       },
     },
 
-    pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
-    pubsubDocumentPublishPath: '/documents',
+    ...defaultDocumentPubsubConfig(),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);
@@ -263,17 +265,25 @@ export interface PeerborneConfig {
    * Prefix to apply to document pubsub topics.
    *
    * Defaults to {@link DEFAULT_DOCUMENT_TOPIC_PREFIX} to namespace document
-   * traffic on the pubsub mesh and avoid collisions with other topic types.
+   * traffic on the pubsub mesh and keep default-configured older peers on a
+   * separate topic. Topic names are routing labels, not authenticated version
+   * negotiation; wire decoding and admission checks remain mandatory.
    *
    * Set to an empty string (`''`) to disable prefixing; topic strings
-   * will be the bare document path.
+   * will be the bare document path. Custom and empty prefixes are protocol
+   * compatibility boundaries: every peer sharing one must be upgraded
+   * together.
    *
    * @default DEFAULT_DOCUMENT_TOPIC_PREFIX
    */
   pubsubDocumentPrefix: string;
 
   /**
-   * Prefix to apply to Libp2p PubSub topics for documents.
+   * GossipSub topic used for document publish notifications.
+   *
+   * Defaults to the versioned {@link DEFAULT_DOCUMENT_PUBLISH_PATH}. Custom
+   * values are protocol compatibility boundaries and require a matching relay
+   * `DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or `TOPIC_ALLOWLIST` entry.
    */
   pubsubDocumentPublishPath: string;
 

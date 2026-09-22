@@ -163,6 +163,7 @@ import {
   validateLoadQuorumConfig,
 } from './load-quorum.js';
 import {
+  DEFAULT_DOCUMENT_PUBLISH_PATH,
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
 } from './document-topic.js';
@@ -315,6 +316,7 @@ export {
   NetworkStats,
   // Utilities
   documentTopic,
+  DEFAULT_DOCUMENT_PUBLISH_PATH,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   LRUCache,
   assertCanonicalP384PublicKeyEncoding,

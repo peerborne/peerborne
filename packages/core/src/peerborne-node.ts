@@ -61,6 +61,10 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 import { createNodeHeliaStores } from './node-stores.js';
+import {
+  copyDocumentPubsubConfig,
+  defaultDocumentPubsubConfig,
+} from './document-topic.js';
 
 /**
  * Default config for Node.js environments.
@@ -145,8 +149,7 @@ export const defaultNodeConfig = (
         connectionGater: { denyDialMultiaddr: async () => false },
       },
     },
-    pubsubDocumentPrefix: '/document/',
-    pubsubDocumentPublishPath: '/documents',
+    ...defaultDocumentPubsubConfig(),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);
@@ -401,10 +404,13 @@ export class PeerborneNode<
           'secrets in clientConfig.',
       );
     }
-    const clientConfig = defaultConfig(
-      defaultBootstrapConfig(bootstrapAddresses ?? []),
-      browserSafeIceServers,
-    );
+    const clientConfig = {
+      ...defaultConfig(
+        defaultBootstrapConfig(bootstrapAddresses ?? []),
+        browserSafeIceServers,
+      ),
+      ...copyDocumentPubsubConfig(this.config),
+    };
     const clientConfigFile =
       process.env.REACT_APP_CLIENT_CONFIG_FILE || 'client-config.env';
     fs.writeFile(
