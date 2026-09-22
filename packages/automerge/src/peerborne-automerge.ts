@@ -576,7 +576,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while membership was being checked');
     }
-    return this._acl.users?.[hash] !== undefined;
+    return base.users?.[hash] !== undefined;
   }
   // The capability parameter is accepted for interface compatibility but ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
