@@ -43,7 +43,7 @@ import {
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
 } from './keychain.js';
 import {
   requireDeserializePublicKey,
@@ -232,7 +232,7 @@ export {
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,

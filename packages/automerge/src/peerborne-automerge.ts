@@ -1556,84 +1556,26 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       raw.loadChallenge === undefined
         ? undefined
         : deserializeInitialLoadChallengeFromWire(raw.loadChallenge);
-    // Copy only recognized fields, but retain their incoming insertion order.
-    // Sync-message signatures cover the serialized JSON bytes. Rebuilding in a
-    // fixed schema order moves `keychainChanges` ahead of the V4 `tips` /
-    // security fields and makes an honest full-load signature unverifiable.
-    // Iterating the parsed wire keys preserves shipped signed payloads while the
-    // switch continues to drop peer-supplied junk properties.
-    const result = {} as CRDTSyncMessage<BinaryChange[], CryptoKey>;
-    for (const field of Object.keys(raw)) {
-      switch (field) {
-        case 'documentId':
-          result.documentId = raw.documentId;
-          break;
-        case 'changeId':
-          if (raw.changeId !== undefined)
-            result.changeId = raw.changeId as string;
-          break;
-        case 'signature':
-          if (raw.signature !== undefined)
-            result.signature = raw.signature as string;
-          break;
-        case 'changes':
-          // Any value other than `undefined` must pass through the untrusted
-          // Merkle-DAG validator; do not use a truthiness guard here.
-          if (raw.changes !== undefined) {
-            result.changes = deserializeChangeNodeFromJSON(
-              raw.changes as iCRDTChangeNode,
-              deserializeBinaryChanges,
-            );
-          }
-          break;
-        case 'keychainChanges':
-          if (keychainChanges !== undefined)
-            result.keychainChanges = keychainChanges;
-          break;
-        case 'welcomeEpochId':
-          if (welcomeEpochId !== undefined)
-            result.welcomeEpochId = welcomeEpochId;
-          break;
-        case 'welcomeRecipient':
-          if (welcomeRecipient !== undefined)
-            result.welcomeRecipient = welcomeRecipient;
-          break;
-        case 'welcomeRecipientKemPublicKey':
-          if (welcomeRecipientKemPublicKey !== undefined)
-            result.welcomeRecipientKemPublicKey = welcomeRecipientKemPublicKey;
-          break;
-        case 'eciesSealed':
-          if (eciesSealed !== undefined) result.eciesSealed = eciesSealed;
-          break;
-        case 'pathUpdate':
-          if (pathUpdate !== undefined)
-            result.pathUpdate = pathUpdate as CRDTSyncMessage<
-              BinaryChange[],
-              CryptoKey
-            >['pathUpdate'];
-          break;
-        case 'pathUpdateEpochId':
-          if (pathUpdateEpochId !== undefined)
-            result.pathUpdateEpochId = pathUpdateEpochId;
-          break;
-        case 'tipsHash':
-          if (tipsHash !== undefined) result.tipsHash = tipsHash;
-          break;
-        case 'tips':
-          if (tips !== undefined) result.tips = tips;
-          break;
-        case 'loadSecurityState':
-          if (loadSecurityState !== undefined)
-            result.loadSecurityState = loadSecurityState;
-          break;
-        case 'loadChallenge':
-          if (loadChallenge !== undefined) result.loadChallenge = loadChallenge;
-          break;
-        case 'snapshot':
-          if (snapshot !== undefined) result.snapshot = snapshot;
-          break;
-      }
-    }
-    return result;
+    return this.orderDecodedSyncFields(raw, {
+      documentId: raw.documentId,
+      changeId: raw.changeId as string | undefined,
+      signature: raw.signature as string | undefined,
+      changes: raw.changes === undefined ? undefined : deserializeChangeNodeFromJSON(
+        raw.changes as iCRDTChangeNode,
+        deserializeBinaryChanges,
+      ),
+      keychainChanges,
+      welcomeEpochId,
+      welcomeRecipient,
+      welcomeRecipientKemPublicKey,
+      eciesSealed,
+      pathUpdate: pathUpdate as CRDTSyncMessage<BinaryChange[], CryptoKey>['pathUpdate'],
+      pathUpdateEpochId,
+      tipsHash,
+      tips,
+      loadSecurityState,
+      loadChallenge,
+      snapshot,
+    });
   }
 }
