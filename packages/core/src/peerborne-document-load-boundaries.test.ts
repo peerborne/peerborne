@@ -5073,3 +5073,48 @@ test('discards deferred and incoming notifications once document state is poison
   expect(pending.size).toBe(0);
   expect(notify).not.toHaveBeenCalled();
 });
+
+test.each([
+  ['Readers', true], ['Readers', false],
+  ['Writers', true], ['Writers', false],
+] as const)('cancellation of %s before invocation=%p preserves the mutation boundary', async (kind, beforeInvocation) => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let mutated = false;
+  const merge = jest.fn(async () => {
+    entered();
+    await gate;
+    mutated = true;
+  });
+  const document = fakeDocument({
+    documentPath: '/abort-boundary',
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
+    _writerPublicationsInFlight: 0,
+    _readers: { merge },
+    _writers: { merge },
+  });
+  const controller = new AbortController();
+  if (beforeInvocation) controller.abort(new Error('cancelled load'));
+  const result = document[`_merge${kind}`]({}, undefined, controller.signal);
+  if (!beforeInvocation) {
+    await started;
+    controller.abort(new Error('cancelled load'));
+  }
+  try {
+    await expect(result).rejects.toThrow('cancelled load');
+    expect(document._bootstrapLoadApplicationState).toBe(beforeInvocation ? 'pristine' : 'poisoned');
+    expect(merge).toHaveBeenCalledTimes(beforeInvocation ? 0 : 1);
+  } finally {
+    release();
+  }
+  if (!beforeInvocation) {
+    await merge.mock.results[0].value;
+    expect(mutated).toBe(true);
+    expect(() => document._assertDocumentStateNotPoisoned()).toThrow(/discard this document instance/);
+  }
+});
