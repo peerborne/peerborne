@@ -121,3 +121,12 @@ Status meanings:
    the offer without a prior founder connection, onboards through a
    recipient-bound encrypted bootstrap, and exchanges actual Automerge
    mutations through the relay in both directions.
+
+
+The Automerge adapter accepts the append-only keychain encoding produced by
+`@automerge/automerge` **3.4.1**, pinned as both its dependency and peer dependency.
+Changing that pin requires running the canonical keychain, malformed-change,
+replay, and invitation-history suites against the new encoding before release.
+Mixed Automerge encoding versions are not supported. Yjs keychain reads
+revalidate the bounded mutable document; an adapter revision alone cannot prove
+that its underlying `Y.Doc` has not changed in place.

@@ -101,7 +101,7 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { keychainHistorySinceOrFull } from './keychain.js';
+import { keychainHistorySinceOrReject } from './keychain.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
 import { Base64 } from 'js-base64';
@@ -1961,7 +1961,7 @@ export class PeerborneDocument<
         // compatibility. The helper rejects when the provider omits it because
         // core cannot assume a freshly synthesized current-key delta is safe to
         // regenerate or replay.
-        return await keychainHistorySinceOrFull(this._keychain)(
+        return await keychainHistorySinceOrReject(this._keychain)(
           this._invitationEpoch,
         );
       case 'current_only':
