@@ -705,11 +705,12 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
           throw new Error('ACL changed while addition was staged');
         }
         const committedAccounting =
-          this._prepareCommittedChangeAccounting(accounting);
+          privateChanges.length === 0 ? undefined :
+            this._prepareCommittedChangeAccounting(accounting);
         const claim = {
           finalize: () => {
             if (state === 'committed') return;
-            if (privateChanges.length !== 0) {
+            if (committedAccounting !== undefined) {
               this._acl = staged;
               this._retainedChanges = committedAccounting.retainedChanges;
               this._retainedChangeBytes =
@@ -786,11 +787,12 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         throw new Error('ACL changed while removal was staged');
       }
       const committedAccounting =
-        this._prepareCommittedChangeAccounting(accounting);
+        privateChanges.length === 0 ? undefined :
+          this._prepareCommittedChangeAccounting(accounting);
       const claim = {
         finalize: () => {
           if (state === 'committed') return;
-          if (privateChanges.length !== 0) {
+          if (committedAccounting !== undefined) {
             this._acl = staged;
             this._retainedChanges = committedAccounting.retainedChanges;
             this._retainedChangeBytes =
