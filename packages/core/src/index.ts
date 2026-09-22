@@ -126,9 +126,7 @@ import {
 import { NetworkStats } from './network-stats.js';
 import { LRUCache } from './lru-cache.js';
 import {
-  beekemPathUpdateV1,
   beekemPathUpdateV2,
-  beekemWelcomeV1,
   beekemWelcomeV2,
   bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
@@ -142,23 +140,15 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import {
-  SerializedPathNodeUpdate,
-  SerializedPathUpdate,
-  deserializePathUpdateFromWire,
   deserializePathUpdateV2FromWire,
-  serializePathUpdateForWire,
   serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 import {
-  deserializeBeeKEMWelcomeFromWire,
   deserializeBeeKEMWelcomeV2FromWire,
-  serializeBeeKEMWelcomeForWire,
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
 import {
-  decodeWelcomeSealedPayload,
   decodeWelcomeSealedPayloadV2,
-  encodeWelcomeSealedPayload,
   encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
@@ -288,9 +278,7 @@ export {
   computeEntryHash,
   // Wire protocols
   bloomFilterUpdateV1,
-  beekemWelcomeV1,
   beekemWelcomeV2,
-  beekemPathUpdateV1,
   beekemPathUpdateV2,
   searchIndexAdvertiseV1,
   searchQueryV1,
@@ -301,16 +289,10 @@ export {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
   // BeeKEM PathUpdate wire serialization
-  serializePathUpdateForWire,
-  deserializePathUpdateFromWire,
   serializePathUpdateV2ForWire,
   deserializePathUpdateV2FromWire,
-  serializeBeeKEMWelcomeForWire,
-  deserializeBeeKEMWelcomeFromWire,
   serializeBeeKEMWelcomeV2ForWire,
   deserializeBeeKEMWelcomeV2FromWire,
-  encodeWelcomeSealedPayload,
-  decodeWelcomeSealedPayload,
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
@@ -357,8 +339,6 @@ export type {
   CRDTReaderChangeNode,
 } from './crdt-change-node.js';
 export type {
-  SerializedPathUpdate,
-  SerializedPathNodeUpdate,
 } from './path-update-wire.js';
 export type {
   SerializedEncryptedPathKeyBundle,
@@ -367,13 +347,11 @@ export type {
   SerializedPathUpdateV2,
 } from './path-update-wire.js';
 export type {
-  SerializedBeeKEMWelcome,
   SerializedBeeKEMWelcomeV2,
   SerializedWelcomeNodePublicKey,
   SerializedWelcomePathNodeUpdate,
 } from './beekem-welcome-wire.js';
 export type {
-  WelcomeSealedPayload,
   WelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
 export type { DocumentCapability } from './capabilities.js';

@@ -1776,7 +1776,7 @@ describe('YjsKeychain', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // BeeKEM PathUpdate compatibility: the flow installs
+  // BeeKEM PathUpdateV2 compatibility: the flow installs
   // epoch keys via addEpochKey(...) using the FULL 32-byte HKDF output
   // (no truncation). The keychain MUST store the key under a cache-key
   // form that round-trips with getKey() on the exact same 32 bytes.
@@ -3204,37 +3204,18 @@ describe('YjsJSONSerializer', () => {
     expect(deserialized.eciesSealed).toEqual(sealed);
   });
 
-  test('serializeSyncMessage/deserializeSyncMessage preserves pathUpdate for BeeKEM revocation', () => {
-    const serializer = new YjsJSONSerializer();
-    const pathUpdate = {
-      senderLeafIndex: 0,
-      senderLeafPublicKey: 'AAAA',
-      nodes: [
-        { nodeIndex: 1, publicKey: 'AQID', encryptedPrivateKey: 'BAUG' },
-        { nodeIndex: 3, publicKey: 'BwgJ', encryptedPrivateKey: 'CgsM' },
-      ],
-    };
-    const message = {
-      documentId: 'pathupdate-doc',
-      pathUpdate,
-    };
-    const serialized = serializer.serializeSyncMessage(message);
-    const deserialized = serializer.deserializeSyncMessage(serialized);
-    expect(deserialized.pathUpdate).toEqual(pathUpdate);
-  });
-
-  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+  test('serializeSyncMessage/deserializeSyncMessage preserves all current PathUpdate fields', () => {
     const serializer = new YjsJSONSerializer();
     const pathUpdate = {
       version: 2 as const,
       generation: 7,
+      parentTreeHash: "AQID",
       numLeaves: 2,
       senderLeafIndex: 0,
       senderLeafPublicKey: 'AAAA',
       nodes: [{
         nodeIndex: 1,
         publicKey: 'AQID',
-        encryptedPrivateKey: 'BAUG',
         encryptedPathKeyBundles: [
           { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
         ],

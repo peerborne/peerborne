@@ -40,7 +40,9 @@ describe('BeeKEM', () => {
       await beekem.initialize(aliceKeyPair.privateKey, aliceKeyPair.publicKey);
 
       const bobKeyPair = await generateECDHKeyPair();
-      const { pathUpdate, welcome } = await beekem.addMember(bobKeyPair.publicKey);
+      const { pathUpdate, welcome } = await beekem.addMember(
+        bobKeyPair.publicKey,
+      );
 
       expect(beekem.memberCount).toBe(2);
       expect(pathUpdate.nodes.length).toBeGreaterThan(0);
@@ -58,8 +60,10 @@ describe('BeeKEM', () => {
       for (const node of pathUpdate.nodes) {
         expect(node.publicKey).toBeInstanceOf(Uint8Array);
         expect(node.publicKey.byteLength).toBe(65); // Uncompressed P-256 point
-        expect(node.encryptedPrivateKey).toBeInstanceOf(Uint8Array);
-        expect(node.encryptedPrivateKey.byteLength).toBeGreaterThan(0);
+        expect(node.encryptedPathKeyBundles.length).toBeGreaterThan(0);
+        expect(
+          node.encryptedPathKeyBundles[0].ciphertext.byteLength,
+        ).toBeGreaterThan(0);
       }
     });
 
@@ -90,14 +94,18 @@ describe('BeeKEM', () => {
       await beekem.initialize(aliceKeyPair.privateKey, aliceKeyPair.publicKey);
 
       const bobKeyPair = await generateECDHKeyPair();
-      const { rootSecret: secretAfterAdd } = await beekem.addMember(bobKeyPair.publicKey);
+      const { rootSecret: secretAfterAdd } = await beekem.addMember(
+        bobKeyPair.publicKey,
+      );
 
       const { rootSecret: secretAfterUpdate } = await beekem.update();
 
       // Root secret should change after update (new key material)
       expect(secretAfterUpdate).toBeInstanceOf(Uint8Array);
       expect(secretAfterUpdate.byteLength).toBe(32);
-      expect(Buffer.from(secretAfterUpdate).equals(Buffer.from(secretAfterAdd))).toBe(false);
+      expect(
+        Buffer.from(secretAfterUpdate).equals(Buffer.from(secretAfterAdd)),
+      ).toBe(false);
     });
   });
 
@@ -130,7 +138,9 @@ describe('BeeKEM', () => {
       expect(aliceRootSecret.byteLength).toBe(32);
       expect(bobRootSecret.byteLength).toBe(32);
 
-      expect(Buffer.from(aliceRootSecret).equals(Buffer.from(bobRootSecret))).toBe(true);
+      expect(
+        Buffer.from(aliceRootSecret).equals(Buffer.from(bobRootSecret)),
+      ).toBe(true);
     });
 
     test('Bob has correct tree state after processing Welcome', async () => {
@@ -142,7 +152,11 @@ describe('BeeKEM', () => {
       const { welcome } = await alice.addMember(bobKeyPair.publicKey);
 
       const bob = new BeeKEM();
-      await bob.processWelcome(welcome, bobKeyPair.privateKey, bobKeyPair.publicKey);
+      await bob.processWelcome(
+        welcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
 
       expect(bob.myLeafIndex).toBe(2); // leaf position 1 => node index 2
       expect(bob.memberCount).toBe(2);
@@ -158,10 +172,16 @@ describe('BeeKEM', () => {
 
       // Add Bob
       const bobKeyPair = await generateECDHKeyPair();
-      const { welcome: bobWelcome } = await alice.addMember(bobKeyPair.publicKey);
+      const { welcome: bobWelcome } = await alice.addMember(
+        bobKeyPair.publicKey,
+      );
 
       const bob = new BeeKEM();
-      await bob.processWelcome(bobWelcome, bobKeyPair.privateKey, bobKeyPair.publicKey);
+      await bob.processWelcome(
+        bobWelcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
 
       // Add Charlie
       const charlieKeyPair = await generateECDHKeyPair();
@@ -194,10 +214,16 @@ describe('BeeKEM', () => {
 
       // Add Bob (leaf position 1 => node index 2)
       const bobKeyPair = await generateECDHKeyPair();
-      const { welcome: bobWelcome } = await alice.addMember(bobKeyPair.publicKey);
+      const { welcome: bobWelcome } = await alice.addMember(
+        bobKeyPair.publicKey,
+      );
 
       const bob = new BeeKEM();
-      await bob.processWelcome(bobWelcome, bobKeyPair.privateKey, bobKeyPair.publicKey);
+      await bob.processWelcome(
+        bobWelcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
 
       // Add Charlie (leaf position 2 => node index 4)
       const charlieKeyPair = await generateECDHKeyPair();
@@ -221,11 +247,14 @@ describe('BeeKEM', () => {
       expect(alice.memberCount).toBe(3);
 
       // Charlie processes the removal update
-      const charlieRootAfterRemoval = await charlie.processPathUpdate(removeUpdate);
+      const charlieRootAfterRemoval =
+        await charlie.processPathUpdate(removeUpdate);
 
       // Alice and Charlie should agree on the new root secret
       expect(
-        Buffer.from(aliceRootAfterRemoval).equals(Buffer.from(charlieRootAfterRemoval)),
+        Buffer.from(aliceRootAfterRemoval).equals(
+          Buffer.from(charlieRootAfterRemoval),
+        ),
       ).toBe(true);
 
       // Bob tries to process the update -- should fail because his leaf is blanked
@@ -335,9 +364,9 @@ describe('BeeKEM', () => {
       expect(
         await alice.findLeafByPublicKey(aliceKeys.publicKey),
       ).toBeUndefined();
-      expect(
-        await alice.hasLiveLeafWithPublicKey(aliceKeys.publicKey),
-      ).toBe(true);
+      expect(await alice.hasLiveLeafWithPublicKey(aliceKeys.publicKey)).toBe(
+        true,
+      );
     });
 
     test('rejects duplicate member keys without mutating the tree', async () => {
@@ -346,7 +375,7 @@ describe('BeeKEM', () => {
       await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
 
       await expect(alice.addMember(aliceKeys.publicKey)).rejects.toThrow(
-        /public key is already owned by a live leaf/,
+        /public key already belongs to a live BeeKEM leaf/,
       );
       expect(alice.memberCount).toBe(1);
       expect(await alice.findLeafByPublicKey(aliceKeys.publicKey)).toBe(0);
@@ -427,7 +456,9 @@ describe('BeeKEM', () => {
       const stagedRoot = await stagedAlice.processPathUpdate(pathUpdate);
       const unchangedAliceRoot = await alice.getRootSecret();
 
-      expect(Buffer.from(stagedRoot).equals(Buffer.from(bobNewRoot))).toBe(true);
+      expect(Buffer.from(stagedRoot).equals(Buffer.from(bobNewRoot))).toBe(
+        true,
+      );
       expect(
         Buffer.from(unchangedAliceRoot).equals(Buffer.from(originalAliceRoot)),
       ).toBe(true);
@@ -444,7 +475,11 @@ describe('BeeKEM', () => {
       const { welcome } = await alice.addMember(bobKeyPair.publicKey);
 
       const bob = new BeeKEM();
-      await bob.processWelcome(welcome, bobKeyPair.privateKey, bobKeyPair.publicKey);
+      await bob.processWelcome(
+        welcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
 
       // Bob performs a self-update (ratchet forward)
       const { pathUpdate, rootSecret: bobNewRoot } = await bob.update();
@@ -453,9 +488,9 @@ describe('BeeKEM', () => {
       const aliceNewRoot = await alice.processPathUpdate(pathUpdate);
 
       // Both should derive the same new root secret
-      expect(
-        Buffer.from(aliceNewRoot).equals(Buffer.from(bobNewRoot)),
-      ).toBe(true);
+      expect(Buffer.from(aliceNewRoot).equals(Buffer.from(bobNewRoot))).toBe(
+        true,
+      );
     });
 
     test('sender leaf key is refreshed in the receiver tree after processPathUpdate', async () => {
@@ -469,7 +504,11 @@ describe('BeeKEM', () => {
       const { welcome } = await alice.addMember(bobKeyPair.publicKey);
 
       const bob = new BeeKEM();
-      await bob.processWelcome(welcome, bobKeyPair.privateKey, bobKeyPair.publicKey);
+      await bob.processWelcome(
+        welcome,
+        bobKeyPair.privateKey,
+        bobKeyPair.publicKey,
+      );
 
       // Bob performs a self-update, generating a new leaf key pair
       const { pathUpdate } = await bob.update();

@@ -1,26 +1,9 @@
-/**
- * Wire serialization for BeeKEM `PathUpdate`s.
- *
- * `BeeKEM.removeMember` / `BeeKEM.update` / `BeeKEM.processPathUpdate`
- * deal in the runtime `PathUpdate` shape from
- * `packages/core/src/beekem/types.ts`, which is a small
- * record of `Uint8Array`s. The `beekemPathUpdateV1` wire protocol
- * carries this record as a JSON-safe payload inside a
- * `CRDTSyncMessage`, so we need a base64-encoded shape per
- * `Uint8Array` and the matching encoder/decoder pair. V2 is a separate,
- * explicitly-versioned shape; the v1 decoder rejects v2-only fields.
- *
- * The shape and helpers live here, rather than in the BeeKEM module, so
- * `beekem/types.ts` can evolve without coupling runtime types to this wire
- * codec.
- */
+/** Strict parent-bound BeeKEM PathUpdate V2 serialization. */
 
 import { Base64 } from 'js-base64';
 import {
   MAX_BEEKEM_TREE_LEAVES,
-  PathNodeUpdate,
   PathNodeUpdateV2,
-  PathUpdate,
   PathUpdateV2,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
@@ -31,24 +14,6 @@ const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 8 * 1024 * 1024;
 const MAX_V2_AGGREGATE_WORK_ITEMS = 4 * MAX_BEEKEM_TREE_LEAVES;
-
-/** JSON-safe encoding of a single `PathNodeUpdate`. */
-export interface SerializedPathNodeUpdate {
-  /** Tree node index. */
-  nodeIndex: number;
-  /** Base64-encoded raw P-256 SEC1-uncompressed public key. */
-  publicKey: string;
-  /** Base64-encoded ECIES ciphertext (BeeKEM internal format). */
-  encryptedPrivateKey: string;
-}
-
-/** JSON-safe encoding of a `PathUpdate`. */
-export interface SerializedPathUpdate {
-  senderLeafIndex: number;
-  /** Base64-encoded raw P-256 SEC1-uncompressed leaf public key. */
-  senderLeafPublicKey: string;
-  nodes: SerializedPathNodeUpdate[];
-}
 
 export interface SerializedEncryptedPathKeyBundle {
   recipientNodeIndex: number;
@@ -66,7 +31,7 @@ export interface SerializedPathTreeNodePublicKey {
   publicKey: string | null;
 }
 
-/** Explicit wire shape reserved for `beekemPathUpdateV2`. */
+/** Current wire shape for `beekemPathUpdateV2`. */
 export interface SerializedPathUpdateV2 {
   version: 2;
   generation: number;
@@ -77,42 +42,6 @@ export interface SerializedPathUpdateV2 {
   nodes: SerializedPathNodeUpdateV2[];
   treeNodePublicKeys: SerializedPathTreeNodePublicKey[];
   treeHash: string;
-}
-
-/** Convert a `PathUpdate` to a JSON-safe wire representation. */
-export function serializePathUpdateForWire(
-  update: PathUpdate,
-): SerializedPathUpdate {
-  for (const field of [
-    'version',
-    'generation',
-    'parentTreeHash',
-    'numLeaves',
-    'treeNodePublicKeys',
-    'treeHash',
-  ]) {
-    if (Reflect.has(update, field)) {
-      throw new Error(
-        `Cannot serialize PathUpdate with v2-only field '${field}' as v1`,
-      );
-    }
-  }
-  for (const node of update.nodes) {
-    if (Reflect.has(node, 'encryptedPathKeyBundles')) {
-      throw new Error(
-        "Cannot serialize PathUpdate with v2-only field 'encryptedPathKeyBundles' as v1",
-      );
-    }
-  }
-  return {
-    senderLeafIndex: update.senderLeafIndex,
-    senderLeafPublicKey: Base64.fromUint8Array(update.senderLeafPublicKey),
-    nodes: update.nodes.map((n) => ({
-      nodeIndex: n.nodeIndex,
-      publicKey: Base64.fromUint8Array(n.publicKey),
-      encryptedPrivateKey: Base64.fromUint8Array(n.encryptedPrivateKey),
-    })),
-  };
 }
 
 /**
@@ -379,111 +308,6 @@ export function serializePathUpdateV2ForWire(
   // canonical wire decoder evolve independently.
   deserializePathUpdateV2FromWire(wire);
   return wire;
-}
-
-/**
- * Decode a wire-format `SerializedPathUpdate` back into a `PathUpdate`.
- *
- * Validates the input shape so a malformed peer payload (missing
- * fields, wrong types, etc.) surfaces as a descriptive error
- * instead of a confusing crash inside `BeeKEM.processPathUpdate`.
- * Mirrors the validation posture used by the sync-message
- * deserializers (`YjsJSONSerializer`, `AutomergeJSONSerializer`).
- */
-export function deserializePathUpdateFromWire(
-  wire: unknown,
-): PathUpdate {
-  if (typeof wire !== 'object' || wire === null || Array.isArray(wire)) {
-    throw new Error(
-      `Invalid PathUpdate: expected a plain object, got ${describe(wire)}`,
-    );
-  }
-  const raw = wire as Record<string, unknown>;
-
-  for (const field of [
-    'version',
-    'generation',
-    'parentTreeHash',
-    'numLeaves',
-    'treeNodePublicKeys',
-    'treeHash',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(raw, field)) {
-      throw new Error(
-        `Invalid PathUpdate v1: v2-only field '${field}' is not allowed`,
-      );
-    }
-  }
-
-  if (
-    typeof raw.senderLeafIndex !== 'number' ||
-    !Number.isInteger(raw.senderLeafIndex) ||
-    raw.senderLeafIndex < 0
-  ) {
-    throw new Error(
-      `Invalid PathUpdate: 'senderLeafIndex' must be a non-negative integer (got ${describe(raw.senderLeafIndex)})`,
-    );
-  }
-  if (typeof raw.senderLeafPublicKey !== 'string') {
-    throw new Error(
-      `Invalid PathUpdate: 'senderLeafPublicKey' must be a base64 string (got ${describe(raw.senderLeafPublicKey)})`,
-    );
-  }
-  if (!Array.isArray(raw.nodes)) {
-    throw new Error(
-      `Invalid PathUpdate: 'nodes' must be an array (got ${describe(raw.nodes)})`,
-    );
-  }
-
-  const nodes: PathNodeUpdate[] = raw.nodes.map((n, i) => {
-    if (typeof n !== 'object' || n === null || Array.isArray(n)) {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}] must be a plain object, got ${describe(n)}`,
-      );
-    }
-    const nn = n as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(nn, 'encryptedPathKeyBundles')) {
-      throw new Error(
-        "Invalid PathUpdate v1: v2-only field 'encryptedPathKeyBundles' is not allowed",
-      );
-    }
-    if (
-      typeof nn.nodeIndex !== 'number' ||
-      !Number.isInteger(nn.nodeIndex) ||
-      nn.nodeIndex < 0
-    ) {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}].nodeIndex must be a non-negative integer (got ${describe(nn.nodeIndex)})`,
-      );
-    }
-    if (typeof nn.publicKey !== 'string') {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}].publicKey must be a base64 string (got ${describe(nn.publicKey)})`,
-      );
-    }
-    if (typeof nn.encryptedPrivateKey !== 'string') {
-      throw new Error(
-        `Invalid PathUpdate: node[${i}].encryptedPrivateKey must be a base64 string (got ${describe(nn.encryptedPrivateKey)})`,
-      );
-    }
-    return {
-      nodeIndex: nn.nodeIndex,
-      publicKey: decodeBase64(nn.publicKey, `node[${i}].publicKey`),
-      encryptedPrivateKey: decodeBase64(
-        nn.encryptedPrivateKey,
-        `node[${i}].encryptedPrivateKey`,
-      ),
-    };
-  });
-
-  return {
-    senderLeafIndex: raw.senderLeafIndex,
-    senderLeafPublicKey: decodeBase64(
-      raw.senderLeafPublicKey,
-      'senderLeafPublicKey',
-    ),
-    nodes,
-  };
 }
 
 /** Decode and structurally validate the explicit v2 wire representation. */
@@ -1047,27 +871,6 @@ function requirePositiveInteger(
   }
 }
 
-/**
- * Decode a base64 string with field-level error context. A malformed
- * peer payload that survives the per-field type checks above but
- * carries syntactically-invalid base64 in one of the `Uint8Array`
- * fields would otherwise throw a generic decoder error with no
- * indication of which field failed. Wrap each decode so the message
- * names the field, making protocol-level debugging tractable.
- */
-function decodeBase64(value: string, fieldName: string): Uint8Array {
-  try {
-    return Base64.toUint8Array(value);
-  } catch (err) {
-    throw new Error(
-      `path-update wire: invalid base64 for field ${fieldName}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
-  }
-}
-
 function decodeCanonicalBase64(
   value: string,
   fieldName: string,
@@ -1093,7 +896,7 @@ function decodeCanonicalBase64(
       `Invalid PathUpdateV2: '${fieldName}' must use canonical padded base64`,
     );
   }
-  const decoded = decodeBase64(value, fieldName);
+  const decoded = Base64.toUint8Array(value);
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(`Invalid PathUpdateV2: '${fieldName}' exceeds size limit`);
   }
