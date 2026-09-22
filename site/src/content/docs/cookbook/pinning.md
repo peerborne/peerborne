@@ -1,6 +1,6 @@
 ---
 title: Keeping data alive (pinning)
-description: Design and validate a pinning integration without treating the current listener as a durability service.
+description: Design and validate a pinning integration with the legacy topic and decoder boundaries made explicit.
 ---
 
 **Status: Deferred/incomplete integration.**
@@ -9,14 +9,11 @@ Peerborne does not currently provide a runnable, end-to-end pinning daemon or du
 
 ## What exists
 
-The Node-only `PeerborneNode` contains a listener for
-`pubsubDocumentPublishPath` (default `/peerborne/documents/v3`). Given an
-announcement, it can open that document, observe its change graph, and call
-Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
-Legacy `/documents` is a separate, explicitly configured compatibility topic;
-relays do not bridge it to the v3 default.
+The Node-only `PeerborneNode` retains the `pubsubDocumentPublishPath` compatibility setting, but it does not subscribe to the legacy `/peerborne/documents/v3` V1 topic. The source retains an isolated, bounded decoder to make the rejected wire shape explicit; no runtime receiver invokes it. A V1 announcement therefore cannot create or open a document, attach a document subscription, or pin either supplied or later CIDs.
 
-That listener is only one side of a protocol. The normal core document commit path does **not** publish document announcements to it, so ordinary application changes do not activate automatic pinning. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
+This is an intentional compatibility break for custom V1 publishers: current `PeerborneNode` instances do not receive either full sync-message or path-only V1 announcements. The legacy envelope has no domain-separated signed purpose, signer identity, or freshness value, and a node that has not opened the document has no trusted writer ACL against which to authorize it. Reusing an ordinary signed sync message would therefore be cross-context replay, not a pinning authorization. A future remotely initiated pinning protocol needs a new versioned envelope with explicit signature-domain, signer-authorization, local pin-policy, and replay semantics; V1 does not fall back to any effect.
+
+There is no authenticated document-publish protocol. The normal core document commit path does **not** publish document announcements, and there is no active receiver. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
 The default Node configuration uses the repository's IndexedDB-backed stores. Durable restart/recovery for a Node pinning process has not been validated, including stable storage paths, process identity, graph restoration, subscriptions, keys, and serving retained data after restart.
 

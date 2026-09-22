@@ -279,11 +279,11 @@ export interface PeerborneConfig {
   pubsubDocumentPrefix: string;
 
   /**
-   * GossipSub topic used for document publish notifications.
+   * GossipSub topic retained for legacy document-publish V1 messages.
    *
-   * Defaults to the versioned {@link DEFAULT_DOCUMENT_PUBLISH_PATH}. Custom
-   * values are protocol compatibility boundaries and require a matching relay
-   * `DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or `TOPIC_ALLOWLIST` entry.
+   * The current document-publish V1 payload is not an authenticated remote
+   * pinning request. `PeerborneNode` does not subscribe to this topic or
+   * perform any document, subscription, or pinning effect from it.
    */
   pubsubDocumentPublishPath: string;
 
