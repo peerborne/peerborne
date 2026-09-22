@@ -53,7 +53,13 @@ function fakeDocument(fields: Record<string, unknown>): any {
 const documentPath = '/detached-load';
 
 function loadHarness(message: any, context = 'load-response-v3') {
-  message.signatureContext = context;
+  const contextualMessage = Object.create(
+    Object.getPrototypeOf(message),
+    {
+      ...Object.getOwnPropertyDescriptors(message),
+      signatureContext: { value: context, enumerable: true },
+    },
+  );
   const verify = jest.fn(async () => true);
   const sync = jest.fn(async () => true);
   const document = fakeDocument({
@@ -67,7 +73,7 @@ function loadHarness(message: any, context = 'load-response-v3') {
       verify,
     },
     _syncMessageSerializer: {
-      deserializeSyncMessage: () => message,
+      deserializeSyncMessage: () => contextualMessage,
       serializeSyncMessage: () => new Uint8Array([1]),
     },
     _isSigningEnabled: () => true,
