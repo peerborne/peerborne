@@ -30,7 +30,7 @@ describe('document topic defaults', () => {
     const first = defaultDocumentPubsubConfig() as {
       pubsubDocumentPrefix: string;
     };
-    first.pubsubDocumentPrefix = '/legacy/';
+    first.pubsubDocumentPrefix = '/custom/';
 
     expect(defaultDocumentPubsubConfig().pubsubDocumentPrefix).toBe(
       DEFAULT_DOCUMENT_TOPIC_PREFIX,

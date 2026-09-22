@@ -53,15 +53,11 @@ The Automerge and Yjs daemon commands are now `peerborne-automerge-d` and
 
 ## Document GossipSub v3 namespaces
 
-The current document GossipSub prefix is `/peerborne/document/v3/`; the relay's
-reserved publish-notification topic is `/peerborne/documents/v3`. Peerborne has
-no existing users requiring old-topic compatibility. Relays allow these current
-defaults and reject the earlier `/document/` and `/documents` defaults.
-
-Every peer must use the same runtime and topic configuration. To use a custom
-document prefix, add its slash-terminated namespace to every relay's
-`TOPIC_ALLOWLIST`. An empty
-prefix requires allowing each concrete document topic or explicitly selecting
+The current document GossipSub prefix is `/peerborne/document/v3/`.
+Relays admit this namespace by default. Every peer must use the same runtime
+and topic configuration. To use a custom document prefix, add its
+slash-terminated namespace to every relay's `TOPIC_ALLOWLIST`. An empty prefix
+requires allowing each concrete document topic or explicitly selecting
 unrestricted `*` mode. Custom topics do not negotiate alternate wire formats.
 
 Topic names are public routing labels, not authentication or an authorization
@@ -152,8 +148,7 @@ There is no replacement protocol yet. An always-on peer that opens the
 document through the normal authorized path is at most a partial substitute;
 durable retention is not validated. See the
 [pinning cookbook](site/src/content/docs/cookbook/pinning.md) for the current
-limits. The relay's `DOCUMENT_PUBLISH_PATH` setting only
-controls which topic the relay admits and subscribes to.
+limits. Relays no longer reserve or subscribe to a document-publish topic.
 
 ## Compatibility identifiers that did not change
 

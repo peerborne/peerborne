@@ -11,14 +11,14 @@ function registry(maxAutoTopics = 2) {
 }
 
 describe('AutoTopicRegistry', () => {
-  it('admits only the current default namespace and exact notification topic', () => {
+  it('admits only the current default document namespace', () => {
     const topics = new AutoTopicRegistry({
       permanentTopics: [],
       allowlist: DEFAULT_TOPIC_ALLOWLIST,
       maxAutoTopics: 2,
       maxAutoTopicsPerPeer: 2,
     })
-    for (const topic of ['/peerborne/document/v3/shared', '/peerborne/documents/v3']) {
+    for (const topic of ['/peerborne/document/v3/shared', '/peerborne/document/v3/other']) {
       expect(topics.subscriptionChanged('peer-a', topic, true)).toEqual({
         action: 'subscribe', topic,
       })

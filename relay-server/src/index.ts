@@ -25,7 +25,6 @@ async function main() {
   const config = loadConfig()
   const {
     peerDiscoveryTopic,
-    documentPublishPath,
     topicAllowlist,
     maxAutoTopics,
     maxAutoTopicsPerPeer,
@@ -75,20 +74,18 @@ async function main() {
     // The relay must be subscribed to these topics to forward messages between
     // browser peers that are connected to the relay but not yet to each other.
     libp2p.services.pubsub.subscribe(peerDiscoveryTopic)
-    libp2p.services.pubsub.subscribe(documentPublishPath)
     for (const topic of extraTopics) {
-      if (topic !== peerDiscoveryTopic && topic !== documentPublishPath) {
+      if (topic !== peerDiscoveryTopic) {
         libp2p.services.pubsub.subscribe(topic)
       }
     }
 
     // Auto-subscribe to document topics as peers join them. The safe default
-    // admits the v3 document namespace and exact publish-notification topic.
+    // admits the current document namespace.
     // Custom namespaces require an explicit allowlist entry.
     // Set TOPIC_ALLOWLIST=* explicitly to allow every non-system topic.
     const permanentTopics = new Set<string>([
       peerDiscoveryTopic,
-      documentPublishPath,
       ...extraTopics,
     ])
     const autoTopics = new AutoTopicRegistry({

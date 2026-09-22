@@ -14,13 +14,13 @@ describe('documentTopic', () => {
     expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/peerborne/document/v3/');
   });
 
-  test('copies explicit legacy topics without replacing them with defaults', () => {
+  test('copies explicit custom topics without replacing them with defaults', () => {
     expect(
       copyDocumentPubsubConfig({
-        pubsubDocumentPrefix: '/document/',
+        pubsubDocumentPrefix: '/custom/',
       }),
     ).toEqual({
-      pubsubDocumentPrefix: '/document/',
+      pubsubDocumentPrefix: '/custom/',
     });
   });
 
@@ -28,9 +28,9 @@ describe('documentTopic', () => {
     expect(documentTopic('/my-doc')).toBe('/peerborne/document/v3/my-doc');
   });
 
-  test('keeps an explicitly configured legacy prefix isolated from v3', () => {
-    expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
-    expect(documentTopic('my-doc', '/document/')).not.toBe(
+  test('keeps an explicitly configured custom namespace isolated', () => {
+    expect(documentTopic('my-doc', '/custom/')).toBe('/custom/my-doc');
+    expect(documentTopic('my-doc', '/custom/')).not.toBe(
       documentTopic('my-doc'),
     );
   });
