@@ -719,7 +719,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           typeof prepared !== 'function'
         ) {
           throw new TypeError(
-            'Backing ACL prepared removal must be an object',
+            'Backing ACL prepared removal must be an object or function',
           );
         }
         const changesProperty = this._backingDataProperty(
