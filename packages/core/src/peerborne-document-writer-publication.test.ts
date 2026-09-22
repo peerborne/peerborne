@@ -228,6 +228,39 @@ function childCids(message: any): string[] {
 }
 
 describe('writer ACL publication boundary', () => {
+  test('reader removal queued behind a promotion preserves the writer reader row', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publicationStarted = deferred<void>();
+    const releasePublication = deferred<void>();
+    const publish = jest.fn(async () => {
+      publicationStarted.resolve();
+      await releasePublication.promise;
+    });
+    const { document, readers } = publicationHarness(
+      writers, publish, ['promoted-cid'],
+    );
+    const rotate = jest.fn(async () => {
+      throw new Error('rotation must not start');
+    });
+    document._beekemInitialized = true;
+    document._beekem = { removeMember: rotate };
+    document._readerLeafIndices = new Map([['candidate', 0]]);
+    document._readerKemPublicKeys = new Map();
+    const promotion = document.addWriter('candidate');
+    await publicationStarted.promise;
+    const removal = document.removeReader('candidate');
+    const rejected = expect(removal).rejects.toThrow(
+      /still an authorized writer.*removeWriter/s,
+    );
+    releasePublication.resolve();
+    await promotion;
+    await rejected;
+    expect(writers.members).toContain('candidate');
+    expect(readers).toContain('candidate');
+    expect(rotate).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
   test('poisons the document when a post-publication ACL commit is indeterminate', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const originalPrepareAdd = writers.prepareAdd.bind(writers);
