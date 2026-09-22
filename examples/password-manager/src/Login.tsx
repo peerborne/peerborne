@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Container, Row, Form } from 'react-bootstrap';
-import { useHistory } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { exportKey, importKey } from './utils';
 
 export const passwordManagerNamespace = '/password-manager';
@@ -20,7 +20,7 @@ export function Login({
   bootstrapPeers?: string[];
   setBootstrapPeers?: (peers: string[]) => void;
 }) {
-  const history = useHistory();
+  const navigate = useNavigate();
   const [generatedPrivateKey, setGeneratedPrivateKey] = React.useState<
     string | undefined
   >();
@@ -112,7 +112,7 @@ export function Login({
                 setBootstrapPeers(draftBootstrapPeers.split('\n'));
               setUserId && generatedPublicKey && setUserId(btoa(generatedPublicKey));
               // Redirect to the /secrets page.
-              history.push('/secrets');
+              navigate('/secrets');
             }}
           >
             Login
