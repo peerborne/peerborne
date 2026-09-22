@@ -90,7 +90,10 @@ export interface SerializedPathUpdateV2 {
   treeHash: string;
 }
 
-/** Convert a `PathUpdate` to a JSON-safe wire representation. */
+/**
+ * Convert a plain, own-data `PathUpdate` to a detached JSON-safe wire value.
+ * Class instances and accessor properties are rejected at this boundary.
+ */
 export function serializePathUpdateForWire(
   update: PathUpdate,
 ): SerializedPathUpdate {
@@ -257,7 +260,7 @@ export function serializePathUpdateV2ForWire(
     raw.nodes,
     MAX_V2_PATH_NODES,
     'Invalid PathUpdateV2: nodes',
-    budget,
+    { budget },
   );
   if (!Array.isArray(raw.treeNodePublicKeys)) {
     throw new Error(
@@ -268,7 +271,7 @@ export function serializePathUpdateV2ForWire(
     raw.treeNodePublicKeys,
     treeWidth,
     'Invalid PathUpdateV2: treeNodePublicKeys',
-    budget,
+    { budget },
   );
   if (rawTreeNodePublicKeys.length !== treeWidth) {
     throw new Error(
@@ -312,8 +315,7 @@ export function serializePathUpdateV2ForWire(
       node.encryptedPathKeyBundles,
       numLeaves,
       `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles`,
-      budget,
-      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      { budget, maxLengthError: `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves` },
     );
     const recipientIndices = new Set<number>();
     const bundles = rawBundles.map((value, bundleOffset) => {
@@ -618,7 +620,7 @@ export function deserializePathUpdateV2FromWire(
     raw.nodes,
     MAX_V2_PATH_NODES,
     'Invalid PathUpdateV2: nodes',
-    budget,
+    { budget },
   );
   if (!Array.isArray(raw.treeNodePublicKeys)) {
     throw new Error(
@@ -629,7 +631,7 @@ export function deserializePathUpdateV2FromWire(
     raw.treeNodePublicKeys,
     treeWidth,
     'Invalid PathUpdateV2: treeNodePublicKeys',
-    budget,
+    { budget },
   );
   if (rawTreeNodePublicKeys.length !== treeWidth) {
     throw new Error(
@@ -683,8 +685,7 @@ export function deserializePathUpdateV2FromWire(
       node.encryptedPathKeyBundles,
       raw.numLeaves as number,
       `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles`,
-      budget,
-      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      { budget, maxLengthError: `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves` },
     );
 
     const recipientIndices = new Set<number>();
@@ -1066,9 +1067,9 @@ function snapshotBoundedArray(
   value: unknown[],
   maxLength: number,
   context: string,
-  budget?: V2DecodeBudget,
-  maxLengthError = `${context} exceeds ${maxLength} entries`,
+  options: { budget?: V2DecodeBudget; maxLengthError?: string } = {},
 ): unknown[] {
+  const { budget, maxLengthError = `${context} exceeds ${maxLength} entries` } = options;
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
   if (
     lengthDescriptor === undefined ||
