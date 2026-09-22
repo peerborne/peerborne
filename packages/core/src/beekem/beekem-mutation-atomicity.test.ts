@@ -32,6 +32,31 @@ function nodesOf(beekem: BeeKEM): Map<number, unknown> {
 }
 
 describe('BeeKEM mutation atomicity', () => {
+  test('holds failed capture in its reserved turn until Welcome settlement', async () => {
+    const { alice } = await twoMemberGroup();
+    const state = alice as unknown as {
+      _beginWelcomeSettlement(): void;
+      _finishWelcomeSettlementIfPossible(): void;
+      _pendingMutations: number;
+    };
+    state._beginWelcomeSettlement();
+    let settled = false;
+    const outcome = alice.processPathUpdate({} as never).then(
+      () => { settled = true; return undefined; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(state._pendingMutations).toBe(1);
+    } finally {
+      state._finishWelcomeSettlementIfPossible();
+      await outcome;
+    }
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(state._pendingMutations).toBe(0);
+  });
+
   test('reserves a remote update before inspecting Proxy descriptors', async () => {
     const { alice, bob } = await twoMemberGroup();
     const older = await bob.update();
