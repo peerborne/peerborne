@@ -277,6 +277,41 @@ function fakeDocument(options: {
 }
 
 describe('membership call-boundary snapshots', () => {
+  test.each(['addReader', 'buildInvitationBootstrap'])(
+    '%s rejects shared KEM bytes before queueing or invoking identity codecs',
+    async (operation) => {
+      const document = fakeDocument();
+      document._addReaderUnlocked = jest.fn(async () => null);
+      document._buildInvitationBootstrapUnlocked = jest.fn(async () => ({}));
+      const queued = jest.spyOn(document._mutationQueue, 'run');
+      const key = new Uint8Array(new SharedArrayBuffer(65));
+      await expect(document[operation](targetUser, key, 'reader')).rejects.toThrow(
+        /backing buffer/i,
+      );
+      expect(queued).not.toHaveBeenCalled();
+      expect(document._testState.serializePublicKey).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['removeReader', 'addWriter'])(
+    '%s rejects an identity-bound key that resolves to the local leaf',
+    async (operation) => {
+      const document = fakeDocument({
+        readers: ['target'],
+        liveLeafIndex: 0,
+        cachedLeafIndex: 0,
+        recordedKemPublicKey: kemPublicKey(),
+      });
+      document._beekem.myLeafIndex = 0;
+      await expect(document[operation](targetUser)).rejects.toThrow(/local.*leaf/i);
+      expect(document._testState.prepareWriterAdd).not.toHaveBeenCalled();
+      expect(document._testState.prepareReaderRemove).not.toHaveBeenCalled();
+      expect(document._testState.liveBeeKEM.clone).not.toHaveBeenCalled();
+      expect(document._testState.prepareEpochKey).not.toHaveBeenCalled();
+      expect(document._testState.readerIds).toContain('target');
+    },
+  );
+
   test('queues reader onboarding with a detached identity and KEM copy', async () => {
     const document = fakeDocument();
     const addReaderUnlocked = jest.fn(async () => null);

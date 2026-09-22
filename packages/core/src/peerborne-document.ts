@@ -8024,6 +8024,13 @@ export class PeerborneDocument<
       );
     }
 
+    if (liveLeafIndex === this._beekem.myLeafIndex) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the identity-bound ` +
+          'KEM key resolves to the local BeeKEM leaf, not a remote member.',
+      );
+    }
+
     const cachedLeafIndex = this._readerLeafIndices.get(serializedWriter);
     if (
       cachedLeafIndex !== undefined &&
@@ -10219,6 +10226,12 @@ export class PeerborneDocument<
           'public key does not resolve to exactly one live, non-blanked ' +
           'BeeKEM leaf. Use an explicit recipient-bound recovery or ' +
           're-invitation flow to repair local membership state.',
+      );
+    }
+    if (leafIndex === beekem.myLeafIndex) {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the identity-bound ` +
+          'KEM key resolves to the local BeeKEM leaf, not a remote member.',
       );
     }
     if (
