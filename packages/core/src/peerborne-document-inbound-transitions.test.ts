@@ -8,12 +8,12 @@ import {
 } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
 import { eciesOpen } from './ecies.js';
-import { decodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
-import { deserializePathUpdateFromWire } from './path-update-wire.js';
+import { deserializePathUpdateV2FromWire } from './path-update-wire.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
@@ -39,8 +39,8 @@ jest.mock('./ecies.js', () => ({
 }));
 
 jest.mock('./welcome-sealed-payload.js', () => ({
-  decodeWelcomeSealedPayload: jest.fn(),
-  encodeWelcomeSealedPayload: jest.fn(),
+  decodeWelcomeSealedPayloadV2: jest.fn(),
+  encodeWelcomeSealedPayloadV2: jest.fn(),
 }));
 
 jest.mock('./derive-doc-key.js', () => ({
@@ -49,8 +49,8 @@ jest.mock('./derive-doc-key.js', () => ({
 }));
 
 jest.mock('./path-update-wire.js', () => ({
-  deserializePathUpdateFromWire: jest.fn(),
-  serializePathUpdateForWire: jest.fn(),
+  deserializePathUpdateV2FromWire: jest.fn(),
+  serializePathUpdateV2ForWire: jest.fn(),
 }));
 
 jest.mock('./beekem/beekem.js', () => {
@@ -290,7 +290,7 @@ function welcomeHarness(
   jest.mocked(eciesOpen).mockImplementation(async (sealed) =>
     new Uint8Array([(sealed as Uint8Array)[0]]),
   );
-  jest.mocked(decodeWelcomeSealedPayload).mockImplementation((plaintext) => {
+  jest.mocked(decodeWelcomeSealedPayloadV2).mockImplementation((plaintext) => {
     const envelope = envelopes.get((plaintext as Uint8Array)[0]);
     if (!envelope) throw new Error('missing Welcome envelope');
     return envelope as never;
@@ -432,7 +432,7 @@ beforeEach(() => {
   jest.mocked(deriveDocumentKeyFromRootSecret).mockResolvedValue(
     derivedDocumentKey,
   );
-  jest.mocked(deserializePathUpdateFromWire).mockReturnValue({
+  jest.mocked(deserializePathUpdateV2FromWire).mockReturnValue({
     senderLeafIndex: 4,
     senderLeafPublicKey: new Uint8Array(65).fill(7),
     nodes: [],
@@ -447,7 +447,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('inbound legacy BeeKEM Welcome transaction', () => {
+describe('inbound BeeKEM V2 Welcome transaction', () => {
   test.each([
     { hydratedShape: 'missing-old' as const },
     { hydratedShape: 'undefined-old' as const },
@@ -517,44 +517,18 @@ describe('inbound legacy BeeKEM Welcome transaction', () => {
     expect(harness.claims[1]).not.toHaveBeenCalled();
   });
 
-  test('allows a valid same-epoch Welcome to repair a legacy key-only transition', async () => {
+  test('rejects a key-only Welcome before staging or committing state', async () => {
     const harness = welcomeHarness();
-    harness.register(
-      15,
-      { ids: [currentEpoch], currentId: currentEpoch },
-      null,
-    );
-    harness.register(16, {
-      ids: [currentEpoch],
-      currentId: currentEpoch,
-    });
-
-    await expect(
-      harness.document._evaluateAndApplyBeeKEMWelcome(
-        welcomeMessage(currentEpoch, 15),
-        { fromBuffer: false },
-      ),
-    ).resolves.toBe('applied');
-
-    expect(harness.document._invitationEpoch).toEqual(currentEpoch);
+    harness.register(15, { ids: [currentEpoch], currentId: currentEpoch }, null);
+    await expect(harness.document._evaluateAndApplyBeeKEMWelcome(
+      welcomeMessage(currentEpoch, 15), { fromBuffer: false },
+    )).resolves.toBe('terminal');
+    expect(harness.prepareMerge).not.toHaveBeenCalled();
+    expect(harness.liveIds()).toEqual([]);
+    expect(harness.liveRevision()).toBe(0);
+    expect(harness.document._invitationEpoch).toBeUndefined();
     expect(harness.document._beekem).toBeNull();
     expect(harness.document._beekemInitialized).toBe(false);
-
-    await expect(
-      harness.document._evaluateAndApplyBeeKEMWelcome(
-        welcomeMessage(currentEpoch, 16),
-        { fromBuffer: false },
-      ),
-    ).resolves.toBe('applied');
-
-    expect(harness.liveIds()).toEqual([currentEpoch]);
-    expect(harness.liveRevision()).toBe(2);
-    expect(harness.document._invitationEpoch).toEqual(currentEpoch);
-    expect(harness.document._beekem).not.toBeNull();
-    expect(harness.document._beekemInitialized).toBe(true);
-    expect(harness.claims).toHaveLength(2);
-    expect(harness.claims[0]).toHaveBeenCalledTimes(1);
-    expect(harness.claims[1]).toHaveBeenCalledTimes(1);
   });
 
   test('rejects a staged keychain whose current ID is not the signed welcomeEpochId', async () => {
@@ -1026,7 +1000,7 @@ describe('inbound legacy BeeKEM Welcome transaction', () => {
   });
 });
 
-describe('inbound BeeKEM PathUpdate transaction', () => {
+describe('inbound BeeKEM PathUpdateV2 transaction', () => {
   test.each(['documentId', 'signature', 'pathUpdate', 'pathUpdateEpochId'])(
     'rejects an accessor-backed %s before routing or authentication', async (field) => {
       const harness = pathUpdateHarness();
@@ -1042,7 +1016,7 @@ describe('inbound BeeKEM PathUpdate transaction', () => {
     },
   );
 
-  test('rejects nested PathUpdate accessors before calling the serializer', async () => {
+  test('rejects nested PathUpdateV2 accessors before calling the serializer', async () => {
     const harness = pathUpdateHarness();
     const getter = jest.fn(() => []);
     Object.defineProperty(harness.message.pathUpdate, 'nodes', { enumerable: true, get: getter });
@@ -1116,7 +1090,7 @@ describe('inbound BeeKEM PathUpdate transaction', () => {
         new Uint8Array([1]),
       );
 
-      expect(deserializePathUpdateFromWire).not.toHaveBeenCalled();
+      expect(deserializePathUpdateV2FromWire).not.toHaveBeenCalled();
       expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
       expect(harness.stagedBeeKEM.processPathUpdate).not.toHaveBeenCalled();
       expect(harness.prepareEpochKey).not.toHaveBeenCalled();
@@ -1124,7 +1098,7 @@ describe('inbound BeeKEM PathUpdate transaction', () => {
     },
   );
 
-  test('authenticates before decoding the PathUpdate payload', async () => {
+  test('authenticates before decoding the PathUpdateV2 payload', async () => {
     const harness = pathUpdateHarness();
     harness.document._verifyWelcomeWriterSignature = jest.fn(async () => false);
 
@@ -1132,7 +1106,7 @@ describe('inbound BeeKEM PathUpdate transaction', () => {
       new Uint8Array([1]),
     );
 
-    expect(deserializePathUpdateFromWire).not.toHaveBeenCalled();
+    expect(deserializePathUpdateV2FromWire).not.toHaveBeenCalled();
     expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
     expect(harness.prepareEpochKey).not.toHaveBeenCalled();
     expect(harness.installedBeeKEM()).toBe(harness.liveBeeKEM);
@@ -1169,8 +1143,8 @@ describe('inbound BeeKEM PathUpdate transaction', () => {
       harness.document._syncMessageSerializer.deserializeSyncMessage.mock
         .calls[1][0],
     ).toEqual(new Uint8Array([6]));
-    expect(deserializePathUpdateFromWire).toHaveBeenCalledTimes(1);
-    expect(deserializePathUpdateFromWire).toHaveBeenCalledWith(
+    expect(deserializePathUpdateV2FromWire).toHaveBeenCalledTimes(1);
+    expect(deserializePathUpdateV2FromWire).toHaveBeenCalledWith(
       canonicalPathUpdate,
     );
     expect(harness.prepareEpochKey).toHaveBeenCalledWith(

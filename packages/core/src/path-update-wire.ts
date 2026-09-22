@@ -1,35 +1,13 @@
-/**
- * Wire serialization for BeeKEM `PathUpdate`s.
- *
- * `BeeKEM.removeMember` / `BeeKEM.update` / `BeeKEM.processPathUpdate`
- * deal in the runtime `PathUpdate` shape from
- * `packages/core/src/beekem/types.ts`, which is a small
- * record of `Uint8Array`s. The `beekemPathUpdateV1` wire protocol
- * carries this record as a JSON-safe payload inside a
- * `CRDTSyncMessage`, so we need a base64-encoded shape per
- * `Uint8Array` and the matching encoder/decoder pair. V2 is a separate,
- * explicitly-versioned shape; the v1 decoder rejects v2-only fields.
- *
- * The shape and helpers live here, rather than in the BeeKEM module, so
- * `beekem/types.ts` can evolve without coupling runtime types to this wire
- * codec.
- */
+/** Strict parent-bound BeeKEM PathUpdate V2 serialization. */
 
 import {
   MAX_BEEKEM_TREE_LEAVES,
-  PathNodeUpdate,
   PathNodeUpdateV2,
-  PathUpdate,
   PathUpdateV2,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import * as TreeMath from './beekem/tree-math.js';
-import {
-  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-  MAX_V1_PATH_NODES,
-  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-} from './beekem/path-update-limits.js';
 import {
   createV2DecodeBudget,
   decodeV2Bytes,
@@ -39,24 +17,9 @@ import {
   requirePositiveInteger,
   snapshotBoundedArray,
   snapshotPlainObject,
-  V2DecodeBudget,
   V2WireCodec,
 } from './wire-v2-validation.js';
 
-const MAX_V1_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
-const PATH_UPDATE_V1: V2WireCodec = {
-  typeName: 'PathUpdate',
-  maxAggregateDecodedBytes: 256 * 1024,
-  maxAggregateWorkItems: MAX_V1_PATH_NODES,
-};
-const PATH_UPDATE_V2_ONLY_FIELDS = [
-  'version',
-  'generation',
-  'parentTreeHash',
-  'numLeaves',
-  'treeNodePublicKeys',
-  'treeHash',
-] as const;
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const PATH_UPDATE_V2: V2WireCodec = {
@@ -76,24 +39,6 @@ const PATH_UPDATE_V2_FIELDS = [
   'treeHash',
 ] as const;
 
-/** JSON-safe encoding of a single `PathNodeUpdate`. */
-export interface SerializedPathNodeUpdate {
-  /** Tree node index. */
-  nodeIndex: number;
-  /** Base64-encoded raw P-256 SEC1-uncompressed public key. */
-  publicKey: string;
-  /** Base64-encoded ECIES ciphertext (BeeKEM internal format). */
-  encryptedPrivateKey: string;
-}
-
-/** JSON-safe encoding of a `PathUpdate`. */
-export interface SerializedPathUpdate {
-  senderLeafIndex: number;
-  /** Base64-encoded raw P-256 SEC1-uncompressed leaf public key. */
-  senderLeafPublicKey: string;
-  nodes: SerializedPathNodeUpdate[];
-}
-
 export interface SerializedEncryptedPathKeyBundle {
   recipientNodeIndex: number;
   ciphertext: string;
@@ -110,7 +55,7 @@ export interface SerializedPathTreeNodePublicKey {
   publicKey: string | null;
 }
 
-/** Explicit wire shape reserved for `beekemPathUpdateV2`. */
+/** Current wire shape for `beekemPathUpdateV2`. */
 export interface SerializedPathUpdateV2 {
   version: 2;
   generation: number;
@@ -121,90 +66,6 @@ export interface SerializedPathUpdateV2 {
   nodes: SerializedPathNodeUpdateV2[];
   treeNodePublicKeys: SerializedPathTreeNodePublicKey[];
   treeHash: string;
-}
-
-/**
- * Convert a plain, own-data `PathUpdate` to a detached JSON-safe wire value.
- * Class instances and accessor properties are rejected at this boundary.
- *
- * The per-field bounds cap the result far below the shared-protocol request
- * limit; the transport sender enforces that limit on the complete frame.
- */
-export function serializePathUpdateForWire(
-  update: PathUpdate,
-): SerializedPathUpdate {
-  const budget = createV2DecodeBudget(PATH_UPDATE_V1);
-  const raw = snapshotPlainObject(
-    update,
-    [
-      'senderLeafIndex',
-      'senderLeafPublicKey',
-      'nodes',
-      ...PATH_UPDATE_V2_ONLY_FIELDS,
-    ],
-    'Invalid PathUpdate',
-  );
-  for (const field of PATH_UPDATE_V2_ONLY_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(raw, field)) {
-      throw new Error(
-        `Cannot serialize PathUpdate with v2-only field '${field}' as v1`,
-      );
-    }
-  }
-  const senderLeafIndex = requireV1SenderLeafIndex(raw.senderLeafIndex);
-  const rawNodes = snapshotBoundedArray(
-    raw.nodes,
-    MAX_V1_PATH_NODES,
-    'Invalid PathUpdate: nodes',
-    budget,
-  );
-  const nodeIndices = new Set<number>();
-  const nodes = rawNodes.map((value, nodeOffset) => {
-    const node = snapshotPlainObject(
-      value,
-      [
-        'nodeIndex',
-        'publicKey',
-        'encryptedPrivateKey',
-        'encryptedPathKeyBundles',
-      ],
-      `Invalid PathUpdate: node[${nodeOffset}]`,
-    );
-    if (Object.prototype.hasOwnProperty.call(node, 'encryptedPathKeyBundles')) {
-      throw new Error(
-        "Cannot serialize PathUpdate with v2-only field 'encryptedPathKeyBundles' as v1",
-      );
-    }
-    const nodeIndex = requireV1PathNodeIndex(
-      node.nodeIndex,
-      nodeOffset,
-      nodeIndices,
-    );
-    const publicKey = encodeRuntimeBytes(
-      node.publicKey,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      `node[${nodeOffset}].publicKey`,
-      budget,
-    );
-    const encryptedPrivateKey = encodeV1Ciphertext(
-      node.encryptedPrivateKey,
-      `node[${nodeOffset}].encryptedPrivateKey`,
-      budget,
-    );
-    return { nodeIndex, publicKey, encryptedPrivateKey };
-  });
-  return {
-    senderLeafIndex,
-    senderLeafPublicKey: encodeRuntimeBytes(
-      raw.senderLeafPublicKey,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      'senderLeafPublicKey',
-      budget,
-    ),
-    nodes,
-  };
 }
 
 /**
@@ -332,75 +193,6 @@ export function serializePathUpdateV2ForWire(
   };
   deserializePathUpdateV2FromWire(wire);
   return wire;
-}
-
-/**
- * Decode a wire-format `SerializedPathUpdate` back into a `PathUpdate`.
- *
- * Validates the input shape so a malformed peer payload (missing
- * fields, wrong types, etc.) surfaces as a descriptive error
- * instead of a confusing crash inside `BeeKEM.processPathUpdate`.
- * Mirrors the validation posture used by the sync-message
- * deserializers (`YjsJSONSerializer`, `AutomergeJSONSerializer`).
- */
-export function deserializePathUpdateFromWire(wire: unknown): PathUpdate {
-  const budget = createV2DecodeBudget(PATH_UPDATE_V1);
-  const raw = snapshotPlainObject(
-    wire,
-    ['senderLeafIndex', 'senderLeafPublicKey', 'nodes'],
-    'Invalid PathUpdate',
-  );
-  const senderLeafIndex = requireV1SenderLeafIndex(raw.senderLeafIndex);
-  const rawNodes = snapshotBoundedArray(
-    raw.nodes,
-    MAX_V1_PATH_NODES,
-    'Invalid PathUpdate: nodes',
-    budget,
-  );
-  const nodeIndices = new Set<number>();
-  const nodes: PathNodeUpdate[] = rawNodes.map((value, nodeOffset) => {
-    const node = snapshotPlainObject(
-      value,
-      ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
-      `Invalid PathUpdate: node[${nodeOffset}]`,
-    );
-    const nodeIndex = requireV1PathNodeIndex(
-      node.nodeIndex,
-      nodeOffset,
-      nodeIndices,
-    );
-    const publicKey = decodeV2Bytes(
-      node.publicKey,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      `node[${nodeOffset}].publicKey`,
-      budget,
-    );
-    const encryptedPrivateKey = decodeV2Bytes(
-      node.encryptedPrivateKey,
-      0,
-      MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-      `node[${nodeOffset}].encryptedPrivateKey`,
-      budget,
-    );
-    requireV1CiphertextLength(
-      encryptedPrivateKey.byteLength,
-      `node[${nodeOffset}].encryptedPrivateKey`,
-    );
-    return { nodeIndex, publicKey, encryptedPrivateKey };
-  });
-
-  return {
-    senderLeafIndex,
-    senderLeafPublicKey: decodeV2Bytes(
-      raw.senderLeafPublicKey,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      ECIES_P256_PUBLIC_KEY_LENGTH,
-      'senderLeafPublicKey',
-      budget,
-    ),
-    nodes,
-  };
 }
 
 /** Decode and structurally validate the explicit v2 wire representation. */
@@ -697,72 +489,4 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
     left.byteLength === right.byteLength &&
     left.every((byte, offset) => byte === right[offset])
   );
-}
-
-function requireV1SenderLeafIndex(value: unknown): number {
-  if (
-    typeof value !== 'number' ||
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    value >= MAX_V1_TREE_WIDTH ||
-    (value & 1) !== 0
-  ) {
-    throw new Error(
-      `Invalid PathUpdate: 'senderLeafIndex' must be an even safe integer in [0, ${MAX_V1_TREE_WIDTH}) identifying a supported leaf (got ${describe(value)})`,
-    );
-  }
-  return value;
-}
-
-function requireV1PathNodeIndex(
-  value: unknown,
-  nodeOffset: number,
-  seen: Set<number>,
-): number {
-  if (
-    typeof value !== 'number' ||
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    value >= MAX_V1_TREE_WIDTH ||
-    (value & 1) === 0 ||
-    seen.has(value)
-  ) {
-    throw new Error(
-      `Invalid PathUpdate: node[${nodeOffset}].nodeIndex must identify a unique supported internal node (got ${describe(value)})`,
-    );
-  }
-  seen.add(value);
-  return value;
-}
-
-function requireV1CiphertextLength(
-  byteLength: number,
-  fieldName: string,
-): void {
-  if (
-    byteLength !== 0 &&
-    (byteLength < MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES ||
-      byteLength > MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES)
-  ) {
-    throw new Error(
-      `Invalid PathUpdate: '${fieldName}' must be empty or ${MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES}..${MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES} bytes`,
-    );
-  }
-}
-
-function encodeV1Ciphertext(
-  value: unknown,
-  fieldName: string,
-  budget: V2DecodeBudget,
-): string {
-  const encoded = encodeRuntimeBytes(
-    value,
-    0,
-    MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
-    fieldName,
-    budget,
-  );
-  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
-  requireV1CiphertextLength((encoded.length / 4) * 3 - padding, fieldName);
-  return encoded;
 }
