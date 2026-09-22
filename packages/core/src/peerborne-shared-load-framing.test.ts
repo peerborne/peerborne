@@ -2,8 +2,8 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { Peerborne } from './peerborne.js';
 import {
-  beekemPathUpdateV1,
-  beekemWelcomeV1,
+  beekemPathUpdateV2,
+  beekemWelcomeV2,
   documentKeyUpdateV2,
   documentLoadV3,
   snapshotLoadV3,
@@ -48,10 +48,10 @@ const jsonProtocols = [
 
 const rawProtocols = [
   ['key-update', documentKeyUpdateV2, 'handleKeyUpdateRequestData'],
-  ['beekem-welcome', beekemWelcomeV1, 'handleBeeKEMWelcomeRequestData'],
+  ['beekem-welcome', beekemWelcomeV2, 'handleBeeKEMWelcomeRequestData'],
   [
     'beekem-pathupdate',
-    beekemPathUpdateV1,
+    beekemPathUpdateV2,
     'handleBeeKEMPathUpdateRequestData',
   ],
 ] as const;

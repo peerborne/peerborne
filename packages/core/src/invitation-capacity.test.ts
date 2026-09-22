@@ -18,7 +18,7 @@ import {
 } from './invitation-capacity.js';
 import { MAX_INVITATION_OPAQUE_PAYLOAD_BYTES } from './invitation-wire.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
-import type { BeeKEMWelcome } from './beekem/types.js';
+import type { BeeKEMWelcomeV2 } from './beekem/types.js';
 
 interface SizedChanges {
   readonly bytes: number;
@@ -55,9 +55,12 @@ class CountingSyncMessageSerializer
 const serializer = new CountingSyncMessageSerializer();
 
 function twoMemberWelcome(
-  overrides: Partial<BeeKEMWelcome> = {},
-): BeeKEMWelcome {
+  overrides: Partial<BeeKEMWelcomeV2> = {},
+): BeeKEMWelcomeV2 {
   return {
+    version: 2 as const,
+    generation: 1,
+    numLeaves: 2,
     leafIndex: 2,
     pathKeys: [
       {
@@ -115,7 +118,7 @@ describe('initial invitation bootstrap capacity', () => {
       assertInitialInvitationBeeKEMWelcomeShape(twoMemberWelcome()),
     ).not.toThrow();
 
-    const invalidWelcomes: BeeKEMWelcome[] = [
+    const invalidWelcomes: BeeKEMWelcomeV2[] = [
       twoMemberWelcome({ leafIndex: 4 }),
       twoMemberWelcome({ pathKeys: [] }),
       twoMemberWelcome({

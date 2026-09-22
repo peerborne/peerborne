@@ -2,9 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import { PathUpdateV2 } from './beekem/types.js';
 import {
-  deserializePathUpdateFromWire,
   deserializePathUpdateV2FromWire,
-  serializePathUpdateForWire,
   serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 
@@ -93,8 +91,8 @@ const malformedMultiLeafPaths: Array<
 ];
 
 describe('path-update-wire', () => {
-  test('round-trips a real PathUpdate produced by BeeKEM.update', async () => {
-    // Build a 3-member group so the PathUpdate has multiple internal
+  test('round-trips a real PathUpdateV2 produced by BeeKEM.update', async () => {
+    // Build a 3-member group so the PathUpdateV2 has multiple internal
     // nodes (a richer payload to round-trip).
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();
@@ -109,11 +107,11 @@ describe('path-update-wire', () => {
     const { pathUpdate } = await alice.update();
     expect(pathUpdate.nodes.length).toBeGreaterThan(0);
 
-    const wire = serializePathUpdateForWire(pathUpdate);
-    // JSON-safety smoke test: a SerializedPathUpdate should survive a
+    const wire = serializePathUpdateV2ForWire(pathUpdate);
+    // JSON-safety smoke test: a SerializedPathUpdateV2 should survive a
     // JSON.stringify / JSON.parse round-trip without losing fidelity.
     const reparsed = JSON.parse(JSON.stringify(wire));
-    const restored = deserializePathUpdateFromWire(reparsed);
+    const restored = deserializePathUpdateV2FromWire(reparsed);
 
     expect(restored.senderLeafIndex).toBe(pathUpdate.senderLeafIndex);
     expect(restored.senderLeafPublicKey).toEqual(pathUpdate.senderLeafPublicKey);
@@ -127,7 +125,7 @@ describe('path-update-wire', () => {
     }
   });
 
-  test('round-tripped PathUpdate is still applicable to a peer', async () => {
+  test('round-tripped PathUpdateV2 is still applicable to a peer', async () => {
     // Confirm that the wire bytes don't only structurally round-trip
     // -- they also remain semantically valid: a peer that receives the
     // restored object can still process it via `processPathUpdate`.
@@ -142,48 +140,30 @@ describe('path-update-wire', () => {
     await bob.processWelcome(welcome, bobKeys.privateKey, bobKeys.publicKey);
 
     const { pathUpdate, rootSecret: aliceNewRoot } = await alice.update();
-    const wire = serializePathUpdateForWire(pathUpdate);
+    const wire = serializePathUpdateV2ForWire(pathUpdate);
     const reparsed = JSON.parse(JSON.stringify(wire));
-    const restored = deserializePathUpdateFromWire(reparsed);
+    const restored = deserializePathUpdateV2FromWire(reparsed);
 
     const bobNewRoot = await bob.processPathUpdate(restored);
     expect(Buffer.from(aliceNewRoot).equals(Buffer.from(bobNewRoot))).toBe(true);
   });
 
-  test('rejects malformed inputs with descriptive errors', () => {
-    expect(() => deserializePathUpdateFromWire(null)).toThrow(
-      /plain object/,
-    );
-    expect(() => deserializePathUpdateFromWire('hi')).toThrow(/plain object/);
-    expect(() => deserializePathUpdateFromWire([])).toThrow(/plain object/);
-    expect(() =>
-      deserializePathUpdateFromWire({
-        senderLeafPublicKey: 'AA==',
-        nodes: [],
-      }),
-    ).toThrow(/senderLeafIndex/);
-    expect(() =>
-      deserializePathUpdateFromWire({
-        senderLeafIndex: 0,
-        senderLeafPublicKey: 42,
-        nodes: [],
-      }),
-    ).toThrow(/senderLeafPublicKey/);
-    expect(() =>
-      deserializePathUpdateFromWire({
-        senderLeafIndex: 0,
-        senderLeafPublicKey: 'AA==',
-        nodes: 'oops',
-      }),
-    ).toThrow(/'nodes' must be an array/);
-    expect(() =>
-      deserializePathUpdateFromWire({
-        senderLeafIndex: 0,
-        senderLeafPublicKey: 'AA==',
-        nodes: [{ nodeIndex: 'not-int', publicKey: '', encryptedPrivateKey: '' }],
-      }),
-    ).toThrow(/node\[0\].nodeIndex/);
+  test.each([
+    ['senderLeafIndex', undefined],
+    ['senderLeafPublicKey', 42],
+    ['nodes', 'oops'],
+  ])('rejects malformed %s', (field, value) => {
+    const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
+    expect(() => deserializePathUpdateV2FromWire({ ...wire, [field]: value }))
+      .toThrow(new RegExp(field));
   });
+
+  test('rejects a malformed path-node index in a complete snapshot', () => {
+    const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
+    wire.nodes[0].nodeIndex = 'not-int' as never;
+    expect(() => deserializePathUpdateV2FromWire(wire)).toThrow(/nodeIndex/);
+  });
+
 });
 
 describe('path-update-wire V2 outbound boundary', () => {
@@ -331,6 +311,8 @@ describe('path-update-wire V2 outbound boundary', () => {
     const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
     expect(() =>
       deserializePathUpdateV2FromWire({
+        version: 2, generation: 1, numLeaves: 2,
+        parentTreeHash: "AA==", treeNodePublicKeys: [], treeHash: "AA==",
         ...wire,
         generation: 0x1_0000_0000,
       }),
@@ -346,6 +328,8 @@ describe('path-update-wire V2 outbound boundary', () => {
     );
     expect(() =>
       deserializePathUpdateV2FromWire({
+        version: 2, generation: 1, numLeaves: 2,
+        parentTreeHash: "AA==", treeNodePublicKeys: [], treeHash: "AA==",
         ...wire,
         treeNodePublicKeys: senderMismatch,
       }),
@@ -358,6 +342,8 @@ describe('path-update-wire V2 outbound boundary', () => {
     );
     expect(() =>
       deserializePathUpdateV2FromWire({
+        version: 2, generation: 1, numLeaves: 2,
+        parentTreeHash: "AA==", treeNodePublicKeys: [], treeHash: "AA==",
         ...wire,
         treeNodePublicKeys: pathMismatch,
       }),
@@ -376,6 +362,8 @@ describe('path-update-wire V2 outbound boundary', () => {
     ];
     expect(() =>
       deserializePathUpdateV2FromWire({
+        version: 2, generation: 1, numLeaves: 2,
+        parentTreeHash: "AA==", treeNodePublicKeys: [], treeHash: "AA==",
         ...wire,
         nodes: missingRecipient,
       }),
@@ -396,6 +384,8 @@ describe('path-update-wire V2 outbound boundary', () => {
     ];
     expect(() =>
       deserializePathUpdateV2FromWire({
+        version: 2, generation: 1, numLeaves: 2,
+        parentTreeHash: "AA==", treeNodePublicKeys: [], treeHash: "AA==",
         ...wire,
         nodes: blankRootRecipient,
       }),

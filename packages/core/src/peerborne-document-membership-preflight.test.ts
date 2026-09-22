@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import type { BeeKEMWelcome } from './beekem/types.js';
+import type { BeeKEMWelcomeV2 } from './beekem/types.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -45,8 +45,11 @@ async function validKemPublicKey(): Promise<Uint8Array> {
   );
 }
 
-function beekemWelcome(version: 1 | 2 = 1): BeeKEMWelcome {
-  const welcome: BeeKEMWelcome = {
+function beekemWelcome(generation = 1): BeeKEMWelcomeV2 {
+  const welcome: BeeKEMWelcomeV2 = {
+    version: 2 as const,
+    generation,
+    numLeaves: 2,
     leafIndex: 2,
     pathKeys: [
       {
@@ -61,15 +64,10 @@ function beekemWelcome(version: 1 | 2 = 1): BeeKEMWelcome {
     ],
     treeHash: new Uint8Array([10, 11, 12]),
   };
-  if (version === 2) {
-    welcome.version = 2;
-    welcome.generation = 7;
-    welcome.numLeaves = 2;
-  }
   return welcome;
 }
 
-function corruptWelcome(welcome: BeeKEMWelcome): void {
+function corruptWelcome(welcome: BeeKEMWelcomeV2): void {
   welcome.leafIndex = 20;
   welcome.pathKeys[0]!.nodeIndex = 21;
   welcome.pathKeys[0]!.publicKey.fill(21);
@@ -92,8 +90,8 @@ function corruptWelcome(welcome: BeeKEMWelcome): void {
 }
 
 function expectWelcomeFieldPresence(
-  actual: BeeKEMWelcome,
-  expected: BeeKEMWelcome,
+  actual: BeeKEMWelcomeV2,
+  expected: BeeKEMWelcomeV2,
 ): void {
   for (const field of ['version', 'generation', 'numLeaves'] as const) {
     expect(Object.prototype.hasOwnProperty.call(actual, field)).toBe(
@@ -324,15 +322,12 @@ describe('reader membership preflight', () => {
     expect(document._keychainChangesForWelcome).not.toHaveBeenCalled();
   });
 
-  test.each([
-    ['v1', 1],
-    ['v2', 2],
-  ] as const)(
-    'returns a detached cached %s Welcome on every exact reader retry',
-    async (_label, version) => {
+  test.each([1, 7])(
+    'returns a detached cached generation %i Welcome on every exact reader retry',
+    async (generation) => {
       const readerKemPublicKey = await validKemPublicKey();
-      const cachedWelcome = beekemWelcome(version);
-      const expectedWelcome = beekemWelcome(version);
+      const cachedWelcome = beekemWelcome(generation);
+      const expectedWelcome = beekemWelcome(generation);
       const findLeafByPublicKey = jest.fn(async () => 2);
       const addMember = jest.fn();
       const document = fakeDocument({
@@ -352,7 +347,7 @@ describe('reader membership preflight', () => {
         'reader',
         new Uint8Array(readerKemPublicKey),
       );
-      const firstWelcome = first.welcome as BeeKEMWelcome;
+      const firstWelcome = first.welcome as BeeKEMWelcomeV2;
       expect(firstWelcome).toEqual(expectedWelcome);
       expect(firstWelcome).not.toBe(cachedWelcome);
       expect(firstWelcome.pathKeys).not.toBe(cachedWelcome.pathKeys);
@@ -376,7 +371,7 @@ describe('reader membership preflight', () => {
         'reader',
         new Uint8Array(readerKemPublicKey),
       );
-      const secondWelcome = second.welcome as BeeKEMWelcome;
+      const secondWelcome = second.welcome as BeeKEMWelcomeV2;
 
       expect(cachedWelcome).toEqual(expectedWelcome);
       expect(secondWelcome).toEqual(expectedWelcome);
@@ -428,7 +423,7 @@ describe('reader membership preflight', () => {
       'reader',
       new Uint8Array(readerKemPublicKey),
     );
-    const preparedWelcome = prepared.welcome as BeeKEMWelcome;
+    const preparedWelcome = prepared.welcome as BeeKEMWelcomeV2;
     expect(preparedWelcome).toEqual(expectedWelcome);
     expect(preparedWelcome).not.toBe(generatedWelcome);
     expect(preparedWelcome.pathKeys[0]!.publicKey).not.toBe(
@@ -445,7 +440,7 @@ describe('reader membership preflight', () => {
 
     const cachedWelcome = document._beekemWelcomeByLeaf.get(
       2,
-    ) as BeeKEMWelcome;
+    ) as BeeKEMWelcomeV2;
     expect(cachedWelcome).toEqual(expectedWelcome);
     expect(cachedWelcome).not.toBe(generatedWelcome);
     expect(cachedWelcome.pathKeys[0]!.publicKey).not.toBe(
@@ -465,7 +460,7 @@ describe('reader membership preflight', () => {
       'reader',
       new Uint8Array(readerKemPublicKey),
     );
-    const recoveredWelcome = recovered.welcome as BeeKEMWelcome;
+    const recoveredWelcome = recovered.welcome as BeeKEMWelcomeV2;
     expect(recoveredWelcome).toEqual(expectedWelcome);
     expect(recoveredWelcome).not.toBe(cachedWelcome);
     expectWelcomeFieldPresence(recoveredWelcome, expectedWelcome);

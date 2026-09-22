@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 
 import { PeerborneDocument } from './peerborne-document.js';
 import { eciesOpen } from './ecies.js';
-import { decodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 
 jest.mock(
@@ -49,8 +49,8 @@ jest.mock('./ecies.js', () => ({
 }));
 
 jest.mock('./welcome-sealed-payload.js', () => ({
-  decodeWelcomeSealedPayload: jest.fn(),
-  encodeWelcomeSealedPayload: jest.fn(),
+  decodeWelcomeSealedPayloadV2: jest.fn(),
+  encodeWelcomeSealedPayloadV2: jest.fn(),
 }));
 
 jest.mock('./beekem/beekem.js', () => ({
@@ -235,7 +235,7 @@ describe('invitation bootstrap keychain transaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.mocked(eciesOpen).mockResolvedValue(new Uint8Array([1]));
-    jest.mocked(decodeWelcomeSealedPayload).mockReturnValue({
+    jest.mocked(decodeWelcomeSealedPayloadV2).mockReturnValue({
       keychainChanges: new Uint8Array([4, 5, 6]),
       beekemWelcome: welcome as never,
     });
