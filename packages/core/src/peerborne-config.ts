@@ -284,3 +284,250 @@ export interface PeerborneConfig {
    * The current document-publish V1 payload is not an authenticated remote
    * pinning request. `PeerborneNode` does not subscribe to this topic or
    * perform any document, subscription, or pinning effect from it.
+   */
+  pubsubDocumentPublishPath: string;
+
+  /**
+   * Enable GossipSub topic validators for authorization enforcement.
+   * When enabled, messages from unauthorized peers are rejected at the
+   * transport layer (P4 penalty in peer scoring).
+   *
+   * Topic validators are registered during `open()` and properly removed
+   * during `close()` to prevent stale validator references.
+   *
+   * Default: false (for backward compatibility).
+   */
+  enableTopicValidators?: boolean;
+
+  /**
+   * Enable Peerborne application-level signing and verification.
+   * When false, application-level signing is bypassed: sync message signatures,
+   * load request signatures, snapshot signatures, topic validator signature
+   * checks, and key update verification. Topic validators are not registered
+   * at all when signing is disabled to avoid unnecessary per-message overhead.
+   * Note: libp2p/GossipSub transport-level signing (e.g., `globalSignaturePolicy`)
+   * is NOT affected by this flag.
+   *
+   * **WARNING: Disabling signing removes all authentication and authorization
+   * checks. Any peer that can decrypt traffic (e.g., possesses a previous
+   * document key) can forge sync, key-update, and load messages. Peers with
+   * `enableSigning: false` will NOT interoperate with peers that have signing
+   * enabled (they will reject empty/missing signatures). Only use in trusted
+   * development/testing environments.**
+   *
+   * Default: true (signatures are computed and verified).
+   */
+  enableSigning?: boolean;
+
+  /**
+   * Configuration for history compaction.
+   * When provided with `enabled: true`, the document will periodically
+   * create snapshot nodes to compact the Merkle-DAG change history.
+   */
+  compaction?: Partial<CompactionConfig>;
+
+  /**
+   * Enable network statistics tracking.
+   * When true, a `NetworkStats` counter container is created and accessible
+   * via `peerborne.networkStats`. Callers must invoke `record*()` methods
+   * explicitly; automatic event wiring will be added in a follow-up.
+   *
+   * Default: false.
+   */
+  enableNetworkStats?: boolean;
+
+  /**
+   * Optional override for the WebRTC ICE server list used by the `webRTC()`
+   * and `webRTCDirect()` transports. When undefined, the built-in
+   * {@link DEFAULT_WEBRTC_ICE_SERVERS} list (Google + Cloudflare + Twilio
+   * public STUN endpoints) is used so peers can discover their public
+   * address mappings without depending on Circuit Relay for the data plane.
+   *
+   * **Privacy note:** Using the public STUN defaults discloses each peer's
+   * public IP/port mapping to the third-party STUN operators. For
+   * privacy-sensitive deployments, pass `[]` to disable STUN entirely (e.g.
+   * for fully-internal LAN deployments where mDNS is sufficient), or supply
+   * self-hosted STUN/TURN servers.
+   *
+   * Note: this field is informational once the libp2p config has already
+   * been built by {@link defaultConfig}; to actually change the ICE
+   * configuration, pass the override into `defaultConfig(bootstrap, ice)`
+   * (or `getDefaultConfig(ice)`) so it is wired into the transports at
+   * construction time.
+   *
+   * @default DEFAULT_WEBRTC_ICE_SERVERS
+   */
+  webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>;
+
+  /**
+   * Enable the initial-load quorum gate.
+   *
+   * When `true` (the default), `PeerborneDocument.load()` queries up to
+   * {@link loadQuorumK} distinct peers in parallel through the negotiated
+   * initial-load advertisement protocol before selecting a full response.
+   * The legacy negotiation compares a digest of the advertised tip frontier.
+   * A strict security-aware negotiation uses signer-authenticated votes over
+   * a digest that also binds the document identity, durable group-security
+   * commitments, and complete response manifest. The load proceeds only when
+   * {@link loadQuorumQ} accepted votes agree on the same negotiated digest.
+   * If quorum is not met, `load()` rejects with `LoadQuorumFailedError`.
+   *
+   * This gate reduces reliance on a single source, but it is not by itself a
+   * Byzantine-consensus guarantee. Its protection depends on the configured
+   * Q-of-K threshold, peer independence, and the authentication guarantees of
+   * the negotiated protocol. In particular, an explicit Q of 1 provides no
+   * independent corroboration.
+   *
+   * Setting this to `false` uses single-source selection: the loader may
+   * proceed with the first response that passes the checks required by the
+   * negotiated protocol and the rest of the configuration. This is useful for
+   * development and intentionally accepts the weaker single-peer trust model.
+   *
+   * @default true
+   */
+  loadQuorumEnabled?: boolean;
+
+  /**
+   * Maximum number of peers to probe in parallel for the initial-load
+   * advertisement step. The effective K is
+   * `min(loadQuorumK, knownPeers.length)`, so no more distinct peers are
+   * selected than are currently known.
+   *
+   * When three peers are known, the default of 3 paired with the default Q
+   * requires two matching votes while limiting open latency and bandwidth.
+   * That numerical majority does not establish Byzantine fault tolerance
+   * without corresponding peer identity, selection, and authentication
+   * assumptions.
+   *
+   * @default 3
+   */
+  loadQuorumK?: number;
+
+  /**
+   * Minimum number of accepted votes that must agree on the same negotiated
+   * advertisement digest. Together, {@link loadQuorumK} and this value define
+   * the configured Q-of-K policy. Once at least one peer is known, an explicit
+   * Q is a hard trust floor: if fewer than Q peers can be probed, loading fails
+   * closed instead of reducing Q to the currently reachable cohort. With no
+   * known peers (`effectiveK = 0`), the loader retains its new-document/no-peer
+   * skip path because there is no remote state to accept.
+   *
+   * When Q is omitted, it is the strict numerical majority
+   * `Math.floor(effectiveK / 2) + 1`, derived from the effective K after
+   * limiting the configured K to the known-peer count.
+   *
+   * Worked examples (`effectiveK -> default Q`):
+   *   - effectiveK=1 -> Q=1 (single-peer pass-through; requires
+   *     `loadQuorumAllowSinglePeer: true`)
+   *   - effectiveK=2 -> Q=2 (both peers must agree)
+   *   - effectiveK=3 -> Q=2
+   *   - effectiveK=4 -> Q=3
+   *   - effectiveK=5 -> Q=3
+   *   - effectiveK=7 -> Q=4
+   *
+   * An explicit valid Q is used as configured, even when it is not a majority
+   * of K. It is also preserved when a partition lowers the effective K, which
+   * makes the load fail closed if Q can no longer be reached. Choosing Q=1 or
+   * another non-majority threshold provides only that amount of agreement and
+   * must not be interpreted as Byzantine-majority protection.
+   *
+   * @default Math.floor(effectiveK / 2) + 1
+   */
+  loadQuorumQ?: number;
+
+  /**
+   * Per-peer timeout (milliseconds) for the initial-load quorum
+   * advertisement probes. A peer that does not respond within this window
+   * is recorded as a non-vote (NOT a disagreement); see
+   * `load-quorum.ts::decideLoadQuorum` for the distinction.
+   *
+   * Default chosen to be larger than typical RTT + protocol-negotiation
+   * latency on a wide-area mesh, but small enough that a partitioned peer
+   * does not stall document open by more than ~5 seconds.
+   *
+   * @default 5000
+   */
+  loadQuorumTimeoutMs?: number;
+
+  /**
+   * Allow the initial-load quorum gate to pass with a single responding
+   * peer when the effective K is 1.
+   *
+   * Effective K can resolve to 1 because only one peer is known, or because
+   * `loadQuorumK` is configured as 1 even when multiple peers are known. When
+   * this flag is `true`, the loader may accept the sole probed peer's
+   * negotiated advertisement and proceed with the full load. An explicit
+   * Q greater than 1 remains a hard floor and is not overridden by this flag.
+   *
+   * **Trust caveat:** with K=1 there is no second opinion, so this flag
+   * selects single-peer trust semantics regardless of which advertisement
+   * protocol is negotiated. A warning is logged when this path is taken.
+   *
+   * When `false` (the default), any effective-K=1 load fails with
+   * `LoadQuorumFailedError`. Callers that intentionally use one probe should
+   * either disable the quorum gate or enable this flag and accept the warning.
+   *
+   * @default false
+   */
+  loadQuorumAllowSinglePeer?: boolean;
+
+  /**
+   * Optional callback to validate document paths before creation.
+   *
+   * Called when `open()` determines the document is new (i.e., `load()` returned
+   * false -- no peers could provide the document). Note that `load()` can also
+   * return false during network partitions when peers are unavailable.
+   *
+   * Validation runs before pubsub subscription and protocol handler registration,
+   * so rejected paths never temporarily join the topic.
+   *
+   * - If the callback returns `false`, `open()` throws
+   *   `new Error('Document path "<path>" is not allowed for the current user')`.
+   * - If the callback throws, `open()` rethrows the error as-is (if it is
+   *   already an `Error`) or wraps it via `new Error(String(err))`.
+   *
+   * May return a boolean or a Promise<boolean> for async validation.
+   * Return `true` to allow creation, `false` to reject it.
+   * When absent, all document paths are allowed.
+   *
+   * @param documentPath The path of the document being created.
+   * @param userPublicKey The public key of the current user.
+   */
+  validateDocumentPath?: (documentPath: string, userPublicKey: unknown) => boolean | Promise<boolean>;
+}
+
+/**
+ * Default bootstrap configuration to use if none is provided.
+ *
+ * @param clientAddresses The list of bootstrap addresses to use.
+ * @returns A BootstrapInit object with the provided addresses.
+ */
+export const defaultBootstrapConfig = (clientAddresses: string[]) =>
+  ({
+    list: clientAddresses,
+  } as BootstrapInit);
+
+/**
+ * Returns a fresh default config with no bootstrap peers.
+ *
+ * Use this as a starting point for browser applications. Connect to peers
+ * after initialization via `peerborne.connect([relayMultiaddr])`.
+ *
+ * For configs with bootstrap peers baked in, use
+ * `defaultConfig(defaultBootstrapConfig(['/ip4/.../ws/p2p/...']))` instead.
+ *
+ * Each call creates new IDB-backed blockstore/datastore instances so callers
+ * can safely mutate the returned config without leaking state across
+ * consumers. For shared/reused configs, store the result in a variable.
+ *
+ * **Note:** Lazily instantiated -- safe to import in Node.js test environments
+ * that lack IndexedDB as long as the function is not called.
+ *
+ * @param webrtcIceServers Optional override for the WebRTC ICE server list.
+ *   When undefined, {@link DEFAULT_WEBRTC_ICE_SERVERS} is used.
+ */
+export function getDefaultConfig(
+  webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>,
+): PeerborneConfig {
+  return defaultConfig(defaultBootstrapConfig([]), webrtcIceServers);
+}
