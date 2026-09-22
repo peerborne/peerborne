@@ -239,7 +239,22 @@ export function firstTrue(promises: Promise<boolean>[]) {
 export function snapshotEnumerableOwnDataObject<T extends object>(
   value: unknown,
   field = 'value',
+  limits: Readonly<{
+    maxProperties: number;
+    maxKeyBytes: number;
+  }> = {
+    maxProperties: 131_072,
+    maxKeyBytes: 64 * 1024 * 1024,
+  },
 ): T {
+  for (const [name, limit] of [
+    ['maxProperties', limits.maxProperties],
+    ['maxKeyBytes', limits.maxKeyBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new TypeError(`${name} must be a non-negative safe integer`);
+    }
+  }
   if (value === null || typeof value !== 'object') {
     throw new TypeError(`${field} must be a plain object`);
   }
@@ -251,27 +266,52 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
   }
   if (isArray) throw new TypeError(`${field} must be a plain object`);
   let prototype: object | null;
-  let descriptors: PropertyDescriptorMap;
+  let keys: (string | symbol)[];
   try {
     prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
       | object
       | null;
-    descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
-      value,
-    ]) as PropertyDescriptorMap;
+    keys = reflectOwnKeys(value);
   } catch {
     throw new TypeError(`${field} must expose stable own data properties`);
   }
   if (prototype !== objectPrototype && prototype !== null) {
     throw new TypeError(`${field} must be a plain object`);
   }
+  if (keys.length > limits.maxProperties) {
+    throw new RangeError(
+      `${field} exceeds ${limits.maxProperties} own properties`,
+    );
+  }
 
-  const snapshot: Record<string, unknown> = {};
-  for (const key of reflectOwnKeys(descriptors)) {
+  let keyBytes = 0;
+  for (const key of keys) {
     if (typeof key !== 'string') {
       throw new TypeError(`${field} must not contain symbol properties`);
     }
-    const descriptor = descriptors[key];
+    keyBytes += key.length * 2;
+    if (
+      !Number.isSafeInteger(keyBytes) ||
+      keyBytes > limits.maxKeyBytes
+    ) {
+      throw new RangeError(
+        `${field} exceeds ${limits.maxKeyBytes} own-property key bytes`,
+      );
+    }
+  }
+  const stringKeys = keys as string[];
+
+  const snapshot: Record<string, unknown> = {};
+  for (const key of stringKeys) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        key,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${field} must expose stable own data properties`);
+    }
     if (
       descriptor === undefined ||
       descriptor.enumerable !== true ||
@@ -614,15 +654,33 @@ export function snapshotDeepEnumerableData<T>(
       throw new TypeError(`${field} contains a non-plain object`);
     }
 
-    const keys = reflectOwnKeys(descriptors);
+    let keys: (string | symbol)[];
+    try {
+      keys = reflectOwnKeys(objectCandidate);
+    } catch {
+      throw new TypeError(`${field} contains an unstable object`);
+    }
     accountProperties(keys.length);
-    const copy: Record<string, unknown> = {};
-    const children: SnapshotTask[] = [];
     for (const key of keys) {
       if (typeof key !== 'string') {
         throw new TypeError(`${field} must not contain symbol properties`);
       }
-      const descriptor = descriptors[key];
+      accountBytes(key.length * 2);
+    }
+    const stringKeys = keys as string[];
+    const copy: Record<string, unknown> = {};
+    const children: SnapshotTask[] = [];
+    for (const key of stringKeys) {
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = reflectApply(
+          objectGetOwnPropertyDescriptor,
+          Object,
+          [objectCandidate, key],
+        ) as PropertyDescriptor | undefined;
+      } catch {
+        throw new TypeError(`${field} contains an unstable object`);
+      }
       if (
         descriptor === undefined ||
         descriptor.enumerable !== true ||

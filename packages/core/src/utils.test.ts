@@ -7,6 +7,7 @@ import {
   firstTrue,
   concatUint8Arrays,
   copyUnsharedUint8Array,
+  snapshotEnumerableOwnDataObject,
   snapshotDeepEnumerableData,
   isBufferList,
   readFirstDeserializable,
@@ -135,6 +136,50 @@ describe('firstTrue', () => {
   });
 });
 
+describe('snapshotEnumerableOwnDataObject', () => {
+  test('rejects an excessive root key count before reading descriptors', () => {
+    let descriptorCalls = 0;
+    const value = new Proxy(
+      { first: 1, second: 2, third: 3 },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          descriptorCalls++;
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+
+    expect(() =>
+      snapshotEnumerableOwnDataObject(value, 'bounded root', {
+        maxProperties: 2,
+        maxKeyBytes: 128,
+      }),
+    ).toThrow(/own properties/);
+    expect(descriptorCalls).toBe(0);
+  });
+
+  test('rejects excessive root key bytes before reading descriptors', () => {
+    let descriptorCalls = 0;
+    const value = new Proxy(
+      { oversized: 1 },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          descriptorCalls++;
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+
+    expect(() =>
+      snapshotEnumerableOwnDataObject(value, 'bounded root', {
+        maxProperties: 1,
+        maxKeyBytes: 2,
+      }),
+    ).toThrow(/key bytes/);
+    expect(descriptorCalls).toBe(0);
+  });
+});
+
 describe('snapshotDeepEnumerableData', () => {
   test('detaches nested Proxy descriptors without invoking property gets', () => {
     const nested = { payload: new Uint8Array([1, 2, 3]) };
@@ -215,6 +260,15 @@ describe('snapshotDeepEnumerableData', () => {
         maxValueBytes: 64,
       }),
     ).toThrow(/detached properties/);
+    expect(() =>
+      snapshotDeepEnumerableData({ oversized: 1 }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 8,
+        maxProperties: 8,
+        maxArrayLength: 8,
+        maxValueBytes: 2,
+      }),
+    ).toThrow(/detached value bytes/);
 
     const deep: Record<string, unknown> = {};
     let cursor = deep;
@@ -231,7 +285,7 @@ describe('snapshotDeepEnumerableData', () => {
         maxObjects: 10_000,
         maxProperties: 10_000,
         maxArrayLength: 8,
-        maxValueBytes: 64,
+        maxValueBytes: 1_000_000,
       }),
     ).toThrow(/maximum depth 8/);
   });
@@ -346,6 +400,30 @@ describe('snapshotDeepEnumerableData', () => {
     expect(Object.prototype.hasOwnProperty.call(snapshot.values, 'extra')).toBe(
       false,
     );
+  });
+
+  test('checks the aggregate property budget before nested descriptors', () => {
+    let descriptorCalls = 0;
+    const nested = new Proxy(
+      { first: 1, second: 2 },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          descriptorCalls++;
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+
+    expect(() =>
+      snapshotDeepEnumerableData({ nested }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 8,
+        maxProperties: 2,
+        maxArrayLength: 8,
+        maxValueBytes: 128,
+      }),
+    ).toThrow(/detached properties/);
+    expect(descriptorCalls).toBe(0);
   });
 });
 
