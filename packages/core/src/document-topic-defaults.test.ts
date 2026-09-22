@@ -18,7 +18,7 @@ describe('document topic defaults', () => {
     expect(DEFAULT_DOCUMENT_PUBLISH_PATH).not.toBe('/documents');
   });
 
-  test('keeps browser and Node builders on the same document topics', async () => {
+  test('imports native ESM browser and Node builders with the same document topics', async () => {
     const fixture = `${__dirname}/document-topic-defaults.fixture.mjs`;
     await expect(
       execFileAsync(
