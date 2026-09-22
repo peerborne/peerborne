@@ -8603,6 +8603,14 @@ export class PeerborneDocument<
       return;
     }
 
+    if (await retryACLConflict(() => this._writers.check(reader))) {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the identity is ` +
+          'still an authorized writer. Call removeWriter first, then ' +
+          'removeReader to revoke its remaining read access.',
+      );
+    }
+
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'BeeKEM reader revocation',
