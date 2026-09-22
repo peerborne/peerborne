@@ -1596,7 +1596,11 @@ export class PeerborneDocument<
   }
 
   private async _fireOrDeferRemoteUpdateHandlers(hashes: string[]) {
-    if (this._isStateApplicationBlocked()) {
+    if (this._bootstrapLoadApplicationState === 'poisoned') {
+      this._pendingBootstrapRemoteUpdateHashes.clear();
+      return;
+    }
+    if (this._bootstrapLoadApplicationState === 'pending') {
       for (const hash of hashes) {
         this._pendingBootstrapRemoteUpdateHashes.add(hash);
       }
