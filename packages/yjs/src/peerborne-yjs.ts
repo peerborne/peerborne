@@ -20,7 +20,9 @@ import {
   KeychainProvider,
   LRUCache,
   MAX_KEYCHAIN_EPOCHS,
-  computeKeychainStateCommitment,
+  canonicalKeychain,
+  CanonicalKeychainEntry,
+  CanonicalAppendIntent,
   serializeChangeNodeForJSON,
   serializeInitialLoadChallengeForWire,
   serializeLoadSecurityCommitmentsForWire,
@@ -37,6 +39,23 @@ import {
   Item,
 } from 'yjs';
 import { Base64 } from 'js-base64';
+
+const {
+  toHex,
+  keyIdToCacheKey,
+  cacheKeyToKeyId,
+  assertAesGcmDocumentKey,
+  validateCanonicalKeychainEntries,
+  sameKeychainEntry,
+  assertAppendOnlyTransition,
+  isKeychainPrefix,
+  snapshotAppendIntent,
+  stateCommitment: yjsKeychainStateCommitment,
+}: typeof canonicalKeychain = canonicalKeychain;
+
+const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocumentKey = canonicalKeychain.assertSerializedDocumentKey;
+
+const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeychainEntry = canonicalKeychain.assertCanonicalKeychainEntry;
 
 // Binary data is stored as a base64 string for JSON serialization.
 // Base64 has only ~33% payload expansion and is the standard encoding for
@@ -555,149 +574,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
 }
 
-/**
- * Convert a Uint8Array to a lowercase hex string for use as a cache key.
- */
-function toHex(bytes: Uint8Array): string {
-  const hexChars: string[] = new Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    hexChars[i] = bytes[i].toString(16).padStart(2, '0');
-  }
-  return hexChars.join('');
-}
-
-/**
- * Convert any key ID (random or HKDF-derived, any byte length) to a cache
- * key string.
- *
- * Uniform lowercase-hex encoding regardless of byte length. Earlier
- * revisions special-cased 16-byte IDs through `uuid.stringify` (producing
- * a dashed-UUID string) on the assumption that 16-byte IDs were always
- * UUIDs. That assumption broke once BeeKEM epoch IDs (originally 32
- * bytes from `deriveEpochIdFromRootSecret`) were truncated to the
- * `keyIDLength` width for wire framing: the truncated 16-byte epoch
- * prefix would be stored under hex (via `addEpochKey`) but looked up
- * under the UUID format (via `getKey`), causing a deterministic cache
- * miss on every PathUpdate-derived key.
- *
- * Hex-only avoids the conflation entirely. The keychain's wire-format
- * key-ID width is now `keyIDLength = 32`, so both UUID-based `add()`
- * outputs and BeeKEM-derived epoch IDs share the same byte length and
- * round-trip through this function without any special casing.
- */
-function keyIdToCacheKey(keyIDBytes: Uint8Array): string {
-  return toHex(
-    copyUnsharedUint8Array(
-      keyIDBytes,
-      KEY_ID_LENGTH_BYTES,
-      KEY_ID_LENGTH_BYTES,
-      'Key ID',
-    ),
-  );
-}
-
-/**
- * Parse a cache key string back to a Uint8Array key ID. The keychain
- * stores cache keys exclusively in lowercase hex (see
- * {@link keyIdToCacheKey}), so this only needs to decode hex.
- *
- * @throws {Error} If the cache key is not a canonical lowercase 32-byte ID.
- */
-function cacheKeyToKeyId(cacheKey: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(cacheKey)) {
-    throw new Error('Invalid keychain key ID');
-  }
-  const bytes = new Uint8Array(KEY_ID_LENGTH_BYTES);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(cacheKey.substring(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
 const KEY_ID_LENGTH_BYTES = 32;
-
-type CanonicalKeychainEntry = readonly [string, string];
-
-function assertAesGcmDocumentKey(key: CryptoKey): void {
-  try {
-    const algorithm = key.algorithm as AesKeyAlgorithm;
-    if (
-      key.type !== 'secret' ||
-      algorithm.name !== 'AES-GCM' ||
-      algorithm.length !== 256 ||
-      !key.usages.includes('encrypt') ||
-      !key.usages.includes('decrypt')
-    ) {
-      throw new Error();
-    }
-  } catch {
-    throw new TypeError('Document key must be a 256-bit AES-GCM key');
-  }
-}
-
-function assertSerializedDocumentKey(
-  serialized: unknown,
-): asserts serialized is string {
-  if (
-    typeof serialized !== 'string' ||
-    !/^[A-Za-z0-9+/]{43}=$/.test(serialized)
-  ) {
-    throw new Error('Invalid serialized keychain key');
-  }
-  let raw: Uint8Array;
-  try {
-    raw = Base64.toUint8Array(serialized);
-  } catch {
-    throw new Error('Invalid serialized keychain key');
-  }
-  if (
-    raw.byteLength !== 32 ||
-    Base64.fromUint8Array(raw) !== serialized
-  ) {
-    throw new Error('Invalid serialized keychain key');
-  }
-}
-
-function assertCanonicalKeychainEntry(
-  entry: unknown,
-): asserts entry is [string, string] {
-  if (
-    !Array.isArray(entry) ||
-    entry.length !== 2 ||
-    typeof entry[0] !== 'string' ||
-    typeof entry[1] !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(entry[0])
-  ) {
-    throw new Error('Invalid keychain entry');
-  }
-  assertSerializedDocumentKey(entry[1]);
-}
-
-function validateCanonicalKeychainEntries(
-  entries: readonly unknown[],
-): CanonicalKeychainEntry[] {
-  if (entries.length > MAX_KEYCHAIN_EPOCHS) {
-    throw new Error('Keychain exceeds the supported epoch limit');
-  }
-  const result: CanonicalKeychainEntry[] = [];
-  const ids = new Set<string>();
-  for (const entry of entries) {
-    assertCanonicalKeychainEntry(entry);
-    if (ids.has(entry[0])) {
-      throw new Error('Duplicate keychain key ID');
-    }
-    ids.add(entry[0]);
-    result.push([entry[0], entry[1]]);
-  }
-  return result;
-}
-
-function sameKeychainEntry(
-  left: CanonicalKeychainEntry,
-  right: CanonicalKeychainEntry,
-): boolean {
-  return left[0] === right[0] && left[1] === right[1];
-}
 
 function compareBytes(left: Uint8Array, right: Uint8Array): number {
   const sharedLength = Math.min(left.byteLength, right.byteLength);
@@ -829,81 +706,7 @@ function validateYjsKeychain(doc: Doc): CanonicalKeychainEntry[] {
   return entries;
 }
 
-function assertAppendOnlyTransition(
-  before: readonly CanonicalKeychainEntry[],
-  after: readonly CanonicalKeychainEntry[],
-): void {
-  if (after.length < before.length) {
-    throw new Error('Keychain merge must preserve existing entries');
-  }
-  for (let index = 0; index < before.length; index++) {
-    if (!sameKeychainEntry(before[index], after[index])) {
-      throw new Error('Keychain merge must append without rewriting entries');
-    }
-  }
-}
-
-function isKeychainPrefix(
-  prefix: readonly CanonicalKeychainEntry[],
-  entries: readonly CanonicalKeychainEntry[],
-): boolean {
-  return (
-    prefix.length <= entries.length &&
-    prefix.every((entry, index) => sameKeychainEntry(entry, entries[index]))
-  );
-}
-
-type CanonicalAppendIntent = {
-  readonly previousKeyId: string;
-  readonly newKeyId: string;
-};
-
-function snapshotAppendIntent(
-  intent: KeychainAppendIntent,
-): CanonicalAppendIntent {
-  if (typeof intent !== 'object' || intent === null) {
-    throw new TypeError('Keychain append intent must be an object');
-  }
-  return {
-    previousKeyId: keyIdToCacheKey(intent.expectedPreviousKeyId),
-    newKeyId: keyIdToCacheKey(intent.expectedNewKeyId),
-  };
-}
-
-function yjsKeychainStateCommitment(
-  entries: readonly CanonicalKeychainEntry[],
-): Promise<Uint8Array> {
-  return computeKeychainStateCommitment(
-    entries.map(([keyId, serialized]) => [
-      cacheKeyToKeyId(keyId),
-      Base64.toUint8Array(serialized),
-    ]),
-  );
-}
-
-/**
- * BREAKING CHANGE: keychain key-ID width is unified to 32 bytes.
- *
- * The keychain now uses 32-byte IDs uniformly for BOTH locally-generated
- * keys (formerly 16-byte UUIDs via `uuid.v4`) and BeeKEM-derived epoch
- * keys (already 32 bytes via `deriveEpochIdFromRootSecret`). The wire-
- * format key-ID prefix, the BeeKEM `pathUpdateEpochId`, and the
- * keychain's storage key are all the same 32 bytes -- no truncation
- * step exists.
- *
- * This is an **intentional, on-disk-breaking change** from earlier
- * shipped revisions of this library, which used 16-byte UUIDs. The project
- * is alpha-only and no migration shim is provided. Any
- * document state persisted with the old 16-byte UUID format will fail
- * to load against this version because `cacheKeyToKeyId` only accepts
- * 64-character lowercase hex (no UUID/dashed format), and existing 16-byte
- * key IDs would be looked up under a different cache-key format than
- * they were stored under.
- *
- * Persisted deployments require a fresh document or a separately reviewed
- * migration; ordinary document load is not a keychain/ratchet migration
- * mechanism.
- */
+/** Append-only keychain with canonical 32-byte identifiers. */
 export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
   private readonly _keyCache = new LRUCache<string, CryptoKey>(
     MAX_KEYCHAIN_EPOCHS,

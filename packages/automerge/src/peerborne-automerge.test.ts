@@ -708,6 +708,21 @@ describe('AutomergeKeychain', () => {
     },
   );
 
+  test('rejects non-extractable document keys before staging', async () => {
+    const keychain = new AutomergeKeychain();
+    const before = keychain.history();
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    await expect(keychain.prepareEpochKey(new Uint8Array(32), key)).rejects.toThrow(
+      'Document key must be extractable for serialization',
+    );
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
+
   test('addEpochKey() rejects non-AES document keys without mutation', async () => {
     const keychain = new AutomergeKeychain();
     const before = keychain.history();

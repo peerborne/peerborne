@@ -455,3 +455,9 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+
+export { canonicalKeychain } from './keychain-canonical.js';
+export type {
+  CanonicalKeychainEntry,
+  CanonicalAppendIntent,
+} from './keychain-canonical.js';
