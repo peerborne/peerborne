@@ -162,7 +162,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
           Base64.fromUint8Array(message.welcomeRecipientKemPublicKey),
         eciesSealed:
           message.eciesSealed && Base64.fromUint8Array(message.eciesSealed),
-        // BeeKEM PathUpdate v1/v2 fields. `pathUpdate` is already the
+        // BeeKEM PathUpdate V2 fields. `pathUpdate` is already the
         // negotiated version's JSON-safe serialized shape, so pass it
         // through verbatim.
         // `pathUpdateEpochId` is a `Uint8Array`; base64-encode it the

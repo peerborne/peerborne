@@ -13,10 +13,9 @@
  */
 import { Base64 } from 'js-base64';
 import {
-  BeeKEMWelcome,
   BeeKEMWelcomeV2,
   MAX_BEEKEM_TREE_LEAVES,
-  PathNodeUpdate,
+  WelcomePathKey,
   WelcomeNodePublicKey,
 } from './beekem/types.js';
 import * as TreeMath from './beekem/tree-math.js';
@@ -27,7 +26,7 @@ const MAX_V2_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
 const MAX_V2_AGGREGATE_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_V2_AGGREGATE_WORK_ITEMS = 4 * MAX_BEEKEM_TREE_LEAVES;
 
-/** JSON-safe encoding of `PathNodeUpdate` (mirrors path-update-wire). */
+/** JSON-safe encoding of `WelcomePathKey` (mirrors path-update-wire). */
 export interface SerializedWelcomePathNodeUpdate {
   nodeIndex: number;
   publicKey: string; // base64
@@ -40,52 +39,14 @@ export interface SerializedWelcomeNodePublicKey {
   publicKey: string | null; // base64 or null
 }
 
-/** JSON-safe encoding of `BeeKEMWelcome`. */
-export interface SerializedBeeKEMWelcome {
+export interface SerializedBeeKEMWelcomeV2 {
   leafIndex: number;
   pathKeys: SerializedWelcomePathNodeUpdate[];
   treeNodePublicKeys: SerializedWelcomeNodePublicKey[];
-  treeHash: string; // base64
-}
-
-export interface SerializedBeeKEMWelcomeV2
-  extends SerializedBeeKEMWelcome {
+  treeHash: string;
   version: 2;
   generation: number;
   numLeaves: number;
-}
-
-function serializeBeeKEMWelcomeBase(
-  welcome: BeeKEMWelcome,
-): SerializedBeeKEMWelcome {
-  return {
-    leafIndex: welcome.leafIndex,
-    pathKeys: welcome.pathKeys.map((n) => ({
-      nodeIndex: n.nodeIndex,
-      publicKey: Base64.fromUint8Array(n.publicKey),
-      encryptedPrivateKey: Base64.fromUint8Array(n.encryptedPrivateKey),
-    })),
-    treeNodePublicKeys: welcome.treeNodePublicKeys.map((e) => ({
-      nodeIndex: e.nodeIndex,
-      publicKey:
-        e.publicKey === null ? null : Base64.fromUint8Array(e.publicKey),
-    })),
-    treeHash: Base64.fromUint8Array(welcome.treeHash),
-  };
-}
-
-/** Convert a runtime v1 `BeeKEMWelcome` to its JSON-safe wire form. */
-export function serializeBeeKEMWelcomeForWire(
-  welcome: BeeKEMWelcome,
-): SerializedBeeKEMWelcome {
-  for (const field of ['version', 'generation', 'numLeaves']) {
-    if (Reflect.has(welcome, field)) {
-      throw new Error(
-        `Cannot serialize BeeKEMWelcome with v2-only field '${field}' as v1`,
-      );
-    }
-  }
-  return serializeBeeKEMWelcomeBase(welcome);
 }
 
 export function serializeBeeKEMWelcomeV2ForWire(
@@ -284,152 +245,6 @@ export function serializeBeeKEMWelcomeV2ForWire(
   return wire;
 }
 
-/**
- * Decode a wire-format `SerializedBeeKEMWelcome` back into a runtime
- * `BeeKEMWelcome`. Surfaces a descriptive error for malformed inputs,
- * mirroring the validation posture used by `path-update-wire.ts`.
- */
-export function deserializeBeeKEMWelcomeFromWire(
-  wire: unknown,
-): BeeKEMWelcome {
-  if (typeof wire !== 'object' || wire === null || Array.isArray(wire)) {
-    throw new Error(
-      `Invalid BeeKEMWelcome: expected a plain object, got ${describe(wire)}`,
-    );
-  }
-  const raw = wire as Record<string, unknown>;
-
-  for (const field of ['version', 'generation', 'numLeaves']) {
-    if (Object.prototype.hasOwnProperty.call(raw, field)) {
-      throw new Error(
-        `Invalid BeeKEMWelcome v1: v2-only field '${field}' is not allowed`,
-      );
-    }
-  }
-
-  if (
-    typeof raw.leafIndex !== 'number' ||
-    !Number.isInteger(raw.leafIndex) ||
-    raw.leafIndex < 0
-  ) {
-    throw new Error(
-      `Invalid BeeKEMWelcome: 'leafIndex' must be a non-negative integer (got ${describe(
-        raw.leafIndex,
-      )})`,
-    );
-  }
-  if (!Array.isArray(raw.pathKeys)) {
-    throw new Error(
-      `Invalid BeeKEMWelcome: 'pathKeys' must be an array (got ${describe(
-        raw.pathKeys,
-      )})`,
-    );
-  }
-  if (!Array.isArray(raw.treeNodePublicKeys)) {
-    throw new Error(
-      `Invalid BeeKEMWelcome: 'treeNodePublicKeys' must be an array (got ${describe(
-        raw.treeNodePublicKeys,
-      )})`,
-    );
-  }
-  if (typeof raw.treeHash !== 'string') {
-    throw new Error(
-      `Invalid BeeKEMWelcome: 'treeHash' must be a base64 string (got ${describe(
-        raw.treeHash,
-      )})`,
-    );
-  }
-  const pathKeys: PathNodeUpdate[] = raw.pathKeys.map((n, i) => {
-    if (typeof n !== 'object' || n === null || Array.isArray(n)) {
-      throw new Error(
-        `Invalid BeeKEMWelcome: pathKeys[${i}] must be a plain object, got ${describe(n)}`,
-      );
-    }
-    const nn = n as Record<string, unknown>;
-    if (
-      typeof nn.nodeIndex !== 'number' ||
-      !Number.isInteger(nn.nodeIndex) ||
-      nn.nodeIndex < 0
-    ) {
-      throw new Error(
-        `Invalid BeeKEMWelcome: pathKeys[${i}].nodeIndex must be a non-negative integer (got ${describe(
-          nn.nodeIndex,
-        )})`,
-      );
-    }
-    if (typeof nn.publicKey !== 'string') {
-      throw new Error(
-        `Invalid BeeKEMWelcome: pathKeys[${i}].publicKey must be a base64 string (got ${describe(
-          nn.publicKey,
-        )})`,
-      );
-    }
-    if (typeof nn.encryptedPrivateKey !== 'string') {
-      throw new Error(
-        `Invalid BeeKEMWelcome: pathKeys[${i}].encryptedPrivateKey must be a base64 string (got ${describe(
-          nn.encryptedPrivateKey,
-        )})`,
-      );
-    }
-    return {
-      nodeIndex: nn.nodeIndex,
-      publicKey: decodeBase64(nn.publicKey, `pathKeys[${i}].publicKey`),
-      encryptedPrivateKey: decodeBase64(
-        nn.encryptedPrivateKey,
-        `pathKeys[${i}].encryptedPrivateKey`,
-      ),
-    };
-  });
-
-  const treeNodePublicKeys: WelcomeNodePublicKey[] = raw.treeNodePublicKeys.map(
-    (n, i) => {
-      if (typeof n !== 'object' || n === null || Array.isArray(n)) {
-        throw new Error(
-          `Invalid BeeKEMWelcome: treeNodePublicKeys[${i}] must be a plain object, got ${describe(
-            n,
-          )}`,
-        );
-      }
-      const nn = n as Record<string, unknown>;
-      if (
-        typeof nn.nodeIndex !== 'number' ||
-        !Number.isInteger(nn.nodeIndex) ||
-        nn.nodeIndex < 0
-      ) {
-        throw new Error(
-          `Invalid BeeKEMWelcome: treeNodePublicKeys[${i}].nodeIndex must be a non-negative integer (got ${describe(
-            nn.nodeIndex,
-          )})`,
-        );
-      }
-      if (nn.publicKey === null) {
-        return { nodeIndex: nn.nodeIndex, publicKey: null };
-      }
-      if (typeof nn.publicKey !== 'string') {
-        throw new Error(
-          `Invalid BeeKEMWelcome: treeNodePublicKeys[${i}].publicKey must be a base64 string or null (got ${describe(
-            nn.publicKey,
-          )})`,
-        );
-      }
-      return {
-        nodeIndex: nn.nodeIndex,
-        publicKey: decodeBase64(
-          nn.publicKey,
-          `treeNodePublicKeys[${i}].publicKey`,
-        ),
-      };
-    },
-  );
-
-  return {
-    leafIndex: raw.leafIndex,
-    pathKeys,
-    treeNodePublicKeys,
-    treeHash: decodeBase64(raw.treeHash, 'treeHash'),
-  };
-}
-
 export function deserializeBeeKEMWelcomeV2FromWire(
   wire: unknown,
 ): BeeKEMWelcomeV2 {
@@ -502,7 +317,7 @@ export function deserializeBeeKEMWelcomeV2FromWire(
   const directPathIndices = new Set(directPath);
   const covered = new Set<number>([leafIndex]);
   let previousPathOffset = -1;
-  const pathKeys: PathNodeUpdate[] = rawPathKeys.map((value, offset) => {
+  const pathKeys: WelcomePathKey[] = rawPathKeys.map((value, offset) => {
     const node = snapshotPlainObject(
       value,
       ['nodeIndex', 'publicKey', 'encryptedPrivateKey'],
@@ -843,7 +658,7 @@ function decodeCanonicalBase64(
       `Invalid BeeKEMWelcomeV2: ${fieldName} must use canonical padded base64`,
     );
   }
-  const decoded = decodeBase64(value, fieldName);
+  const decoded = Base64.toUint8Array(value);
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(
       `Invalid BeeKEMWelcomeV2: ${fieldName} exceeds the decoded size limit`,
@@ -855,19 +670,6 @@ function decodeCanonicalBase64(
     );
   }
   return decoded;
-}
-
-function decodeBase64(value: string, fieldName: string): Uint8Array {
-  try {
-    return Base64.toUint8Array(value);
-  } catch (err) {
-    throw new Error(
-      `BeeKEMWelcome wire: invalid base64 for field ${fieldName}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { cause: err },
-    );
-  }
 }
 
 function describe(value: unknown): string {

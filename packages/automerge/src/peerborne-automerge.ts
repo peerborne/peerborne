@@ -1818,7 +1818,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
           Base64.fromUint8Array(message.welcomeRecipientKemPublicKey),
         eciesSealed:
           message.eciesSealed && Base64.fromUint8Array(message.eciesSealed),
-        // BeeKEM PathUpdate v1/v2 fields. `pathUpdate` is already the
+        // BeeKEM PathUpdate V2 fields. `pathUpdate` is already the
         // negotiated version's JSON-safe serialized shape; pass through
         // verbatim.
         // `pathUpdateEpochId` is a `Uint8Array`; base64-encode it.
@@ -2011,7 +2011,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
     }
     // Loose top-level shape check for `pathUpdate`; the
     // per-field decode happens later in
-    // `deserializePathUpdateFromWire`. Rejecting `null`/array/primitive
+    // `deserializePathUpdateV2FromWire`. Rejecting `null`/array/primitive
     // here keeps malformed peer payloads from propagating downstream.
     let pathUpdate: unknown;
     if (raw.pathUpdate !== undefined) {

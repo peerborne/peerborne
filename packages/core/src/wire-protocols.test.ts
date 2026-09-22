@@ -48,8 +48,8 @@ describe('wire protocol constant verification', () => {
       snapshotLoadV3: 'snapshot-load',
       tipAdvertiseV1: 'tip-advertise',
       invitationJoinV1: 'invitation-join',
-      beekemWelcomeV1: 'beekem-welcome',
-      beekemPathUpdateV1: 'beekem-pathupdate',
+      beekemWelcomeV2: 'beekem-welcome',
+      beekemPathUpdateV2: 'beekem-pathupdate',
       searchIndexAdvertiseV1: 'search-index-advertise',
       searchQueryV1: 'search-query',
     };
@@ -66,8 +66,8 @@ describe('wire protocol constant verification', () => {
       snapshotLoadV3: 3,
       tipAdvertiseV1: 1,
       invitationJoinV1: 1,
-      beekemWelcomeV1: 1,
-      beekemPathUpdateV1: 1,
+      beekemWelcomeV2: 2,
+      beekemPathUpdateV2: 2,
       searchIndexAdvertiseV1: 1,
       searchQueryV1: 1,
     };
@@ -81,8 +81,8 @@ describe('wire protocol constant verification', () => {
     const labelMap: Record<string, string> = {
       documentKeyUpdateV2: 'key-update',
       invitationJoinV1: 'invitation-join',
-      beekemWelcomeV1: 'beekem-welcome',
-      beekemPathUpdateV1: 'beekem-pathupdate',
+      beekemWelcomeV2: 'beekem-welcome',
+      beekemPathUpdateV2: 'beekem-pathupdate',
     };
     for (const [constant, label] of Object.entries(labelMap)) {
       expect(wireProtocols[constant as keyof typeof wireProtocols]).toContain(`/${label}/`);

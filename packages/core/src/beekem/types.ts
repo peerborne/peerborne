@@ -39,18 +39,6 @@ export interface InternalNode {
   conflictKeys?: CryptoKey[];
 }
 
-/**
- * Path update message: encrypted key pairs along a path from leaf to root.
- */
-export interface PathUpdate {
-  /** Index of the leaf that initiated the update. */
-  senderLeafIndex: number;
-  /** Sender's new leaf public key (raw exported ECDH public key). */
-  senderLeafPublicKey: Uint8Array;
-  /** Encrypted node updates along the path to root. */
-  nodes: PathNodeUpdate[];
-}
-
 /** One authenticated ancestor-key bundle sealed to a copath resolution node. */
 export interface EncryptedPathKeyBundle {
   /** Tree node whose public key was used to seal the bundle. */
@@ -86,14 +74,14 @@ export interface PathUpdateV2 {
 }
 
 /**
- * A single node update in a path update message.
+ * A private ancestor key delivered in a Welcome.
  */
-export interface PathNodeUpdate {
+export interface WelcomePathKey {
   /** Tree node index. */
   nodeIndex: number;
   /** New public key for this node (raw exported ECDH public key). */
   publicKey: Uint8Array;
-  /** Encrypted private key for the sibling subtree. */
+  /** Private key sealed to the recipient or preceding Welcome path key. */
   encryptedPrivateKey: Uint8Array;
 }
 
@@ -107,32 +95,12 @@ export interface WelcomeNodePublicKey {
   publicKey: Uint8Array | null;
 }
 
-/**
- * Welcome message for a new member joining the group.
- */
-export interface BeeKEMWelcome {
-  /** The new member's leaf index. */
-  leafIndex: number;
-  /** Path keys from the new leaf to root, encrypted to the new member. */
-  pathKeys: PathNodeUpdate[];
-  /**
-   * Public keys for all tree nodes not covered by pathKeys or the new member's
-   * own leaf. Includes peer leaves and internal nodes so the joiner can
-   * reconstruct the full tree for hash verification and future path updates.
-   */
-  treeNodePublicKeys: WelcomeNodePublicKey[];
-  /** Serialized tree state hash for verification. */
-  treeHash: Uint8Array;
-  /** Sender generation. Omitted on the legacy v1 Welcome shape. */
-  generation?: number;
-  /** Exact leaf count. Omitted on the legacy v1 Welcome shape. */
-  numLeaves?: number;
-  /** Explicit protocol version. Omitted on the legacy v1 Welcome shape. */
-  version?: 2;
-}
-
 /** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
-export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
+export interface BeeKEMWelcomeV2 {
+  leafIndex: number;
+  pathKeys: WelcomePathKey[];
+  treeNodePublicKeys: WelcomeNodePublicKey[];
+  treeHash: Uint8Array;
   version: 2;
   generation: number;
   numLeaves: number;
