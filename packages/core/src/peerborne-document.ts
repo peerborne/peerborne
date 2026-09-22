@@ -1,3 +1,4 @@
+import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 /**
  * Document  is just for opening documents right now
@@ -224,13 +225,6 @@ async function retryLoadACLConflict<T>(
       await awaitLoadWork(error.waitForSettlement(), signal);
     }
   }
-}
-
-function assertPositiveSafeByteLimit(value: number, field: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`${field} must be a positive safe integer`);
-  }
-  return value;
 }
 
 const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
@@ -5667,7 +5661,13 @@ export class PeerborneDocument<
             beginStateApplication();
           }
           assertStillActive();
-          preparedKeychainMerge.commit();
+          try {
+            preparedKeychainMerge.commit();
+          } catch (error) {
+            // A provider-reported no-op can still partially mutate before throwing.
+            this._markBootstrapStateApplicationPending();
+            throw error;
+          }
         } else {
           beginStateApplication();
           this._keychain.merge(keychainChanges);
