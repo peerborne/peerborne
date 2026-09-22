@@ -3850,7 +3850,7 @@ describe('AutomergeJSONSerializer', () => {
     const pathUpdate = {
       version: 2 as const,
       generation: 7,
-      parentTreeHash: "AQID",
+      parentTreeHash: 'AQID',
       numLeaves: 2,
       senderLeafIndex: 0,
       senderLeafPublicKey: 'AAAA',
