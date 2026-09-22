@@ -1,6 +1,7 @@
 import { assertWellFormedUtf16 } from './internal/utf16.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 /**
  * Document  is just for opening documents right now
  * @remarks
@@ -197,12 +198,7 @@ export type { HistoryVisibility } from './invitation-policy.js';
  * matched. Returns `false` for mismatched lengths (also in constant
  * time across same-length inputs).
  */
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
+
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
