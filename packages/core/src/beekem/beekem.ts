@@ -39,36 +39,28 @@ async function assertEcdhKeyPairCompatible(
   probe: CryptoKeyPair,
   label: string,
 ): Promise<void> {
-  let privateSide: Uint8Array;
-  let publicSide: Uint8Array;
+  let privateSide: Uint8Array | undefined;
+  let publicSide: Uint8Array | undefined;
+  let coherent = false;
   try {
-    [privateSide, publicSide] = await Promise.all([
-      crypto.subtle
-        .deriveBits(
-          { name: 'ECDH', public: probe.publicKey },
-          privateKey,
-          256,
-        )
-        .then((bits) => new Uint8Array(bits)),
-      crypto.subtle
-        .deriveBits(
-          { name: 'ECDH', public: publicKey },
-          probe.privateKey,
-          256,
-        )
-        .then((bits) => new Uint8Array(bits)),
-    ]);
+    privateSide = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: probe.publicKey }, privateKey, 256,
+    ));
+    publicSide = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: publicKey }, probe.privateKey, 256,
+    ));
+    coherent = constantTimeEqual(privateSide, publicSide);
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : '';
     throw new Error(
       `Cannot process Welcome: ${label} ECDH compatibility check failed${detail}`,
       { cause: error },
     );
+  } finally {
+    privateSide?.fill(0);
+    publicSide?.fill(0);
   }
 
-  const coherent = constantTimeEqual(privateSide, publicSide);
-  privateSide.fill(0);
-  publicSide.fill(0);
   if (!coherent) {
     throw new Error(
       `Cannot process Welcome: ${label} public and private keys are not ECDH-compatible`,
@@ -110,6 +102,9 @@ async function assertExactWelcomePathKeyPair(
     );
   }
 }
+
+const WELCOME_SUPERSEDED_MESSAGE =
+  'Cannot process Welcome: the attempt was superseded or receiver state changed';
 
 interface StagedWelcomeCandidate {
   receiverGeneration: bigint;
@@ -620,7 +615,7 @@ export class BeeKEM {
       !this._isFreshWelcomeTarget()
     ) {
       throw new Error(
-        'Cannot process Welcome: the attempt was superseded or receiver state changed',
+        WELCOME_SUPERSEDED_MESSAGE,
       );
     }
     return await this._registerWelcomeCandidate(
@@ -808,7 +803,7 @@ export class BeeKEM {
       ) {
         reject(
           new Error(
-            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+            WELCOME_SUPERSEDED_MESSAGE,
           ),
         );
         this._settleWelcomeCandidates();
@@ -835,7 +830,7 @@ export class BeeKEM {
         this._stagedWelcomeCandidates.delete(revision);
         candidate.reject(
           new Error(
-            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+            WELCOME_SUPERSEDED_MESSAGE,
           ),
         );
       }
@@ -848,7 +843,7 @@ export class BeeKEM {
       for (const candidate of candidates) {
         candidate.reject(
           new Error(
-            'Cannot process Welcome: the attempt was superseded or receiver state changed',
+            WELCOME_SUPERSEDED_MESSAGE,
           ),
         );
       }
