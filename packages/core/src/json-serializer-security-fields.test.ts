@@ -7,6 +7,19 @@ import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 const serializer = new JSONSerializer<unknown, CryptoKey>();
 
 describe('JSON sync security fields', () => {
+  test('redacts a base64 decoder failure with the field contract', () => {
+    const decoder = jest.spyOn(Base64, 'toUint8Array').mockImplementation(() => {
+      throw new Error('opaque decoder detail');
+    });
+    try {
+      expect(() => serializer.deserializeSyncMessage(new TextEncoder().encode(
+        JSON.stringify({ documentId: '/doc', tipsHash: 'A'.repeat(43) + '=' }),
+      ))).toThrow(new TypeError('tipsHash must be bounded canonical base64'));
+    } finally {
+      decoder.mockRestore();
+    }
+  });
+
   test('round-trips a complete signed Welcome through the admission validator', async () => {
     const keys = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
