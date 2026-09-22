@@ -20,6 +20,11 @@ describe('wire protocol constant verification', () => {
     );
   });
 
+  test('new BeeKEM V2 protocols use the Peerborne namespace', () => {
+    expect(wireProtocols.beekemWelcomeV2).toBe('/peerborne/beekem-welcome/2.0.0');
+    expect(wireProtocols.beekemPathUpdateV2).toBe('/peerborne/beekem-pathupdate/2.0.0');
+  });
+
   test('no duplicate protocol strings', () => {
     const values = allConstants.map(([, v]) => v);
     expect(new Set(values).size).toBe(values.length);
