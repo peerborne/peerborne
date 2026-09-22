@@ -1,3 +1,4 @@
+import { defineEnumerableDataProperty } from './internal/data-property.js';
 import type { Uint8ArrayList } from 'uint8arraylist';
 import type { AesAlgorithmName } from './auth-provider.js';
 
@@ -23,7 +24,6 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
 const arrayIsArray = Array.isArray;
-const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
@@ -51,22 +51,7 @@ const intrinsicTypedArrayByteLengthGetter = typedArrayByteLengthGetter;
 const intrinsicTypedArrayBufferGetter = typedArrayBufferGetter;
 const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
 
-function defineEnumerableDataProperty(
-  target: object,
-  key: PropertyKey,
-  value: unknown,
-): void {
-  reflectApply(objectDefineProperty, Object, [
-    target,
-    key,
-    {
-      configurable: true,
-      enumerable: true,
-      value,
-      writable: true,
-    },
-  ]);
-}
+
 
 /**
  * Outcome of parsing a path-prefixed protocol header off an inbound

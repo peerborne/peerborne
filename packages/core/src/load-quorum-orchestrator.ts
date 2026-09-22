@@ -93,22 +93,28 @@ function normalizeLoadQuorumProbeResult(
     return { kind: 'non-vote' };
   }
 
-  let hashValue: unknown;
-  let signerAuthority: unknown;
   try {
-    const candidate = result as Partial<SignerAttributedLoadQuorumVote>;
-    hashValue = candidate.hash;
-    signerAuthority = candidate.signerAuthority;
+    const prototype = Object.getPrototypeOf(result);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return { kind: 'non-vote' };
+    }
+    const hashDescriptor = Object.getOwnPropertyDescriptor(result, 'hash');
+    if (hashDescriptor === undefined || !('value' in hashDescriptor)) {
+      return { kind: 'non-vote' };
+    }
+    const hash = snapshotVoteHash(hashDescriptor.value);
+    const signerDescriptor = Object.getOwnPropertyDescriptor(result, 'signerAuthority');
+    if (signerDescriptor === undefined || !('value' in signerDescriptor)) {
+      return { kind: 'non-vote' };
+    }
+    const signerAuthority = signerDescriptor.value;
+    return hash !== undefined && typeof signerAuthority === 'string' &&
+      signerAuthority.length !== 0
+      ? { kind: 'vote', hash, signerAuthority }
+      : { kind: 'non-vote' };
   } catch {
     return { kind: 'non-vote' };
   }
-  if (typeof signerAuthority !== 'string' || signerAuthority.length === 0) {
-    return { kind: 'non-vote' };
-  }
-  const hash = snapshotVoteHash(hashValue);
-  return hash === undefined
-    ? { kind: 'non-vote' }
-    : { kind: 'vote', hash, signerAuthority };
 }
 
 function snapshotVoteHash(value: unknown): Uint8Array | undefined {
@@ -308,6 +314,7 @@ export async function runLoadQuorum<T>(opts: {
       reason: 'insufficient-responses',
       respondingCount: 0,
       requiredQ: explicitQ,
+      detail: `Explicit quorum ${explicitQ} exceeds the ${k} probeable peers`,
       agreement: new Map(),
     });
   }
