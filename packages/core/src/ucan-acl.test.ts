@@ -93,6 +93,15 @@ describe('UCANACL', () => {
     expect(backing.users).not.toHaveBeenCalled();
   });
 
+  test.each(['\ud800', '\udc00', 'key\ud800suffix'])(
+    'rejects ill-formed canonical identity %p before backing work',
+    async (encoding) => {
+      const guarded = new UCANACLImpl(backing, async () => encoding);
+      await expect(guarded.check('key1')).rejects.toThrow(/well-formed UTF-16/);
+      expect(backing.check).not.toHaveBeenCalled();
+    },
+  );
+
   test('add delegates to backing ACL', async () => {
     backing.add.mockResolvedValue('changes');
     const result = await acl.add('key1');
@@ -2714,6 +2723,32 @@ describe('UCANACL', () => {
   ])('current preserves an opaque synchronous %p result', (currentState) => {
     backing.current.mockReturnValue(currentState);
     expect(acl.current()).toBe(currentState);
+  });
+
+  test('rejects an inherited thenable without invoking its method', async () => {
+    const then = jest.fn();
+    class DeferredState {}
+    Object.defineProperty(DeferredState.prototype, 'then', { value: then });
+    backing.current.mockReturnValue(new DeferredState());
+    expect(() => acl.current()).toThrow(/must complete synchronously/);
+    expect(then).not.toHaveBeenCalled();
+    await expect(acl.check('key1')).rejects.toThrow(/synchronous operation contract/);
+  });
+
+  test('rejects an inherited then accessor without invoking it', () => {
+    const getter = jest.fn();
+    class DeferredState {}
+    Object.defineProperty(DeferredState.prototype, 'then', { get: getter });
+    backing.current.mockReturnValue(new DeferredState());
+    expect(() => acl.current()).toThrow(/invalid asynchronous result/);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  test('rejects a cyclic result prototype without unbounded traversal', () => {
+    const target = {};
+    const result = new Proxy(target, { getPrototypeOf: () => result });
+    backing.current.mockReturnValue(result);
+    expect(() => acl.current()).toThrow(/invalid asynchronous result/);
   });
 
   test('merge delegates to backing ACL', () => {

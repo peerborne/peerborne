@@ -1,3 +1,4 @@
+import { assertWellFormedUtf16 } from './internal/utf16.js';
 import {
   ACL,
   ACLOperationInProgressError,
@@ -240,6 +241,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         `${operation} requires a non-empty canonical public-key encoding`,
       );
     }
+    assertWellFormedUtf16(keyBase64, `${operation} canonical public-key encoding`);
     return keyBase64;
   }
 
@@ -1046,7 +1048,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           typeof prepared !== 'function'
         ) {
           throw new TypeError(
-            `Backing ACL prepared ${changeName} must be an object`,
+            `Backing ACL prepared ${changeName} must be an object or function`,
           );
         }
         const changesProperty = this._backingDataProperty(
@@ -1851,6 +1853,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
               `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
             );
           }
+          // Start each bounded codec before suspending so it captures every
+          // caller-owned identity in this listing before the caller can mutate it.
           for (let index = 0; index < (length as number); index++) {
             const user = reflectGet(allUsers, String(index)) as PublicKey;
             snapshotTasks.push(

@@ -1,5 +1,6 @@
 import { Base64 } from 'js-base64';
 import { EPOCH_ID_LENGTH } from './epoch.js';
+import { TIPS_HASH_LENGTH } from './tips-hash.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import {
   copyUnsharedUint8Array,
@@ -35,8 +36,9 @@ function syncBinaryFieldBounds(
   switch (field) {
     case 'welcomeEpochId':
     case 'pathUpdateEpochId':
-    case 'tipsHash':
       return [EPOCH_ID_LENGTH, EPOCH_ID_LENGTH];
+    case 'tipsHash':
+      return [TIPS_HASH_LENGTH, TIPS_HASH_LENGTH];
     case 'welcomeRecipientKemPublicKey':
       return [ECIES_P256_PUBLIC_KEY_LENGTH, ECIES_P256_PUBLIC_KEY_LENGTH];
     case 'eciesSealed':
@@ -78,7 +80,12 @@ function deserializeSyncBinaryField(field: string, value: unknown): unknown {
   ) {
     throw new TypeError(`${field} must be bounded canonical base64`);
   }
-  const decoded = Base64.toUint8Array(value);
+  let decoded: Uint8Array;
+  try {
+    decoded = Base64.toUint8Array(value);
+  } catch {
+    throw new TypeError(`${field} must be bounded canonical base64`);
+  }
   if (
     decoded.byteLength < bounds[0] ||
     decoded.byteLength > bounds[1] ||

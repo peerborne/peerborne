@@ -238,6 +238,15 @@ describe('YjsACL delta encoding', () => {
 });
 
 describe('YjsACL', () => {
+  test('failed merge validation does not create or replace live shared types', () => {
+    const acl = new YjsACL();
+    const live = (acl as any)._acl as Doc;
+    const before = new Map(live.share);
+    expect(() => acl.merge(new Uint8Array([255]))).toThrow();
+    expect(live.share).toEqual(before);
+    expect(live.share.has('users')).toBe(false);
+  });
+
   test('add rejects a non-P-384 identity before emitting changes', async () => {
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
@@ -1954,6 +1963,21 @@ describe('YjsKeychain', () => {
       expect(await keychain.keys()).toHaveLength(0);
     },
   );
+
+  test('rejects non-extractable document keys before staging', async () => {
+    const keychain = new YjsKeychain();
+    const before = keychain.history();
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    await expect(keychain.prepareEpochKey(new Uint8Array(32), key)).rejects.toThrow(
+      'Document key must be extractable for serialization',
+    );
+    expect(keychain.history()).toEqual(before);
+    expect(await keychain.keys()).toHaveLength(0);
+  });
 
   test('addEpochKey() rejects non-AES document keys without mutation', async () => {
     const keychain = new YjsKeychain();

@@ -1,3 +1,4 @@
+import { defineEnumerableDataProperty } from './internal/data-property.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 const LOAD_SECURITY_STATE_DOMAIN = 'peerborne/load-security-state/v1\0';
@@ -24,28 +25,12 @@ const LOAD_SECURITY_STATE_FIELDS = [
   'frontier',
 ] as const;
 const objectCreate = Object.create;
-const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const arrayIsArray = Array.isArray;
 const reflectApply = Reflect.apply;
 
-function defineEnumerableDataProperty(
-  target: object,
-  key: PropertyKey,
-  value: unknown,
-): void {
-  reflectApply(objectDefineProperty, Object, [
-    target,
-    key,
-    {
-      configurable: true,
-      enumerable: true,
-      value,
-      writable: true,
-    },
-  ]);
-}
+
 
 export interface LoadSecurityCommitments {
   version: typeof LOAD_SECURITY_STATE_VERSION;

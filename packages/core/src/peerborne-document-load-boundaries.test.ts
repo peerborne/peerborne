@@ -2122,7 +2122,7 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('commits a provider-semantic no-op without reserving bootstrap state', async () => {
+  test.each([false, true])('handles a provider-semantic no-op with commit failure %p', async (commitFails) => {
     const message = {
       documentId: '/load-race',
       signature: 'AAAA',
@@ -2135,7 +2135,9 @@ describe('document load response boundaries', () => {
       },
       message,
     );
-    const commit = jest.fn();
+    const commit = jest.fn(() => {
+      if (commitFails) throw new Error('indeterminate no-op commit');
+    });
     const merge = jest.fn();
     const hydrateKeys = jest.fn(async () => []);
     document._keychain = {
@@ -2152,9 +2154,12 @@ describe('document load response boundaries', () => {
       merge,
     };
 
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).resolves.toBe(false);
+    const result = document._sendLoadRequestAndSync(stream, new Uint8Array([1]));
+    if (commitFails) {
+      await expect(result).rejects.toThrow('indeterminate no-op commit');
+    } else {
+      await expect(result).resolves.toBe(false);
+    }
 
     expect(document._keychain.prepareMerge).toHaveBeenCalledWith(
       message.keychainChanges,
@@ -2162,7 +2167,7 @@ describe('document load response boundaries', () => {
     expect(commit).toHaveBeenCalledTimes(1);
     expect(hydrateKeys).not.toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    expect(document._bootstrapLoadApplicationState).toBe(commitFails ? 'pending' : 'pristine');
   });
 
   test('hydrates staged logical keychain changes before reservation and redacts failures', async () => {
@@ -4517,4 +4522,49 @@ test('discards deferred and incoming notifications once document state is poison
   await document._fireOrDeferRemoteUpdateHandlers(['later']);
   expect(pending.size).toBe(0);
   expect(notify).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['Readers', true], ['Readers', false],
+  ['Writers', true], ['Writers', false],
+] as const)('cancellation of %s before invocation=%p preserves the mutation boundary', async (kind, beforeInvocation) => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let mutated = false;
+  const merge = jest.fn(async () => {
+    entered();
+    await gate;
+    mutated = true;
+  });
+  const document = fakeDocument({
+    documentPath: '/abort-boundary',
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
+    _writerPublicationsInFlight: 0,
+    _readers: { merge },
+    _writers: { merge },
+  });
+  const controller = new AbortController();
+  if (beforeInvocation) controller.abort(new Error('cancelled load'));
+  const result = document[`_merge${kind}`]({}, undefined, controller.signal);
+  if (!beforeInvocation) {
+    await started;
+    controller.abort(new Error('cancelled load'));
+  }
+  try {
+    await expect(result).rejects.toThrow('cancelled load');
+    expect(document._bootstrapLoadApplicationState).toBe(beforeInvocation ? 'pristine' : 'poisoned');
+    expect(merge).toHaveBeenCalledTimes(beforeInvocation ? 0 : 1);
+  } finally {
+    release();
+  }
+  if (!beforeInvocation) {
+    await merge.mock.results[0].value;
+    expect(mutated).toBe(true);
+    expect(() => document._assertDocumentStateNotPoisoned()).toThrow(/discard this document instance/);
+  }
 });

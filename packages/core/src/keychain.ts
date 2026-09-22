@@ -396,7 +396,9 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
    */
   stateCommitment?(): Promise<Uint8Array>;
   /**
-   * Claim the staged revision without changing the live keychain.
+   * Claim the staged base identity and revision without changing the live keychain.
+   * Both claimCommit() and commit() must reject a replaced base, including a
+   * replacement with the same numeric revision, before publishing any state.
    *
    * The method and returned finalizer have the same composed-commit contract
    * as `PreparedACLChange.claimCommit()`. Optional for source compatibility;

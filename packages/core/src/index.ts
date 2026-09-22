@@ -458,7 +458,10 @@ export {
   copyUnsharedUint8Array,
   snapshotDeepEnumerableData,
 } from './utils.js';
+export type { DeepDataSnapshotLimits, DeepDataSnapshotOptions } from './utils.js';
+
+export { canonicalKeychain } from './keychain-canonical.js';
 export type {
-  DeepDataSnapshotLimits,
-  DeepDataSnapshotOptions,
-} from './utils.js';
+  CanonicalKeychainEntry,
+  CanonicalAppendIntent,
+} from './keychain-canonical.js';

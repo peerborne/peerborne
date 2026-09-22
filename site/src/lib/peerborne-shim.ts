@@ -4,6 +4,7 @@
 // only exercises the CRDT serialization and crypto providers. The site's Vite
 // config aliases bare `@peerborne/core` imports to this module.
 export {
+  canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,

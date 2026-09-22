@@ -45,6 +45,21 @@ async function trustedProbe(
 }
 
 describe('trusted V4 security tuple quorum primitives', () => {
+  test.each(['hash', 'signerAuthority'])(
+    'rejects accessor-backed %s without invoking it',
+    async (field) => {
+      const getter = jest.fn(() => { throw new Error('must not run'); });
+      const vote = { hash: bytes(4), signerAuthority: 'writer' };
+      Object.defineProperty(vote, field, { get: getter, enumerable: true });
+      await expect(runLoadQuorum({
+        protocol: 'security-advertise-v1', peers: ['a', 'b'],
+        peerIdOf: (peer) => peer, probeFn: async () => vote,
+        documentPath: '/doc', config: { enabled: true, k: 2, q: 2 },
+      })).rejects.toMatchObject({ respondingCount: 0 });
+      expect(getter).not.toHaveBeenCalled();
+    },
+  );
+
   test('rejects a Byzantine quorum agreeing on a different rollback tuple', async () => {
     const trusted = tuple();
     const rollback = tuple({ epoch: 9n, treeHash: bytes(9) });

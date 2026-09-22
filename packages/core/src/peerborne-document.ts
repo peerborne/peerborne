@@ -1,3 +1,5 @@
+import { assertWellFormedUtf16 } from './internal/utf16.js';
+import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 /**
  * Document  is just for opening documents right now
@@ -248,13 +250,6 @@ async function retryLoadACLConflict<T>(
       await awaitLoadWork(error.waitForSettlement(), signal);
     }
   }
-}
-
-function assertPositiveSafeByteLimit(value: number, field: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`${field} must be a positive safe integer`);
-  }
-  return value;
 }
 
 const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
@@ -978,22 +973,7 @@ function assertCanonicalACLIdentity(
       'AuthProvider.serializePublicKey must return a non-empty string',
     );
   }
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(
-          'AuthProvider.serializePublicKey must return well-formed UTF-16',
-        );
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(
-        'AuthProvider.serializePublicKey must return well-formed UTF-16',
-      );
-    }
-  }
+  assertWellFormedUtf16(value, 'AuthProvider.serializePublicKey return value');
 }
 
 /** Match the default per-peer load-quorum probe budget. */
@@ -2702,9 +2682,9 @@ export class PeerborneDocument<
           poisonedWorkerPool.then(() => ({ kind: 'poisoned' as const })),
         ]);
         if (workerPoolOutcome.kind === 'poisoned') {
-          this._assertDocumentStateNotPoisoned();
           throw new Error(
-            `Missing change worker pool for ${this.documentPath} entered an invalid state`,
+            `Document ${this.documentPath} has indeterminate authorization state; ` +
+              'discard this document instance before continuing',
           );
         }
         workerResults = workerPoolOutcome.results;
@@ -2939,6 +2919,7 @@ export class PeerborneDocument<
       }
       assertStillActive?.();
       try {
+        // Once an opaque merge starts, abort cannot prove that it stopped mutating.
         await awaitLoadWork(this._readers.merge(changes), signal);
       } catch (error) {
         if (!(error instanceof ACLOperationInProgressError)) {
@@ -3139,6 +3120,7 @@ export class PeerborneDocument<
         }
         assertStillActive?.();
         try {
+          // Once an opaque merge starts, abort cannot prove that it stopped mutating.
           await awaitLoadWork(this._writers.merge(changes), signal);
         } catch (error) {
           if (!(error instanceof ACLOperationInProgressError)) {
@@ -7032,7 +7014,13 @@ export class PeerborneDocument<
             beginStateApplication();
           }
           assertStillActive();
-          preparedKeychainMerge.commit();
+          try {
+            preparedKeychainMerge.commit();
+          } catch (error) {
+            // A provider-reported no-op can still partially mutate before throwing.
+            this._markBootstrapStateApplicationPending();
+            throw error;
+          }
         } else {
           beginStateApplication();
           this._keychain.merge(keychainChanges);
@@ -10194,7 +10182,7 @@ export class PeerborneDocument<
         new Uint8Array(readerKemPublicKey),
       );
       if (liveLeaf === this._beekem.myLeafIndex) {
-        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+        throw new Error(`[${this.documentPath}] _prepareBeeKEMReaderRegistration: Cannot register a remote reader at the local BeeKEM leaf`);
       }
       if (liveLeaf !== existingLeaf) {
         throw new Error(
@@ -10232,7 +10220,7 @@ export class PeerborneDocument<
         );
       }
       if (recoveredLeaf === this._beekem.myLeafIndex) {
-        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+        throw new Error(`[${this.documentPath}] _prepareBeeKEMReaderRegistration: Cannot register a remote reader at the local BeeKEM leaf`);
       }
       const committedReaderLeafIndices = new Map(this._readerLeafIndices);
       committedReaderLeafIndices.set(serializedReader, recoveredLeaf);

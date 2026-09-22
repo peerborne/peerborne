@@ -971,8 +971,8 @@ export class BeeKEM {
     publicKey: CryptoKey | Uint8Array,
     maximumMatches: number,
   ): Promise<number[]> {
-    // Snapshot caller-owned bytes before the first await so mutation during a
-    // WebCrypto export cannot redirect the lookup to a different leaf.
+    // Capture caller-owned byte views before any await. CryptoKey inputs are
+    // immutable, so exporting their public bytes first cannot redirect the lookup.
     const target = copyUnsharedUint8Array(
       isArrayBufferView(publicKey)
         ? publicKey
