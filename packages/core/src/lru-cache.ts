@@ -22,6 +22,8 @@ export class LRUCache<K, V> {
   get(key: K): V | undefined {
     const finalized = this._finalizedEntry;
     if (finalized !== undefined && sameValueZero(finalized.key, key)) {
+      // Finalization already makes this the newest logical entry. Reading it
+      // cannot rescue an older entry that its insertion has logically evicted.
       return finalized.value;
     }
     this._materializeFinalizedEntry();
