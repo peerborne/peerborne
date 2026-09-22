@@ -19,6 +19,7 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
+  snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
@@ -489,9 +490,9 @@ function capturePreparedKeychainMerge(
   return { keyIds, currentKeyId, hydrateKeys, getKey, claimCommit };
 }
 
-function hydratedKeychainContainsEpoch(
+function hasCompleteHydratedKeychain(
   hydrated: unknown,
-  epochId: Uint8Array,
+  keyIds: readonly Uint8Array[],
 ): boolean {
   const entryCount = boundedPreparedArrayLength(
     hydrated,
@@ -499,8 +500,8 @@ function hydratedKeychainContainsEpoch(
     MAX_KEYCHAIN_EPOCHS,
     'Prepared Welcome hydrated keys',
   );
+  if (entryCount !== keyIds.length) return false;
   const entries = hydrated as readonly unknown[];
-  let found = false;
   for (let index = 0; index < entryCount; index++) {
     const entry = preparedArrayDataEntry(
       entries,
@@ -528,11 +529,33 @@ function hydratedKeychainContainsEpoch(
       1,
       `Prepared Welcome hydrated keys[${index}][1]`,
     );
-    if (key !== undefined && constantTimeEqual(hydratedKeyId, epochId)) {
-      found = true;
+    if (
+      key === undefined ||
+      !constantTimeEqual(hydratedKeyId, keyIds[index])
+    ) {
+      return false;
     }
   }
-  return found;
+  return true;
+}
+
+function snapshotPathUpdateMessage<ChangesType, PublicKey>(
+  value: unknown,
+): CRDTSyncMessage<ChangesType, PublicKey> {
+  return snapshotDeepEnumerableData(
+    snapshotEnumerableOwnDataObject<CRDTSyncMessage<ChangesType, PublicKey>>(
+      value,
+      'BeeKEM PathUpdate message',
+    ),
+    'BeeKEM PathUpdate message',
+    {
+      maxDepth: 32,
+      maxObjects: 32_768,
+      maxProperties: 131_072,
+      maxArrayLength: 65_536,
+      maxValueBytes: MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    },
+  );
 }
 
 function canSafelyObservePreparedNativePromise(
@@ -9183,22 +9206,20 @@ export class PeerborneDocument<
         preparedKeychainMerge.hydrateKeys.receiver,
         emptyCommitArguments,
       );
-      if (!hydratedKeychainContainsEpoch(hydrated, newEpochId)) {
-        console.warn(
-          'Dropping BeeKEM Welcome without its hydrated advertised epoch',
-        );
+      if (!hasCompleteHydratedKeychain(hydrated, preparedKeychainMerge.keyIds)) {
+        console.warn('Dropping BeeKEM Welcome with incomplete hydrated history');
         return 'retry';
       }
-      const hydratedEpochKey = documentReflectApply(
-        preparedKeychainMerge.getKey.method,
-        preparedKeychainMerge.getKey.receiver,
-        [new Uint8Array(newEpochId)],
-      );
-      if (hydratedEpochKey === undefined) {
-        console.warn(
-          'Dropping BeeKEM Welcome without its advertised epoch key',
+      for (const keyId of preparedKeychainMerge.keyIds) {
+        const hydratedKey = documentReflectApply(
+          preparedKeychainMerge.getKey.method,
+          preparedKeychainMerge.getKey.receiver,
+          [new Uint8Array(keyId)],
         );
-        return 'retry';
+        if (hydratedKey === undefined) {
+          console.warn('Dropping BeeKEM Welcome with unavailable history keys');
+          return 'retry';
+        }
       }
     } catch {
       console.warn('Failed to stage BeeKEM Welcome keychain state');
@@ -10151,7 +10172,9 @@ export class PeerborneDocument<
     try {
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(payload);
+        message = snapshotPathUpdateMessage<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(payload),
+        );
       } catch {
         console.warn('Dropping malformed BeeKEM PathUpdate');
         return;
@@ -10218,11 +10241,8 @@ export class PeerborneDocument<
       let pathUpdate: PathUpdate;
       let senderEpochId32: Uint8Array;
       try {
-        const authenticatedMessage = snapshotEnumerableOwnDataObject<
-          CRDTSyncMessage<ChangesType, PublicKey>
-        >(
+        const authenticatedMessage = snapshotPathUpdateMessage<ChangesType, PublicKey>(
           this._syncMessageSerializer.deserializeSyncMessage(raw),
-          'Authenticated BeeKEM PathUpdate',
         );
         if (
           authenticatedMessage.documentId !== this.documentPath ||
