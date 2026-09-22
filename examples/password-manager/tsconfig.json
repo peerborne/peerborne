@@ -18,7 +18,7 @@
     "jsx": "react-jsx"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/reportWebVitals.ts", "src/setupTests.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/setupTests.ts"],
   "references": [
     {
       "path": "../../packages/core"
