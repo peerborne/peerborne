@@ -1083,3 +1083,19 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     await expectTargetPristine(target);
   });
 });
+
+
+test('wipes a derived compatibility secret when the second derivation rejects', async () => {
+  const { welcome, recipientKeys } = await createTwoMemberWelcome();
+  const receiver = new BeeKEM();
+  const derived = new Uint8Array(32).fill(0xa5);
+  const derive = jest.spyOn(crypto.subtle, 'deriveBits')
+    .mockResolvedValueOnce(derived.buffer)
+    .mockRejectedValueOnce(new Error('derivation unavailable'));
+  try {
+    await expect(receiver.processWelcome(welcome, recipientKeys.privateKey, recipientKeys.publicKey)).rejects.toThrow(/compatibility check failed/);
+    expect(derived).toEqual(new Uint8Array(32));
+  } finally {
+    derive.mockRestore();
+  }
+});
