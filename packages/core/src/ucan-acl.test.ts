@@ -86,6 +86,13 @@ describe('UCANACL', () => {
     mockCreateUCAN.mockReset();
   });
 
+  test.each(['', null, 0])('rejects invalid capability %p before consulting membership', async (capability) => {
+    await expect(acl.check('key1', capability)).rejects.toThrow(/non-empty string/);
+    await expect(acl.users(capability)).rejects.toThrow(/non-empty string/);
+    expect(backing.check).not.toHaveBeenCalled();
+    expect(backing.users).not.toHaveBeenCalled();
+  });
+
   test('add delegates to backing ACL', async () => {
     backing.add.mockResolvedValue('changes');
     const result = await acl.add('key1');
