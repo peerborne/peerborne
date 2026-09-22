@@ -117,7 +117,13 @@ export class PendingWelcomeBuffer {
     if (!Number.isSafeInteger(bufferedAtMs) || bufferedAtMs < 0) {
       throw new TypeError('Pending BeeKEM Welcome timestamp is invalid');
     }
-    if (Reflect.apply(getByteLength, body, []) > PENDING_WELCOME_MAX_BODY_BYTES) {
+    let bodyLength: number;
+    try {
+      bodyLength = Reflect.apply(getByteLength, body, []);
+    } catch {
+      throw new TypeError('Pending BeeKEM Welcome body must be a Uint8Array');
+    }
+    if (bodyLength > PENDING_WELCOME_MAX_BODY_BYTES) {
       throw new PendingWelcomeBodyLimitError();
     }
     const stableBody = copyUnsharedUint8Array(
