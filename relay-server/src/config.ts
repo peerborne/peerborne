@@ -23,8 +23,6 @@ export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
   '/peerborne/document/v3/',
   '/peerborne/documents/v3',
-  '/document/',
-  '/documents',
 ]
 
 /** Default websocket port. */

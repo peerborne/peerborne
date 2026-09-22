@@ -36,12 +36,7 @@ describe('loadConfig', () => {
       expect(cfg.tcpListenV6).toBe(`/ip6/::/tcp/${DEFAULT_TCP_PORT}`)
       expect(cfg.readinessPort).toBe(DEFAULT_READINESS_PORT)
       expect(cfg.identityKeyPath).toBe(DEFAULT_IDENTITY_KEY_PATH)
-      expect(cfg.topicAllowlist).toEqual([
-        '/peerborne/document/v3/',
-        '/peerborne/documents/v3',
-        '/document/',
-        '/documents',
-      ])
+      expect(cfg.topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
       expect(cfg.topicAllowlist).toContain(DEFAULT_DOCUMENT_PUBLISH_PATH)
       expect(cfg.maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
       expect(cfg.maxAutoTopicsPerPeer).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
@@ -141,20 +136,18 @@ describe('loadConfig', () => {
     })
 
     it('splits a single value', () => {
-      expect(loadConfig({ TOPIC_ALLOWLIST: '/document/' }).topicAllowlist).toEqual(['/document/'])
+      expect(loadConfig({ TOPIC_ALLOWLIST: '/custom/' }).topicAllowlist).toEqual(['/custom/'])
     })
 
     it('splits multiple comma-separated values', () => {
       expect(
         loadConfig({
           TOPIC_ALLOWLIST:
-            '/peerborne/document/v3/,/peerborne/documents/v3,/document/,/documents',
+            '/peerborne/document/v3/,/peerborne/documents/v3',
         }).topicAllowlist,
       ).toEqual([
         '/peerborne/document/v3/',
         '/peerborne/documents/v3',
-        '/document/',
-        '/documents',
       ])
     })
 

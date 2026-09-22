@@ -281,7 +281,7 @@ export interface PeerborneConfig {
   /**
    * GossipSub topic used for document publish notifications.
    *
-   * Defaults to the versioned {@link DEFAULT_DOCUMENT_PUBLISH_PATH}. Custom
+   * Defaults to `/peerborne/documents/v3`. Custom
    * values are protocol compatibility boundaries and require a matching relay
    * `DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or `TOPIC_ALLOWLIST` entry.
    */

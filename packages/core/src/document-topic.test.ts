@@ -79,14 +79,6 @@ describe('documentTopic', () => {
     expect(documentTopic('/my-doc', '/docs')).toBe('/docs/my-doc');
   });
 
-  test('applies the legacy /document/ prefix when explicitly provided', () => {
-    expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
-  });
-
-  test('applies the legacy /document/ prefix and avoids double slash', () => {
-    expect(documentTopic('/my-doc', '/document/')).toBe('/document/my-doc');
-  });
-
   // Edge case: '/' prefix produces '/path'
   test('applies bare / prefix correctly', () => {
     expect(documentTopic('my-doc', '/')).toBe('/my-doc');
