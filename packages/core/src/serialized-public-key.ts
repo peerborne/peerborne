@@ -22,6 +22,10 @@ export function decodeCanonicalP384PublicKeyEncoding(
     throw new TypeError(`${description} must be a string`);
   }
 
+  if (serialized.length !== Math.ceil(97 / 3) * 4) {
+    throw new Error(`${description} must be canonical base64 for a 97-byte uncompressed P-384 point`);
+  }
+
   let raw: Uint8Array;
   try {
     raw = Base64.toUint8Array(serialized);
