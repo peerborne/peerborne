@@ -380,7 +380,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   ): AutomergeACLAdditionActorReservation {
     if (this._stagedAdditionActors.size >= MAX_AUTOMERGE_ACL_CHANGES) {
       throw new RangeError(
-        'Automerge ACL has too many staged addition actors',
+        `Cannot stage an ACL addition: Automerge ACL exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-actor reservation limit`,
       );
     }
 
