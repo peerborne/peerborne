@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 
 import type { GroupWelcome } from './group-security-provider.js';
 import {
@@ -58,6 +59,18 @@ function delivery(
 }
 
 describe('group-security durable acceptance', () => {
+  test('accepts cross-realm dense arrays at both acceptance boundaries', async () => {
+    const value = delivery([new Uint8Array([1])]);
+    const welcomes = runInNewContext('[]') as GroupWelcome[];
+    welcomes.push(...value.welcomes);
+    const acceptance = await createGroupSecurityDurableAcceptance({ ...value, welcomes });
+    const references = runInNewContext('[]') as Uint8Array[];
+    references.push(...acceptance.recipientKeyPackageRefs);
+    await expect(validateGroupSecurityDurableAcceptance({
+      ...acceptance, recipientKeyPackageRefs: references,
+    }, value)).resolves.toEqual(acceptance);
+  });
+
   test('constructs a canonical exact-set acceptance with defensive copies', async () => {
     const value = delivery([
       new Uint8Array([3]),

@@ -394,11 +394,9 @@ function strictArray(
   maximumLength: number,
 ): unknown[] {
   let isArray: boolean;
-  let prototype: object | null;
   let lengthDescriptor: PropertyDescriptor | undefined;
   try {
     isArray = Array.isArray(value);
-    prototype = isArray ? Object.getPrototypeOf(value) : null;
     lengthDescriptor = isArray
       ? Object.getOwnPropertyDescriptor(value, 'length')
       : undefined;
@@ -407,7 +405,6 @@ function strictArray(
   }
   if (
     !isArray ||
-    prototype !== Array.prototype ||
     lengthDescriptor === undefined ||
     !('value' in lengthDescriptor) ||
     !Number.isSafeInteger(lengthDescriptor.value) ||
