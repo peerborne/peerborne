@@ -1,6 +1,6 @@
 ---
 title: Keeping data alive (pinning)
-description: Design and validate a pinning integration with the legacy topic and decoder boundaries made explicit.
+description: Requirements and current limitations for an authenticated pinning integration.
 ---
 
 **Status: Deferred/incomplete integration.**
@@ -9,11 +9,11 @@ Peerborne does not currently provide a runnable, end-to-end pinning daemon or du
 
 ## What exists
 
-The Node-only `PeerborneNode` retains the `pubsubDocumentPublishPath` compatibility setting (default `/peerborne/documents/v3`), but it does not subscribe to that V1 topic. The source retains an isolated, bounded decoder to make the rejected wire shape explicit; no runtime receiver invokes it. A V1 announcement therefore cannot create or open a document, attach a document subscription, or pin either supplied or later CIDs.
+The Node-only `PeerborneNode` has no document-announcement receiver, decoder, or compatibility setting. Remote announcements cannot create or open documents, attach subscriptions, or request pinning.
 
-This is an intentional compatibility break for custom V1 publishers: current `PeerborneNode` instances do not receive either full sync-message or path-only V1 announcements. The legacy envelope has no domain-separated signed purpose, signer identity, or freshness value, and a node that has not opened the document has no trusted writer ACL against which to authorize it. Reusing an ordinary signed sync message would therefore be cross-context replay, not a pinning authorization. A future remotely initiated pinning protocol needs a new versioned envelope with explicit signature-domain, signer-authorization, local pin-policy, and replay semantics; V1 does not fall back to any effect.
+A remotely initiated pinning protocol needs an authenticated envelope with an explicit signed purpose, signer authorization, local pin policy, and replay protection. An ordinary signed sync message does not grant pinning authority to a node that has not opened the document and has no trusted writer ACL.
 
-There is no authenticated document-publish protocol. The normal core document commit path does **not** publish document announcements, and there is no active receiver. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
+The normal document commit path does not publish document announcements. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
 The default Node configuration uses the repository's IndexedDB-backed stores. Durable restart/recovery for a Node pinning process has not been validated, including stable storage paths, process identity, graph restoration, subscriptions, keys, and serving retained data after restart.
 

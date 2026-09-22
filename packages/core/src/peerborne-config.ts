@@ -279,16 +279,6 @@ export interface PeerborneConfig {
   pubsubDocumentPrefix: string;
 
   /**
-   * GossipSub topic retained for legacy document-publish V1 messages.
-   *
-   * Defaults to `/peerborne/documents/v3`. The current document-publish V1
-   * payload is not an authenticated remote pinning request. `PeerborneNode`
-   * does not subscribe to this topic or perform any document, subscription,
-   * or pinning effect from it.
-   */
-  pubsubDocumentPublishPath: string;
-
-  /**
    * Enable GossipSub topic validators for authorization enforcement.
    * When enabled, messages from unauthorized peers are rejected at the
    * transport layer (P4 penalty in peer scoring).

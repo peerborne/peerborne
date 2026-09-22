@@ -8,7 +8,6 @@ import type { LoadSecurityCommitments } from './load-security-state.js';
 
 const signatureContexts = [
   'ordinary-sync-v1',
-  'document-publish-v1',
   'load-response-v3',
   'load-response-v4',
   'tip-advertisement-v1',
