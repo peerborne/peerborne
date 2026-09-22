@@ -56,7 +56,7 @@ import {
   isTransactionalKeychain,
   keychainHistorySinceOrReject,
 } from './keychain.js';
-import { PreparedCommitClaim } from './prepared-commit.js';
+export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -252,7 +252,6 @@ export {
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
-  PreparedCommitClaim,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
