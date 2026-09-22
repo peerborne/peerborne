@@ -151,6 +151,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -183,6 +184,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -220,6 +222,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -267,6 +270,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -322,6 +326,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -362,6 +367,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -398,6 +404,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -457,6 +464,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -504,6 +512,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_Y);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -539,6 +548,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -558,6 +568,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -587,6 +598,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(null);
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -627,6 +639,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const singlePeer = path === 'single-peer';
       const peers = singlePeer ? ['p1'] : ['p1', 'p2', 'p3'];
       const err = await runLoadQuorum({
+      protocol: form === 'legacy' ? 'tip-advertise-v1' : 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) =>
@@ -656,6 +669,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       runInNewContext('new Uint8Array(32).fill(0xaa)') as Uint8Array;
 
     const single = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers: ['p1'],
       peerIdOf,
       probeFn: async () => crossRealmHash(),
@@ -669,6 +683,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const quorum = await runLoadQuorum({
+      protocol: 'security-advertise-v1',
       peers: ['p1', 'p2', 'p3'],
       peerIdOf,
       probeFn: async (peer) => ({
@@ -692,6 +707,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     '%s rejects an empty signer authority as a non-vote',
     async (_path, peers, config) => {
       const error = await runLoadQuorum({
+      protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({ hash: HASH_X, signerAuthority: '' }),
@@ -715,6 +731,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -737,6 +754,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -750,6 +768,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
   test('empty peer list: returns { skipped: true } so caller treats as new document', async () => {
     const peers: TestPeer[] = [];
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -770,6 +789,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -788,6 +808,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     const peers: TestPeer[] = ['p1', 'p2'];
     probeMock.mockResolvedValue(HASH_X);
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -809,6 +830,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // orchestrator throws unconditionally rather than silently bypassing
     // the gate.
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers: [],
       peerIdOf,
       probeFn: probeMock,
@@ -841,6 +863,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -862,6 +885,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -880,6 +904,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -899,6 +924,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -922,6 +948,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -942,6 +969,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       // load-attempt's actual `documentPath` so operator logs identify
       // which document's load tripped the post-init mutation.
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers: ['p1', 'p2'] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -964,6 +992,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -981,6 +1010,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       ['allowSinglePeer', 'true'],
     ])('non-boolean %s=%p fails as invalid-config', async (name, value) => {
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers: ['p1'] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -1003,6 +1033,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       // perfectly valid; the absence of peers is a runtime fact, not a
       // config error.
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers: [] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -1021,6 +1052,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1048,6 +1080,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1067,6 +1100,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1085,6 +1119,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1103,6 +1138,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1121,6 +1157,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1139,6 +1176,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1156,6 +1194,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1167,6 +1206,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
     test('rethrown invalid-config (timeoutMs) carries the actual documentPath', async () => {
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers: ['p1', 'p2'] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -1208,6 +1248,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['only-peer'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1231,6 +1272,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1256,6 +1298,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3', 'p4', 'p5'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1271,6 +1314,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1295,6 +1339,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       return HASH_X;
     });
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1316,6 +1361,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       throw new Error('synthetic probe failure');
     });
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1341,6 +1387,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       throw new Error('synthetic single-peer probe failure');
     });
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1371,6 +1418,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1525,6 +1573,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers: quorumPeers,
         peerIdOf: idOf,
         probeFn: probeMock,
@@ -1572,6 +1621,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       });
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1594,6 +1644,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       });
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1613,6 +1664,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       });
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1632,6 +1684,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       });
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1653,6 +1706,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       });
 
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1671,6 +1725,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       probeMock.mockResolvedValue(HASH_X);
 
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1702,6 +1757,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1737,6 +1793,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1773,6 +1830,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1804,6 +1862,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       probeMock.mockResolvedValue('unknown-doc');
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1835,6 +1894,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       );
 
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1856,6 +1916,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       );
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1876,6 +1937,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       probeMock.mockResolvedValue('unknown-doc');
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1896,6 +1958,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       );
 
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1934,6 +1997,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       };
 
       const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf: unstablePeerIdOf,
         probeFn: probeMock,
@@ -1957,6 +2021,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('one signer across multiple libp2p PeerIds contributes only one vote', async () => {
       const peers: TestPeer[] = ['sybil-1', 'sybil-2', 'sybil-3'];
       const err = await runLoadQuorum({
+      protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({
@@ -1977,6 +2042,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('distinct caller-authenticated signer authorities can satisfy V4 quorum', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
       const result = await runLoadQuorum({
+      protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) => ({
@@ -1995,6 +2061,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('legacy bare-hash probes retain PeerId-based tally semantics', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b'];
       const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => HASH_X,
@@ -2005,5 +2072,39 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       if (!('ok' in result)) throw new Error('expected legacy quorum success');
       expect(result.narrowedPeers).toEqual(peers);
     });
+  });
+});
+
+
+describe('quorum protocol separation', () => {
+  test.each([new Uint8Array(32).fill(0xaa), 'unknown-doc'] as const)(
+    'never counts a response from another protocol alongside a V4 authority',
+    async (wrongFamily) => {
+      await expect(runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers: ['signed', 'unsigned-a', 'unsigned-b'],
+        peerIdOf,
+        probeFn: async (peer) => peer === 'signed'
+          ? { hash: HASH_X, signerAuthority: 'writer-a' }
+          : wrongFamily,
+        documentPath: '/mixed-families',
+        config: { k: 3, q: 2 },
+      })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 1 });
+    },
+  );
+
+  test('rejects an unattributed single-peer V4 response', async () => {
+    await expect(runLoadQuorum({
+      protocol: 'security-advertise-v1', peers: ['a'], peerIdOf,
+      probeFn: async () => 'unknown-doc', documentPath: '/unsigned-single',
+      config: { allowSinglePeer: true },
+    })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 0 });
+  });
+
+  test('requires explicit protocol selection even with no peers', async () => {
+    await expect(runLoadQuorum({
+      protocol: undefined as never, peers: [], peerIdOf,
+      probeFn: async () => null, documentPath: '/missing-family',
+    })).rejects.toMatchObject({ reason: 'invalid-config' });
   });
 });
