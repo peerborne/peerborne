@@ -17,7 +17,7 @@
     "@peerborne/automerge": "workspace:packages/automerge",
     "@peerborne/core": "workspace:packages/core",
     "react": "^19.3.0",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@libp2p/peer-id": "^6.0.14",

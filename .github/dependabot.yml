@@ -8,3 +8,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
