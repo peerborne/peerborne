@@ -99,12 +99,13 @@ later design.
 Document content remains a multi-writer CRDT. Membership and role changes are
 serialized by one controller per epoch. Only the current controller may author
 the next record. Each accepted transaction advances the group by exactly one
-epoch. Add/remove records carry matching group proposals; a role-only change
-uses a self-update so its authorization boundary also receives a fresh epoch.
-That role-only rule is part of the target MLS integration. The current
-protocol-neutral coordinator accepts exactly one provider-applied
-cryptographic add/remove/update and deliberately rejects a role-only control
-with no applied membership delta.
+epoch. Add/remove records carry matching group proposals. The target MLS
+integration represents each role-only change as a self-update so its
+authorization boundary also receives a fresh epoch.
+
+Current implementation limitation: the protocol-neutral coordinator accepts
+exactly one provider-applied cryptographic add/remove/update and rejects a
+role-only control with no applied membership delta.
 
 This prevents honest peers from creating competing Commits. Two valid-looking
 children of the same control head are a security fork: clients stop accepting
@@ -135,7 +136,7 @@ version
 documentId
 groupId
 sequenceNumber
-parentControlHash
+parentControlRecordId
 oldEpoch
 newEpoch
 controllerClientId
@@ -172,7 +173,7 @@ ID, epoch, optional parent record ID, operation ID, action, actor, subject, and
 length-prefixed control payload. The signature is verified separately and is
 not part of the record ID. The MLS payload and its domain-separated digest are
 encoded together inside that frame's `controlPayload`; the digest does not
-replace the frame identity. Every control head, `parentControlHash`, and
+replace the frame identity. Every control head, `parentControlRecordId`, and
 envelope `parentRecordId` uses this record ID, including the genesis record ID.
 The payload parent and envelope parent must agree.
 
@@ -365,7 +366,7 @@ Security-aware peers vote over a domain-separated canonical tuple:
 version
 documentId
 sortedContentFrontier
-controlHeadHash
+controlHeadRecordId
 groupId
 groupEpoch
 treeHash
@@ -438,13 +439,13 @@ cost of failing closed.
 The proposed MLS family uses distinct bounded protocols:
 
 ```text
-/collabswarm/mls-keypackage/1.0.0
-/collabswarm/mls-control/1.0.0
-/collabswarm/mls-welcome/1.0.0
-/collabswarm/mls-ack/1.0.0
-/collabswarm/doc-load/4.0.0
-/collabswarm/snapshot-load/4.0.0
-/collabswarm/security-advertise/1.0.0
+/peerborne/mls-keypackage/1.0.0
+/peerborne/mls-control/1.0.0
+/peerborne/mls-welcome/1.0.0
+/peerborne/mls-ack/1.0.0
+/peerborne/doc-load/4.0.0
+/peerborne/snapshot-load/4.0.0
+/peerborne/security-advertise/1.0.0
 ```
 
 Strict security documents do not serve V3 loads or legacy tip advertisements,
