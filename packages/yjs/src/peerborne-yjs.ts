@@ -594,15 +594,18 @@ const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
 // This independently rooted current-key view is reconciled by prepareMerge:
 // a matching current tuple preserves the receiver's existing linear history
 // without applying the projection's unrelated CRDT root operations.
+const projectionTextEncoder = new TextEncoder();
+
 async function currentKeyProjection(
   entry: CanonicalKeychainEntry,
 ): Promise<Uint8Array> {
-  const identity = new TextEncoder().encode(
+  const identity = projectionTextEncoder.encode(
     `${KEYCHAIN_PROJECTION_CLIENT_DOMAIN}${JSON.stringify(entry)}`,
   );
   const digest = new Uint8Array(
     await crypto.subtle.digest('SHA-256', identity),
   );
+  // Five high bits plus six bytes yield a deterministic 53-bit safe integer.
   let clientID = digest[0] & 0x1f;
   for (let index = 1; index < 7; index++) {
     clientID = clientID * 256 + digest[index];
