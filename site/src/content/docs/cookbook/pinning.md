@@ -1,6 +1,6 @@
 ---
 title: Keeping data alive (pinning)
-description: Design and validate a pinning integration without treating the current listener as a durability service.
+description: Design and validate a pinning integration with the legacy topic and decoder boundaries made explicit.
 ---
 
 **Status: Deferred/incomplete integration.**
