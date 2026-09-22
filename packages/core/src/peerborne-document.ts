@@ -452,9 +452,9 @@ function capturePreparedKeychainMerge(
   return { keyIds, currentKeyId, hydrateKeys, getKey, claimCommit };
 }
 
-function hydratedKeychainContainsEpoch(
+function hasCompleteHydratedKeychain(
   hydrated: unknown,
-  epochId: Uint8Array,
+  keyIds: readonly Uint8Array[],
 ): boolean {
   const entryCount = boundedPreparedArrayLength(
     hydrated,
@@ -462,8 +462,8 @@ function hydratedKeychainContainsEpoch(
     MAX_KEYCHAIN_EPOCHS,
     'Prepared Welcome hydrated keys',
   );
+  if (entryCount !== keyIds.length) return false;
   const entries = hydrated as readonly unknown[];
-  let found = false;
   for (let index = 0; index < entryCount; index++) {
     const entry = preparedArrayDataEntry(
       entries,
@@ -491,11 +491,14 @@ function hydratedKeychainContainsEpoch(
       1,
       `Prepared Welcome hydrated keys[${index}][1]`,
     );
-    if (key !== undefined && constantTimeEqual(hydratedKeyId, epochId)) {
-      found = true;
+    if (
+      key === undefined ||
+      !constantTimeEqual(hydratedKeyId, keyIds[index])
+    ) {
+      return false;
     }
   }
-  return found;
+  return true;
 }
 
 function invokePreparedCommitClaim(
@@ -9471,22 +9474,20 @@ export class PeerborneDocument<
         preparedKeychainMerge.hydrateKeys.receiver,
         emptyCommitArguments,
       );
-      if (!hydratedKeychainContainsEpoch(hydrated, newEpochId)) {
-        console.warn(
-          'Dropping BeeKEM Welcome without its hydrated advertised epoch',
-        );
+      if (!hasCompleteHydratedKeychain(hydrated, preparedKeychainMerge.keyIds)) {
+        console.warn('Dropping BeeKEM Welcome with incomplete hydrated history');
         return 'retry';
       }
-      const hydratedEpochKey = documentReflectApply(
-        preparedKeychainMerge.getKey.method,
-        preparedKeychainMerge.getKey.receiver,
-        [new Uint8Array(newEpochId)],
-      );
-      if (hydratedEpochKey === undefined) {
-        console.warn(
-          'Dropping BeeKEM Welcome without its advertised epoch key',
+      for (const keyId of preparedKeychainMerge.keyIds) {
+        const hydratedKey = documentReflectApply(
+          preparedKeychainMerge.getKey.method,
+          preparedKeychainMerge.getKey.receiver,
+          [new Uint8Array(keyId)],
         );
-        return 'retry';
+        if (hydratedKey === undefined) {
+          console.warn('Dropping BeeKEM Welcome with unavailable history keys');
+          return 'retry';
+        }
       }
     } catch {
       console.warn('Failed to stage BeeKEM Welcome keychain state');

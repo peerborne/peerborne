@@ -386,8 +386,10 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
    * consumed by core transaction wrappers must resolve through data-property
    * function descriptors rather than accessors. The resolved list must be a
    * dense ordinary array of own-data two-element arrays `[keyId, key]`, bounded
-   * by `MAX_KEYCHAIN_EPOCHS`; every advertised current epoch must be present
-   * as a genuine unshared 32-byte ID with a non-`undefined` key.
+   * by `MAX_KEYCHAIN_EPOCHS`. It must contain every detached `keyIds` entry
+   * exactly once in the same canonical history order, with a genuine unshared
+   * 32-byte ID and a non-`undefined` key. Each ID must also resolve through
+   * the captured `getKey()` method before the merge is claimed.
    */
   hydrateKeys(): Promise<[Uint8Array, DocumentKey][]>;
   /** Look up a key hydrated by `hydrateKeys()` without mutating live state. */
