@@ -120,8 +120,9 @@ UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core`
 
 But the document change path does not check UCAN tokens. UCAN integration is a future capability.
 The optional [`UCANACL`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/ucan-acl.ts)
-wrapper in `@peerborne/core` keeps capability metadata in process-local memory. That metadata is not replicated, and the wrapper does not provide
-distributed strong-removal semantics.
+wrapper in `@peerborne/core` keeps capability metadata in process-local memory.
+That metadata is not replicated. The wrapper does not provide distributed
+strong-removal semantics.
 
 ## Encryption and history visibility
 
@@ -212,14 +213,16 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate** is a best-effort mechanism to notify peers about ACL changes
+- **PathUpdate** carries BeeKEM tree and key-rotation state to surviving members
 - Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
 
 ```ts
 // Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
-`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
+`removeReader` generates and distributes BeeKEM PathUpdates internally as part
+of the operation. This key-rotation delivery is best-effort; an update may not
+reach every surviving member.
 A surviving reader that misses the new epoch cannot recover it with an ordinary
 load response, because that response is encrypted under the unknown current
 epoch. Recovery requires a separate recipient-bound re-invitation or explicit
