@@ -1,13 +1,9 @@
-import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
+import { snapshotTrustKeys } from './initial-load-trust.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
 export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
 
-const arrayIsArray = Array.isArray;
-const objectDefineProperty = Object.defineProperty;
-const objectFreeze = Object.freeze;
-const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const reflectApply = Reflect.apply;
 
 export interface InitialLoadAuthenticationOptions<PublicKey> {
@@ -43,68 +39,6 @@ function selectedTrustKeys<PublicKey>(
         trustedBootstrapWriterKeysValue,
         'trusted bootstrap writer keys',
       );
-}
-
-function snapshotTrustKeys<PublicKey>(
-  value: readonly PublicKey[],
-  field: string,
-): readonly PublicKey[] {
-  let isArray: boolean;
-  let lengthDescriptor: PropertyDescriptor | undefined;
-  try {
-    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
-    lengthDescriptor = isArray
-      ? (reflectApply(objectGetOwnPropertyDescriptor, Object, [
-          value,
-          'length',
-        ]) as PropertyDescriptor | undefined)
-      : undefined;
-  } catch {
-    throw new TypeError(`${field} must be a stable array`);
-  }
-  const length =
-    lengthDescriptor !== undefined && 'value' in lengthDescriptor
-      ? lengthDescriptor.value
-      : undefined;
-  if (!isArray || !Number.isSafeInteger(length) || (length as number) < 0) {
-    throw new TypeError(`${field} must be a stable array`);
-  }
-  if ((length as number) > MAX_INITIAL_LOAD_SIGNER_AUTHORITIES) {
-    throw new RangeError(
-      `${field} exceeds ${MAX_INITIAL_LOAD_SIGNER_AUTHORITIES} entries`,
-    );
-  }
-
-  const snapshot = new Array<PublicKey>(length as number);
-  for (let index = 0; index < snapshot.length; index++) {
-    let descriptor: PropertyDescriptor | undefined;
-    try {
-      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
-        value,
-        String(index),
-      ]) as PropertyDescriptor | undefined;
-    } catch {
-      throw new TypeError(`${field} must expose stable own data entries`);
-    }
-    if (
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !('value' in descriptor)
-    ) {
-      throw new TypeError(`${field} must contain only own data entries`);
-    }
-    reflectApply(objectDefineProperty, Object, [
-      snapshot,
-      String(index),
-      {
-        configurable: true,
-        enumerable: true,
-        value: descriptor.value,
-        writable: true,
-      },
-    ]);
-  }
-  return reflectApply(objectFreeze, Object, [snapshot]) as readonly PublicKey[];
 }
 
 interface InitialLoadVerificationInputs<PublicKey> {

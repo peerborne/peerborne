@@ -1,6 +1,74 @@
 export const MAX_INITIAL_LOAD_SIGNER_AUTHORITIES = 256;
 export const MAX_INITIAL_LOAD_SIGNER_AUTHORITY_ID_BYTES = 1024;
 
+const arrayIsArray = Array.isArray;
+const objectDefineProperty = Object.defineProperty;
+const objectFreeze = Object.freeze;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const reflectApply = Reflect.apply;
+
+export function snapshotTrustKeys<PublicKey>(
+  value: readonly PublicKey[],
+  field: string,
+): readonly PublicKey[] {
+  let isArray: boolean;
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+    lengthDescriptor = isArray
+      ? (reflectApply(objectGetOwnPropertyDescriptor, Object, [
+          value,
+          'length',
+        ]) as PropertyDescriptor | undefined)
+      : undefined;
+  } catch {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  const length =
+    lengthDescriptor !== undefined && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : undefined;
+  if (!isArray || !Number.isSafeInteger(length) || (length as number) < 0) {
+    throw new TypeError(`${field} must be a stable array`);
+  }
+  if ((length as number) > MAX_INITIAL_LOAD_SIGNER_AUTHORITIES) {
+    throw new RangeError(
+      `${field} exceeds ${MAX_INITIAL_LOAD_SIGNER_AUTHORITIES} entries`,
+    );
+  }
+
+  const snapshot = new Array<PublicKey>(length as number);
+  for (let index = 0; index < snapshot.length; index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        String(index),
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${field} must expose stable own data entries`);
+    }
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !('value' in descriptor)
+    ) {
+      throw new TypeError(`${field} must contain only own data entries`);
+    }
+    reflectApply(objectDefineProperty, Object, [
+      snapshot,
+      String(index),
+      {
+        configurable: true,
+        enumerable: true,
+        value: descriptor.value,
+        writable: true,
+      },
+    ]);
+  }
+  return reflectApply(objectFreeze, Object, [snapshot]) as readonly PublicKey[];
+}
+
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).length;
 }
@@ -61,7 +129,10 @@ function validateAuthorityId(value: unknown): asserts value is string {
 export async function captureInitialLoadSignerAuthorities<PublicKey>(
   options: CaptureInitialLoadSignerAuthoritiesOptions<PublicKey>,
 ): Promise<readonly InitialLoadSignerAuthority<PublicKey>[]> {
-  let sourceKeys: readonly PublicKey[] = [...options.existingWriterKeys];
+  let sourceKeys = snapshotTrustKeys(
+    options.existingWriterKeys,
+    'existing writer keys',
+  );
   if (sourceKeys.length === 0) {
     const resolver = options.resolveTrustedDocumentWriters;
     if (resolver === undefined) {
@@ -86,13 +157,7 @@ export async function captureInitialLoadSignerAuthorities<PublicKey>(
           'resolveTrustedDocumentWriters must return an array of public keys',
       );
     }
-    sourceKeys = [...resolved];
-  }
-  if (sourceKeys.length > MAX_INITIAL_LOAD_SIGNER_AUTHORITIES) {
-    throw new RangeError(
-      `Cannot start security-aware load for ${options.documentPath}: ` +
-        `trusted writer authority count exceeds ${MAX_INITIAL_LOAD_SIGNER_AUTHORITIES}`,
-    );
+    sourceKeys = snapshotTrustKeys(resolved, 'trusted bootstrap writer keys');
   }
 
   if (sourceKeys.length === 0) {
