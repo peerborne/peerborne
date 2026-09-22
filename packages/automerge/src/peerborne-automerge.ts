@@ -539,7 +539,15 @@ function decodeCanonicalAutomergeAppend(
   decoded: DecodedAutomergeChange,
   expectedPreviousElementId: string,
 ): { readonly entry: CanonicalKeychainEntry; readonly elementId: string } {
-  if (decoded.message !== null || decoded.ops.length !== 111) {
+  const structuralOperationCount = 3;
+  const keyIdHexLength = 64;
+  const keyBase64Length = 44;
+  const expectedOperationCount =
+    structuralOperationCount + keyIdHexLength + keyBase64Length;
+  if (
+    decoded.message !== null ||
+    decoded.ops.length !== expectedOperationCount
+  ) {
     throw new Error(
       'Keychain history contains unrelated metadata or operations',
     );
@@ -596,8 +604,12 @@ function decodeCanonicalAutomergeAppend(
   };
 
   const entry: CanonicalKeychainEntry = [
-    readText(3, 64, idTextId),
-    readText(67, 44, keyTextId),
+    readText(structuralOperationCount, keyIdHexLength, idTextId),
+    readText(
+      structuralOperationCount + keyIdHexLength,
+      keyBase64Length,
+      keyTextId,
+    ),
   ];
   assertCanonicalKeychainEntry(entry);
   return { entry, elementId: tupleId };
