@@ -2056,7 +2056,7 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('commits a provider-semantic no-op without reserving bootstrap state', async () => {
+  test.each([false, true])('handles a provider-semantic no-op with commit failure %p', async (commitFails) => {
     const message = {
       documentId: '/load-race',
       signature: 'AAAA',
@@ -2069,7 +2069,9 @@ describe('document load response boundaries', () => {
       },
       message,
     );
-    const commit = jest.fn();
+    const commit = jest.fn(() => {
+      if (commitFails) throw new Error('indeterminate no-op commit');
+    });
     const merge = jest.fn();
     const hydrateKeys = jest.fn(async () => []);
     document._keychain = {
@@ -2086,9 +2088,12 @@ describe('document load response boundaries', () => {
       merge,
     };
 
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).resolves.toBe(false);
+    const result = document._sendLoadRequestAndSync(stream, new Uint8Array([1]));
+    if (commitFails) {
+      await expect(result).rejects.toThrow('indeterminate no-op commit');
+    } else {
+      await expect(result).resolves.toBe(false);
+    }
 
     expect(document._keychain.prepareMerge).toHaveBeenCalledWith(
       message.keychainChanges,
@@ -2096,7 +2101,7 @@ describe('document load response boundaries', () => {
     expect(commit).toHaveBeenCalledTimes(1);
     expect(hydrateKeys).not.toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    expect(document._bootstrapLoadApplicationState).toBe(commitFails ? 'pending' : 'pristine');
   });
 
   test('hydrates staged logical keychain changes before reservation and redacts failures', async () => {
