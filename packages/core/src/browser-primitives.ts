@@ -32,3 +32,5 @@ export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
 export * from './webcrypto-group-state-protector.js';
+
+export { canonicalKeychain } from './keychain-canonical.js';
