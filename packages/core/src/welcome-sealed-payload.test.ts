@@ -1,4 +1,4 @@
-import { welcomeFixture } from './__mocks__/beekem-v2.js';
+import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { Base64 } from 'js-base64';
 import {
