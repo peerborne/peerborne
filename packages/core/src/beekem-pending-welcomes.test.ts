@@ -8,6 +8,7 @@ import {
 import { EPOCH_ID_LENGTH } from './epoch.js';
 import {
   PendingWelcomeBuffer,
+  PendingWelcomeBodyLimitError,
   PENDING_WELCOME_MAX_BODY_BYTES,
   PENDING_WELCOMES_MAX_ENTRIES,
   PENDING_WELCOMES_MAX_RETAINED_BYTES,
@@ -137,7 +138,8 @@ class PendingWelcomesHarness {
         this.nowMs,
       );
       return true;
-    } catch {
+    } catch (error) {
+      if (!(error instanceof PendingWelcomeBodyLimitError)) throw error;
       return false;
     }
   }
@@ -211,7 +213,7 @@ describe('PendingWelcomeBuffer byte accounting', () => {
         new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES + 1),
         2,
       ),
-    ).toThrow();
+    ).toThrow(PendingWelcomeBodyLimitError);
     expect(buffer.size).toBe(1);
     expect(buffer.retainedBytes).toBe(original.byteLength);
     expect(buffer.get('epoch')?.body).toEqual(original);
