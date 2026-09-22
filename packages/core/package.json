@@ -56,6 +56,7 @@
     "!dist/**/__tests__/**",
     "!dist/**/__benchmarks__/**",
     "!dist/**/__mocks__/**",
+    "!dist/**/__testutils__/**",
     "!dist/**/*.map",
     "!dist/**/*.tsbuildinfo"
   ],
@@ -161,6 +162,7 @@
       "!src/**/*.test.ts",
       "!src/**/*.benchmark.ts",
       "!src/**/__mocks__/**",
+      "!src/**/__testutils__/**",
       "!src/**/__benchmarks__/**"
     ],
     "coverageReporters": [

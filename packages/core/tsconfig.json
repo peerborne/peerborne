@@ -21,7 +21,8 @@
     "extras",
     "src/**/*.test.ts",
     "src/**/__benchmarks__/**",
-    "src/**/__mocks__/**"
+    "src/**/__mocks__/**",
+    "src/**/__testutils__/**"
   ],
   "include": ["src", "types", "bin"]
 }
