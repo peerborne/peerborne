@@ -33,6 +33,8 @@ import {
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
+  AbstractType,
+  Map as YMap,
   applyUpdateV2,
   ContentAny,
   ContentDeleted,
@@ -548,6 +550,15 @@ export const MAX_YJS_ACL_UPDATE_BYTES = 4 * 1024 * 1024;
 export const MAX_YJS_ACL_STRUCTURES = 8192;
 export const MAX_YJS_ACL_MEMBERS = 4096;
 
+function existingYjsACLUsers(doc: Doc) {
+  const users = doc.share.get('users');
+  // Remote updates begin with an untyped AbstractType until an owner requests it.
+  if (users !== undefined && users.constructor !== AbstractType && !(users instanceof YMap)) {
+    throw new TypeError('Yjs ACL users must be a map');
+  }
+  return users;
+}
+
 function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
   // Yjs folds pendingStructs and pendingDs into this update before returning
   // it. Reapplying the bounded snapshot therefore preserves unresolved
@@ -587,7 +598,12 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
       structureCount += range.len;
     }
   }
-  if (doc.getMap('users').size > MAX_YJS_ACL_MEMBERS) {
+  const users = existingYjsACLUsers(doc);
+  let memberCount = 0;
+  for (const item of users?._map.values() ?? []) {
+    if (!item.deleted) memberCount++;
+  }
+  if (memberCount > MAX_YJS_ACL_MEMBERS) {
     throw new RangeError(
       `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
     );
@@ -597,7 +613,7 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
 }
 
 function assertValidYjsACLHistory(doc: Doc, operation: string): void {
-  const users = doc.getMap('users');
+  const users = existingYjsACLUsers(doc);
   for (const structs of doc.store.clients.values()) {
     for (const struct of structs) {
       if (!(struct instanceof Item) || struct.parent !== users) continue;
