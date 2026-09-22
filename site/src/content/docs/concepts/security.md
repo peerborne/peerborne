@@ -92,6 +92,7 @@ await document.setKemKeyPair(kemKeyPair);
 
 - **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold.
 - **Writers** sign ordinary sync messages that carry new changes. A new writer must already have an explicit reader row; call `addReader()` before `addWriter()`. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
+- Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas.
 - **Ordinary document sync/load signing is configurable.** BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 ### Current-writer authorization only
