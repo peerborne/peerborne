@@ -1505,6 +1505,9 @@ export class BeeKEM {
   ): Promise<boolean> {
     // ECDH agreement alone cannot distinguish a point from its negation.
     // Decrypted path keys are extractable so their exact public point can be checked.
+    // WebCrypto has no public-only projection of a private ECDH key. The JWK
+    // briefly contains the private scalar as an immutable string; retain only
+    // public coordinates, never log the JWK, and keep this in the trusted process.
     const { kty, crv, x, y } = await crypto.subtle.exportKey('jwk', privateKey);
     const advertised = await crypto.subtle.exportKey('jwk', publicKey);
     return (
