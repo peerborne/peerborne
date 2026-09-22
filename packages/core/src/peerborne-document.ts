@@ -1,3 +1,4 @@
+import { assertWellFormedUtf16 } from './internal/utf16.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 /**
@@ -962,22 +963,7 @@ function assertCanonicalACLIdentity(
       'AuthProvider.serializePublicKey must return a non-empty string',
     );
   }
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(
-          'AuthProvider.serializePublicKey must return well-formed UTF-16',
-        );
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(
-        'AuthProvider.serializePublicKey must return well-formed UTF-16',
-      );
-    }
-  }
+  assertWellFormedUtf16(value, 'AuthProvider.serializePublicKey return value');
 }
 
 /** Match the default per-peer load-quorum probe budget. */
