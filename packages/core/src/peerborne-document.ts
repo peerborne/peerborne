@@ -2833,7 +2833,10 @@ export class PeerborneDocument<
           return false;
         }
 
-        const message = this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+        const message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+          'load-response-v3',
+        );
         if (message.documentId !== this.documentPath) {
           console.warn(
             `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
@@ -3433,7 +3436,10 @@ export class PeerborneDocument<
       }
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(decrypted);
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(decrypted),
+          'tip-advertisement-v1',
+        );
       } catch {
         return null;
       }
@@ -5872,8 +5878,13 @@ export class PeerborneDocument<
       throw new Error('Invitation encrypted bootstrap could not be decrypted');
     }
 
-    const bootstrapMessage =
-      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext);
+    const bootstrapMessage = snapshotSyncMessageForContext<
+      ChangesType,
+      PublicKey
+    >(
+      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext),
+      'invitation-bootstrap-v1',
+    );
     if (bootstrapMessage.documentId !== this.documentPath) {
       throw new Error('Invitation bootstrap document binding does not match');
     }
