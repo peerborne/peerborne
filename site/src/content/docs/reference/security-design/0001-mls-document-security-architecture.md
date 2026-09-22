@@ -74,6 +74,9 @@ Its application-specific payload digest is:
 SHA-256("peerborne/mls-genesis/v1\0" || deterministicDagCbor(payload))
 ```
 
+In every domain string in this ADR, `\0` denotes one NUL byte (`0x00`).
+Encode the preceding characters as UTF-8 and concatenate byte sequences.
+
 The genesis is enclosed in a signed membership-control record with action
 `create`, epoch zero, no parent, and the authenticated founder as actor and
 subject. The initial controller must be that authenticated creator client, an
@@ -276,7 +279,7 @@ RFC 9420 KeyPackage generation, HPKE processing, or real onboarding
 interoperability.
 
 An onboarding invitation supplies a complete retained control prefix bounded
-by configured record count and a 128 MiB canonical-byte ceiling. The byte
+by configured record count and a 128 MiB (134,217,728-byte) canonical-byte ceiling. The byte
 ceiling is a normative hard maximum, shared with
 `MAX_GROUP_STATE_STORE_COMMITTED_BYTES`, rather than an example or an operator
 setting. It caps attacker-controlled replay work and temporary allocations
