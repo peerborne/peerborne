@@ -49,7 +49,7 @@ Both CRDT adapters use parallel deserialization for cold-cache performance to re
 
 ### Revocation latency
 
-Focused BeeKEM tests show that a blanked reader leaf cannot derive the root
+Focused BeeKEM tests show that a removed reader’s leaf (blanked in the tree) cannot derive the root
 produced by the corresponding PathUpdate. This avoids the primitive-level flaw
 of encrypting a successor key under a predecessor key already known to the
 removed reader. It is not an end-to-end revocation guarantee: PathUpdate
