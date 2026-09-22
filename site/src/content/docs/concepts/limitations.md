@@ -110,8 +110,8 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
 - **UCAN capabilities are standalone and locally cached.** The UCAN module can
   issue and verify capability tokens, but the document change path does not
-  check them and capability metadata is not replicated. This is not
-  distributed strong removal.
+  check them and capability metadata is not replicated. Revocation is not
+  enforced across replicas through a shared, authenticated membership state.
 - **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
 
 ## Convergence and verification

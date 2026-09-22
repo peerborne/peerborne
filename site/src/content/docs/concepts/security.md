@@ -198,7 +198,7 @@ When a writer is removed from the ACL:
 - There is no globally simultaneous cutover: a replica that has not applied the best-effort ACL update still evaluates against its older writer set, and an in-flight message is judged against the set current when that replica verifies it
 - The causal ACL chain is not integrated, so a stale or partitioned writer can race the removal with a signed re-grant; writer revocation is not Byzantine-safe
 - `removeWriter()` revokes write authorization, not BeeKEM reader membership; an identity that remains a reader retains its existing read access, while `removeReader()` separately attempts a BeeKEM key rotation
-- With `enableSigning: false`, ordinary inbound sync does not enforce writer signatures, so removing an ACL row is not an adversarial remote-writer revocation boundary
+- With `enableSigning: false`, ordinary inbound sync does not enforce writer signatures, so removing an ACL entry is not an adversarial remote-writer revocation boundary
 - Past contributions remain in the document; stored payloads do not carry persistent per-block writer attribution
 - There is no mechanism to retroactively remove those past contributions
 
