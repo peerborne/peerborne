@@ -3,6 +3,8 @@ import { BeeKEM } from './beekem/beekem.js';
 import {
   deserializeBeeKEMWelcomeFromWire,
   serializeBeeKEMWelcomeForWire,
+  serializeBeeKEMWelcomeV2ForWire,
+  deserializeBeeKEMWelcomeV2FromWire,
 } from './beekem-welcome-wire.js';
 import {
   decodeWelcomeSealedPayload,
@@ -25,6 +27,47 @@ async function generateECDHKeyPair(): Promise<CryptoKeyPair> {
 }
 
 describe('beekem-welcome-wire', () => {
+  test('materializes omitted blank slots in a three-leaf V2 Welcome', async () => {
+    const alice = new BeeKEM();
+    const aliceKeys = await generateECDHKeyPair();
+    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+    const bobKeys = await generateECDHKeyPair();
+    const bob = await alice.addMember(bobKeys.publicKey);
+    await alice.removeMember(bob.welcome.leafIndex);
+    alice.compact();
+    const carolKeys = await generateECDHKeyPair();
+    const { welcome, rootSecret } = await alice.addMember(carolKeys.publicKey);
+    const sparseNodes = welcome.treeNodePublicKeys.filter(
+      (node) => node.publicKey !== null,
+    );
+    expect(sparseNodes.length).toBeLessThan(welcome.treeNodePublicKeys.length);
+    const wire = serializeBeeKEMWelcomeV2ForWire({
+      ...welcome,
+      version: 2,
+      generation: 3,
+      numLeaves: 3,
+      treeNodePublicKeys: sparseNodes,
+    });
+    const decoded = deserializeBeeKEMWelcomeV2FromWire(wire);
+    expect(decoded.treeNodePublicKeys).toContainEqual({
+      nodeIndex: bob.welcome.leafIndex,
+      publicKey: null,
+    });
+    const { version, generation, numLeaves, ...legacyWelcome } = decoded;
+    const carol = new BeeKEM();
+    await expect(
+      carol.processWelcome(legacyWelcome, carolKeys.privateKey, carolKeys.publicKey),
+    ).resolves.toEqual(rootSecret);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...wire,
+        treeNodePublicKeys: wire.treeNodePublicKeys.filter(
+          (node) => node.nodeIndex !== bob.welcome.leafIndex,
+        ),
+      }),
+    ).toThrow(/complete tree/);
+  });
+
   test('round-trips a real BeeKEMWelcome produced by BeeKEM.addMember', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();

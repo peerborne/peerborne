@@ -212,15 +212,11 @@ export function serializeBeeKEMWelcomeV2ForWire(
     return { nodeIndex, publicKey: node.publicKey };
   });
 
-  if (
-    covered.size !== treeWidth ||
-    Array.from({ length: treeWidth }, (_, index) => index).some(
-      (index) => !covered.has(index),
-    )
-  ) {
-    throw new Error(
-      'Invalid BeeKEMWelcomeV2: pathKeys and treeNodePublicKeys must cover the complete tree exactly once',
-    );
+  // Runtime BeeKEM trees may omit blank slots; V2 wire snapshots are complete.
+  for (let nodeIndex = 0; nodeIndex < treeWidth; nodeIndex++) {
+    if (!covered.has(nodeIndex)) {
+      treeNodeSnapshots.push({ nodeIndex, publicKey: null });
+    }
   }
 
   const detachedPathKeys = pathKeySnapshots.map((node, offset) => ({
