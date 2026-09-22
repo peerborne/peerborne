@@ -311,11 +311,10 @@ function snapshotPathUpdate(update: PathUpdate): PathUpdate {
   return { senderLeafIndex, senderLeafPublicKey, nodes };
 }
 
-function snapshotPathUpdateForTree(
-  update: PathUpdate,
+function validatePathUpdateForTree(
+  detached: PathUpdate,
   numLeaves: number,
-): PathUpdate {
-  const detached = snapshotPathUpdate(update);
+): void {
   const treeWidth = 2 * numLeaves - 1;
   if (detached.senderLeafIndex >= treeWidth) {
     throw new Error(
@@ -337,7 +336,6 @@ function snapshotPathUpdateForTree(
       'Invalid PathUpdate: nodes must exactly match the sender direct path',
     );
   }
-  return detached;
 }
 
 /**
@@ -671,15 +669,10 @@ export class BeeKEM {
       this._pendingMutations === 0 && welcomeSettlement === undefined;
     const runReservedMutation = this._reserveMutation();
     try {
-      let detachedUpdate: PathUpdate;
+      const detachedUpdate = snapshotPathUpdate(update);
       if (validateAgainstCurrentTree) {
         this._assertPathUpdateState();
-        detachedUpdate = snapshotPathUpdateForTree(
-          update,
-          this._numLeaves,
-        );
-      } else {
-        detachedUpdate = snapshotPathUpdate(update);
+        validatePathUpdateForTree(detachedUpdate, this._numLeaves);
       }
       return runReservedMutation(async () => {
         await welcomeSettlement;
@@ -692,12 +685,9 @@ export class BeeKEM {
     }
   }
 
-  private async _processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
+  private async _processPathUpdate(detachedUpdate: PathUpdate): Promise<Uint8Array> {
     this._assertPathUpdateState();
-    const detachedUpdate = snapshotPathUpdateForTree(
-      update,
-      this._numLeaves,
-    );
+    validatePathUpdateForTree(detachedUpdate, this._numLeaves);
     const currentSenderLeaf = this._nodes.get(detachedUpdate.senderLeafIndex);
     if (
       currentSenderLeaf?.type !== 'leaf' ||
