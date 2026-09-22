@@ -8,6 +8,7 @@ import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { JSONSerializer } from './json-serializer.js';
 import {
   snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
   type SyncMessageContext,
 } from './sync-message-context.js';
 
@@ -370,4 +371,12 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
+});
+
+test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
+  expect(syncMessageMatchesSnapshot(
+    { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: new Array(2) } as any,
+    { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: [] },
+    'ordinary-sync-v1',
+  )).toBe(false);
 });

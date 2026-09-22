@@ -202,6 +202,9 @@ export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
       continue;
     }
     if (Array.isArray(left) !== Array.isArray(right)) return false;
+    if (Array.isArray(left) && left.length !== (right as unknown[]).length) {
+      return false;
+    }
     const leftKeys = Object.keys(left);
     const rightKeys = Object.keys(right);
     if (leftKeys.length !== rightKeys.length) return false;

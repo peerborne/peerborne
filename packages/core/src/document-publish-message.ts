@@ -1,3 +1,5 @@
+const documentPublishTextEncoder = new TextEncoder();
+
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
 import { copyUnsharedUint8Array } from './utils.js';
@@ -43,7 +45,7 @@ export function decodeDocumentPublishMessage<ChangesType, PublicKey>(
   if (
     typeof message.documentId !== 'string' ||
     message.documentId.length === 0 ||
-    new TextEncoder().encode(message.documentId).byteLength >
+    documentPublishTextEncoder.encode(message.documentId).byteLength >
       maxDocumentPathBytes
   ) {
     throw new TypeError('Invalid document publish documentId');
