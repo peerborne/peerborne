@@ -5451,3 +5451,17 @@ test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     expect(sink).not.toHaveBeenCalled();
   },
 );
+
+test('discards deferred and incoming notifications once document state is poisoned', async () => {
+  const pending = new Set(['deferred']);
+  const notify = jest.fn();
+  const document = fakeDocument({
+    _bootstrapLoadApplicationState: 'poisoned',
+    _pendingBootstrapRemoteUpdateHashes: pending,
+    _fireRemoteUpdateHandlers: notify,
+  });
+  await document._fireOrDeferRemoteUpdateHandlers(['incoming']);
+  await document._fireOrDeferRemoteUpdateHandlers(['later']);
+  expect(pending.size).toBe(0);
+  expect(notify).not.toHaveBeenCalled();
+});
