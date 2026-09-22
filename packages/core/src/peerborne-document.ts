@@ -1035,12 +1035,12 @@ export class PeerborneDocument<
     }
   }
 
-  private _createSyncMessage(): CRDTSyncMessage<ChangesType, PublicKey> {
+  private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType, PublicKey> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       ...(this._lastSyncMessage || {
         documentId: this.documentPath,
       }),
-      signatureContext: 'ordinary-sync-v1',
+      signatureContext: context,
     };
     return message;
   }
@@ -1903,7 +1903,7 @@ export class PeerborneDocument<
     this._hashes.add(hash);
 
     // Send new message.
-    let updateMessage = this._createSyncMessage();
+    let updateMessage = this._createSyncMessage('ordinary-sync-v1');
     const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
     const primaryParentId = updateMessage.changeId;
     if (primaryParentId && updateMessage.changes) {
@@ -2368,8 +2368,7 @@ export class PeerborneDocument<
       if (!isSharedProtocolHandlerActive(admission)) return;
 
       // Construct load response based on history visibility setting.
-      const loadMessage = this._createSyncMessage();
-      loadMessage.signatureContext = 'load-response-v3';
+      const loadMessage = this._createSyncMessage('load-response-v3');
 
       loadMessage.keychainChanges = await this._keychainChangesForVisibility();
 
@@ -2520,8 +2519,7 @@ export class PeerborneDocument<
 
       // Build a complete sync message with the snapshot, post-snapshot
       // changes, and keychain so the peer can fully catch up.
-      const snapshotMessage = this._createSyncMessage();
-      snapshotMessage.signatureContext = 'load-response-v3';
+      const snapshotMessage = this._createSyncMessage('load-response-v3');
       snapshotMessage.snapshot = this._latestSnapshot;
       snapshotMessage.keychainChanges = await this._keychainChangesForVisibility();
       // Tip-set advertisement for the pre-apply structural binding check
@@ -5723,8 +5721,7 @@ export class PeerborneDocument<
       this.documentPath,
     );
 
-    const bootstrapMessage = this._createSyncMessage();
-    bootstrapMessage.signatureContext = 'invitation-bootstrap-v1';
+    const bootstrapMessage = this._createSyncMessage('invitation-bootstrap-v1');
     bootstrapMessage.keychainChanges = keychainChanges;
     if (capacityPlan.snapshot) {
       bootstrapMessage.snapshot = capacityPlan.snapshot;
@@ -5807,7 +5804,7 @@ export class PeerborneDocument<
     const frozenCurrentMessage =
       this._syncMessageSerializer.deserializeSyncMessage(
         this._syncMessageSerializer.serializeSyncMessage(
-          this._createSyncMessage(),
+          this._createSyncMessage('ordinary-sync-v1'),
         ),
       );
     this._lastSyncMessage = frozenCurrentMessage;
