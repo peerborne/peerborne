@@ -151,7 +151,7 @@ export async function captureInitialLoadSignerAuthorities<PublicKey>(
         { cause },
       );
     }
-    if (!Array.isArray(resolved)) {
+    if (!reflectApply(arrayIsArray, Array, [resolved])) {
       throw new TypeError(
         `Cannot start security-aware load for ${options.documentPath}: ` +
           'resolveTrustedDocumentWriters must return an array of public keys',
