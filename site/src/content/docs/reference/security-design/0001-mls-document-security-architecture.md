@@ -1,12 +1,12 @@
 ---
 title: "ADR 0001: MLS document security architecture"
-description: Proposed control-plane, persistence, key-derivation, compatibility, and acceptance architecture for MLS-secured Peerborne documents.
+description: Proposed architecture and acceptance gates for future MLS-secured Peerborne documents.
 ---
 
 - Status: Proposed
 - Date: 2026-08-21
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
-- Follow-up evaluations: ADR 0002 and ADR 0003
+- Follow-up evaluations: ADR 0002 (dependency selection, [PR #457](https://github.com/Peerborne/peerborne/pull/457)) and ADR 0003 (authorization proofs, [PR #456](https://github.com/Peerborne/peerborne/pull/456)); proposed in separate changes.
 
 ## Context
 
@@ -15,7 +15,7 @@ BeeKEM tree state, epoch document keys, encrypted Welcome messages, and an
 initial-load quorum. Those components have useful focused tests, but they are
 not one authenticated, durable membership state machine. BeeKEM state is
 memory-only, membership delivery is best-effort, the ACL chain is not the
-runtime authority, and the legacy quorum commits only to the content frontier.
+runtime authority, and the current quorum commits only to the content frontier.
 Recent BeeKEM transaction helpers can restore in-memory tree/generation state
 after selected operation failures, but they do not persist the accepted
 generation/replay anchor or roll ACL, keychain, and network effects back as one
@@ -276,7 +276,14 @@ RFC 9420 KeyPackage generation, HPKE processing, or real onboarding
 interoperability.
 
 An onboarding invitation supplies a complete retained control prefix bounded
-by configured record count and a 128 MiB canonical-byte ceiling. No
+by configured record count and a 128 MiB canonical-byte ceiling. The byte
+ceiling is a normative hard maximum, shared with
+`MAX_GROUP_STATE_STORE_COMMITTED_BYTES`, rather than an example or an operator
+setting. It caps attacker-controlled replay work and temporary allocations
+while accommodating multiple bounded control records. It is not a guarantee
+that a 128 MiB history fits a particular browser's memory: applications should
+set a smaller record-count budget, and increasing the hard ceiling requires a
+code change plus worst-case memory and replay-cost measurements. No
 authenticated checkpoint plus suffix format exists yet for histories beyond
 those bounds; silently truncating the prefix is not supported.
 
@@ -346,7 +353,7 @@ History policy is immutable in genesis:
 - `since_invited` retains an explicit bounded suffix and protects only epochs
   whose keys were neither retained nor re-shared.
 
-The current legacy document-load protocol cannot authenticate a
+The current document-load protocol cannot authenticate a
 requester-specific invitation boundary, so its `since_invited` response is
 fail-closed to the current key only. The explicit bounded suffix above is the
 target coordinator policy, not a capability claim for ordinary load.
@@ -427,7 +434,7 @@ MLS genesis/control suffix or learn a newer security state from peers. Without
 an integrated reviewed provider and live hostile-peer tests, this remains
 partial evidence only.
 
-Strict mode does not count the legacy unauthenticated `0xff` “unknown
+Strict mode does not count the unauthenticated `0xff` “unknown
 document” sentinel as a vote. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
 existing swarm needs an application-authorized create decision or a future
@@ -448,10 +455,13 @@ The proposed MLS family uses distinct bounded protocols:
 /peerborne/security-advertise/1.0.0
 ```
 
-Strict security documents do not serve V3 loads or legacy tip advertisements,
-and clients never silently downgrade. BeeKEM documents remain explicitly
-legacy. Existing documents do not auto-upgrade; migration requires a later
-signed out-of-place or ReInit design with rollback and mixed-client behavior.
+Runtime integration must replace older load and snapshot formats with this
+single protocol family and remove their decoders and schemas. It must not
+negotiate a downgrade or retain a per-document compatibility mode. Peerborne
+has no deployed users requiring an old-format migration. The current BeeKEM
+runtime remains distinct from the future MLS provider proposed here; its
+limitations must remain explicit until that provider passes the acceptance
+gates.
 
 ### Delivery, replay, and recovery
 
