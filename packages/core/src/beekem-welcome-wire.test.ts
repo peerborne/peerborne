@@ -380,6 +380,13 @@ describe('beekem-welcome-wire', () => {
       },
       {
         mutate: (welcome) => {
+          welcome.treeNodePublicKeys[1].nodeIndex =
+            welcome.treeNodePublicKeys[0].nodeIndex;
+        },
+        error: /duplicate/,
+      },
+      {
+        mutate: (welcome) => {
           welcome.treeNodePublicKeys[0].nodeIndex = 11;
         },
         error: /out-of-range/,

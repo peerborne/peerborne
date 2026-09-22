@@ -73,6 +73,10 @@ async function assertExactWelcomePathKeyPair(
   privateKey: CryptoKey,
   nodeIndex: number,
 ): Promise<void> {
+  // WebCrypto has no public-only projection for an imported private EC key.
+  // Exact x/y comparison also rejects the negated point that ECDH alone accepts.
+  // JWK export creates a GC-managed private-scalar string that cannot be wiped;
+  // this primitive assumes a trusted process and never retains or logs the JWK.
   let publicJwk: JsonWebKey;
   let privateJwk: JsonWebKey;
   try {
@@ -808,6 +812,16 @@ export class BeeKEM {
         );
         this._settleWelcomeCandidates();
         return;
+      }
+      for (const [previousRevision, candidate] of this._stagedWelcomeCandidates) {
+        if (previousRevision > revision) {
+          rootSecret.fill(0);
+          reject(new Error(WELCOME_SUPERSEDED_MESSAGE));
+          return;
+        }
+        this._stagedWelcomeCandidates.delete(previousRevision);
+        candidate.rootSecret.fill(0);
+        candidate.reject(new Error(WELCOME_SUPERSEDED_MESSAGE));
       }
       this._stagedWelcomeCandidates.set(revision, {
         receiverGeneration,
