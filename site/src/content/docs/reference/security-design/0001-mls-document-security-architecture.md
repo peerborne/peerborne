@@ -68,14 +68,22 @@ The immutable genesis contains at least:
 - initial controller client ID and history-retention policy; and
 - a founder signature over a deterministic encoding.
 
-Its identity is:
+Its application-specific payload digest is:
 
 ```text
 SHA-256("peerborne/mls-genesis/v1\0" || deterministicDagCbor(payload))
 ```
 
-The genesis hash is the initial control head. A recipient accepts it only via
-an authenticated invitation, an out-of-band fingerprint, or equivalent
+The genesis is enclosed in a signed membership-control record with action
+`create`, epoch zero, no parent, and the authenticated founder as actor and
+subject. The initial controller must be that authenticated creator client, an
+active member of the new group, and authorized to author membership records at
+epoch zero. Creation, invitation acceptance, and restored-state validation
+reject a genesis that does not satisfy these bindings.
+
+The genesis record ID, defined below, is the initial control head; the payload
+digest alone is not a chain head. A recipient accepts the genesis only via an
+authenticated invitation, an out-of-band record-ID fingerprint, or equivalent
 application policy. State fetched from an untrusted peer is never a trust root.
 
 The provider authentication adapter binds each protocol credential and
@@ -152,7 +160,21 @@ SHA-256("peerborne/mls-control/v1\0" || deterministicDagCbor(payload))
 
 The enclosing membership record signs canonical frame bytes containing that
 exact payload and its identity, actor, subject, epoch, parent, operation ID,
-and action.
+and action. Its record ID uses the existing protocol-neutral
+`membershipControlRecordId` construction:
+
+```text
+recordId = SHA-256(canonicalMembershipControlPayload(unsignedRecord))
+```
+
+The canonical frame includes its magic, format and protocol versions, group
+ID, epoch, optional parent record ID, operation ID, action, actor, subject, and
+length-prefixed control payload. The signature is verified separately and is
+not part of the record ID. The MLS payload and its domain-separated digest are
+encoded together inside that frame's `controlPayload`; the digest does not
+replace the frame identity. Every control head, `parentControlHash`, and
+envelope `parentRecordId` uses this record ID, including the genesis record ID.
+The payload parent and envelope parent must agree.
 
 Protocol verification, controller signature, parent linkage, operation-ID
 conflict checks, and all transition invariants succeed before any new state is
@@ -480,9 +502,11 @@ MLS is not integrated until automated evidence covers:
 
 ## Consequences
 
-Content remains available under CRDT semantics while membership becomes a
-serialized security control plane. This deliberately trades controller loss or
-forks for availability rather than choosing an unauthenticated winner.
+Membership becomes a serialized security control plane. During ordinary
+controller loss, current-epoch CRDT content may continue while membership
+changes stop. After an authenticated same-parent fork is detected, clients also
+halt content ingestion until authenticated recovery. Neither failure permits
+choosing an unauthenticated replacement controller or control head.
 
 The work cannot be completed by swapping BeeKEM for one package call.
 Dependency selection, provider isolation, authenticated identity, durable
