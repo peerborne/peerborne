@@ -281,6 +281,7 @@ export function snapshotInvitationBootstrapBundle(
     bundle,
     'Invitation bootstrap bundle',
   );
+  const invalidFieldsMessage = 'Invitation bootstrap bundle must contain exactly its three byte fields';
   const keys = reflectOwnKeys(candidate);
   let recognizedKeys = 0;
   for (const key of keys) {
@@ -290,14 +291,14 @@ export function snapshotInvitationBootstrapBundle(
       key !== 'encryptedBootstrap'
     ) {
       throw new TypeError(
-        'Invitation bootstrap bundle must contain exactly its three byte fields',
+        invalidFieldsMessage,
       );
     }
     recognizedKeys += 1;
   }
   if (recognizedKeys !== 3) {
     throw new TypeError(
-      'Invitation bootstrap bundle must contain exactly its three byte fields',
+      invalidFieldsMessage,
     );
   }
   const welcomeEpochId = copyUnsharedUint8Array(
