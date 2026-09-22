@@ -69,30 +69,6 @@ export type WelcomeUnauthorizedReason =
   | 'missing-signature'
   | 'invalid-signature';
 
-export type WelcomeTransitionDecision =
-  | { kind: 'accept' }
-  | { kind: 'reject'; reason: 'legacy-downgrade' | 'non-increasing-v2' };
-
-/** Enforce monotonic Welcome replacement after writer authentication. */
-export function evaluateBeeKEMWelcomeTransition(
-  currentGeneration: number | null | undefined,
-  protocolVersion: 1 | 2,
-  incomingGeneration: number | undefined,
-): WelcomeTransitionDecision {
-  if (currentGeneration === undefined) return { kind: 'accept' };
-  if (protocolVersion === 1 && currentGeneration !== null) {
-    return { kind: 'reject', reason: 'legacy-downgrade' };
-  }
-  if (
-    protocolVersion === 2 &&
-    currentGeneration !== null &&
-    (incomingGeneration === undefined || incomingGeneration <= currentGeneration)
-  ) {
-    return { kind: 'reject', reason: 'non-increasing-v2' };
-  }
-  return { kind: 'accept' };
-}
-
 /**
  * Minimal dependency surface a Welcome validator needs. Modeled as a
  * record of callables rather than full provider instances so tests can

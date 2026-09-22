@@ -3,7 +3,6 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
   evaluateBeeKEMWelcome,
-  evaluateBeeKEMWelcomeTransition,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
 import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
@@ -639,29 +638,5 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     });
     expect(verifyCalled).toBe(true);
     expect(isReaderCalled).toBe(false);
-  });
-});
-
-describe('evaluateBeeKEMWelcomeTransition', () => {
-  test('rejects v1 replacement of generation-bearing state', () => {
-    expect(evaluateBeeKEMWelcomeTransition(4, 1, undefined)).toEqual({
-      kind: 'reject',
-      reason: 'legacy-downgrade',
-    });
-  });
-
-  test.each([3, 4])(
-    'rejects non-increasing v2 generation %i over generation 4',
-    (incomingGeneration) => {
-      expect(
-        evaluateBeeKEMWelcomeTransition(4, 2, incomingGeneration),
-      ).toEqual({ kind: 'reject', reason: 'non-increasing-v2' });
-    },
-  );
-
-  test('accepts a strictly newer v2 generation', () => {
-    expect(evaluateBeeKEMWelcomeTransition(4, 2, 5)).toEqual({
-      kind: 'accept',
-    });
   });
 });

@@ -1,4 +1,15 @@
 import { Base64 } from 'js-base64';
+import { EPOCH_ID_LENGTH } from './epoch.js';
+import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
+import {
+  copyUnsharedUint8Array,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './utils.js';
+import {
+  serializeLoadSecurityCommitmentsForWire,
+  deserializeLoadSecurityCommitmentsFromWire,
+} from './load-security-state-wire.js';
+import type { LoadSecurityCommitments } from './load-security-state.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
 import { CRDTLoadRequest } from './crdt-load-request.js';
@@ -17,6 +28,66 @@ import {
   deserializeChangeNodeFromJSON,
   serializeChangeNodeForJSON,
 } from './merkle-dag-serialization.js';
+
+function syncBinaryFieldBounds(
+  field: string,
+): readonly [number, number] | undefined {
+  switch (field) {
+    case 'welcomeEpochId':
+    case 'pathUpdateEpochId':
+    case 'tipsHash':
+      return [EPOCH_ID_LENGTH, EPOCH_ID_LENGTH];
+    case 'welcomeRecipientKemPublicKey':
+      return [ECIES_P256_PUBLIC_KEY_LENGTH, ECIES_P256_PUBLIC_KEY_LENGTH];
+    case 'eciesSealed':
+      return [1, MAX_SHARED_PROTOCOL_REQUEST_BYTES];
+    default:
+      return undefined;
+  }
+}
+
+function serializeSyncBinaryField(field: string, value: unknown): unknown {
+  if (value === undefined) return value;
+  if (field === 'loadChallenge')
+    return serializeInitialLoadChallengeForWire(value as Uint8Array);
+  if (field === 'loadSecurityState')
+    return serializeLoadSecurityCommitmentsForWire(
+      value as LoadSecurityCommitments,
+    );
+  const bounds = syncBinaryFieldBounds(field);
+  return bounds === undefined
+    ? value
+    : Base64.fromUint8Array(
+        copyUnsharedUint8Array(value, bounds[0], bounds[1], field),
+      );
+}
+
+function deserializeSyncBinaryField(field: string, value: unknown): unknown {
+  if (value === undefined) return value;
+  if (field === 'loadChallenge')
+    return deserializeInitialLoadChallengeFromWire(value);
+  if (field === 'loadSecurityState')
+    return deserializeLoadSecurityCommitmentsFromWire(value);
+  const bounds = syncBinaryFieldBounds(field);
+  if (bounds === undefined) return value;
+  if (
+    typeof value !== 'string' ||
+    value.length < Math.ceil(bounds[0] / 3) * 4 ||
+    value.length > Math.ceil(bounds[1] / 3) * 4 ||
+    value.length % 4 !== 0
+  ) {
+    throw new TypeError(`${field} must be bounded canonical base64`);
+  }
+  const decoded = Base64.toUint8Array(value);
+  if (
+    decoded.byteLength < bounds[0] ||
+    decoded.byteLength > bounds[1] ||
+    Base64.fromUint8Array(decoded) !== value
+  ) {
+    throw new TypeError(`${field} must be bounded canonical base64`);
+  }
+  return decoded;
+}
 
 /**
  * Dangerous property keys that should be stripped from deserialized objects
@@ -461,11 +532,9 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
             >,
             (change) => change,
           )
-        : value,
+        : serializeSyncBinaryField(field, value),
     );
-    return this.encode(
-      this.serializeNormalizedSyncWireValue(wire),
-    );
+    return this.encode(this.serializeNormalizedSyncWireValue(wire));
   }
   deserializeSyncMessage(
     message: Uint8Array,
@@ -481,7 +550,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
             value as CRDTChangeNodeWire<ChangesType>,
             (change) => change,
           )
-        : value,
+        : deserializeSyncBinaryField(field, value),
     ) as CRDTSyncMessage<ChangesType, PublicKey>;
   }
   serializeLoadRequest(message: CRDTLoadRequest): Uint8Array {
@@ -490,9 +559,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
         ? serializeInitialLoadChallengeForWire(value as Uint8Array)
         : value,
     );
-    return this.encode(
-      this.serialize(wire),
-    );
+    return this.encode(this.serialize(wire));
   }
   deserializeLoadRequest(message: Uint8Array): CRDTLoadRequest {
     // Shape validated by subclass overrides; base class trusts JSON.parse output matches CRDTLoadRequest
