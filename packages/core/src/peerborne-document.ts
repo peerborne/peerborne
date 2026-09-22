@@ -10106,6 +10106,9 @@ export class PeerborneDocument<
       const liveLeaf = await this._beekem.findLeafByPublicKey(
         new Uint8Array(readerKemPublicKey),
       );
+      if (liveLeaf === this._beekem.myLeafIndex) {
+        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
+      }
       if (liveLeaf !== existingLeaf) {
         throw new Error(
           `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the cached reader ` +
@@ -10140,6 +10143,9 @@ export class PeerborneDocument<
           `[${this.documentPath}] _prepareBeeKEMReaderRegistration: the existing reader ` +
             'KEM binding does not resolve to exactly one live BeeKEM leaf',
         );
+      }
+      if (recoveredLeaf === this._beekem.myLeafIndex) {
+        throw new Error('Cannot register a remote reader at the local BeeKEM leaf');
       }
       const committedReaderLeafIndices = new Map(this._readerLeafIndices);
       committedReaderLeafIndices.set(serializedReader, recoveredLeaf);
