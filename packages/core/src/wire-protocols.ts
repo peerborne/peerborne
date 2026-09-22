@@ -171,7 +171,7 @@ export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';
 // Reserved compatibility boundary for the generation- and leaf-count-bearing
 // Welcome v2 wire format. Runtime dialing and handler integration land with
 // the corresponding transactional document transition.
-export const beekemWelcomeV2 = '/collabswarm/beekem-welcome/2.0.0';
+export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 
 // BeeKEM PathUpdate v1: distributes a BeeKEM ratchet-tree path update to
 // every surviving member of a document. Used by
@@ -276,7 +276,7 @@ export const beekemPathUpdateV1 = '/collabswarm/beekem-pathupdate/1.0.0';
 // Reserved compatibility boundary for the parent-tree-, generation-, and
 // shape-bound PathUpdate v2 wire format. Runtime dialing and handler
 // integration land with the corresponding transactional document transition.
-export const beekemPathUpdateV2 = '/collabswarm/beekem-pathupdate/2.0.0';
+export const beekemPathUpdateV2 = '/peerborne/beekem-pathupdate/2.0.0';
 
 // The historical protocol namespace is retained as a wire-compatibility boundary.
 export const searchIndexAdvertiseV1 = '/collabswarm/search-index-advertise/1.0.0';
