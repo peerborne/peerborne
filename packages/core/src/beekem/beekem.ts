@@ -8,11 +8,17 @@ import {
   WelcomeNodePublicKey,
 } from './types.js';
 import * as TreeMath from './tree-math.js';
-import { eciesSeal, eciesOpen } from '../ecies.js';
+import {
+  eciesSeal,
+  eciesOpen,
+  ECIES_P256_PUBLIC_KEY_LENGTH,
+} from '../ecies.js';
+import { copyUnsharedUint8Array } from '../utils.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
 const ECDH_ALGO = { name: 'ECDH', namedCurve: ECDH_CURVE };
+const isArrayBufferView = ArrayBuffer.isView;
 
 /** Cast Uint8Array to ArrayBuffer for WebCrypto API compatibility. */
 function toBuffer(data: Uint8Array): ArrayBuffer {
@@ -552,9 +558,14 @@ export class BeeKEM {
   ): Promise<number[]> {
     // Snapshot caller-owned bytes before the first await so mutation during a
     // WebCrypto export cannot redirect the lookup to a different leaf.
-    const target = publicKey instanceof Uint8Array
-      ? new Uint8Array(publicKey)
-      : new Uint8Array(await crypto.subtle.exportKey('raw', publicKey));
+    const target = copyUnsharedUint8Array(
+      isArrayBufferView(publicKey)
+        ? publicKey
+        : new Uint8Array(await crypto.subtle.exportKey('raw', publicKey)),
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      'BeeKEM public key lookup',
+    );
     const matchingLeafIndices: number[] = [];
     for (let leafPos = 0; leafPos < this._numLeaves; leafPos++) {
       const nodeIndex = TreeMath.leafToNodeIndex(leafPos);

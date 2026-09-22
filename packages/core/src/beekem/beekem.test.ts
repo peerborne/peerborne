@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import { BeeKEM } from './beekem.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
@@ -234,6 +235,43 @@ describe('BeeKEM', () => {
   });
 
   describe('findLeafByPublicKey', () => {
+    test('accepts genuine public-key bytes from another realm', async () => {
+      const alice = new BeeKEM();
+      const keys = await generateECDHKeyPair();
+      await alice.initialize(keys.privateKey, keys.publicKey);
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', keys.publicKey),
+      );
+      const foreign = runInNewContext('new Uint8Array(bytes)', {
+        bytes: Array.from(raw),
+      }) as Uint8Array;
+
+      expect(foreign).not.toBeInstanceOf(Uint8Array);
+      await expect(alice.findLeafByPublicKey(foreign)).resolves.toBe(0);
+      await expect(alice.hasLiveLeafWithPublicKey(foreign)).resolves.toBe(true);
+    });
+
+    test('rejects shared-backed public-key bytes without changing membership', async () => {
+      if (typeof SharedArrayBuffer === 'undefined') return;
+      const alice = new BeeKEM();
+      const keys = await generateECDHKeyPair();
+      await alice.initialize(keys.privateKey, keys.publicKey);
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', keys.publicKey),
+      );
+      const shared = new Uint8Array(new SharedArrayBuffer(raw.byteLength));
+      shared.set(raw);
+
+      await expect(alice.findLeafByPublicKey(shared)).rejects.toThrow(
+        /backing buffer/,
+      );
+      await expect(alice.hasLiveLeafWithPublicKey(shared)).rejects.toThrow(
+        /backing buffer/,
+      );
+      expect(alice.memberCount).toBe(1);
+      await expect(alice.findLeafByPublicKey(keys.publicKey)).resolves.toBe(0);
+    });
+
     test('finds the founder leaf by its own public key', async () => {
       const alice = new BeeKEM();
       const aliceKeys = await generateECDHKeyPair();
