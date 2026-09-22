@@ -14,6 +14,7 @@ export {
   SubtleCrypto,
   copyUnsharedUint8Array,
   assertCanonicalP384PublicKeyEncoding,
+  isSyncMessageSignatureContext,
   computeKeychainStateCommitment,
   MAX_KEYCHAIN_EPOCHS,
   INITIAL_INVITATION_CAPACITY_PROFILE,

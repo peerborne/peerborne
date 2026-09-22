@@ -49,7 +49,18 @@ Both CRDT adapters use parallel deserialization for cold-cache performance to re
 
 ### Revocation latency
 
-The BeeKEM ratchet-tree key rotation closes the revocation-latency gap of earlier "encrypt new key under old key" schemes. A removed reader cannot derive the new key even if connected at the moment of revocation. Source: [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts) and [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).
+One fresh BeeKEM ratchet-tree rotation excludes the removed leaf from the newly
+generated key instead of encrypting that key under the old document key. This
+is a primitive-level property, not an end-to-end revocation guarantee: the
+active PathUpdate v1 protocol has no generation or parent-tree binding, accepts
+previously unseen delayed updates out of order, and has no delivery guarantee.
+Shipped keychains may incidentally reject an exact repeat of an already-installed
+epoch ID, which does not provide an ordering guarantee. Rotations also fail
+closed when a blank sibling subtree requires more than v1's single ciphertext
+to cover its resolution. Source:
+[`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts)
+and
+[`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).
 
 ### GC and bounded caches
 

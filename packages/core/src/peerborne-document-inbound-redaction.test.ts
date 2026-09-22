@@ -102,6 +102,7 @@ describe('concrete inbound handler log redaction', () => {
       document._pubsubHandler({
         detail: {
           data: new Uint8Array([1, 2, 3]),
+          topic: '/topic',
           type: 'unsigned',
         },
       });

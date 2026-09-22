@@ -3595,6 +3595,26 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
+  test('deserializeSyncMessage preserves an exact signature context', () => {
+    const wire = buildWire({
+      documentId: 'doc',
+      signatureContext: 'invitation-bootstrap-v1',
+    });
+    expect(serializer.deserializeSyncMessage(wire).signatureContext).toBe(
+      'invitation-bootstrap-v1',
+    );
+  });
+
+  test.each([7, 'load-response-v3 ', 'LOAD-RESPONSE-V3'])(
+    'deserializeSyncMessage rejects noncanonical signature context %#',
+    (signatureContext) => {
+      const wire = buildWire({ documentId: 'doc', signatureContext });
+      expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+        /signatureContext.*supported exact tag/,
+      );
+    },
+  );
+
   test('deserializeSyncMessage rejects non-array keychainChanges', () => {
     const wire = buildWire({ documentId: 'doc', keychainChanges: 'not-an-array' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(

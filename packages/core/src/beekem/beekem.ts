@@ -139,6 +139,10 @@ export class BeeKEM {
     if (this._pendingTransitionCount !== 0) {
       throw new Error('Cannot clone BeeKEM during a pending transition');
     }
+    return this._copyState();
+  }
+
+  private _copyState(): BeeKEM {
     const state = this._snapshotState();
     const copy = new BeeKEM();
     copy._nodes = state.nodes;
@@ -154,15 +158,15 @@ export class BeeKEM {
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
-    return this._runTransition(async () => {
-      if (!(await this._privateKeyMatchesPublicKey(privateKey, publicKey))) {
+    return this._runTransition(async (staged) => {
+      if (!(await staged._privateKeyMatchesPublicKey(privateKey, publicKey))) {
         throw new Error('BeeKEM founder private key does not match public key');
       }
-      this._nodes.clear();
-      this._numLeaves = 1;
-      this._myLeafIndex = 0;
-      this._generation = 0;
-      this._lastAppliedV2UpdateDigest = null;
+      staged._nodes.clear();
+      staged._numLeaves = 1;
+      staged._myLeafIndex = 0;
+      staged._generation = 0;
+      staged._lastAppliedV2UpdateDigest = null;
 
       const leaf: LeafNode = {
         type: 'leaf',
@@ -170,7 +174,7 @@ export class BeeKEM {
         publicKey,
         privateKey,
       };
-      this._nodes.set(0, leaf);
+      staged._nodes.set(0, leaf);
     });
   }
 
@@ -202,32 +206,32 @@ export class BeeKEM {
       rootSecret: Uint8Array;
     }) => Promise<T>,
   ): Promise<T> {
-    return this._runTransition(async () => {
-      if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
+    return this._runTransition(async (staged) => {
+      if (staged._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
         throw new Error(
           `BeeKEM tree lifetime leaf limit of ${MAX_BEEKEM_TREE_LEAVES} reached`,
         );
       }
-      if (await this.hasLiveLeafWithPublicKey(memberPublicKey)) {
+      if (await staged.hasLiveLeafWithPublicKey(memberPublicKey)) {
         throw new Error(
           'Cannot add member: KEM public key already belongs to a live BeeKEM leaf',
         );
       }
-      const parentTreeHash = await this._computeTreeHashV2(
-        this._nodes,
-        this._numLeaves,
+      const parentTreeHash = await staged._computeTreeHashV2(
+        staged._nodes,
+        staged._numLeaves,
       );
       // Add new leaf at next position
-      const newLeafPos = this._numLeaves;
+      const newLeafPos = staged._numLeaves;
       const newLeafIndex = TreeMath.leafToNodeIndex(newLeafPos);
-      this._numLeaves++;
+      staged._numLeaves++;
 
       const newLeaf: LeafNode = {
         type: 'leaf',
         index: newLeafIndex,
         publicKey: memberPublicKey,
       };
-      this._nodes.set(newLeafIndex, newLeaf);
+      staged._nodes.set(newLeafIndex, newLeaf);
 
       // Appending a leaf can place it below an internal node that already has
       // a public key, while the committer (outside that subtree) does not hold
@@ -238,16 +242,16 @@ export class BeeKEM {
       // nodes; the next snapshot's resolution expands them to descendant keys,
       // preserving access for every survivor and the new leaf.
       const committerPath = new Set(
-        TreeMath.directPath(this._myLeafIndex, this._numLeaves),
+        TreeMath.directPath(staged._myLeafIndex, staged._numLeaves),
       );
       for (const nodeIndex of TreeMath.directPath(
         newLeafIndex,
-        this._numLeaves,
+        staged._numLeaves,
       )) {
         if (committerPath.has(nodeIndex)) continue;
-        const node = this._nodes.get(nodeIndex);
+        const node = staged._nodes.get(nodeIndex);
         if (node?.publicKey && !node.privateKey) {
-          this._nodes.set(nodeIndex, {
+          staged._nodes.set(nodeIndex, {
             type: 'internal',
             index: nodeIndex,
             publicKey: null,
@@ -256,11 +260,12 @@ export class BeeKEM {
       }
 
       // Generate fresh key material along our path to root
-      const { pathUpdate, rootSecret } = await this._updatePath(parentTreeHash);
+      const { pathUpdate, rootSecret } =
+        await staged._updatePath(parentTreeHash);
 
       // Build welcome message for the new member
-      const welcome = await this._buildWelcome(newLeafIndex, memberPublicKey);
-      this._validateWelcomeV2(welcome);
+      const welcome = await staged._buildWelcome(newLeafIndex, memberPublicKey);
+      staged._validateWelcomeV2(welcome);
 
       return commit({ pathUpdate, welcome, rootSecret });
     });
@@ -292,8 +297,8 @@ export class BeeKEM {
       rootSecret: Uint8Array;
     }) => Promise<T>,
   ): Promise<T> {
-    return this._runTransition(async () => {
-      const treeWidth = 2 * this._numLeaves - 1;
+    return this._runTransition(async (staged) => {
+      const treeWidth = 2 * staged._numLeaves - 1;
       if (
         !Number.isSafeInteger(memberLeafIndex) ||
         memberLeafIndex < 0 ||
@@ -302,18 +307,18 @@ export class BeeKEM {
       ) {
         throw new Error('Cannot remove member: invalid leaf index');
       }
-      if (memberLeafIndex === this._myLeafIndex) {
+      if (memberLeafIndex === staged._myLeafIndex) {
         throw new Error('Cannot remove the local BeeKEM member');
       }
-      const memberLeaf = this._nodes.get(memberLeafIndex);
+      const memberLeaf = staged._nodes.get(memberLeafIndex);
       if (!memberLeaf || memberLeaf.type !== 'leaf' || !memberLeaf.publicKey) {
         throw new Error(
           'Cannot remove member: leaf is missing or already blank',
         );
       }
-      const parentTreeHash = await this._computeTreeHashV2(
-        this._nodes,
-        this._numLeaves,
+      const parentTreeHash = await staged._computeTreeHashV2(
+        staged._nodes,
+        staged._numLeaves,
       );
       // Blank the removed member's leaf
       const blankedLeaf: LeafNode = {
@@ -321,17 +326,20 @@ export class BeeKEM {
         index: memberLeafIndex,
         publicKey: null,
       };
-      this._nodes.set(memberLeafIndex, blankedLeaf);
+      staged._nodes.set(memberLeafIndex, blankedLeaf);
 
       // Blank all internal nodes on the removed member's direct path
-      const removedPath = TreeMath.directPath(memberLeafIndex, this._numLeaves);
+      const removedPath = TreeMath.directPath(
+        memberLeafIndex,
+        staged._numLeaves,
+      );
       for (const nodeIndex of removedPath) {
         const blankedNode: InternalNode = {
           type: 'internal',
           index: nodeIndex,
           publicKey: null,
         };
-        this._nodes.set(nodeIndex, blankedNode);
+        staged._nodes.set(nodeIndex, blankedNode);
       }
 
       // Generate fresh key pair for our leaf
@@ -340,14 +348,14 @@ export class BeeKEM {
       ]);
       const myLeaf: LeafNode = {
         type: 'leaf',
-        index: this._myLeafIndex,
+        index: staged._myLeafIndex,
         publicKey: newKeyPair.publicKey,
         privateKey: newKeyPair.privateKey,
       };
-      this._nodes.set(this._myLeafIndex, myLeaf);
+      staged._nodes.set(staged._myLeafIndex, myLeaf);
 
       // Re-derive path keys from our leaf to root
-      return commit(await this._updatePath(parentTreeHash));
+      return commit(await staged._updatePath(parentTreeHash));
     });
   }
 
@@ -360,10 +368,10 @@ export class BeeKEM {
     pathUpdate: PathUpdateV2;
     rootSecret: Uint8Array;
   }> {
-    return this._runTransition(async () => {
-      const parentTreeHash = await this._computeTreeHashV2(
-        this._nodes,
-        this._numLeaves,
+    return this._runTransition(async (staged) => {
+      const parentTreeHash = await staged._computeTreeHashV2(
+        staged._nodes,
+        staged._numLeaves,
       );
       // Generate new ECDH key pair for our leaf
       const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
@@ -371,14 +379,14 @@ export class BeeKEM {
       ]);
       const myLeaf: LeafNode = {
         type: 'leaf',
-        index: this._myLeafIndex,
+        index: staged._myLeafIndex,
         publicKey: newKeyPair.publicKey,
         privateKey: newKeyPair.privateKey,
       };
-      this._nodes.set(this._myLeafIndex, myLeaf);
+      staged._nodes.set(staged._myLeafIndex, myLeaf);
 
       // Re-derive all internal node keys on our path to root
-      return this._updatePath(parentTreeHash);
+      return staged._updatePath(parentTreeHash);
     });
   }
 
@@ -410,17 +418,16 @@ export class BeeKEM {
       disposition: 'applied' | 'duplicate',
     ) => Promise<T>,
   ): Promise<T> {
-    // Detach the complete caller-owned graph before `_runTransition` yields to
-    // an earlier operation. Validation, replay hashing, and application must
-    // observe the same bytes even if the caller mutates its input meanwhile.
-    const stableUpdate = snapshotBeeKEMRuntimeInput(
-      update,
-      'BeeKEM PathUpdate',
+    let stableUpdate: PathUpdateV2;
+    return this._runTransition(
+      async (staged) => {
+        const result = await staged._processPathUpdateV2(stableUpdate);
+        return commit(result.rootSecret, result.disposition);
+      },
+      () => {
+        stableUpdate = snapshotBeeKEMRuntimeInput(update, 'BeeKEM PathUpdate');
+      },
     );
-    return this._runTransition(async () => {
-      const result = await this._processPathUpdateV2(stableUpdate);
-      return commit(result.rootSecret, result.disposition);
-    });
   }
 
   private async _processPathUpdateV2(update: PathUpdateV2): Promise<{
@@ -680,119 +687,130 @@ export class BeeKEM {
     privateKey: CryptoKey,
     publicKey: CryptoKey,
   ): Promise<Uint8Array> {
-    // Snapshot before entering the async transition queue for the same reason
-    // as PathUpdate: every check and mutation must consume one stable graph.
-    const stableWelcome = snapshotBeeKEMRuntimeInput(welcome, 'BeeKEM Welcome');
-    return this._runTransition(async () => {
-      this._validateWelcomeV2(stableWelcome);
-      if (
-        this._generation !== null &&
-        stableWelcome.generation <= this._generation
-      ) {
-        throw new Error(
-          'Cannot process non-increasing BeeKEM Welcome generation',
-        );
-      }
-      if (!(await this._privateKeyMatchesPublicKey(privateKey, publicKey))) {
-        throw new Error(
-          'Welcome recipient private key does not match public key',
-        );
-      }
-      this._myLeafIndex = stableWelcome.leafIndex;
-
-      this._numLeaves = stableWelcome.numLeaves;
-      this._nodes = new Map();
-
-      // Set up our leaf node
-      const myLeaf: LeafNode = {
-        type: 'leaf',
-        index: stableWelcome.leafIndex,
-        publicKey,
-        privateKey,
-      };
-      this._nodes.set(stableWelcome.leafIndex, myLeaf);
-
-      // Decrypt path keys using our private key for the first one,
-      // then derive the rest up the tree
-      let currentPrivateKey = privateKey;
-
-      for (const pathKey of stableWelcome.pathKeys) {
-        const nodePublicKey = await crypto.subtle.importKey(
-          'raw',
-          toBuffer(pathKey.publicKey),
-          ECDH_ALGO,
-          true,
-          [],
-        );
-
-        // Decrypt the private key for this node
-        const nodePrivateKey = await this._decryptNodeKey(
-          pathKey.encryptedPrivateKey,
-          currentPrivateKey,
-        );
-        if (!(await this._pathKeyPairMatches(nodePrivateKey, nodePublicKey))) {
+    let stableWelcome: BeeKEMWelcomeV2;
+    return this._runTransition(
+      async (staged) => {
+        staged._validateWelcomeV2(stableWelcome);
+        if (
+          staged._generation !== null &&
+          stableWelcome.generation <= staged._generation
+        ) {
           throw new Error(
-            `Welcome decrypted private key does not match path node ${pathKey.nodeIndex}`,
+            'Cannot process non-increasing BeeKEM Welcome generation',
           );
         }
+        if (
+          !(await staged._privateKeyMatchesPublicKey(privateKey, publicKey))
+        ) {
+          throw new Error(
+            'Welcome recipient private key does not match public key',
+          );
+        }
+        staged._myLeafIndex = stableWelcome.leafIndex;
 
-        const node: InternalNode = {
-          type: 'internal',
-          index: pathKey.nodeIndex,
-          publicKey: nodePublicKey,
-          privateKey: nodePrivateKey,
+        staged._numLeaves = stableWelcome.numLeaves;
+        staged._nodes = new Map();
+
+        // Set up our leaf node
+        const myLeaf: LeafNode = {
+          type: 'leaf',
+          index: stableWelcome.leafIndex,
+          publicKey,
+          privateKey,
         };
-        this._nodes.set(pathKey.nodeIndex, node);
+        staged._nodes.set(stableWelcome.leafIndex, myLeaf);
 
-        // Use this node's private key to decrypt the next level
-        currentPrivateKey = nodePrivateKey;
-      }
+        // Decrypt path keys using our private key for the first one,
+        // then derive the rest up the tree
+        let currentPrivateKey = privateKey;
 
-      // Install all tree node public keys so we have the full tree state
-      for (const nodeEntry of stableWelcome.treeNodePublicKeys) {
-        if (nodeEntry.publicKey) {
-          const pubKey = await crypto.subtle.importKey(
+        for (const pathKey of stableWelcome.pathKeys) {
+          const nodePublicKey = await crypto.subtle.importKey(
             'raw',
-            toBuffer(nodeEntry.publicKey),
+            toBuffer(pathKey.publicKey),
             ECDH_ALGO,
             true,
             [],
           );
-          const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
-          const node: TreeNode = isLeaf
-            ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: pubKey }
-            : {
-                type: 'internal',
-                index: nodeEntry.nodeIndex,
-                publicKey: pubKey,
-              };
-          this._nodes.set(nodeEntry.nodeIndex, node);
-        } else {
-          const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
-          const node: TreeNode = isLeaf
-            ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: null }
-            : { type: 'internal', index: nodeEntry.nodeIndex, publicKey: null };
-          this._nodes.set(nodeEntry.nodeIndex, node);
+
+          // Decrypt the private key for this node
+          const nodePrivateKey = await staged._decryptNodeKey(
+            pathKey.encryptedPrivateKey,
+            currentPrivateKey,
+          );
+          if (
+            !(await staged._pathKeyPairMatches(nodePrivateKey, nodePublicKey))
+          ) {
+            throw new Error(
+              `Welcome decrypted private key does not match path node ${pathKey.nodeIndex}`,
+            );
+          }
+
+          const node: InternalNode = {
+            type: 'internal',
+            index: pathKey.nodeIndex,
+            publicKey: nodePublicKey,
+            privateKey: nodePrivateKey,
+          };
+          staged._nodes.set(pathKey.nodeIndex, node);
+
+          // Use this node's private key to decrypt the next level
+          currentPrivateKey = nodePrivateKey;
         }
-      }
 
-      const computedHash = await this._computeTreeHashV2(
-        this._nodes,
-        this._numLeaves,
-      );
-      if (
-        computedHash.byteLength !== stableWelcome.treeHash.byteLength ||
-        !computedHash.every((b, i) => b === stableWelcome.treeHash[i])
-      ) {
-        throw new Error(
-          'Welcome tree hash mismatch: reconstructed tree does not match sender state',
+        // Install all tree node public keys so we have the full tree state
+        for (const nodeEntry of stableWelcome.treeNodePublicKeys) {
+          if (nodeEntry.publicKey) {
+            const pubKey = await crypto.subtle.importKey(
+              'raw',
+              toBuffer(nodeEntry.publicKey),
+              ECDH_ALGO,
+              true,
+              [],
+            );
+            const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
+            const node: TreeNode = isLeaf
+              ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: pubKey }
+              : {
+                  type: 'internal',
+                  index: nodeEntry.nodeIndex,
+                  publicKey: pubKey,
+                };
+            staged._nodes.set(nodeEntry.nodeIndex, node);
+          } else {
+            const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
+            const node: TreeNode = isLeaf
+              ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: null }
+              : {
+                  type: 'internal',
+                  index: nodeEntry.nodeIndex,
+                  publicKey: null,
+                };
+            staged._nodes.set(nodeEntry.nodeIndex, node);
+          }
+        }
+
+        const computedHash = await staged._computeTreeHashV2(
+          staged._nodes,
+          staged._numLeaves,
         );
-      }
+        if (
+          computedHash.byteLength !== stableWelcome.treeHash.byteLength ||
+          !computedHash.every((b, i) => b === stableWelcome.treeHash[i])
+        ) {
+          throw new Error(
+            'Welcome tree hash mismatch: reconstructed tree does not match sender state',
+          );
+        }
 
-      this._generation = stableWelcome.generation;
-      this._lastAppliedV2UpdateDigest = null;
-      return this.getRootSecret();
-    });
+        staged._generation = stableWelcome.generation;
+        staged._lastAppliedV2UpdateDigest = null;
+        return staged.getRootSecret();
+      },
+      () => {
+        stableWelcome = snapshotBeeKEMRuntimeInput(welcome, 'BeeKEM Welcome');
+      },
+    );
   }
 
   /**
@@ -1005,7 +1023,7 @@ export class BeeKEM {
 
   /** Queue compaction behind any active BeeKEM transition. */
   async compactAsync(): Promise<void> {
-    return this._runTransition(async () => this._compactNow());
+    return this._runTransition(async (staged) => staged._compactNow());
   }
 
   private _compactNow(): void {
@@ -1039,35 +1057,39 @@ export class BeeKEM {
 
   // ---- Private helpers ----
 
-  /** Serialize all public state transitions on this BeeKEM instance. */
-  private async _runTransition<T>(operation: () => Promise<T>): Promise<T> {
+  /** Reserve call order before inspecting input, then publish only a complete tree. */
+  private async _runTransition<T>(
+    operation: (staged: BeeKEM) => Promise<T>,
+    captureInput?: () => void,
+  ): Promise<T> {
     this._pendingTransitionCount++;
     const previous = this._transitionTail;
     let release: () => void = () => {};
     this._transitionTail = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let captureFailed = false;
+    let captureError: unknown;
+    try {
+      captureInput?.();
+    } catch (error) {
+      captureFailed = true;
+      captureError = error;
+    }
     await previous;
     try {
-      return await this._withStateRollback(operation);
+      if (captureFailed) throw captureError;
+      const staged = this._copyState();
+      const result = await operation(staged);
+      this._nodes = staged._nodes;
+      this._numLeaves = staged._numLeaves;
+      this._myLeafIndex = staged._myLeafIndex;
+      this._generation = staged._generation;
+      this._lastAppliedV2UpdateDigest = staged._lastAppliedV2UpdateDigest;
+      return result;
     } finally {
       this._pendingTransitionCount--;
       release();
-    }
-  }
-
-  /** Run an async state transition atomically with respect to local tree state. */
-  private async _withStateRollback<T>(operation: () => Promise<T>): Promise<T> {
-    const snapshot = this._snapshotState();
-    try {
-      return await operation();
-    } catch (err) {
-      this._nodes = snapshot.nodes;
-      this._numLeaves = snapshot.numLeaves;
-      this._myLeafIndex = snapshot.myLeafIndex;
-      this._generation = snapshot.generation;
-      this._lastAppliedV2UpdateDigest = snapshot.lastAppliedV2UpdateDigest;
-      throw err;
     }
   }
 

@@ -16,7 +16,10 @@ import {
   PeerborneDocumentChangeHandler,
   HistoryVisibility,
 } from './peerborne-document.js';
-import { CRDTSyncMessage } from './crdt-sync-message.js';
+import {
+  CRDTSyncMessage,
+  isSyncMessageSignatureContext,
+} from './crdt-sync-message.js';
 // PeerborneNode is intentionally excluded from this barrel export.
 // It is a Node-only module (imports `fs`, `@libp2p/mdns` which depends on
 // `dgram`) and must not be bundled by browser consumers. Import it from the
@@ -211,6 +214,7 @@ export {
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
   CRDTSyncMessage,
+  isSyncMessageSignatureContext,
   CRDTProvider,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
@@ -333,6 +337,7 @@ export type {
 } from './auth-provider.js';
 export type { SubtleCryptoEncryptionResult } from './auth-subtlecrypto.js';
 export type { CRDTLoadRequest } from './crdt-load-request.js';
+export type { SyncMessageSignatureContext } from './crdt-sync-message.js';
 export type {
   CRDTDocumentChangeNode,
   CRDTWriterChangeNode,
@@ -450,4 +455,7 @@ export {
   copyUnsharedUint8Array,
   snapshotDeepEnumerableData,
 } from './utils.js';
-export type { DeepDataSnapshotLimits } from './utils.js';
+export type {
+  DeepDataSnapshotLimits,
+  DeepDataSnapshotOptions,
+} from './utils.js';

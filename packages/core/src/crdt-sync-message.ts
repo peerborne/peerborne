@@ -5,6 +5,40 @@ import {
 import { CRDTSnapshotNode } from './snapshot-node.js';
 import type { LoadSecurityCommitments } from './load-security-state.js';
 
+/** Wire-purpose tag signed by authenticated sync-message operations. */
+export type SyncMessageSignatureContext =
+  | 'ordinary-sync-v1'
+  | 'document-publish-v1'
+  | 'load-response-v3'
+  | 'load-response-v4'
+  | 'tip-advertisement-v1'
+  | 'security-advertisement-v1'
+  | 'invitation-bootstrap-v1'
+  | 'beekem-welcome-v2'
+  | 'beekem-path-update-v2'
+  | 'key-update-v2';
+
+/** Return whether an untrusted value is one exact supported signature tag. */
+export function isSyncMessageSignatureContext(
+  value: unknown,
+): value is SyncMessageSignatureContext {
+  switch (value) {
+    case 'ordinary-sync-v1':
+    case 'document-publish-v1':
+    case 'load-response-v3':
+    case 'load-response-v4':
+    case 'tip-advertisement-v1':
+    case 'security-advertisement-v1':
+    case 'invitation-bootstrap-v1':
+    case 'beekem-welcome-v2':
+    case 'beekem-path-update-v2':
+    case 'key-update-v2':
+      return true;
+    default:
+      return false;
+  }
+}
+
 /**
  * CRDTSyncMessage is the message sent over both GossipSub pubsub topics and in response to
  * load document requests.
@@ -16,6 +50,19 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * ID of a peerborne document.
    */
   documentId: string;
+
+  /**
+   * Exact wire purpose of this message. Every network admission path requires
+   * this value to match its local context. For authenticated operations, the
+   * field is serialized with the unsigned body, so a writer signature binds
+   * the payload to one protocol purpose instead of authenticating reusable
+   * context-free bytes.
+   *
+   * Optional at the TypeScript boundary so serializers can decode legacy
+   * input and reject it deliberately at context admission. Newly emitted wire
+   * messages always populate it.
+   */
+  signatureContext?: SyncMessageSignatureContext;
 
   /**
    * CID of the root change node.
