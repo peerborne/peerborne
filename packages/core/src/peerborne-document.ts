@@ -7273,6 +7273,13 @@ export class PeerborneDocument<
       );
     }
 
+    if (liveLeafIndex === this._beekem.myLeafIndex) {
+      throw new Error(
+        `Cannot add writer to "${this.documentPath}": the identity-bound ` +
+          'KEM key resolves to the local BeeKEM leaf, not a remote member.',
+      );
+    }
+
     const cachedLeafIndex = this._readerLeafIndices.get(serializedWriter);
     if (
       cachedLeafIndex !== undefined &&
@@ -7528,7 +7535,12 @@ export class PeerborneDocument<
     const stableReaderKemPublicKey =
       readerKemPublicKey === undefined
         ? undefined
-        : new Uint8Array(readerKemPublicKey);
+        : copyUnsharedUint8Array(
+            readerKemPublicKey,
+            ECIES_P256_PUBLIC_KEY_LENGTH,
+            ECIES_P256_PUBLIC_KEY_LENGTH,
+            'Reader KEM public key',
+          );
     const snapshot = this._startMembershipPublicKeySnapshot(
       reader,
       'BeeKEM reader onboarding',
@@ -7825,7 +7837,12 @@ export class PeerborneDocument<
     assertCanMutate?: () => void,
   ): Promise<InvitationBootstrapBundle> {
     this._assertNoIncompleteBootstrapLoad();
-    const stableReaderKemPublicKey = new Uint8Array(readerKemPublicKey);
+    const stableReaderKemPublicKey = copyUnsharedUint8Array(
+      readerKemPublicKey,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      'Invitation recipient KEM public key',
+    );
     const snapshot = this._startMembershipPublicKeySnapshot(
       reader,
       'Public invitations',
@@ -9354,6 +9371,12 @@ export class PeerborneDocument<
           'public key does not resolve to exactly one live, non-blanked ' +
           'BeeKEM leaf. Use an explicit recipient-bound recovery or ' +
           're-invitation flow to repair local membership state.',
+      );
+    }
+    if (leafIndex === beekem.myLeafIndex) {
+      throw new Error(
+        `Cannot remove reader from "${this.documentPath}": the identity-bound ` +
+          'KEM key resolves to the local BeeKEM leaf, not a remote member.',
       );
     }
     if (
