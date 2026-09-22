@@ -749,6 +749,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
     const baseRevision = this._revision;
     const base = this._acl;
+    // A valid V2 no-op still carries its binary framing; zero bytes are malformed.
     const detachedChange = copyUnsharedUint8Array(
       change,
       1,
