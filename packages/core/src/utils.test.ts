@@ -136,6 +136,21 @@ describe('firstTrue', () => {
 });
 
 describe('snapshotDeepEnumerableData', () => {
+  test.each(['array', 'bytes'])(
+    'checks own and inherited forbidden markers on %s carriers',
+    (kind) => {
+      for (const inherited of [false, true]) {
+        const value = kind === 'array' ? [] : new Uint8Array(1);
+        const target = inherited ? Object.create(Object.getPrototypeOf(value)) : value;
+        Object.defineProperty(target, 'version', { value: 2 });
+        if (inherited) Object.setPrototypeOf(value, target);
+        expect(() => snapshotDeepEnumerableData(value, 'boundary', undefined, {
+          forbiddenFields: ['version'],
+        })).toThrow(/forbidden field 'version'/);
+      }
+    },
+  );
+
   test('detaches nested Proxy descriptors without invoking property gets', () => {
     const nested = { payload: new Uint8Array([1, 2, 3]) };
     let getCalls = 0;
