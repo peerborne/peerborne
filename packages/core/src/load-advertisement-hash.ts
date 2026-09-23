@@ -1,4 +1,3 @@
-import { tipsHash } from './tips-hash.js';
 import {
   LOAD_SECURITY_HASH_LENGTH,
   LoadSecurityCommitments,
@@ -13,8 +12,7 @@ const SECURITY_LOAD_ADVERTISEMENT_DOMAIN =
   'peerborne/security-load-advertisement/v2\0';
 
 /**
- * Hash a legacy served frontier, or the complete security-aware load tuple.
- * The legacy branch intentionally delegates to `tipsHash` byte-for-byte.
+ * Hash the complete security-aware load tuple.
  * This is a quorum comparison digest, not a signature payload. V4 responders
  * must sign the response envelope including its fresh `loadChallenge`; putting
  * a per-responder request challenge in this digest would prevent equal
@@ -24,30 +22,12 @@ const SECURITY_LOAD_ADVERTISEMENT_DOMAIN =
  * smuggling extra nodes, different node classifications/edges, snapshot state,
  * or keychain changes into the selected full response.
  */
-export function loadAdvertisementHash(
-  documentId: string,
-  frontier: readonly string[],
-): Promise<Uint8Array>;
-export function loadAdvertisementHash(
+export async function loadAdvertisementHash(
   documentId: string,
   frontier: readonly string[],
   commitments: LoadSecurityCommitments,
   responseManifestHash: Uint8Array,
-): Promise<Uint8Array>;
-export async function loadAdvertisementHash(
-  documentId: string,
-  frontier: readonly string[],
-  commitments?: LoadSecurityCommitments,
-  responseManifestHash?: Uint8Array,
 ): Promise<Uint8Array> {
-  if (commitments === undefined) {
-    if (responseManifestHash !== undefined) {
-      throw new TypeError(
-        'legacy load advertisements cannot include a V4 response manifest',
-      );
-    }
-    return tipsHash(frontier);
-  }
   let manifestHashSnapshot: Uint8Array;
   try {
     manifestHashSnapshot = copyUnsharedUint8Array(

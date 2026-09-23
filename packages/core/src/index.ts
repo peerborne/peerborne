@@ -411,12 +411,6 @@ export type {
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
 export {
-  allowsUnauthenticatedUnknownDocumentSentinel,
-  isUnknownDocumentAdvertisement,
-  unknownDocumentAdvertisement,
-} from './initial-load-sentinel-policy.js';
-export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
-export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
   cloneInitialLoadChallenge,

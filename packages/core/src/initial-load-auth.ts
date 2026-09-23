@@ -10,7 +10,6 @@ export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
 const reflectApply = Reflect.apply;
 
 export interface InitialLoadAuthenticationOptions<PublicKey> {
-  strict: boolean;
   signingEnabled: boolean;
   payload: Uint8Array;
   signature?: Uint8Array;
@@ -155,15 +154,14 @@ export async function identifyInitialLoadSigner<PublicKey>(
 /**
  * Authenticate a first-load envelope without trusting writer keys carried by
  * that same envelope. Existing ACL writers take precedence; an empty ACL can
- * only bootstrap from application-pinned writer keys in strict mode.
+ * only bootstrap from application-pinned writer keys.
  */
 export async function verifyInitialLoadAuthentication<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<boolean> {
   const signingEnabled = options.signingEnabled;
-  const strict = options.strict;
   if (!signingEnabled) {
-    return !strict;
+    return false;
   }
   const existingWriterKeys = options.existingWriterKeys;
   const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
@@ -172,7 +170,7 @@ export async function verifyInitialLoadAuthentication<PublicKey>(
     trustedBootstrapWriterKeys,
   );
   if (keys.length === 0) {
-    return !strict;
+    return false;
   }
   const payload = options.payload;
   const signature = options.signature;
