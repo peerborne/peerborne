@@ -16,7 +16,6 @@ import {
 import { WikiSwarmArticle } from '../models';
 import { RootState, selectAutomergeSwarmState } from '../reducers';
 import dayjs from 'dayjs';
-import { RouteComponentProps } from 'react-router-dom';
 import Spinner from 'react-bootstrap/Spinner';
 import { SlateInput } from '../components/SlateInput';
 import { initialValue } from '../components/Slate';
@@ -41,11 +40,11 @@ function stampTimestamps(doc: WikiSwarmArticle) {
   }
 }
 
-interface MatchParams {
+interface WikiArticleOwnProps {
   documentId: string;
 }
 
-interface WikiArticleProps extends RouteComponentProps<MatchParams> {
+interface WikiArticleProps extends WikiArticleOwnProps {
   document: WikiSwarmArticle | null;
   documentRef: AutomergeSwarmDocument<WikiSwarmArticle> | null;
 
@@ -114,8 +113,8 @@ class WikiArticle extends React.Component<
   componentDidMount() {
     this._mounted = true;
     // Load this article upon component mount.
-    if (this.props.onDocumentOpen && this.props.match.params.documentId) {
-      console.log('Loading article at:', this.props.match.params.documentId);
+    if (this.props.onDocumentOpen && this.props.documentId) {
+      console.log('Loading article at:', this.props.documentId);
       // Get relay/bootstrap address from env. The relay multiaddr
       // (e.g. /ip4/.../tcp/9001/ws/p2p/...) is used as a bootstrap peer
       // for libp2p peer discovery — NOT as a listen address.
@@ -125,7 +124,7 @@ class WikiArticle extends React.Component<
       this.props
         .onInitialize(config)
         .then(() =>
-          this.props.onDocumentOpen(this.props.match.params.documentId),
+          this.props.onDocumentOpen(this.props.documentId),
         )
         .then((loaded) => console.log('Loaded article:', loaded));
     }
@@ -134,9 +133,9 @@ class WikiArticle extends React.Component<
   componentWillUnmount() {
     this._mounted = false;
     // Close this article upon component unmount.
-    if (this.props.onDocumentClose && this.props.match.params.documentId) {
-      console.log('Closing article at:', this.props.match.params.documentId);
-      this.props.onDocumentClose(this.props.match.params.documentId);
+    if (this.props.onDocumentClose && this.props.documentId) {
+      console.log('Closing article at:', this.props.documentId);
+      this.props.onDocumentClose(this.props.documentId);
     }
   }
 
@@ -167,7 +166,7 @@ class WikiArticle extends React.Component<
             onChange={(e) => {
               const newTitle = e.target.value;
               this.props.onDocumentChange(
-                this.props.match.params.documentId,
+                this.props.documentId,
                 (currentDocument) => {
                   // Automerge 3 models collaborative text with native strings.
                   // This whole-value assignment matches the previous example's
@@ -185,7 +184,7 @@ class WikiArticle extends React.Component<
               onChange={(content) => {
                 // Your Redux action
                 this.props.onDocumentChange(
-                  this.props.match.params.documentId,
+                  this.props.documentId,
                   (currentDocument) => {
                     stampTimestamps(currentDocument);
                     currentDocument.content = content;
@@ -232,9 +231,9 @@ class WikiArticle extends React.Component<
   }
 }
 
-function mapStateToProps(state: RootState, ownProps: RouteComponentProps<MatchParams>) {
+function mapStateToProps(state: RootState, ownProps: WikiArticleOwnProps) {
   const documentState =
-    state.automergeSwarm.documents[ownProps.match.params.documentId];
+    state.automergeSwarm.documents[ownProps.documentId];
   return {
     document: documentState ? documentState.document : null,
     documentRef: documentState ? documentState.documentRef : null,
