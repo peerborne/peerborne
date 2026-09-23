@@ -41,7 +41,6 @@ import {
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
 } from './acl.js';
 import {
@@ -194,7 +193,6 @@ export {
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
   ACLProvider,
   SubtleCrypto,

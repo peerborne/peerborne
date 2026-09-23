@@ -5,7 +5,6 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -759,7 +758,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
   private readonly _queuedRemovalCommits = new WeakSet<
-    PreparedACLRemoval<Uint8Array>
+    PreparedACLChange<Uint8Array>
   >();
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<Uint8Array>
@@ -793,7 +792,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
 
   private _commitQueuedRemoval(
-    prepared: PreparedACLRemoval<Uint8Array>,
+    prepared: PreparedACLChange<Uint8Array>,
   ): void {
     this._queuedRemovalCommits.add(prepared);
     try {
@@ -970,7 +969,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
   async prepareRemove(
     publicKey: CryptoKey,
-  ): Promise<PreparedACLRemoval<Uint8Array>> {
+  ): Promise<PreparedACLChange<Uint8Array>> {
     this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
     assertCanonicalP384PublicKeyEncoding(hash);
@@ -993,7 +992,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     snapshotBoundedYjsACLState(staged, 'stage an ACL removal');
     const changes = new Uint8Array(privateChanges);
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
-    let prepared!: PreparedACLRemoval<Uint8Array>;
+    let prepared!: PreparedACLChange<Uint8Array>;
     const claimCommit = () => {
       if (state !== 'prepared') {
         throw new Error(
