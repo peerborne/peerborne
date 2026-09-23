@@ -159,8 +159,8 @@ export function PermissionsTable({
 
                       switch (draftPermission) {
                         case 'r': {
-                          await removeWriter(key);
                           await addReader(key);
+                          await removeWriter(key);
                           console.log('Added reader');
                           break;
                         }
