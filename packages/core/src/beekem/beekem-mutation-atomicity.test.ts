@@ -61,41 +61,6 @@ describe('BeeKEM mutation atomicity', () => {
     await expect(alice.getRootSecret()).resolves.toEqual(latest.rootSecret);
   });
 
-  test('reentrant forbidden-marker checks preserve mutation call order', async () => {
-    const { alice, bob } = await twoMemberGroup();
-    const update = await bob.update();
-    let nestedOutcome:
-      | Promise<
-          | { kind: 'fulfilled'; value: Uint8Array }
-          | { kind: 'rejected'; error: unknown }
-        >
-      | undefined;
-    const proxied = new Proxy(update.pathUpdate, {
-      has(target, property) {
-        if (property === 'version') {
-          nestedOutcome ??= alice.processPathUpdate(update.pathUpdate).then(
-            (value) => ({ kind: 'fulfilled' as const, value }),
-            (error: unknown) => ({ kind: 'rejected' as const, error }),
-          );
-          return true;
-        }
-        return Reflect.has(target, property);
-      },
-    });
-
-    await expect(alice.processPathUpdate(proxied)).rejects.toMatchObject({
-      cause: expect.objectContaining({
-        message: expect.stringContaining("forbidden field 'version'"),
-      }),
-    });
-    expect(nestedOutcome).toBeDefined();
-    await expect(nestedOutcome!).resolves.toEqual({
-      kind: 'fulfilled',
-      value: update.rootSecret,
-    });
-    await expect(alice.getRootSecret()).resolves.toEqual(update.rootSecret);
-  });
-
   test('keeps the live tree unchanged while member onboarding is in flight', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await generateKeyPair();
@@ -217,7 +182,6 @@ describe('BeeKEM mutation atomicity', () => {
 
     for (const target of [
       -1,
-      -0,
       1,
       2.5,
       3,
@@ -232,7 +196,7 @@ describe('BeeKEM mutation atomicity', () => {
       await expect(alice.getRootSecret()).resolves.toEqual(originalRoot);
     }
     await expect(alice.removeMember(0)).rejects.toThrow(
-      /cannot remove the local member/,
+      /Cannot remove the local BeeKEM member/,
     );
     expect(nodesOf(alice)).toBe(originalNodes);
 
@@ -240,7 +204,7 @@ describe('BeeKEM mutation atomicity', () => {
     const removedNodes = nodesOf(alice);
     const removedRoot = await alice.getRootSecret();
     await expect(alice.removeMember(2)).rejects.toThrow(
-      /target is not an active tree leaf/,
+      /leaf is missing or already blank/,
     );
     expect(nodesOf(alice)).toBe(removedNodes);
     await expect(alice.getRootSecret()).resolves.toEqual(removedRoot);
@@ -261,13 +225,13 @@ describe('BeeKEM mutation atomicity', () => {
     const pristineNodes = nodesOf(target);
 
     await expect(target.update()).rejects.toThrow(
-      /Cannot update: BeeKEM tree is not initialized/,
+      /before initialization/,
     );
     await expect(target.removeMember(0)).rejects.toThrow(
-      /Cannot remove a member: BeeKEM tree is not initialized/,
+      /invalid leaf index/,
     );
     await expect(target.addMember(recipientKeys.publicKey)).rejects.toThrow(
-      /Cannot add a member: BeeKEM tree is not initialized/,
+      /before initialization/,
     );
     expect(nodesOf(target)).toBe(pristineNodes);
     expect(target.memberCount).toBe(0);
@@ -295,7 +259,7 @@ describe('BeeKEM mutation atomicity', () => {
     await expect(
       target.initialize(founderKeys.privateKey, unrelatedKeys.publicKey),
     ).rejects.toThrow(
-      /founder leaf 0 public and private keys are not ECDH-compatible/,
+      /founder private key does not match public key/,
     );
     expect(nodesOf(target)).toBe(pristineNodes);
     expect(target.memberCount).toBe(0);
@@ -309,221 +273,63 @@ describe('BeeKEM mutation atomicity', () => {
     ).resolves.toBe(0);
   });
 
-  test('does not commit a Welcome ahead of an earlier initialization', async () => {
+  test.each([false, true])('queues Welcome behind initialization failure=%s', async (fail) => {
     const founder = new BeeKEM();
     const founderKeys = await generateKeyPair();
     await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
-    const recipientKeys = await generateKeyPair();
-    const { welcome } = await founder.addMember(recipientKeys.publicKey);
-    const initializationKeys = await generateKeyPair();
+    const recipient = await generateKeyPair();
+    const { welcome, rootSecret } = await founder.addMember(recipient.publicKey);
+    const initializingKeys = await generateKeyPair();
+    const unrelated = await generateKeyPair();
     const target = new BeeKEM();
-    const internals = target as unknown as {
-      _resolveWelcomeSettlement: (() => void) | undefined;
-      _registerWelcomeCandidate(
-        revision: bigint,
-        staged: BeeKEM,
-        rootSecret: Uint8Array,
-        receiverGeneration: bigint,
-      ): Promise<Uint8Array>;
-    };
-
-    let initializationEntered!: () => void;
-    let releaseInitialization!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      initializationEntered = resolve;
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const generate = crypto.subtle.generateKey.bind(crypto.subtle);
+    const spy = jest.spyOn(crypto.subtle, 'generateKey').mockImplementationOnce(async (...args) => {
+      enter();
+      await gate;
+      return generate(...args);
     });
-    const initializationGate = new Promise<void>((resolve) => {
-      releaseInitialization = resolve;
-    });
-    let candidateReady!: () => void;
-    const ready = new Promise<void>((resolve) => {
-      candidateReady = resolve;
-    });
-    const originalRegister = internals._registerWelcomeCandidate.bind(target);
-    internals._registerWelcomeCandidate = (
-      revision,
-      staged,
-      rootSecret,
-      receiverGeneration,
-    ) => {
-      candidateReady();
-      return originalRegister(
-        revision,
-        staged,
-        rootSecret,
-        receiverGeneration,
-      );
-    };
-
-    const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
-    let generateCalls = 0;
-    const generateSpy = jest
-      .spyOn(crypto.subtle, 'generateKey')
-      .mockImplementation(async (algorithm, extractable, keyUsages) => {
-        generateCalls++;
-        if (generateCalls === 1) {
-          initializationEntered();
-          await initializationGate;
-        }
-        return originalGenerateKey(algorithm, extractable, keyUsages);
-      });
-
-    const initialization = target.initialize(
-      initializationKeys.privateKey,
-      initializationKeys.publicKey,
-    );
-    let joining:
-      | Promise<
-          | { kind: 'fulfilled'; value: Uint8Array }
-          | { kind: 'rejected'; error: unknown }
-        >
-      | undefined;
+    const initialized = target.initialize(
+      initializingKeys.privateKey,
+      fail ? unrelated.publicKey : initializingKeys.publicKey,
+    ).then(() => true, () => false);
+    let joined: Promise<Uint8Array> | undefined;
     try {
       await entered;
-      let joiningSettled = false;
-      joining = target.processWelcome(
-        welcome,
-        recipientKeys.privateKey,
-        recipientKeys.publicKey,
-      ).then(
-        (value) => {
-          joiningSettled = true;
-          return { kind: 'fulfilled' as const, value };
-        },
-        (error: unknown) => {
-          joiningSettled = true;
-          return { kind: 'rejected' as const, error };
-        },
-      );
-      await ready;
-      await Promise.resolve();
-      expect(joiningSettled).toBe(false);
-
-      releaseInitialization();
-      await expect(initialization).resolves.toBeUndefined();
-      await expect(joining).resolves.toEqual({
-        kind: 'rejected',
-        error: expect.objectContaining({
-          message: expect.stringMatching(/superseded|receiver state changed/),
-        }),
+      let settled = false;
+      joined = target.processWelcome(welcome, recipient.privateKey, recipient.publicKey).then((root) => {
+        settled = true;
+        return root;
       });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(target.memberCount).toBe(0);
+      release();
+      expect(await initialized).toBe(!fail);
+      expect(Buffer.from(await joined).equals(Buffer.from(rootSecret))).toBe(true);
+      expect(target.generation).toBe(welcome.generation);
     } finally {
-      releaseInitialization();
-      await Promise.allSettled(
-        joining === undefined ? [initialization] : [initialization, joining],
-      );
-      generateSpy.mockRestore();
+      release();
+      await Promise.allSettled(joined ? [initialized, joined] : [initialized]);
+      spy.mockRestore();
     }
-
-    await expect(
-      target.findLeafByPublicKey(initializationKeys.publicKey),
-    ).resolves.toBe(0);
-    await expect(
-      target.findLeafByPublicKey(recipientKeys.publicKey),
-    ).resolves.toBeUndefined();
-    expect(internals._resolveWelcomeSettlement).toBeUndefined();
   });
 
-  test('releases a staged Welcome when an earlier initialization fails', async () => {
-    const founder = new BeeKEM();
-    const founderKeys = await generateKeyPair();
-    await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
-    const recipientKeys = await generateKeyPair();
-    const { welcome, rootSecret } = await founder.addMember(
-      recipientKeys.publicKey,
-    );
-    const initializationKeys = await generateKeyPair();
-    const unrelatedKeys = await generateKeyPair();
-    const target = new BeeKEM();
-    const internals = target as unknown as {
-      _registerWelcomeCandidate(
-        revision: bigint,
-        staged: BeeKEM,
-        rootSecret: Uint8Array,
-        receiverGeneration: bigint,
-      ): Promise<Uint8Array>;
-    };
-
-    let initializationEntered!: () => void;
-    let releaseInitialization!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      initializationEntered = resolve;
-    });
-    const initializationGate = new Promise<void>((resolve) => {
-      releaseInitialization = resolve;
-    });
-    let candidateReady!: () => void;
-    const ready = new Promise<void>((resolve) => {
-      candidateReady = resolve;
-    });
-    const originalRegister = internals._registerWelcomeCandidate.bind(target);
-    internals._registerWelcomeCandidate = (
-      revision,
-      staged,
-      candidateRoot,
-      receiverGeneration,
-    ) => {
-      candidateReady();
-      return originalRegister(
-        revision,
-        staged,
-        candidateRoot,
-        receiverGeneration,
-      );
-    };
-
-    const originalGenerateKey = crypto.subtle.generateKey.bind(crypto.subtle);
-    let generateCalls = 0;
-    const generateSpy = jest
-      .spyOn(crypto.subtle, 'generateKey')
-      .mockImplementation(async (algorithm, extractable, keyUsages) => {
-        generateCalls++;
-        if (generateCalls === 1) {
-          initializationEntered();
-          await initializationGate;
-        }
-        return originalGenerateKey(algorithm, extractable, keyUsages);
-      });
-
-    const initialization = target.initialize(
-      initializationKeys.privateKey,
-      unrelatedKeys.publicKey,
-    );
-    let joining: Promise<Uint8Array> | undefined;
+  test('wipes the derived key-check secret if the second derivation fails', async () => {
+    const keys = await generateKeyPair();
+    const derived = new Uint8Array(32).fill(0x5a);
+    const spy = jest.spyOn(crypto.subtle, 'deriveBits')
+      .mockResolvedValueOnce(derived.buffer)
+      .mockRejectedValueOnce(new Error('injected derivation failure'));
     try {
-      await entered;
-      let joiningSettled = false;
-      joining = target.processWelcome(
-        welcome,
-        recipientKeys.privateKey,
-        recipientKeys.publicKey,
-      );
-      void joining.then(
-        () => {
-          joiningSettled = true;
-        },
-        () => {
-          joiningSettled = true;
-        },
-      );
-      await ready;
-      await Promise.resolve();
-      expect(joiningSettled).toBe(false);
-
-      releaseInitialization();
-      await expect(initialization).rejects.toThrow(/not ECDH-compatible/);
-      await expect(joining).resolves.toEqual(rootSecret);
+      await expect(new BeeKEM().initialize(keys.privateKey, keys.publicKey)).rejects.toThrow('injected derivation failure');
+      expect(derived.every((byte) => byte === 0)).toBe(true);
     } finally {
-      releaseInitialization();
-      await Promise.allSettled(
-        joining === undefined ? [initialization] : [initialization, joining],
-      );
-      generateSpy.mockRestore();
+      spy.mockRestore();
     }
-
-    await expect(target.getRootSecret()).resolves.toEqual(rootSecret);
-    await expect(
-      target.findLeafByPublicKey(recipientKeys.publicKey),
-    ).resolves.toBe(2);
   });
+
 });

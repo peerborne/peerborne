@@ -46,7 +46,6 @@ const uint8ArrayConstructor = Uint8Array;
 const arrayIsArray = Array.isArray;
 const numberIsSafeInteger = Number.isSafeInteger;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
@@ -600,14 +599,10 @@ export function snapshotDeepEnumerableData<T>(
     }
 
     let prototype: object | null;
-    let descriptors: PropertyDescriptorMap;
     try {
       prototype = reflectApply(objectGetPrototypeOf, Object, [
         objectCandidate,
       ]) as object | null;
-      descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
-        objectCandidate,
-      ]) as PropertyDescriptorMap;
     } catch {
       throw new TypeError(`${field} contains an unstable object`);
     }

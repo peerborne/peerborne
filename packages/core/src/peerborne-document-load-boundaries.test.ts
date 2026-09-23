@@ -81,6 +81,10 @@ function signedLoadHarness(
   serializeSyncMessage: (message: any) => Uint8Array = () =>
     new Uint8Array([8]),
 ) {
+  const contextMessage = Object.defineProperties(
+    { signatureContext: 'load-response-v3', tips: [] },
+    Object.getOwnPropertyDescriptors(message),
+  );
   const document = fakeDocument({
     documentPath: message.documentId,
     swarm: { config: { enableSigning: true, loadQuorumTimeoutMs: 1000 } },
@@ -92,7 +96,7 @@ function signedLoadHarness(
       verify: jest.fn(verify),
     },
     _syncMessageSerializer: {
-      deserializeSyncMessage: jest.fn(() => message),
+      deserializeSyncMessage: jest.fn(() => contextMessage),
       serializeSyncMessage: jest.fn(serializeSyncMessage),
     },
     _getWriterKeys: jest.fn(getWriterKeys),
@@ -223,7 +227,7 @@ describe('document load response boundaries', () => {
     );
     document._bootstrapLoadApplicationState = 'complete';
     document._syncUnlocked = jest.fn(async (...args: any[]) => {
-      const options = args[5];
+      const options = args[6];
       expect(options.maxBlockBytes).toBeUndefined();
       expect(options.maxAggregateBlockBytes).toBeUndefined();
       expect(options.aggregateBudget).toBeUndefined();
@@ -815,7 +819,8 @@ describe('document load response boundaries', () => {
     releaseVerification.resolve(true);
 
     await expect(load).resolves.toBe(false);
-    expect(document._writers.users).toHaveBeenCalledTimes(2);
+    // The writer revision rejects this stale admission before a second lookup.
+    expect(document._writers.users).toHaveBeenCalledTimes(1);
     expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
   });
 
@@ -890,7 +895,7 @@ describe('document load response boundaries', () => {
     ).resolves.toBe(true);
 
     expect(verifiedRaw).toEqual([[1], [1]]);
-    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(serialize).toHaveBeenCalledTimes(2);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
@@ -935,6 +940,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
         _onLogicalKeychainChange: (() => void) | undefined,
@@ -1081,6 +1087,7 @@ describe('document load response boundaries', () => {
         async (
           appliedMessage: any,
           _verifySignature: boolean,
+        _context: string,
           _onStateApplicationStart: (() => void) | undefined,
           _continuePending: boolean,
           _onLogicalKeychainChange: (() => void) | undefined,
@@ -1157,6 +1164,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
         _onLogicalKeychainChange: (() => void) | undefined,
@@ -1304,6 +1312,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1466,6 +1475,8 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when a response is rejected before state application', async () => {
     const validMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1484,6 +1495,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1511,6 +1523,8 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when sync rejects before mutating state', async () => {
     const unsignedMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1534,6 +1548,8 @@ describe('document load response boundaries', () => {
 
     document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changes: { kind: crdtDocumentChangeNode },
     });
@@ -1558,6 +1574,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1594,6 +1611,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1660,6 +1678,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1833,6 +1852,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1868,6 +1888,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1903,6 +1924,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -2200,11 +2222,11 @@ describe('document load response boundaries', () => {
     try {
       await expect(
         document._syncUnlocked(
-          {
+          { signatureContext: 'load-response-v3',
             documentId: '/keychain-hydration-failure',
             keychainChanges: { providerEncoding: 'one-key' },
           },
-          false,
+          false, 'load-response-v3',
           beginStateApplication,
         ),
       ).rejects.toBe(sentinel);
@@ -2247,7 +2269,7 @@ describe('document load response boundaries', () => {
     });
 
     const sync = document._syncUnlocked(
-      {
+      { signatureContext: 'load-response-v3',
         documentId: '/acl-prepass-reservation',
         changeId: 'READER',
         changes: {
@@ -2255,7 +2277,7 @@ describe('document load response boundaries', () => {
           change: { reader: 'partial' },
         },
       },
-      false,
+      false, 'load-response-v3',
       beginStateApplication,
     );
     await mergeStarted.promise;
@@ -2289,7 +2311,7 @@ describe('document load response boundaries', () => {
     try {
       await expect(
         document._syncUnlocked(
-          {
+          { signatureContext: 'load-response-v3',
             documentId: '/snapshot-redaction',
             signature: 'AAAA',
             snapshot: {
@@ -2299,7 +2321,7 @@ describe('document load response boundaries', () => {
               signature: 'AAAA',
             },
           },
-          false,
+          false, 'load-response-v3',
         ),
       ).resolves.toBe(true);
 
@@ -2571,7 +2593,7 @@ describe('document load response boundaries', () => {
     };
 
     const syncing = document._syncUnlocked(
-      {
+      { signatureContext: 'load-response-v3',
         documentId: '/revoked-acl-prepass',
         changeId: 'HEAD',
         changes: { kind: crdtDocumentChangeNode },
@@ -2583,7 +2605,7 @@ describe('document load response boundaries', () => {
           timestamp: 1,
         },
       },
-      false,
+      false, 'load-response-v3',
       undefined,
       true,
       undefined,
@@ -2931,7 +2953,7 @@ describe('document load response boundaries', () => {
     });
     const deserializeSyncMessage = jest.fn(() => {
       order.push('deserialize');
-      return { documentId: '/validator-bootstrap', signature: 'AAAA' };
+      return { documentId: '/validator-bootstrap', signatureContext: 'ordinary-sync-v1', signature: 'AAAA' };
     });
     const serializeSyncMessage = jest.fn(() => {
       order.push('serialize');
@@ -3030,6 +3052,7 @@ describe('document load response boundaries', () => {
           order.push('deserialize');
           return {
             documentId: '/validator-authorization',
+            signatureContext: 'ordinary-sync-v1',
             signature: 'AAAA',
           };
         }),
@@ -3073,6 +3096,7 @@ describe('document load response boundaries', () => {
       'serialize',
       'queue',
       'verify',
+      'serialize',
     ]);
   });
 
@@ -3547,6 +3571,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -3593,6 +3618,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -3939,6 +3965,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -4326,6 +4353,8 @@ describe('document load response boundaries', () => {
         ),
       ).toThrow(/genuine Uint8Array/);
     }
+  });
+
   test('rejects a cross-context load response before sync', async () => {
     const syncValidatedProtocolMessage = jest.fn();
     const document = fakeDocument({

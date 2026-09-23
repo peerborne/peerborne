@@ -207,6 +207,9 @@ export class BeeKEM {
     }) => Promise<T>,
   ): Promise<T> {
     return this._runTransition(async (staged) => {
+      if (staged._generation === null) {
+        throw new Error('Cannot add a BeeKEM member before initialization');
+      }
       if (staged._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
         throw new Error(
           `BeeKEM tree lifetime leaf limit of ${MAX_BEEKEM_TREE_LEAVES} reached`,
