@@ -36,9 +36,6 @@ export default defineConfig({
     // Astro 7 deprecates markdown.rehypePlugins in favor of processor plugins.
     processor: unified({ rehypePlugins: [rehypeDocsFigures] }),
   },
-  redirects: {
-    '/concepts/why-swarmbase/': '/concepts/why-peerborne/',
-  },
   vite: {
     resolve: {
       alias: [
