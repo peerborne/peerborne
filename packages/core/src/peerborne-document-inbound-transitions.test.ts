@@ -7,6 +7,7 @@ import {
   test,
 } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
+import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { eciesOpen } from './ecies.js';
 import { decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import {
@@ -99,13 +100,20 @@ function fakeDocument(fields: Record<string, unknown>): any {
 }
 
 function syncMessageSerializer() {
-  let snapshot: Record<string, unknown> | undefined;
+  const snapshots = new Map<number, Record<string, unknown>>();
+  const ids = new Map<string, number>();
+  let nextId = 0;
   return {
     serializeSyncMessage: jest.fn((message: Record<string, unknown>) => {
-      snapshot = { ...message };
-      return new Uint8Array([1]);
+      const encoded = JSON.stringify(message);
+      const id = ids.get(encoded) ?? ++nextId;
+      ids.set(encoded, id);
+      snapshots.set(id, { ...message });
+      return new Uint8Array([id]);
     }),
-    deserializeSyncMessage: jest.fn(() => ({ ...snapshot })),
+    deserializeSyncMessage: jest.fn((bytes: Uint8Array) => ({
+      ...snapshots.get(bytes[0]),
+    })),
   };
 }
 
@@ -261,7 +269,7 @@ function welcomeHarness(
         : new Uint8Array(options.invitationEpoch),
     _beekem: null,
     _beekemInitialized: false,
-    _pendingWelcomes: new Map(),
+    _pendingWelcomes: new PendingWelcomeBuffer(),
     _changesSerializer: {
       deserializeChanges: jest.fn((bytes: Uint8Array) => bytes[0]),
     },
@@ -909,22 +917,18 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ],
       currentId: new Uint8Array(32).fill(4),
     });
-    harness.document._pendingWelcomes.set('duplicate', {
-      message: welcomeMessage(currentEpoch, 11),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('older', {
-      message: welcomeMessage(oldEpoch, 12),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('divergent', {
-      message: welcomeMessage(nextEpoch, 15),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('mismatched-current', {
-      message: welcomeMessage(nextEpoch, 16),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'duplicate', welcomeMessage(currentEpoch, 11), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'older', welcomeMessage(oldEpoch, 12), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'divergent', welcomeMessage(nextEpoch, 15), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'mismatched-current', welcomeMessage(nextEpoch, 16), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -954,14 +958,12 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 13),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 14),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'first', welcomeMessage(currentEpoch, 13), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'second', welcomeMessage(nextEpoch, 14), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -987,14 +989,12 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 18),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 19),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'first', welcomeMessage(currentEpoch, 18), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'second', welcomeMessage(nextEpoch, 19), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(),

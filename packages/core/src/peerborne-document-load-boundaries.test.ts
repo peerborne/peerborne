@@ -93,6 +93,10 @@ function signedLoadHarness(
   serializeSyncMessage: (message: any) => Uint8Array = () =>
     new Uint8Array([8]),
 ) {
+  const contextMessage = Object.defineProperties(
+    { signatureContext: 'load-response-v3', tips: [] },
+    Object.getOwnPropertyDescriptors(message),
+  );
   const document = fakeDocument({
     documentPath: message.documentId,
     swarm: {
@@ -113,7 +117,7 @@ function signedLoadHarness(
       verify: jest.fn(verify),
     },
     _syncMessageSerializer: {
-      deserializeSyncMessage: jest.fn(() => message),
+      deserializeSyncMessage: jest.fn(() => contextMessage),
       serializeSyncMessage: jest.fn(serializeSyncMessage),
     },
     _getWriterKeys: jest.fn(getWriterKeys),
@@ -1074,7 +1078,8 @@ describe('document load response boundaries', () => {
     releaseVerification.resolve(true);
 
     await expect(load).resolves.toBe(false);
-    expect(document._writers.users).toHaveBeenCalledTimes(2);
+    // The writer revision rejects this stale admission before a second lookup.
+    expect(document._writers.users).toHaveBeenCalledTimes(1);
     expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
   });
 
@@ -1097,6 +1102,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1607,6 +1613,7 @@ describe('document load response boundaries', () => {
     const firstMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1623,6 +1630,7 @@ describe('document load response boundaries', () => {
     const secondMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1680,6 +1688,7 @@ describe('document load response boundaries', () => {
     const firstMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1696,6 +1705,7 @@ describe('document load response boundaries', () => {
     const secondMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1745,6 +1755,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'hash-only-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1806,6 +1817,7 @@ describe('document load response boundaries', () => {
     const validMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1853,6 +1865,7 @@ describe('document load response boundaries', () => {
     const unsignedMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1877,6 +1890,7 @@ describe('document load response boundaries', () => {
     document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changes: { kind: crdtDocumentChangeNode },
     });
@@ -1925,6 +1939,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -2166,6 +2181,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'legacy-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -2203,6 +2219,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2240,6 +2257,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2280,6 +2298,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2329,6 +2348,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2363,6 +2383,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'pinned-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -2611,6 +2632,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'empty' },
     };
@@ -2897,6 +2919,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4203,6 +4226,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -4272,6 +4296,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: {},
     };
@@ -4329,6 +4354,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4416,6 +4442,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };
@@ -4494,6 +4521,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };
@@ -4590,6 +4618,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -5156,6 +5185,8 @@ describe('document load response boundaries', () => {
         _isSigningEnabled: () => true,
         _deserializeSignature: () => new Uint8Array([1]),
         _getWriterKeys: async () => ['writer'],
+        _writerKeysVersion: 0,
+        _writerMutationsInFlight: 0,
       });
 
       await expect(

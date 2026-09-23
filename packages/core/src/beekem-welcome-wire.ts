@@ -1,8 +1,8 @@
 /**
- * Wire serialization for BeeKEM `BeeKEMWelcome` payloads.
+ * Wire serialization for BeeKEM `BeeKEMWelcomeV2` payloads.
  *
- * The `BeeKEMWelcome` runtime shape (from `beekem/types.ts`) is a small
- * record of `Uint8Array`s plus a leaf index. This module is the JSON-safe
+ * The `BeeKEMWelcomeV2` runtime shape (from `beekem/types.ts`) is a small
+ * record of key bytes, a leaf index, and authenticated generation/tree metadata. This module is the JSON-safe
  * encoder/decoder pair so a Welcome can be carried inside the sealed
  * `eciesSealed` payload of a `CRDTSyncMessage` together with the keychain
  * delta (see `welcome-sealed-payload.ts`).
