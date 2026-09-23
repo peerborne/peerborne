@@ -226,7 +226,8 @@ reach every surviving member.
 A surviving reader that misses the new epoch cannot recover it with an ordinary
 load response, because that response is encrypted under the unknown current
 epoch. Recovery requires a separate recipient-bound re-invitation or explicit
-key-recovery flow; Peerborne does not perform one automatically.
+key-recovery flow; Peerborne does not automatically re-invite members or run
+a key-recovery flow.
 
 ### Limitations of revocation
 
