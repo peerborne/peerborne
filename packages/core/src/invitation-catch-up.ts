@@ -181,7 +181,7 @@ export async function withIssuerPinnedInvitationStream<
 ): Promise<Result> {
   return withInvitationProtocolStream(
     (signal) => dial(founderAddress, signal),
-    (stream, signal) => loadAndVerify(stream, signal),
+    loadAndVerify,
     timeoutMs,
   );
 }
