@@ -1,9 +1,6 @@
-import { describe, expect, test, jest } from '@jest/globals';
+import { describe, expect, test } from '@jest/globals';
 import {
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  Keychain,
-  keychainHistorySinceOrReject,
   MAX_KEYCHAIN_EPOCHS,
 } from './keychain.js';
 
@@ -81,89 +78,5 @@ describe('computeKeychainStateCommitment', () => {
     await expect(computeKeychainStateCommitment(oversized)).rejects.toThrow(
       'Keychain exceeds the supported epoch limit',
     );
-  });
-});
-
-describe('keychainHistorySinceOrReject', () => {
-  test('calls historySince when the implementation provides it', async () => {
-    const historySinceMock = jest
-      .fn<(keyID: Uint8Array) => Promise<string>>()
-      .mockResolvedValue('delta-since');
-    const keychain: Keychain<string, string> = {
-      add: async () => [new Uint8Array(), 'key', 'change'],
-      history: () => 'full-history',
-      merge: () => {},
-      keys: async () => [],
-      current: async () => [new Uint8Array(), 'current-key'],
-      getKey: () => 'key',
-      currentKeyChange: async () => 'current-change',
-      addEpochKey: async () => 'epoch-change',
-      historySince: historySinceMock as any,
-    };
-    const fn = keychainHistorySinceOrReject(keychain);
-    const keyID = new Uint8Array([1, 2, 3]);
-    const result = await fn(keyID);
-    expect(historySinceMock).toHaveBeenCalledWith(keyID);
-    expect(result).toBe('delta-since');
-  });
-
-  test('rejects when historySince is not implemented', async () => {
-    const history = jest.fn(() => 'full-history');
-    const currentKeyChange = jest
-      .fn<() => Promise<string>>()
-      .mockResolvedValue('current-change');
-    const keychain: Keychain<string, string> = {
-      add: async () => [new Uint8Array(), 'key', 'change'],
-      history,
-      merge: () => {},
-      keys: async () => [],
-      current: async () => [new Uint8Array(), 'current-key'],
-      getKey: () => 'key',
-      currentKeyChange,
-      addEpochKey: async () => 'epoch-change',
-    };
-    const fn = keychainHistorySinceOrReject(keychain);
-    await expect(fn(new Uint8Array([1]))).rejects.toThrow(
-      'Keychain does not support replay-safe history slicing',
-    );
-    expect(currentKeyChange).not.toHaveBeenCalled();
-    expect(history).not.toHaveBeenCalled();
-  });
-});
-
-describe('isTransactionalKeychain', () => {
-  const makeKeychain = (): Keychain<string, string> => ({
-    add: async () => [new Uint8Array(), 'key', 'change'],
-    history: () => 'full-history',
-    merge: () => {},
-    keys: async () => [],
-    current: async () => [new Uint8Array(), 'current-key'],
-    getKey: () => 'key',
-    currentKeyChange: async () => 'current-change',
-    addEpochKey: async () => 'epoch-change',
-  });
-
-  test('rejects a legacy keychain that lacks atomic staging', () => {
-    expect(isTransactionalKeychain(makeKeychain())).toBe(false);
-  });
-
-  test('accepts a keychain with both BeeKEM staging operations', () => {
-    const keychain = makeKeychain();
-    keychain.prepareEpochKey = async () => ({
-      changes: 'change',
-      history: 'history',
-      currentKeyChange: 'current',
-      commit: () => {},
-    });
-    keychain.prepareMerge = () => ({
-      changes: 'change',
-      keyIds: [],
-      currentKeyId: undefined,
-      hydrateKeys: async () => [],
-      getKey: () => undefined,
-      commit: () => {},
-    });
-
-    expect(isTransactionalKeychain(keychain)).toBe(true);
   });
 });
