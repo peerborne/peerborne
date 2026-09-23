@@ -1,3 +1,4 @@
+import { defineEnumerableDataProperty } from './internal/data-property.js';
 import type { Uint8ArrayList } from 'uint8arraylist';
 import type { AesAlgorithmName } from './auth-provider.js';
 
@@ -22,8 +23,12 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
   Symbol.toStringTag,
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
+const arrayIsArray = Array.isArray;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectPrototype = Object.prototype;
+const reflectApply = Reflect.apply;
+const reflectOwnKeys = Reflect.ownKeys;
 const intrinsicStructuredClone = globalThis.structuredClone;
 const cryptoKeyTypeGetter =
   typeof CryptoKey === 'undefined'
@@ -45,6 +50,8 @@ if (
 const intrinsicTypedArrayByteLengthGetter = typedArrayByteLengthGetter;
 const intrinsicTypedArrayBufferGetter = typedArrayBufferGetter;
 const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
+
+
 
 /**
  * Outcome of parsing a path-prefixed protocol header off an inbound
@@ -195,27 +202,34 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
   value: unknown,
   field = 'value',
 ): T {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (value === null || typeof value !== 'object') {
     throw new TypeError(`${field} must be a plain object`);
   }
+  let isArray: boolean;
+  try {
+    isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
+  } catch {
+    throw new TypeError(`${field} must expose stable own data properties`);
+  }
+  if (isArray) throw new TypeError(`${field} must be a plain object`);
   let prototype: object | null;
   let descriptors: PropertyDescriptorMap;
   try {
-    prototype = Reflect.apply(objectGetPrototypeOf, Object, [value]) as
+    prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
       | object
       | null;
-    descriptors = Reflect.apply(objectGetOwnPropertyDescriptors, Object, [
+    descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
       value,
     ]) as PropertyDescriptorMap;
   } catch {
     throw new TypeError(`${field} must expose stable own data properties`);
   }
-  if (prototype !== Object.prototype && prototype !== null) {
+  if (prototype !== objectPrototype && prototype !== null) {
     throw new TypeError(`${field} must be a plain object`);
   }
 
   const snapshot: Record<string, unknown> = {};
-  for (const key of Reflect.ownKeys(descriptors)) {
+  for (const key of reflectOwnKeys(descriptors)) {
     if (typeof key !== 'string') {
       throw new TypeError(`${field} must not contain symbol properties`);
     }
@@ -229,12 +243,7 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
         `${field} must contain only enumerable data properties`,
       );
     }
-    Object.defineProperty(snapshot, key, {
-      configurable: true,
-      enumerable: true,
-      value: descriptor.value,
-      writable: true,
-    });
+    defineEnumerableDataProperty(snapshot, key, descriptor.value);
   }
   return snapshot as T;
 }
@@ -337,14 +346,13 @@ export function snapshotDeepEnumerableData<T>(
     if (target.kind === 'root') {
       result = candidate;
     } else if (target.kind === 'array') {
-      target.parent[target.index] = candidate;
+      defineEnumerableDataProperty(
+        target.parent,
+        String(target.index),
+        candidate,
+      );
     } else {
-      Object.defineProperty(target.parent, target.key, {
-        configurable: true,
-        enumerable: true,
-        value: candidate,
-        writable: true,
-      });
+      defineEnumerableDataProperty(target.parent, target.key, candidate);
     }
   };
 
@@ -397,12 +405,12 @@ export function snapshotDeepEnumerableData<T>(
     let typedArrayTag: unknown;
     let typedArrayByteLength: number | undefined;
     try {
-      typedArrayByteLength = Reflect.apply(
+      typedArrayByteLength = reflectApply(
         intrinsicTypedArrayByteLengthGetter,
         objectCandidate,
         [],
       ) as number;
-      typedArrayTag = Reflect.apply(
+      typedArrayTag = reflectApply(
         intrinsicTypedArrayTagGetter,
         objectCandidate,
         [],
@@ -425,17 +433,17 @@ export function snapshotDeepEnumerableData<T>(
     let prototype: object | null;
     let descriptors: PropertyDescriptorMap;
     try {
-      prototype = Reflect.apply(objectGetPrototypeOf, Object, [
+      prototype = reflectApply(objectGetPrototypeOf, Object, [
         objectCandidate,
       ]) as object | null;
-      descriptors = Reflect.apply(objectGetOwnPropertyDescriptors, Object, [
+      descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
         objectCandidate,
       ]) as PropertyDescriptorMap;
     } catch {
       throw new TypeError(`${field} contains an unstable object`);
     }
 
-    if (Array.isArray(objectCandidate)) {
+    if (reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean) {
       const lengthDescriptor = descriptors.length;
       if (
         lengthDescriptor === undefined ||
@@ -447,7 +455,7 @@ export function snapshotDeepEnumerableData<T>(
         throw new TypeError(`${field} contains an invalid array`);
       }
       const length = lengthDescriptor.value as number;
-      const keys = Reflect.ownKeys(descriptors);
+      const keys = reflectOwnKeys(descriptors);
       if (keys.length !== length + 1) {
         throw new TypeError(`${field} arrays must be dense data arrays`);
       }
@@ -481,7 +489,7 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
 
-    if (prototype !== Object.prototype && prototype !== null) {
+    if (prototype !== objectPrototype && prototype !== null) {
       // CryptoKey is the sole opaque platform value admitted by the sync
       // message type. Invoke the captured native brand getter before cloning;
       // a Proxy or lookalike fails without consulting overridable fields.
@@ -490,13 +498,13 @@ export function snapshotDeepEnumerableData<T>(
         intrinsicStructuredClone !== undefined
       ) {
         try {
-          Reflect.apply(cryptoKeyTypeGetter, objectCandidate, []);
-          const copy = Reflect.apply(intrinsicStructuredClone, undefined, [
+          reflectApply(cryptoKeyTypeGetter, objectCandidate, []);
+          const copy = reflectApply(intrinsicStructuredClone, undefined, [
             objectCandidate,
           ]);
           if (
-            Reflect.apply(cryptoKeyTypeGetter, copy, []) ===
-            Reflect.apply(cryptoKeyTypeGetter, objectCandidate, [])
+            reflectApply(cryptoKeyTypeGetter, copy, []) ===
+            reflectApply(cryptoKeyTypeGetter, objectCandidate, [])
           ) {
             assign(target, copy);
             continue;
@@ -508,7 +516,7 @@ export function snapshotDeepEnumerableData<T>(
       throw new TypeError(`${field} contains a non-plain object`);
     }
 
-    const keys = Reflect.ownKeys(descriptors);
+    const keys = reflectOwnKeys(descriptors);
     accountProperties(keys.length);
     const copy: Record<string, unknown> = {};
     const children: SnapshotTask[] = [];
@@ -559,17 +567,17 @@ export function copyUnsharedUint8Array(
   let buffer: ArrayBufferLike;
   let tag: unknown;
   try {
-    byteLength = Reflect.apply(
+    byteLength = reflectApply(
       intrinsicTypedArrayByteLengthGetter,
       value,
       [],
     ) as number;
-    buffer = Reflect.apply(
+    buffer = reflectApply(
       intrinsicTypedArrayBufferGetter,
       value,
       [],
     ) as ArrayBufferLike;
-    tag = Reflect.apply(intrinsicTypedArrayTagGetter, value, []);
+    tag = reflectApply(intrinsicTypedArrayTagGetter, value, []);
   } catch {
     throw new TypeError(`${field} must be a genuine Uint8Array`);
   }
@@ -577,7 +585,7 @@ export function copyUnsharedUint8Array(
   let shared = false;
   if (sharedArrayBufferByteLengthGetter !== undefined) {
     try {
-      Reflect.apply(sharedArrayBufferByteLengthGetter, buffer, []);
+      reflectApply(sharedArrayBufferByteLengthGetter, buffer, []);
       shared = true;
     } catch {
       // Ordinary ArrayBuffer backing.
@@ -595,7 +603,7 @@ export function copyUnsharedUint8Array(
 
   const copy = new Uint8Array(byteLength);
   try {
-    Reflect.apply(uint8ArraySet, copy, [value, 0]);
+    reflectApply(uint8ArraySet, copy, [value, 0]);
   } catch {
     throw new TypeError(`${field} could not be copied safely`);
   }

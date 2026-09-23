@@ -1,28 +1,16 @@
 /**
- * Integration tests for the load-quorum orchestrator (#186 / #189 §5.4.2).
+ * Unit and contract tests for the injected load-quorum orchestrator.
  *
- * The pure helpers in `load-quorum.ts` (decision logic) and `tips-hash.ts`
- * (canonical hashing) have their own unit tests that prove the trust-critical
- * primitives are correct in isolation. Those tests do NOT exercise the
- * orchestration the production loader runs end-to-end -- probe K peers,
- * narrow to the agreeing cohort, surface single-peer fallback with a strict
- * binding, raise `LoadQuorumFailedError` on the right reasons.
+ * These tests call `runLoadQuorum` with caller-supplied peer identifiers and
+ * probe functions. A local harness models the follow-up response-selection
+ * contract. This exercises orchestration decisions without instantiating
+ * `PeerborneDocument`, libp2p, or Helia and is not integration or end-to-end
+ * production-loader coverage. Real `PeerborneDocument` and libp2p coverage is
+ * absent from this suite.
  *
- * The orchestration code path lives in
- * `runLoadQuorum` (called by `PeerborneDocument.load()`) and was extracted
- * here specifically so the security gate can be regression-tested without a
- * real libp2p/Helia stack. (The codebase has no precedent for full libp2p
- * test doubles: existing tests in `peerborne.test.ts` replicate logic
- * against mocks rather than instantiating `PeerborneDocument`, since the
- * module's top-level imports drag in ESM-only libp2p packages that Jest's
- * default CommonJS resolver cannot load. A full libp2p harness is outside
- * this suite's scope; extracting the orchestration into a pure-ish module
- * gives equivalent coverage without new test infrastructure.)
- *
- * The production quorum path is covered by a test matrix that exercises all
- * five cases: (a) all-agree, (b) majority-agree-with-dissenter,
- * (c) vote-vs-serve mismatch, (d) insufficient responses (timeouts), and
- * (e) single-peer fallback path.
+ * The matrix covers the injected contract's all-agree, threshold-agree with a
+ * dissenter, vote-vs-serve mismatch, insufficient-response, and single-peer
+ * cases. The pure decision and hashing helpers have separate unit tests.
  */
 
 import {
@@ -33,6 +21,7 @@ import {
   beforeEach,
   afterEach,
 } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import { runLoadQuorum } from './load-quorum-orchestrator.js';
 import { dedupePeersByPeerId, LoadQuorumFailedError } from './load-quorum.js';
 import { tipsHashToHex } from './tips-hash.js';
@@ -147,7 +136,7 @@ async function simulateFullLoad(opts: {
   });
 }
 
-describe('runLoadQuorum: production orchestration coverage', () => {
+describe('runLoadQuorum: injected orchestration contract', () => {
   // Typed `any` because Jest's generic `jest.fn()` typings are awkward to
   // satisfy alongside `mockImplementation((peer) => ...)`, and the call
   // sites explicitly annotate `peer: TestPeer` where it matters.
@@ -162,6 +151,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -194,6 +184,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     });
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -231,6 +222,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -278,6 +270,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -333,6 +326,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -373,6 +367,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -409,6 +404,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -468,6 +464,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -515,6 +512,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_Y);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -550,6 +548,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     });
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -569,6 +568,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -598,6 +598,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(null);
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -610,6 +611,118 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     );
   });
 
+  const invalidVoteHashes: ReadonlyArray<
+    readonly [string, () => unknown]
+  > = [
+    ['short', () => new Uint8Array(31)],
+    ['long', () => new Uint8Array(33)],
+    [
+      'malformed',
+      () => ({
+        length: 32,
+        byteLength: 32,
+        [Symbol.toStringTag]: 'Uint8Array',
+      }),
+    ],
+  ];
+  const invalidVoteCases = (['single-peer', 'K-of-Q'] as const).flatMap(
+    (path) =>
+      (['legacy', 'signer-attributed'] as const).flatMap((form) =>
+        invalidVoteHashes.map(
+          ([name, makeHash]) => [path, form, name, makeHash] as const,
+        ),
+      ),
+  );
+  test.each(invalidVoteCases)(
+    '%s %s %s hash is a structured non-vote',
+    async (path, form, _name, makeHash) => {
+      const singlePeer = path === 'single-peer';
+      const peers = singlePeer ? ['p1'] : ['p1', 'p2', 'p3'];
+      const err = await runLoadQuorum({
+        protocol: form === 'legacy' ? 'tip-advertise-v1' : 'security-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async (peer) =>
+          form === 'legacy'
+            ? (makeHash() as Uint8Array)
+            : {
+                hash: makeHash() as Uint8Array,
+                signerAuthority: `writer:${peer}`,
+              },
+        documentPath: `/invalid-${path}-${form}`,
+        config: singlePeer
+          ? { enabled: true, k: 1, allowSinglePeer: true }
+          : { enabled: true, k: 3, q: 2 },
+      }).catch((error: unknown) => error);
+
+      expect(err).toBeInstanceOf(LoadQuorumFailedError);
+      expect(err).toMatchObject({
+        reason: 'insufficient-responses',
+        respondingCount: 0,
+        requiredQ: singlePeer ? 1 : 2,
+      });
+    },
+  );
+
+  test('accepts genuine cross-realm hashes in legacy and signer-attributed paths', async () => {
+    const crossRealmHash = () =>
+      runInNewContext('new Uint8Array(32).fill(0xaa)') as Uint8Array;
+
+    const single = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
+      peers: ['p1'],
+      peerIdOf,
+      probeFn: async () => crossRealmHash(),
+      documentPath: '/cross-realm-single',
+      config: { enabled: true, k: 1, allowSinglePeer: true },
+    });
+    expect(single).toMatchObject({
+      ok: true,
+      narrowedPeers: ['p1'],
+      winningHashHex: HASH_X_HEX,
+    });
+
+    const quorum = await runLoadQuorum({
+      protocol: 'security-advertise-v1',
+      peers: ['p1', 'p2', 'p3'],
+      peerIdOf,
+      probeFn: async (peer) => ({
+        hash: crossRealmHash(),
+        signerAuthority: `writer:${peer}`,
+      }),
+      documentPath: '/cross-realm-v4',
+      config: { enabled: true, k: 3, q: 2 },
+    });
+    expect(quorum).toMatchObject({
+      ok: true,
+      narrowedPeers: ['p1', 'p2', 'p3'],
+      winningHashHex: HASH_X_HEX,
+    });
+  });
+
+  test.each([
+    ['single-peer', ['p1'], { enabled: true, k: 1, allowSinglePeer: true }],
+    ['K-of-Q', ['p1', 'p2', 'p3'], { enabled: true, k: 3, q: 2 }],
+  ] as const)(
+    '%s rejects an empty signer authority as a non-vote',
+    async (_path, peers, config) => {
+      const error = await runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async () => ({ hash: HASH_X, signerAuthority: '' }),
+        documentPath: '/empty-signer-authority',
+        config,
+      }).catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(LoadQuorumFailedError);
+      expect(error).toMatchObject({
+        reason: 'insufficient-responses',
+        respondingCount: 0,
+      });
+    },
+  );
+
   test('single-peer fallback DENIED when allowSinglePeer=false (default)', async () => {
     // The orchestrator must refuse to run quorum against a single peer
     // unless the caller opts in. This protects against silently degrading
@@ -618,6 +731,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     probeMock.mockResolvedValue(HASH_X);
 
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -640,6 +754,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -653,6 +768,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
   test('empty peer list: returns { skipped: true } so caller treats as new document', async () => {
     const peers: TestPeer[] = [];
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -673,6 +789,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -691,6 +808,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     const peers: TestPeer[] = ['p1', 'p2'];
     probeMock.mockResolvedValue(HASH_X);
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -712,6 +830,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     // orchestrator throws unconditionally rather than silently bypassing
     // the gate.
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers: [],
       peerIdOf,
       probeFn: probeMock,
@@ -744,6 +863,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -765,6 +885,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -783,6 +904,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -802,6 +924,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -825,6 +948,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -845,6 +969,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       // load-attempt's actual `documentPath` so operator logs identify
       // which document's load tripped the post-init mutation.
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers: ['p1', 'p2'] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -859,15 +984,15 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       );
     });
 
-    test('loadQuorumEnabled: false still returns { skipped: true } even with invalid K (early-exit precedes validation)', async () => {
+    test('loadQuorumEnabled: false still returns { skipped: true } even with invalid K', async () => {
       // When the operator has explicitly disabled the gate, validation of
-      // K/Q is irrelevant — the values won't be consulted at all. The
-      // `enabled` short-circuit precedes the validator so an
-      // already-disabled gate doesn't suddenly start throwing on a
-      // pre-existing bad K.
+      // K/Q is irrelevant — the values won't be consulted at all. Boolean
+      // switches are still validated exactly before the disabled policy
+      // skips dormant numeric validation.
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -878,6 +1003,29 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       expect(probeMock).not.toHaveBeenCalled();
     });
 
+    test.each([
+      ['enabled', 0],
+      ['enabled', 'false'],
+      ['allowSinglePeer', 1],
+      ['allowSinglePeer', 'true'],
+    ])('non-boolean %s=%p fails as invalid-config', async (name, value) => {
+      const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
+        peers: ['p1'] as TestPeer[],
+        peerIdOf,
+        probeFn: probeMock,
+        documentPath: '/boolean-policy',
+        config: { [name]: value, k: 1 } as any,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(LoadQuorumFailedError);
+      expect((err as LoadQuorumFailedError).reason).toBe('invalid-config');
+      expect((err as LoadQuorumFailedError).message).toMatch(
+        new RegExp(`${name === 'enabled' ? 'loadQuorumEnabled' : 'loadQuorumAllowSinglePeer'} must be a boolean`),
+      );
+      expect(probeMock).not.toHaveBeenCalled();
+    });
+
     test('valid K with zero peers still returns { skipped: true } (NOT a config error)', async () => {
       // Zero peers with a valid K is the legitimate founder/partition
       // case: `effectiveK(3, 0) === 0` => `{ skipped: true }`. The
@@ -885,6 +1033,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       // perfectly valid; the absence of peers is a runtime fact, not a
       // config error.
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers: [] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -903,6 +1052,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -930,6 +1080,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -949,6 +1100,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -967,6 +1119,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -985,6 +1138,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1003,6 +1157,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1021,6 +1176,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1038,6 +1194,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1049,6 +1206,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
 
     test('rethrown invalid-config (timeoutMs) carries the actual documentPath', async () => {
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers: ['p1', 'p2'] as TestPeer[],
         peerIdOf,
         probeFn: probeMock,
@@ -1090,6 +1248,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['only-peer'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1113,6 +1272,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1138,6 +1298,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3', 'p4', 'p5'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1153,6 +1314,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1'];
       probeMock.mockResolvedValue(HASH_X);
       await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1177,6 +1339,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       return HASH_X;
     });
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1198,6 +1361,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       throw new Error('synthetic probe failure');
     });
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1223,6 +1387,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       throw new Error('synthetic single-peer probe failure');
     });
     const err = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1253,6 +1418,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
     });
 
     const result = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers,
       peerIdOf,
       probeFn: probeMock,
@@ -1407,6 +1573,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
 
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers: quorumPeers,
         peerIdOf: idOf,
         probeFn: probeMock,
@@ -1454,6 +1621,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       });
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1476,6 +1644,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       });
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1495,6 +1664,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       });
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1514,6 +1684,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       });
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1527,16 +1698,15 @@ describe('runLoadQuorum: production orchestration coverage', () => {
 
     test('explicit Q is honoured (??-fallback no-op): configured K=7, 3 peers, explicit Q=3 still requires all 3', async () => {
       // When the operator explicitly sets `loadQuorumQ`, the `??` fallback
-      // does not fire and the explicit value flows through `effectiveQ`'s
-      // `[1, k]` clamp. Verify the fix did not accidentally clamp the
-      // explicit value too aggressively. With explicit Q=3 and effective
-      // K=3, all 3 peers must agree.
+      // does not fire. With explicit Q=3 and effective K=3, all 3 peers must
+      // agree.
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockImplementation(async (peer: TestPeer) => {
         return peer === 'p3' ? null : HASH_X;
       });
 
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1548,6 +1718,28 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       expect((err as LoadQuorumFailedError).reason).toBe(
         'insufficient-responses',
       );
+    });
+
+    test('a partition cannot lower an explicit Q below the configured trust floor', async () => {
+      const peers: TestPeer[] = ['isolated-p1', 'isolated-p2'];
+      probeMock.mockResolvedValue(HASH_X);
+
+      const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: probeMock,
+        documentPath: '/partitioned',
+        config: { enabled: true, k: 5, q: 4 },
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(LoadQuorumFailedError);
+      expect((err as LoadQuorumFailedError).reason).toBe(
+        'insufficient-responses',
+      );
+      expect((err as LoadQuorumFailedError).requiredQ).toBe(4);
+      expect((err as LoadQuorumFailedError).respondingCount).toBe(0);
+      expect(probeMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1565,6 +1757,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1600,6 +1793,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1636,6 +1830,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1667,6 +1862,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       probeMock.mockResolvedValue('unknown-doc');
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1698,6 +1894,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       );
 
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1719,6 +1916,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       );
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1739,6 +1937,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       probeMock.mockResolvedValue('unknown-doc');
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1759,6 +1958,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       );
 
       const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf,
         probeFn: probeMock,
@@ -1797,6 +1997,7 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       };
 
       const err = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
         peers,
         peerIdOf: unstablePeerIdOf,
         probeFn: probeMock,
@@ -1815,4 +2016,105 @@ describe('runLoadQuorum: production orchestration coverage', () => {
       expect(count).toBe(3);
     });
   });
+
+  describe('caller-authenticated V4 signer-authority quorum', () => {
+    test('one signer across multiple libp2p PeerIds contributes only one vote', async () => {
+      const peers: TestPeer[] = ['sybil-1', 'sybil-2', 'sybil-3'];
+      const err = await runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async () => ({
+          hash: HASH_X,
+          signerAuthority: 'trusted-writer-a',
+        }),
+        documentPath: '/test',
+        config: { enabled: true, k: 3, q: 2 },
+      }).catch((error: unknown) => error);
+
+      expect(err).toBeInstanceOf(LoadQuorumFailedError);
+      expect((err as LoadQuorumFailedError).reason).toBe(
+        'insufficient-responses',
+      );
+      expect((err as LoadQuorumFailedError).respondingCount).toBe(1);
+    });
+
+    test('distinct caller-authenticated signer authorities can satisfy V4 quorum', async () => {
+      const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
+      const result = await runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async (peer) => ({
+          hash: peer === 'peer-c' ? HASH_Y : HASH_X,
+          signerAuthority: `writer:${peer}`,
+        }),
+        documentPath: '/test',
+        config: { enabled: true, k: 3, q: 2 },
+      });
+
+      if (!('ok' in result)) throw new Error('expected V4 quorum success');
+      expect(result.winningHashHex).toBe(HASH_X_HEX);
+      expect(result.narrowedPeers).toEqual(['peer-a', 'peer-b']);
+    });
+
+    test('legacy bare-hash probes retain PeerId-based tally semantics', async () => {
+      const peers: TestPeer[] = ['peer-a', 'peer-b'];
+      const result = await runLoadQuorum({
+        protocol: 'tip-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async () => HASH_X,
+        documentPath: '/legacy',
+        config: { enabled: true, k: 2, q: 2 },
+      });
+
+      if (!('ok' in result)) throw new Error('expected legacy quorum success');
+      expect(result.narrowedPeers).toEqual(peers);
+    });
+  });
+});
+
+
+describe('quorum protocol separation', () => {
+  test.each([new Uint8Array(32).fill(0xaa), 'unknown-doc'] as const)(
+    'never counts a response from another protocol alongside a V4 authority',
+    async (wrongFamily) => {
+      await expect(runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers: ['signed', 'unsigned-a', 'unsigned-b'],
+        peerIdOf,
+        probeFn: async (peer) => peer === 'signed'
+          ? { hash: HASH_X, signerAuthority: 'writer-a' }
+          : wrongFamily,
+        documentPath: '/mixed-families',
+        config: { k: 3, q: 2 },
+      })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 1 });
+    },
+  );
+
+  test('rejects an unattributed single-peer V4 response', async () => {
+    await expect(runLoadQuorum({
+      protocol: 'security-advertise-v1', peers: ['a'], peerIdOf,
+      probeFn: async () => 'unknown-doc', documentPath: '/unsigned-single',
+      config: { allowSinglePeer: true },
+    })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 0 });
+  });
+
+  test('requires explicit protocol selection even with no peers', async () => {
+    await expect(runLoadQuorum({
+      protocol: undefined as never, peers: [], peerIdOf,
+      probeFn: async () => null, documentPath: '/missing-family',
+    })).rejects.toMatchObject({ reason: 'invalid-config' });
+  });
+
+  test('accepts a detached signer-attributed record from another realm', async () => {
+    const vote = runInNewContext('({ hash: new Uint8Array(32).fill(0xaa), signerAuthority: "writer-a" })');
+    await expect(runLoadQuorum({
+      protocol: 'security-advertise-v1',
+      peers: ['a'], peerIdOf, probeFn: async () => vote,
+      documentPath: '/cross-realm-vote', config: { allowSinglePeer: true },
+    })).resolves.toMatchObject({ ok: true });
+  });
+
 });

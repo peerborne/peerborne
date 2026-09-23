@@ -20,8 +20,21 @@ export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
 // `documentKeyUpdateV2` is intentionally NOT bumped: its wire shape is
 // unaffected by the load-quorum work (no `tips` field, no `tipsHash`).
 export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
+// Reserved V4 contract identifiers; runtime integration lands separately. A
+// conforming V4 load response adds a signed `loadSecurityState` tuple. Its
+// quorum digest binds the control/group tuple and served frontier together
+// with a canonical complete response manifest (root, CID/kind/edge graph,
+// snapshot content/metadata, and keychain delta). Each request also signs a
+// fresh 32-byte challenge that every writer-signed advertisement/full response
+// must echo, preventing a complete older quorum transcript from being replayed
+// in a later load round. A conforming loader must recompute the manifest from
+// the actual response before sync. V4 is a separate family because older
+// serializers cannot verify the same signed bytes or binding; callers that opt
+// into it must select the family atomically and never downgrade to V3.
+export const documentLoadV4 = '/collabswarm/doc-load/4.0.0';
 export const documentKeyUpdateV2 = '/collabswarm/key-update/2.0.0';
 export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
+export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
 
 // Tip-advertise v1: lightweight initial-load quorum probe.
 //
@@ -77,6 +90,12 @@ export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
 // protocol id so a slow/malicious peer that serves bogus full loads cannot
 // also cheaply poison every quorum vote at the same time.
 export const tipAdvertiseV1 = '/collabswarm/tip-advertise/1.0.0';
+// Reserved security-aware probe contract. Its signed hash covers the served
+// frontier, the complete derived load-response manifest, and the same
+// `loadSecurityState` tuple required on the subsequent V4 load. It also echoes
+// the request's fresh challenge inside the signed envelope. The unauthenticated
+// 0xff unknown-document sentinel is never valid here.
+export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
 
 // Public invitation join v1: a recipient opens a direct stream to an
 // inviter advertised by a signed InvitationOffer, sends one canonical signed

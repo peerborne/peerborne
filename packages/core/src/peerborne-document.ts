@@ -3769,6 +3769,7 @@ export class PeerborneDocument<
     // single-peer fallback all happen in pure code.
     const timeoutMs = this.swarm.config?.loadQuorumTimeoutMs ?? 5000;
     const quorumResult = await runLoadQuorum({
+      protocol: 'tip-advertise-v1',
       peers: quorumPeers,
       peerIdOf: (p) => this._peerIdOf(p),
       probeFn: (peer) =>
