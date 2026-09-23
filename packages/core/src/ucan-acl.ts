@@ -160,7 +160,12 @@ interface CapturedBackingFinalizer {
  * A backing commit claim consumed by this wrapper must be a plain record whose
  * immediate prototype is `Object.prototype` or `null`. Class instances are
  * rejected so a custom constructor or Promise species hook cannot disguise an
- * asynchronous claim as a synchronous record.
+ * asynchronous claim as a synchronous record. `Promise.prototype` is allowed
+ * only through inspection so a safe rejection handler can be attached before
+ * the asynchronous result is rejected; a Promise is never accepted as a claim.
+ * Promises with unsafe constructor/species hooks cannot be safely observed and
+ * may still produce an unhandled rejection; backing providers must not return
+ * asynchronous values from synchronous operations.
  * Backing `current()` remains an opaque generic value for compatibility. Its
  * synchronous contract is mandatory: runtime checks detect ordinary native
  * Promises and visible thenables, but JavaScript exposes no hook-free Promise
