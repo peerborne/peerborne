@@ -909,7 +909,7 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
         'Automerge cannot export the current key replay-safely',
       );
     }
-    return this.history();
+    return getAllChanges(this._keychain);
   }
 
   /**
@@ -945,7 +945,7 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
         'Automerge cannot export this keychain suffix replay-safely',
       );
     }
-    return this.history();
+    return getAllChanges(this._keychain);
   }
   getKey(keyIDBytes: Uint8Array): CryptoKey | undefined {
     const cacheKey = keyIdToCacheKey(keyIDBytes);
