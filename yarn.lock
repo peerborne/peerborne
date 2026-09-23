@@ -4453,7 +4453,7 @@ __metadata:
     "@libp2p/kad-dht": "npm:^16.4.5"
     "@libp2p/mdns": "npm:^12.0.29"
     "@libp2p/peer-id": "npm:^6.0.14"
-    "@libp2p/ping": "npm:^3.1.11"
+    "@libp2p/ping": "npm:^3.1.13"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
     "@libp2p/webrtc": "npm:^6.0.29"
     "@libp2p/websockets": "npm:^10.1.19"
