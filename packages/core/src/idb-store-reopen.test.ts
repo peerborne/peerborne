@@ -4,9 +4,9 @@ import { describe, expect, test } from '@jest/globals';
 
 const execFileAsync = promisify(execFile);
 
-describe('IndexedDB store migration', () => {
-  test('current stores read and extend databases from the previous majors', async () => {
-    const fixture = `${__dirname}/idb-store-migration.fixture.mjs`;
+describe('IndexedDB store persistence', () => {
+  test('current stores retain blocks and pins across reopen', async () => {
+    const fixture = `${__dirname}/idb-store-reopen.fixture.mjs`;
     await expect(
       execFileAsync(process.execPath, ['--test', fixture]),
     ).resolves.toBeDefined();

@@ -1,11 +1,11 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import {
-  closeLegacyHeliaStores,
-  openLegacyHeliaStores,
+  closeHeliaStores,
+  openHeliaStores,
 } from './store-lifecycle.js';
 
-describe('legacy Helia store lifecycle', () => {
-  test('opens each distinct legacy store and closes in reverse order', async () => {
+describe('Helia store lifecycle', () => {
+  test('opens each distinct configured store and closes in reverse order', async () => {
     const calls: string[] = [];
     const datastore = {
       open: jest.fn(async () => calls.push('open datastore')),
@@ -16,13 +16,13 @@ describe('legacy Helia store lifecycle', () => {
       close: jest.fn(async () => calls.push('close blockstore')),
     };
 
-    const opened = await openLegacyHeliaStores(
+    const opened = await openHeliaStores(
       datastore,
       blockstore,
       datastore,
       {},
     );
-    await closeLegacyHeliaStores(opened);
+    await closeHeliaStores(opened);
 
     expect(calls).toEqual([
       'open datastore',
@@ -46,7 +46,7 @@ describe('legacy Helia store lifecycle', () => {
       close: jest.fn(async () => firstCloseFinished),
     };
 
-    const closing = closeLegacyHeliaStores([first, second]);
+    const closing = closeHeliaStores([first, second]);
     await Promise.resolve();
 
     expect(second.close).toHaveBeenCalledTimes(1);
@@ -70,7 +70,7 @@ describe('legacy Helia store lifecycle', () => {
     };
 
     await expect(
-      closeLegacyHeliaStores([first, second]),
+      closeHeliaStores([first, second]),
     ).resolves.toBeUndefined();
     expect(first.close).toHaveBeenCalledTimes(1);
   });
@@ -87,7 +87,7 @@ describe('legacy Helia store lifecycle', () => {
       }),
     };
 
-    await expect(openLegacyHeliaStores(first, second)).rejects.toBe(failure);
+    await expect(openHeliaStores(first, second)).rejects.toBe(failure);
     expect(first.close).toHaveBeenCalledTimes(1);
   });
 });
