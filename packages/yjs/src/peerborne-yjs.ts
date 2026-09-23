@@ -351,8 +351,8 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       }
       welcomeRecipient = raw.welcomeRecipient;
     }
-    // The `pathUpdate` field is the serialized v1|v2 union. Its internal
-    // shape is validated by the decoder selected by protocol negotiation.
+    // The `pathUpdate` field carries the current V2 format. Its internal
+    // shape is validated by the strict PathUpdate decoder.
     // Reject obviously malformed
     // top-level values (null / array / primitive) here so a peer who
     // sends e.g. `pathUpdate: 42` doesn't propagate that through to the

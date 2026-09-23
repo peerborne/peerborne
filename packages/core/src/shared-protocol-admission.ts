@@ -10,7 +10,7 @@ export interface SharedProtocolHandlerAdmission {
   ): Promise<SharedProtocolMutationResult<T>>;
 }
 
-/** Preserve direct-call compatibility, but fail closed for an expired token. */
+/** Local queued work has no network deadline; expired handler tokens fail closed. */
 export function isSharedProtocolHandlerActive(
   admission: SharedProtocolHandlerAdmission | undefined,
 ): boolean {

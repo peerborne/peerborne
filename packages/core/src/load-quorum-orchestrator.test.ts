@@ -1826,10 +1826,10 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // the LOSING hash. The previous behaviour widened trust scope to
     // escape this edge case, defeating the very narrowing the gate
     // exists to enforce. The fix raises a structured
-    // `LoadQuorumFailedError(no-majority)` so the caller sees the same
+    // `LoadQuorumFailedError(no-agreement)` so the caller sees the same
     // contract as any other quorum failure.
 
-    test('unstable peerIdOf that maps probe-round ids to non-existent post-narrowing ids => LoadQuorumFailedError(no-majority)', async () => {
+    test('unstable peerIdOf that maps probe-round ids to non-existent post-narrowing ids => LoadQuorumFailedError(no-agreement)', async () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       // Probe round sees ids `p1/p2/p3`; narrowing round sees totally
@@ -1851,7 +1851,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       }).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(LoadQuorumFailedError);
-      expect((err as LoadQuorumFailedError).reason).toBe('no-majority');
+      expect((err as LoadQuorumFailedError).reason).toBe('no-agreement');
       // Agreement map carries the winning hex + the count of agreeing
       // peers so observability is preserved across the fail-closed path.
       const agreement = (err as LoadQuorumFailedError).agreement;

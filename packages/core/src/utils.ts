@@ -109,7 +109,7 @@ export type PathPrefixedHeaderDropReason =
 
 /**
  * Read and parse the path-prefixed header used by shared protocol
- * handlers (BeeKEM Welcome v1, document key-update v2), then look up
+ * handlers (BeeKEM Welcome V2 and PathUpdate V2), then look up
  * the document in the supplied registry.
  *
  * On any malformed input -- oversized request, short read, invalid

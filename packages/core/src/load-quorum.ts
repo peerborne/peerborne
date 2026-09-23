@@ -18,7 +18,7 @@ export type LoadQuorumDecision =
     }
   | {
       ok: false;
-      reason: 'insufficient-responses' | 'no-majority' | 'no-peers-queried';
+      reason: 'insufficient-responses' | 'no-agreement' | 'no-peers-queried';
       respondingCount: number;
       effectiveQ: number;
       agreement: Map<string, number>;
@@ -82,7 +82,7 @@ export function decideLoadQuorum(
         ? 'no-peers-queried'
         : respondingCount < q
           ? 'insufficient-responses'
-          : 'no-majority',
+          : 'no-agreement',
     respondingCount,
     effectiveQ: q,
     agreement: new Map(
@@ -103,8 +103,7 @@ export function decideLoadQuorum(
  * Worked examples:
  *   - K=1 → Q=1
  *   - K=2 → Q=2
- *   - K=3 → Q=2 (previously K=3 → Q=3 under
- *     `Math.ceil(K/2)+1`, which required all three peers to vote)
+ *   - K=3 → Q=2
  *   - K=4 → Q=3
  *   - K=5 → Q=3
  *   - K=7 → Q=4
@@ -400,12 +399,11 @@ export function formatConfigValue(value: unknown): string {
 /**
  * The set of reasons `LoadQuorumFailedError` can be thrown with.
  *
- *   - `'insufficient-responses'` — fewer than `Q` peers returned a usable
- *     tip-set hash within the configured timeout (timeouts, declines,
+ *   - `'insufficient-responses'` — fewer than `Q` authorities returned a usable
+ *     authenticated state digest within the configured timeout (timeouts, declines,
  *     decryption failures).
- *   - `'no-majority'` — historical identifier retained for compatibility:
- *     peers responded but no single tip-set hash reached Q. Q may be an
- *     explicitly configured non-majority threshold.
+ *   - `'no-agreement'` — peers responded but no single authenticated state
+ *     digest reached Q. Q may be an explicitly configured non-majority threshold.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
  *   - `'invalid-config'` — the operator misconfigured the gate (e.g.
@@ -414,10 +412,10 @@ export function formatConfigValue(value: unknown): string {
  *     failure so the misconfiguration is loud at `open()` time.
  *   - `'bind-check-failed-all-agreeing-peers'` — quorum agreement was
  *     reached, but EVERY peer in the agreeing cohort served a full-load
- *     response whose `tips` array did not hash to `winningHashHex` (or
- *     omitted `tips` entirely). Distinct from `'no-majority'` so callers
- *     can tell "no peer was even willing to vote" apart from "the agreeing
- *     cohort was entirely Byzantine on the load step". Surfaced by
+ *     response did not match the authenticated state digest, including its
+ *     served frontier, response manifest, and security commitments. Distinct
+ *     from `'no-agreement'` so callers can distinguish vote disagreement from
+ *     inconsistent full responses. Surfaced by
  *     `PeerborneDocument.load()` after exhausting every narrowed peer.
  *     Without the per-peer retry, a single malicious peer in the agreeing
  *     cohort could vote for the agreed hash and then serve a mismatched
@@ -426,7 +424,7 @@ export function formatConfigValue(value: unknown): string {
  */
 export type LoadQuorumFailedReason =
   | 'insufficient-responses'
-  | 'no-majority'
+  | 'no-agreement'
   | 'no-peers-queried'
   | 'invalid-config'
   | 'bind-check-failed-all-agreeing-peers'
@@ -459,7 +457,7 @@ export class LoadQuorumFailedError extends Error {
    *  tip-hash votes. Timeouts and
    *  non-disclaim declines do NOT increment this. Used to distinguish
    *  `'insufficient-responses'` (< Q peers responded at all) from
-   *  `'no-majority'` (≥ Q responded but no single bucket reached Q). */
+   *  `'no-agreement'` (≥ Q responded but no single bucket reached Q). */
   public readonly respondingCount: number;
   /** The effective Q threshold the loader was holding peers to. */
   public readonly requiredQ: number;

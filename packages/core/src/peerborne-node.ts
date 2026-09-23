@@ -272,9 +272,4 @@ export class PeerborneNode<
       },
     );
   }
-
-  /** Stop Node-owned background listeners. None are currently registered. */
-  public stop() {
-    // Reserved for lifecycle compatibility.
-  }
 }

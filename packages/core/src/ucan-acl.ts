@@ -161,7 +161,7 @@ interface CapturedBackingFinalizer {
  * Promises with unsafe constructor/species hooks cannot be safely observed and
  * may still produce an unhandled rejection; backing providers must not return
  * asynchronous values from synchronous operations.
- * Backing `current()` remains an opaque generic value for compatibility. Its
+ * Backing `current()` returns the provider's opaque generic state value. Its
  * synchronous contract is mandatory: runtime checks detect ordinary native
  * Promises and visible thenables, but JavaScript exposes no hook-free Promise
  * brand predicate for an object with deliberately forged prototype and

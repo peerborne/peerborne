@@ -62,7 +62,7 @@ and [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packa
 The removed-member cases in
 [`beekem-revocation.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/beekem-revocation.test.ts)
 and the encoded-delivery cases in
-[`peerborne-document-beekem-revocation.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document-beekem-revocation.test.ts)
+[`beekem-revocation-wire.test.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/beekem-revocation-wire.test.ts)
 provide the focused evidence for that primitive property.
 
 ### GC and bounded caches
