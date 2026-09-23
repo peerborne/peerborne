@@ -15,7 +15,7 @@ import { bootstrap } from '@libp2p/bootstrap'
 import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'
 
 const SYNC_TOPIC = '/peerborne/integration-test/sync'
-const DISCOVERY_TOPIC = 'swarmdb._peer-discovery._p2p._pubsub'
+const DISCOVERY_TOPIC = 'peerborne._peer-discovery._p2p._pubsub'
 
 // UI elements
 const statusEl = document.getElementById('status')

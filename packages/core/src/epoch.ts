@@ -13,7 +13,7 @@ export const EPOCH_ID_LENGTH = 32;
 export const GCM_NONCE_LENGTH = 12;
 
 /** HKDF info string for deriving the epoch secret. */
-export const EPOCH_SECRET_INFO = 'swarmdb-epoch-v1';
+export const EPOCH_SECRET_INFO = 'peerborne-epoch-v1';
 
 /**
  * HKDF info strings for deriving encryption keys, keyed by algorithm.
@@ -92,7 +92,7 @@ export async function generateEpochId(
  * Derive an epoch secret from the group key agreement output using HKDF-SHA256.
  *
  * ```
- * epoch_secret = HKDF-SHA256(ikm: groupKeyAgreementOutput, salt: epochId, info: "swarmdb-epoch-v1")
+ * epoch_secret = HKDF-SHA256(ikm: groupKeyAgreementOutput, salt: epochId, info: "peerborne-epoch-v1")
  * ```
  *
  * @param groupKeyAgreementOutput - The raw shared secret from the group key agreement protocol.

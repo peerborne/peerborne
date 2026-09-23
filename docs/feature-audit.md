@@ -91,10 +91,9 @@ Status meanings:
 
 ## Cross-cutting design findings
 
-1. Public packages, APIs, documentation, and error messages now use
-   **Peerborne**. Historical `swarmdb` and `collabswarm` strings remain only
-   where changing protocol, key-derivation, Redux, or persisted-storage
-   identifiers would break compatibility; see `MIGRATING.md`.
+1. Runtime protocol identifiers, key-derivation domains, Redux actions, and
+   default local-storage names use **Peerborne** identifiers. There are no
+   compatibility aliases; see `MIGRATING.md`.
 2. The core barrel eagerly imports the complete networking/storage stack. This
    makes simple adapter and serializer consumers pay a large bundle cost and
    increases the chance that environment-specific dependencies leak across the

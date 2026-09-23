@@ -8,7 +8,7 @@
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2'
 
 /** Topic the relay subscribes to so it can forward peer-discovery messages. */
-export const PUBSUB_PEER_DISCOVERY_TOPIC = 'swarmdb._peer-discovery._p2p._pubsub'
+export const PUBSUB_PEER_DISCOVERY_TOPIC = 'peerborne._peer-discovery._p2p._pubsub'
 
 /** Default cap on the number of auto-subscribed topics. */
 export const DEFAULT_MAX_AUTO_TOPICS = 1000

@@ -89,7 +89,7 @@ export function initializeAsync<
   };
 }
 
-export const INITIALIZE = 'COLLABSWARM_INITIALIZE';
+export const INITIALIZE = 'PEERBORNE_INITIALIZE';
 export interface InitializeAction<
   DocType,
   ChangesType,
@@ -178,7 +178,7 @@ export function connectAsync<
   };
 }
 
-export const CONNECT = 'COLLABSWARM_CONNECT';
+export const CONNECT = 'PEERBORNE_CONNECT';
 export interface ConnectAction extends Action<typeof CONNECT> {
   addresses: string[];
   _trace?: string;
@@ -281,7 +281,7 @@ export function openDocumentAsync<
   };
 }
 
-export const OPEN_DOCUMENT = 'COLLABSWARM_OPEN_DOCUMENT';
+export const OPEN_DOCUMENT = 'PEERBORNE_OPEN_DOCUMENT';
 export interface OpenDocumentAction<
   DocType,
   ChangesType,
@@ -376,7 +376,7 @@ export function closeDocumentAsync<
   };
 }
 
-export const CLOSE_DOCUMENT = 'COLLABSWARM_CLOSE_DOCUMENT';
+export const CLOSE_DOCUMENT = 'PEERBORNE_CLOSE_DOCUMENT';
 export interface CloseDocumentAction extends Action<typeof CLOSE_DOCUMENT> {
   documentId: string;
   _trace?: string;
@@ -385,7 +385,7 @@ export function closeDocument(documentId: string, _trace?: string): CloseDocumen
   return { type: CLOSE_DOCUMENT, documentId, ...(_trace != null && { _trace }) };
 }
 
-export const SYNC_DOCUMENT = 'COLLABSWARM_SYNC_DOCUMENT';
+export const SYNC_DOCUMENT = 'PEERBORNE_SYNC_DOCUMENT';
 export interface SyncDocumentAction<DocType>
   extends Action<typeof SYNC_DOCUMENT> {
   documentId: string;
@@ -451,7 +451,7 @@ export function changeDocumentAsync<
   };
 }
 
-export const CHANGE_DOCUMENT = 'COLLABSWARM_CHANGE_DOCUMENT';
+export const CHANGE_DOCUMENT = 'PEERBORNE_CHANGE_DOCUMENT';
 export interface ChangeDocumentAction<DocType>
   extends Action<typeof CHANGE_DOCUMENT> {
   documentId: string;
@@ -466,7 +466,7 @@ export function changeDocument<DocType>(
   return { type: CHANGE_DOCUMENT, documentId, document, ...(_trace != null && { _trace }) };
 }
 
-export const PEER_CONNECT = 'COLLABSWARM_PEER_CONNECT';
+export const PEER_CONNECT = 'PEERBORNE_PEER_CONNECT';
 export interface PeerConnectAction extends Action<typeof PEER_CONNECT> {
   peerAddress: string;
   _trace?: string;
@@ -475,7 +475,7 @@ export function peerConnect(peerAddress: string, _trace?: string): PeerConnectAc
   return { type: PEER_CONNECT, peerAddress, ...(_trace != null && { _trace }) };
 }
 
-export const PEER_DISCONNECT = 'COLLABSWARM_PEER_DISCONNECT';
+export const PEER_DISCONNECT = 'PEERBORNE_PEER_DISCONNECT';
 export interface PeerDisconnectAction extends Action<typeof PEER_DISCONNECT> {
   peerAddress: string;
   _trace?: string;

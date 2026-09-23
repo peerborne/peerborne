@@ -167,7 +167,7 @@ export class IDBIndexStorage implements IndexStorage {
   private _physicalIndexes: Map<string, IndexKeyDefinition[]> = new Map();
   private _fields: Map<string, IndexFieldDefinition[]> = new Map();
 
-  constructor(dbName: string = 'collabswarm-index') {
+  constructor(dbName: string = 'peerborne-index') {
     this._dbName = dbName;
   }
 
