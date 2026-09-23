@@ -132,7 +132,6 @@ import { LRUCache } from './lru-cache.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
@@ -284,7 +283,6 @@ export {
   canonicalEntryPayload,
   computeEntryHash,
   // Wire protocols
-  bloomFilterUpdateV1,
   beekemWelcomeV2,
   beekemPathUpdateV2,
   searchIndexAdvertiseV1,
