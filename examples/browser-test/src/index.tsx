@@ -33,6 +33,7 @@ declare global {
     __PEERBORNE_TEST__?: {
       identityFingerprint: () => string;
       open: (path: string) => Promise<unknown>;
+      create: (path: string) => Promise<unknown>;
       createInvitation: (
         path: string,
         role?: 'reader' | 'editor',
@@ -122,6 +123,7 @@ if (testIdentityFingerprint !== undefined) {
   window.__PEERBORNE_TEST__ = {
     identityFingerprint: () => testIdentityFingerprint,
     open: (path) => store.dispatch<any>(openDocumentAsync(path)),
+    create: (path) => store.dispatch<any>(openDocumentAsync(path, undefined, 'create')),
     createInvitation: async (path, role = 'editor') => {
       const documentRef = store.getState().documents[path]?.documentRef;
       if (!documentRef) throw new Error(`Document is not open: ${path}`);

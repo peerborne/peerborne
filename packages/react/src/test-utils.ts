@@ -26,6 +26,7 @@ export function createMockDocument(data: any = { test: 'data' }): any {
   const subscriptions = new Map<string, { handler: Function; filter: string }>();
   return {
     open: jest.fn(() => Promise.resolve()),
+    create: jest.fn(() => Promise.resolve()),
     close: jest.fn(() => Promise.resolve()),
     getReaders: jest.fn(() => Promise.resolve(['reader1'])),
     getWriters: jest.fn(() => Promise.resolve(['writer1'])),
@@ -78,12 +79,14 @@ export function TestConsumer(props: {
   peerborne: any;
   documentPath: string;
   originFilter?: 'all' | 'remote' | 'local';
+  initialization?: 'open' | 'create';
   captureRef?: { current: any };
 }) {
   const [docData, changeFn, acl] = usePeerborneDocumentState(
     props.peerborne,
     props.documentPath,
     props.originFilter,
+    props.initialization,
   );
   if (props.captureRef) {
     props.captureRef.current = { docData, changeFn, acl };

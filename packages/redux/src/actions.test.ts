@@ -73,6 +73,7 @@ describe('peerborne-redux async thunks', () => {
     mockDocRef = {
       document: { text: 'init' },
       open: jest.fn().mockResolvedValue(true),
+      create: jest.fn().mockResolvedValue(false),
       close: jest.fn().mockResolvedValue(undefined),
       change: jest.fn().mockImplementation(async (fn: any) => mockDocRef.document),
       subscribe: jest.fn(),
@@ -112,6 +113,25 @@ describe('peerborne-redux async thunks', () => {
     const result = await actions.openDocumentAsync('/doc')(dispatch, getState);
     expect(result).toBe(mockDocRef);
     expect(mockDocRef.open).toHaveBeenCalled();
+  });
+
+  test('creates only when explicitly requested', async () => {
+    mockNode.doc.mockReturnValue(mockDocRef);
+    getState.mockReturnValue({ node: mockNode, documents: {}, peers: [] });
+    await actions.openDocumentAsync('/new', undefined, 'create')(dispatch, getState);
+    expect(mockDocRef.create).toHaveBeenCalledTimes(1);
+    expect(mockDocRef.open).not.toHaveBeenCalled();
+  });
+
+  test('does not create after an open failure and releases its subscription', async () => {
+    mockNode.doc.mockReturnValue(mockDocRef);
+    getState.mockReturnValue({ node: mockNode, documents: {}, peers: [] });
+    mockDocRef.open.mockRejectedValue(new Error('No trusted state'));
+    await expect(actions.openDocumentAsync('/existing')(dispatch, getState)).rejects.toThrow('No trusted state');
+    expect(mockDocRef.create).not.toHaveBeenCalled();
+    expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/existing');
+    expect(mockDocRef.close).toHaveBeenCalledTimes(1);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   test('closeDocumentAsync closes open document', async () => {
