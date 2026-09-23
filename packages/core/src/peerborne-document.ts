@@ -8017,9 +8017,10 @@ export class PeerborneDocument<
 
   /**
    * Remove a user's explicit write authorization while preserving their
-   * explicit reader authorization. A writer-only legacy member is rejected:
-   * this operation does not rotate document keys, so silently removing its
-   * only ACL row would misrepresent retained read access as full revocation.
+   * explicit reader authorization. A writer without explicit reader
+   * membership is rejected: this operation does not rotate document keys, so
+   * silently removing its only ACL row would misrepresent retained read access
+   * as full revocation.
    * To fully revoke an editor, first downgrade it here, then call
    * `removeReader` so the reader-removal flow rotates the BeeKEM epoch.
    *
