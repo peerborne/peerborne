@@ -27,7 +27,8 @@ import {
   shuffleArray,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import { wrapStream, type DuplexStream } from './stream-adapter.js';
+import type { Stream } from '@libp2p/interface';
+import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
   AuthProvider,
@@ -2880,7 +2881,7 @@ export class PeerborneDocument<
 
   private async _sendAuthorizedLoadResponse(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     data: Iterable<Uint8Array>,
     bootstrapRevision: number,
     admission?: SharedProtocolHandlerAdmission,
@@ -2902,10 +2903,10 @@ export class PeerborneDocument<
         }
         if (!isSharedProtocolHandlerActive(admission)) return;
         if (!authorized) {
-          return { completion: stream.sink([] as Iterable<Uint8Array>) };
+          return { completion: writeStream(stream, [] as Iterable<Uint8Array>) };
         }
         this._assertBootstrapResponseRevision(bootstrapRevision);
-        return { completion: stream.sink(data) };
+        return { completion: writeStream(stream, data) };
       });
       if (conflict === undefined) {
         await dispatch?.completion;
@@ -4077,7 +4078,7 @@ export class PeerborneDocument<
    */
   public async handleLoadRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4085,14 +4086,14 @@ export class PeerborneDocument<
       if (!isSharedProtocolHandlerActive(admission)) return;
       if (message.documentId !== this.documentPath) {
         console.warn('Shared doc-load request targeted the wrong document');
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared doc-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4178,7 +4179,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4196,7 +4197,7 @@ export class PeerborneDocument<
    */
   public async handleSnapshotLoadRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4206,14 +4207,14 @@ export class PeerborneDocument<
         console.warn(
           'Shared snapshot-load request targeted the wrong document',
         );
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared snapshot-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4223,7 +4224,7 @@ export class PeerborneDocument<
         // No snapshot available -- respond with empty payload so the peer
         // can fall back to the normal doc-load protocol.
         console.log('No snapshot available; sending an empty response');
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
@@ -4283,7 +4284,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4319,7 +4320,7 @@ export class PeerborneDocument<
    */
   public async handleTipAdvertiseRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4336,7 +4337,7 @@ export class PeerborneDocument<
         console.warn(
           'Shared tip-advertise request targeted the wrong document',
         );
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
@@ -4345,7 +4346,7 @@ export class PeerborneDocument<
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared tip-advertise request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4422,7 +4423,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4527,7 +4528,7 @@ export class PeerborneDocument<
    *   `false` return value (by trying the next available peer) and thrown errors.
    */
   private async _sendLoadRequestAndSync(
-    stream: Pick<DuplexStream, 'sink' | 'source' | 'abort'>,
+    stream: Pick<Stream, 'send' | 'onDrain' | 'close' | 'abort' | typeof Symbol.asyncIterator>,
     serializedRequest: Uint8Array,
     expectedTipsHashHex: string | null = null,
     requiredResponseSigner?: PublicKey,
@@ -4612,13 +4613,13 @@ export class PeerborneDocument<
       }, responseTimeoutMs);
     });
     try {
-      await Promise.race([pipe([serializedRequest], stream.sink), deadline]);
+      await Promise.race([writeStream(stream, [serializedRequest]), deadline]);
     } catch (error) {
       clearResponseDeadline();
       throw error;
     }
     return await pipe(
-      stream.source,
+      stream,
       async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
         let assembled: Uint8Array;
         const readResponse = readUint8Iterable(source, responseLimit).catch(
@@ -5676,13 +5677,13 @@ export class PeerborneDocument<
     // closed -- on partitioned/slow peers, each `load()` could leak K
     // streams, exhausting per-connection stream quotas.
     let rawStream: import('@libp2p/interface').Stream;
-    let stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> };
+    let stream: Stream;
     try {
       rawStream = await this.libp2p.dialProtocol(peer, [tipAdvertiseV1], {
         runOnLimitedConnection: true,
         signal,
       });
-      stream = wrapStream(rawStream);
+      stream = rawStream;
     } catch {
       // Peer doesn't support tip-advertise or dial failed -- treat as non-vote.
       return null;
@@ -5718,7 +5719,7 @@ export class PeerborneDocument<
       signal.addEventListener('abort', onAbort, { once: true });
     }
     try {
-      await pipe([serializedRequest], stream.sink);
+      await writeStream(stream, [serializedRequest]);
       // Size-bound the tip-advertise response read. A `tipAdvertiseV1`
       // body is an encrypted `CRDTSyncMessage` carrying the `documentId`
       // (up to `MAX_DOCUMENT_PATH_LENGTH` bytes BEFORE encryption — this
@@ -5736,7 +5737,7 @@ export class PeerborneDocument<
       // surrounding `try { ... } catch { return null; }` — surfacing as a
       // non-vote (same outcome as a timeout), NOT a quorum disagreement.
       const assembled = await readUint8Iterable(
-        stream.source,
+        stream,
         MAX_TIP_ADVERTISE_RESPONSE_SIZE,
       );
       if (assembled.length === 0) {
@@ -6001,7 +6002,7 @@ export class PeerborneDocument<
                 signature: this._serializeSignature(signatureBytes),
               });
             return this._sendLoadRequestAndSync(
-              wrapStream(rawStream),
+              rawStream,
               serializedRequest,
               null,
               issuerPublicKey,
@@ -6358,13 +6359,9 @@ export class PeerborneDocument<
       if (this._compactionConfig.enabled) {
         try {
           console.log('Trying snapshot-load from peer:', peer.toString());
-          // dialProtocol returns a libp2p v3 `Stream` (event-driven, with a
-          // `send()`/iterator pair). Wrap it into the v2 `{ source, sink }`
-          // duplex shape that `_sendLoadRequestAndSync` (and the legacy
-          // `it-pipe` calls inside it) still expects.
-          const snapshotStream = wrapStream(await this.libp2p.dialProtocol(peer, [
+          const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV3,
-          ], { runOnLimitedConnection: true }));
+          ], { runOnLimitedConnection: true });
           const loaded = await this._sendLoadRequestAndSync(
             snapshotStream,
             serializedRequest,
@@ -6405,10 +6402,9 @@ export class PeerborneDocument<
 
       try {
         console.log('Trying doc-load from peer:', peer.toString());
-        // See snapshot-load above for why we wrap the v3 Stream here.
-        const docStream = wrapStream(await this.libp2p.dialProtocol(peer, [
+        const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV3,
-        ], { runOnLimitedConnection: true }));
+        ], { runOnLimitedConnection: true });
         const loaded = await this._sendLoadRequestAndSync(
           docStream,
           serializedRequest,
@@ -9246,12 +9242,10 @@ export class PeerborneDocument<
     const failedPeers: string[] = [];
     for (const peer of peers) {
       try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemWelcomeV2], {
+        const stream = await this.libp2p.dialProtocol(peer, [beekemWelcomeV2], {
             runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
+          });
+        await writeStream(stream, [payload]);
       } catch (err) {
         failedPeers.push(peer.toString());
         console.warn(
@@ -10456,12 +10450,10 @@ export class PeerborneDocument<
     const failedPeers: string[] = [];
     for (const peer of peers) {
       try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemPathUpdateV2], {
+        const stream = await this.libp2p.dialProtocol(peer, [beekemPathUpdateV2], {
             runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
+          });
+        await writeStream(stream, [payload]);
       } catch (err) {
         failedPeers.push(peer.toString());
         console.warn(

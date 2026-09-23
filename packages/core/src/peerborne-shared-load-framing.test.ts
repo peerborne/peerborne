@@ -1,3 +1,4 @@
+import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { Peerborne } from './peerborne.js';
@@ -166,9 +167,9 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
+          stream: ProtocolWriteStream,
         ) => {
-          await stream.sink([response]);
+          await writeStream(stream, [response]);
         },
       );
       (peerborne as any)._documentRegistry.set('/fragmented', {
@@ -232,8 +233,8 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
-        ) => stream.sink([response]),
+          stream: ProtocolWriteStream,
+        ) => writeStream(stream, [response]),
       );
       (peerborne as any)._documentRegistry.set('/registered', {
         handleLoadRequestData: documentHandler,

@@ -270,16 +270,18 @@ describe('concrete inbound handler log redaction', () => {
         },
         _keychain: { current },
       });
-      const sink = jest.fn(async () => undefined);
+      const responseSend = jest.fn(() => true);
+      const responseClose = jest.fn(async () => undefined);
       const logs = captureFailureLogs();
 
       try {
         await document[methodName](
           { documentId: privatePath, signature: 'AA==' },
-          { sink },
+          { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
-        expect(sink).toHaveBeenCalledTimes(1);
-        expect(sink).toHaveBeenCalledWith([]);
+        expect(responseClose).toHaveBeenCalledTimes(1);
+        expect(responseSend).not.toHaveBeenCalled();
+        expect(responseClose).toHaveBeenCalled();
         expect(current).not.toHaveBeenCalled();
       } finally {
         logs.restore();
@@ -338,16 +340,18 @@ describe('concrete inbound handler log redaction', () => {
         },
         _writers: { users: async () => [] },
       });
-      const sink = jest.fn(async () => undefined);
+      const responseSend = jest.fn(() => true);
+      const responseClose = jest.fn(async () => undefined);
       const logs = captureFailureLogs();
 
       try {
         await document[methodName](
           { documentId: privatePath, signature: 'signature' },
-          { sink },
+          { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);
-        expect(sink).toHaveBeenCalledWith([]);
+        expect(responseSend).not.toHaveBeenCalled();
+        expect(responseClose).toHaveBeenCalled();
         expect(logs.text()).not.toContain(privateFailure);
         expect(logs.text()).not.toContain(privatePath);
       } finally {

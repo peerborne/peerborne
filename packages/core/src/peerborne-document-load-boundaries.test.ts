@@ -133,10 +133,12 @@ function signedLoadHarness(
     _bootstrapLoadApplicationRevision: 0,
   });
   const stream = {
-    sink: jest.fn(async () => undefined),
-    source: (async function* () {
+    send: jest.fn(() => true),
+    onDrain: async () => undefined,
+    close: jest.fn(async () => undefined),
+    [Symbol.asyncIterator]: async function* () {
       yield new Uint8Array([1, 2, 3]);
-    })(),
+    },
     abort: jest.fn(),
   };
   return { document, stream };
@@ -163,10 +165,12 @@ describe('document load response boundaries', () => {
       _syncValidatedProtocolMessage: syncValidatedProtocolMessage,
     });
     const stream = {
-      sink: jest.fn(async () => undefined),
-      source: (async function* () {
+      send: jest.fn(() => true),
+      onDrain: async () => undefined,
+      close: jest.fn(async () => undefined),
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
       abort: jest.fn(),
     };
 
@@ -1599,9 +1603,9 @@ describe('document load response boundaries', () => {
     document._hashes.add('existing-change');
     const nextStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(nextStream, new Uint8Array([1])),
@@ -1665,9 +1669,9 @@ describe('document load response boundaries', () => {
     );
     const attackerStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(
@@ -1737,9 +1741,9 @@ describe('document load response boundaries', () => {
     );
     const attackerStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(
@@ -1802,9 +1806,9 @@ describe('document load response boundaries', () => {
     });
     const retryStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
@@ -1851,9 +1855,9 @@ describe('document load response boundaries', () => {
 
     const retryStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
@@ -1896,9 +1900,9 @@ describe('document load response boundaries', () => {
     });
     const malformedStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(
@@ -1925,9 +1929,9 @@ describe('document load response boundaries', () => {
     );
     const retryStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
@@ -1971,9 +1975,9 @@ describe('document load response boundaries', () => {
 
     const writerStream = {
       ...stream,
-      source: (async function* () {
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1, 2, 3]);
-      })(),
+      },
     };
     await expect(
       document._sendLoadRequestAndSync(writerStream, new Uint8Array([1])),
@@ -2000,7 +2004,7 @@ describe('document load response boundaries', () => {
       ),
     ).resolves.toBe(false);
 
-    expect(stream.sink).not.toHaveBeenCalled();
+    expect(stream.send).not.toHaveBeenCalled();
     expect(stream.abort).toHaveBeenCalledWith(
       expect.objectContaining({
         message: 'Document load rejected on poisoned instance',
@@ -3007,11 +3011,11 @@ describe('document load response boundaries', () => {
       async () => ['issuer'],
       async () => true,
     );
-    stream.source = (async function* () {
+    stream[Symbol.asyncIterator] = async function* () {
       sourceStarted.resolve();
       await releaseSource.promise;
       yield new Uint8Array([1, 2, 3]);
-    })();
+    };
     document._bootstrapLoadApplicationState = 'pending';
     document._activeInvitationBootstrapContinuation = continuation;
     document._syncUnlocked = jest.fn(async () => {
@@ -3646,7 +3650,8 @@ describe('document load response boundaries', () => {
   test('does not send a response assembled across a bootstrap ABA transition', async () => {
     const signingStarted = deferred<void>();
     const releaseSigning = deferred<string>();
-    const sink = jest.fn(async () => undefined);
+    const responseSend = jest.fn(() => true);
+    const responseClose = jest.fn(async () => undefined);
     const document = fakeDocument({
       documentPath: '/response-aba',
       _bootstrapLoadApplicationState: 'complete',
@@ -3675,7 +3680,7 @@ describe('document load response boundaries', () => {
 
     const response = document.handleTipAdvertiseRequestData(
       { documentId: '/response-aba' },
-      { sink },
+      { send: responseSend, close: responseClose, onDrain: async () => {} },
     );
     await signingStarted.promise;
     document._markBootstrapStateApplicationPending();
@@ -3690,8 +3695,9 @@ describe('document load response boundaries', () => {
     } finally {
       consoleError.mockRestore();
     }
-    expect(sink).toHaveBeenCalledTimes(1);
-    expect(sink).toHaveBeenCalledWith([]);
+    expect(responseClose).toHaveBeenCalledTimes(1);
+    expect(responseSend).not.toHaveBeenCalled();
+    expect(responseClose).toHaveBeenCalled();
   });
 
   test.each([
@@ -3705,7 +3711,8 @@ describe('document load response boundaries', () => {
       const releaseResponseConstruction = deferred<void>();
       const mutationQueue = new InvitationMembershipQueue();
       let authorized = true;
-      const sink = jest.fn(async () => undefined);
+      const responseSend = jest.fn(() => true);
+      const responseClose = jest.fn(async () => undefined);
       const document = fakeDocument({
         documentPath: '/response-revocation',
         _bootstrapLoadApplicationState: 'complete',
@@ -3749,7 +3756,7 @@ describe('document load response boundaries', () => {
 
       const response = document[methodName](
         { documentId: '/response-revocation', signature: 'AAAA' },
-        { sink },
+        { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
       await responseConstructionPaused.promise;
       await mutationQueue.run(async () => {
@@ -3759,8 +3766,9 @@ describe('document load response boundaries', () => {
       await expect(response).resolves.toBeUndefined();
 
       expect(document._readers.users).toHaveBeenCalledTimes(2);
-      expect(sink).toHaveBeenCalledTimes(1);
-      expect(sink).toHaveBeenCalledWith([]);
+      expect(responseClose).toHaveBeenCalledTimes(1);
+      expect(responseSend).not.toHaveBeenCalled();
+      expect(responseClose).toHaveBeenCalled();
     },
   );
 
@@ -3780,7 +3788,9 @@ describe('document load response boundaries', () => {
       return ['requester'];
     });
     const otherUsers = jest.fn(async () => [] as string[]);
-    const sink = jest.fn(async () => undefined);
+    const send = jest.fn((_chunk: Uint8Array) => true);
+    const close = jest.fn(async () => undefined);
+    const responseStream = { send, close, onDrain: async () => undefined };
     const document = fakeDocument({
       documentPath: '/queued-authorization-conflict',
       _bootstrapLoadApplicationState: 'complete',
@@ -3812,14 +3822,30 @@ describe('document load response boundaries', () => {
         })),
       },
     });
-    return { mutationQueue, conflictingUsers, otherUsers, sink, document };
+    return {
+      mutationQueue,
+      conflictingUsers,
+      otherUsers,
+      send,
+      close,
+      responseStream,
+      document,
+    };
   }
 
   test.each(['readers', 'writers'] as const)(
     'retries a queued %s conflict after settlement without retaining the mutation FIFO',
     async (conflictingACL) => {
       const settled = deferred<void>();
-      const { mutationQueue, conflictingUsers, otherUsers, sink, document } =
+      const {
+        mutationQueue,
+        conflictingUsers,
+        otherUsers,
+        send,
+        close,
+        responseStream,
+        document,
+      } =
         queuedAuthorizationConflictHarness(conflictingACL, settled.promise);
 
       const handling = document.handleTipAdvertiseRequestData(
@@ -3827,27 +3853,27 @@ describe('document load response boundaries', () => {
           documentId: '/queued-authorization-conflict',
           signature: 'AAAA',
         },
-        { sink },
+        responseStream,
       );
       await waitFor(() => conflictingUsers.mock.calls.length === 2);
       await expect(
         mutationQueue.run(async () => 'released'),
       ).resolves.toBe('released');
-      expect(sink).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
 
       settled.resolve();
       await expect(handling).resolves.toBeUndefined();
 
       expect(conflictingUsers).toHaveBeenCalledTimes(3);
       expect(otherUsers).toHaveBeenCalledTimes(3);
-      expect(sink).toHaveBeenCalledTimes(1);
-      expect(sink).not.toHaveBeenCalledWith([]);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalled();
     },
   );
 
   test('does not respond after a queued authorization conflict outlives the handler', async () => {
     const settled = deferred<void>();
-    const { mutationQueue, conflictingUsers, sink, document } =
+    const { mutationQueue, conflictingUsers, send, close, responseStream, document } =
       queuedAuthorizationConflictHarness('readers', settled.promise);
     let active = true;
     const admission = {
@@ -3860,7 +3886,7 @@ describe('document load response boundaries', () => {
         documentId: '/queued-authorization-conflict',
         signature: 'AAAA',
       },
-      { sink },
+      responseStream,
       admission,
     );
     await waitFor(() => conflictingUsers.mock.calls.length === 2);
@@ -3869,7 +3895,8 @@ describe('document load response boundaries', () => {
     await expect(handling).resolves.toBeUndefined();
 
     expect(conflictingUsers).toHaveBeenCalledTimes(2);
-    expect(sink).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
     await expect(
       mutationQueue.run(async () => 'released'),
     ).resolves.toBe('released');
@@ -4762,7 +4789,7 @@ describe('document load response boundaries', () => {
       _remoteHandlers: {},
     });
     const stream = {
-      close: jest.fn(async () => undefined),
+    close: jest.fn(async () => undefined),
       closeRead: jest.fn(async () => undefined),
       abort: jest.fn(),
     };
@@ -5063,10 +5090,12 @@ describe('document load response boundaries', () => {
       swarm: { config: { loadQuorumTimeoutMs: 1000 } },
     });
     const stream = {
-      sink: jest.fn(async () => undefined),
-      source: (async function* () {
+      send: jest.fn(() => true),
+      onDrain: async () => undefined,
+      close: jest.fn(async () => undefined),
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array(MAX_DOCUMENT_LOAD_RESPONSE_SIZE + 1);
-      })(),
+      },
       abort,
     };
 
@@ -5080,10 +5109,12 @@ describe('document load response boundaries', () => {
 
   test('rejects invalid load byte limits before protocol I/O', async () => {
     const stream = {
-      sink: jest.fn(async () => undefined),
-      source: (async function* () {
+      send: jest.fn(() => true),
+      onDrain: async () => undefined,
+      close: jest.fn(async () => undefined),
+      [Symbol.asyncIterator]: async function* () {
         yield new Uint8Array([1]);
-      })(),
+      },
       abort: jest.fn(),
     };
     const document = fakeDocument({
@@ -5099,7 +5130,7 @@ describe('document load response boundaries', () => {
         0,
       ),
     ).rejects.toThrow(/positive safe integer/);
-    expect(stream.sink).not.toHaveBeenCalled();
+    expect(stream.send).not.toHaveBeenCalled();
   });
 
   test('aborts a normal load whose peer withholds response EOF', async () => {
@@ -5109,8 +5140,10 @@ describe('document load response boundaries', () => {
       swarm: { config: { loadQuorumTimeoutMs: 25 } },
     });
     const stream = {
-      sink: jest.fn(async () => undefined),
-      source: {
+      send: jest.fn(() => true),
+      onDrain: async () => undefined,
+      close: jest.fn(async () => undefined),
+      ...{
         [Symbol.asyncIterator]: () => ({
           next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
         }),
@@ -5333,10 +5366,12 @@ test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
   'rejects invalid configured response limit %p before stream work',
   async (limit) => {
     const document = Object.create(PeerborneDocument.prototype) as any;
-    const sink = jest.fn();
+    const responseSend = jest.fn();
+    const responseClose = jest.fn(async () => undefined);
     await expect(document._sendLoadRequestAndSync(
-      { sink }, new Uint8Array([1]), null, undefined, limit,
+      { send: responseSend, close: responseClose, onDrain: async () => {} }, new Uint8Array([1]), null, undefined, limit,
     )).rejects.toThrow(RangeError);
-    expect(sink).not.toHaveBeenCalled();
+    expect(responseSend).not.toHaveBeenCalled();
+    expect(responseClose).not.toHaveBeenCalled();
   },
 );
