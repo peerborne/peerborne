@@ -69,12 +69,9 @@
   "devDependencies": {
     "@peculiar/webcrypto": "^1.7.1",
     "@types/node": "^22.7.5",
-    "blockstore-idb-v3": "npm:blockstore-idb@3.0.1",
-    "datastore-idb-v4": "npm:datastore-idb@4.0.1",
     "eslint": "^10.4.1",
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.9.0",
-    "helia-v6": "npm:helia@6.1.4",
     "jest": "^30.5.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
