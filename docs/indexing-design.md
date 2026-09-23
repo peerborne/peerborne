@@ -193,10 +193,8 @@ and publish it on `searchIndexAdvertiseV1`. The receiver validates:
 - a strictly increasing per-peer sequence.
 
 Accepted filters replace the previous peer snapshot. They are never OR-merged
-across time. The legacy `BloomFilterGossip` grow-only merge is suitable only as
-an approximate compatibility primitive: it cannot remove terms and an
-all-ones/stale update permanently poisons routing. It must not be treated as an
-authoritative distributed index.
+across time. Only authenticated replacement advertisements are admitted to the
+routing registry; a filter cannot prove that its sender has a matching document.
 
 Bloom filters reveal approximate holdings, fill, update timing, and equality
 patterns to anyone who has or observes the relevant tokens. They have honest

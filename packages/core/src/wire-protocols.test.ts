@@ -42,7 +42,6 @@ describe('wire protocol constant verification', () => {
 
   test('protocol name segments match expected purpose', () => {
     const expected: Record<string, string> = {
-      bloomFilterUpdateV1: 'bloom-index',
       documentLoadV3: 'doc-load',
       snapshotLoadV3: 'snapshot-load',
       tipAdvertiseV1: 'tip-advertise',
@@ -59,7 +58,6 @@ describe('wire protocol constant verification', () => {
 
   test('major version in constant name matches value', () => {
     const nameToMajor: Record<string, number> = {
-      bloomFilterUpdateV1: 1,
       documentLoadV3: 3,
       snapshotLoadV3: 3,
       tipAdvertiseV1: 1,

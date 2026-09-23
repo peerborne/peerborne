@@ -92,10 +92,8 @@ export { SubtleBlindIndexProvider } from './subtle-blind-index-provider.js';
 export { BlindIndexQuery } from './blind-index-query.js';
 export type { BlindIndexEntry } from './blind-index-query.js';
 
-// Bloom filter (distributed discovery)
+// Local Bloom-filter primitive
 export { BloomFilterCRDT } from './bloom-filter-crdt.js';
-export { BloomFilterGossip } from './bloom-filter-gossip.js';
-export type { PeerFilterState, BloomFilterGossipConfig } from './bloom-filter-gossip.js';
 
 // Distributed candidate and authorization boundary
 export type {

@@ -129,7 +129,7 @@ Authorized candidate resolution is concurrency-, per-document timeout-, and tota
 
 Plaintext candidate requests strip the global cursor/projection, request no remote count, and cannot set `allowScan: true`; the responder must still impose its own deadline, stream, byte, and CPU budgets. Exact federated counts are computed only as verified lower bounds after candidate documents pass local authorization.
 
-The older `BloomFilterGossip` grow-only OR merge remains a compatibility primitive, not an authoritative distributed index: it cannot delete terms, and a saturated or stale update persists. The new routing registry instead authenticates source peers, bounds fill/rate/size, enforces monotonic sequences, expires snapshots, and replaces rather than merges state. Neither representation proves that a peer has a matching document.
+The routing registry authenticates source peers, bounds fill/rate/size, enforces monotonic sequences, expires snapshots, and replaces previous state. An accepted advertisement still cannot prove that a peer has a matching document.
 
 See the complete [local and distributed indexing design](https://github.com/Peerborne/peerborne/blob/main/docs/indexing-design.md) for planner rules, performance semantics, threat analysis, and the remaining integration sequence.
 
