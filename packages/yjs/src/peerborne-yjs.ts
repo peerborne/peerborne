@@ -634,6 +634,8 @@ function validateYjsKeychain(doc: Doc): CanonicalKeychainEntry[] {
   const entries = validateCanonicalKeychainEntries(
     doc.getArray<unknown>('keys').toArray(),
   );
+  // Yjs 13.6 represents complete integration with null in both fields.
+  // An absent/changed internal field is unsupported, not evidence of safety.
   if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
     throw new Error('Keychain history has unresolved update dependencies');
   }
@@ -1078,7 +1080,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     if (yarr.length !== 1) {
       throw new Error('Yjs cannot export the current key replay-safely');
     }
-    return this.history();
+    return encodeStateAsUpdateV2(this._keychain);
   }
 
   /**
@@ -1113,7 +1115,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     if (startIdx !== 0) {
       throw new Error('Yjs cannot export this keychain suffix replay-safely');
     }
-    return this.history();
+    return encodeStateAsUpdateV2(this._keychain);
   }
   /**
    * Synchronous cache lookup for a key by its ID bytes.
