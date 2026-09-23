@@ -139,7 +139,6 @@ import {
 } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
-  keychainHistorySinceOrReject,
   MAX_KEYCHAIN_EPOCHS,
   type Keychain,
 } from './keychain.js';
@@ -3764,19 +3763,15 @@ export class PeerborneDocument<
         return this._keychain.history();
       case 'since_invited':
         if (this._invitationEpoch === undefined) {
-          // No recorded invitation epoch (founding member, or a node that
-          // joined before Welcome wiring landed). Request the narrowest
+          // Founding members have no invitation epoch. Request the narrowest
           // distribution interpretation. The provider rejects if its CRDT
           // cannot represent the isolated current key replay-safely.
           return await this._keychain.currentKeyChange();
         }
-        // `historySince` is optional on the Keychain interface for source
-        // compatibility. The helper rejects when the provider omits it because
-        // core cannot assume a freshly synthesized current-key delta is safe to
-        // regenerate or replay.
-        return await keychainHistorySinceOrReject(this._keychain)(
-          this._invitationEpoch,
-        );
+        if (typeof this._keychain.historySince !== 'function') {
+          throw new TypeError('Keychain must implement replay-safe history slicing');
+        }
+        return await this._keychain.historySince(this._invitationEpoch);
       case 'current_only':
       default:
         // Request only the current key. Providers reject when their CRDT cannot
@@ -7063,22 +7058,16 @@ export class PeerborneDocument<
     const hasKeychainChanges = keychainChanges !== undefined;
 
     // The built-in providers do not share one byte-level empty encoding. When
-    // staging and logical commitments are available,
-    // compare the live and projected key sequences before reserving a bootstrap
+    // bootstrapping, compare the live and projected key sequences before reserving a bootstrap
     // instance. A semantic no-op is still committed atomically so providers
     // retain causal metadata, but it does not expose new logical key state.
-    // Opaque legacy keychains retain the conservative begin-before-merge behavior.
     const preparedKeychainMerge =
       hasKeychainChanges &&
-      onStateApplicationStart !== undefined &&
-      this._keychain.prepareMerge
+      onStateApplicationStart !== undefined
         ? this._keychain.prepareMerge(keychainChanges)
         : undefined;
     let logicalKeychainStateChanged: boolean | undefined;
-    if (
-      preparedKeychainMerge?.stateCommitment &&
-      this._keychain.stateCommitment
-    ) {
+    if (preparedKeychainMerge !== undefined) {
       const [liveCommitment, preparedCommitment] = await awaitLoadWork(
         Promise.all([
           this._keychain.stateCommitment(),

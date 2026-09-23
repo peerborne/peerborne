@@ -45,15 +45,12 @@ import {
 } from './acl.js';
 import {
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -234,15 +231,12 @@ export {
   MembershipProposal,
   GroupKeyProvider,
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,

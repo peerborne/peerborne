@@ -112,10 +112,9 @@ export interface Keychain<KeychainChange, DocumentKey> {
   /**
    * Stage generation and insertion of a random document key without mutating
    * live state. Callers can finish fallible wire preparation before invoking
-   * the synchronous commit. Optional for backwards compatibility; workflows
-   * that require it must feature-detect and fail closed when absent.
+   * the synchronous commit.
    */
-  prepareKey?(): Promise<
+  prepareKey(): Promise<
     PreparedKeychainAddition<KeychainChange, DocumentKey>
   >;
 
@@ -128,12 +127,10 @@ export interface Keychain<KeychainChange, DocumentKey> {
 
   /**
    * Commit to the validated ordered logical key sequence independently of
-   * provider-specific CRDT operation identities. Optional for backwards
-   * compatibility; implementations MUST use
-   * `computeKeychainStateCommitment`, and protocols that require this binding
-   * must feature-detect it.
+   * provider-specific CRDT operation identities. Implementations MUST use
+   * `computeKeychainStateCommitment`.
    */
-  stateCommitment?(): Promise<Uint8Array>;
+  stateCommitment(): Promise<Uint8Array>;
 
   /**
    * Merges in a block of change(s) to the keychain.
@@ -204,11 +201,9 @@ export interface Keychain<KeychainChange, DocumentKey> {
 
   /**
    * Stage an epoch-key insertion without mutating live keychain state.
-   * Transactional BeeKEM membership transitions can use this optional
-   * capability to finish all fallible signing, sealing, serialization, and
-   * block preparation before a synchronous keychain/tree commit. Custom
-   * keychains that omit it cannot be used for transactional BeeKEM add/remove
-   * operations.
+   * BeeKEM membership transitions finish all fallible signing, sealing,
+   * serialization, and block preparation before a synchronous keychain/tree
+   * commit.
    *
    * `commit()` MUST either apply the staged state completely or throw before
    * mutation. It is called at most once, after every asynchronous preparation
@@ -228,7 +223,7 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * @param epochId The full-width epoch identifier.
    * @param key The encryption key for this epoch.
    */
-  prepareEpochKey?(
+  prepareEpochKey(
     epochId: Uint8Array,
     key: DocumentKey,
   ): Promise<PreparedKeychainEpoch<KeychainChange>>;
@@ -242,20 +237,20 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * and `claimCommit` capabilities without invoking accessors. Implement them
    * as ordinary prototype methods or own data-property functions.
    */
-  prepareMerge?(
+  prepareMerge(
     change: KeychainChange,
   ): PreparedKeychainMerge<KeychainChange, DocumentKey>;
 
   /**
    * Stage an authenticated, predecessor-bound standalone key append. This is
-   * intentionally distinct from `prepareMerge()` so legacy implementations
-   * cannot silently ignore append authority passed as an extra argument.
+   * distinct from `prepareMerge()` because append authority must be validated
+   * explicitly.
    * Implementations MUST require a canonical one-key projection matching
    * `expectedNewKeyId`. They may append only when the live current key matches
    * `expectedPreviousKeyId`, or return an unchanged exact replay when the live
    * sequence already ends with the expected previous/new pair and material.
    */
-  prepareAppend?(
+  prepareAppend(
     change: KeychainChange,
     intent: KeychainAppendIntent,
   ): PreparedKeychainMerge<KeychainChange, DocumentKey>;
@@ -276,48 +271,10 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * current-key-only change from existing operation history. Returning full
    * history would disclose every pre-invitation epoch.
    *
-   * Optional for backwards compatibility with `Keychain` implementations
-   * written before the `since_invited` history-visibility mode landed. When a
-   * provider does not implement this method, `since_invited` rejects rather
-   * than guessing that a newly synthesized `currentKeyChange()` is replay-safe.
-   * Custom keychains that want efficient `since_invited` filtering SHOULD
-   * implement this method directly; the next major version will make it
-   * required.
-   *
    * @param keyID The key ID marking the start of the visible window.
    * @return A block of change(s) containing only keys at or after `keyID`.
    */
-  historySince?(keyID: Uint8Array): Promise<KeychainChange>;
-}
-
-/**
- * Keychain capability for staging BeeKEM membership transitions.
- *
- * `isTransactionalKeychain` checks for both BeeKEM staging methods. A plain
- * `Keychain` remains source-compatible with implementations that omit them.
- * Workflows composing staged transitions across providers must additionally
- * require `claimCommit()` on each prepared result and fail closed when absent.
- */
-export interface TransactionalKeychain<KeychainChange, DocumentKey>
-  extends Keychain<KeychainChange, DocumentKey> {
-  prepareEpochKey(
-    epochId: Uint8Array,
-    key: DocumentKey,
-  ): Promise<PreparedKeychainEpoch<KeychainChange>>;
-
-  prepareMerge(
-    change: KeychainChange,
-  ): PreparedKeychainMerge<KeychainChange, DocumentKey>;
-}
-
-/** Return whether a keychain supports atomic BeeKEM transition staging. */
-export function isTransactionalKeychain<KeychainChange, DocumentKey>(
-  keychain: Keychain<KeychainChange, DocumentKey>,
-): keychain is TransactionalKeychain<KeychainChange, DocumentKey> {
-  return (
-    typeof keychain.prepareEpochKey === 'function' &&
-    typeof keychain.prepareMerge === 'function'
-  );
+  historySince(keyID: Uint8Array): Promise<KeychainChange>;
 }
 
 export interface PreparedKeychainEpoch<KeychainChange> {
@@ -332,16 +289,15 @@ export interface PreparedKeychainEpoch<KeychainChange> {
    * `undefined` means callers that require current-only distribution must fail
    * closed.
    */
-  readonly currentKeyChange?: KeychainChange;
+  readonly currentKeyChange: KeychainChange | undefined;
   /**
    * Claim the staged revision without changing the live keychain.
    *
    * The method and returned finalizer have the same composed-commit contract
    * as `PreparedACLChange.claimCommit()`. Workflows spanning providers must
-   * require this optional capability instead of sequencing independently
-   * fallible `commit()` calls.
+   * claim every provider before finalizing any live-state mutation.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /** Synchronous, single-use, atomic live-state commit. */
   commit(): void;
 }
@@ -396,43 +352,23 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
   getKey(keyID: Uint8Array): DocumentKey | undefined;
   /**
    * Commit to the detached staged logical key sequence with
-   * `computeKeychainStateCommitment`, when supported.
+   * `computeKeychainStateCommitment`.
    */
-  stateCommitment?(): Promise<Uint8Array>;
+  stateCommitment(): Promise<Uint8Array>;
   /**
    * Claim the staged base identity and revision without changing the live keychain.
    * Both claimCommit() and commit() must reject a replaced base, including a
    * replacement with the same numeric revision, before publishing any state.
    *
    * The method and returned finalizer have the same composed-commit contract
-   * as `PreparedACLChange.claimCommit()`. Optional for source compatibility;
-   * workflows that compose this merge with another provider transition must
-   * require it and fail closed when absent.
+   * as `PreparedACLChange.claimCommit()`. Composed transitions must claim
+   * every provider before finalizing any live-state mutation.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, atomic live-state commit. Keys already hydrated
    * through this staged view MUST become immediately available from the live
    * keychain's `getKey()` when commit returns.
    */
   commit(): void;
-}
-
-/**
- * Returns a function that invokes `keychain.historySince` when the
- * implementation provides it, and returns a rejecting function otherwise.
- * Missing history slicing is rejected: a newly generated `currentKeyChange()`
- * is not guaranteed to be operation-idempotent. No full-history fallback is
- * safe for an invitation that grants access only from its epoch onward.
- */
-export function keychainHistorySinceOrReject<KeychainChange, DocumentKey>(
-  keychain: Keychain<KeychainChange, DocumentKey>,
-): (keyID: Uint8Array) => Promise<KeychainChange> {
-  const impl = keychain.historySince;
-  if (impl) {
-    return (keyID) => impl.call(keychain, keyID);
-  }
-  return async () => {
-    throw new Error('Keychain does not support replay-safe history slicing');
-  };
 }

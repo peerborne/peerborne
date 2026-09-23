@@ -2601,7 +2601,7 @@ describe('document load response boundaries', () => {
     ['empty array', []],
     ['zero-length bytes', new Uint8Array()],
   ])(
-    'treats an %s legacy keychain change conservatively',
+    'rejects a keychain without staging for %s changes',
     async (_name, changes) => {
       const message = {
         documentId: '/load-race',
@@ -2621,12 +2621,11 @@ describe('document load response boundaries', () => {
 
       await expect(
         document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-      ).resolves.toBe(false);
+      ).rejects.toThrow(/prepareMerge/);
 
-      expect(merge).toHaveBeenCalledTimes(1);
-      expect(merge).toHaveBeenCalledWith(changes);
+      expect(merge).not.toHaveBeenCalled();
       expect(document._hashes).toEqual(new Set());
-      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
     },
   );
 
@@ -4469,7 +4468,7 @@ describe('document load response boundaries', () => {
       signatureContext: 'load-response-v3',
       tips: [],
       signature: 'AAAA',
-      keychainChanges: { providerEncoding: 'legacy-change' },
+      keychainChanges: { providerEncoding: 'one-key' },
     };
     const handler = jest.fn();
     const { document, stream } = signedLoadHarness(
@@ -4489,7 +4488,13 @@ describe('document load response boundaries', () => {
     });
     document._keychain = {
       getKey: jest.fn(() => ({})),
-      merge,
+      merge: jest.fn(),
+      stateCommitment: async () => new Uint8Array(32).fill(1),
+      prepareMerge: () => ({
+        stateCommitment: async () => new Uint8Array(32).fill(2),
+        hydrateKeys: async () => [],
+        commit: merge,
+      }),
     };
     const rawStream = {
       ...stream,
@@ -4548,7 +4553,7 @@ describe('document load response boundaries', () => {
       signatureContext: 'load-response-v3',
       tips: [],
       signature: 'AAAA',
-      keychainChanges: { providerEncoding: 'legacy-change' },
+      keychainChanges: { providerEncoding: 'one-key' },
     };
     const handler = jest.fn();
     const { document, stream } = signedLoadHarness(
@@ -4575,8 +4580,14 @@ describe('document load response boundaries', () => {
     document._writers = { users: jest.fn(async () => ['writer']) };
     document._keychain = {
       getKey: jest.fn(() => ({})),
-      merge: jest.fn(() => {
-        document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
+      merge: jest.fn(),
+      stateCommitment: async () => new Uint8Array(32).fill(1),
+      prepareMerge: () => ({
+        stateCommitment: async () => new Uint8Array(32).fill(2),
+        hydrateKeys: async () => [],
+        commit: () => {
+          document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
+        },
       }),
     };
     const rawStream = {
