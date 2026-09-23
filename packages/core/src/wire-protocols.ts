@@ -1,5 +1,3 @@
-export const bloomFilterUpdateV1 = '/peerborne/bloom-index/1.0.0';
-
 // V3 doc-load and snapshot-load handlers use a shared handler model where
 // a single handler serves all documents. They include an explicit `tips`
 // field in the SIGNED `CRDTSyncMessage` payload so the loader can bind the
