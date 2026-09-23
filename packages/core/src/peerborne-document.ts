@@ -2828,8 +2828,7 @@ export class PeerborneDocument<
           keyIDLength <= 0 ||
           !Number.isSafeInteger(nonceLength) ||
           nonceLength <= 0 ||
-          !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
-          keyIDLength + nonceLength + 1 > responseLimit
+          !Number.isSafeInteger(keyIDLength + nonceLength + 1)
         ) {
           console.warn(
             `Load response for ${this.documentPath}: invalid provider framing widths`,
@@ -2837,6 +2836,12 @@ export class PeerborneDocument<
           return false;
         }
         const headerLength = keyIDLength + nonceLength;
+        if (responseLimit <= headerLength) {
+          console.warn(
+            `Load response for ${this.documentPath}: configured byte limit is below the minimum encrypted framing size`,
+          );
+          return false;
+        }
         let rawContent: Uint8Array;
         if (assembled.length <= headerLength) {
           // Too short to contain a valid encrypted payload -- reject.
@@ -2979,22 +2984,22 @@ export class PeerborneDocument<
               );
               return false;
             }
-            const verified =
-              requiredResponseSigner === undefined
-                ? await firstTrue(
-                    preLoadWriters.map((writerKey) =>
-                      this._authProvider.verify(
-                        new Uint8Array(raw),
-                        writerKey,
-                        new Uint8Array(signatureBytes),
-                      ),
-                    ),
-                  )
-                : await this._authProvider.verify(
-                    new Uint8Array(raw),
-                    requiredResponseSigner,
-                    new Uint8Array(signatureBytes),
-                  );
+            let verified = false;
+            const verificationKeys = requiredResponseSigner === undefined
+              ? preLoadWriters
+              : [requiredResponseSigner];
+            // A verifier may retain or mutate its arguments, so each attempt
+            // gets detached bytes. Serial attempts bound active payload copies.
+            for (const writerKey of verificationKeys) {
+              if (await this._authProvider.verify(
+                new Uint8Array(raw),
+                writerKey,
+                new Uint8Array(signatureBytes),
+              ) === true) {
+                verified = true;
+                break;
+              }
+            }
             if (verified !== true) {
               console.warn(
                 `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
