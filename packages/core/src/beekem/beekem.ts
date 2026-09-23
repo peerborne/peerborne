@@ -213,7 +213,9 @@ function requireDetachedBytes(
     value.byteLength > maximumLength
   ) {
     throw new Error(
-      `Invalid PathUpdate: '${field}' must be a Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
+      minimumLength === maximumLength
+        ? `Invalid PathUpdate: '${field}' must be a ${minimumLength}-byte Uint8Array`
+        : `Invalid PathUpdate: '${field}' must be a Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
     );
   }
   return value;
@@ -407,6 +409,8 @@ export class BeeKEM {
 
   // Queue and Welcome settlement bookkeeping belong to the live receiver.
   // Staged helpers can publish only these three tree-state fields.
+  // Fresh-only Welcome attempts are invalidated by live initialization or
+  // Welcome settlement; a staged clone has no receiver generation to publish.
   private _publishStagedTree(staged: BeeKEM): void {
     this._nodes = staged._nodes;
     this._numLeaves = staged._numLeaves;
