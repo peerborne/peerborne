@@ -10,6 +10,12 @@ import {
 import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import {
+  concatenate,
+  encodeUtf8,
+  isWellFormedUtf16,
+  uint32,
+} from './internal/canonical-encoding.js';
 
 const LOAD_RESPONSE_MANIFEST_DOMAIN =
   'peerborne/load-response-manifest/v1\0';
@@ -43,10 +49,6 @@ const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
 
 
-
-function encodeUtf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
 
 export interface LoadResponseManifestSnapshot {
   readonly stateBytes: Uint8Array;
@@ -83,27 +85,9 @@ function uint8(value: number): Uint8Array {
   return new Uint8Array([value]);
 }
 
-function uint32(value: number): Uint8Array {
-  const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
-  return out;
-}
-
 function uint64(value: number): Uint8Array {
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
-  return out;
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) length += part.length;
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
   return out;
 }
 
@@ -120,17 +104,8 @@ function requireString(
       options.allowEmpty ? '' : 'non-empty '
     }string`);
   }
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(`${name} must be well-formed UTF-16`);
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(`${name} must be well-formed UTF-16`);
-    }
+  if (!isWellFormedUtf16(value)) {
+    throw new TypeError(`${name} must be well-formed UTF-16`);
   }
   if (encodeUtf8(value).length > MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES) {
     throw new RangeError(

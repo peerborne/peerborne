@@ -1,4 +1,7 @@
-import { snapshotTrustKeys } from './initial-load-trust.js';
+import {
+  MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
+  snapshotTrustKeys,
+} from './initial-load-trust.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
@@ -38,6 +41,7 @@ function selectedTrustKeys<PublicKey>(
     : snapshotTrustKeys(
         trustedBootstrapWriterKeysValue,
         'trusted bootstrap writer keys',
+        MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
       );
 }
 
@@ -74,15 +78,28 @@ function captureVerificationInputs<PublicKey>(
   }
 }
 
+function isRepeatedKey<PublicKey>(
+  keys: readonly PublicKey[],
+  index: number,
+): boolean {
+  for (let earlier = 0; earlier < index; earlier++) {
+    if (Object.is(keys[earlier], keys[index])) return true;
+  }
+  return false;
+}
+
 async function verifiedSignerIndexes<PublicKey>(
   keys: readonly PublicKey[],
   inputs: InitialLoadVerificationInputs<PublicKey>,
+  stopAtFirst: boolean,
 ): Promise<number[]> {
   const indexes: number[] = [];
   // Verify sequentially with disposable copies. A custom verifier may retain
   // and later mutate its arguments, so checking for immediate mutation cannot
   // make shared payload buffers safe for the next authority.
   for (let index = 0; index < keys.length; index++) {
+    // The same key listed twice must not make its own signature ambiguous.
+    if (isRepeatedKey(keys, index)) continue;
     try {
       const payload = copyUnsharedUint8Array(
         inputs.payload,
@@ -101,7 +118,10 @@ async function verifiedSignerIndexes<PublicKey>(
         keys[index],
         signature,
       ]);
-      if (verified === true) indexes.push(index);
+      if (verified === true) {
+        indexes.push(index);
+        if (stopAtFirst) break;
+      }
     } catch {
       // One malformed key or verifier failure is not evidence about the rest.
     }
@@ -134,7 +154,7 @@ export async function identifyInitialLoadSigner<PublicKey>(
     verify,
   );
   if (inputs === undefined) return null;
-  const indexes = await verifiedSignerIndexes(keys, inputs);
+  const indexes = await verifiedSignerIndexes(keys, inputs, false);
   if (indexes.length !== 1) return null;
   const keyIndex = indexes[0];
   return { publicKey: keys[keyIndex], keyIndex };
@@ -171,5 +191,5 @@ export async function verifyInitialLoadAuthentication<PublicKey>(
     verify,
   );
   if (inputs === undefined) return false;
-  return (await verifiedSignerIndexes(keys, inputs)).length > 0;
+  return (await verifiedSignerIndexes(keys, inputs, true)).length > 0;
 }

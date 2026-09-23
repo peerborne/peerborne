@@ -6,7 +6,7 @@ import {
   verifyInitialLoadAuthentication,
 } from './initial-load-auth.js';
 import type { InitialLoadAuthenticationOptions } from './initial-load-auth.js';
-import { MAX_INITIAL_LOAD_SIGNER_AUTHORITIES } from './initial-load-trust.js';
+import { MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS } from './initial-load-trust.js';
 
 const payload = new Uint8Array([1]);
 const signature = new Uint8Array([2]);
@@ -203,7 +203,29 @@ describe('verifyInitialLoadAuthentication', () => {
     expect(writerKeys).toEqual(['attacker-a', 'attacker-b']);
   });
 
-  test('rejects an over-limit trust-key snapshot before verification', async () => {
+  test('accepts more existing writers than the bootstrap cap', async () => {
+    const writers = Array.from(
+      { length: MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS + 1 },
+      (_, index) => `writer-${index}`,
+    );
+    const lastWriter = writers[writers.length - 1];
+    const options = {
+      strict: true,
+      signingEnabled: true,
+      payload,
+      signature,
+      existingWriterKeys: writers,
+      trustedBootstrapWriterKeys: [],
+      verify: async (_raw: Uint8Array, key: string) => key === lastWriter,
+    };
+    await expect(verifyInitialLoadAuthentication(options)).resolves.toBe(true);
+    await expect(identifyInitialLoadSigner(options)).resolves.toEqual({
+      publicKey: lastWriter,
+      keyIndex: writers.length - 1,
+    });
+  });
+
+  test('rejects an over-limit bootstrap key snapshot before verification', async () => {
     let verifierCalls = 0;
     await expect(
       identifyInitialLoadSigner({
@@ -211,10 +233,10 @@ describe('verifyInitialLoadAuthentication', () => {
         signingEnabled: true,
         payload,
         signature,
-        existingWriterKeys: new Array(
-          MAX_INITIAL_LOAD_SIGNER_AUTHORITIES + 1,
+        existingWriterKeys: [],
+        trustedBootstrapWriterKeys: new Array(
+          MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS + 1,
         ).fill('writer'),
-        trustedBootstrapWriterKeys: [],
         verify: async () => {
           verifierCalls++;
           return true;
@@ -346,6 +368,39 @@ describe('verifyInitialLoadAuthentication', () => {
       }),
     ).resolves.toBe(false);
     expect(verifierCalls).toBe(0);
+  });
+
+  test('a key listed twice is not treated as ambiguous', async () => {
+    await expect(
+      identifyInitialLoadSigner({
+        strict: true,
+        signingEnabled: true,
+        payload,
+        signature,
+        existingWriterKeys: ['writer-a', 'writer-b', 'writer-a'],
+        trustedBootstrapWriterKeys: [],
+        verify: async (_raw, key) => key === 'writer-a',
+      }),
+    ).resolves.toEqual({ publicKey: 'writer-a', keyIndex: 0 });
+  });
+
+  test('stops verifying after the first trusted key matches', async () => {
+    const seen: string[] = [];
+    await expect(
+      verifyInitialLoadAuthentication({
+        strict: true,
+        signingEnabled: true,
+        payload,
+        signature,
+        existingWriterKeys: ['writer-a', 'writer-b', 'writer-c'],
+        trustedBootstrapWriterKeys: [],
+        verify: async (_raw, key) => {
+          seen.push(key);
+          return key !== 'writer-c';
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(seen).toEqual(['writer-a']);
   });
 
   test('rejects ambiguous signatures instead of assigning a vote arbitrarily', async () => {

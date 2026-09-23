@@ -126,7 +126,7 @@ import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   decideLoadQuorum,
   effectiveK,
-  effectiveQ,
+  DEFAULT_LOAD_QUORUM_K,
   LoadQuorumFailedError,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
@@ -252,7 +252,7 @@ export {
   TIPS_HASH_LENGTH,
   decideLoadQuorum,
   effectiveK,
-  effectiveQ,
+  DEFAULT_LOAD_QUORUM_K,
   LoadQuorumFailedError,
   validateLoadQuorumConfig,
   // Compaction

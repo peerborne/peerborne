@@ -1,5 +1,11 @@
 import { defineEnumerableDataProperty } from './internal/data-property.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import {
+  concatenate,
+  encodeUtf8,
+  isWellFormedUtf16,
+  uint32,
+} from './internal/canonical-encoding.js';
 
 const LOAD_SECURITY_STATE_DOMAIN = 'peerborne/load-security-state/v1\0';
 
@@ -66,25 +72,12 @@ export class TrustedLoadSecurityCommitmentsError extends Error {
   }
 }
 
-function encodeUtf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
-
 function requirePlainString(name: string, value: unknown, maxBytes: number): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new TypeError(`${name} must be a non-empty string`);
   }
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(`${name} must be well-formed UTF-16`);
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(`${name} must be well-formed UTF-16`);
-    }
+  if (!isWellFormedUtf16(value)) {
+    throw new TypeError(`${name} must be well-formed UTF-16`);
   }
   const bytes = encodeUtf8(value);
   if (bytes.length > maxBytes) {
@@ -393,12 +386,6 @@ export function validateLoadSecurityState(state: LoadSecurityState): void {
   validateAndCloneLoadSecurityState(state);
 }
 
-function uint32(value: number): Uint8Array {
-  const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
-  return out;
-}
-
 function uint64(value: bigint): Uint8Array {
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigUint64(0, value, false);
@@ -407,18 +394,6 @@ function uint64(value: bigint): Uint8Array {
 
 function lengthPrefixed(bytes: Uint8Array): Uint8Array[] {
   return [uint32(bytes.length), bytes];
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) length += part.length;
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
 }
 
 /** Canonical, domain-separated encoding used for quorum advertisements. */

@@ -42,6 +42,7 @@
 
 import {
   decideLoadQuorum,
+  DEFAULT_LOAD_QUORUM_K,
   defaultQuorumQ,
   effectiveK,
   LoadQuorumFailedError,
@@ -119,6 +120,17 @@ function normalizeLoadQuorumProbeResult(
   } catch {
     return { kind: 'non-vote' };
   }
+}
+
+function describeProbeError(err: unknown): string {
+  try {
+    if (err instanceof Error) {
+      return `Cause: ${String(err.name)}: ${String(err.message)}`;
+    }
+  } catch {
+    // Fall through: a hostile error object must not break the tally.
+  }
+  return 'Cause: non-Error rejection';
 }
 
 function snapshotVoteHash(value: unknown): Uint8Array | undefined {
@@ -290,7 +302,7 @@ export async function runLoadQuorum<T>(opts: {
     return { skipped: true };
   }
 
-  const configuredK = config?.k ?? 3;
+  const configuredK = config?.k ?? DEFAULT_LOAD_QUORUM_K;
   const allowSinglePeer = config?.allowSinglePeer ?? false;
 
   const k = effectiveK(configuredK, peers.length);
@@ -383,10 +395,10 @@ export async function runLoadQuorum<T>(opts: {
     let probe: LoadQuorumProbeResult;
     try {
       probe = await probeFn(probedPeer);
-    } catch {
+    } catch (err) {
       console.warn(
         `[${documentPath}] Initial-load quorum single-peer probe threw; ` +
-          `recording as non-vote.`,
+          `recording as non-vote. ${describeProbeError(err)}`,
       );
       probe = null;
     }
@@ -438,11 +450,11 @@ export async function runLoadQuorum<T>(opts: {
       let result: LoadQuorumProbeResult;
       try {
         result = await probeFn(peer);
-      } catch {
+      } catch (err) {
         console.warn(
           `[${documentPath}] Initial-load quorum probe for peer ${peerIdOf(
             peer,
-          )} threw; recording as non-vote.`,
+          )} threw; recording as non-vote. ${describeProbeError(err)}`,
         );
         result = null;
       }
@@ -453,21 +465,22 @@ export async function runLoadQuorum<T>(opts: {
   // verified, not merely to the transport's libp2p PeerId. This orchestrator
   // does not perform that verification. Keep only the first vote from each
   // authority so one credential reused across many Sybil PeerIds cannot
-  // satisfy Q by itself. Normalization rejects responses from the other
+  // satisfy Q by itself, and fail the round if an authority signed two
+  // different hashes. Normalization rejects responses from the other
   // protocol family before either tally, including unauthenticated sentinels.
-  const seenSignerAuthorities = new Set<string>();
+  const signerAuthorityHashes = new Map<string, string>();
+  let equivocatingAuthority = false;
   const advertisements: PeerTipAdvertisement[] = probeResults.map(
     ({ peer, result }) => {
       let hash: Uint8Array | 'unknown-doc' | null = null;
       if (result.kind === 'vote' && result.signerAuthority !== undefined) {
-        if (
-          result.signerAuthority.length === 0 ||
-          seenSignerAuthorities.has(result.signerAuthority)
-        ) {
-          hash = null;
-        } else {
-          seenSignerAuthorities.add(result.signerAuthority);
+        const hashHex = tipsHashToHex(result.hash);
+        const seenHashHex = signerAuthorityHashes.get(result.signerAuthority);
+        if (seenHashHex === undefined) {
+          signerAuthorityHashes.set(result.signerAuthority, hashHex);
           hash = result.hash;
+        } else if (seenHashHex !== hashHex) {
+          equivocatingAuthority = true;
         }
       } else if (result.kind === 'vote') {
         hash = result.hash;
@@ -477,6 +490,19 @@ export async function runLoadQuorum<T>(opts: {
       return { peerId: peerIdOf(peer), hash };
     },
   );
+  if (equivocatingAuthority) {
+    console.warn(
+      `[${documentPath}] Initial-load quorum FAILED: a signing authority ` +
+        `voted for conflicting tip-set hashes. Aborting load.`,
+    );
+    throw new LoadQuorumFailedError({
+      documentPath,
+      reason: 'equivocating-authority',
+      respondingCount: 0,
+      requiredQ: q,
+      agreement: new Map(),
+    });
+  }
   const decision = decideLoadQuorum(advertisements, q);
   if (!decision.ok) {
     console.warn(

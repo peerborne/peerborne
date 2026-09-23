@@ -1,5 +1,11 @@
 import { Base64 } from 'js-base64';
 import { copyUnsharedUint8Array } from './utils.js';
+import {
+  concatenate,
+  encodeUtf8,
+  isWellFormedUtf16,
+  uint32,
+} from './internal/canonical-encoding.js';
 
 const INITIAL_LOAD_REQUEST_DOMAIN = 'peerborne/initial-load-request/v4\0';
 
@@ -24,47 +30,12 @@ function snapshotInitialLoadChallenge(challenge: unknown): Uint8Array {
   }
 }
 
-function encodeUtf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
-
-function uint32(value: number): Uint8Array {
-  const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
-  return out;
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) length += part.length;
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
 function validateDocumentId(documentId: string): Uint8Array {
   if (typeof documentId !== 'string' || documentId.length === 0) {
     throw new TypeError('initial-load documentId must be a non-empty string');
   }
-  for (let index = 0; index < documentId.length; index++) {
-    const codeUnit = documentId.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = documentId.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(
-          'initial-load documentId must be well-formed UTF-16',
-        );
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(
-        'initial-load documentId must be well-formed UTF-16',
-      );
-    }
+  if (!isWellFormedUtf16(documentId)) {
+    throw new TypeError('initial-load documentId must be well-formed UTF-16');
   }
   const bytes = encodeUtf8(documentId);
   if (bytes.length > MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES) {

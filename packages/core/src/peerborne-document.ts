@@ -83,6 +83,7 @@ import {
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
+  DEFAULT_LOAD_QUORUM_K,
   dedupePeersByPeerId,
   LOAD_QUORUM_TIMEOUT_MS_MAX,
   LoadQuorumFailedError,
@@ -3777,7 +3778,7 @@ export class PeerborneDocument<
       documentPath: this.documentPath,
       config: {
         enabled: this.swarm.config?.loadQuorumEnabled ?? true,
-        k: this.swarm.config?.loadQuorumK ?? 3,
+        k: this.swarm.config?.loadQuorumK ?? DEFAULT_LOAD_QUORUM_K,
         q: this.swarm.config?.loadQuorumQ,
         timeoutMs,
         allowSinglePeer:
