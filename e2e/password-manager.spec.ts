@@ -46,6 +46,7 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
   );
   await page.getByRole('button', { name: 'Login' }).click();
   await expect(page).toHaveURL(/\/secrets$/);
+  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
 
   await page.getByRole('button', { name: 'New Secret' }).click();
   await page.getByText(/^Unnamed Secret/).click();
@@ -77,4 +78,22 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
       .filter({ has: page.getByRole('button', { name: 'Remove' }) }),
   ).toHaveCount(1);
   expect(errors, 'permission update errors').toEqual([]);
+});
+
+test('creates a vault and preserves a secret across selection and navigation', async ({ page }) => {
+  await page.goto('/login');
+  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  const name = page.getByPlaceholder('Enter a name here...').filter({ visible: true });
+  await expect(name).toBeVisible();
+  await name.fill('Smoke secret');
+  await expect(page.getByText('Smoke secret', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await page.getByText('Smoke secret', { exact: true }).click();
+  await expect(name).toHaveValue('Smoke secret');
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Secrets', exact: true }).click();
+  await expect(name).toHaveValue('Smoke secret');
 });

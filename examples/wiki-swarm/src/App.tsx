@@ -5,10 +5,10 @@ import WikiNavbar from './containers/WikiNavbar';
 import WikiArticle from './containers/WikiArticle';
 import { WikiHome } from './containers/WikiHome';
 
-function WikiArticleRoute() {
+function WikiArticleRoute({ create = false }: { create?: boolean }) {
   const { documentId } = useParams();
   return documentId ? (
-    <WikiArticle key={documentId} documentId={documentId} />
+    <WikiArticle key={`${create}:${documentId}`} documentId={documentId} create={create} />
   ) : (
     <WikiHome />
   );
@@ -19,6 +19,7 @@ export default function App() {
     <div>
       <WikiNavbar />
       <Routes>
+        <Route path="/create/:documentId" element={<WikiArticleRoute create />} />
         <Route path="/document/:documentId" element={<WikiArticleRoute />} />
         <Route path="*" element={<WikiHome />} />
       </Routes>

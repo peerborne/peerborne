@@ -214,6 +214,7 @@ export function openDocumentAsync<
     PublicKey,
     DocumentKey
   > = defaultStateSelector,
+  initialization: 'open' | 'create' = 'open',
 ): ThunkAction<
   Promise<PeerborneDocument<
     DocType,
@@ -263,14 +264,12 @@ export function openDocumentAsync<
         },
         'remote',
       );
-      const loaded = await documentRef.open();
-      if (!loaded) {
-        // Assume this is a new document.
-        console.log(
-          'Failed to load document from peers, assuming this is a new document...',
-          documentRef,
-        );
-        // await documentRef.pin();
+      try {
+        await documentRef[initialization]();
+      } catch (error) {
+        documentRef.unsubscribe(documentId);
+        await documentRef.close().catch(() => undefined);
+        throw error;
       }
       dispatch(openDocument(documentId, documentRef, captureTrace()));
       return documentRef;

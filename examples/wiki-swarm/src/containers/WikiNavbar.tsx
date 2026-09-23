@@ -19,6 +19,9 @@ export default function WikiNavbar() {
       <Link className="btn btn-outline-secondary" to={`/document/${currentSearch}`}>
         Search
       </Link>
+      {currentSearch && <Link className="btn btn-primary" to={`/create/${encodeURIComponent(currentSearch)}`}>
+        Create article
+      </Link>}
     </InputGroup>
   </div>
 }

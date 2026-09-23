@@ -44,7 +44,7 @@ interface AppProps {
   state: AutomergeSwarmState;
   onInitialize: (config: PeerborneConfig) => Promise<AutomergeSwarm>;
   onConnect: (addresses: string[]) => any;
-  onDocumentOpen: (documentId: string) => any;
+  onDocumentOpen: (documentId: string, initialization?: 'open' | 'create') => any;
   onDocumentClose: (documentId: string) => any;
   onDocumentChange: (
     documentId: string,
@@ -246,6 +246,9 @@ class App extends React.Component<
           >
             Open
           </button>
+          <button onClick={() => this.props.onDocumentOpen(this.state.documentId, 'create')}>
+            Create
+          </button>
         </div>
         {/* {Object.entries(this.props.state.documents).map(([documentPath, documentState]: [string, any]) => <React.Fragment key={documentPath}> */}
         {Object.entries(this.props.state.documents).map(
@@ -358,7 +361,7 @@ function mapDispatchToProps(
           CryptoKey
         >(addresses),
       ),
-    onDocumentOpen: (documentId: string) =>
+    onDocumentOpen: (documentId: string, initialization: 'open' | 'create' = 'open') =>
       dispatch(
         openDocumentAsync<
           Doc<any>,
@@ -367,7 +370,7 @@ function mapDispatchToProps(
           CryptoKey,
           CryptoKey,
           CryptoKey
-        >(documentId),
+        >(documentId, undefined, initialization),
       ),
     onDocumentClose: (documentId: string) =>
       dispatch(
