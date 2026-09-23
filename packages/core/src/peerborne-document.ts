@@ -1853,10 +1853,10 @@ export class PeerborneDocument<
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
     );
     const blockData = block.slice(
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
     );
     const content = await awaitLoadWork(
       this._decryptBlock(blockKeyID, blockNonce, blockData, getKey),
@@ -4706,7 +4706,7 @@ export class PeerborneDocument<
         // look it up in the keychain. Responses shorter than the encryption
         // header are treated as malformed and rejected.
         const keyIDLength = this._keychainProvider.keyIDLength;
-        const nonceLength = this._authProvider.nonceBits;
+        const nonceLength = this._authProvider.nonceBytes;
         if (
           !Number.isSafeInteger(keyIDLength) ||
           keyIDLength <= 0 ||
@@ -5825,7 +5825,7 @@ export class PeerborneDocument<
         return 'unknown-doc';
       }
       const keyIDLength = this._keychainProvider.keyIDLength;
-      const nonceLength = this._authProvider.nonceBits;
+      const nonceLength = this._authProvider.nonceBytes;
       if (
         !Number.isSafeInteger(keyIDLength) ||
         keyIDLength <= 0 ||
@@ -6717,10 +6717,10 @@ export class PeerborneDocument<
       );
       const blockNonce = rawMessage.detail.data.slice(
         this._keychainProvider.keyIDLength,
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
       );
       const blockData = rawMessage.detail.data.slice(
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
       );
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
@@ -6786,11 +6786,11 @@ export class PeerborneDocument<
                 const blockNonce = message.data.slice(
                   this._keychainProvider.keyIDLength,
                   this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBits,
+                    this._authProvider.nonceBytes,
                 );
                 const blockData = message.data.slice(
                   this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBits,
+                    this._authProvider.nonceBytes,
                 );
                 const rawContent = await this._decryptBlock(
                   blockKeyID,
@@ -8975,7 +8975,7 @@ export class PeerborneDocument<
     }
     const invitationKemPublicKeyRaw = new Uint8Array(this._kemPublicKeyRaw);
     const keyIDLength = this._keychainProvider.keyIDLength;
-    const nonceLength = this._authProvider.nonceBits;
+    const nonceLength = this._authProvider.nonceBytes;
     if (
       !Number.isSafeInteger(keyIDLength) ||
       keyIDLength <= 0 ||

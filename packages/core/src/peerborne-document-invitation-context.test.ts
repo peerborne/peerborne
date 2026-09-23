@@ -151,7 +151,7 @@ function invitationHarness(
       serializeChanges: jest.fn(() => new Uint8Array([1])),
     },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async () => new Uint8Array([2])),
       verify,
     },

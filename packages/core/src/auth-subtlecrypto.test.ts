@@ -213,7 +213,7 @@ describe('encrypt and decrypt', () => {
 
       const { data: encrypted, nonce } = await instance.encrypt(plaintext, key);
       expect(encrypted.length).toBeGreaterThan(0);
-      expect(nonce.length).toBe(instance.nonceBits);
+      expect(nonce.length).toBe(instance.nonceBytes);
 
       const decrypted = await instance.decrypt(encrypted, key, nonce);
       expect(decrypted).toStrictEqual(plaintext);
@@ -243,19 +243,19 @@ describe('encrypt and decrypt', () => {
 });
 
 describe('nonce size', () => {
-  test('AES-GCM nonceBits is 12 bytes', () => {
+  test('AES-GCM nonceBytes is 12 bytes', () => {
     const instance = new SubtleCrypto(undefined, 'AES-GCM');
-    expect(instance.nonceBits).toBe(12);
+    expect(instance.nonceBytes).toBe(12);
   });
 
-  test('AES-CTR nonceBits is 16 bytes', () => {
+  test('AES-CTR nonceBytes is 16 bytes', () => {
     const instance = new SubtleCrypto(undefined, 'AES-CTR');
-    expect(instance.nonceBits).toBe(16);
+    expect(instance.nonceBytes).toBe(16);
   });
 
-  test('AES-CBC nonceBits is 16 bytes', () => {
+  test('AES-CBC nonceBytes is 16 bytes', () => {
     const instance = new SubtleCrypto(undefined, 'AES-CBC');
-    expect(instance.nonceBits).toBe(16);
+    expect(instance.nonceBytes).toBe(16);
   });
 
   test.each(['AES-GCM', 'AES-CTR', 'AES-CBC'] as AesAlgorithmName[])(
@@ -264,7 +264,7 @@ describe('nonce size', () => {
       const instance = new SubtleCrypto(undefined, alg);
       const key = await generateKey(alg);
       const result = await instance.encrypt(new Uint8Array([1, 2, 3]), key);
-      expect(result.nonce.length).toBe(instance.nonceBits);
+      expect(result.nonce.length).toBe(instance.nonceBytes);
     },
   );
 });

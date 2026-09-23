@@ -217,7 +217,7 @@ function invitationHarness(options: {
     },
     _keychain: liveKeychain,
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async (_ciphertext, key) => {
         order.push('decrypt');
         expect(key).toBe(stagedKey);

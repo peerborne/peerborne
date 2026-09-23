@@ -74,7 +74,7 @@ function loadHarness(message: any, context = 'load-response-v3') {
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => new Uint8Array([1]),
       verify,
     },
