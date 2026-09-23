@@ -185,8 +185,8 @@ export const defaultConfig = (
   return ({
     // Helia configuration (ref: https://gist.github.com/bellbind/23ad8d6e3a1509335253ff074fcd3cb6)
     helia: {
-      blockstore: new IDBBlockstore('/collabswarm-blocks'),
-      datastore: new IDBDatastore('/collabswarm-data'),
+      blockstore: new IDBBlockstore('/peerborne-blocks'),
+      datastore: new IDBDatastore('/peerborne-data'),
       libp2p: {
         // https://github.com/ipfs/helia/blob/main/packages/libp2p/src/utils/libp2p-defaults.browser.ts
         addresses: {
@@ -215,7 +215,9 @@ export const defaultConfig = (
         // until at least one bootstrap address is configured.
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
-          pubsubPeerDiscovery(),
+          pubsubPeerDiscovery({
+            topics: ['peerborne._peer-discovery._p2p._pubsub'],
+          }),
         ],
         services: {
           identify: identify(),

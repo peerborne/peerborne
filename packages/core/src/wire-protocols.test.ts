@@ -8,7 +8,7 @@ describe('wire protocol constant verification', () => {
   ) as [string, string][];
 
   test('all constants match a supported namespace/{name}/{semver} convention', () => {
-    const pattern = /^\/(?:collabswarm|peerborne)\/[a-z][a-z-]+\/\d+\.\d+\.\d+$/;
+    const pattern = /^\/peerborne\/[a-z][a-z-]+\/\d+\.\d+\.\d+$/;
     for (const [, value] of allConstants) {
       expect(value).toMatch(pattern);
     }

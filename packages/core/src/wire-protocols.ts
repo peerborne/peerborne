@@ -1,4 +1,4 @@
-export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
+export const bloomFilterUpdateV1 = '/peerborne/bloom-index/1.0.0';
 
 // V3 doc-load and snapshot-load handlers use a shared handler model where
 // a single handler serves all documents. They include an explicit `tips`
@@ -16,7 +16,7 @@ export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
 // silently dropping the binding. There are no live users of this project,
 // so we did NOT retain a v2 alias -- removing legacy handlers keeps the
 // codebase clean.
-export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
+export const documentLoadV3 = '/peerborne/doc-load/3.0.0';
 // Reserved V4 contract identifiers; runtime integration lands separately. A
 // conforming V4 load response adds a signed `loadSecurityState` tuple. Its
 // quorum digest binds the control/group tuple and served frontier together
@@ -28,9 +28,9 @@ export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
 // the actual response before sync. V4 is a separate family because older
 // serializers cannot verify the same signed bytes or binding; callers that opt
 // into it must select the family atomically and never downgrade to V3.
-export const documentLoadV4 = '/collabswarm/doc-load/4.0.0';
-export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
-export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
+export const documentLoadV4 = '/peerborne/doc-load/4.0.0';
+export const snapshotLoadV3 = '/peerborne/snapshot-load/3.0.0';
+export const snapshotLoadV4 = '/peerborne/snapshot-load/4.0.0';
 
 // Tip-advertise v1: lightweight initial-load quorum probe.
 //
@@ -85,13 +85,13 @@ export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
 // Layered on documentLoadV3's transport semantics, but on a separate
 // protocol id so a slow/malicious peer that serves bogus full loads cannot
 // also cheaply poison every quorum vote at the same time.
-export const tipAdvertiseV1 = '/collabswarm/tip-advertise/1.0.0';
+export const tipAdvertiseV1 = '/peerborne/tip-advertise/1.0.0';
 // Reserved security-aware probe contract. Its signed hash covers the served
 // frontier, the complete derived load-response manifest, and the same
 // `loadSecurityState` tuple required on the subsequent V4 load. It also echoes
 // the request's fresh challenge inside the signed envelope. The unauthenticated
 // 0xff unknown-document sentinel is never valid here.
-export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
+export const securityAdvertiseV1 = '/peerborne/security-advertise/1.0.0';
 
 // Public invitation join v1: a recipient opens a direct stream to an
 // inviter advertised by a signed InvitationOffer, sends one canonical signed
@@ -100,9 +100,6 @@ export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
 // (for example as a QR code or link). Message codecs, signature domains,
 // expiry checks, recipient/KEM binding, and replay guards live in
 // `invitation-wire.ts` and `invitation-replay-guard.ts`.
-//
-// This is the first protocol introduced under the Peerborne name. Existing
-// `/collabswarm/*` protocol IDs remain unchanged compatibility boundaries.
 export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 
 // Welcomes require a generation-bearing tree and recipient-sealed keychain.
@@ -112,5 +109,5 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // parent tree. Missed updates require ordered delivery or ratchet recovery.
 export const beekemPathUpdateV2 = '/peerborne/beekem-pathupdate/2.0.0';
 
-export const searchIndexAdvertiseV1 = '/collabswarm/search-index-advertise/1.0.0';
-export const searchQueryV1 = '/collabswarm/search-query/1.0.0';
+export const searchIndexAdvertiseV1 = '/peerborne/search-index-advertise/1.0.0';
+export const searchQueryV1 = '/peerborne/search-query/1.0.0';

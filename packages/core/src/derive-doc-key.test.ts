@@ -82,7 +82,7 @@ describe('deriveDocumentKeyFromRootSecret', () => {
     // Lock in the on-wire-equivalent info string so a downstream
     // consumer can re-derive without round-tripping through the
     // helper (and so future bumps are intentional).
-    expect(DOC_KEY_INFO).toBe('collabswarm-doc-key-v1');
+    expect(DOC_KEY_INFO).toBe('peerborne-doc-key-v1');
   });
 });
 

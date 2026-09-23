@@ -6110,9 +6110,6 @@ export class PeerborneDocument<
    *   applying state but did not complete. The document instance remains
    *   fail-closed and must be discarded.
    */
-  // Key exchange happens during:
-  // - Load messages.
-  // - ACL updates via /collabswarm/key-update/1.0.0 protocol
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
     // A failed bootstrap may have partially changed ACL/keychain state without
     // producing a DAG head. Do not let a later load retry or `open()` interpret

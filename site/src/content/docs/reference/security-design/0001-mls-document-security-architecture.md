@@ -462,15 +462,13 @@ The proposed MLS family uses distinct bounded protocols:
 /peerborne/mls-control/1.0.0
 /peerborne/mls-welcome/1.0.0
 /peerborne/mls-ack/1.0.0
-/collabswarm/doc-load/4.0.0
-/collabswarm/snapshot-load/4.0.0
-/collabswarm/security-advertise/1.0.0
+/peerborne/doc-load/4.0.0
+/peerborne/snapshot-load/4.0.0
+/peerborne/security-advertise/1.0.0
 ```
 
-The last three are the IDs already reserved as `documentLoadV4`,
-`snapshotLoadV4`, and `securityAdvertiseV1` in `wire-protocols.ts`. Renaming
-them to the `/peerborne/` prefix is a separate wire change that must update
-those constants and this list together.
+The last three are the IDs reserved as `documentLoadV4`, `snapshotLoadV4`,
+and `securityAdvertiseV1` in `wire-protocols.ts`.
 
 Runtime integration must replace older load and snapshot formats with this
 single protocol family and remove their decoders and schemas. It must not
