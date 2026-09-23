@@ -1333,10 +1333,8 @@ describe('writer and reader removal ordering', () => {
     });
   });
 
-  test('keeps absent writer removal idempotent without identity codecs', async () => {
+  test('keeps absent writer removal idempotent with canonical identity codecs', async () => {
     const document = fakeDocument();
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
 
     await expect(document.removeWriter(targetUser)).resolves.toBeUndefined();
     expect(document._testState.prepareWriterRemove).not.toHaveBeenCalled();

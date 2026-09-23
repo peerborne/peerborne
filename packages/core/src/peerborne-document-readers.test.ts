@@ -131,7 +131,7 @@ describe('PeerborneDocument reader listing', () => {
     },
   );
 
-  test('falls back without a serializer and does not fan out UCAN checks', async () => {
+  test('rejects a missing serializer before any UCAN membership checks', async () => {
     const readers = [{ id: 'shared' }, { id: 'reader-only' }];
     const writers = [
       { id: 'shared' },
@@ -159,28 +159,11 @@ describe('PeerborneDocument reader listing', () => {
       _writers: { users: async () => writers },
     });
 
-    await expect(document.getReaders()).resolves.toEqual([
-      ...readers,
-      writers[1],
-      writers[2],
-    ]);
-    expect(check).toHaveBeenCalledTimes(writers.length);
+    await expect(document.getReaders()).rejects.toThrow(/requires AuthProvider.serializePublicKey/);
+    expect(check).not.toHaveBeenCalled();
   });
 
-  test('legacy fallback only treats literal true as reader membership', async () => {
-    const reader = { id: 'reader' };
-    const writer = { id: 'writer' };
-    const document = fakeDocument({
-      _authProvider: {},
-      _readers: {
-        users: async () => [reader],
-        check: async () => ({ member: true }) as unknown as boolean,
-      },
-      _writers: { users: async () => [writer] },
-    });
 
-    await expect(document.getReaders()).resolves.toEqual([reader, writer]);
-  });
 });
 
 describe('PeerborneDocument writer removal', () => {
@@ -221,9 +204,10 @@ describe('PeerborneDocument writer removal', () => {
       _publishPreparedWriterChange: publish,
     });
 
-    await document._removeWriterUnlocked('writer', true);
+    const localWriter = async () => ({ publicKey: 'owner', serialized: 'owner' });
+    await document._removeWriterUnlocked('writer', true, 'writer', localWriter());
     writersACL.merge(new Uint8Array([3]));
-    await document._removeWriterUnlocked('writer', true);
+    await document._removeWriterUnlocked('writer', true, 'writer', localWriter());
 
     expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
     expect(publish).toHaveBeenCalledTimes(2);
