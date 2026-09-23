@@ -86,7 +86,7 @@ function catchUpHarness(
     _serializeSignature: () => 'AQ==',
     _deserializeSignature: () => new Uint8Array([1]),
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       sign: async () => new Uint8Array([1]),
       decrypt: async () => new Uint8Array([1]),
       verify,

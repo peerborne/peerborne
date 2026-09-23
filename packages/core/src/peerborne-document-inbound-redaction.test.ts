@@ -105,7 +105,7 @@ describe('concrete inbound handler log redaction', () => {
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
       _keychain: { getKey: jest.fn(testCase.getKey) },
-      _authProvider: { nonceBits: 1, decrypt },
+      _authProvider: { nonceBytes: 1, decrypt },
       _syncMessageSerializer: { deserializeSyncMessage },
       load,
       swarm: {
@@ -198,7 +198,7 @@ describe('concrete inbound handler log redaction', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: async () => new Uint8Array([9]),
       _syncMessageSerializer: {
         deserializeSyncMessage: () => {

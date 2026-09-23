@@ -99,7 +99,7 @@ function loadHarness(plaintext: Uint8Array) {
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => plaintext,
       verify: auth.verify.bind(auth),
     },
@@ -145,7 +145,7 @@ async function invitationHarness(plaintext: Uint8Array) {
   const document = fakeDocument({
     _keychainProvider: { keyIDLength: 1 },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => plaintext,
       verify: auth.verify.bind(auth),
     },

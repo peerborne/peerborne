@@ -186,7 +186,7 @@ function invitationHarness(options: {
       ...(options.transactional === false ? {} : { prepareMerge }),
     },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async (_ciphertext, key) => {
         order.push('decrypt');
         expect(key).toBe(stagedKey);

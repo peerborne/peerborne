@@ -26,11 +26,9 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
   ): Promise<Uint8Array>;
 
   /**
-   * Returns the nonce/IV size **in bytes** for the configured encryption
-   * algorithm. The property name is a historical artifact — it represents
-   * a byte count, not a bit count.
+   * Returns the nonce/IV size in bytes for the configured encryption algorithm.
    */
-  readonly nonceBits: number;
+  readonly nonceBytes: number;
 
   /**
    * Serialize a `PublicKey` to a stable string representation. The
