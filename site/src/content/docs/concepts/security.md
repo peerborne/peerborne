@@ -100,7 +100,11 @@ When document signing is enabled, ordinary inbound sync envelopes are
 authorized against that replica's current writer ACL. Grants do not expire
 automatically; they remain accepted until that replica applies a writer-removal
 ACL update. With `enableSigning: false`, ordinary inbound sync skips this
-writer-signature gate. Beyond this gate, there is no:
+writer-signature gate. The standalone `ACLChain` implementation is not wired
+into this path. Authorization is consequently local and order-dependent: a
+stale or partitioned writer can race a removal with a signed ACL re-grant while
+another replica still considers that writer current. Beyond this gate, there is
+no:
 
 - Role-based access beyond reader/writer
 - Delegation or sub-key authorization (UCAN capabilities exist but are not integrated)
@@ -115,6 +119,10 @@ UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core`
 - Encode delegation proofs
 
 But the document change path does not check UCAN tokens. UCAN integration is a future capability.
+The optional [`UCANACL`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/ucan-acl.ts)
+wrapper in `@peerborne/core` keeps capability metadata in process-local memory.
+That metadata is not replicated. The wrapper does not provide distributed
+strong-removal semantics.
 
 ## Encryption and history visibility
 
@@ -189,7 +197,9 @@ The quorum check:
 When a writer is removed from the ACL:
 - With document signing enabled, after a replica applies the update it invalidates its cached writer set and rejects subsequently verified ordinary sync envelopes signed only by the removed key
 - There is no globally simultaneous cutover: a replica that has not applied the best-effort ACL update still evaluates against its older writer set, and an in-flight message is judged against the set current when that replica verifies it
+- The causal ACL chain is not integrated, so a stale or partitioned writer can race the removal with a signed re-grant; writer revocation does not protect against a malicious writer equivocating across partitions
 - `removeWriter()` revokes write authorization, not BeeKEM reader membership; an identity that remains a reader retains its existing read access, while `removeReader()` separately attempts a BeeKEM key rotation
+- With `enableSigning: false`, ordinary inbound sync does not enforce writer signatures, so removing an ACL entry is not an adversarial remote-writer revocation boundary
 - Past contributions remain in the document; stored payloads do not carry persistent per-block writer attribution
 - There is no mechanism to retroactively remove those past contributions
 
@@ -203,20 +213,28 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate** is a best-effort mechanism to notify peers about ACL changes
+- **PathUpdate** carries BeeKEM tree and key-rotation state to surviving members
 - Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
 
 ```ts
 // Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
-`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort — there is no guarantee that ACL change notifications reach all peers.
+`removeReader` generates and distributes BeeKEM PathUpdates internally as part
+of the operation. This key-rotation delivery is best-effort; an update may not
+reach every surviving member.
+A surviving reader that misses the new epoch cannot recover it with an ordinary
+load response, because that response is encrypted under the unknown current
+epoch. Recovery requires a separate recipient-bound re-invitation or explicit
+key-recovery flow; Peerborne does not automatically re-invite members or run
+a key-recovery flow.
 
 ### Limitations of revocation
 
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.
 - **BeeKEM state is lost on restart.** If the node restarts, it loses track of which keys have been invalidated.
 - **PathUpdate is not guaranteed.** There is no acknowledgment or retry mechanism.
+- **ACL authorization is not causally chained.** The standalone chain primitive is not connected to document sync, so concurrent stale-writer ACL operations remain order-dependent.
 - **Key reuse risk.** If the application reuses KEM key pairs across documents, revoking access to one document may not fully revoke it from another.
 
 ## Metadata and hostile infrastructure
@@ -241,7 +259,7 @@ Verified in CI:
 
 - ECDSA P-384 signing and verification of sync-message payloads
 - AES-GCM encryption and decryption of document blocks
-- Reader/writer ACL enforcement (writer check before accepting changes)
+- Current-replica reader/writer ACL checks at document boundaries
 - BeeKEM key encapsulation and decapsulation
 - UCAN capability issuance and verification (standalone module)
 - Encrypted document retrieval through Circuit Relay
@@ -251,6 +269,7 @@ Verified in CI:
 Not verified:
 
 - Reader revocation with key rotation and live peer notification
+- Causally authorized writer revocation across a partition
 - Conflicting real peers serving adversarial shadow-tree payloads during quorum loading
 - PathUpdate delivery across NAT boundaries
 - Invitation or replay-state persistence across process restart
