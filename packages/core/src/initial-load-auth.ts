@@ -79,6 +79,9 @@ async function verifiedSignerIndexes<PublicKey>(
   inputs: InitialLoadVerificationInputs<PublicKey>,
 ): Promise<number[]> {
   const indexes: number[] = [];
+  // Verify sequentially with disposable copies. A custom verifier may retain
+  // and later mutate its arguments, so checking for immediate mutation cannot
+  // make shared payload buffers safe for the next authority.
   for (let index = 0; index < keys.length; index++) {
     try {
       const payload = copyUnsharedUint8Array(

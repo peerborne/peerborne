@@ -51,6 +51,10 @@ import {
 import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const reflectApply = Reflect.apply;
+
 /**
  * A V4 vote attributed to a signer authority authenticated by `probeFn`.
  *
@@ -94,16 +98,16 @@ function normalizeLoadQuorumProbeResult(
   }
 
   try {
-    const prototype = Object.getPrototypeOf(result);
-    if (prototype !== Object.prototype && prototype !== null) {
+    const prototype = reflectApply(objectGetPrototypeOf, Object, [result]);
+    if (prototype !== null && reflectApply(objectGetPrototypeOf, Object, [prototype]) !== null) {
       return { kind: 'non-vote' };
     }
-    const hashDescriptor = Object.getOwnPropertyDescriptor(result, 'hash');
+    const hashDescriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [result, 'hash']);
     if (hashDescriptor === undefined || !('value' in hashDescriptor)) {
       return { kind: 'non-vote' };
     }
     const hash = snapshotVoteHash(hashDescriptor.value);
-    const signerDescriptor = Object.getOwnPropertyDescriptor(result, 'signerAuthority');
+    const signerDescriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [result, 'signerAuthority']);
     if (signerDescriptor === undefined || !('value' in signerDescriptor)) {
       return { kind: 'non-vote' };
     }
