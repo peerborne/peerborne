@@ -108,8 +108,8 @@ export type PathPrefixedHeaderDropReason =
 
 /**
  * Read and parse the path-prefixed header used by shared protocol
- * handlers (BeeKEM Welcome and PathUpdate V2, document key-update V2), then
- * look up the document in the supplied registry.
+ * handlers (BeeKEM Welcome V2 and PathUpdate V2), then look up
+ * the document in the supplied registry.
  *
  * On any malformed input -- oversized request, short read, invalid
  * length header, unknown document path -- this logs a warning prefixed

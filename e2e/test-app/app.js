@@ -6,10 +6,6 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
-// libp2p v3 migration: the chainsafe gossipsub package was renamed to
-// `@libp2p/gossipsub`. package.json already pins the new name; the import
-// here was still pointing at the legacy chainsafe-scoped path, which is
-// no longer installed.
 import { gossipsub } from '@libp2p/gossipsub'
 import { bootstrap } from '@libp2p/bootstrap'
 import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'

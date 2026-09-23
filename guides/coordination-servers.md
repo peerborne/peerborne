@@ -92,7 +92,7 @@ If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open sour
 | **Required?** | **Optional** but strongly recommended for production |
 | **Protocol** | IPFS Bitswap (built into Helia) |
 
-Peerborne's Node-only `PeerborneNode` does not subscribe to the legacy document-publish topic because its V1 envelope cannot authenticate or authorize a pin request. The normal document commit path also has no authenticated publisher. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
+Peerborne's Node-only `PeerborneNode` has no document-announcement receiver or authenticated publisher. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
 
 Self-hosted pinning therefore requires a new domain-separated, writer-authorized, replay-protected protocol plus application-specific local pin policy, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
 

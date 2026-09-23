@@ -12,7 +12,7 @@ A comprehensive reference for designing application schemas that work well with 
 4. [Common Application Schemas](#4-common-application-schemas)
 5. [Anti-Patterns](#5-anti-patterns)
 6. [Performance Considerations](#6-performance-considerations)
-7. [Migration Strategies](#7-migration-strategies)
+7. [Current Schema Validation](#7-current-schema-validation)
 8. [Integration with Peerborne](#8-integration-with-peerborne)
 
 ---
@@ -1247,7 +1247,8 @@ const index = doc.getMap<Y.Map<any>>('documents');
 index.set('doc-abc', { title: 'Meeting Notes', createdAt: Date.now() });
 
 // Each child is a separate Peerborne document opened on demand
-const meetingNotes = await swarm.openDocument('/docs/doc-abc');
+const meetingNotes = swarm.doc('/docs/doc-abc');
+await meetingNotes.open();
 ```
 
 ### 6.5 Undo/Redo Implementation
@@ -1282,110 +1283,63 @@ const undoManager = new Y.UndoManager([content, metadata], {
 
 ---
 
-## 7. Migration Strategies
+## 7. Current Schema Validation
 
-### 7.1 Evolving Schemas Over Time
+### 7.1 One Supported Schema
 
-Y.js shared types are schema-less — a `Y.Doc` does not enforce a fixed structure. This means schemas evolve by convention, not by constraint. New peers can add new top-level types or nested structures without breaking existing peers.
+Y.js merges shared state without enforcing an application schema. Applications
+must validate that state before using it. Peerborne is alpha software with no
+existing deployed users: each application supports one current schema, and
+incompatible development data is recreated. Do not add fallback decoders,
+dual field names, or automatic upgrades for experimental schemas.
 
-### 7.2 Adding New Fields
+### 7.2 Initialize New Documents Explicitly
 
-Adding new fields to existing documents is straightforward because `Y.Map.get()` returns `undefined` for missing keys.
+Set the schema version and required fields only when creating a new document:
 
 ```typescript
-// Version 1 schema: only 'title' and 'content'
-// Version 2 schema: adds 'tags' and 'priority'
+const SCHEMA_VERSION = 1;
 
-function readTask(task: Y.Map<any>) {
-  const title = task.get('title') as string;
-  const content = task.get('content') as string;
-
-  // New fields — default gracefully when missing (from v1 peers)
-  const tags = task.get('tags') as Y.Map<boolean> | undefined;
-  const priority = (task.get('priority') as string) ?? 'medium';
-
-  return { title, content, tags, priority };
+function initializeProject(doc: Y.Doc): void {
+  const meta = doc.getMap('meta');
+  meta.set('schemaVersion', SCHEMA_VERSION);
+  meta.set('title', 'Untitled project');
+  doc.getArray('tasks');
 }
+```
 
-// New peers set the new fields; old peers ignore them
-function upgradeTask(task: Y.Map<any>): void {
-  if (!task.has('priority')) {
-    task.set('priority', 'medium');
+Use `swarm.doc(path)` followed by `await document.create()` for a new Peerborne
+document. Use `await document.open()` to load an existing document; a failed load
+does not create one. Do not run initialization as a recovery path for failed
+validation or failed loading.
+
+### 7.3 Reject Unsupported State
+
+Validate the exact supported schema before interpreting document fields:
+
+```typescript
+function assertCurrentSchema(doc: Y.Doc): void {
+  const meta = doc.getMap('meta');
+  if (meta.get('schemaVersion') !== SCHEMA_VERSION) {
+    throw new Error('Unsupported project schema');
   }
-  if (!task.has('tags')) {
-    task.set('tags', new Y.Map<boolean>());
+  if (typeof meta.get('title') !== 'string') {
+    throw new Error('Invalid project title');
   }
 }
 ```
 
-### 7.3 Handling Schema Version Mismatches
+Apply the same checks to nested collections and values used by application
+logic. A schema tag alone does not validate the rest of the document. Run
+validation on loaded state and remote updates; CRDT convergence does not imply
+valid application data.
 
-When peers running different schema versions synchronize, the CRDT merge succeeds at the data level but the application must handle unknown fields gracefully.
+### 7.4 Changing a Schema During Alpha
 
-**Strategy: Version field with forward compatibility**:
-
-```typescript
-const meta = doc.getMap('meta');
-
-// Always set version on document creation
-meta.set('schemaVersion', 2);
-
-function onDocumentLoad(doc: Y.Doc): void {
-  const meta = doc.getMap('meta');
-  const version = (meta.get('schemaVersion') as number) || 1;
-
-  if (version < 2) {
-    // Run migration for documents created by v1 peers
-    migrateV1toV2(doc);
-    meta.set('schemaVersion', 2);
-  }
-
-  if (version > 2) {
-    // Newer schema — read what we can, ignore what we don't understand
-    console.warn(`Document schema version ${version} is newer than supported (2). Some features may not work.`);
-  }
-}
-
-function migrateV1toV2(doc: Y.Doc): void {
-  const tasks = doc.getArray<Y.Map<any>>('tasks');
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks.get(i);
-    if (!task.has('priority')) {
-      task.set('priority', 'medium');
-    }
-  }
-}
-```
-
-**Key principles**:
-- **Never remove fields** — old peers may still reference them. Set them to `null` or a sentinel value if deprecated.
-- **Never change a field's type** — if `title` was a `string`, don't replace it with a `Y.Text`. Create a new field `titleText` instead.
-- **Migrations are idempotent** — multiple peers may run the same migration concurrently. Use `has()` checks to avoid duplicating data.
-- **Forward compatibility** — always ignore unknown keys gracefully. Never crash on unexpected data.
-
-### 7.4 Renaming or Restructuring Fields
-
-```typescript
-// Renaming: copy data from old key to new key
-function migrateRename(doc: Y.Doc): void {
-  const meta = doc.getMap('meta');
-  if (meta.has('name') && !meta.has('title')) {
-    meta.set('title', meta.get('name'));
-    // Don't delete 'name' — old peers may still read it
-  }
-}
-
-// Restructuring: flatten a nested structure
-function migrateFlatten(doc: Y.Doc): void {
-  const meta = doc.getMap('meta');
-  const address = meta.get('address') as Y.Map<any> | undefined;
-  if (address && !meta.has('addressCity')) {
-    meta.set('addressCity', address.get('city'));
-    meta.set('addressState', address.get('state'));
-    // Keep old 'address' for backward compatibility
-  }
-}
-```
+Update producers, readers, validators, and tests together. Remove obsolete
+fields and code paths, advance the application schema version, and use fresh
+local state for incompatible changes. Test malformed and unsupported schemas
+explicitly. See [the alpha compatibility policy](../MIGRATING.md).
 
 ---
 
@@ -1407,8 +1361,9 @@ const auth = new SubtleCrypto();
 const acl = new YjsACLProvider();
 const keychain = new YjsKeychainProvider();
 
-// Open a document and apply schema
-const swarmDoc = await swarm.openDocument('/projects/project-123');
+// Create a new document and apply the current schema
+const swarmDoc = swarm.doc('/projects/project-123');
+await swarmDoc.create();
 
 // Change the document — the change function receives the Y.Doc
 swarmDoc.change((doc: Y.Doc) => {
@@ -1437,14 +1392,16 @@ Peerborne enforces access control at the document level. Schema design should al
 // /projects/proj-123/secrets  — readable by authorized users only
 
 // Public document: project overview
-const publicDoc = await swarm.openDocument('/projects/proj-123/public');
+const publicDoc = swarm.doc('/projects/proj-123/public');
+await publicDoc.open();
 publicDoc.change((doc: Y.Doc) => {
   doc.getMap('meta').set('title', 'Project Alpha');
   doc.getMap('meta').set('description', 'A public project overview');
 });
 
 // Admin document: settings and permissions
-const adminDoc = await swarm.openDocument('/projects/proj-123/admin');
+const adminDoc = swarm.doc('/projects/proj-123/admin');
+await adminDoc.open();
 // Only admin keys are in this document's ACL
 ```
 
@@ -1455,7 +1412,7 @@ const adminDoc = await swarm.openDocument('/projects/proj-123/admin');
 
 ### 8.3 Schema Design Implications for Indexing
 
-When Peerborne's indexing support is implemented (WS-5 in the roadmap), indexed fields must be readable from the Y.Doc structure. Design schemas with queryable fields at predictable paths:
+`@peerborne/index` materializes indexed fields through an application-supplied document extractor. Design schemas with queryable fields at predictable paths, and validate extracted values against the current index definition:
 
 ```typescript
 // GOOD: consistent field paths for indexing
@@ -1488,9 +1445,10 @@ Peerborne encrypts the entire Y.Doc state with AES-GCM using a document key mana
 
 ```typescript
 // Pattern: separate document per sensitivity level
-const projectPublic = await swarm.openDocument('/proj/public');   // all members
-const projectInternal = await swarm.openDocument('/proj/internal'); // team only
-const projectSecret = await swarm.openDocument('/proj/secret');   // leads only
+const projectPublic = swarm.doc('/proj/public'); // all members
+const projectInternal = swarm.doc('/proj/internal'); // team only
+const projectSecret = swarm.doc('/proj/secret'); // leads only
+await Promise.all([projectPublic.open(), projectInternal.open(), projectSecret.open()]);
 ```
 
 ---
@@ -1525,11 +1483,11 @@ Use this checklist when designing a new schema:
    - [ ] Which data needs different read/write permissions?
    - [ ] Split into separate documents per access level
 
-6. **Plan for schema evolution**
-   - [ ] Include a `schemaVersion` field
-   - [ ] New fields have sensible defaults
-   - [ ] Migrations are idempotent
-   - [ ] Old field names are never reused for different purposes
+6. **Validate the current schema**
+   - [ ] Include and check the exact supported `schemaVersion`
+   - [ ] Initialize required fields only during explicit creation
+   - [ ] Reject malformed and unsupported state
+   - [ ] Remove obsolete readers, writers, and fields together
 
 7. **Test concurrent scenarios**
    - [ ] Simulate two peers editing the same field

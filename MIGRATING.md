@@ -18,6 +18,15 @@ the message. Ordinary application sync uses `ordinary-sync-v1`; BeeKEM uses
 parent-bound V2 PathUpdates and generation-bearing V2 Welcomes. Receivers
 reject unsupported forms before applying state.
 
+Normal document and snapshot loads use V4 only. They require signing, a fresh
+request challenge, a captured trusted writer, and locally trusted security
+commitments; load quorum configuration does not disable those checks.
+Invitation catch-up uses a separate issuer-pinned protocol.
+
+`document.create()` explicitly founds a document. `document.open()` loads an
+existing document and fails when it cannot authenticate one; it never creates
+an empty document after an unsuccessful load.
+
 The document GossipSub prefix is `/peerborne/document/v3/`. Custom document
 prefixes must be admitted by the relay's `TOPIC_ALLOWLIST`; changing a topic
 does not select another wire format. Topic names are public routing labels,
