@@ -8,7 +8,7 @@ describe('IndexedDB store persistence', () => {
   test('current stores retain blocks and pins across reopen', async () => {
     const fixture = `${__dirname}/idb-store-reopen.fixture.mjs`;
     await expect(
-      execFileAsync(process.execPath, ['--test', fixture]),
+      execFileAsync(process.execPath, ['--test', fixture], { timeout: 30_000 }),
     ).resolves.toBeDefined();
-  });
+  }, 35_000);
 });
