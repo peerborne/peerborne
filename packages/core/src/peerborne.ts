@@ -60,7 +60,7 @@ import {
   readPathPrefixedProtocolHeader,
 } from './utils.js';
 import { wrapStream } from './stream-adapter.js';
-import { closeLegacyHeliaStores } from './store-lifecycle.js';
+import { closeHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 import { createAndStartHeliaNode } from './helia-node.js';
 import type { PeerborneHeliaNode } from './helia-node.js';
@@ -511,7 +511,7 @@ export class Peerborne<
   private _networkStats?: NetworkStats;
 
   private _sharedHandlersRegistration: Promise<void> | undefined;
-  private _openedLegacyStores: OpenableStore[] = [];
+  private _openedStores: OpenableStore[] = [];
   private _initializationInFlight = false;
 
   // Registry of open documents keyed by document path. Shared protocol
@@ -659,8 +659,8 @@ export class Peerborne<
     // preventing leaked background resources (connections, timers, etc.).
     if (this._heliaNode) {
       try { await this._heliaNode.stop(); } catch { /* best-effort */ }
-      await closeLegacyHeliaStores(this._openedLegacyStores);
-      this._openedLegacyStores = [];
+      await closeHeliaStores(this._openedStores);
+      this._openedStores = [];
       this._heliaNode = undefined;
       this._peerId = undefined;
       this._peerIds = [];
@@ -692,10 +692,10 @@ export class Peerborne<
     this._networkStats = config.enableNetworkStats ? new NetworkStats() : undefined;
 
     // Setup Helia node.
-    const { heliaNode, openedLegacyStores } =
+    const { heliaNode, openedStores } =
       await createAndStartHeliaNode(config.helia);
     this._heliaNode = heliaNode;
-    this._openedLegacyStores = openedLegacyStores;
+    this._openedStores = openedStores;
 
     this.libp2p.addEventListener('peer:connect', (event) => {
       const peerId = event.detail.toString();

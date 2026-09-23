@@ -11,7 +11,7 @@ import { isLibp2p } from 'libp2p';
 import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import type { PeerborneConfig } from './peerborne-config.js';
-import { closeLegacyHeliaStores, openLegacyHeliaStores } from './store-lifecycle.js';
+import { closeHeliaStores, openHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 
 export type PeerborneHeliaNode = HeliaWithLibp2p<
@@ -20,14 +20,14 @@ export type PeerborneHeliaNode = HeliaWithLibp2p<
 
 interface StartedHeliaNode {
   heliaNode: PeerborneHeliaNode;
-  openedLegacyStores: OpenableStore[];
+  openedStores: OpenableStore[];
 }
 
 export async function createAndStartHeliaNode(
   heliaInit?: NonNullable<PeerborneConfig['helia']>,
 ): Promise<StartedHeliaNode> {
-  const openedLegacyStores = heliaInit
-    ? await openLegacyHeliaStores(heliaInit.datastore, heliaInit.blockstore)
+  const openedStores = heliaInit
+    ? await openHeliaStores(heliaInit.datastore, heliaInit.blockstore)
     : [];
   let heliaNode: PeerborneHeliaNode | undefined;
 
@@ -72,14 +72,14 @@ export async function createAndStartHeliaNode(
       );
     }
 
-    return { heliaNode, openedLegacyStores };
+    return { heliaNode, openedStores };
   } catch (error) {
     try {
       await heliaNode?.stop();
     } catch {
       // Best-effort cleanup preserves the startup error.
     }
-    await closeLegacyHeliaStores(openedLegacyStores);
+    await closeHeliaStores(openedStores);
     throw error;
   }
 }
