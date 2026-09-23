@@ -30,7 +30,7 @@ describe('YjsJSONSerializer load security state', () => {
     const serializer = new YjsJSONSerializer();
     const loadChallenge = new Uint8Array(32).fill(7);
     const decoded = serializer.deserializeSyncMessage(
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: commitments,
         loadChallenge,
@@ -44,12 +44,12 @@ describe('YjsJSONSerializer load security state', () => {
     expect(decoded.signature).toBe('writer-signature');
     expect(decoded.loadChallenge).toEqual(loadChallenge);
     expect(
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: commitments,
       }),
     ).not.toEqual(
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: { ...commitments, epoch: commitments.epoch + 1n },
       }),
@@ -84,7 +84,7 @@ describe('YjsJSONSerializer load security state', () => {
   test('rejects malformed security commitments at the sync boundary', () => {
     const serializer = new YjsJSONSerializer();
     const wire = new TextEncoder().encode(
-      JSON.stringify({
+      JSON.stringify({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: {
           version: 1,
@@ -105,7 +105,7 @@ describe('YjsJSONSerializer load security state', () => {
     const serializer = new YjsJSONSerializer();
     const digest = Buffer.from(new Uint8Array(32)).toString('base64');
     const wire = new TextEncoder().encode(
-      JSON.stringify({
+      JSON.stringify({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: {
           groupId: 'group',
@@ -126,7 +126,7 @@ describe('YjsJSONSerializer load security state', () => {
     const serializer = new YjsJSONSerializer();
     const legacy = changeChain<Uint8Array>(MAX_MERKLE_DAG_DEPTH + 1);
     expect(() =>
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: '/doc',
         changes: legacy,
       }),
@@ -144,7 +144,7 @@ describe('YjsJSONSerializer load security state', () => {
     changes.keyID = 'epoch-7';
     changes.kind = 'document';
 
-    const first = serializer.serializeSyncMessage({
+    const first = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/signed-load',
       changeId: 'ROOT',
       changes,

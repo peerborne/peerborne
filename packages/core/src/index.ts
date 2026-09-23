@@ -130,7 +130,6 @@ import {
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
   DOC_KEY_INFO,
@@ -278,7 +277,6 @@ export {
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
   // BeeKEM document-key derivation
   DOC_KEY_INFO,
   deriveDocumentKeyFromRootSecret,
@@ -419,11 +417,10 @@ export {
   validateInitialLoadChallenge,
 } from './initial-load-challenge.js';
 export {
-  documentLoadV3,
   documentLoadV4,
-  snapshotLoadV3,
   snapshotLoadV4,
   securityAdvertiseV1,
+  invitationCatchUpV1,
 } from './wire-protocols.js';
 export type {
   ACLChainConfig,

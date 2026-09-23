@@ -15,20 +15,20 @@ describe('Yjs Core Functionality', () => {
     const doc = new Doc();
     const map = doc.getMap('test');
     map.set('key', 'value');
-    
+
     expect(map.get('key')).toBe('value');
   });
 
   test('should create multiple independent documents', () => {
     const doc1 = new Doc();
     const doc2 = new Doc();
-    
+
     const map1 = doc1.getMap('test');
     map1.set('key', 'value1');
-    
+
     const map2 = doc2.getMap('test');
     map2.set('key', 'value2');
-    
+
     expect(map1.get('key')).toBe('value1');
     expect(map2.get('key')).toBe('value2');
   });
@@ -37,7 +37,7 @@ describe('Yjs Core Functionality', () => {
     const data = new Uint8Array([1, 2, 3, 4, 5]);
     const base64 = Base64.fromUint8Array(data);
     const decoded = Base64.toUint8Array(base64);
-    
+
     expect(base64).toBeDefined();
     expect(typeof base64).toBe('string');
     expect(decoded).toEqual(data);
@@ -47,17 +47,17 @@ describe('Yjs Core Functionality', () => {
     const data = new Uint8Array([]);
     const base64 = Base64.fromUint8Array(data);
     const decoded = Base64.toUint8Array(base64);
-    
+
     expect(decoded).toEqual(data);
   });
 
   test('should handle document arrays', () => {
     const doc = new Doc();
     const arr = doc.getArray('testArray');
-    
+
     arr.push(['item1']);
     arr.push(['item2']);
-    
+
     expect(arr.length).toBe(2);
     expect(arr.get(0)).toBe('item1');
     expect(arr.get(1)).toBe('item2');
@@ -98,7 +98,7 @@ describe('YjsJSONSerializer tipsHash round-trip (quorum)', () => {
   ])(
     'serializeSyncMessage/deserializeSyncMessage preserves tipsHash (%s)',
     (_label, hash) => {
-      const wire = serializer.serializeSyncMessage({
+      const wire = serializer.serializeSyncMessage({ signatureContext: 'security-advertisement-v1' as const,
         documentId: 'quorum-doc',
         tipsHash: hash,
       });
@@ -108,7 +108,7 @@ describe('YjsJSONSerializer tipsHash round-trip (quorum)', () => {
   );
 
   test('deserializeSyncMessage omits tipsHash when absent on wire', () => {
-    const message = { documentId: 'no-quorum-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-quorum-doc' };
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.tipsHash).toBeUndefined();
@@ -121,7 +121,7 @@ describe('YjsJSONSerializer tipsHash round-trip (quorum)', () => {
   // table cases share.
   test('deserializeSyncMessage rejects non-string tipsHash', () => {
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', tipsHash: 42 }),
+      JSON.stringify({ signatureContext: 'security-advertisement-v1' as const, documentId: 'doc', tipsHash: 42 }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tipsHash/);
   });
@@ -141,7 +141,7 @@ describe('YjsJSONSerializer tipsHash round-trip (quorum)', () => {
       // validator (the serializer's encoder pre-validation is not in play).
       const b64 = Buffer.from(malformedHash).toString('base64');
       const wire = new TextEncoder().encode(
-        JSON.stringify({ documentId: 'doc', tipsHash: b64 }),
+        JSON.stringify({ signatureContext: 'security-advertisement-v1' as const, documentId: 'doc', tipsHash: b64 }),
       );
       expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
         /tipsHash.*32 bytes/,
@@ -163,7 +163,7 @@ describe('YjsJSONSerializer tips round-trip (quorum frontier)', () => {
   ])(
     'serializeSyncMessage/deserializeSyncMessage preserves tips (%s)',
     (_label, tips) => {
-      const wire = serializer.serializeSyncMessage({
+      const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: 'frontier-doc',
         tips,
       });
@@ -173,7 +173,7 @@ describe('YjsJSONSerializer tips round-trip (quorum frontier)', () => {
   );
 
   test('deserializeSyncMessage omits tips when absent on wire', () => {
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'no-frontier-doc',
     });
     const deserialized = serializer.deserializeSyncMessage(wire);
@@ -182,14 +182,14 @@ describe('YjsJSONSerializer tips round-trip (quorum frontier)', () => {
 
   test('deserializeSyncMessage rejects non-array tips', () => {
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', tips: 'not-an-array' }),
+      JSON.stringify({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', tips: 'not-an-array' }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tips/);
   });
 
   test('deserializeSyncMessage rejects non-string tips entries', () => {
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', tips: ['ok', 42] }),
+      JSON.stringify({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', tips: ['ok', 42] }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tips/);
   });

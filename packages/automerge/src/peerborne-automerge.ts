@@ -1924,7 +1924,6 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       );
     }
     if (
-      raw.signatureContext !== undefined &&
       !isSyncMessageSignatureContext(raw.signatureContext)
     ) {
       throw new Error(

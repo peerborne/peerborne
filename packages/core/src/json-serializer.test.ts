@@ -82,7 +82,7 @@ describe('load-request stream framing', () => {
     expect(() => nonObject(encoder.encode('[]'))).toThrow(/must be an object/);
 
     const trailing = jsonSerializer.createLoadRequestCompletionDetector();
-    expect(() => trailing(encoder.encode('{"documentId":"/doc"}x'))).toThrow(
+    expect(() => trailing(encoder.encode('{"signatureContext":"ordinary-sync-v1","documentId":"/doc"}x'))).toThrow(
       /after JSON load request/,
     );
   });
@@ -240,6 +240,7 @@ describe('V4 initial-load challenge JSON boundary', () => {
     expect(
       jsonSerializer.deserializeSyncMessage(
         jsonSerializer.serializeSyncMessage({
+          signatureContext: 'load-response-v4',
           documentId: '/doc',
           loadChallenge: challenge,
         }),
@@ -257,11 +258,11 @@ describe('V4 initial-load challenge JSON boundary', () => {
   });
 
   test('rejects malformed challenge width and non-canonical base64', () => {
-    const encode = (value: unknown) =>
+    const encode = (value: unknown, context = false) =>
       new TextEncoder().encode(
-        JSON.stringify({ documentId: '/doc', loadChallenge: value }),
+        JSON.stringify({ ...(context ? { signatureContext: 'load-response-v4' } : {}), documentId: '/doc', loadChallenge: value }),
       );
-    expect(() => jsonSerializer.deserializeSyncMessage(encode('AQ=='))).toThrow(
+    expect(() => jsonSerializer.deserializeSyncMessage(encode('AQ==', true))).toThrow(
       /32-byte/,
     );
     expect(() =>
@@ -278,9 +279,9 @@ describe('signed top-level wire field order', () => {
 
   test('preserves sync-message bytes with recognized and unknown fields in different orders', () => {
     const wires = [
-      '{"changes":{"kind":"writer","change":{"delta":1}},"documentId":"/doc","signature":"sig","extension":{"version":1}}',
-      '{"documentId":"/doc","extension":{"version":1},"changes":{"kind":"writer","change":{"delta":1}},"signature":"sig"}',
-      '{"extension":{"version":1},"signature":"sig","documentId":"/doc","changes":{"kind":"writer","change":{"delta":1}}}',
+      '{"changes":{"kind":"writer","change":{"delta":1}},"signatureContext":"ordinary-sync-v1","documentId":"/doc","signature":"sig","extension":{"version":1}}',
+      '{"signatureContext":"ordinary-sync-v1","documentId":"/doc","extension":{"version":1},"changes":{"kind":"writer","change":{"delta":1}},"signature":"sig"}',
+      '{"extension":{"version":1},"signature":"sig","signatureContext":"ordinary-sync-v1","documentId":"/doc","changes":{"kind":"writer","change":{"delta":1}}}',
     ];
 
     for (const wire of wires) {
@@ -308,16 +309,13 @@ describe('signed top-level wire field order', () => {
         loadChallenge: challengeWire,
         documentId: '/doc',
         signature: 'sig',
-        extension: 1,
       }),
       JSON.stringify({
         documentId: '/doc',
-        extension: 1,
         loadChallenge: challengeWire,
         signature: 'sig',
       }),
       JSON.stringify({
-        extension: 1,
         signature: 'sig',
         documentId: '/doc',
         loadChallenge: challengeWire,
@@ -336,7 +334,7 @@ describe('signed top-level wire field order', () => {
 
   test('keeps dangerous unknown keys inert while retaining signed bytes', () => {
     const wire =
-      '{"documentId":"/doc","__proto__":{"polluted":true},' +
+      '{"signatureContext":"ordinary-sync-v1","documentId":"/doc","__proto__":{"polluted":true},' +
       '"changes":{"kind":"document"},"extension":"kept"}';
     const decoded = jsonSerializer.deserializeSyncMessage(
       encoder.encode(wire),
@@ -363,7 +361,7 @@ describe('signed top-level wire field order', () => {
 
   test('rejects enumerable accessors without invoking them', () => {
     let reads = 0;
-    const accessorMessage = { documentId: '/doc' } as Record<string, unknown>;
+    const accessorMessage = { signatureContext: 'ordinary-sync-v1' as const, documentId: '/doc' } as Record<string, unknown>;
     Object.defineProperty(accessorMessage, 'changes', {
       enumerable: true,
       get: () => {
@@ -403,7 +401,7 @@ describe('V4 load-security state JSON boundary', () => {
   };
 
   test('round-trips canonical commitments without bigint or byte loss', () => {
-    const encoded = jsonSerializer.serializeSyncMessage({
+    const encoded = jsonSerializer.serializeSyncMessage({ signatureContext: 'load-response-v4' as const,
       documentId: '/doc',
       loadSecurityState: commitments,
     });
@@ -444,7 +442,7 @@ describe('V4 load-security state JSON boundary', () => {
     ['non-object tuple', []],
   ])('rejects malformed %s', (_name, loadSecurityState) => {
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: '/doc', loadSecurityState }),
+      JSON.stringify({ signatureContext: 'load-response-v4' as const, documentId: '/doc', loadSecurityState }),
     );
     expect(() => jsonSerializer.deserializeSyncMessage(wire)).toThrow(
       /loadSecurityState/,
@@ -454,7 +452,7 @@ describe('V4 load-security state JSON boundary', () => {
   test('rejects reordered commitments before signed re-encoding', () => {
     const digest = Buffer.from(new Uint8Array(32)).toString('base64');
     const wire = new TextEncoder().encode(
-      JSON.stringify({
+      JSON.stringify({ signatureContext: 'load-response-v4' as const,
         documentId: '/doc',
         loadSecurityState: {
           groupId: 'group',
@@ -557,7 +555,7 @@ describe('stack-safe JSON serialization', () => {
     boxedString.toString = () => 'b';
 
     for (const extension of [boxedNumber, boxedString]) {
-      const message = { documentId: '/doc', extension } as any;
+      const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: '/doc', extension } as any;
       expect(
         jsonSerializer.decode(jsonSerializer.serializeSyncMessage(message)),
       ).toBe(JSON.stringify(message));
@@ -582,7 +580,7 @@ describe('stack-safe JSON serialization', () => {
       toJSON?: (key: string) => unknown;
     };
     const original = Object.getOwnPropertyDescriptor(prototype, 'toJSON');
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/doc',
       extension: 1n,
     } as any;
@@ -621,7 +619,7 @@ describe('stack-safe JSON serialization', () => {
 
   test('round-trips and re-encodes the maximum supported history byte-identically', () => {
     const legacyDepth = MAX_CHANGE_TREE_DEPTH;
-    const first = jsonSerializer.serializeSyncMessage({
+    const first = jsonSerializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/doc',
       changes: chain(legacyDepth),
     });
@@ -639,3 +637,13 @@ describe('stack-safe JSON serialization', () => {
     expect(actualDepth).toBe(legacyDepth);
   });
 });
+
+
+test.each([undefined, 'load-response-v3', 'tip-advertisement-v1', 'key-update-v2'])(
+  'rejects missing or removed sync-message context %p', (signatureContext) => {
+    const message = { documentId: '/doc', signatureContext };
+    expect(() => jsonSerializer.serializeSyncMessage(message as never)).toThrow(/signatureContext/);
+    const bytes = new TextEncoder().encode(JSON.stringify(message));
+    expect(() => jsonSerializer.deserializeSyncMessage(bytes)).toThrow(/signatureContext/);
+  },
+);

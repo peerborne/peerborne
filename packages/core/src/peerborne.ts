@@ -49,10 +49,11 @@ import {
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  documentLoadV3,
+  documentLoadV4,
   invitationJoinV1,
-  snapshotLoadV3,
-  tipAdvertiseV1,
+  invitationCatchUpV1,
+  snapshotLoadV4,
+  securityAdvertiseV1,
 } from './wire-protocols.js';
 import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
@@ -497,6 +498,13 @@ export class Peerborne<
 
   // configs for the swarm, thus passing its config to all documents opened in a swarm
   protected _config: PeerborneConfig | null = null;
+  private _loadTrustPolicy: Pick<PeerborneConfig,
+    'resolveTrustedDocumentWriters' | 'resolveLoadSecurityCommitments' | 'validateDocumentPath'> = {};
+
+  get resolveTrustedDocumentWriters() { return this._loadTrustPolicy.resolveTrustedDocumentWriters; }
+  get resolveLoadSecurityCommitments() { return this._loadTrustPolicy.resolveLoadSecurityCommitments; }
+  get validateDocumentPath() { return this._loadTrustPolicy.validateDocumentPath; }
+
   private _heliaNode: PeerborneHeliaNode | undefined;
   private _peerId: PeerId | undefined;
   private _peerIds: string[] = [];
@@ -680,13 +688,18 @@ export class Peerborne<
     // Skip validation when the feature is explicitly disabled -- a
     // shared config object that carries leftover quorum knobs alongside
     // `loadQuorumEnabled: false` should still initialize cleanly via
-    // the legacy load path. `runLoadQuorum` mirrors this early-exit
+    // single-source selection. `runLoadQuorum` mirrors this early-exit
     // ordering: `enabled === false` is checked before validation, so
     // the two boundaries stay consistent.
     if (config.loadQuorumEnabled !== false) {
       validateLoadQuorumConfig(config);
     }
 
+    this._loadTrustPolicy = Object.freeze({
+      resolveTrustedDocumentWriters: config.resolveTrustedDocumentWriters,
+      resolveLoadSecurityCommitments: config.resolveLoadSecurityCommitments,
+      validateDocumentPath: config.validateDocumentPath,
+    });
     this._config = config;
 
     this._sharedHandlersRegistration = undefined;
@@ -949,7 +962,7 @@ export class Peerborne<
       this._config?.loadQuorumTimeoutMs,
     );
 
-    const docLoadHandler = (rawStream: Stream) => {
+    const docLoadHandler = (invitationCatchUp = false) => (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
         stream,
@@ -991,7 +1004,11 @@ export class Peerborne<
                 await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
-              await doc.handleLoadRequestData(request, stream, admission);
+              if (invitationCatchUp) {
+                await doc.handleInvitationCatchUpRequestData(request, stream, admission);
+              } else {
+                await doc.handleLoadRequestData(request, stream, admission);
+              }
             },
           );
           return [];
@@ -1178,8 +1195,8 @@ export class Peerborne<
     };
 
     // Handler implementation for tip-advertise requests (initial-load
-    // quorum probe; see `wire-protocols.ts::tipAdvertiseV1`). Wire format
-    // mirrors documentLoadV3: a single serialized CRDTLoadRequest in,
+    // quorum probe; see `wire-protocols.ts::securityAdvertiseV1`). Wire format
+    // mirrors documentLoadV4: a single serialized CRDTLoadRequest in,
     // a single (small) encrypted/serialized CRDTSyncMessage out (whose
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
@@ -1220,15 +1237,10 @@ export class Peerborne<
             async (admission) => {
               const doc = this._documentRegistry.get(request.documentId);
               if (!doc) {
-                // The unauthenticated one-byte sentinel is intentionally only
-                // an existence signal. Quorum protects its interpretation and
-                // the attacker-controlled document ID is never logged.
-                await writeStream(stream, [
-                  new Uint8Array([0xff]),
-                ] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
-              await doc.handleTipAdvertiseRequestData(
+              await doc.handleSecurityAdvertiseRequestData(
                 request,
                 stream,
                 admission,
@@ -1280,11 +1292,12 @@ export class Peerborne<
     // stream payload for routing.
     const relayProtocolOptions = { runOnLimitedConnection: true };
     const registration = Promise.all([
-      this.libp2p.handle(documentLoadV3, docLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(snapshotLoadV3, snapshotLoadHandler, relayProtocolOptions),
+      this.libp2p.handle(documentLoadV4, docLoadHandler(), relayProtocolOptions),
+      this.libp2p.handle(invitationCatchUpV1, docLoadHandler(true), relayProtocolOptions),
+      this.libp2p.handle(snapshotLoadV4, snapshotLoadHandler, relayProtocolOptions),
       this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
+      this.libp2p.handle(securityAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
       this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;

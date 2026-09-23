@@ -1,43 +1,7 @@
 /**
- * Orchestration helper for the initial-load quorum gate (#186 / #189 §5.4.2).
- *
- * The pure quorum decision module (`load-quorum.ts`) is responsible for
- * computing whether a set of tip-advertise responses meets the agreement
- * threshold. It is intentionally I/O-free so the trust-critical decision
- * logic can be audited and unit-tested in isolation.
- *
- * This module sits one layer up: it takes a peer list and a caller-supplied
- * probe function and orchestrates the K-of-Q probe round, returning the
- * narrowed agreeing-cohort peer list plus the winning hash (or throwing
- * `LoadQuorumFailedError` on any failure mode). It is also pure with respect
- * to libp2p/Helia -- the only network coupling lives in the `probeFn`
- * callback that `PeerborneDocument.load()` passes in. That decoupling
- * exists so the production orchestration path can be exercised by unit tests
- * without a real libp2p/Helia stack (the codebase has no precedent for full
- * libp2p test doubles, and the load orchestration is a security gate that
- * needs direct regression coverage).
- *
- * Callers wire this module by:
- *
- *   1. Computing the peer list (already-deduped by libp2p PeerId so a single
- *      peer with multiple open connections cannot cast multiple votes).
- *   2. Selecting one `protocol` for the whole round and passing a `probeFn`
- *      that returns that family's response or `null` for a non-vote. V4
- *      requires `{ hash, signerAuthority }` with caller-authenticated authority;
- *      bare hashes and the unknown-document sentinel cannot count in V4.
- *   3. Passing a `peerIdOf` extractor so this module can narrow the peer list
- *      down to the agreeing cohort without knowing about Multiaddrs.
- *
- * The return value is either:
- *   - `{ skipped: true }` — quorum disabled, or no peers (caller falls through
- *     to the legacy single-peer load loop / treats as new document).
- *   - `{ ok: true, narrowedPeers, winningHashHex }` — quorum passed; caller
- *     does the full document-load against `narrowedPeers` with the binding
- *     check pinned to `winningHashHex`.
- *
- * Failures (insufficient responses, no majority, etc.) are thrown as
- * `LoadQuorumFailedError` so the caller's existing `instanceof`-based
- * propagation works unchanged.
+ * Select an agreeing cohort of authenticated, distinct writer authorities.
+ * probeFn owns signature and trust verification; this module validates and
+ * detaches votes, deduplicates authorities, and enforces the configured Q.
  */
 
 import {
@@ -67,52 +31,54 @@ export interface SignerAttributedLoadQuorumVote {
   readonly signerAuthority: string;
 }
 
-export type LoadQuorumProtocol = 'tip-advertise-v1' | 'security-advertise-v1';
+export type LoadQuorumProtocol = 'security-advertise-v1';
 
-export type LoadQuorumProbeResult =
-  | Uint8Array
-  | SignerAttributedLoadQuorumVote
-  | 'unknown-doc'
-  | null;
+export type LoadQuorumProbeResult = SignerAttributedLoadQuorumVote | null;
 
 type NormalizedLoadQuorumProbeResult =
   | {
       readonly kind: 'vote';
       readonly hash: Uint8Array;
-      readonly signerAuthority?: string;
+      readonly signerAuthority: string;
     }
-  | { readonly kind: 'unknown-doc' }
   | { readonly kind: 'non-vote' };
 
 function normalizeLoadQuorumProbeResult(
   result: unknown,
   protocol: LoadQuorumProtocol,
 ): NormalizedLoadQuorumProbeResult {
-  if (protocol === 'tip-advertise-v1') {
-    if (result === 'unknown-doc') return { kind: 'unknown-doc' };
-    const hash = snapshotVoteHash(result);
-    return hash === undefined ? { kind: 'non-vote' } : { kind: 'vote', hash };
-  }
   if (result === null || typeof result !== 'object') {
     return { kind: 'non-vote' };
   }
 
   try {
     const prototype = reflectApply(objectGetPrototypeOf, Object, [result]);
-    if (prototype !== null && reflectApply(objectGetPrototypeOf, Object, [prototype]) !== null) {
+    if (
+      prototype !== null &&
+      reflectApply(objectGetPrototypeOf, Object, [prototype]) !== null
+    ) {
       return { kind: 'non-vote' };
     }
-    const hashDescriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [result, 'hash']);
+    const hashDescriptor = reflectApply(
+      objectGetOwnPropertyDescriptor,
+      Object,
+      [result, 'hash'],
+    );
     if (hashDescriptor === undefined || !('value' in hashDescriptor)) {
       return { kind: 'non-vote' };
     }
     const hash = snapshotVoteHash(hashDescriptor.value);
-    const signerDescriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [result, 'signerAuthority']);
+    const signerDescriptor = reflectApply(
+      objectGetOwnPropertyDescriptor,
+      Object,
+      [result, 'signerAuthority'],
+    );
     if (signerDescriptor === undefined || !('value' in signerDescriptor)) {
       return { kind: 'non-vote' };
     }
     const signerAuthority = signerDescriptor.value;
-    return hash !== undefined && typeof signerAuthority === 'string' &&
+    return hash !== undefined &&
+      typeof signerAuthority === 'string' &&
       signerAuthority.length !== 0
       ? { kind: 'vote', hash, signerAuthority }
       : { kind: 'non-vote' };
@@ -160,24 +126,11 @@ export interface LoadQuorumOrchestratorConfig {
 }
 
 /**
- * Result of running the quorum orchestration over a peer list.
- *
- *   - `{ skipped: true }` — gate disabled or no peers known. Caller
- *     falls through to the legacy single-peer load loop.
- *   - `{ newDoc: true }` — a Q-of-K majority of probed peers explicitly
- *     disclaimed the document (returned `'unknown-doc'` from the probe).
- *     Caller should treat as "document does not exist yet" and let
- *     `load()` return `false` so a fresh `open()` creates the document
- *     on top of the existing swarm. The previous design conflated
- *     unknown-doc with partition / timeout and made new-doc creation fail
- *     in an existing mesh.
- *   - `{ ok: true, narrowedPeers, winningHashHex }` — quorum passed on
- *     a tip-set hash; caller does the full document-load against
- *     `narrowedPeers` with the binding check pinned to `winningHashHex`.
+ * A disabled gate or empty peer list is skipped. A successful round returns
+ * the agreeing cohort and bound digest. No result authorizes document creation.
  */
 export type LoadQuorumOrchestratorResult<T> =
   | { skipped: true }
-  | { newDoc: true }
   | { ok: true; narrowedPeers: T[]; winningHashHex: string };
 
 /**
@@ -188,7 +141,7 @@ export type LoadQuorumOrchestratorResult<T> =
  *   caller's preferred-peer placement survives.
  * @param peerIdOf Extracts a stable peer-id key from each peer entry; used
  *   to match agreeing-cohort PeerIds back to the original peer entries.
- * @param probeFn Probes one peer for a legacy `tipsHash` or a V4 vote whose
+ * @param probeFn Probes one peer for a current V4 vote whose
  *   signer authority the callback has already authenticated and authorized.
  *   This orchestrator does not verify that claim. Return `null` for any
  *   non-vote outcome (timeout, decline, decryption failure, malformed hash,
@@ -216,9 +169,12 @@ export async function runLoadQuorum<T>(opts: {
   config?: LoadQuorumOrchestratorConfig;
 }): Promise<LoadQuorumOrchestratorResult<T>> {
   const { peers, peerIdOf, probeFn, documentPath, config, protocol } = opts;
-  if (protocol !== 'tip-advertise-v1' && protocol !== 'security-advertise-v1') {
+  if (protocol !== 'security-advertise-v1') {
     throw new LoadQuorumFailedError({
-      documentPath, reason: 'invalid-config', respondingCount: 0, requiredQ: 0,
+      documentPath,
+      reason: 'invalid-config',
+      respondingCount: 0,
+      requiredQ: 0,
       agreement: new Map(),
       detail: 'A load-quorum protocol family must be selected before probing',
     });
@@ -239,7 +195,7 @@ export async function runLoadQuorum<T>(opts: {
   // `effectiveK(NaN, peers)`, whose floor/finiteness guards return 0;
   // the K=0 branch below would return
   // `{ skipped: true }`, and `PeerborneDocument.load()` would fall
-  // through to the legacy unbound load even though `loadQuorumEnabled`
+  // through to the single-source load even though `loadQuorumEnabled`
   // is still `true` — silently violating the operator's intent of a
   // quorum-protected load. A mutated `timeoutMs = NaN`/`Infinity`/`0`/
   // negative similarly would flow into `setTimeout(...)` inside the
@@ -302,8 +258,7 @@ export async function runLoadQuorum<T>(opts: {
   const q = explicitQ ?? defaultQuorumQ(k);
 
   if (k === 0) {
-    // No peers known. Treat as "new document" — caller falls through to
-    // the legacy "no peer could load" branch.
+    // No peers can be queried; document creation still requires explicit authorization.
     return { skipped: true };
   }
 
@@ -349,7 +304,7 @@ export async function runLoadQuorum<T>(opts: {
 
   if (k === 1 && allowSinglePeer) {
     // Single-peer pass-through. Probe the one known peer; if it responds at
-    // all we proceed with the legacy load. Warn loudly so operators can
+    // all we proceed with the single-source load. Warn loudly so operators can
     // spot the regression. Q is forced to 1 here.
     //
     // The warning text covers BOTH causes of `k === 1`:
@@ -400,17 +355,6 @@ export async function runLoadQuorum<T>(opts: {
         agreement: new Map(),
       });
     }
-    if (normalizedProbe.kind === 'unknown-doc') {
-      // The single probed peer explicitly disclaims the document. Treat
-      // as new-doc-creation -- `load()` will return `false` so a fresh
-      // `open()` can create the document on top of the swarm. This is
-      // symmetric with the K-of-Q `kind === 'new-doc'` branch below.
-      console.warn(
-        `[${documentPath}] Initial-load quorum single-peer probe returned ` +
-          `'unknown-doc'; treating as new-document path (load() will return false).`,
-      );
-      return { newDoc: true };
-    }
     const winningHashHex = tipsHashToHex(normalizedProbe.hash);
     // Narrow to ONLY the probed peer. Without this, the subsequent
     // snapshot/doc-load loop would also try the other peers in the original
@@ -458,21 +402,13 @@ export async function runLoadQuorum<T>(opts: {
   const seenSignerAuthorities = new Set<string>();
   const advertisements: PeerTipAdvertisement[] = probeResults.map(
     ({ peer, result }) => {
-      let hash: Uint8Array | 'unknown-doc' | null = null;
-      if (result.kind === 'vote' && result.signerAuthority !== undefined) {
-        if (
-          result.signerAuthority.length === 0 ||
-          seenSignerAuthorities.has(result.signerAuthority)
-        ) {
-          hash = null;
-        } else {
-          seenSignerAuthorities.add(result.signerAuthority);
-          hash = result.hash;
-        }
-      } else if (result.kind === 'vote') {
+      let hash: Uint8Array | null = null;
+      if (
+        result.kind === 'vote' &&
+        !seenSignerAuthorities.has(result.signerAuthority)
+      ) {
+        seenSignerAuthorities.add(result.signerAuthority);
         hash = result.hash;
-      } else if (result.kind === 'unknown-doc') {
-        hash = 'unknown-doc';
       }
       return { peerId: peerIdOf(peer), hash };
     },
@@ -491,22 +427,6 @@ export async function runLoadQuorum<T>(opts: {
       requiredQ: decision.effectiveQ,
       agreement: decision.agreement,
     });
-  }
-  if (decision.kind === 'new-doc') {
-    // Q-of-K peers all returned the `'unknown-doc'` sentinel: the swarm
-    // collectively disclaims the document. Surface as the new-doc path
-    // so `PeerborneDocument.load()` returns `false` and a fresh
-    // `open()` can create the document on top of the existing swarm.
-    // Defense remains Q-Byzantine: a single lying peer in a 3-of-3 mesh
-    // whose other peers hold the doc cannot force this branch (their
-    // tip-hash bucket wins the tally).
-    console.log(
-      `[${documentPath}] Initial-load quorum passed (new-doc): ` +
-        `${decision.agreeingPeerIds.length}/${decision.respondingCount} ` +
-        `peers disclaimed the document; treating as new-document path ` +
-        `(load() will return false).`,
-    );
-    return { newDoc: true };
   }
   console.log(
     `[${documentPath}] Initial-load quorum passed: ` +

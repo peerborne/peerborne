@@ -61,6 +61,7 @@ function catchUpHarness(
   });
   const sync = jest.fn(async () => true);
   const streams: any[] = [];
+  const requests: any[] = [];
   const dialProtocol = jest.fn(async () => {
     const stream = {
       send: () => true,
@@ -87,17 +88,23 @@ function catchUpHarness(
     _deserializeSignature: () => new Uint8Array([1]),
     _authProvider: {
       nonceBytes: 1,
+      serializePublicKey: async (key: string) => key,
+      deserializePublicKey: async (key: string) => key,
       sign: async () => new Uint8Array([1]),
       decrypt: async () => new Uint8Array([1]),
       verify,
     },
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
-    _loadMessageSerializer: { serializeLoadRequest: () => new Uint8Array([1]) },
+    _loadMessageSerializer: { serializeLoadRequest: (request: any) => {
+      requests.push(request);
+      return new Uint8Array([1]);
+    } },
     _syncMessageSerializer: {
       deserializeSyncMessage: () => ({
         documentId: '/invitation-retry',
-        signatureContext: 'load-response-v3',
+        signatureContext: 'invitation-catch-up-v1',
+        loadChallenge: new Uint8Array(requests.at(-1).loadChallenge),
         signature: 'AQ==',
         tips: [],
       }),
@@ -113,14 +120,15 @@ function catchUpHarness(
       }),
     },
   });
-  return { document, verify, sync, dialProtocol, streams };
+  return { document, verify, sync, dialProtocol, streams, requests };
 }
 
 describe('invitation catch-up writer-version races', () => {
   test('retries a writer change during verification with a fresh issuer response', async () => {
-    const { document, verify, sync, dialProtocol, streams } = catchUpHarness(1);
+    const { document, verify, sync, dialProtocol, streams, requests } = catchUpHarness(1);
     await expect(document._loadInvitationCatchUp('/founder', 'issuer', 'reader', document._activeInvitationBootstrapContinuation)).resolves.toBe(true);
     expect(dialProtocol).toHaveBeenCalledTimes(2);
+    expect(requests[0].loadChallenge).not.toEqual(requests[1].loadChallenge);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(sync).toHaveBeenCalledTimes(1);
     expect(streams[0].abort).toHaveBeenCalledTimes(1);

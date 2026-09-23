@@ -1879,8 +1879,8 @@ describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () =
     // End-to-end structural property the fix establishes:
     //   1. Relay peer B receives a sync tree (X, treeX). Refresh updates
     //      _lastSyncMessage so the served frontier is {X}.
-    //   2. C opens, runs `tipAdvertiseV1` against B, gets tipsHash({X}).
-    //   3. C runs `documentLoadV3` against B. B ships (X, treeX) as the
+    //   2. C opens, runs `securityAdvertiseV1` against B, gets tipsHash({X}).
+    //   3. C runs `documentLoadV4` against B. B ships (X, treeX) as the
     //      load response.
     //   4. C derives `computeServedFrontier(X, treeX)` over the
     //      received payload, hashes it, compares to the agreed

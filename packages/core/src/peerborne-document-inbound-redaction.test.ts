@@ -1,3 +1,4 @@
+import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
 
@@ -75,6 +76,7 @@ describe('concrete inbound handler log redaction', () => {
     const deserializeSyncMessage = jest.fn();
     const document = fakeDocument({
       _invitationBootstrapReady: true,
+      load: async () => true,
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
@@ -183,7 +185,7 @@ describe('concrete inbound handler log redaction', () => {
   test.each([
     'handleLoadRequestData',
     'handleSnapshotLoadRequestData',
-    'handleTipAdvertiseRequestData',
+    'handleSecurityAdvertiseRequestData',
   ] as const)(
     '%s rejects a truthy non-boolean signature result',
     async (methodName) => {
@@ -205,7 +207,7 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'AA==' },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AA==' },
           { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(responseClose).toHaveBeenCalledTimes(1);
@@ -254,7 +256,7 @@ describe('concrete inbound handler log redaction', () => {
     ],
     [
       'tip-advertise',
-      'handleTipAdvertiseRequestData',
+      'handleSecurityAdvertiseRequestData',
       'Shared tip-advertise request handling failed',
     ],
   ] as const)(
@@ -275,7 +277,7 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'signature' },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'signature' },
           { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);

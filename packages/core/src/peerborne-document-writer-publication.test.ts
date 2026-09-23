@@ -1,3 +1,4 @@
+import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
 import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
@@ -346,7 +347,7 @@ describe('writer ACL publication boundary', () => {
       .mockImplementation(() => undefined);
     try {
       await document.handleLoadRequestData(
-        { documentId: '/writer-publication', signature: 'AA==' },
+        { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
         { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
     } finally {
@@ -807,6 +808,7 @@ describe('writer ACL publication boundary', () => {
       ['uncommitted-writer-cid', 'committed-retry-cid'],
     );
     document.swarm.config = { enableSigning: true };
+    document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     document._authProvider.encrypt = encrypt;
     document._authProvider.verify = jest.fn(async () => true);
     document._encoder = new TextEncoder();
@@ -815,6 +817,7 @@ describe('writer ACL publication boundary', () => {
     }));
     document._latestSnapshot = {
       lastChangeNodeCID: 'snapshot-boundary',
+      compactedCount: 1, timestamp: 1,
       state: { stable: true },
       signature: new Uint8Array([1]),
     };
@@ -828,11 +831,11 @@ describe('writer ACL publication boundary', () => {
     await encryptionStarted.promise;
 
     const loadResponse = document.handleLoadRequestData(
-      { documentId: '/writer-publication', signature: 'AA==' },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
       { send: loadSend, onDrain: async () => {}, close: async () => {} },
     );
     const snapshotResponse = document.handleSnapshotLoadRequestData(
-      { documentId: '/writer-publication', signature: 'AA==' },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
       { send: snapshotSend, onDrain: async () => {}, close: async () => {} },
     );
 
@@ -851,7 +854,7 @@ describe('writer ACL publication boundary', () => {
     for (const served of serializedMessages.slice(1)) {
       expect(served.changeId).toBe('parent-cid');
       expect(served.changes.change).toEqual({ prior: true });
-      expect(JSON.stringify(served)).not.toContain('uncommitted-writer-cid');
+      expect(JSON.stringify(served, (_key, value) => typeof value === 'bigint' ? String(value) : value)).not.toContain('uncommitted-writer-cid');
     }
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
     expect(publish).not.toHaveBeenCalled();
