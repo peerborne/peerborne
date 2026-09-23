@@ -467,6 +467,34 @@ describe('document load response boundaries', () => {
     expect(readers).toHaveBeenCalledTimes(3);
   });
 
+  test('continues queued notifications after an audience preparation fails', async () => {
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/notification-recovery',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _readers: {
+        users: jest.fn<() => Promise<unknown[]>>()
+          .mockRejectedValueOnce(new Error('audience unavailable'))
+          .mockResolvedValue([]),
+        check: jest.fn(async () => true),
+      },
+      _writers: { users: jest.fn(async () => []) },
+      _mutationQueue: new InvitationMembershipQueue(),
+    });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      document._enqueueRemoteUpdateNotification(['FIRST'], [handler]);
+      document._enqueueRemoteUpdateNotification(['SECOND'], [handler]);
+      await document._remoteUpdateNotificationTail;
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0][3]).toEqual(['SECOND']);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   test('redacts a terminal audience failure without suppressing frontier refresh', async () => {
     const secret = 'private-audience-provider-error';
     const handler = jest.fn();
@@ -785,6 +813,35 @@ describe('document load response boundaries', () => {
     expect(readers).toHaveBeenCalledTimes(2);
     expect(writers).toHaveBeenCalledTimes(2);
     expect(verify).toHaveBeenCalledTimes(1);
+  });
+
+  test('verifies writers serially with isolated payload and signature bytes', async () => {
+    let active = 0;
+    let peak = 0;
+    const payloads: number[][] = [];
+    const signatures: number[][] = [];
+    const { document, stream } = signedLoadHarness(
+      async () => ['rejecting-writer', 'accepting-writer'],
+      async (raw, writer, signature) => {
+        active++;
+        peak = Math.max(peak, active);
+        payloads.push([...raw as Uint8Array]);
+        signatures.push([...signature as Uint8Array]);
+        (raw as Uint8Array).fill(99);
+        (signature as Uint8Array).fill(99);
+        await Promise.resolve();
+        active--;
+        return writer === 'accepting-writer';
+      },
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(stream, new Uint8Array([1])))
+      .resolves.toBe(true);
+    expect(peak).toBe(1);
+    expect(payloads).toEqual([[8], [8], [8], [8]]);
+    expect(signatures).toEqual(Array.from({ length: 4 }, () => [0, 0, 0]));
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
   test('rechecks current writers after an admitted signer is removed', async () => {
@@ -4537,6 +4594,8 @@ describe('document load response boundaries', () => {
 });
 
 
+describe('poisoned state and cancellation boundaries', () => {
+
 test('discards deferred and incoming notifications once document state is poisoned', async () => {
   const pending = new Set(['deferred']);
   const notify = jest.fn();
@@ -4607,3 +4666,4 @@ test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     expect(sink).not.toHaveBeenCalled();
   },
 );
+});

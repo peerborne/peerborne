@@ -298,6 +298,8 @@ const ignoredDocumentPromiseSettlementArguments = [
   ignoreDocumentPromiseSettlement,
   ignoreDocumentPromiseSettlement,
 ];
+// Bound hostile prototype traversal well above normal provider inheritance.
+// Custom providers must expose prepared methods within this depth.
 const MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH = 32;
 
 interface CapturedDataMethod {
@@ -4808,15 +4810,16 @@ export class PeerborneDocument<
         ): Promise<boolean> => {
           const signatureBytes = getOriginalSignatureBytes();
           if (!originalSignedRaw || !signatureBytes) return false;
-          return firstTrue(
-            writerKeys.map((writerKey) =>
-              this._authProvider.verify(
-                new Uint8Array(originalSignedRaw!),
-                writerKey,
-                new Uint8Array(signatureBytes),
-              ),
-            ),
-          );
+          // Every verifier owns its arguments; sequential attempts limit the
+          // live copies and stop once an authorized writer verifies the body.
+          for (const writerKey of writerKeys) {
+            if (await this._authProvider.verify(
+              new Uint8Array(originalSignedRaw),
+              writerKey,
+              new Uint8Array(signatureBytes),
+            ) === true) return true;
+          }
+          return false;
         };
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the

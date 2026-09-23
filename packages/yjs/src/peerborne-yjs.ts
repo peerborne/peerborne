@@ -660,6 +660,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   // A stale preparation may already have been published. Retain its exact
   // client/clock tuple for this ACL's bounded lifetime so a later live-base
   // replacement cannot expose a different struct under the same identifier.
+  // Exposed prepared updates may already exist on another replica, so their
+  // operation/client identifiers remain burned even when abandoned locally.
+  // The bounded reservation budget is per ACL instance.
   private readonly _stagedAdditionOperations = new Set<string>();
   private readonly _stagedAdditionClientIDs = new Set<number>();
 
@@ -929,6 +932,8 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
+    // Capture first and reject reentrant changes during detachment; no update
+    // may publish against a baseline different from the one this call admitted.
     const baseRevision = this._revision;
     const base = this._acl;
     // A valid V2 no-op still carries its binary framing; zero bytes are malformed.
@@ -1094,6 +1099,8 @@ function validateYjsKeychain(doc: Doc): CanonicalKeychainEntry[] {
   const entries = validateCanonicalKeychainEntries(
     doc.getArray<unknown>('keys').toArray(),
   );
+  // Yjs 13.6 represents complete integration with null in both fields.
+  // An absent/changed internal field is unsupported, not evidence of safety.
   if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
     throw new Error('Keychain history has unresolved update dependencies');
   }
@@ -1630,7 +1637,7 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     if (startIdx !== 0) {
       throw new Error('Yjs cannot export this keychain suffix replay-safely');
     }
-    return this.history();
+    return encodeStateAsUpdateV2(this._keychain);
   }
   /**
    * Synchronous cache lookup for a key by its ID bytes.
