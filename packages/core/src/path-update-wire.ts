@@ -16,6 +16,7 @@
  */
 
 import { Base64 } from 'js-base64';
+import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import {
   MAX_BEEKEM_TREE_LEAVES,
   PathNodeUpdate,
@@ -32,7 +33,7 @@ import {
 
 // A left-balanced tree with the shared 8,192-leaf ceiling has at most 13
 // internal nodes on a leaf-to-root direct path.
-const MAX_V1_PATH_NODES = 13;
+const MAX_V1_PATH_NODES = Math.ceil(Math.log2(MAX_BEEKEM_TREE_LEAVES));
 const MAX_V1_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
 // ECIES framing is salt (32) + ephemeral P-256 key (65) + nonce (12) +
 // AES-GCM tag (16). An empty value is separately valid for a blank copath.
@@ -169,8 +170,8 @@ export function serializePathUpdateForWire(
       nodeIndex,
       publicKey: snapshotRuntimeV1Bytes(
         node.publicKey,
-        65,
-        65,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
         `node[${nodeOffset}].publicKey`,
       ),
       encryptedPrivateKey,
@@ -178,8 +179,8 @@ export function serializePathUpdateForWire(
   });
   const senderLeafPublicKey = snapshotRuntimeV1Bytes(
     raw.senderLeafPublicKey,
-    65,
-    65,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
     'senderLeafPublicKey',
   );
   const wire: SerializedPathUpdate = {
@@ -192,6 +193,7 @@ export function serializePathUpdateForWire(
     })),
   };
   assertSharedProtocolRequestSize(
+    // Fixed ASCII keys, integer indices and base64 make code units equal bytes.
     JSON.stringify(wire).length,
     'BeeKEM PathUpdate v1 wire payload',
   );
@@ -381,8 +383,8 @@ export function serializePathUpdateV2ForWire(
   );
   const senderLeafPublicKey = snapshotRuntimeBytes(
     raw.senderLeafPublicKey,
-    65,
-    65,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
     'senderLeafPublicKey',
     budget,
   );
@@ -390,8 +392,8 @@ export function serializePathUpdateV2ForWire(
     nodeIndex: node.nodeIndex,
     publicKey: snapshotRuntimeBytes(
       node.publicKey,
-      65,
-      65,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
       `node[${nodeOffset}].publicKey`,
       budget,
     ),
@@ -416,8 +418,8 @@ export function serializePathUpdateV2ForWire(
           ? null
           : snapshotRuntimeBytes(
               node.publicKey,
-              65,
-              65,
+              ECIES_P256_PUBLIC_KEY_LENGTH,
+              ECIES_P256_PUBLIC_KEY_LENGTH,
               `treeNodePublicKeys[${nodeOffset}].publicKey`,
               budget,
             ),
@@ -535,8 +537,8 @@ export function deserializePathUpdateFromWire(
       publicKey: decodeCanonicalV1Base64(
         nn.publicKey,
         `node[${i}].publicKey`,
-        65,
-        65,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
+        ECIES_P256_PUBLIC_KEY_LENGTH,
       ),
       encryptedPrivateKey,
     };
@@ -547,8 +549,8 @@ export function deserializePathUpdateFromWire(
     senderLeafPublicKey: decodeCanonicalV1Base64(
       raw.senderLeafPublicKey,
       'senderLeafPublicKey',
-      65,
-      65,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
     ),
     nodes,
   };
@@ -739,10 +741,10 @@ export function deserializePathUpdateV2FromWire(
     const publicKey = decodeCanonicalBase64(
       node.publicKey,
       `node[${nodeOffset}].publicKey`,
-      65,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
       budget,
     );
-    if (publicKey.byteLength !== 65) {
+    if (publicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
       throw new Error(
         `Invalid PathUpdateV2: node[${nodeOffset}].publicKey must decode to 65 bytes`,
       );
@@ -785,10 +787,10 @@ export function deserializePathUpdateV2FromWire(
           : decodeCanonicalBase64(
               node.publicKey,
               `treeNodePublicKeys[${nodeOffset}].publicKey`,
-              65,
+              ECIES_P256_PUBLIC_KEY_LENGTH,
               budget,
             );
-      if (publicKey !== null && publicKey.byteLength !== 65) {
+      if (publicKey !== null && publicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
         throw new Error(
           `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}].publicKey must decode to 65 bytes`,
         );
@@ -799,7 +801,7 @@ export function deserializePathUpdateV2FromWire(
   const senderLeafPublicKey = decodeCanonicalBase64(
     raw.senderLeafPublicKey,
     'senderLeafPublicKey',
-    65,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
     budget,
   );
   const parentTreeHash = decodeCanonicalBase64(
@@ -814,7 +816,7 @@ export function deserializePathUpdateV2FromWire(
     32,
     budget,
   );
-  if (senderLeafPublicKey.byteLength !== 65) {
+  if (senderLeafPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
     throw new Error(
       'Invalid PathUpdateV2: senderLeafPublicKey must decode to 65 bytes',
     );
@@ -958,7 +960,7 @@ function requireV1SenderLeafIndex(value: unknown): number {
     (value & 1) !== 0
   ) {
     throw new Error(
-      `Invalid PathUpdate: 'senderLeafIndex' must identify a supported leaf (got ${describe(value)})`,
+      `Invalid PathUpdate: 'senderLeafIndex' must be an even safe integer in [0, ${MAX_V1_TREE_WIDTH}) identifying a supported leaf (got ${describe(value)})`,
     );
   }
   return value;
