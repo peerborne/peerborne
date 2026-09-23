@@ -105,7 +105,7 @@ function expectWelcomeFieldPresence(
 describe('reader membership preflight', () => {
   test('key projection failure precedes ACL and BeeKEM mutation', async () => {
     const readerKemPublicKey = await validKemPublicKey();
-    const add = jest.fn();
+    const prepareAdd = jest.fn();
     const makeChange = jest.fn();
     const prepareBeeKEMReaderRegistration = jest.fn();
     const sendBeeKEMWelcome = jest.fn();
@@ -119,7 +119,7 @@ describe('reader membership preflight', () => {
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
-        add,
+        prepareAdd,
       },
       _keychainChangesForWelcome: jest.fn(async () => {
         throw new Error('Current-key projection is unavailable');
@@ -132,7 +132,7 @@ describe('reader membership preflight', () => {
     await expect(
       document.addReader({ reader: true }, readerKemPublicKey),
     ).rejects.toThrow(/Current-key projection is unavailable/);
-    expect(add).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
     expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
@@ -190,7 +190,7 @@ describe('reader membership preflight', () => {
 
   test('rejects base64-expanded Welcome capacity before mutation', async () => {
     const readerKemPublicKey = await validKemPublicKey();
-    const add = jest.fn();
+    const prepareAdd = jest.fn();
     const makeChange = jest.fn();
     const prepareBeeKEMReaderRegistration = jest.fn();
     const sendBeeKEMWelcome = jest.fn();
@@ -204,7 +204,7 @@ describe('reader membership preflight', () => {
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
-        add,
+        prepareAdd,
       },
       _changesSerializer: {
         serializeChanges: jest.fn(() => new Uint8Array(900 * 1024)),
@@ -218,7 +218,7 @@ describe('reader membership preflight', () => {
     await expect(
       document.addReader({ reader: true }, readerKemPublicKey),
     ).rejects.toThrow(/too large before onboarding/);
-    expect(add).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
     expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe('reader membership preflight', () => {
 
   test('rejects an unsupported replacement before ACL or BeeKEM mutation', async () => {
     const readerKemPublicKey = await validKemPublicKey();
-    const add = jest.fn();
+    const prepareAdd = jest.fn();
     const makeChange = jest.fn();
     const keychainChangesForWelcome = jest.fn();
     const prepareBeeKEMReaderRegistration = jest.fn();
@@ -238,7 +238,7 @@ describe('reader membership preflight', () => {
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
-        add,
+        prepareAdd,
       },
       _keychainChangesForWelcome: keychainChangesForWelcome,
       _makeChange: makeChange,
@@ -250,7 +250,7 @@ describe('reader membership preflight', () => {
       document.addReader({ replacement: true }, readerKemPublicKey),
     ).rejects.toThrow(/replacement readers are not supported/);
     expect(keychainChangesForWelcome).not.toHaveBeenCalled();
-    expect(add).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
     expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe('reader membership preflight', () => {
 
   test('rejects a KEM key already owned by a live leaf before ACL mutation', async () => {
     const readerKemPublicKey = await validKemPublicKey();
-    const add = jest.fn();
+    const prepareAdd = jest.fn();
     const makeChange = jest.fn();
     const keychainChangesForWelcome = jest.fn();
     const prepareBeeKEMReaderRegistration = jest.fn();
@@ -270,7 +270,7 @@ describe('reader membership preflight', () => {
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
-        add,
+        prepareAdd,
       },
       _keychainChangesForWelcome: keychainChangesForWelcome,
       _makeChange: makeChange,
@@ -286,14 +286,14 @@ describe('reader membership preflight', () => {
       expect.any(Uint8Array),
     );
     expect(keychainChangesForWelcome).not.toHaveBeenCalled();
-    expect(add).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
     expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
   });
 
   test('rejects the future founder leaf key before initializing or mutating ACL state', async () => {
     const founderKemPublicKey = await validKemPublicKey();
-    const add = jest.fn();
+    const prepareAdd = jest.fn();
     const makeChange = jest.fn();
     const prepareBeeKEMReaderRegistration = jest.fn();
     const document = fakeDocument({
@@ -306,7 +306,7 @@ describe('reader membership preflight', () => {
       _readers: {
         check: jest.fn(async () => false),
         users: jest.fn(async () => []),
-        add,
+        prepareAdd,
       },
       _keychainChangesForWelcome: jest.fn(),
       _makeChange: makeChange,
@@ -318,7 +318,7 @@ describe('reader membership preflight', () => {
       document.addReader({ reader: true }, founderKemPublicKey),
     ).rejects.toThrow(/matches the founder's BeeKEM leaf/);
 
-    expect(add).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
     expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
     expect(document._keychainChangesForWelcome).not.toHaveBeenCalled();
