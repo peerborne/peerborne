@@ -297,8 +297,7 @@ function assertAutomergeACLResourceLimits(
 }
 
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  // Start without a local `users` root so complete ACL histories produced by
-  // older random-seed releases apply without a competing root assignment.
+  // The first staged addition installs the canonical users root.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
   private _retainedChanges = new Map<
@@ -410,8 +409,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (getMissingDeps(this._acl, []).length > 0) {
       throw new Error(
         `Cannot ${operation}: Automerge ACL has unresolved change ` +
-          'dependencies. Replay the complete ACL history; legacy incremental ' +
-          'ACL changes that omitted their random seed cannot be migrated safely.',
+          'dependencies. Replay the complete ACL history.',
       );
     }
   }
@@ -449,6 +447,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const ancestryByHash = new Map<string, bigint>();
     const writesByKey = new Map<string, AutomergeACLKeyWrite[]>();
     let usersRootCreations = 0;
+    let canonicalUsersRoot = false;
 
     for (const binaryChange of getAllChanges(acl)) {
       const decoded = decodeChange(binaryChange);
@@ -474,6 +473,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
             );
           }
           usersRootCreations++;
+          canonicalUsersRoot = isCanonicalAutomergeACLUsersRootSeed(decoded);
         }
         if (
           usersObjectId !== undefined &&
@@ -514,6 +514,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       );
     }
     if (users === undefined) return;
+    if (!canonicalUsersRoot) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history requires the canonical users root`,
+      );
+    }
 
     for (const [key, frontier] of writesByKey) {
       // Homogeneous additions and removals are idempotent. A mixed or invalid
