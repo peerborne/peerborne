@@ -91,7 +91,7 @@ function signedLoadHarness(
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: jest.fn(() => ({})) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async () => new Uint8Array([9])),
       verify: jest.fn(verify),
     },
@@ -1061,7 +1061,7 @@ describe('document load response boundaries', () => {
         ]),
         _keychainProvider: { keyIDLength: 1 },
         _keychain: { getKey: liveGetKey },
-        _authProvider: { nonceBits: 1, decrypt },
+        _authProvider: { nonceBytes: 1, decrypt },
         _changesSerializer: {
           deserializeChanges: jest.fn(() => decodedChanges),
         },
@@ -3033,7 +3033,7 @@ describe('document load response boundaries', () => {
         },
       },
       _keychain: { getKey: jest.fn(() => ({})) },
-      _authProvider: { nonceBits: 1, decrypt },
+      _authProvider: { nonceBytes: 1, decrypt },
       _keychainProvider: { keyIDLength: 1 },
       _syncMessageSerializer: {
         deserializeSyncMessage,
@@ -3095,7 +3095,7 @@ describe('document load response boundaries', () => {
       },
       _keychain: { getKey: jest.fn(() => ({})) },
       _authProvider: {
-        nonceBits: 1,
+        nonceBytes: 1,
         decrypt: jest.fn(async () => {
           order.push('decrypt');
           return new Uint8Array([1]);
@@ -3177,7 +3177,7 @@ describe('document load response boundaries', () => {
         current: jest.fn(async () => [new Uint8Array([1]), {}]),
       },
       _authProvider: {
-        nonceBits: 1,
+        nonceBytes: 1,
         encrypt: jest.fn(async () => ({
           nonce: new Uint8Array([2]),
           data: new Uint8Array([3]),
@@ -3250,7 +3250,7 @@ describe('document load response boundaries', () => {
           current: jest.fn(async () => [new Uint8Array([1]), {}]),
         },
         _authProvider: {
-          nonceBits: 1,
+          nonceBytes: 1,
           verify: jest.fn(async () => true),
           encrypt: jest.fn(async () => ({
             nonce: new Uint8Array([2]),
@@ -3316,7 +3316,7 @@ describe('document load response boundaries', () => {
           current: jest.fn(async () => [new Uint8Array([1]), {}]),
         },
         _authProvider: {
-          nonceBits: 1,
+          nonceBytes: 1,
           verify: jest.fn(async () => true),
           encrypt: jest.fn(async () => ({
             nonce: new Uint8Array([2]),
@@ -3435,7 +3435,7 @@ describe('document load response boundaries', () => {
       _hashes: new Set(['HEAD']),
       _computeTopic: jest.fn(() => '/invitation-topic'),
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _syncMessageSerializer: { deserializeSyncMessage: jest.fn() },
       swarm: {
         config: { enableSigning: false },
@@ -4101,7 +4101,7 @@ describe('document load response boundaries', () => {
       _keychainProvider: { keyIDLength: 1 },
       _keychain: { getKey: jest.fn(() => ({})) },
       _authProvider: {
-        nonceBits: 1,
+        nonceBytes: 1,
         decrypt: jest.fn(async () => new Uint8Array([1])),
       },
       _changesSerializer: {
@@ -4190,7 +4190,7 @@ describe('document load response boundaries', () => {
         _keychainProvider: { keyIDLength: 1 },
         _keychain: { getKey: jest.fn(() => ({})) },
         _authProvider: {
-          nonceBits: 1,
+          nonceBytes: 1,
           decrypt: jest.fn(async () => new Uint8Array([7])),
         },
         _changesSerializer: {
@@ -4417,7 +4417,7 @@ describe('document load response boundaries', () => {
       swarm: { config: { loadQuorumTimeoutMs: 1000 } },
       _keychainProvider: { keyIDLength: 1 },
       _authProvider: {
-        nonceBits: 1,
+        nonceBytes: 1,
         decrypt: jest.fn(async () => new Uint8Array([9])),
       },
       _keychain: { getKey: jest.fn(() => ({})) },
@@ -4573,7 +4573,7 @@ describe('document load response boundaries', () => {
       },
       _keychainProvider: { keyIDLength: 1 },
       _authProvider: {
-        nonceBits: 1,
+        nonceBytes: 1,
         decrypt: jest.fn(async () => new Uint8Array([9])),
         verify,
       },

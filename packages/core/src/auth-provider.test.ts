@@ -13,7 +13,7 @@ describe('requireSerializePublicKey', () => {
       verify: async () => true,
       encrypt: async () => ({ data: new Uint8Array() }),
       decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
+      nonceBytes: 12,
       serializePublicKey: serializeFn as any,
     };
     const fn = requireSerializePublicKey(provider, 'test-feature');
@@ -28,7 +28,7 @@ describe('requireSerializePublicKey', () => {
       verify: async () => true,
       encrypt: async () => ({ data: new Uint8Array() }),
       decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
+      nonceBytes: 12,
     };
     expect(() => requireSerializePublicKey(provider, 'BeeKEM Welcome')).toThrow(
       /BeeKEM Welcome requires AuthProvider.serializePublicKey/,
@@ -41,7 +41,7 @@ describe('requireSerializePublicKey', () => {
       verify: async () => true,
       encrypt: async () => ({ data: new Uint8Array() }),
       decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
+      nonceBytes: 12,
     };
     expect(() => requireSerializePublicKey(provider, 'MyFeature')).toThrow(
       /MyFeature requires AuthProvider.serializePublicKey/,
@@ -57,7 +57,7 @@ describe('requireDeserializePublicKey', () => {
       verify: async () => true,
       encrypt: async () => ({ data: new Uint8Array() }),
       decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
+      nonceBytes: 12,
       deserializePublicKey: deserializeFn,
     };
 
@@ -73,7 +73,7 @@ describe('requireDeserializePublicKey', () => {
       verify: async () => true,
       encrypt: async () => ({ data: new Uint8Array() }),
       decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
+      nonceBytes: 12,
     };
 
     expect(() => requireDeserializePublicKey(provider, 'Invitations')).toThrow(

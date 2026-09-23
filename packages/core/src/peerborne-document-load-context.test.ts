@@ -93,7 +93,7 @@ function loadHarness(
     _getWriterKeys: async () => [{}],
     _keychainProvider: { keyIDLength: 32 },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => new Uint8Array([1]),
       verify,
     },
@@ -132,7 +132,7 @@ function tipHarness(
     _keychainProvider: { keyIDLength: 32 },
     _keychain: { getKey: jest.fn(() => ({})) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async () => new Uint8Array([1])),
       verify,
     },
@@ -348,7 +348,7 @@ describe('load-response V3 confinement', () => {
     const harness = loadHarness();
     const decrypt = jest.fn();
     harness.document._authProvider.decrypt = decrypt;
-    harness.document._authProvider.nonceBits = 0;
+    harness.document._authProvider.nonceBytes = 0;
 
     await expect(
       harness.document._sendLoadRequestAndSync(
@@ -527,7 +527,7 @@ describe('tip-advertisement V1 confinement', () => {
 
   test('rejects invalid provider framing before decryption', async () => {
     const harness = tipHarness();
-    harness.document._authProvider.nonceBits = 0;
+    harness.document._authProvider.nonceBytes = 0;
 
     await expect(
       harness.document._probeTipAdvertise(

@@ -78,7 +78,7 @@ describe('concrete inbound handler log redaction', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: async () => undefined,
       _syncMessageSerializer: { deserializeSyncMessage },
       load,
@@ -127,7 +127,7 @@ describe('concrete inbound handler log redaction', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: async () => new Uint8Array([9]),
       _syncMessageSerializer: {
         deserializeSyncMessage: () => {
