@@ -37,7 +37,7 @@ afterEach(async () => {
   await Promise.all(openStorages.splice(0).map((storage) => storage.close()));
 });
 
-describe('IndexedDB v2 physical indexes and migration', () => {
+describe('IndexedDB current physical indexes and persistence', () => {
   test('uses a compound IDB cursor instead of visiting the full store', async () => {
     const dbName = `idb-v2-${Date.now()}-${Math.random()}`;
     const instance = manager(dbName);
@@ -84,42 +84,43 @@ describe('IndexedDB v2 physical indexes and migration', () => {
     expect(await changed.storage.get('articles', '/articles/one')).toBeUndefined();
   });
 
-  test('backfills valid legacy rows when no schema identity exists', async () => {
-    const dbName = `idb-backfill-${Date.now()}-${Math.random()}`;
-    const legacy = new IDBIndexStorage(dbName);
-    openStorages.push(legacy);
-    await legacy.initialize('articles', schema().fields);
-    await legacy.put('articles', '/articles/one', { status: 'published', created: 1 });
-    await legacy.close();
-
-    const upgraded = manager(dbName);
-    await upgraded.ready;
-    const result = await upgraded.manager.query({
-      version: 2,
-      indexName: 'articles',
+  test('discards persisted rows that have no current schema identity', async () => {
+    const dbName = `idb-missing-identity-${Date.now()}-${Math.random()}`;
+    const raw = await openDB(dbName, 1, {
+      upgrade(db) { db.createObjectStore('articles', { keyPath: 'documentPath' }); },
+    });
+    await raw.put('articles', { documentPath: '/articles/untrusted', fields: { status: 'published', created: 1 } });
+    raw.close();
+    const current = manager(dbName);
+    await current.ready;
+    const result = await current.manager.query({
+      version: 2, indexName: 'articles',
       where: { kind: 'field', path: 'status', operator: 'eq', value: 'published' },
     });
-    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/one']);
+    expect(result.documents).toEqual([]);
+    await expect(current.storage.get('articles', '/articles/untrusted')).resolves.toBeUndefined();
+    await current.manager.updateIndex('/articles/current', { status: 'published', created: 2 });
+    await current.storage.close();
+    const reopened = manager(dbName);
+    await reopened.ready;
+    await expect(reopened.storage.get('articles', '/articles/current')).resolves.toEqual({ status: 'published', created: 2 });
   });
 
-  test('removes wrong-prefix rows during legacy backfill', async () => {
-    const dbName = `idb-prefix-backfill-${Date.now()}-${Math.random()}`;
-    const legacy = new IDBIndexStorage(dbName);
-    openStorages.push(legacy);
-    await legacy.initialize('articles', schema().fields);
-    await legacy.put('articles', '/other/wrong', { status: 'published', created: 1 });
-    await legacy.put('articles', '/articles/right', { status: 'published', created: 2 });
-    await legacy.close();
-
-    const upgraded = manager(dbName);
-    await upgraded.ready;
-    const result = await upgraded.manager.query({
-      version: 2,
-      indexName: 'articles',
+  test('removes corrupted wrong-prefix rows when reopening the current schema', async () => {
+    const dbName = `idb-prefix-validation-${Date.now()}-${Math.random()}`;
+    const first = manager(dbName);
+    await first.ready;
+    await first.storage.put('articles', '/other/wrong', { status: 'published', created: 1 });
+    await first.storage.put('articles', '/articles/right', { status: 'published', created: 2 });
+    await first.storage.close();
+    const reopened = manager(dbName);
+    await reopened.ready;
+    const result = await reopened.manager.query({
+      version: 2, indexName: 'articles',
       where: { kind: 'field', path: 'status', operator: 'eq', value: 'published' },
     });
-    expect(result.documents.map((entry) => entry.documentPath)).toEqual(['/articles/right']);
-    await expect(upgraded.storage.get('articles', '/other/wrong')).resolves.toBeUndefined();
+    expect(result.documents.map(entry => entry.documentPath)).toEqual(['/articles/right']);
+    await expect(reopened.storage.get('articles', '/other/wrong')).resolves.toBeUndefined();
   });
 
   test('uses encoded physical keys for paths that are not valid raw IDB key paths', async () => {

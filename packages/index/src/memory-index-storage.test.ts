@@ -1,18 +1,33 @@
+import { hashIndexDefinition, physicalIndexesFor, validateQueryAst } from './query-ast.js';
+import { planQuery } from './query-planner.js';
+import type { IndexDefinition, QueryAst } from './types.js';
 import { describe, expect, test, beforeEach } from '@jest/globals';
 import { MemoryIndexStorage } from './memory-index-storage.js';
-import { FieldFilter } from './types.js';
 
 describe('MemoryIndexStorage', () => {
   let storage: MemoryIndexStorage;
   const indexName = 'test-index';
-
-  beforeEach(async () => {
-    storage = new MemoryIndexStorage();
-    await storage.initialize(indexName, [
+  const definition: IndexDefinition = {
+    version: 2, name: indexName, collectionPrefix: '/doc/',
+    fields: [
       { path: 'title', type: 'string' },
       { path: 'count', type: 'number' },
       { path: 'active', type: 'boolean' },
-    ]);
+    ],
+  };
+  async function query(input: QueryAst) {
+    const query = validateQueryAst(input, definition);
+    return (await storage.execute({ definition, query, plan: planQuery(definition, query) })).entries;
+  }
+
+  beforeEach(async () => {
+    storage = new MemoryIndexStorage();
+    await storage.initialize(indexName, definition.fields, physicalIndexesFor(definition), {
+      schemaHash: await hashIndexDefinition(definition),
+      generation: 'one',
+      collectionPrefix: '/doc/',
+      invalidValuePolicy: 'skip-document',
+    });
   });
 
   describe('put and get', () => {
@@ -66,7 +81,7 @@ describe('MemoryIndexStorage', () => {
       await storage.put(indexName, '/doc/1', { title: 'A' });
       await storage.put(indexName, '/doc/2', { title: 'B' });
       await storage.clear(indexName);
-      const results = await storage.query(indexName, []);
+      const results = await query({ version: 2, indexName });
       expect(results).toHaveLength(0);
     });
   });
@@ -80,35 +95,35 @@ describe('MemoryIndexStorage', () => {
     });
 
     test('eq: exact match', async () => {
-      const results = await storage.query(indexName, [{ path: 'title', operator: 'eq', value: 'Alpha' }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'title', operator: 'eq', value: 'Alpha' } });
       expect(results).toHaveLength(1);
       expect(results[0].documentPath).toBe('/doc/1');
     });
 
     test('neq: not equal', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'neq', value: 20 }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'neq', value: 20 } });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.documentPath).sort()).toEqual(['/doc/1', '/doc/3']);
     });
 
     test('gt: greater than', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'gt', value: 10 }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'gt', value: 10 } });
       expect(results).toHaveLength(3);
     });
 
     test('gte: greater than or equal', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'gte', value: 20 }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'gte', value: 20 } });
       expect(results).toHaveLength(3);
     });
 
     test('lt: less than', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'lt', value: 20 }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'lt', value: 20 } });
       expect(results).toHaveLength(1);
       expect(results[0].documentPath).toBe('/doc/1');
     });
 
     test('lte: less than or equal', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'lte', value: 20 }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'lte', value: 20 } });
       expect(results).toHaveLength(3);
     });
 
@@ -116,48 +131,55 @@ describe('MemoryIndexStorage', () => {
       await storage.put(indexName, '/doc/null', { title: 'Null', count: null });
       await storage.put(indexName, '/doc/missing', { title: 'Missing' });
       for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
-        await expect(storage.query(indexName, [{ path: 'count', operator, value: null }]))
-          .resolves.toEqual([]);
-        const numeric = await storage.query(indexName, [{ path: 'count', operator, value: 0 }]);
+        await expect(query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator, value: null } }))
+          .rejects.toThrow('invalid number value');
+        const numeric = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator, value: 0 } });
         expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/null');
         expect(numeric.map((entry) => entry.documentPath)).not.toContain('/doc/missing');
       }
     });
 
     test('prefix: string prefix match', async () => {
-      const results = await storage.query(indexName, [{ path: 'title', operator: 'prefix', value: 'Alpha' }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'title', operator: 'prefix', value: 'Alpha' } });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.documentPath).sort()).toEqual(['/doc/1', '/doc/3']);
     });
 
     test('in: value in array', async () => {
-      const results = await storage.query(indexName, [{ path: 'count', operator: 'in', value: [10, 30] }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'count', operator: 'in', value: [10, 30] } });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.documentPath).sort()).toEqual(['/doc/1', '/doc/3']);
     });
 
     test('contains: substring match', async () => {
-      const results = await storage.query(indexName, [{ path: 'title', operator: 'contains', value: 'Beta' }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'title', operator: 'contains', value: 'Beta' } });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.documentPath).sort()).toEqual(['/doc/2', '/doc/3']);
     });
 
     test('multiple filters (AND)', async () => {
-      const results = await storage.query(indexName, [
-        { path: 'count', operator: 'gte', value: 20 },
-        { path: 'active', operator: 'eq', value: true },
-      ]);
+      const results = await query({
+        version: 2,
+        indexName,
+        where: {
+          kind: 'and',
+          expressions: [
+            { kind: 'field', path: 'count', operator: 'gte', value: 20 },
+            { kind: 'field', path: 'active', operator: 'eq', value: true },
+          ],
+        },
+      });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.documentPath).sort()).toEqual(['/doc/3', '/doc/4']);
     });
 
     test('no filters returns all', async () => {
-      const results = await storage.query(indexName, []);
+      const results = await query({ version: 2, indexName });
       expect(results).toHaveLength(4);
     });
 
     test('no matching results', async () => {
-      const results = await storage.query(indexName, [{ path: 'title', operator: 'eq', value: 'Nonexistent' }]);
+      const results = await query({ version: 2, indexName, where: { kind: 'field', path: 'title', operator: 'eq', value: 'Nonexistent' } });
       expect(results).toHaveLength(0);
     });
   });
@@ -170,59 +192,35 @@ describe('MemoryIndexStorage', () => {
     });
 
     test('sort ascending by string', async () => {
-      const results = await storage.query(indexName, [], [{ path: 'title', direction: 'asc' }]);
+      const results = await query({ version: 2, indexName, orderBy: [{ path: 'title', direction: 'asc' }] });
       expect(results.map(r => r.fields.title)).toEqual(['Alpha', 'Beta', 'Charlie']);
     });
 
     test('preserves plain lexical ordering for numeric-looking strings', async () => {
       await storage.put(indexName, '/doc/4', { title: '10', count: 40 });
       await storage.put(indexName, '/doc/5', { title: '2', count: 50 });
-      const results = await storage.query(indexName, [], [{ path: 'title', direction: 'asc' }]);
+      const results = await query({ version: 2, indexName, orderBy: [{ path: 'title', direction: 'asc' }] });
       expect(results.map(r => r.fields.title)).toEqual(
         ['Charlie', 'Alpha', 'Beta', '10', '2'].sort((left, right) => left.localeCompare(right)),
       );
     });
 
     test('sort descending by number', async () => {
-      const results = await storage.query(indexName, [], [{ path: 'count', direction: 'desc' }]);
+      const results = await query({ version: 2, indexName, orderBy: [{ path: 'count', direction: 'desc' }] });
       expect(results.map(r => r.fields.count)).toEqual([30, 20, 10]);
     });
 
     test('multi-field sort', async () => {
       await storage.put(indexName, '/doc/4', { title: 'Alpha', count: 5 });
-      const results = await storage.query(indexName, [], [
+      const results = await query({ version: 2, indexName, orderBy: [
         { path: 'title', direction: 'asc' },
         { path: 'count', direction: 'desc' },
-      ]);
+      ] });
       expect(results.map(r => r.documentPath)).toEqual(['/doc/2', '/doc/4', '/doc/3', '/doc/1']);
     });
   });
 
-  describe('query pagination', () => {
-    beforeEach(async () => {
-      for (let i = 1; i <= 10; i++) {
-        await storage.put(indexName, `/doc/${i}`, { title: `Doc ${i}`, count: i });
-      }
-    });
 
-    test('limit', async () => {
-      const results = await storage.query(indexName, [], [{ path: 'count', direction: 'asc' }], 3);
-      expect(results).toHaveLength(3);
-      expect(results.map(r => r.fields.count)).toEqual([1, 2, 3]);
-    });
-
-    test('offset', async () => {
-      const results = await storage.query(indexName, [], [{ path: 'count', direction: 'asc' }], undefined, 7);
-      expect(results).toHaveLength(3);
-      expect(results.map(r => r.fields.count)).toEqual([8, 9, 10]);
-    });
-
-    test('limit with offset', async () => {
-      const results = await storage.query(indexName, [], [{ path: 'count', direction: 'asc' }], 3, 2);
-      expect(results).toHaveLength(3);
-      expect(results.map(r => r.fields.count)).toEqual([3, 4, 5]);
-    });
-  });
 
   describe('close', () => {
     test('should clear all stores', async () => {
@@ -231,5 +229,11 @@ describe('MemoryIndexStorage', () => {
       const result = await storage.get(indexName, '/doc/1');
       expect(result).toBeUndefined();
     });
+  });
+  test('rejects initialization without a current schema identity', async () => {
+    await storage.put(indexName, '/doc/current', { title: 'Current', count: 1 });
+    await expect(Reflect.apply(storage.initialize, storage, [indexName, definition.fields]))
+      .rejects.toThrow('requires physical indexes and a schema identity');
+    await expect(storage.get(indexName, '/doc/current')).resolves.toEqual({ title: 'Current', count: 1 });
   });
 });

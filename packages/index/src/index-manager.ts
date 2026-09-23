@@ -4,8 +4,6 @@ import {
   InvalidIndexedValueReason,
   QueryAst,
   QueryAstResult,
-  QueryOptions,
-  QueryResult,
   DocumentSnapshotExtractor,
 } from './types.js';
 import { IndexStorage } from './index-storage.js';
@@ -13,9 +11,7 @@ import { extractField } from './field-extractor.js';
 import {
   hashIndexDefinition,
   hashQuery,
-  InvalidQueryError,
   invalidIndexedValueReason,
-  legacyQueryToAst,
   physicalIndexesFor,
   projectFields,
   resolvedGeneration,
@@ -34,10 +30,6 @@ interface IndexGeneration {
   schemaHash: string;
 }
 
-function isQueryAst(options: QueryOptions | QueryAst): options is QueryAst {
-  return (options as { version?: unknown }).version === 2;
-}
-
 function validateDocumentPath(documentPath: string): void {
   if (typeof documentPath !== 'string' || documentPath.length === 0 ||
       documentPath.length > MAX_DOCUMENT_PATH_LENGTH || /[\u0000-\u001f]/.test(documentPath)) {
@@ -47,20 +39,9 @@ function validateDocumentPath(documentPath: string): void {
   }
 }
 
-function validateLegacyPagination(options: QueryOptions): void {
-  if (options.offset !== undefined &&
-      (!Number.isSafeInteger(options.offset) || options.offset < 0)) {
-    throw new RangeError(`offset must be a non-negative safe integer, got ${options.offset}`);
-  }
-  if (options.limit !== undefined &&
-      (!Number.isSafeInteger(options.limit) || options.limit < 0)) {
-    throw new RangeError(`limit must be a non-negative safe integer, got ${options.limit}`);
-  }
-}
-
 interface IndexSubscription {
-  options: QueryOptions;
-  callback: (result: QueryResult<Record<string, unknown>>) => void;
+  options: QueryAst;
+  callback: (result: QueryAstResult<Record<string, unknown>> | undefined) => void;
   queryRevision: number;
 }
 
@@ -125,7 +106,7 @@ export class IndexManager<DocType> {
    */
   async defineIndex(definition: IndexDefinition): Promise<void> {
     const normalized = validateIndexDefinition(definition);
-    if ((normalized.version ?? 1) === 2 && this._storage.persistent !== false &&
+    if (this._storage.persistent !== false &&
         resolvedStorageMode(normalized) !== 'cleartext-local') {
       throw new IndexSecurityPolicyError(
         `index storage may persist cleartext projections for ${normalized.name}; ` +
@@ -144,9 +125,7 @@ export class IndexManager<DocType> {
         `Call removeIndex() first to redefine it.`,
       );
     }
-    const schemaHash = (normalized.version ?? 1) === 2
-      ? hashIndexDefinition(normalized)
-      : Promise.resolve('');
+    const schemaHash = hashIndexDefinition(normalized);
     const generation: IndexGeneration = {
       ready: Promise.resolve(),
       barrier: Promise.resolve(),
@@ -159,21 +138,17 @@ export class IndexManager<DocType> {
       normalized.name,
       async () => {
         generation.schemaHash = await schemaHash;
-        if ((normalized.version ?? 1) === 2) {
-          await this._storage.initialize(
-            normalized.name,
-            normalized.fields,
-            physicalIndexesFor(normalized),
-            {
-              schemaHash: generation.schemaHash,
-              generation: resolvedGeneration(normalized),
-              collectionPrefix: normalized.collectionPrefix,
-              invalidValuePolicy: resolvedInvalidValuePolicy(normalized),
-            },
-          );
-        } else {
-          await this._storage.initialize(normalized.name, normalized.fields);
-        }
+        await this._storage.initialize(
+          normalized.name,
+          normalized.fields,
+          physicalIndexesFor(normalized),
+          {
+            schemaHash: generation.schemaHash,
+            generation: resolvedGeneration(normalized),
+            collectionPrefix: normalized.collectionPrefix,
+            invalidValuePolicy: resolvedInvalidValuePolicy(normalized),
+          },
+        );
       },
       {
         runAfterPreviousFailure: false,
@@ -270,12 +245,10 @@ export class IndexManager<DocType> {
       let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
       for (const fieldDef of definition.fields) {
         const value = extractField(snapshot, fieldDef.path);
-        if ((definition.version ?? 1) === 2) {
-          const reason = invalidIndexedValueReason(value, fieldDef);
-          if (reason) {
-            invalid = { fieldPath: fieldDef.path, reason };
-            break;
-          }
+        const reason = invalidIndexedValueReason(value, fieldDef);
+        if (reason) {
+          invalid = { fieldPath: fieldDef.path, reason };
+          break;
         }
         this._setNestedField(fields, fieldDef.path, value);
       }
@@ -345,92 +318,14 @@ export class IndexManager<DocType> {
     });
   }
 
-  /**
-   * Query the local index.
-   */
-  async query(options: QueryOptions): Promise<QueryResult<Record<string, unknown>>>;
-  async query(options: QueryAst): Promise<QueryAstResult<Record<string, unknown>>>;
-  async query(
-    options: QueryOptions | QueryAst,
-  ): Promise<QueryResult<Record<string, unknown>> | QueryAstResult<Record<string, unknown>>> {
-    if (isQueryAst(options)) return this._queryAst(options);
-    const indexName = this._resolveIndexName(options);
-    if (!indexName) {
-      return { documents: [], totalCount: 0 };
-    }
-    const generation = this._indexGenerations.get(indexName);
-    if (!generation) {
-      return { documents: [], totalCount: 0 };
-    }
-    try {
-      await generation.ready;
-    } catch {
-      return { documents: [], totalCount: 0 };
-    }
-    if (this._indexGenerations.get(indexName) !== generation) {
-      return { documents: [], totalCount: 0 };
-    }
-
-    const definition = this._definitions.get(indexName)!;
-    if ((definition.version ?? 1) === 2 && this._storage.execute) {
-      validateLegacyPagination(options);
-      const query = validateQueryAst(legacyQueryToAst({
-        ...options,
-        limit: undefined,
-        offset: undefined,
-      }), definition);
-      const executed = await this._storage.execute({
-        definition,
-        query,
-        plan: planQuery(definition, query),
-      });
-      if (this._indexGenerations.get(indexName) !== generation) {
-        return { documents: [], totalCount: 0 };
-      }
-      const offset = options.offset ?? 0;
-      const entries = options.limit === undefined
-        ? executed.entries.slice(offset)
-        : executed.entries.slice(offset, offset + options.limit);
-      return {
-        documents: entries.map((entry) => ({
-          documentPath: entry.documentPath,
-          snapshot: entry.fields,
-        })),
-        totalCount: executed.totalCount ?? executed.rowsMatched,
-      };
-    }
-
-    // Get total count (unpaginated) and paginated results.
-    // Two queries so that storage backends can optimize pagination natively.
-    const [allEntries, paginatedEntries] = await Promise.all([
-      this._storage.query(indexName, options.filters, options.sort),
-      (options.limit !== undefined || (options.offset !== undefined && options.offset > 0))
-        ? this._storage.query(indexName, options.filters, options.sort, options.limit, options.offset)
-        : null,
-    ]);
-    const totalCount = allEntries.length;
-    const resultEntries = paginatedEntries ?? allEntries;
-    if (this._indexGenerations.get(indexName) !== generation) {
-      return { documents: [], totalCount: 0 };
-    }
-
-    return {
-      documents: resultEntries.map(entry => ({
-        documentPath: entry.documentPath,
-        snapshot: entry.fields,
-      })),
-      totalCount,
-    };
-  }
-
-  private async _queryAst(queryInput: QueryAst): Promise<QueryAstResult<Record<string, unknown>>> {
+  async query(queryInput: QueryAst): Promise<QueryAstResult<Record<string, unknown>>> {
     const indexName = this._resolveIndexName(queryInput);
     if (!indexName) throw new Error('query does not resolve to a defined index');
     const definition = this._definitions.get(indexName)!;
     const generation = this._indexGenerations.get(indexName)!;
     await generation.ready;
-    if ((definition.version ?? 1) !== 2) {
-      throw new InvalidQueryError('version 2 queries require a version 2 index definition');
+    if (this._indexGenerations.get(indexName) !== generation) {
+      throw new Error(`index generation changed while preparing to query ${indexName}`);
     }
     const query = validateQueryAst(queryInput, definition);
     if (query.consistency === 'indexed') {
@@ -441,7 +336,6 @@ export class IndexManager<DocType> {
     }
     const plan = planQuery(definition, query);
     if (planScanKind(plan) === 'full' && !query.allowScan) throw new QueryRequiresScanError(indexName);
-    if (!this._storage.execute) throw new Error('storage backend does not support v2 query execution');
     const executed = await this._storage.execute({ definition, query, plan });
     if (this._indexGenerations.get(indexName) !== generation) {
       throw new Error(`index generation changed while querying ${indexName}`);
@@ -495,7 +389,7 @@ export class IndexManager<DocType> {
       execution: {
         source: 'local',
         indexName,
-        schemaVersion: definition.version ?? 1,
+        schemaVersion: definition.version,
         schemaHash: generation.schemaHash,
         generation: resolvedGeneration(definition),
         storageMode: resolvedStorageMode(definition),
@@ -512,11 +406,11 @@ export class IndexManager<DocType> {
 
   /**
    * Subscribe to live query results. The callback fires when the result set may have changed.
-   * Returns an unsubscribe function.
+   * Emits undefined when the target index is removed. Returns an unsubscribe function.
    */
   subscribe(
-    options: QueryOptions,
-    callback: (result: QueryResult<Record<string, unknown>>) => void,
+    options: QueryAst,
+    callback: (result: QueryAstResult<Record<string, unknown>> | undefined) => void,
   ): () => void {
     const id = this._nextSubscriptionId++;
     const subscription: IndexSubscription = { options, callback, queryRevision: 0 };
@@ -549,12 +443,10 @@ export class IndexManager<DocType> {
       let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
       for (const fieldDef of definition.fields) {
         const value = extractField(snapshot, fieldDef.path);
-        if ((definition.version ?? 1) === 2) {
-          const reason = invalidIndexedValueReason(value, fieldDef);
-          if (reason) {
-            invalid = { fieldPath: fieldDef.path, reason };
-            break;
-          }
+        const reason = invalidIndexedValueReason(value, fieldDef);
+        if (reason) {
+          invalid = { fieldPath: fieldDef.path, reason };
+          break;
         }
         this._setNestedField(fields, fieldDef.path, value);
       }
@@ -591,7 +483,7 @@ export class IndexManager<DocType> {
    * If indexName is specified, use it directly. Otherwise find an index
    * matching the collectionPrefix.
    */
-  private _resolveIndexName(options: QueryOptions | QueryAst): string | undefined {
+  private _resolveIndexName(options: QueryAst): string | undefined {
     if (options.indexName) {
       return this._definitions.has(options.indexName) ? options.indexName : undefined;
     }
@@ -800,7 +692,10 @@ export class IndexManager<DocType> {
     errorMessage: string,
   ): void {
     const revision = ++subscription.queryRevision;
-    this.query(subscription.options).then((result) => {
+    const pending = this._resolveIndexName(subscription.options)
+      ? this.query(subscription.options)
+      : Promise.resolve(undefined);
+    pending.then((result) => {
       if (
         this._subscriptions.get(id) === subscription &&
         subscription.queryRevision === revision

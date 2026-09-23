@@ -2,9 +2,7 @@ import {
   IndexDefinition,
   IndexFieldDefinition,
   IndexKeyDefinition,
-  FieldFilter,
   QueryAst,
-  SortClause,
 } from './types.js';
 import { QueryPlan } from './query-planner.js';
 
@@ -52,8 +50,8 @@ export interface IndexStorage {
   initialize(
     indexName: string,
     fields: IndexFieldDefinition[],
-    physicalIndexes?: IndexKeyDefinition[],
-    identity?: StorageSchemaIdentity,
+    physicalIndexes: IndexKeyDefinition[],
+    identity: StorageSchemaIdentity,
   ): Promise<void>;
 
   /**
@@ -66,20 +64,8 @@ export interface IndexStorage {
    */
   delete(indexName: string, documentPath: string): Promise<void>;
 
-  /**
-   * Query the index with filters, sorting, and pagination.
-   * Returns matching entries ordered and paginated as specified.
-   */
-  query(
-    indexName: string,
-    filters: FieldFilter[],
-    sort?: SortClause[],
-    limit?: number,
-    offset?: number,
-  ): Promise<IndexEntry[]>;
-
-  /** Execute the v2 plan. Backends implementing v2 should provide this method. */
-  execute?(request: StorageQueryRequest): Promise<StorageQueryResult>;
+  /** Execute the v2 plan. All backends implement the current query plan. */
+  execute(request: StorageQueryRequest): Promise<StorageQueryResult>;
 
   /**
    * Get a single entry by document path.
