@@ -285,6 +285,8 @@ const ignoredDocumentPromiseSettlementArguments = [
   ignoreDocumentPromiseSettlement,
   ignoreDocumentPromiseSettlement,
 ];
+// Bound hostile prototype traversal well above normal provider inheritance.
+// Custom providers must expose prepared methods within this depth.
 const MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH = 32;
 
 interface CapturedDataMethod {
