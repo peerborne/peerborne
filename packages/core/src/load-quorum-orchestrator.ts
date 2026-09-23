@@ -483,12 +483,12 @@ export async function runLoadQuorum<T>(opts: {
   if (narrowed.length === 0) {
     throw new LoadQuorumFailedError({
       documentPath,
-      reason: 'no-majority',
+      reason: 'no-agreement',
       respondingCount: decision.respondingCount,
       requiredQ: decision.effectiveQ,
       // Re-derive a `hash -> count` agreement summary from the agreeing
       // cohort so the structured error carries the same observability
-      // payload as the normal `'no-majority'` path (decideLoadQuorum's
+      // payload as the normal `'no-agreement'` path (decideLoadQuorum's
       // success branch does not expose the full agreement map; we
       // reconstruct just the winning bucket here).
       agreement: new Map([

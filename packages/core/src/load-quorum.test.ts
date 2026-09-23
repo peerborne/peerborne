@@ -58,7 +58,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test('3-way disagreement fails quorum (no-majority)', () => {
+  test('3-way disagreement fails quorum (no-agreement)', () => {
     const decision = decideLoadQuorum(
       [
         { peerId: 'p1', hash: HASH_A },
@@ -69,7 +69,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     );
     expect(decision.ok).toBe(false);
     if (!decision.ok) {
-      expect(decision.reason).toBe('no-majority');
+      expect(decision.reason).toBe('no-agreement');
       expect(decision.respondingCount).toBe(3);
       expect(decision.agreement.size).toBe(3);
     }
@@ -925,7 +925,7 @@ describe('LoadQuorumFailedError', () => {
   test('carries structured fields for application-level recovery', () => {
     const err = new LoadQuorumFailedError({
       documentPath: '/docs/x',
-      reason: 'no-majority',
+      reason: 'no-agreement',
       respondingCount: 3,
       requiredQ: 2,
       agreement: new Map([
@@ -937,7 +937,7 @@ describe('LoadQuorumFailedError', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('LoadQuorumFailedError');
     expect(err.documentPath).toBe('/docs/x');
-    expect(err.reason).toBe('no-majority');
+    expect(err.reason).toBe('no-agreement');
     expect(err.respondingCount).toBe(3);
     expect(err.requiredQ).toBe(2);
     expect(err.agreement.size).toBe(3);
@@ -999,7 +999,7 @@ describe('LoadQuorumFailedError', () => {
     // unconditionally without a null-check.
     const err = new LoadQuorumFailedError({
       documentPath: '/docs/x',
-      reason: 'no-majority',
+      reason: 'no-agreement',
       respondingCount: 1,
       requiredQ: 2,
       agreement: new Map(),
