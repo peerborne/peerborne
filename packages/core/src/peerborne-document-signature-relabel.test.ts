@@ -116,10 +116,12 @@ function loadHarness(plaintext: Uint8Array) {
     _syncUnlocked: sync,
   });
   const stream = {
-    sink: async () => undefined,
-    source: (async function* () {
+    send: () => true,
+    onDrain: async () => undefined,
+    close: async () => undefined,
+    [Symbol.asyncIterator]: async function* () {
       yield new Uint8Array([1, 2, 3]);
-    })(),
+    },
     abort: jest.fn(),
   };
   return { document, stream, sync };
