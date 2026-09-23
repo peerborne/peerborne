@@ -1201,8 +1201,9 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
 
     const fresh = new AutomergeACL();
-    expect(() => fresh.merge(independentChanges)).not.toThrow();
-    expect(await fresh.check(key2)).toBe(true);
+    expect(() => fresh.merge(independentChanges)).toThrow(/canonical users root/);
+    expect(fresh.current()).toEqual([]);
+    expect(await fresh.check(key2)).toBe(false);
   });
 
   test('rejects a concurrent membership assignment and deletion atomically', async () => {
@@ -1640,38 +1641,41 @@ describe('AutomergeACL', () => {
     expect(second.current()).toEqual(first.current());
   });
 
-  test('loads a complete ACL history from the legacy random-seed format', async () => {
+  test('rejects a complete ACL history with a noncanonical random seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+    expect(() => receiver.merge(getAllAutomergeChanges(noncanonicalWithMember))).toThrow(
+      /requires the canonical users root/,
+    );
 
-    expect(await receiver.check(key1)).toBe(true);
-    expect(await receiver.users()).toHaveLength(1);
+    expect(receiver.current()).toEqual([]);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.users()).toEqual([]);
   });
 
-  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+  test('fails closed for an incremental change that omitted its seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+    receiver.merge(getAutomergeChanges(noncanonicalBase, noncanonicalWithMember));
 
     await expect(receiver.check(key1)).rejects.toThrow(
       /unresolved change dependencies.*complete ACL history/i,
     );
-    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+    expect(() => receiver.current()).toThrow(/unresolved change dependencies/i);
   });
 
   test('allows valid child-before-parent delivery once dependencies arrive', async () => {
@@ -2494,7 +2498,7 @@ describe('AutomergeKeychain', () => {
     expect(keychain.getKey(expectedEpochId)).toBe(key);
   });
 
-  test('legacy keychain commit uses its captured claim method', async () => {
+  test('keychain commit uses its captured claim method', async () => {
     const keychain = new AutomergeKeychain();
     const epochId = crypto.getRandomValues(new Uint8Array(32));
     const key = await crypto.subtle.generateKey(
@@ -2985,7 +2989,7 @@ describe('AutomergeKeychain', () => {
     );
   });
 
-  test('legacy merge commit ignores an accessor replacing the returned claim method', async () => {
+  test('merge commit ignores an accessor replacing the returned claim method', async () => {
     const source = new AutomergeKeychain();
     const [epochId] = await source.add();
     const receiver = new AutomergeKeychain();
