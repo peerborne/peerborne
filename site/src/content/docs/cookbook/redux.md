@@ -79,13 +79,15 @@ async function openNote(identity: CryptoKeyPair) {
   ));
 
   await store.dispatch<any>(initializeAsync(config, selectSwarm));
-  await store.dispatch<any>(openDocumentAsync('/notes/hello', selectSwarm));
+  await store.dispatch<any>(openDocumentAsync('/notes/hello', selectSwarm, 'create'));
 
   const opened = selectSwarm(store.getState()).documents['/notes/hello'];
   const text = opened.document.getText('content').toString();
   return { store, text };
 }
 ```
+
+The third argument explicitly creates a new document. Omit it to open existing authenticated state; a failed open never creates a replacement.
 
 Initialize the node once at application startup. `initializeAsync` installs peer listeners and has no matching Redux shutdown action; repeated component effects can duplicate initialization/listeners. `openDocumentAsync` subscribes with the `'remote'` filter and dispatches `SYNC_DOCUMENT` for subsequent remote events. Always pass the selector when the slice is nested.
 

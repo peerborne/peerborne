@@ -37,33 +37,37 @@ convergence through this complete path are not yet demonstrated in CI.
 
 ## Data flow: loading an existing document
 
-![A quorum-enabled remote document load obtains Q-of-K frontier agreement, decrypts the selected response before any conditional known-writer signature check, binds its served frontier, and fetches the CIDs enumerated by its served changes tree before mutation; a quorum-bound first load drops an unverifiable snapshot and requires an available changes tree, while the quorum-disabled legacy path skips those gates.](../../../assets/diagrams/initial-load.svg "Initial load: quorum binds the served frontier before history application.")
+![A V4 load captures locally trusted writers, group commitments, and a fresh challenge; authenticated authorities agree on a complete response digest before state is applied.](../../../assets/diagrams/initial-load.svg "Current V4 load authentication and response binding.")
 
-The configured initial-load gate probes up to an effective K distinct connected
-peers and requires Q matching frontier advertisements before accepting a remote
-history. Peerborne decrypts the selected response first. On a subsequent load,
-when signing is enabled and a prior writer set is already known, it then verifies
-the response's outer signature before mutating document state. If quorum ran,
-Peerborne also derives the served frontier and binds it to the agreed hash and
-required tips.
+Normal network loading uses V4 exclusively. Before probing, the loader captures
+canonical trusted signing authorities, a locally resolved control/group tuple,
+and a fresh 32-byte challenge. A first load needs
+`resolveTrustedDocumentWriters`; normal loading and serving need
+`resolveLoadSecurityCommitments`. Applications must supply independently trusted
+state. The runtime does not yet verify an MLS genesis or replay a newer control
+suffix from peers.
 
-For a quorum-bound load, inline changes are stripped from the response and every
-CID enumerated by its served changes tree is prefetched before state mutation.
-Helia validates the fetched ciphertext against each CID during that prefetch.
-After the gate passes, `sync()` decrypts, deserializes, and applies the cached
-payloads. A later per-block failure can therefore follow partial local mutation;
-there is no rollback. CID integrity authenticates those ciphertext bytes, not
-the responder-supplied node kind or interior tree topology, a writer identity,
-or a complete-history claim. The fetched blocks have no per-block signature or
-ACL decision.
+Quorum probes count each authenticated signing authority once across transport
+PeerIds. The agreed digest binds the document, served frontier, captured tuple,
+and a complete response manifest containing node kinds, edges, inline payloads,
+snapshot content/metadata, and keychain changes. The selected response must echo
+the fresh challenge, match the local tuple, verify under a captured writer, and
+reproduce that digest before mutation. Disabling quorum allows one trusted
+signed V4 response; challenge, tuple, signature, and frontier checks remain.
 
-On a first load there is no prior writer set with which to authenticate the
-outer response. A quorum-bound first load therefore drops an unverifiable
-snapshot and replays an available changes tree; a snapshot-only response is
-refused. When quorum is disabled, the legacy response path skips advertisement
-probes, frontier binding, inline stripping, and the prefetch-before-mutation
-gate. The decision logic and orchestration have focused tests; conflicting real
-peers serving adversarial DAG payloads are not yet exercised end to end.
+Quorum loads strip inline changes and prefetch the served tree's CIDs through
+Helia before mutation. CID validation covers ciphertext bytes; signed manifests
+bind the accompanying graph. A first load still drops a snapshot that cannot be
+verified against a prior ACL and requires available change history. Later
+provider failures can leave partial state; there is no rollback, and incomplete
+bootstrap instances must be discarded.
+
+Invitation acceptance uses its independently pinned issuer and a separate
+challenge-bound catch-up protocol. It does not claim MLS control-log validation.
+`document.create()` explicitly authorizes a new document at an application-owned
+path. `open()` never converts a failed load or an empty peer response into a new
+document. Focused adversarial tests cover these boundaries; a hostile real-peer
+V4 quorum test remains outstanding.
 
 ## The sync model
 
@@ -103,7 +107,7 @@ Peerborne documents can sync over peer-to-peer links, but most deployments need 
 | **Relay node** | For browser peers | Bridges NAT; peers behind restrictive firewalls connect through it |
 | **Bootstrap node** | For initial discovery | Provides a well-known entry point for the libp2p network |
 | **STUN/TURN server** | For WebRTC direct connections | Helps peers establish direct browser-to-browser links |
-| **Remote pinning** | Not implemented | Would persist encrypted blocks when all local peers go offline; `PeerborneNode` does not subscribe to unauthorizable legacy V1 announcements, and no authenticated publisher exists |
+| **Remote pinning** | Not implemented | Would persist encrypted blocks when all local peers go offline; no authenticated pin-request protocol or publisher exists |
 | **Identity service** | Application responsibility | Peerborne does not provide user authentication or key management |
 
 The relay server source is in `relay-server/`. The Docker Compose files in the repository root provide ready-to-run multi-node topologies for testing.

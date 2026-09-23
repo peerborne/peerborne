@@ -421,8 +421,7 @@ envelope. Challenge equality is checked before tallying or staging state, so a
 recorded advertisement set and matching full response from an older round are
 rejected while Web Crypto randomness and signature verification hold. This is
 not a timestamp or durable replay ledger, and it does not stop an authorized or
-compromised writer from signing stale state again in the current round. Legacy
-V3 wire behavior is unchanged.
+compromised writer from signing stale state again in the current round. Older load formats are not negotiated or decoded.
 
 The current seam requires exact equality with the captured tuple. It cannot
 yet authenticate and replay a newer control suffix from an older checkpoint,
@@ -437,8 +436,7 @@ MLS genesis/control suffix or learn a newer security state from peers. Without
 an integrated reviewed provider and live hostile-peer tests, this remains
 partial evidence only.
 
-Strict mode does not count the unauthenticated `0xff` “unknown
-document” sentinel as a vote. Consequently, a client cannot infer that a name
+Empty or unauthenticated absence responses do not count as votes. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
 existing swarm needs an application-authorized create decision or a future
 authenticated nonexistence protocol; this is an intentional availability
@@ -458,9 +456,8 @@ The proposed MLS family uses distinct bounded protocols:
 /peerborne/security-advertise/1.0.0
 ```
 
-Runtime integration must replace older load and snapshot formats with this
-single protocol family and remove their decoders and schemas. It must not
-negotiate a downgrade or retain a per-document compatibility mode. Peerborne
+The current load runtime uses only V4 full/snapshot responses and signed
+security advertisements. Older load formats and their schemas are removed. Peerborne
 has no deployed users requiring an old-format migration. The current BeeKEM
 runtime remains distinct from the future MLS provider proposed here; its
 limitations must remain explicit until that provider passes the acceptance

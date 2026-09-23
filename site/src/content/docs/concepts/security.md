@@ -171,30 +171,26 @@ path secrets individually encrypted to the surviving BeeKEM subtrees.
 
 ## Initial-load quorum
 
-Before accepting a remote document state, Peerborne can require **Q-of-K**
-distinct currently connected peers to agree on a served-frontier hash. This
-reduces the risk of one peer unilaterally selecting the frontier; it does not
-authenticate the responder-supplied interior tree or prove that the served
-history is complete. Quorum is configured via `PeerborneConfig`:
+V4 loading requires a fresh signed request challenge, trusted writer identities,
+and locally resolved control/group commitments. Configure
+`resolveTrustedDocumentWriters(documentPath)` for a first load and
+`resolveLoadSecurityCommitments(documentPath)` for normal loading and serving.
+The latter supplies the current `version`, `controlHead`, `groupId`, `epoch`,
+`treeHash`, and `confirmedTranscriptHash`; a responder cannot provide its own
+trust root. The runtime compares this tuple but does not yet replay an MLS
+control log.
 
-```ts
-// Override loadQuorumK and loadQuorumQ on the complete config:
-await swarm.initialize({
-  ...defaultConfig(defaultBootstrapConfig([])),
-  loadQuorumK: 3,  // probe up to 3 peers
-  loadQuorumQ: 2,  // require agreement from at least 2
-});
+`loadQuorumK` bounds queried transport peers. `loadQuorumQ` requires that many
+independent trusted signing authorities to agree on one complete response
+manifest and security-state digest. One credential contributes only one vote,
+even through multiple PeerIds. An explicit Q is never lowered when fewer peers
+are available. Distinct compromised authorities can still collude; independent
+trust configuration is essential.
 
-// Documents are then opened normally; quorum runs automatically:
-const document = swarm.doc('/shared-note');
-await document.open();
-```
-
-The quorum check:
-- Probes up to `loadQuorumK` peers for their current frontier hashes
-- Proceeds only when at least `loadQuorumQ` peers agree on the same frontier
-- Rejects the load if agreement cannot be reached
-- Is **not Sybil-resistant** — a peer controlling multiple identities can subvert it
+`loadQuorumEnabled: false` permits one authenticated V4 response and retains
+challenge, tuple, signature, and frontier checks. Unsigned loads are rejected.
+A failed `document.open()` never creates a document. Use `document.create()`
+only when the application has explicitly authorized founding that path.
 
 ## Revocation
 

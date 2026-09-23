@@ -15,7 +15,7 @@ The goal: merge edits from multiple peers without a central consensus service, a
 
 ```ts
 const todos = swarm.doc('/todo-list');
-await todos.open();
+await todos.create();
 
 await todos.change((state) => {
   state.getArray<string>('items').push(['buy milk']);
@@ -146,14 +146,13 @@ also enabled. In particular:
 
 ## Quorum loading
 
-Before accepting a remote document state, Peerborne can require Q-of-K distinct
-currently connected peers to agree on a served-frontier hash. Quorum is
-configured through `PeerborneConfig` and runs automatically during
-`document.open()` when enabled. Agreement and response binding reduce the risk
-of one peer unilaterally selecting a frontier; they do not authenticate the
-interior shadow tree or prove complete history. The check is **not
-Sybil-resistant** — one actor controlling multiple peer identities can subvert
-it.
+V4 initial loads require trusted signing authorities, a locally captured
+control/group tuple, and a fresh request challenge. The optional quorum gate
+requires Q distinct authenticated authorities to agree on a complete response
+digest covering the served graph, state, and frontier. An explicit Q is never
+lowered. Multiple PeerIds sharing one signing credential count once; the
+application must still establish independent trusted authorities. See
+[security](../security/) for the trust configuration and remaining limits.
 
 ## CI-backed evidence
 
