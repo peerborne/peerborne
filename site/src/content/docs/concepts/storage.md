@@ -51,7 +51,7 @@ In the browser, Helia stores blocks in **IndexedDB**:
 import { IDBBlockstore } from 'blockstore-idb';
 import { IDBDatastore } from 'datastore-idb';
 
-const blockstore = new IDBBlockstore('/collabswarm-blocks');
+const blockstore = new IDBBlockstore('/peerborne-blocks');
 // In practice, pass these via PeerborneConfig.helia to initialize()
 ```
 

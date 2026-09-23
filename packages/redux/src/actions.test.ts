@@ -6,7 +6,7 @@ describe('peerborne-redux sync action creators', () => {
   test('initialize action includes node', () => {
     const node = { id: 'mock-node' };
     const action = actions.initialize(node);
-    expect(action.type).toBe('COLLABSWARM_INITIALIZE');
+    expect(action.type).toBe('PEERBORNE_INITIALIZE');
     expect(action.node).toBe(node);
   });
 
@@ -18,25 +18,25 @@ describe('peerborne-redux sync action creators', () => {
   test('connect action includes addresses', () => {
     const addrs = ['/ip4/1.2.3.4'];
     const action = actions.connect(addrs);
-    expect(action.type).toBe('COLLABSWARM_CONNECT');
+    expect(action.type).toBe('PEERBORNE_CONNECT');
     expect(action.addresses).toEqual(addrs);
   });
 
   test('openDocument action includes documentId and ref', () => {
     const action = actions.openDocument('/test/doc', { document: {} });
-    expect(action.type).toBe('COLLABSWARM_OPEN_DOCUMENT');
+    expect(action.type).toBe('PEERBORNE_OPEN_DOCUMENT');
     expect(action.documentId).toBe('/test/doc');
   });
 
   test('closeDocument action includes documentId', () => {
     const action = actions.closeDocument('/test/doc');
-    expect(action.type).toBe('COLLABSWARM_CLOSE_DOCUMENT');
+    expect(action.type).toBe('PEERBORNE_CLOSE_DOCUMENT');
     expect(action.documentId).toBe('/test/doc');
   });
 
   test('syncDocument action includes documentId and document', () => {
     const action = actions.syncDocument('/test/doc', { text: 'synced' });
-    expect(action.type).toBe('COLLABSWARM_SYNC_DOCUMENT');
+    expect(action.type).toBe('PEERBORNE_SYNC_DOCUMENT');
     expect(action.documentId).toBe('/test/doc');
   });
 
@@ -45,13 +45,13 @@ describe('peerborne-redux sync action creators', () => {
   });
 
   test('action type constants are defined', () => {
-    expect(actions.INITIALIZE).toBe('COLLABSWARM_INITIALIZE');
-    expect(actions.CONNECT).toBe('COLLABSWARM_CONNECT');
-    expect(actions.OPEN_DOCUMENT).toBe('COLLABSWARM_OPEN_DOCUMENT');
-    expect(actions.CLOSE_DOCUMENT).toBe('COLLABSWARM_CLOSE_DOCUMENT');
-    expect(actions.CHANGE_DOCUMENT).toBe('COLLABSWARM_CHANGE_DOCUMENT');
-    expect(actions.PEER_CONNECT).toBe('COLLABSWARM_PEER_CONNECT');
-    expect(actions.PEER_DISCONNECT).toBe('COLLABSWARM_PEER_DISCONNECT');
+    expect(actions.INITIALIZE).toBe('PEERBORNE_INITIALIZE');
+    expect(actions.CONNECT).toBe('PEERBORNE_CONNECT');
+    expect(actions.OPEN_DOCUMENT).toBe('PEERBORNE_OPEN_DOCUMENT');
+    expect(actions.CLOSE_DOCUMENT).toBe('PEERBORNE_CLOSE_DOCUMENT');
+    expect(actions.CHANGE_DOCUMENT).toBe('PEERBORNE_CHANGE_DOCUMENT');
+    expect(actions.PEER_CONNECT).toBe('PEERBORNE_PEER_CONNECT');
+    expect(actions.PEER_DISCONNECT).toBe('PEERBORNE_PEER_DISCONNECT');
   });
 });
 
@@ -90,7 +90,7 @@ describe('peerborne-redux async thunks', () => {
     getState.mockReturnValue({ node: mockNode, documents: {}, peers: [] });
     await actions.connectAsync(['addr1'])(dispatch, getState);
     expect(mockNode.connect).toHaveBeenCalledWith(['addr1']);
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'COLLABSWARM_CONNECT' }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_CONNECT' }));
   });
 
   test('openDocumentAsync warns when node not initialized', async () => {
@@ -122,7 +122,7 @@ describe('peerborne-redux async thunks', () => {
     await actions.closeDocumentAsync('/doc')(dispatch, getState);
     expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc');
     expect(mockDocRef.close).toHaveBeenCalled();
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'COLLABSWARM_CLOSE_DOCUMENT' }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_CLOSE_DOCUMENT' }));
   });
 
   test('changeDocumentAsync throws when document not open', async () => {
@@ -138,6 +138,6 @@ describe('peerborne-redux async thunks', () => {
     });
     await actions.changeDocumentAsync('/doc', changeFn, 'a message')(dispatch, getState);
     expect(mockDocRef.change).toHaveBeenCalledWith(changeFn, 'a message');
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'COLLABSWARM_CHANGE_DOCUMENT' }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_CHANGE_DOCUMENT' }));
   });
 });

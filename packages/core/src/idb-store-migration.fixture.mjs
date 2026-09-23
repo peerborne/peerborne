@@ -41,8 +41,8 @@ async function drain(source) {
 }
 
 test('Helia 7 reads and extends blocks and pins written by Helia 6', async () => {
-  const blockLocation = '/collabswarm-blocks-migration-test';
-  const dataLocation = '/collabswarm-data-migration-test';
+  const blockLocation = '/peerborne-blocks-migration-test';
+  const dataLocation = '/peerborne-data-migration-test';
   const legacyBlockstore = new LegacyBlockstore(blockLocation);
   const legacyDatastore = new LegacyDatastore(dataLocation);
   const upgradedBlockstore = new IDBBlockstore(blockLocation);
