@@ -214,6 +214,9 @@ export function firstTrue(promises: Promise<boolean>[]) {
   return Promise.race(newPromises);
 }
 
+// JavaScript string lengths count UTF-16 code units, each occupying two bytes.
+const UTF16_BYTES_PER_CODE_UNIT = 2;
+
 /**
  * Detach a serializer/provider-produced record without invoking accessors or
  * reading any property more than once. Routing checks, signature verification,
@@ -272,7 +275,7 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
     if (typeof key !== 'string') {
       throw new TypeError(`${field} must not contain symbol properties`);
     }
-    keyBytes += key.length * 2;
+    keyBytes += key.length * UTF16_BYTES_PER_CODE_UNIT;
     if (
       !Number.isSafeInteger(keyBytes) ||
       keyBytes > limits.maxKeyBytes
@@ -459,7 +462,7 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
     if (typeof candidate === 'string') {
-      accountBytes(candidate.length * 2);
+      accountBytes(candidate.length * UTF16_BYTES_PER_CODE_UNIT);
       assign(target, candidate);
       continue;
     }
@@ -557,7 +560,7 @@ export function snapshotDeepEnumerableData<T>(
         if (typeof key !== 'string') {
           throw new TypeError(`${field} must not contain symbol properties`);
         }
-        if (key !== 'length') accountBytes(key.length * 2);
+        if (key !== 'length') accountBytes(key.length * UTF16_BYTES_PER_CODE_UNIT);
       }
       const copy = new Array<unknown>(length);
       const children: SnapshotTask[] = [];
@@ -637,7 +640,7 @@ export function snapshotDeepEnumerableData<T>(
       if (typeof key !== 'string') {
         throw new TypeError(`${field} must not contain symbol properties`);
       }
-      accountBytes(key.length * 2);
+      accountBytes(key.length * UTF16_BYTES_PER_CODE_UNIT);
     }
     const stringKeys = keys as string[];
     const copy: Record<string, unknown> = {};
