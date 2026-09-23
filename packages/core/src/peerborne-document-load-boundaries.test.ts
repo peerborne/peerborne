@@ -811,6 +811,35 @@ describe('document load response boundaries', () => {
     expect(verify).toHaveBeenCalledTimes(1);
   });
 
+  test('verifies writers serially with isolated payload and signature bytes', async () => {
+    let active = 0;
+    let peak = 0;
+    const payloads: number[][] = [];
+    const signatures: number[][] = [];
+    const { document, stream } = signedLoadHarness(
+      async () => ['rejecting-writer', 'accepting-writer'],
+      async (raw, writer, signature) => {
+        active++;
+        peak = Math.max(peak, active);
+        payloads.push([...raw as Uint8Array]);
+        signatures.push([...signature as Uint8Array]);
+        (raw as Uint8Array).fill(99);
+        (signature as Uint8Array).fill(99);
+        await Promise.resolve();
+        active--;
+        return writer === 'accepting-writer';
+      },
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(stream, new Uint8Array([1])))
+      .resolves.toBe(true);
+    expect(peak).toBe(1);
+    expect(payloads).toEqual([[8], [8], [8], [8]]);
+    expect(signatures).toEqual(Array.from({ length: 4 }, () => [0, 0, 0]));
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
   test('rechecks current writers after an admitted signer is removed', async () => {
     const verificationStarted = deferred<void>();
     const releaseVerification = deferred<boolean>();

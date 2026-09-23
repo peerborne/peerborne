@@ -4719,15 +4719,16 @@ export class PeerborneDocument<
         ): Promise<boolean> => {
           const signatureBytes = getOriginalSignatureBytes();
           if (!originalSignedRaw || !signatureBytes) return false;
-          return firstTrue(
-            writerKeys.map((writerKey) =>
-              this._authProvider.verify(
-                originalSignedRaw!,
-                writerKey,
-                signatureBytes,
-              ),
-            ),
-          );
+          // Every verifier owns its arguments; sequential attempts limit the
+          // live copies and stop once an authorized writer verifies the body.
+          for (const writerKey of writerKeys) {
+            if (await this._authProvider.verify(
+              new Uint8Array(originalSignedRaw),
+              writerKey,
+              new Uint8Array(signatureBytes),
+            ) === true) return true;
+          }
+          return false;
         };
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the
