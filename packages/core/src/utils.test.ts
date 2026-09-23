@@ -136,6 +136,21 @@ describe('firstTrue', () => {
 });
 
 describe('snapshotDeepEnumerableData', () => {
+  test.each(['array', 'bytes'])(
+    'checks own and inherited forbidden markers on %s carriers',
+    (kind) => {
+      for (const inherited of [false, true]) {
+        const value = kind === 'array' ? [] : new Uint8Array(1);
+        const target = inherited ? Object.create(Object.getPrototypeOf(value)) : value;
+        Object.defineProperty(target, 'version', { value: 2 });
+        if (inherited) Object.setPrototypeOf(value, target);
+        expect(() => snapshotDeepEnumerableData(value, 'boundary', undefined, {
+          forbiddenFields: ['version'],
+        })).toThrow(/forbidden field 'version'/);
+      }
+    },
+  );
+
   test('detaches nested Proxy descriptors without invoking property gets', () => {
     const nested = { payload: new Uint8Array([1, 2, 3]) };
     let getCalls = 0;
@@ -234,6 +249,118 @@ describe('snapshotDeepEnumerableData', () => {
         maxValueBytes: 64,
       }),
     ).toThrow(/maximum depth 8/);
+  });
+
+  test('rejects oversized dense arrays before enumerating their entries', () => {
+    let ownKeysCalls = 0;
+    let entryDescriptorCalls = 0;
+    const values = new Proxy(new Array(9).fill(0), {
+      ownKeys(target) {
+        ownKeysCalls++;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property !== 'length') entryDescriptorCalls++;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    expect(() =>
+      snapshotDeepEnumerableData({ values }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 16,
+        maxProperties: 16,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/invalid array/);
+    expect(ownKeysCalls).toBe(0);
+    expect(entryDescriptorCalls).toBe(0);
+  });
+
+  test('bounds array Proxy work by the reported length without enumerating keys', () => {
+    let ownKeysCalls = 0;
+    let lengthDescriptorCalls = 0;
+    let entryDescriptorCalls = 0;
+    const values = new Proxy(new Array(100_000).fill(7), {
+      ownKeys() {
+        ownKeysCalls++;
+        throw new Error('array keys must not be enumerated');
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'length') {
+          lengthDescriptorCalls++;
+          return {
+            ...Reflect.getOwnPropertyDescriptor(target, property)!,
+            value: 2,
+          };
+        }
+        entryDescriptorCalls++;
+        if (entryDescriptorCalls > 2) {
+          throw new Error('array work exceeded the reported length');
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const snapshot = snapshotDeepEnumerableData({ values }, 'bounded', {
+      maxDepth: 8,
+      maxObjects: 16,
+      maxProperties: 16,
+      maxArrayLength: 8,
+      maxValueBytes: 64,
+    });
+
+    expect(snapshot).toEqual({ values: [7, 7] });
+    expect(ownKeysCalls).toBe(0);
+    expect(lengthDescriptorCalls).toBe(2);
+    expect(entryDescriptorCalls).toBe(2);
+  });
+
+  test('rejects an array Proxy whose reported length changes during detachment', () => {
+    let lengthDescriptorCalls = 0;
+    const values = new Proxy([1, 2], {
+      getOwnPropertyDescriptor(target, property) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        if (property !== 'length') return descriptor;
+        lengthDescriptorCalls++;
+        return {
+          ...descriptor!,
+          value: lengthDescriptorCalls === 1 ? 2 : 1,
+        };
+      },
+    });
+
+    expect(() =>
+      snapshotDeepEnumerableData({ values }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 16,
+        maxProperties: 16,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/invalid array/);
+    expect(lengthDescriptorCalls).toBe(2);
+  });
+
+  test('ignores irrelevant array properties without invoking accessors', () => {
+    let extraReads = 0;
+    const values = [1, 2] as number[] & { extra?: string };
+    Object.defineProperty(values, 'extra', {
+      enumerable: true,
+      get() {
+        extraReads++;
+        return 'ignored';
+      },
+    });
+
+    const snapshot = snapshotDeepEnumerableData({ values });
+
+    expect(snapshot).toEqual({ values: [1, 2] });
+    expect(extraReads).toBe(0);
+    expect(Object.prototype.hasOwnProperty.call(snapshot.values, 'extra')).toBe(
+      false,
+    );
   });
 });
 

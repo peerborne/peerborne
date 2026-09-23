@@ -184,9 +184,10 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // and re-derives the document key from
 // the fresh root secret (see `derive-doc-key.ts`). The removed reader
 // cannot derive the new key — their leaf is blanked and the new path key
-// material is encrypted to subtrees they no longer occupy — which closes
-// the revocation-latency gap of the previous "encrypt new key under old
-// key" rotation scheme.
+// material is encrypted to subtrees they no longer occupy. That avoids the
+// previous scheme's direct "new key encrypted under the old key" leak for this
+// rotation, but v1 has no generation or parent-tree binding and therefore does
+// not provide replay-safe end-to-end revocation.
 //
 // =============================================================================
 // SAFETY-CRITICAL: writer-only
@@ -254,6 +255,12 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // traffic is encrypted under the new epoch key (`pathUpdateEpochId`
 // is the wire-format key-ID prefix); the recipient has no entry for
 // that ID in their local keychain and the decrypt fails.
+//
+// The shipped keychains reject an exact duplicate epoch ID before the
+// handler commits its cloned BeeKEM state. That incidental check can drop an
+// update the receiver already installed, but it does not establish freshness:
+// a previously unseen older update still has a new-to-that-receiver epoch ID
+// and can be accepted out of order because v1 has no parent/generation binding.
 //
 // Recovery is NOT guaranteed by a vanilla `loadDocument` against an
 // arbitrary peer: `handleLoadRequestData` encrypts its response under

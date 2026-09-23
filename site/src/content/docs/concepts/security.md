@@ -163,6 +163,23 @@ are not ordinary whole-message document-key envelopes. A Welcome ECIES-seals
 its onboarding payload to the recipient's KEM key. A PathUpdate instead carries
 path secrets individually encrypted to the surviving BeeKEM subtrees.
 
+The active `beekemPathUpdateV1` protocol has no generation or parent-tree hash.
+The shipped document keychains reject an exact repeat of an already-installed
+epoch ID before the handler commits its cloned BeeKEM state, but that incidental
+duplicate check does not establish freshness. A previously unseen, withheld
+writer-signed PathUpdate can still be delivered late and may roll a live
+receiver back to an earlier BeeKEM root and document-key epoch. The state-bound
+v2 wire codec is reserved but is not applied by the runtime handler, so writer
+authentication must not be interpreted as PathUpdate ordering or freshness.
+V1 also carries only one ciphertext at each path level. The runtime therefore
+rejects an otherwise well-formed update when the receiver's first shared path
+node with the sender is below the root: accepting it would leave the receiver
+without a safe way to obtain the remaining ancestor keys. A root intersection
+is not sufficient when a blank sibling subtree has multiple resolution nodes,
+so local mutations reject before commit rather than encrypting to only one of
+those nodes and stranding the other survivors. Some multi-level group updates
+consequently require the v2 per-resolution bundles.
+
 ## Initial-load quorum
 
 Before accepting a remote document state, Peerborne can require **Q-of-K**
@@ -225,6 +242,11 @@ await document.removeReader(revokedPeerSigningPublicKey);
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.
 - **BeeKEM state is lost on restart.** If the node restarts, it loses track of which keys have been invalidated.
 - **PathUpdate is not guaranteed.** There is no acknowledgment or retry mechanism.
+- **Legacy PathUpdate is not state-bound.** V1 does not bind a generation or
+  parent tree. Shipped keychains can reject an already-installed epoch ID, but
+  a previously unseen delayed writer-signed update can still roll a receiver
+  back to an older BeeKEM root. The reserved v2 codec is not wired into the
+  runtime protocol.
 - **Key reuse risk.** If the application reuses KEM key pairs across documents, revoking access to one document may not fully revoke it from another.
 
 ## Metadata and hostile infrastructure
