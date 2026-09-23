@@ -4467,6 +4467,8 @@ describe('document load response boundaries', () => {
 });
 
 
+describe('poisoned state and cancellation boundaries', () => {
+
 test('discards deferred and incoming notifications once document state is poisoned', async () => {
   const pending = new Set(['deferred']);
   const notify = jest.fn();
@@ -4524,4 +4526,6 @@ test.each([
     expect(mutated).toBe(true);
     expect(() => document._assertDocumentStateNotPoisoned()).toThrow(/discard this document instance/);
   }
+});
+
 });
