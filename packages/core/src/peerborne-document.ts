@@ -4722,16 +4722,20 @@ export class PeerborneDocument<
         ): Promise<boolean> => {
           const signatureBytes = getOriginalSignatureBytes();
           if (!originalSignedRaw || !signatureBytes) return false;
-          const verified = await firstTrue(
-            writerKeys.map((writerKey) =>
-              this._authProvider.verify(
-                originalSignedRaw,
+          // Every verifier owns its arguments; sequential attempts limit the
+          // live copies and stop once an authorized writer verifies the body.
+          for (const writerKey of writerKeys) {
+            if (
+              (await this._authProvider.verify(
+                new Uint8Array(originalSignedRaw),
                 writerKey,
-                signatureBytes,
-              ),
-            ),
-          );
-          return verified === true && originalUnsigned!.unchanged();
+                new Uint8Array(signatureBytes),
+              )) === true
+            ) {
+              return originalUnsigned!.unchanged();
+            }
+          }
+          return false;
         };
         // Verify the outer message signature before applying changes.
         // On subsequent loads (writers already known), verify against the

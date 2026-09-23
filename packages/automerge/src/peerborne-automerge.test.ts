@@ -4381,8 +4381,11 @@ describe('bounded initial invitation profile', () => {
       recipientKemPair.publicKey,
     );
 
-    const sealedWelcomeGrowth =
-      sealedWelcome.byteLength - withoutBeeKEMBytes;
+    const treePlaintextGrowth = welcomePlaintext.byteLength - withoutBeeKEMBytes;
+    const eciesFramingBytes = sealedWelcome.byteLength - welcomePlaintext.byteLength;
+    expect(eciesFramingBytes).toBeGreaterThan(0);
+    // The capacity profile reserves both the encoded tree and ECIES framing.
+    const sealedWelcomeGrowth = treePlaintextGrowth + eciesFramingBytes;
     expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
       INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
     );
