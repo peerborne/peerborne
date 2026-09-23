@@ -71,7 +71,11 @@ export interface SerializedBeeKEMWelcomeV2
   numLeaves: number;
 }
 
-/** Convert a runtime v1 `BeeKEMWelcome` to its JSON-safe wire form. */
+/**
+ * Convert a runtime v1 Welcome to JSON-safe wire form.
+ * Inputs must be plain records containing only the specified enumerable data
+ * fields; metadata, accessors and class instances are rejected.
+ */
 export function serializeBeeKEMWelcomeForWire(
   welcome: BeeKEMWelcome,
 ): SerializedBeeKEMWelcome {
@@ -270,6 +274,10 @@ function validateLegacyWelcomeTopology(
   return directPath;
 }
 
+/**
+ * Encode a detached current Welcome. Inputs must be plain records with exactly
+ * the specified enumerable data fields, without metadata or accessors.
+ */
 export function serializeBeeKEMWelcomeV2ForWire(
   welcome: BeeKEMWelcomeV2,
 ): SerializedBeeKEMWelcomeV2 {
