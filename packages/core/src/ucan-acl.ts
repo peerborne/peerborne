@@ -3,7 +3,6 @@ import {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
 } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
@@ -1040,7 +1039,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     readonly result: {
       readonly changes: ChangesType;
       readonly commit: () => void;
-      readonly claimCommit?: () => unknown;
+      readonly claimCommit: () => unknown;
     };
     readonly backingRevision: object;
   } {
@@ -1083,49 +1082,19 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           `Backing ACL ${preparedName} claimCommit`,
         );
         const claimCommit = claimProperty.value;
-        if (
-          claimProperty.found &&
-          claimCommit !== undefined &&
-          typeof claimCommit !== 'function'
-        ) {
+        if (!claimProperty.found || typeof claimCommit !== 'function') {
           throw new TypeError(
-            `Backing ACL prepared ${changeName} claimCommit must be a function when present`,
+            `Backing ACL prepared ${changeName} claimCommit must be a function`,
           );
         }
         return {
           changes: changesProperty.value as ChangesType,
           commit: () => reflectApply(commit, prepared, []),
-          claimCommit:
-            typeof claimCommit === 'function'
-              ? () => reflectApply(claimCommit, prepared, [])
-              : undefined,
+          claimCommit: () => reflectApply(claimCommit, prepared, []),
         };
       },
       onInvokedFailure,
     );
-  }
-
-  private _runBackingCommit(operation: () => void): void {
-    this._assertBackingOperationAvailable('ACL backing commit');
-    const finishBackingOperation = this._beginBackingOperation();
-    try {
-      this._invokeSynchronousBacking(
-        operation,
-        'Backing ACL commit',
-        'void',
-      );
-    } catch (error) {
-      this._backingStateUncertain = true;
-      if (error instanceof ACLOperationInProgressError) {
-        throw new Error(
-          'Backing ACL commit reported a retry conflict after invocation; backing state is uncertain',
-        );
-      }
-      throw error;
-    } finally {
-      this._markBackingMutation();
-      finishBackingOperation();
-    }
   }
 
   private _runBackingClaim(
@@ -1444,108 +1413,70 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       );
     }
     const backingClaimCommit = captured.claimCommit;
-    if (backingClaimCommit) {
-      let state:
-        | 'prepared'
-        | 'claimed'
-        | 'finalizing'
-        | 'committed'
-        | 'failed' = 'prepared';
-      const claimCommit = () => {
-        this._assertHealthy('Prepared ACL addition');
-        if (state !== 'prepared') {
-          throw new Error(
-            'Prepared ACL addition was already committed or claimed',
-          );
-        }
-        if (!allowActiveMutation) {
-          this._assertPublicOperationAvailable(
-            'Prepared ACL addition claim',
-          );
-        }
-        this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
-        if (this._backingRevision !== backingRevision) {
-          throw new Error(
-            'Prepared ACL addition became stale after backing ACL changed',
-          );
-        }
-
-        const committedRevokedKeys = new Set(this._revokedKeys);
-        committedRevokedKeys.delete(keyBase64);
-        const committedFailedAdditions = new Set(this._failedAdditions);
-        committedFailedAdditions.delete(keyBase64);
-        const committedMetadataRevision = {};
-        const committedBackingRevision = {};
-        const finalizeBacking = this._runBackingClaim(
-          backingClaimCommit,
-          'addition',
+    let state:
+      | 'prepared'
+      | 'claimed'
+      | 'finalizing'
+      | 'committed'
+      | 'failed' = 'prepared';
+    const claimCommit = () => {
+      this._assertHealthy('Prepared ACL addition');
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared ACL addition was already committed or claimed',
         );
-        state = 'claimed';
-        return {
-          finalize: () => {
-            if (state === 'committed') return;
-            if (state !== 'claimed') {
-              throw new Error(
-                'Prepared ACL addition claim cannot be finalized',
-              );
-            }
-            state = 'finalizing';
-            try {
-              this._runBackingClaimFinalizer(finalizeBacking);
-            } catch (error) {
-              this._backingRevision = committedBackingRevision;
-              state = 'failed';
-              throw error;
-            }
-            this._revokedKeys = committedRevokedKeys;
-            this._failedAdditions = committedFailedAdditions;
-            this._metadataRevision = committedMetadataRevision;
-            this._backingRevision = committedBackingRevision;
-            state = 'committed';
-          },
-        };
-      };
+      }
+      if (!allowActiveMutation) {
+        this._assertPublicOperationAvailable(
+          'Prepared ACL addition claim',
+        );
+      }
+      this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
+      if (this._backingRevision !== backingRevision) {
+        throw new Error(
+          'Prepared ACL addition became stale after backing ACL changed',
+        );
+      }
+
+      const committedRevokedKeys = new Set(this._revokedKeys);
+      committedRevokedKeys.delete(keyBase64);
+      const committedFailedAdditions = new Set(this._failedAdditions);
+      committedFailedAdditions.delete(keyBase64);
+      const committedMetadataRevision = {};
+      const committedBackingRevision = {};
+      const finalizeBacking = this._runBackingClaim(
+        backingClaimCommit,
+        'addition',
+      );
+      state = 'claimed';
       return {
-        changes: captured.changes,
-        claimCommit,
-        commit: () => claimCommit().finalize(),
+        finalize: () => {
+          if (state === 'committed') return;
+          if (state !== 'claimed') {
+            throw new Error(
+              'Prepared ACL addition claim cannot be finalized',
+            );
+          }
+          state = 'finalizing';
+          try {
+            this._runBackingClaimFinalizer(finalizeBacking);
+          } catch (error) {
+            this._backingRevision = committedBackingRevision;
+            state = 'failed';
+            throw error;
+          }
+          this._revokedKeys = committedRevokedKeys;
+          this._failedAdditions = committedFailedAdditions;
+          this._metadataRevision = committedMetadataRevision;
+          this._backingRevision = committedBackingRevision;
+          state = 'committed';
+        },
       };
-    }
-    let committed = false;
+    };
     return {
       changes: captured.changes,
-      commit: () => {
-        this._assertHealthy('Prepared ACL addition');
-        if (committed) {
-          throw new Error('Prepared ACL addition was already committed');
-        }
-        if (!allowActiveMutation) {
-          this._assertPublicOperationAvailable(
-            'Prepared ACL addition commit',
-          );
-        }
-        this._assertMetadataRevision(metadataRevision, 'Prepared ACL addition');
-        if (this._backingRevision !== backingRevision) {
-          throw new Error(
-            'Prepared ACL addition became stale after backing ACL changed',
-          );
-        }
-        // Even a previously-valid capability is hidden for the duration of
-        // the opaque commit. A contract-violating backing implementation can
-        // otherwise remove and partially re-add that identity reentrantly
-        // before throwing, reviving stale UCAN metadata.
-        this._runBackingCommit(() => {
-          // Quarantine only after the backing-commit preflight succeeds. A
-          // busy/poisoned wrapper rejection is known to precede any backing
-          // call and must leave wrapper metadata untouched.
-          this._quarantineAddition(keyBase64);
-          return captured.commit();
-        });
-        this._revokedKeys.delete(keyBase64);
-        this._failedAdditions.delete(keyBase64);
-        this._markMetadataMutation();
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
 
@@ -1586,7 +1517,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   async prepareRemove(
     publicKey: PublicKey,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     return this._startMembershipMutation(
       publicKey,
       'Prepared ACL removal',
@@ -1609,7 +1540,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     keyBase64: string,
     prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
     allowActiveMutation = false,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL removal');
     const metadataRevision = this._metadataRevision;
     const { result: prepared } = await this._runBackingPreparation(() =>
@@ -1625,102 +1556,73 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       );
     }
     const backingClaimCommit = captured.claimCommit;
-    if (backingClaimCommit) {
-      let state:
-        | 'prepared'
-        | 'claimed'
-        | 'finalizing'
-        | 'committed'
-        | 'failed' = 'prepared';
-      const claimCommit = () => {
-        this._assertHealthy('Prepared ACL removal');
-        if (state !== 'prepared') {
-          throw new Error(
-            'Prepared ACL removal was already committed or claimed',
-          );
-        }
-        if (!allowActiveMutation) {
-          this._assertPublicOperationAvailable(
-            'Prepared ACL removal claim',
-          );
-        }
-        this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
-        if (this._backingRevision !== backingRevision) {
-          throw new Error(
-            'Prepared ACL removal became stale after backing ACL changed',
-          );
-        }
-
-        const committedRevokedKeys = new Set(this._revokedKeys);
-        committedRevokedKeys.add(keyBase64);
-        const committedFailedAdditions = new Set(this._failedAdditions);
-        committedFailedAdditions.delete(keyBase64);
-        const committedEntries = new Map(this._entries);
-        committedEntries.delete(keyBase64);
-        const committedMetadataRevision = {};
-        const committedBackingRevision = {};
-        const finalizeBacking = this._runBackingClaim(
-          backingClaimCommit,
-          'removal',
+    let state:
+      | 'prepared'
+      | 'claimed'
+      | 'finalizing'
+      | 'committed'
+      | 'failed' = 'prepared';
+    const claimCommit = () => {
+      this._assertHealthy('Prepared ACL removal');
+      if (state !== 'prepared') {
+        throw new Error(
+          'Prepared ACL removal was already committed or claimed',
         );
-        state = 'claimed';
-        return {
-          finalize: () => {
-            if (state === 'committed') return;
-            if (state !== 'claimed') {
-              throw new Error(
-                'Prepared ACL removal claim cannot be finalized',
-              );
-            }
-            state = 'finalizing';
-            try {
-              this._runBackingClaimFinalizer(finalizeBacking);
-            } catch (error) {
-              this._backingRevision = committedBackingRevision;
-              state = 'failed';
-              throw error;
-            }
-            this._revokedKeys = committedRevokedKeys;
-            this._failedAdditions = committedFailedAdditions;
-            this._entries = committedEntries;
-            this._metadataRevision = committedMetadataRevision;
-            this._backingRevision = committedBackingRevision;
-            state = 'committed';
-          },
-        };
-      };
+      }
+      if (!allowActiveMutation) {
+        this._assertPublicOperationAvailable(
+          'Prepared ACL removal claim',
+        );
+      }
+      this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
+      if (this._backingRevision !== backingRevision) {
+        throw new Error(
+          'Prepared ACL removal became stale after backing ACL changed',
+        );
+      }
+
+      const committedRevokedKeys = new Set(this._revokedKeys);
+      committedRevokedKeys.add(keyBase64);
+      const committedFailedAdditions = new Set(this._failedAdditions);
+      committedFailedAdditions.delete(keyBase64);
+      const committedEntries = new Map(this._entries);
+      committedEntries.delete(keyBase64);
+      const committedMetadataRevision = {};
+      const committedBackingRevision = {};
+      const finalizeBacking = this._runBackingClaim(
+        backingClaimCommit,
+        'removal',
+      );
+      state = 'claimed';
       return {
-        changes: captured.changes,
-        claimCommit,
-        commit: () => claimCommit().finalize(),
+        finalize: () => {
+          if (state === 'committed') return;
+          if (state !== 'claimed') {
+            throw new Error(
+              'Prepared ACL removal claim cannot be finalized',
+            );
+          }
+          state = 'finalizing';
+          try {
+            this._runBackingClaimFinalizer(finalizeBacking);
+          } catch (error) {
+            this._backingRevision = committedBackingRevision;
+            state = 'failed';
+            throw error;
+          }
+          this._revokedKeys = committedRevokedKeys;
+          this._failedAdditions = committedFailedAdditions;
+          this._entries = committedEntries;
+          this._metadataRevision = committedMetadataRevision;
+          this._backingRevision = committedBackingRevision;
+          state = 'committed';
+        },
       };
-    }
-    let committed = false;
+    };
     return {
       changes: captured.changes,
-      commit: () => {
-        this._assertHealthy('Prepared ACL removal');
-        if (committed) {
-          throw new Error('Prepared ACL removal was already committed');
-        }
-        if (!allowActiveMutation) {
-          this._assertPublicOperationAvailable(
-            'Prepared ACL removal commit',
-          );
-        }
-        this._assertMetadataRevision(metadataRevision, 'Prepared ACL removal');
-        if (this._backingRevision !== backingRevision) {
-          throw new Error(
-            'Prepared ACL removal became stale after backing ACL changed',
-          );
-        }
-        this._runBackingCommit(captured.commit);
-        this._revokedKeys.add(keyBase64);
-        this._failedAdditions.delete(keyBase64);
-        this._entries.delete(keyBase64);
-        this._markMetadataMutation();
-        committed = true;
-      },
+      claimCommit,
+      commit: () => claimCommit().finalize(),
     };
   }
 

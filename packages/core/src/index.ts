@@ -40,7 +40,6 @@ import {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
 } from './acl.js';
 import {
@@ -192,7 +191,6 @@ export {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
   ACLProvider,
   SubtleCrypto,

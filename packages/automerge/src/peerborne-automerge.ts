@@ -22,7 +22,6 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -313,7 +312,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
   private readonly _queuedRemovalCommits = new WeakSet<
-    PreparedACLRemoval<BinaryChange[]>
+    PreparedACLChange<BinaryChange[]>
   >();
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<BinaryChange[]>
@@ -343,7 +342,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   private _commitQueuedRemoval(
-    prepared: PreparedACLRemoval<BinaryChange[]>,
+    prepared: PreparedACLChange<BinaryChange[]>,
   ): void {
     this._queuedRemovalCommits.add(prepared);
     try {
@@ -769,7 +768,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
     );
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
-    let prepared!: PreparedACLRemoval<BinaryChange[]>;
+    let prepared!: PreparedACLChange<BinaryChange[]>;
     const claimCommit = () => {
       if (state !== 'prepared') {
         throw new Error(
