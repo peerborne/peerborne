@@ -776,6 +776,8 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     if (this._pendingMutations !== 0) {
       throw new Error('Cannot merge during a local ACL mutation');
     }
+    // Capture first and reject reentrant changes during detachment; no update
+    // may publish against a baseline different from the one this call admitted.
     const baseRevision = this._revision;
     const base = this._acl;
     // A valid V2 no-op still carries its binary framing; zero bytes are malformed.
