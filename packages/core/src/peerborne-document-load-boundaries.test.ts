@@ -463,6 +463,34 @@ describe('document load response boundaries', () => {
     expect(readers).toHaveBeenCalledTimes(3);
   });
 
+  test('continues queued notifications after an audience preparation fails', async () => {
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/notification-recovery',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _readers: {
+        users: jest.fn<() => Promise<unknown[]>>()
+          .mockRejectedValueOnce(new Error('audience unavailable'))
+          .mockResolvedValue([]),
+        check: jest.fn(async () => true),
+      },
+      _writers: { users: jest.fn(async () => []) },
+      _mutationQueue: new InvitationMembershipQueue(),
+    });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      document._enqueueRemoteUpdateNotification(['FIRST'], [handler]);
+      document._enqueueRemoteUpdateNotification(['SECOND'], [handler]);
+      await document._remoteUpdateNotificationTail;
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0][3]).toEqual(['SECOND']);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   test('redacts a terminal audience failure without suppressing frontier refresh', async () => {
     const secret = 'private-audience-provider-error';
     const handler = jest.fn();
