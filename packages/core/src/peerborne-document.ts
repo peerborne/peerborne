@@ -4265,6 +4265,7 @@ export class PeerborneDocument<
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
           if (!rawContent) {
+            // Unauthenticated packets must not trigger network load amplification.
             return;
           }
 
