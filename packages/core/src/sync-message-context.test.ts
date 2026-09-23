@@ -360,9 +360,8 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
-});
 
-test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
+  test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
   expect(syncMessageMatchesSnapshot(
     { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: new Array(2) } as any,
     { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: [] },
@@ -370,7 +369,7 @@ test('snapshot comparison rejects different array lengths even without enumerabl
   )).toBe(false);
 });
 
-test('rejects the removed document publication purpose', () => {
+  test('rejects the removed document publication purpose', () => {
   expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
 });
 
@@ -382,4 +381,5 @@ test('rejects the removed direct key-update signature purpose', () => {
     signatureContext: 'key-update-v2',
     signature: 'sig',
   }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
+});
 });

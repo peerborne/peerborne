@@ -70,7 +70,6 @@ Peerborne does not replicate blocks automatically. If you have 3 peers and one s
 
 Pinning is **incomplete**. What exists:
 
-- A retained legacy document-publish configuration identifier, with no active `PeerborneNode` receiver
 - No authenticated publisher or receiver in the normal core path
 - No generic IPFS pinning client (e.g., to pin to a remote IPFS node, S3, or Filecoin)
 
