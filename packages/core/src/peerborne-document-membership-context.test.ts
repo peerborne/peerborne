@@ -283,15 +283,17 @@ describe('BeeKEM PathUpdate context confinement', () => {
 });
 
 
-test('preserves unexpected errors while buffering an authenticated Welcome', () => {
-  const failure = new Error('serializer failed');
-  const document = fakeDocument({
-    _pendingWelcomes: { storeMessage: () => { throw failure; } },
-    _syncMessageSerializer: new JSONSerializer<any>(),
-    _now: () => 1,
+describe('pending Welcome buffering', () => {
+  test('preserves unexpected errors while buffering an authenticated Welcome', () => {
+    const failure = new Error('serializer failed');
+    const document = fakeDocument({
+      _pendingWelcomes: { storeMessage: () => { throw failure; } },
+      _syncMessageSerializer: new JSONSerializer<any>(),
+      _now: () => 1,
+    });
+    expect(() => document._bufferPendingWelcome({
+      documentId: documentPath,
+      welcomeEpochId: new Uint8Array(32).fill(1),
+    })).toThrow(failure);
   });
-  expect(() => document._bufferPendingWelcome({
-    documentId: documentPath,
-    welcomeEpochId: new Uint8Array(32).fill(1),
-  })).toThrow(failure);
 });

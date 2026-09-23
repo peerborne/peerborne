@@ -8,6 +8,10 @@ export const PENDING_WELCOMES_MAX_RETAINED_BYTES = 4 * 1024 * 1024;
 export const PENDING_WELCOMES_MAX_ENTRIES = 16;
 export const PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
 
+if (PENDING_WELCOMES_MAX_RETAINED_BYTES < PENDING_WELCOME_MAX_BODY_BYTES) {
+  throw new Error('Pending Welcome aggregate limit must admit one maximum-size body');
+}
+
 const typedArrayByteLength = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8Array.prototype), 'byteLength',
 )?.get;
@@ -85,7 +89,8 @@ export class PendingWelcomeBuffer {
   }
 
   /**
-   * Store an owned copy, refreshing duplicate recency and evicting oldest
+   * Store an owned copy of a non-empty Uint8Array, refreshing duplicate recency
+   * and evicting oldest
    * entries until both count and aggregate-byte limits admit the new body.
    * Validation and copying happen before replacement, so a rejected duplicate
    * cannot erase a previously retained Welcome.

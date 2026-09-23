@@ -552,3 +552,17 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytesBefore);
   });
 });
+
+
+describe('pending Welcome byte view admission', () => {
+  test.each([new Uint16Array([1]), new Uint8Array(0)])(
+    'rejects an invalid body without replacing a retained Welcome',
+    (body) => {
+      const buffer = new PendingWelcomeBuffer();
+      buffer.store('retained', new Uint8Array([1]), 0);
+      expect(() => buffer.store('retained', body, 1)).toThrow();
+      expect(buffer.get('retained')?.body).toEqual(new Uint8Array([1]));
+      expect(buffer.retainedBytes).toBe(1);
+    },
+  );
+});
