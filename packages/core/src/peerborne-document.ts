@@ -3404,17 +3404,11 @@ export class PeerborneDocument<
     const mutableIdentity =
       (typeof publicKey === 'object' && publicKey !== null) ||
       typeof publicKey === 'function';
-    const deserializePublicKey = this._authProvider.deserializePublicKey;
-    if (typeof deserializePublicKey !== 'function') {
-      if (mutableIdentity) {
-        requireDeserializePublicKey(this._authProvider, featureName);
-      }
-      return { publicKey, serialized };
-    }
-    const stablePublicKey = await deserializePublicKey.call(
+    const deserializePublicKey = requireDeserializePublicKey(
       this._authProvider,
-      serialized,
+      featureName,
     );
+    const stablePublicKey = await deserializePublicKey(serialized);
     if (mutableIdentity && stablePublicKey === publicKey) {
       throw new Error(
         `${featureName} requires AuthProvider.deserializePublicKey to ` +
@@ -7621,21 +7615,6 @@ export class PeerborneDocument<
    */
   public async addWriter(writer: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
-    if (typeof this._authProvider.serializePublicKey !== 'function') {
-      const stableIdentity =
-        (typeof writer !== 'object' || writer === null) &&
-        typeof writer !== 'function';
-      return this._runStateMutation(() =>
-        this._addWriterUnlocked(
-          writer,
-          undefined,
-          stableIdentity,
-          typeof writer === 'string' && writer.length > 0
-            ? writer
-            : undefined,
-        ),
-      );
-    }
     const snapshot = this._startMembershipPublicKeySnapshot(
       writer,
       'Writer addition',
@@ -7667,23 +7646,6 @@ export class PeerborneDocument<
       throw new Error(
         'Writer addition requires a public-key snapshot before it is queued',
       );
-    }
-
-    if (serializedWriter === undefined) {
-      const serializePublicKey = this._authProvider.serializePublicKey;
-      if (typeof serializePublicKey === 'function') {
-        serializedWriter = await serializePublicKey.call(
-          this._authProvider,
-          stableWriter,
-        );
-      } else if (
-        typeof stableWriter === 'string' &&
-        stableWriter.length > 0
-      ) {
-        serializedWriter = stableWriter;
-      } else {
-        requireSerializePublicKey(this._authProvider, 'Writer promotion');
-      }
     }
     if (
       typeof serializedWriter !== 'string' ||
@@ -7755,7 +7717,7 @@ export class PeerborneDocument<
           'divergent membership state.',
       );
     }
-    // Run every onboarding check above even for a legacy ACL that already
+    // Run every onboarding check above even for a malformed ACL that already
     // lists the target as a writer. A no-op must not bless malformed state.
     if (
       (await retryACLConflict(() =>
@@ -7777,7 +7739,7 @@ export class PeerborneDocument<
 
   /**
    * Remove a user's explicit write authorization while preserving their
-   * explicit reader authorization. A writer-only legacy member is rejected:
+   * explicit reader authorization. A writer without explicit reader membership is rejected:
    * this operation does not rotate document keys, so silently removing its
    * only ACL row would misrepresent retained read access as full revocation.
    * To fully revoke an editor, first downgrade it here, then call
@@ -7792,14 +7754,6 @@ export class PeerborneDocument<
    */
   public async removeWriter(writer: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
-    if (typeof this._authProvider.serializePublicKey !== 'function') {
-      const stableIdentity =
-        (typeof writer !== 'object' || writer === null) &&
-        typeof writer !== 'function';
-      return this._runStateMutation(() =>
-        this._removeWriterUnlocked(writer, stableIdentity),
-      );
-    }
     const localWriterSnapshot = this._startMembershipPublicKeySnapshot(
       this._userPublicKey,
       'Writer removal local identity',
@@ -7833,8 +7787,6 @@ export class PeerborneDocument<
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
-    // Preserve the historical idempotent no-op for absent targets without
-    // requiring identity codecs from legacy providers.
     if (
       (await retryACLConflict(() =>
         this._writers.check(stableWriter),
@@ -7849,20 +7801,13 @@ export class PeerborneDocument<
         'Writer removal requires a public-key snapshot before it is queued',
       );
     }
-    let isLocalWriter = false;
-    if (serializedWriter !== undefined) {
-      if (localWriterSnapshot === undefined) {
-        throw new Error(
-          'Writer removal requires a local identity snapshot before it is ' +
-            'queued',
-        );
-      }
-      isLocalWriter =
-        serializedWriter ===
-        (await localWriterSnapshot).serialized;
-    } else {
-      isLocalWriter = Object.is(stableWriter, this._userPublicKey);
+    if (serializedWriter === undefined || localWriterSnapshot === undefined) {
+      throw new Error(
+        'Writer removal requires canonical identity snapshots before it is queued',
+      );
     }
+    const isLocalWriter =
+      serializedWriter === (await localWriterSnapshot).serialized;
     if (isLocalWriter) {
       throw new Error(
         `Cannot remove the local writer from "${this.documentPath}". ` +
@@ -7908,43 +7853,23 @@ export class PeerborneDocument<
       this._assertNoIncompleteBootstrapLoad();
       return [...writers];
     }
-    const serializer = this._authProvider.serializePublicKey;
-    if (serializer !== undefined) {
-      if (typeof serializer !== 'function') {
-        throw new TypeError(
-          'AuthProvider.serializePublicKey must be a function',
-        );
-      }
-      const serializePublicKey = serializer.bind(this._authProvider);
-      const readerIdentities = new Set<string>();
-      // Keep identity-codec work bounded to one in-flight call. Custom auth
-      // providers are not required to support unbounded parallel invocation.
-      for (const reader of readers) {
-        const identity = await serializePublicKey(reader);
-        assertCanonicalACLIdentity(identity);
-        readerIdentities.add(identity);
-      }
-      const filteredWriters: PublicKey[] = [];
-      for (const writer of writers) {
-        const identity = await serializePublicKey(writer);
-        assertCanonicalACLIdentity(identity);
-        if (!readerIdentities.has(identity)) filteredWriters.push(writer);
-      }
-      this._assertNoIncompleteBootstrapLoad();
-      return [...readers, ...filteredWriters];
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'Reader listing',
+    );
+    const readerIdentities = new Set<string>();
+    // Keep identity-codec work bounded to one in-flight call. Custom auth
+    // providers are not required to support unbounded parallel invocation.
+    for (const reader of readers) {
+      const identity = await serializePublicKey(reader);
+      assertCanonicalACLIdentity(identity);
+      readerIdentities.add(identity);
     }
-
-    // Legacy providers without canonical serialization must use ACL.check.
-    // Keep those calls serial because serialized ACLs reject overlap; a
-    // Promise.all fan-out would turn N checks into a quadratic retry storm.
     const filteredWriters: PublicKey[] = [];
     for (const writer of writers) {
-      if (
-        (await retryACLConflict(() => this._readers.check(writer))) !==
-        true
-      ) {
-        filteredWriters.push(writer);
-      }
+      const identity = await serializePublicKey(writer);
+      assertCanonicalACLIdentity(identity);
+      if (!readerIdentities.has(identity)) filteredWriters.push(writer);
     }
     this._assertNoIncompleteBootstrapLoad();
     return [...readers, ...filteredWriters];
@@ -9105,9 +9030,7 @@ export class PeerborneDocument<
     // Recipient binding: serialize the new reader's public key so
     // recipients that aren't this reader can drop the broadcast Welcome.
     // The signed payload covers this field, so only an authorized writer
-    // can claim a specific recipient. `serializePublicKey` is optional
-    // on `AuthProvider` for backwards compatibility, but Welcome
-    // onboarding cannot function without it.
+    // can claim a specific recipient.
     const serializePublicKey = requireSerializePublicKey(
       this._authProvider,
       'BeeKEM Welcome onboarding',
