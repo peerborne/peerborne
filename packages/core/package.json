@@ -75,7 +75,7 @@
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.9.0",
     "helia-v6": "npm:helia@6.1.4",
-    "jest": "^30.5.0",
+    "jest": "^30.5.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
     "tsx": "4.23.12",
@@ -83,7 +83,7 @@
     "typescript": "^5.9.3"
   },
   "resolutions": {
-    "jest": "^30.5.0",
+    "jest": "^30.5.2",
     "ts-jest": "^29.4.12"
   },
   "dependencies": {

@@ -55,7 +55,7 @@
     "@peculiar/webcrypto": "^1.7.1",
     "@types/node": "^22.7.5",
     "fake-indexeddb": "^6.0.0",
-    "jest": "^30.5.0",
+    "jest": "^30.5.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
     "tsx": "4.23.12",
