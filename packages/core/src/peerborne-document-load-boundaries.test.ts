@@ -96,6 +96,10 @@ function signedLoadHarness(
   serializeSyncMessage: (message: any) => Uint8Array = () =>
     new Uint8Array([8]),
 ) {
+  const contextMessage = Object.defineProperties(
+    { signatureContext: 'load-response-v3', tips: [] },
+    Object.getOwnPropertyDescriptors(message),
+  );
   const document = fakeDocument({
     documentPath: message.documentId,
     swarm: {
@@ -116,7 +120,7 @@ function signedLoadHarness(
       verify: jest.fn(verify),
     },
     _syncMessageSerializer: {
-      deserializeSyncMessage: jest.fn(() => message),
+      deserializeSyncMessage: jest.fn(() => contextMessage),
       serializeSyncMessage: jest.fn(serializeSyncMessage),
     },
     _getWriterKeys: jest.fn(getWriterKeys),
