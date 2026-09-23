@@ -171,14 +171,6 @@ import {
 } from './shared-protocol-admission.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
-/**
- * Constant-time byte-array equality. Used by the BeeKEM PathUpdate
- * receive path to compare epoch IDs without leaking which prefix
- * matched. Returns `false` for mismatched lengths (also in constant
- * time across same-length inputs).
- */
-
-
 /** Opaque, recipient-bound material returned by the invitation join handler. */
 export interface InvitationBootstrapBundle {
   welcomeEpochId: Uint8Array;
@@ -7569,7 +7561,7 @@ export class PeerborneDocument<
           'BeeKEM PathUpdate epoch ID',
         );
       } catch {
-        console.warn('Dropping BeeKEM PathUpdate without an epoch ID');
+        console.warn('Dropping BeeKEM PathUpdate with a missing or invalid epoch ID');
         return;
       }
 
@@ -7633,7 +7625,9 @@ export class PeerborneDocument<
         !constantTimeEqual(raw, rawAfterVerification) ||
         this._writerKeysVersion !== writerKeysVersion
       ) {
-        console.warn('Dropping BeeKEM PathUpdate changed during verification');
+        console.warn(
+          'Dropping BeeKEM PathUpdate after payload or writer ACL changed during verification',
+        );
         return;
       }
 
@@ -7979,7 +7973,9 @@ export class PeerborneDocument<
         !constantTimeEqual(raw, rawAfterVerification) ||
         this._writerKeysVersion !== writerKeysVersion
       ) {
-        console.warn('Dropping key-update that changed during verification');
+        console.warn(
+          'Dropping key-update after payload or writer ACL changed during verification',
+        );
         return;
       }
 
