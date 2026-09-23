@@ -29,7 +29,7 @@ management is the application's responsibility.
 No peer can serve a local copy while every holder is offline. IndexedDB bytes
 may survive offline, but complete close/restart reconstruction is not verified.
 Peerborne's pinning integration is **not implemented**: `PeerborneNode` does not
-subscribe to the unauthorizable legacy announcement topic, and the normal core
+implement an authenticated pinning protocol, and the normal core
 commit path has no authenticated publisher. Data is lost if every local copy is
 cleared or otherwise becomes unrecoverable.
 

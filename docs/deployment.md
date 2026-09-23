@@ -105,9 +105,8 @@ All configuration is done through environment variables on the relay process.
 | `TCP_LISTEN_V6` | `/ip6/::/tcp/$TCP_PORT` | IPv6 TCP multiaddr |
 | `READINESS_PORT` | `9000` | Internal HTTP port for `/livez` and `/readyz` |
 | `RELAY_IDENTITY_KEY_PATH` | `./relay-identity.key` | App-managed protobuf libp2p private-key file. The standard image sets `/shared/relay-identity.key` |
-| `DOCUMENT_PUBLISH_PATH` | `/peerborne/documents/v3` | Relay topic reserved for document publish notifications; current `PeerborneNode` does not subscribe because V1 cannot authorize pin requests |
 | `EXTRA_TOPICS` | (unset) | Comma-separated additional topics to subscribe |
-| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/,/peerborne/documents/v3` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
+| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
 | `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer |
