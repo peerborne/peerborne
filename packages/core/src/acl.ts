@@ -154,7 +154,7 @@ export interface ACL<ChangesType, PublicKey> {
 
   /**
    * Checks to see if the specified user has a specific capability.
-   * If capability is undefined, checks if the user is in the ACL at all (backward compatible).
+   * If capability is undefined, checks if the user is in the ACL at all.
    *
    * @param publicKey User's public key.
    * @param capability Optional capability string to check for.
@@ -164,7 +164,7 @@ export interface ACL<ChangesType, PublicKey> {
 
   /**
    * Returns the list of users with a specific capability.
-   * If capability is undefined, returns all users (backward compatible).
+   * If capability is undefined, returns all users.
    *
    * @param capability Optional capability to filter users by.
    */
