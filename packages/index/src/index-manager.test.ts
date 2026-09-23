@@ -81,12 +81,12 @@ class ControlledLifecycleStorage extends MemoryIndexStorage {
     await super.clear(indexName);
   }
 
-  override async query(
-    ...args: Parameters<MemoryIndexStorage['query']>
-  ): ReturnType<MemoryIndexStorage['query']> {
+  override async execute(
+    ...args: Parameters<MemoryIndexStorage['execute']>
+  ): ReturnType<MemoryIndexStorage['execute']> {
     const gate = this._nextQueryGate;
     this._nextQueryGate = undefined;
-    const result = await super.query(...args);
+    const result = await super.execute(...args);
     if (gate) {
       this.operations.push('query:read');
       await gate.promise;
@@ -107,29 +107,24 @@ class ControlledInitializeStorage extends MemoryIndexStorage {
   }
 
   override async initialize(
-    indexName: string,
-    fields: IndexFieldDefinition[],
+    ...args: Parameters<MemoryIndexStorage['initialize']>
   ): Promise<void> {
     const gate = this._nextInitializeGate;
     this._nextInitializeGate = undefined;
     this.initializeStarted = true;
     await gate?.promise;
-    await super.initialize(indexName, fields);
+    await super.initialize(...args);
   }
 }
 
 describe('IndexManager', () => {
   let storage: MemoryIndexStorage;
   let manager: IndexManager<WikiArticle>;
-  const articleIndex: IndexDefinition = {
-    name: 'articles-by-title',
-    collectionPrefix: '/articles/',
-    fields: [
+  const articleIndex: IndexDefinition = { version: 2, name: 'articles-by-title', collectionPrefix: '/articles/', fields: [
       { path: 'title', type: 'string' },
       { path: 'author', type: 'string' },
       { path: 'createdOn', type: 'date' },
-    ],
-  };
+    ] };
 
   beforeEach(async () => {
     storage = new MemoryIndexStorage();
@@ -145,11 +140,7 @@ describe('IndexManager', () => {
     });
 
     test('should support multiple indexes', async () => {
-      await manager.defineIndex({
-        name: 'articles-by-author',
-        collectionPrefix: '/articles/',
-        fields: [{ path: 'author', type: 'string' }],
-      });
+      await manager.defineIndex({ version: 2, name: 'articles-by-author', collectionPrefix: '/articles/', fields: [{ path: 'author', type: 'string' }] });
       expect(manager.getDefinitions()).toHaveLength(2);
     });
 
@@ -307,11 +298,7 @@ describe('IndexManager', () => {
         tags: [],
       });
 
-      const redefined: IndexDefinition = {
-        name: articleIndex.name,
-        collectionPrefix: articleIndex.collectionPrefix,
-        fields: [{ path: 'author', type: 'string' }],
-      };
+      const redefined: IndexDefinition = { version: 2, name: articleIndex.name, collectionPrefix: articleIndex.collectionPrefix, fields: [{ path: 'author', type: 'string' }] };
       const removal = controlledManager.removeIndex(articleIndex.name);
       const redefinition = controlledManager.defineIndex(redefined);
 
@@ -358,10 +345,7 @@ describe('IndexManager', () => {
       const removal = controlledManager.removeIndex(articleIndex.name);
       const redefinition = controlledManager.defineIndex(replacement);
       let queryResolved = false;
-      const query = controlledManager.query({
-        indexName: articleIndex.name,
-        filters: [],
-      }).then((result) => {
+      const query = controlledManager.query({ version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name }).then((result) => {
         queryResolved = true;
         return result;
       });
@@ -397,16 +381,13 @@ describe('IndexManager', () => {
       controlledStorage.operations.length = 0;
       const queryGate = controlledStorage.blockNextQuery();
 
-      const query = controlledManager.query({
-        indexName: articleIndex.name,
-        filters: [],
-      });
+      const query = controlledManager.query({ version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name });
       await waitFor(async () => controlledStorage.operations.includes('query:read'));
 
       await controlledManager.removeIndex(articleIndex.name);
       queryGate.resolve();
 
-      await expect(query).resolves.toEqual({ documents: [], totalCount: 0 });
+      await expect(query).rejects.toThrow('index generation changed');
     });
 
     test('should discard an in-flight query after redefining its generation', async () => {
@@ -430,10 +411,7 @@ describe('IndexManager', () => {
         fields: [{ path: 'author', type: 'string' }],
       };
 
-      const query = controlledManager.query({
-        indexName: articleIndex.name,
-        filters: [],
-      });
+      const query = controlledManager.query({ version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name });
       await waitFor(async () => controlledStorage.operations.includes('query:read'));
 
       const removal = controlledManager.removeIndex(articleIndex.name);
@@ -441,7 +419,7 @@ describe('IndexManager', () => {
       await Promise.all([removal, redefinition]);
       queryGate.resolve();
 
-      await expect(query).resolves.toEqual({ documents: [], totalCount: 0 });
+      await expect(query).rejects.toThrow('index generation changed');
       expect(controlledManager.getDefinitions()).toEqual([replacement]);
     });
 
@@ -475,20 +453,17 @@ describe('IndexManager', () => {
         createdOn: '2024-01-02',
         tags: [],
       });
-      const query = controlledManager.query({
-        indexName: articleIndex.name,
-        filters: [],
-      });
+      const query = controlledManager.query({ version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name });
       await waitFor(async () => controlledStorage.operations.includes('clear'));
       const removalFailure = expect(removal).rejects.toThrow('clear failed');
       const redefinitionFailure = expect(redefinition).rejects.toThrow('clear failed');
       const updateFailure = expect(replacementUpdate).rejects.toThrow('clear failed');
+      const queryFailure = expect(query).rejects.toThrow('clear failed');
 
       clearing.reject(new Error('clear failed'));
-      await Promise.all([removalFailure, redefinitionFailure, updateFailure]);
+      await Promise.all([removalFailure, redefinitionFailure, updateFailure, queryFailure]);
 
       expect(controlledManager.getDefinitions()).toHaveLength(0);
-      expect((await query).documents).toHaveLength(0);
       expect(await controlledStorage.get(articleIndex.name, '/articles/1')).toBeDefined();
 
       await expect(controlledManager.defineIndex(replacement)).rejects.toThrow('clear failed');
@@ -536,11 +511,7 @@ describe('IndexManager', () => {
         (doc: WikiArticle) => doc as unknown as Record<string, unknown>,
       );
       await controlledManager.defineIndex(articleIndex);
-      await controlledManager.defineIndex({
-        name: 'users-by-name',
-        collectionPrefix: '/users/',
-        fields: [{ path: 'author', type: 'string' }],
-      });
+      await controlledManager.defineIndex({ version: 2, name: 'users-by-name', collectionPrefix: '/users/', fields: [{ path: 'author', type: 'string' }] });
       const write = controlledStorage.blockNextPut();
 
       const update = controlledManager.updateIndex('/articles/1', {
@@ -575,8 +546,11 @@ describe('IndexManager', () => {
       });
 
       const result = await manager.query({
+        version: 2,
+        count: 'exact',
+        allowScan: true,
         indexName: 'articles-by-title',
-        filters: [{ path: 'title', operator: 'eq', value: 'Hello World' }],
+        where: { kind: 'field', path: 'title', operator: 'eq', value: 'Hello World' },
       });
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0].documentPath).toBe('/articles/1');
@@ -591,10 +565,7 @@ describe('IndexManager', () => {
         tags: [],
       });
 
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' });
       expect(result.documents).toHaveLength(0);
     });
 
@@ -612,10 +583,7 @@ describe('IndexManager', () => {
       doc.content = 'different content';
       await manager.updateIndex('/articles/1', doc);
 
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' });
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0].snapshot.title).toBe('Same');
     });
@@ -637,10 +605,7 @@ describe('IndexManager', () => {
         tags: [],
       });
 
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [{ path: 'title', operator: 'eq', value: 'v2' }],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title', where: { kind: 'field', path: 'title', operator: 'eq', value: 'v2' } });
       expect(result.documents).toHaveLength(1);
     });
   });
@@ -657,10 +622,7 @@ describe('IndexManager', () => {
 
       await manager.removeFromIndex('/articles/1');
 
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' });
       expect(result.documents).toHaveLength(0);
     });
   });
@@ -680,59 +642,65 @@ describe('IndexManager', () => {
 
     test('exact match', async () => {
       const result = await manager.query({
+        version: 2,
+        count: 'exact',
+        allowScan: true,
         indexName: 'articles-by-title',
-        filters: [{ path: 'title', operator: 'eq', value: 'Beta' }],
+        where: { kind: 'field', path: 'title', operator: 'eq', value: 'Beta' },
       });
       expect(result.documents).toHaveLength(1);
-      expect(result.totalCount).toBe(1);
+      expect(result.count).toEqual({ kind: 'verified', value: 1 });
       expect(result.documents[0].documentPath).toBe('/articles/2');
     });
 
     test('prefix match', async () => {
       const result = await manager.query({
+        version: 2,
+        count: 'exact',
+        allowScan: true,
         indexName: 'articles-by-title',
-        filters: [{ path: 'title', operator: 'prefix', value: 'Alpha' }],
+        where: { kind: 'field', path: 'title', operator: 'prefix', value: 'Alpha' },
       });
       expect(result.documents).toHaveLength(2);
     });
 
     test('sorted results', async () => {
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [],
-        sort: [{ path: 'createdOn', direction: 'desc' }],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title', orderBy: [{ path: 'createdOn', direction: 'desc' }] });
       expect(result.documents.map(d => d.documentPath)).toEqual([
         '/articles/4', '/articles/3', '/articles/2', '/articles/1',
       ]);
     });
 
-    test('pagination with limit and offset', async () => {
+    test('pagination with a bound cursor', async () => {
+      const initial = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title', orderBy: [{ path: 'title', direction: 'asc' }], first: 2 });
       const result = await manager.query({
+        version: 2,
+        count: 'exact',
+        allowScan: true,
         indexName: 'articles-by-title',
-        filters: [],
-        sort: [{ path: 'title', direction: 'asc' }],
-        limit: 2,
-        offset: 1,
+        orderBy: [{ path: 'title', direction: 'asc' }],
+        first: 2,
+        after: initial.pageInfo.cursor,
       });
+      expect(result.documents[0].documentPath).not.toBe(initial.documents[0].documentPath);
       expect(result.documents).toHaveLength(2);
-      expect(result.totalCount).toBe(4);
+      expect(result.count).toEqual({ kind: 'verified', value: 4 });
     });
 
     test('query by collectionPrefix instead of indexName', async () => {
       const result = await manager.query({
+        version: 2,
+        count: 'exact',
+        allowScan: true,
         collectionPrefix: '/articles/',
-        filters: [{ path: 'author', operator: 'eq', value: 'Alice' }],
+        where: { kind: 'field', path: 'author', operator: 'eq', value: 'Alice' },
       });
       expect(result.documents).toHaveLength(2);
     });
 
-    test('returns empty for nonexistent index', async () => {
-      const result = await manager.query({
-        indexName: 'nonexistent',
-        filters: [],
-      });
-      expect(result.documents).toHaveLength(0);
+    test('rejects a query for an undefined index', async () => {
+      await expect(manager.query({ version: 2, indexName: 'nonexistent' }))
+        .rejects.toThrow('query does not resolve to a defined index');
     });
   });
 
@@ -748,8 +716,11 @@ describe('IndexManager', () => {
 
       const results: number[] = [];
       const unsub = manager.subscribe(
-        { indexName: 'articles-by-title', filters: [] },
-        (result) => { results.push(result.totalCount); },
+        { version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' },
+        (result) => {
+          if (!result) results.push(0);
+          else if (result.count.kind === 'verified') results.push(result.count.value);
+        },
       );
 
       await waitFor(async () => results.length >= 1);
@@ -761,8 +732,11 @@ describe('IndexManager', () => {
     test('should fire callback on updates', async () => {
       const results: number[] = [];
       const unsub = manager.subscribe(
-        { indexName: 'articles-by-title', filters: [] },
-        (result) => { results.push(result.totalCount); },
+        { version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' },
+        (result) => {
+          if (!result) results.push(0);
+          else if (result.count.kind === 'verified') results.push(result.count.value);
+        },
       );
 
       await waitFor(async () => results.length >= 1);
@@ -802,9 +776,9 @@ describe('IndexManager', () => {
       const queryGate = controlledStorage.blockNextQuery();
       const deliveries: string[] = [];
       const unsub = controlledManager.subscribe(
-        { indexName: articleIndex.name, filters: [] },
+        { version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name },
         (result) => {
-          deliveries.push(String(result.documents[0]?.snapshot.author ?? 'empty'));
+          deliveries.push(String(result?.documents[0]?.snapshot.author ?? 'empty'));
         },
       );
       await waitFor(async () => controlledStorage.operations.includes('query:read'));
@@ -851,8 +825,11 @@ describe('IndexManager', () => {
       });
       const results: number[] = [];
       const unsub = controlledManager.subscribe(
-        { indexName: articleIndex.name, filters: [] },
-        (result) => { results.push(result.totalCount); },
+        { version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name },
+        (result) => {
+          if (!result) results.push(0);
+          else if (result.count.kind === 'verified') results.push(result.count.value);
+        },
       );
       await waitFor(async () => results.includes(1));
       results.length = 0;
@@ -892,8 +869,11 @@ describe('IndexManager', () => {
       });
       const results: number[] = [];
       const unsub = controlledManager.subscribe(
-        { indexName: articleIndex.name, filters: [] },
-        (result) => { results.push(result.totalCount); },
+        { version: 2, count: 'exact', allowScan: true, indexName: articleIndex.name },
+        (result) => {
+          if (!result) results.push(0);
+          else if (result.count.kind === 'verified') results.push(result.count.value);
+        },
       );
       await waitFor(async () => results.includes(1));
       results.length = 0;
@@ -919,8 +899,11 @@ describe('IndexManager', () => {
     test('should stop firing after unsubscribe', async () => {
       const results: number[] = [];
       const unsub = manager.subscribe(
-        { indexName: 'articles-by-title', filters: [] },
-        (result) => { results.push(result.totalCount); },
+        { version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' },
+        (result) => {
+          if (!result) results.push(0);
+          else if (result.count.kind === 'verified') results.push(result.count.value);
+        },
       );
 
       await waitFor(async () => results.length >= 1);
@@ -969,12 +952,9 @@ describe('IndexManager', () => {
 
       await manager.rebuildIndex('articles-by-title', docs);
 
-      const result = await manager.query({
-        indexName: 'articles-by-title',
-        filters: [],
-      });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' });
       // Should only have the rebuilt docs, not the stale one
-      expect(result.totalCount).toBe(2);
+      expect(result.count).toEqual({ kind: 'verified', value: 2 });
       expect(result.documents.map(d => d.snapshot.title).sort()).toEqual(['Fresh', 'New']);
     });
 
@@ -985,8 +965,8 @@ describe('IndexManager', () => {
 
       await manager.rebuildIndex('articles-by-title', docs);
 
-      const result = await manager.query({ indexName: 'articles-by-title', filters: [] });
-      expect(result.totalCount).toBe(1);
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'articles-by-title' });
+      expect(result.count).toEqual({ kind: 'verified', value: 1 });
     });
   });
 });

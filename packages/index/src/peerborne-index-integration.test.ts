@@ -111,14 +111,10 @@ async function createTestIntegration(storage: MemoryIndexStorage): Promise<{
     storage,
     (doc: MockDoc) => doc as unknown as Record<string, unknown>,
   );
-  await manager.defineIndex({
-    name: 'docs',
-    collectionPrefix: '/docs/',
-    fields: [
+  await manager.defineIndex({ version: 2, name: 'docs', collectionPrefix: '/docs/', fields: [
       { path: 'title', type: 'string' },
       { path: 'author', type: 'string' },
-    ],
-  });
+    ] });
   return { manager, integration: new PeerborneIndexIntegration(manager) };
 }
 
@@ -142,10 +138,7 @@ describe('PeerborneIndexIntegration', () => {
       integration.trackDocument(doc);
 
       await waitFor(async () => {
-        const result = await manager.query({
-          indexName: 'docs',
-          filters: [{ path: 'title', operator: 'eq', value: 'Hello' }],
-        });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs', where: { kind: 'field', path: 'title', operator: 'eq', value: 'Hello' } });
         return result.documents.length === 1;
       });
     });
@@ -161,20 +154,14 @@ describe('PeerborneIndexIntegration', () => {
       integration.trackDocument(doc);
 
       await waitFor(async () => {
-        const result = await manager.query({
-          indexName: 'docs',
-          filters: [{ path: 'title', operator: 'eq', value: 'v1' }],
-        });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs', where: { kind: 'field', path: 'title', operator: 'eq', value: 'v1' } });
         return result.documents.length === 1;
       });
 
       doc.simulateChange({ title: 'v2', author: 'Alice' });
 
       await waitFor(async () => {
-        const result = await manager.query({
-          indexName: 'docs',
-          filters: [{ path: 'title', operator: 'eq', value: 'v2' }],
-        });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs', where: { kind: 'field', path: 'title', operator: 'eq', value: 'v2' } });
         return result.documents.length === 1;
       });
     });
@@ -198,7 +185,7 @@ describe('PeerborneIndexIntegration', () => {
 
       initialWrite.resolve();
       await waitFor(async () => {
-        const result = await controlled.manager.query({ indexName: 'docs', filters: [] });
+        const result = await controlled.manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents[0]?.snapshot.title === 'v2';
       });
       expect(controlledStorage.operations).toEqual(['put:v1', 'put:v2']);
@@ -222,14 +209,14 @@ describe('PeerborneIndexIntegration', () => {
 
       controlled.integration.trackDocument(independentDoc);
       await waitFor(async () => {
-        const result = await controlled.manager.query({ indexName: 'docs', filters: [] });
+        const result = await controlled.manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.some(({ documentPath }) => documentPath === '/docs/2');
       });
 
       expect(controlledStorage.operations).toEqual(['put:blocked', 'put:independent']);
       blockedWrite.resolve();
       await waitFor(async () => {
-        const result = await controlled.manager.query({ indexName: 'docs', filters: [] });
+        const result = await controlled.manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.some(({ documentPath }) => documentPath === '/docs/1');
       });
     });
@@ -273,28 +260,28 @@ describe('PeerborneIndexIntegration', () => {
       const doc = new MockSubscribableDocument('/docs/1', { title: 'v1', author: 'Alice' });
       integration.trackDocument(doc);
       await waitFor(async () => {
-        const result = await manager.query({ indexName: 'docs', filters: [] });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents[0]?.snapshot.title === 'v1';
       });
       const staleHandler = doc.captureChangeHandler();
 
       integration.untrackDocument(doc);
       await waitFor(async () => {
-        const result = await manager.query({ indexName: 'docs', filters: [] });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.length === 0;
       });
 
       doc.document = { title: 'v2', author: 'Alice' };
       integration.trackDocument(doc);
       await waitFor(async () => {
-        const result = await manager.query({ indexName: 'docs', filters: [] });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents[0]?.snapshot.title === 'v2';
       });
 
       staleHandler({ title: 'stale', author: 'Alice' });
       await new Promise(resolve => setTimeout(resolve, 0));
 
-      const result = await manager.query({ indexName: 'docs', filters: [] });
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
       expect(result.documents[0]?.snapshot.title).toBe('v2');
       expect(doc.handlerCount).toBe(1);
     });
@@ -313,14 +300,14 @@ describe('PeerborneIndexIntegration', () => {
       integration.trackDocument(doc);
 
       await waitFor(async () => {
-        const result = await manager.query({ indexName: 'docs', filters: [] });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.length === 1;
       });
 
       integration.untrackDocument(doc);
 
       await waitFor(async () => {
-        const result = await manager.query({ indexName: 'docs', filters: [] });
+        const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.length === 0;
       });
     });
@@ -342,7 +329,7 @@ describe('PeerborneIndexIntegration', () => {
       initialWrite.resolve();
       await waitFor(async () => controlledStorage.operations.includes('delete'));
       await waitFor(async () => {
-        const result = await controlled.manager.query({ indexName: 'docs', filters: [] });
+        const result = await controlled.manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
         return result.documents.length === 0;
       });
       expect(controlledStorage.operations).toEqual(['put:v1', 'delete']);

@@ -235,11 +235,7 @@ describe('v2 local indexing and query contract', () => {
       }
     }
 
-    const inheritedVersion = Object.assign(Object.create({ version: 2 }), {
-      name: 'inherited-version',
-      collectionPrefix: '/hostile/',
-      fields: [{ path: 'title', type: 'string', required: true }],
-    }) as IndexDefinition;
+    const inheritedVersion = Object.assign(Object.create({ version: 2 }), { version: 2, name: 'inherited-version', collectionPrefix: '/hostile/', fields: [{ path: 'title', type: 'string', required: true }] }) as IndexDefinition;
     await expect(manager.defineIndex(inheritedVersion)).rejects.toThrow('plain object');
 
     await expect(manager.defineIndex({
@@ -305,7 +301,7 @@ describe('v2 local indexing and query contract', () => {
     })).toThrow('dense array');
   });
 
-  test('discards an in-flight legacy query against a removed v2 generation', async () => {
+  test('rejects an in-flight query against a removed generation', async () => {
     let release!: () => void;
     let started!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -325,22 +321,25 @@ describe('v2 local indexing and query contract', () => {
     await manager.updateIndex('/articles/one', {
       status: 'published', title: 'Old', created: 1,
     });
-    const queryResult = manager.query({ indexName: definition.name, filters: [] });
+    const queryResult = manager.query({ version: 2, count: 'exact', allowScan: true, indexName: definition.name });
     await queryStarted;
     await manager.removeIndex(definition.name);
     release();
-    await expect(queryResult).resolves.toEqual({ documents: [], totalCount: 0 });
+    await expect(queryResult).rejects.toThrow('index generation changed');
   });
 
-  test('retains the legacy API\'s unbounded limit semantics on v2 indexes', async () => {
+  test('rejects superseded query shapes and enforces the current page bound', async () => {
     const manager = await populatedManager();
-    const result = await manager.query({
-      indexName: definition.name,
-      filters: [],
-      limit: 20_000,
-    });
-    expect(result.documents).toHaveLength(4);
-    expect(result.totalCount).toBe(4);
+    for (const input of [
+      { indexName: definition.name, filters: [] },
+      { version: 1, indexName: definition.name },
+      { version: 2, indexName: definition.name, filters: [] },
+      { version: 2, indexName: definition.name, limit: 1 },
+      { version: 2, indexName: definition.name, offset: 0 },
+      { version: 2, indexName: definition.name, first: 20_000 },
+    ]) {
+      await expect(manager.query(input as unknown as QueryAst)).rejects.toBeInstanceOf(InvalidQueryError);
+    }
   });
 
   test('treats ordering-only traversal as a scan and rejects optional physical keys', async () => {
@@ -491,22 +490,20 @@ describe('v2 local indexing and query contract', () => {
     expect(result.execution.sort).toBe('memory');
   });
 
-  test('preserves unversioned schemas without permitting prototype pollution', async () => {
-    const manager = new IndexManager<Record<string, unknown>>(
-      new MemoryIndexStorage(),
-      (value) => value,
-    );
-    await manager.defineIndex({
-      name: 'legacy schema name',
-      collectionPrefix: '/legacy/',
+  test('rejects missing and obsolete schema versions without registering an index', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), value => value);
+    for (const version of [undefined, 1]) {
+      await expect(manager.defineIndex({
+        name: 'unsupported', collectionPrefix: '/unsupported/',
+        fields: [{ path: 'title', type: 'string' }],
+        ...(version === undefined ? {} : { version }),
+      } as unknown as IndexDefinition)).rejects.toBeInstanceOf(InvalidIndexSchemaError);
+    }
+    await expect(manager.defineIndex({
+      version: 2, name: 'unsafe-field', collectionPrefix: '/unsafe/',
       fields: [{ path: '__proto__.polluted', type: 'string' }],
-    });
-    await manager.updateIndex('/legacy/one', JSON.parse('{"__proto__":{"polluted":"value"}}'));
-    const result = await manager.query({
-      indexName: 'legacy schema name',
-      filters: [{ path: '__proto__.polluted', operator: 'eq', value: 'value' }],
-    });
-    expect(result.documents).toHaveLength(1);
+    })).rejects.toBeInstanceOf(InvalidIndexSchemaError);
+    expect(manager.getDefinitions()).toEqual([]);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 

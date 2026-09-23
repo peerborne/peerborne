@@ -1,9 +1,7 @@
 import {
-  FieldFilter,
   IndexFieldDefinition,
   IndexKeyDefinition,
   IndexScalar,
-  SortClause,
 } from './types.js';
 import {
   IndexEntry,
@@ -26,7 +24,7 @@ interface MemoryStore {
   entries: Map<string, Record<string, unknown>>;
   fields: IndexFieldDefinition[];
   physical: Map<string, { definition: IndexKeyDefinition; rows: PhysicalRow[] }>;
-  identity?: StorageSchemaIdentity;
+  identity: StorageSchemaIdentity;
 }
 
 /** In-memory materialized storage with sorted compound secondary indexes. */
@@ -37,16 +35,19 @@ export class MemoryIndexStorage implements IndexStorage {
   async initialize(
     indexName: string,
     fields: IndexFieldDefinition[],
-    physicalIndexes: IndexKeyDefinition[] = [],
-    identity?: StorageSchemaIdentity,
+    physicalIndexes: IndexKeyDefinition[],
+    identity: StorageSchemaIdentity,
   ): Promise<void> {
+    if (!identity || !Array.isArray(physicalIndexes)) {
+      throw new TypeError('Index initialization requires physical indexes and a schema identity');
+    }
     let store = this._stores.get(indexName);
     if (!store) {
-      store = { entries: new Map(), fields: [...fields], physical: new Map(), identity };
+      store = { entries: new Map(), fields: [...fields], physical: new Map(), identity: { ...identity } };
       this._stores.set(indexName, store);
-    } else if (identity && (!store.identity || !sameIdentity(store.identity, identity))) {
+    } else if (!sameIdentity(store.identity, identity)) {
       store.entries.clear();
-      store.identity = identity;
+      store.identity = { ...identity };
     }
     store.fields = [...fields];
     store.physical.clear();
@@ -71,24 +72,6 @@ export class MemoryIndexStorage implements IndexStorage {
     if (!store) return;
     store.entries.delete(documentPath);
     this._removePhysicalRows(store, documentPath);
-  }
-
-  async query(
-    indexName: string,
-    filters: FieldFilter[],
-    sort?: SortClause[],
-    limit?: number,
-    offset?: number,
-  ): Promise<IndexEntry[]> {
-    validatePagination(limit, offset);
-    const store = this._stores.get(indexName);
-    if (!store) return [];
-    let results = Array.from(store.entries, ([documentPath, fields]) => ({ documentPath, fields }))
-      .filter((entry) => matchesLegacyFilters(entry.fields, filters));
-    if (sort?.length) results.sort((a, b) => compareLegacyEntries(a, b, sort));
-    const start = offset ?? 0;
-    results = limit === undefined ? results.slice(start) : results.slice(start, start + limit);
-    return results.map((entry) => ({ ...entry, fields: structuredClone(entry.fields) }));
   }
 
   async execute(request: StorageQueryRequest): Promise<StorageQueryResult> {
@@ -245,71 +228,4 @@ function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity)
   return left.schemaHash === right.schemaHash && left.generation === right.generation &&
     left.collectionPrefix === right.collectionPrefix &&
     left.invalidValuePolicy === right.invalidValuePolicy;
-}
-
-function validatePagination(limit?: number, offset?: number): void {
-  if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) {
-    throw new RangeError(`offset must be a non-negative safe integer, got ${offset}`);
-  }
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
-    throw new RangeError(`limit must be a non-negative safe integer, got ${limit}`);
-  }
-}
-
-function matchesLegacyFilters(fields: Record<string, unknown>, filters: FieldFilter[]): boolean {
-  return filters.every((filter) => {
-    const value = extractField(fields, filter.path);
-    switch (filter.operator) {
-      case 'eq': return value === filter.value;
-      case 'neq': return value !== filter.value;
-      case 'gt': {
-        const [left, right] = [comparable(value), comparable(filter.value)];
-        return left !== undefined && left !== null && right !== undefined && right !== null && left > right;
-      }
-      case 'gte': {
-        const [left, right] = [comparable(value), comparable(filter.value)];
-        return left !== undefined && left !== null && right !== undefined && right !== null && left >= right;
-      }
-      case 'lt': {
-        const [left, right] = [comparable(value), comparable(filter.value)];
-        return left !== undefined && left !== null && right !== undefined && right !== null && left < right;
-      }
-      case 'lte': {
-        const [left, right] = [comparable(value), comparable(filter.value)];
-        return left !== undefined && left !== null && right !== undefined && right !== null && left <= right;
-      }
-      case 'prefix': return typeof value === 'string' && typeof filter.value === 'string' && value.startsWith(filter.value);
-      case 'in': return Array.isArray(filter.value) && filter.value.includes(value);
-      case 'contains': return typeof value === 'string' && typeof filter.value === 'string' && value.includes(filter.value);
-    }
-  });
-}
-
-function compareLegacyEntries(left: IndexEntry, right: IndexEntry, sort: SortClause[]): number {
-  for (const clause of sort) {
-    const a = comparable(extractField(left.fields, clause.path));
-    const b = comparable(extractField(right.fields, clause.path));
-    const compared = compareLegacyValues(a, b);
-    if (compared) return clause.direction === 'desc' ? -compared : compared;
-  }
-  return 0;
-}
-
-function compareLegacyValues(a: unknown, b: unknown): number {
-  if (a === b) return 0;
-  if (a === undefined || a === null) return -1;
-  if (b === undefined || b === null) return 1;
-  if (typeof a === 'number' && typeof b === 'number') return a - b;
-  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
-  if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
-  return String(a).localeCompare(String(b));
-}
-
-function comparable(value: unknown): any {
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
-    const time = Date.parse(value);
-    if (Number.isFinite(time)) return time;
-  }
-  return value;
 }
