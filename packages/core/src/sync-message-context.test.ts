@@ -89,10 +89,6 @@ describe('sync message wire-context separation', () => {
         signature: 'sig',
       },
     ],
-    [
-      'key-update-v2',
-      { documentId: '/doc', keychainChanges: {}, signature: 'sig' },
-    ],
   ] as const)('accepts the %s allowlist', (context, message) => {
     const contextual = tagged(context, message);
     expect(snapshotSyncMessageForContext(contextual, context)).toEqual(
@@ -109,7 +105,6 @@ describe('sync message wire-context separation', () => {
     'invitation-bootstrap-v1',
     'beekem-welcome-v2',
     'beekem-path-update-v2',
-    'key-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
     expect(() =>
       snapshotSyncMessageForContext({ documentId: '/doc' }, context),
@@ -168,7 +163,6 @@ describe('sync message wire-context separation', () => {
     ['invitation-bootstrap-v1', { eciesSealed: new Uint8Array([1]) }],
     ['beekem-welcome-v2', { keychainChanges: {} }],
     ['beekem-path-update-v2', { keychainChanges: {} }],
-    ['key-update-v2', { welcomeEpochId: new Uint8Array(32) }],
   ] as const)(
     'rejects a cross-context field in %s',
     (context, extra) => {
@@ -378,4 +372,14 @@ test('snapshot comparison rejects different array lengths even without enumerabl
 
 test('rejects the removed document publication purpose', () => {
   expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
+});
+
+
+test('rejects the removed direct key-update signature purpose', () => {
+  expect(isSyncMessageSignatureContext('key-update-v2')).toBe(false);
+  expect(() => snapshotSyncMessageForContext({
+    documentId: '/doc',
+    signatureContext: 'key-update-v2',
+    signature: 'sig',
+  }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
 });

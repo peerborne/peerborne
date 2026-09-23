@@ -1974,7 +1974,6 @@ describe('document load response boundaries', () => {
       _buildInvitationBootstrapUnlocked: otherMutation,
       _handleBeeKEMWelcomeRequestDataUnlocked: otherMutation,
       _handleBeeKEMPathUpdateRequestDataUnlocked: otherMutation,
-      _handleKeyUpdateRequestDataUnlocked: otherMutation,
     });
 
     expect(() => document.document).toThrow(/discard this document instance/);
@@ -2019,7 +2018,6 @@ describe('document load response boundaries', () => {
         ),
       () => document.handleBeeKEMWelcomeRequestData(new Uint8Array([1])),
       () => document.handleBeeKEMPathUpdateRequestData(new Uint8Array([1])),
-      () => document.handleKeyUpdateRequestData(new Uint8Array([1])),
     ];
     for (const mutate of otherMutations) {
       await expect(mutate()).rejects.toThrow(/discard this document instance/);

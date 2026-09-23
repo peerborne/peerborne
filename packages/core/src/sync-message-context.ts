@@ -105,12 +105,6 @@ const allowedFields: Readonly<
     'pathUpdateEpochId',
     'signature',
   ]),
-  'key-update-v2': new Set([
-    'documentId',
-    'signatureContext',
-    'keychainChanges',
-    'signature',
-  ]),
 };
 
 const rootSnapshotLimits = Object.fromEntries(

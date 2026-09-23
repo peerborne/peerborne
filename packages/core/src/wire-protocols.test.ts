@@ -44,7 +44,6 @@ describe('wire protocol constant verification', () => {
     const expected: Record<string, string> = {
       bloomFilterUpdateV1: 'bloom-index',
       documentLoadV3: 'doc-load',
-      documentKeyUpdateV2: 'key-update',
       snapshotLoadV3: 'snapshot-load',
       tipAdvertiseV1: 'tip-advertise',
       invitationJoinV1: 'invitation-join',
@@ -62,7 +61,6 @@ describe('wire protocol constant verification', () => {
     const nameToMajor: Record<string, number> = {
       bloomFilterUpdateV1: 1,
       documentLoadV3: 3,
-      documentKeyUpdateV2: 2,
       snapshotLoadV3: 3,
       tipAdvertiseV1: 1,
       invitationJoinV1: 1,
@@ -79,7 +77,6 @@ describe('wire protocol constant verification', () => {
 
   test('handler label matches protocol path segment', () => {
     const labelMap: Record<string, string> = {
-      documentKeyUpdateV2: 'key-update',
       invitationJoinV1: 'invitation-join',
       beekemWelcomeV2: 'beekem-welcome',
       beekemPathUpdateV2: 'beekem-pathupdate',
