@@ -1,7 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import { eciesSeal } from './ecies.js';
-import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 
 import {
   PeerborneDocument,
@@ -85,7 +85,8 @@ function loadHarness(message: any, context = 'load-response-v3') {
     _isSigningEnabled: () => true,
     _deserializeSignature: () => new Uint8Array([1]),
     _getWriterKeys: async () => ['writer'],
-    _syncValidatedProtocolMessage: sync,
+    _syncUnlocked: sync,
+    _mutationQueue: { run: (operation: () => Promise<unknown>) => operation() },
   });
   const stream = {
     sink: async () => undefined,
@@ -106,7 +107,7 @@ async function invitationHarness(message: any) {
   await tree.initialize(founder.privateKey, founder.publicKey);
   const { welcome } = await tree.addMember(recipient.publicKey);
   const sealedWelcome = await eciesSeal(
-    encodeWelcomeSealedPayload({
+    encodeWelcomeSealedPayloadV2({
       beekemWelcome: welcome,
       keychainChanges: new Uint8Array([1]),
     }),
@@ -116,6 +117,8 @@ async function invitationHarness(message: any) {
   const epoch = new Uint8Array([1]);
   Object.assign(document, {
     _hashes: new Set(),
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     _subscribed: false,
     _kemKeyPair: recipient,
     _kemPublicKeyRaw: new Uint8Array(
@@ -124,18 +127,16 @@ async function invitationHarness(message: any) {
     _changesSerializer: { deserializeChanges: () => ({}) },
     _keychain: {
       merge: () => undefined,
-      keys: async () => [[epoch, {}]],
+      keys: async () => [],
       getKey: () => ({}),
     },
   });
-  document._keychainProvider.initialize = () => ({
-    prepareMerge: () => ({
+  document._keychain.prepareMerge = () => ({
       hydrateKeys: async () => [[epoch, {}]],
       currentKeyId: epoch,
       keyIds: [epoch],
       getKey: () => ({}),
       commit: () => undefined,
-    }),
   });
   return {
     document, verify,
@@ -184,8 +185,12 @@ describe('deserialized load message boundaries', () => {
         documentId: documentPath,
         changes: { kind: 'document', change: { value: 1 } },
       }),
+      false,
       'load-response-v3',
-      0,
+      undefined,
+      false,
+      undefined,
+      expect.any(Object),
     );
   });
 

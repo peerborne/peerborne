@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
-import { pathUpdateFixture } from './__mocks__/beekem-v2.js';
+import { pathUpdateFixture } from './__testutils__/beekem-v2.js';
 import { serializePathUpdateV2ForWire } from './path-update-wire.js';
 import { deriveEpochIdFromRootSecret } from './derive-doc-key.js';
 import { JSONSerializer } from './json-serializer.js';

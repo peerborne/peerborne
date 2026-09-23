@@ -52,7 +52,13 @@ function catchUpHarness(
   signatureValid = true,
   onConflict?: () => void,
 ) {
-  const verify = jest.fn(async () => signatureValid);
+  const verify = jest.fn(async () => {
+    if (conflicts-- > 0) {
+      document._writerKeysVersion++;
+      onConflict?.();
+    }
+    return signatureValid;
+  });
   const sync = jest.fn(async () => true);
   const streams: any[] = [];
   const dialProtocol = jest.fn(async () => {
@@ -69,6 +75,12 @@ function catchUpHarness(
   });
   const document = fakeDocument({
     documentPath: '/invitation-retry',
+    _bootstrapLoadApplicationState: 'pending',
+    _bootstrapLoadApplicationRevision: 0,
+    _activeInvitationBootstrapContinuation: {},
+    _pendingBootstrapRemoteUpdateHashes: new Set(),
+    _pendingWelcomes: { size: 0 },
+    _assertAcceptedInvitationMembership: async () => undefined,
     swarm: { config: {}, heliaNode: { libp2p: { dialProtocol } } },
     _encoder: new TextEncoder(),
     _serializeSignature: () => 'AQ==',
@@ -93,25 +105,21 @@ function catchUpHarness(
     },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
-    _hashes: new Set(),
+    _hashes: new Set(['installed-bootstrap']),
     _syncUnlocked: sync,
     _mutationQueue: {
-      run: async (operation: () => Promise<unknown>) => {
-        if (conflicts-- > 0) {
-          document._writerKeysVersion++;
-          onConflict?.();
-        }
-        return operation();
-      },
+      run: jest.fn(() => {
+        throw new Error('Active invitation continuation must not reenter the mutation queue');
+      }),
     },
   });
   return { document, verify, sync, dialProtocol, streams };
 }
 
 describe('invitation catch-up writer-version races', () => {
-  test('retries a queued writer change with a fresh issuer-verified response', async () => {
+  test('retries a writer change during verification with a fresh issuer response', async () => {
     const { document, verify, sync, dialProtocol, streams } = catchUpHarness(1);
-    await expect(document._loadInvitationCatchUp('/founder', 'issuer')).resolves.toBe(true);
+    await expect(document._loadInvitationCatchUp('/founder', 'issuer', 'reader', document._activeInvitationBootstrapContinuation)).resolves.toBe(true);
     expect(dialProtocol).toHaveBeenCalledTimes(2);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(sync).toHaveBeenCalledTimes(1);
@@ -121,7 +129,7 @@ describe('invitation catch-up writer-version races', () => {
 
   test('bounds repeated writer conflicts to three attempts without applying state', async () => {
     const { document, sync, dialProtocol } = catchUpHarness(Infinity);
-    await expect(document._loadInvitationCatchUp('/founder', 'issuer')).rejects.toThrow(/writer.*changed/i);
+    await expect(document._loadInvitationCatchUp('/founder', 'issuer', 'reader', document._activeInvitationBootstrapContinuation)).rejects.toThrow(/writer.*changed/i);
     expect(dialProtocol).toHaveBeenCalledTimes(3);
     expect(sync).not.toHaveBeenCalled();
   });
@@ -134,7 +142,7 @@ describe('invitation catch-up writer-version races', () => {
         now += 30_001;
       });
       await expect(
-        document._loadInvitationCatchUp('/founder', 'issuer'),
+        document._loadInvitationCatchUp('/founder', 'issuer', 'reader', document._activeInvitationBootstrapContinuation),
       ).rejects.toThrow(/deadline exceeded/);
       expect(dialProtocol).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();
@@ -147,7 +155,7 @@ describe('invitation catch-up writer-version races', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const { document, verify, sync, dialProtocol } = catchUpHarness(0, false);
-      await expect(document._loadInvitationCatchUp('/founder', 'issuer')).resolves.toBe(false);
+      await expect(document._loadInvitationCatchUp('/founder', 'issuer', 'reader', document._activeInvitationBootstrapContinuation)).resolves.toBe(false);
       expect(dialProtocol).toHaveBeenCalledTimes(1);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();

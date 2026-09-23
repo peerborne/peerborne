@@ -111,6 +111,7 @@ describe('document current BeeKEM delivery', () => {
       }
       const message = {
         documentId: document.documentPath,
+        signatureContext: 'beekem-path-update-v2' as const,
         pathUpdate,
         pathUpdateEpochId: await deriveEpochIdFromRootSecret(update.rootSecret),
       };
