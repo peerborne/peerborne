@@ -42,7 +42,7 @@ Status meanings:
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
 | Distinct-identity invitation and live bidirectional sync across NAT boundaries | Verified | A dedicated real Peerborne Playwright job forces two isolated Chromium processes with separate signing identities through Circuit Relay, accepts a signed editor invitation without exposing a plaintext document key or injecting one through the test bridge, verifies the recipient-encrypted bootstrap, then asserts fresh A-to-B and B-to-A mutations | The initial release is founder-plus-one and online-only; persistence, partition/rejoin, automatic reconnect, revocation, and relay failover remain unverified. |
-| Initial-load K-of-Q tip verification | Verified | Load-quorum and orchestrator suites | Real peers serving conflicting DAG blocks should be tested end to end. |
+| V4 authenticated initial-load quorum | Partial | Challenge, locally pinned tuple, complete-response-manifest, canonical-authority deduplication, serializer, document-boundary, and quorum suites | The application must supply trusted writers and current security commitments; runtime MLS genesis/control replay and hostile real-peer acceptance remain unverified. |
 | Network statistics | Verified | Network statistics suite | Reference applications do not expose enough diagnostics for operators. |
 
 ## Security and membership
@@ -51,14 +51,14 @@ Status meanings:
 | --- | --- | --- | --- |
 | Public-key user identity and signatures | Verified | SubtleCrypto, ECIES, ACL, and serialization tests plus Peerborne Note's non-extractable P-384 IndexedDB identity tests | Account recovery, cross-device identity transfer, backup, and authenticated collaborator discovery are not implemented. |
 | AES-GCM document/change confidentiality | Verified | Encryption and tamper-failure tests | Metadata leakage and traffic analysis are not addressed by the product claim. |
-| Reader/writer ACLs | Verified | ACL and both CRDT adapter ACL suites | A revoked online peer attempting subsequent writes needs a full-network test. |
-| ACL chain of trust | Verified | ACL-chain suite | Forked ACL histories across a partition need end-to-end resolution evidence. |
-| Capability hierarchy and field capabilities | Verified | Capability suite | Field-level enforcement through document mutation APIs is not demonstrated in an example. |
-| UCAN creation, signatures, and delegation chains | Verified | UCAN suite | Expiry/revocation behavior should be demonstrated at the application boundary. |
+| Reader/writer ACLs | Partial | ACL, document-boundary, and both CRDT adapter ACL suites | The current-replica writer check is exercised, but stale-writer re-grants and removal across a real partition are not prevented by a wired causal authorization chain. |
+| ACL chain of trust | Partial | The standalone ACL-chain suite | `ACLChain` is not wired into `PeerborneDocument`; outer envelopes are authorized against the receiving replica's current writer set before enclosed ACL nodes are merged. Forked and concurrent ACL histories therefore remain a runtime gap. |
+| Capability hierarchy and field capabilities | Partial | Standalone capability suite | The document mutation path does not enforce field capabilities. |
+| UCAN creation, signatures, and delegation chains | Verified | Standalone UCAN and UCAN-ACL suites | UCAN capability metadata is process-local and the document mutation path does not evaluate it; this is not distributed strong-removal evidence. |
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |
 | BeeKEM group key agreement | Verified | Current V2 tree, Welcome, churn, transactional rollback, wire-codec, and signed document-handler replay suites | Primitive churn coverage does not establish large-group network support. Updates require the exact parent and next generation; skipped updates need ordered redelivery or explicit ratchet recovery. |
-| Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, blank/self-contained Automerge ACL initialization, complete legacy-history migration, and incomplete-legacy fail-closed suites plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
-| Member revocation and path updates | Verified | Revocation and path-update suites | Prove that removed peers cannot decrypt any post-removal content in a multi-peer test. |
+| Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, canonical-root Automerge ACL initialization and rejection of noncanonical histories plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
+| Member revocation and PathUpdates | Partial | BeeKEM revocation and PathUpdate codec/handler suites | Delivery is best-effort, BeeKEM state is memory-only, ACL causal authorization is not wired, and a peer that missed the new epoch cannot recover it through an ordinary load encrypted under that epoch. Multi-peer partition/rejoin and explicit recovery remain unverified. |
 | History visibility key filters | Partial | Exported API, document implementation, and focused filter tests | The modes filter distributed epoch keys but do not redact retained CRDT operations or provide historical-content confidentiality; initial invitations therefore require explicit full-history sharing. |
 
 ## Query and framework integration
@@ -68,7 +68,7 @@ Status meanings:
 | React hooks and lifecycle management | Verified | 42 passing hook/cache/lifecycle tests; password-manager typechecked build and Chromium smoke | StrictMode and real reconnect behavior should be browser-tested. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
 | Field extraction and local indexes | Verified | V1 manager/extractor suites plus v2 planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
-| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, legacy-backfill, and corrupted-row suites | Persistent migration should be exercised across actual browser restarts. |
+| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, current-schema rejection, and corrupted-row suites | Persistent schema invalidation should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
 | Bloom-filter CRDT and peer gossip | Partial | Bloom CRDT/gossip suites; clean `--detectOpenHandles` run | Malformed/hostile high-volume gossip still needs resource limits. |
 | React query subscription binding | Verified | Index React suite | No reference application demonstrates distributed search. |
@@ -91,10 +91,9 @@ Status meanings:
 
 ## Cross-cutting design findings
 
-1. Public packages, APIs, documentation, and error messages now use
-   **Peerborne**. Historical `swarmdb` and `collabswarm` strings remain only
-   where changing protocol, key-derivation, Redux, or persisted-storage
-   identifiers would break compatibility; see `MIGRATING.md`.
+1. Runtime protocol identifiers, key-derivation domains, Redux actions, and
+   default local-storage names use **Peerborne** identifiers. There are no
+   compatibility aliases; see `MIGRATING.md`.
 2. The core barrel eagerly imports the complete networking/storage stack. This
    makes simple adapter and serializer consumers pay a large bundle cost and
    increases the chance that environment-specific dependencies leak across the

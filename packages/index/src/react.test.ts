@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach } from '@jest/globals';
 import { IndexManager } from './index-manager.js';
 import { MemoryIndexStorage } from './memory-index-storage.js';
-import { QueryResult } from './types.js';
+import { QueryAstResult } from './types.js';
 
 // We test the hooks' backing logic by directly exercising IndexManager's
 // subscribe()/defineIndex()/removeIndex() — the same primitives the hooks
@@ -24,11 +24,11 @@ function subscribeAndWait<T extends Record<string, unknown>>(
   options: Parameters<IndexManager<T>['subscribe']>[0],
   timeoutMs = 1000,
 ): {
-  results: QueryResult<Record<string, unknown>>[];
+  results: QueryAstResult<Record<string, unknown>>[];
   unsubscribe: () => void;
   waitForResults: (count: number, timeout?: number) => Promise<void>;
 } {
-  const results: QueryResult<Record<string, unknown>>[] = [];
+  const results: QueryAstResult<Record<string, unknown>>[] = [];
   const waiters: Array<{
     target: number;
     resolve: () => void;
@@ -37,6 +37,7 @@ function subscribeAndWait<T extends Record<string, unknown>>(
   }> = [];
 
   const innerUnsubscribe = manager.subscribe(options, (r) => {
+    if (!r) throw new Error('Expected a result for the defined index');
     results.push(r);
     // Wake up any waiters whose target count has been reached.
     for (let i = waiters.length - 1; i >= 0; i--) {
@@ -91,36 +92,26 @@ describe('React hook backing logic (subscribe + defineIndex)', () => {
   beforeEach(async () => {
     storage = new MemoryIndexStorage();
     manager = new IndexManager(storage, (doc) => doc);
-    await manager.defineIndex({
-      name: 'items',
-      collectionPrefix: '/items/',
-      fields: [
+    await manager.defineIndex({ version: 2, name: 'items', collectionPrefix: '/items/', fields: [
         { path: 'name', type: 'string' },
         { path: 'priority', type: 'number' },
-      ],
-    });
+      ] });
   });
 
   test('subscribe delivers initial empty result (useIndexQuery lifecycle)', async () => {
-    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, {
-      indexName: 'items',
-      filters: [],
-    });
+    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, { version: 2, count: 'exact', allowScan: true, indexName: 'items' });
 
     await waitForResults(1);
 
     expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results[0].totalCount).toBe(0);
+    expect(results[0].count).toEqual({ kind: 'verified', value: 0 });
     expect(results[0].documents).toEqual([]);
 
     unsubscribe();
   });
 
   test('subscribe delivers updated results after index change', async () => {
-    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, {
-      indexName: 'items',
-      filters: [],
-    });
+    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, { version: 2, count: 'exact', allowScan: true, indexName: 'items' });
 
     // Wait for the initial empty result before mutating, so we can deterministically
     // assert that we see both the pre-update and post-update states.
@@ -132,8 +123,8 @@ describe('React hook backing logic (subscribe + defineIndex)', () => {
     await waitForResults(2);
 
     // Should have received at least 2 results: initial (0) and after insert (1)
-    expect(results.some((r) => r.totalCount === 0)).toBe(true);
-    expect(results.some((r) => r.totalCount === 1)).toBe(true);
+    expect(results.some((r) => r.count.kind === 'verified' && r.count.value === 0)).toBe(true);
+    expect(results.some((r) => r.count.kind === 'verified' && r.count.value === 1)).toBe(true);
 
     unsubscribe();
   });
@@ -142,26 +133,20 @@ describe('React hook backing logic (subscribe + defineIndex)', () => {
     await manager.updateIndex('/items/1', { name: 'Low', priority: 1 });
     await manager.updateIndex('/items/2', { name: 'High', priority: 10 });
 
-    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, {
-      indexName: 'items',
-      filters: [{ path: 'priority', operator: 'gte', value: 5 }],
-    });
+    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, { version: 2, count: 'exact', allowScan: true, indexName: 'items', where: { kind: 'field', path: 'priority', operator: 'gte', value: 5 } });
 
     await waitForResults(1);
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     const latest = results[results.length - 1];
-    expect(latest.totalCount).toBe(1);
+    expect(latest.count).toEqual({ kind: 'verified', value: 1 });
     expect(latest.documents[0].snapshot.name).toBe('High');
 
     unsubscribe();
   });
 
   test('unsubscribe prevents further callbacks (useIndexQuery teardown)', async () => {
-    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, {
-      indexName: 'items',
-      filters: [],
-    });
+    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, { version: 2, count: 'exact', allowScan: true, indexName: 'items' });
 
     await waitForResults(1);
     unsubscribe();
@@ -181,11 +166,7 @@ describe('React hook backing logic (subscribe + defineIndex)', () => {
   });
 
   test('defineIndex + removeIndex lifecycle (useDefineIndexes mount/unmount)', async () => {
-    const newDef = {
-      name: 'tags',
-      collectionPrefix: '/tags/',
-      fields: [{ path: 'label', type: 'string' as const }],
-    };
+    const newDef = { version: 2 as const, name: 'tags', collectionPrefix: '/tags/', fields: [{ path: 'label', type: 'string' as const }] };
 
     await manager.defineIndex(newDef);
     expect(manager.getDefinitions().map((d) => d.name)).toContain('tags');
@@ -199,18 +180,12 @@ describe('React hook backing logic (subscribe + defineIndex)', () => {
     await manager.updateIndex('/items/b', { name: 'A', priority: 1 });
     await manager.updateIndex('/items/c', { name: 'B', priority: 2 });
 
-    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, {
-      indexName: 'items',
-      filters: [],
-      sort: [{ path: 'priority', direction: 'asc' }],
-      limit: 2,
-      offset: 0,
-    });
+    const { results, unsubscribe, waitForResults } = subscribeAndWait(manager, { version: 2, count: 'exact', allowScan: true, indexName: 'items', orderBy: [{ path: 'priority', direction: 'asc' }], first: 2 });
 
     await waitForResults(1);
 
     const latest = results[results.length - 1];
-    expect(latest.totalCount).toBe(3);
+    expect(latest.count).toEqual({ kind: 'verified', value: 3 });
     expect(latest.documents).toHaveLength(2);
     expect(latest.documents[0].snapshot.name).toBe('A');
     expect(latest.documents[1].snapshot.name).toBe('B');

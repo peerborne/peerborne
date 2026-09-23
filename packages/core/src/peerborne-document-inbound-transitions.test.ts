@@ -7,6 +7,7 @@ import {
   test,
 } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
+import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { eciesOpen } from './ecies.js';
 import { decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import {
@@ -92,25 +93,33 @@ function fakeDocument(fields: Record<string, unknown>): any {
       serializePublicKey: async (key: { id: string }) => key.id,
     },
     _readers: { check: async () => true },
-    _verifyWelcomeWriterSignature: async () => true,
+    _verifyMembershipWriterSignature: async () => true,
     ...fields,
   });
 }
 
 function syncMessageSerializer() {
-  let snapshot: Record<string, unknown> | undefined;
+  const snapshots = new Map<number, Record<string, unknown>>();
+  const ids = new Map<string, number>();
+  let nextId = 0;
   return {
     serializeSyncMessage: jest.fn((message: Record<string, unknown>) => {
-      snapshot = { ...message };
-      return new Uint8Array([1]);
+      const encoded = JSON.stringify(message);
+      const id = ids.get(encoded) ?? ++nextId;
+      ids.set(encoded, id);
+      snapshots.set(id, { ...message });
+      return new Uint8Array([id]);
     }),
-    deserializeSyncMessage: jest.fn(() => ({ ...snapshot })),
+    deserializeSyncMessage: jest.fn((bytes: Uint8Array) => ({
+      ...snapshots.get(bytes[0]),
+    })),
   };
 }
 
 function welcomeMessage(epochId: Uint8Array, token: number) {
   return {
     documentId: '/inbound-transitions',
+    signatureContext: 'beekem-welcome-v2',
     welcomeEpochId: new Uint8Array(epochId),
     welcomeRecipient: 'local',
     welcomeRecipientKemPublicKey: new Uint8Array(localKemPublicKey),
@@ -259,7 +268,7 @@ function welcomeHarness(
         : new Uint8Array(options.invitationEpoch),
     _beekem: null,
     _beekemInitialized: false,
-    _pendingWelcomes: new Map(),
+    _pendingWelcomes: new PendingWelcomeBuffer(),
     _changesSerializer: {
       deserializeChanges: jest.fn((bytes: Uint8Array) => bytes[0]),
     },
@@ -388,15 +397,22 @@ function pathUpdateHarness(
   const message: Record<string, unknown> = {
     documentId: '/inbound-transitions',
     signature: 'signed-by-writer',
+    signatureContext: 'beekem-path-update-v2',
     pathUpdate: { senderLeafIndex: 4, nodes: [] },
     pathUpdateEpochId: new Uint8Array(nextEpoch),
     ...options.message,
   };
+  let signedMessage: Record<string, unknown> = message;
   const document = fakeDocument({
     _beekemInitialized: true,
     _syncMessageSerializer: {
-      deserializeSyncMessage: jest.fn(() => message),
-      serializeSyncMessage: jest.fn(() => new Uint8Array([6])),
+      deserializeSyncMessage: jest.fn((bytes: Uint8Array) =>
+        bytes[0] === 6 ? signedMessage : message,
+      ),
+      serializeSyncMessage: jest.fn((unsigned: Record<string, unknown>) => {
+        signedMessage = { ...unsigned };
+        return new Uint8Array([6]);
+      }),
     },
     _keychain: { addEpochKey, prepareEpochKey },
   });
@@ -902,22 +918,18 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ],
       currentId: new Uint8Array(32).fill(4),
     });
-    harness.document._pendingWelcomes.set('duplicate', {
-      message: welcomeMessage(currentEpoch, 11),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('older', {
-      message: welcomeMessage(oldEpoch, 12),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('divergent', {
-      message: welcomeMessage(nextEpoch, 15),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('mismatched-current', {
-      message: welcomeMessage(nextEpoch, 16),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'duplicate', welcomeMessage(currentEpoch, 11), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'older', welcomeMessage(oldEpoch, 12), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'divergent', welcomeMessage(nextEpoch, 15), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'mismatched-current', welcomeMessage(nextEpoch, 16), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -947,14 +959,12 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 13),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 14),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'first', welcomeMessage(currentEpoch, 13), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'second', welcomeMessage(nextEpoch, 14), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -980,14 +990,12 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 18),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 19),
-      bufferedAtMs: Date.now(),
-    });
+    harness.document._pendingWelcomes.storeMessage(
+      'first', welcomeMessage(currentEpoch, 18), harness.document._syncMessageSerializer, Date.now(),
+    );
+    harness.document._pendingWelcomes.storeMessage(
+      'second', welcomeMessage(nextEpoch, 19), harness.document._syncMessageSerializer, Date.now(),
+    );
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(),
@@ -1007,10 +1015,10 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
       const original = harness.message[field];
       const getter = jest.fn(() => original);
       Object.defineProperty(harness.message, field, { enumerable: true, get: getter });
-      harness.document._verifyWelcomeWriterSignature = jest.fn(async () => true);
+      harness.document._verifyMembershipWriterSignature = jest.fn(async () => true);
       await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(new Uint8Array([1]));
       expect(getter).not.toHaveBeenCalled();
-      expect(harness.document._verifyWelcomeWriterSignature).not.toHaveBeenCalled();
+      expect(harness.document._verifyMembershipWriterSignature).not.toHaveBeenCalled();
       expect(harness.document._syncMessageSerializer.serializeSyncMessage).not.toHaveBeenCalled();
       expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
     },
@@ -1020,10 +1028,10 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
     const harness = pathUpdateHarness();
     const getter = jest.fn(() => []);
     Object.defineProperty(harness.message.pathUpdate, 'nodes', { enumerable: true, get: getter });
-    harness.document._verifyWelcomeWriterSignature = jest.fn(async () => true);
+    harness.document._verifyMembershipWriterSignature = jest.fn(async () => true);
     await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(new Uint8Array([1]));
     expect(getter).not.toHaveBeenCalled();
-    expect(harness.document._verifyWelcomeWriterSignature).not.toHaveBeenCalled();
+    expect(harness.document._verifyMembershipWriterSignature).not.toHaveBeenCalled();
     expect(harness.document._syncMessageSerializer.serializeSyncMessage).not.toHaveBeenCalled();
     expect(harness.liveBeeKEM.clone).not.toHaveBeenCalled();
   });
@@ -1059,7 +1067,7 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
     const signedBytes = new Uint8Array([1, 2, 3]);
     const verifyWelcomeWriterSignature = (
       PeerborneDocument.prototype as unknown as Record<string, unknown>
-    )._verifyWelcomeWriterSignature as (
+    )._verifyMembershipWriterSignature as (
       raw: Uint8Array,
       signature: string,
     ) => Promise<boolean>;
@@ -1100,7 +1108,7 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
 
   test('authenticates before decoding the PathUpdateV2 payload', async () => {
     const harness = pathUpdateHarness();
-    harness.document._verifyWelcomeWriterSignature = jest.fn(async () => false);
+    harness.document._verifyMembershipWriterSignature = jest.fn(async () => false);
 
     await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(
       new Uint8Array([1]),
@@ -1115,9 +1123,10 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
   test('decodes only the canonical message reconstructed from authenticated bytes', async () => {
     const harness = pathUpdateHarness();
     const originalEpoch = harness.message.pathUpdateEpochId as Uint8Array;
-    const canonicalPathUpdate = { senderLeafIndex: 9, nodes: [] };
+    const canonicalPathUpdate = { senderLeafIndex: 4, nodes: [] };
     const canonicalMessage = {
       documentId: '/inbound-transitions',
+      signatureContext: 'beekem-path-update-v2',
       pathUpdate: canonicalPathUpdate,
       pathUpdateEpochId: new Uint8Array(nextEpoch),
     };
@@ -1125,7 +1134,7 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
       .mockReset()
       .mockReturnValueOnce(harness.message)
       .mockReturnValueOnce(canonicalMessage);
-    harness.document._verifyWelcomeWriterSignature = jest.fn(
+    harness.document._verifyMembershipWriterSignature = jest.fn(
       async (verificationBytes: Uint8Array) => {
         verificationBytes.fill(0);
         originalEpoch.fill(0xee);

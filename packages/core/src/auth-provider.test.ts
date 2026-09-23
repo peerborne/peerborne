@@ -5,44 +5,45 @@ import {
   requireSerializePublicKey,
 } from './auth-provider';
 
+function makeProvider(): AuthProvider<string, string> {
+  return {
+    sign: async () => new Uint8Array(),
+    verify: async () => true,
+    encrypt: async () => ({ data: new Uint8Array() }),
+    decrypt: async () => new Uint8Array(),
+    nonceBytes: 12,
+    serializePublicKey: async (key) => key,
+    deserializePublicKey: async (serialized) => serialized,
+  };
+}
+
 describe('requireSerializePublicKey', () => {
-  test('returns a bound function when serializePublicKey is implemented', () => {
-    const serializeFn = jest.fn(async (_key: string) => 'serialized-key');
-    const provider: AuthProvider<string, string> = {
-      sign: async () => new Uint8Array(),
-      verify: async () => true,
-      encrypt: async () => ({ data: new Uint8Array() }),
-      decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
-      serializePublicKey: serializeFn as any,
-    };
-    const fn = requireSerializePublicKey(provider, 'test-feature');
-    expect(typeof fn).toBe('function');
-    void fn('my-key');
-    expect(serializeFn).toHaveBeenCalledWith('my-key');
+  test('returns a bound function', async () => {
+    const provider = makeProvider();
+    provider.serializePublicKey = jest.fn(async function (
+      this: unknown,
+      key: string,
+    ) {
+      expect(this).toBe(provider);
+      return `serialized:${key}`;
+    });
+    await expect(
+      requireSerializePublicKey(provider, 'test-feature')('key'),
+    ).resolves.toBe('serialized:key');
+    expect(provider.serializePublicKey).toHaveBeenCalledWith('key');
   });
 
-  test('throws when serializePublicKey is not implemented', () => {
-    const provider: AuthProvider<string, string> = {
-      sign: async () => new Uint8Array(),
-      verify: async () => true,
-      encrypt: async () => ({ data: new Uint8Array() }),
-      decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
-    };
+  test('rejects a missing method at the JavaScript boundary', () => {
+    const provider = makeProvider();
+    Reflect.deleteProperty(provider, 'serializePublicKey');
     expect(() => requireSerializePublicKey(provider, 'BeeKEM Welcome')).toThrow(
       /BeeKEM Welcome requires AuthProvider.serializePublicKey/,
     );
   });
 
-  test('error message includes the feature name', () => {
-    const provider: AuthProvider<string, string> = {
-      sign: async () => new Uint8Array(),
-      verify: async () => true,
-      encrypt: async () => ({ data: new Uint8Array() }),
-      decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
-    };
+  test('includes the feature name in a malformed-provider error', () => {
+    const provider = makeProvider();
+    Reflect.set(provider, 'serializePublicKey', { callable: true });
     expect(() => requireSerializePublicKey(provider, 'MyFeature')).toThrow(
       /MyFeature requires AuthProvider.serializePublicKey/,
     );
@@ -50,34 +51,29 @@ describe('requireSerializePublicKey', () => {
 });
 
 describe('requireDeserializePublicKey', () => {
-  test('returns a bound function when implemented', async () => {
-    const deserializeFn = jest.fn(async (serialized: string) => `key:${serialized}`);
-    const provider: AuthProvider<string, string> = {
-      sign: async () => new Uint8Array(),
-      verify: async () => true,
-      encrypt: async () => ({ data: new Uint8Array() }),
-      decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
-      deserializePublicKey: deserializeFn,
-    };
-
+  test('returns a bound function', async () => {
+    const provider = makeProvider();
+    provider.deserializePublicKey = jest.fn(async function (
+      this: unknown,
+      serialized: string,
+    ) {
+      expect(this).toBe(provider);
+      return `key:${serialized}`;
+    });
     await expect(
       requireDeserializePublicKey(provider, 'Invitations')('abc'),
     ).resolves.toBe('key:abc');
-    expect(deserializeFn).toHaveBeenCalledWith('abc');
+    expect(provider.deserializePublicKey).toHaveBeenCalledWith('abc');
   });
 
-  test('throws when not implemented', () => {
-    const provider: AuthProvider<string, string> = {
-      sign: async () => new Uint8Array(),
-      verify: async () => true,
-      encrypt: async () => ({ data: new Uint8Array() }),
-      decrypt: async () => new Uint8Array(),
-      nonceBits: 96,
-    };
-
-    expect(() => requireDeserializePublicKey(provider, 'Invitations')).toThrow(
-      /Invitations requires AuthProvider.deserializePublicKey/,
-    );
-  });
+  test.each([undefined, { callable: true }])(
+    'rejects a missing or malformed method: %p',
+    (value) => {
+      const provider = makeProvider();
+      Reflect.set(provider, 'deserializePublicKey', value);
+      expect(() =>
+        requireDeserializePublicKey(provider, 'Invitations'),
+      ).toThrow(/Invitations requires AuthProvider.deserializePublicKey/);
+    },
+  );
 });

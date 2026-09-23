@@ -13,14 +13,33 @@ const MAX_GROUP_ID_BYTES = 1024;
 const MAX_CONTROL_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES = 4096;
 const MAX_U64 = (1n << 64n) - 1n;
+const HEX_ALPHABET = '0123456789abcdef';
 
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const numberIsInteger = Number.isInteger;
+const reflectApply = Reflect.apply;
+const uint8ArrayConstructor = Uint8Array;
+const dataViewConstructor = DataView;
+const stringCharCodeAt = String.prototype.charCodeAt;
+const stringFromCharCode = String.fromCharCode;
 const uint8ArraySet = Uint8Array.prototype.set;
+const uint8ArraySubarray = Uint8Array.prototype.subarray;
+const regExpExec = RegExp.prototype.exec;
+const dataViewGetBigUint64 = DataView.prototype.getBigUint64;
+const dataViewGetUint16 = DataView.prototype.getUint16;
+const dataViewGetUint32 = DataView.prototype.getUint32;
+const dataViewSetBigUint64 = DataView.prototype.setBigUint64;
+const dataViewSetUint16 = DataView.prototype.setUint16;
+const dataViewSetUint32 = DataView.prototype.setUint32;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayByteLength = objectGetOwnPropertyDescriptor(
   typedArrayPrototype,
   'byteLength',
+)?.get;
+const typedArrayByteOffset = objectGetOwnPropertyDescriptor(
+  typedArrayPrototype,
+  'byteOffset',
 )?.get;
 const typedArrayBuffer = objectGetOwnPropertyDescriptor(
   typedArrayPrototype,
@@ -40,14 +59,18 @@ const sharedArrayBufferByteLength =
 
 if (
   typedArrayByteLength === undefined ||
+  typedArrayByteOffset === undefined ||
   typedArrayBuffer === undefined ||
   typedArrayTag === undefined
 ) {
   throw new Error('membership control Uint8Array intrinsics are unavailable');
 }
 const typedArrayByteLengthGetter = typedArrayByteLength;
+const typedArrayByteOffsetGetter = typedArrayByteOffset;
 const typedArrayBufferGetter = typedArrayBuffer;
 const typedArrayTagGetter = typedArrayTag;
+const canonicalProtocolIdPattern =
+  /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(?![\s\S])/;
 
 export type MembershipControlAction = 'create' | 'add' | 'remove' | 'update';
 
@@ -131,7 +154,7 @@ export function canonicalMembershipControlPayload(
 function canonicalMembershipControlPayloadFromSnapshot(
   record: UnsignedMembershipControlRecord,
 ): Uint8Array {
-  const protocolId = new TextEncoder().encode(record.protocol.id);
+  const protocolId = encodeProtocolId(record.protocol.id);
   return concat([
     MEMBERSHIP_CONTROL_MAGIC,
     u16(record.version),
@@ -140,10 +163,10 @@ function canonicalMembershipControlPayloadFromSnapshot(
     bytes16(record.groupId),
     u64(record.epoch),
     record.parentRecordId === undefined
-      ? new Uint8Array([0])
-      : concat([new Uint8Array([1]), record.parentRecordId]),
+      ? u8(0)
+      : concat([u8(1), record.parentRecordId]),
     record.operationId,
-    new Uint8Array([actionToCode(record.action)]),
+    u8(actionToCode(record.action)),
     bytes16(record.actorId),
     bytes16(record.subjectId),
     bytes32(record.controlPayload),
@@ -154,7 +177,7 @@ export async function membershipControlRecordId(
   record: UnsignedMembershipControlRecord,
 ): Promise<Uint8Array> {
   const snapshot = snapshotUnsignedRecord(record);
-  return new Uint8Array(
+  return new uint8ArrayConstructor(
     await crypto.subtle.digest(
       'SHA-256',
       canonicalMembershipControlPayloadFromSnapshot(snapshot) as BufferSource,
@@ -170,8 +193,8 @@ export async function signMembershipControlRecord(
   const canonical = canonicalMembershipControlPayloadFromSnapshot(snapshot);
   const signature = snapshotBytes(
     await sign(
-      new Uint8Array(canonical),
-      new Uint8Array(snapshot.actorId),
+      new uint8ArrayConstructor(canonical),
+      new uint8ArrayConstructor(snapshot.actorId),
     ),
     'signature',
     1,
@@ -191,7 +214,7 @@ export function serializeMembershipControlRecord(
     canonicalMembershipControlPayloadFromSnapshot(snapshot),
     bytes16(snapshot.signature),
   ]);
-  if (out.byteLength > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES) {
+  if (intrinsicByteLength(out) > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES) {
     throw new Error('membership control record exceeds its serialized limit');
   }
   return out;
@@ -272,7 +295,7 @@ export class MembershipControlChain {
 
   get headRecordId(): Uint8Array | undefined {
     const value = this.recordIds[this.recordIds.length - 1];
-    return value === undefined ? undefined : new Uint8Array(value);
+    return value === undefined ? undefined : new uint8ArrayConstructor(value);
   }
 
   records(): ReadonlyArray<MembershipControlRecord> {
@@ -321,9 +344,9 @@ export class MembershipControlChain {
     let valid: unknown = false;
     try {
       valid = await this.config.verifySignature(
-        new Uint8Array(canonical),
-        new Uint8Array(record.signature),
-        new Uint8Array(record.actorId),
+        new uint8ArrayConstructor(canonical),
+        new uint8ArrayConstructor(record.signature),
+        new uint8ArrayConstructor(record.actorId),
       );
     } catch {
       return rejected('bad-signature', 'control signature verification failed');
@@ -334,7 +357,10 @@ export class MembershipControlChain {
 
     const recordHex = toHex(recordId);
     if (this.recordIdSet.has(recordHex)) {
-      return { status: 'duplicate', recordId: new Uint8Array(recordId) };
+      return {
+        status: 'duplicate',
+        recordId: new uint8ArrayConstructor(recordId),
+      };
     }
     if (!sameProtocol(record.protocol, this.config.protocol)) {
       return rejected('protocol-mismatch', 'record protocol does not match');
@@ -365,11 +391,13 @@ export class MembershipControlChain {
       try {
         authorized = await this.config.authorize({
           record: cloneRecord(record),
-          recordId: new Uint8Array(recordId),
+          recordId: new uint8ArrayConstructor(recordId),
           previousRecord:
             parent === undefined ? undefined : cloneRecord(parent),
           previousRecordId:
-            parentId === undefined ? undefined : new Uint8Array(parentId),
+            parentId === undefined
+              ? undefined
+              : new uint8ArrayConstructor(parentId),
         });
       } catch {
         return rejected('unauthorized-actor', 'control authorization failed');
@@ -426,11 +454,13 @@ export class MembershipControlChain {
     try {
       authorized = await this.config.authorize({
         record: cloneRecord(record),
-        recordId: new Uint8Array(recordId),
+        recordId: new uint8ArrayConstructor(recordId),
         previousRecord:
           previous === undefined ? undefined : cloneRecord(previous),
         previousRecordId:
-          previousId === undefined ? undefined : new Uint8Array(previousId),
+          previousId === undefined
+            ? undefined
+            : new uint8ArrayConstructor(previousId),
       });
     } catch {
       return rejected('unauthorized-actor', 'control authorization failed');
@@ -441,14 +471,17 @@ export class MembershipControlChain {
 
     const recordIndex = this.recordsValue.length;
     this.recordsValue.push(cloneRecord(record));
-    this.recordIds.push(new Uint8Array(recordId));
+    this.recordIds.push(new uint8ArrayConstructor(recordId));
     this.recordIdSet.add(recordHex);
     this.operationToRecord.set(operationHex, recordHex);
     this.slotToRecordIndex.set(
       membershipControlSlotKey(record.epoch, record.parentRecordId),
       recordIndex,
     );
-    return { status: 'accepted', recordId: new Uint8Array(recordId) };
+    return {
+      status: 'accepted',
+      recordId: new uint8ArrayConstructor(recordId),
+    };
   }
 }
 
@@ -456,7 +489,7 @@ function membershipControlSlotKey(
   epoch: bigint,
   parentRecordId: Uint8Array | undefined,
 ): string {
-  const encodedEpoch = epoch.toString(16).padStart(16, '0');
+  const encodedEpoch = toHex(u64(epoch));
   return `${encodedEpoch}:${
     parentRecordId === undefined ? 'genesis' : toHex(parentRecordId)
   }`;
@@ -474,13 +507,30 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
     protocol === null ||
     typeof protocol !== 'object' ||
     typeof protocol.id !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(protocol.id) ||
-    !Number.isInteger(protocol.version) ||
+    reflectApply(regExpExec, canonicalProtocolIdPattern, [protocol.id]) === null ||
+    !numberIsInteger(protocol.version) ||
     protocol.version < 0 ||
     protocol.version > 0xffff
   ) {
     throw new Error('invalid canonical protocol identifier');
   }
+}
+
+function encodeProtocolId(value: string): Uint8Array {
+  const output = new uint8ArrayConstructor(value.length);
+  for (let index = 0; index < value.length; index++) {
+    output[index] = reflectApply(stringCharCodeAt, value, [index]);
+  }
+  return output;
+}
+
+function decodeProtocolId(value: Uint8Array): string {
+  const length = intrinsicByteLength(value);
+  let output = '';
+  for (let index = 0; index < length; index++) {
+    output += stringFromCharCode(value[index]);
+  }
+  return output;
 }
 
 function validateU64(value: bigint, field: string): void {
@@ -672,16 +722,16 @@ function snapshotBytes(
   let buffer: ArrayBufferLike;
   let tag: unknown;
   try {
-    length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-    buffer = Reflect.apply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
-    tag = Reflect.apply(typedArrayTagGetter, value, []);
+    length = reflectApply(typedArrayByteLengthGetter, value, []) as number;
+    buffer = reflectApply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
+    tag = reflectApply(typedArrayTagGetter, value, []);
   } catch {
     throw new Error(`${field} must be a genuine Uint8Array`);
   }
   let shared = false;
   if (sharedArrayBufferByteLength !== undefined) {
     try {
-      Reflect.apply(sharedArrayBufferByteLength, buffer, []);
+      reflectApply(sharedArrayBufferByteLength, buffer, []);
       shared = true;
     } catch {
       shared = false;
@@ -695,13 +745,25 @@ function snapshotBytes(
   ) {
     throw new Error(`${field} has an invalid length or backing buffer`);
   }
-  const snapshot = new Uint8Array(length);
+  const snapshot = new uint8ArrayConstructor(length);
   try {
-    Reflect.apply(uint8ArraySet, snapshot, [value]);
+    reflectApply(uint8ArraySet, snapshot, [value]);
   } catch {
     throw new Error(`${field} could not be copied safely`);
   }
   return snapshot;
+}
+
+function intrinsicByteLength(value: Uint8Array): number {
+  return reflectApply(typedArrayByteLengthGetter, value, []) as number;
+}
+
+function intrinsicByteOffset(value: Uint8Array): number {
+  return reflectApply(typedArrayByteOffsetGetter, value, []) as number;
+}
+
+function intrinsicBuffer(value: Uint8Array): ArrayBufferLike {
+  return reflectApply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
 }
 
 function rejected(
@@ -716,46 +778,70 @@ function errorMessage(error: unknown): string {
 }
 
 function bytes16(value: Uint8Array): Uint8Array {
-  return concat([u16(value.byteLength), value]);
+  return concat([u16(intrinsicByteLength(value)), value]);
 }
 
 function bytes32(value: Uint8Array): Uint8Array {
-  return concat([u32(value.byteLength), value]);
+  return concat([u32(intrinsicByteLength(value)), value]);
+}
+
+function u8(value: number): Uint8Array {
+  if (!numberIsInteger(value) || value < 0 || value > 0xff) {
+    throw new Error('value does not fit in u8');
+  }
+  const out = new uint8ArrayConstructor(1);
+  out[0] = value;
+  return out;
 }
 
 function u16(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+  if (!numberIsInteger(value) || value < 0 || value > 0xffff) {
     throw new Error('value does not fit in u16');
   }
-  const out = new Uint8Array(2);
-  new DataView(out.buffer).setUint16(0, value, false);
+  const out = new uint8ArrayConstructor(2);
+  reflectApply(dataViewSetUint16, new dataViewConstructor(intrinsicBuffer(out)), [
+    0,
+    value,
+    false,
+  ]);
   return out;
 }
 
 function u32(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+  if (!numberIsInteger(value) || value < 0 || value > 0xffffffff) {
     throw new Error('value does not fit in u32');
   }
-  const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
+  const out = new uint8ArrayConstructor(4);
+  reflectApply(dataViewSetUint32, new dataViewConstructor(intrinsicBuffer(out)), [
+    0,
+    value,
+    false,
+  ]);
   return out;
 }
 
 function u64(value: bigint): Uint8Array {
   validateU64(value, 'epoch');
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, value, false);
+  const out = new uint8ArrayConstructor(8);
+  reflectApply(dataViewSetBigUint64, new dataViewConstructor(intrinsicBuffer(out)), [
+    0,
+    value,
+    false,
+  ]);
   return out;
 }
 
 function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  const out = new Uint8Array(
-    parts.reduce((total, part) => total + part.byteLength, 0),
-  );
+  let length = 0;
+  for (let index = 0; index < parts.length; index++) {
+    length += intrinsicByteLength(parts[index]);
+  }
+  const out = new uint8ArrayConstructor(length);
   let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    reflectApply(uint8ArraySet, out, [part, offset]);
+    offset += intrinsicByteLength(part);
   }
   return out;
 }
@@ -768,15 +854,20 @@ function sameProtocol(
 }
 
 function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
+  const length = intrinsicByteLength(a);
+  if (length !== intrinsicByteLength(b)) return false;
   let different = 0;
-  for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
+  for (let i = 0; i < length; i++) different |= a[i] ^ b[i];
   return different === 0;
 }
 
 function toHex(bytes: Uint8Array): string {
   let result = '';
-  for (const value of bytes) result += value.toString(16).padStart(2, '0');
+  const length = intrinsicByteLength(bytes);
+  for (let index = 0; index < length; index++) {
+    const value = bytes[index];
+    result += HEX_ALPHABET[value >>> 4] + HEX_ALPHABET[value & 0x0f];
+  }
   return result;
 }
 
@@ -786,7 +877,7 @@ class Reader {
   constructor(private readonly bytes: Uint8Array) {}
 
   expect(expected: Uint8Array, field: string): void {
-    if (!equalBytes(this.fixed(expected.byteLength, field), expected)) {
+    if (!equalBytes(this.fixed(intrinsicByteLength(expected), field), expected)) {
       throw new Error(`invalid ${field}`);
     }
   }
@@ -797,34 +888,48 @@ class Reader {
 
   u16(field: string): number {
     const start = this.reserve(2, field);
-    return new DataView(
-      this.bytes.buffer,
-      this.bytes.byteOffset + start,
-      2,
-    ).getUint16(0, false);
+    return reflectApply(
+      dataViewGetUint16,
+      new dataViewConstructor(
+        intrinsicBuffer(this.bytes),
+        intrinsicByteOffset(this.bytes) + start,
+        2,
+      ),
+      [0, false],
+    );
   }
 
   u32(field: string): number {
     const start = this.reserve(4, field);
-    return new DataView(
-      this.bytes.buffer,
-      this.bytes.byteOffset + start,
-      4,
-    ).getUint32(0, false);
+    return reflectApply(
+      dataViewGetUint32,
+      new dataViewConstructor(
+        intrinsicBuffer(this.bytes),
+        intrinsicByteOffset(this.bytes) + start,
+        4,
+      ),
+      [0, false],
+    );
   }
 
   u64(field: string): bigint {
     const start = this.reserve(8, field);
-    return new DataView(
-      this.bytes.buffer,
-      this.bytes.byteOffset + start,
-      8,
-    ).getBigUint64(0, false);
+    return reflectApply(
+      dataViewGetBigUint64,
+      new dataViewConstructor(
+        intrinsicBuffer(this.bytes),
+        intrinsicByteOffset(this.bytes) + start,
+        8,
+      ),
+      [0, false],
+    );
   }
 
   fixed(length: number, field: string): Uint8Array {
     const start = this.reserve(length, field);
-    return new Uint8Array(this.bytes.subarray(start, start + length));
+    return new uint8ArrayConstructor(
+      reflectApply(uint8ArraySubarray, this.bytes, [start, start + length]),
+    );
   }
 
   bytes16(field: string, minimum: number, maximum: number): Uint8Array {
@@ -836,17 +941,15 @@ class Reader {
   }
 
   protocolId(): string {
-    const value = new TextDecoder('utf-8', { fatal: true }).decode(
-      this.bytes16('protocol.id', 1, 128),
-    );
-    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value)) {
+    const value = decodeProtocolId(this.bytes16('protocol.id', 1, 128));
+    if (reflectApply(regExpExec, canonicalProtocolIdPattern, [value]) === null) {
       throw new Error('invalid canonical protocol identifier');
     }
     return value;
   }
 
   done(): void {
-    if (this.offset !== this.bytes.byteLength) {
+    if (this.offset !== intrinsicByteLength(this.bytes)) {
       throw new Error('membership control record has trailing bytes');
     }
   }
@@ -864,7 +967,7 @@ class Reader {
   }
 
   private reserve(length: number, field: string): number {
-    if (length < 0 || this.offset + length > this.bytes.byteLength) {
+    if (length < 0 || this.offset + length > intrinsicByteLength(this.bytes)) {
       throw new Error(`membership control record is truncated at ${field}`);
     }
     const start = this.offset;

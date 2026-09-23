@@ -11,7 +11,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Packages are unpublished.** The `@peerborne/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
 - **No deployment automation.** There is no CI/CD pipeline for deploying relays, bootstrap nodes, or pinning services.
-- **No upgrade or migration path.** API changes between commits may break your application without warning. There is no changelog, no semver, and no deprecation period.
+- **No general upgrade or migration path.** API changes between commits may break your application without warning. The narrow document-topic namespace migration is documented, but there is no general state migration framework, changelog, semver, or deprecation period.
 
 ## Offline and durability
 
@@ -32,7 +32,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 ## Storage and persistence
 
 - **No replication factor guarantee.** Peerborne does not ensure encrypted payloads are stored on at least N origins. No peer can serve a local copy while every holder is offline, and data is lost if every copy is cleared or otherwise unrecoverable.
-- **Pinning is incomplete.** A `PeerborneNode` listener API exists but the normal core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
+- **Pinning is incomplete.** There is no authenticated pin-request protocol or core pinning publisher. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
 - **Automatic compaction is off by default.** When enabled, snapshots can prune the in-memory shadow tree; stored blocks are deleted only with opt-in `gcAfterPrune`.
 - **Snapshot-only first load can fail.** A quorum-bound first load has no prior writer set for snapshot authentication and rejects a response that contains only a snapshot.
 - **No size-based garbage collection policy.** Opt-in post-prune GC is destructive for the local copy. There is no TTL, quota, or size-limit-based automatic cleanup.
@@ -41,6 +41,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
+- **Custom document topics require coordinated upgrades.** The versioned defaults keep honest, default-configured runtime generations on separate document and publish-notification topics. A custom or empty topic can mix incompatible peers; every participant sharing it must be upgraded together, and the topic must be added to each relay's allowlist. Topic names are routing labels, not authenticated version negotiation or authorization, and relays do not bridge topic versions.
 - **Many transports lack document-path evidence in CI.** The current cross-NAT
   proof verifies invitation acceptance, initial document-history load, and live
   post-join convergence through Circuit Relay. Transport-specific Peerborne
@@ -95,11 +96,23 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   rejected by the invitation path.
 - **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync/load signature gates are disabled for peers holding the needed document key; BeeKEM membership-control messages remain writer-signed.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
+- **The ACL chain is not wired into document synchronization.** The standalone
+  `ACLChain` implementation has focused tests, but `PeerborneDocument` still
+  authorizes an outer envelope against its current local writer set before
+  merging any enclosed ACL nodes. A stale or partitioned writer can therefore
+  race a removal with a signed re-grant. Do not treat writer removal as a
+  Byzantine or globally causal cutover.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
-- **PathUpdate is best-effort.** There is no guarantee that ACL change notifications reach all peers.
+- **PathUpdate is best-effort and has no automatic catch-up.** There is no
+  acknowledgment or retry. A surviving reader that misses the new epoch cannot
+  use an ordinary load response encrypted under that unknown epoch to recover;
+  it needs an explicit recipient-bound recovery or re-invitation flow.
 - **No time-bound or conditional access.** Readers and writers are either in the ACL or not. There is no expiration, usage limit, or context-based access control.
-- **UCAN capabilities are standalone.** The UCAN module can issue and verify capability tokens, but the document change path does not check them.
+- **UCAN capabilities are standalone and locally cached.** The UCAN module can
+  issue and verify capability tokens, but the document change path does not
+  check them and capability metadata is not replicated. Revocation is not
+  enforced across replicas through a shared, authenticated membership state.
 - **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
 
 ## Convergence and verification
@@ -127,7 +140,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   UX, or a delivery guarantee. Its source smoke test is not proof that the
   public relay or deployment will remain available.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
-- **No migration guide.** There is no guide for upgrading from one Peerborne commit to another.
+- **No general migration guide.** `MIGRATING.md` covers the source rename and the document-topic boundary, not arbitrary upgrades between Peerborne commits.
 - **No changelog.** Release notes and version history are not published.
 
 ## What is verified

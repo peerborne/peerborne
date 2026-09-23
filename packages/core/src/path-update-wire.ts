@@ -1,6 +1,7 @@
 /** Strict parent-bound BeeKEM PathUpdate V2 serialization. */
 
 import { Base64 } from 'js-base64';
+import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import {
   MAX_BEEKEM_TREE_LEAVES,
   PathNodeUpdateV2,
@@ -71,15 +72,12 @@ export function serializePathUpdateV2ForWire(
     ],
     'Invalid PathUpdateV2',
     {
-      parentTreeHash: (bytes) => snapshotRuntimeBytes(
-        bytes, 32, 32, 'parentTreeHash', budget,
-      ),
-      senderLeafPublicKey: (bytes) => snapshotRuntimeBytes(
-        bytes, 65, 65, 'senderLeafPublicKey', budget,
-      ),
-      treeHash: (bytes) => snapshotRuntimeBytes(
-        bytes, 32, 32, 'treeHash', budget,
-      ),
+      parentTreeHash: (bytes) =>
+        snapshotRuntimeBytes(bytes, 32, 32, 'parentTreeHash', budget),
+      senderLeafPublicKey: (bytes) =>
+        snapshotRuntimeBytes(bytes, 65, 65, 'senderLeafPublicKey', budget),
+      treeHash: (bytes) =>
+        snapshotRuntimeBytes(bytes, 32, 32, 'treeHash', budget),
     },
   );
   if (raw.version !== 2) {
@@ -117,7 +115,7 @@ export function serializePathUpdateV2ForWire(
     raw.nodes,
     MAX_V2_PATH_NODES,
     'Invalid PathUpdateV2: nodes',
-    budget,
+    { budget },
   );
   if (!Array.isArray(raw.treeNodePublicKeys)) {
     throw new Error(
@@ -128,7 +126,7 @@ export function serializePathUpdateV2ForWire(
     raw.treeNodePublicKeys,
     treeWidth,
     'Invalid PathUpdateV2: treeNodePublicKeys',
-    budget,
+    { budget },
   );
   if (rawTreeNodePublicKeys.length !== treeWidth) {
     throw new Error(
@@ -140,16 +138,17 @@ export function serializePathUpdateV2ForWire(
   const nodeSnapshots = rawNodes.map((value, nodeOffset) => {
     const node = snapshotPlainObject(
       value,
-      [
-        'nodeIndex',
-        'publicKey',
-        'encryptedPathKeyBundles',
-      ],
+      ['nodeIndex', 'publicKey', 'encryptedPathKeyBundles'],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
       {
-        publicKey: (bytes) => snapshotRuntimeBytes(
-          bytes, 65, 65, `node[${nodeOffset}].publicKey`, budget,
-        ),
+        publicKey: (bytes) =>
+          snapshotRuntimeBytes(
+            bytes,
+            ECIES_P256_PUBLIC_KEY_LENGTH,
+            ECIES_P256_PUBLIC_KEY_LENGTH,
+            `node[${nodeOffset}].publicKey`,
+            budget,
+          ),
       },
     );
     requireNonNegativeInteger(
@@ -177,8 +176,10 @@ export function serializePathUpdateV2ForWire(
       node.encryptedPathKeyBundles,
       numLeaves,
       `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles`,
-      budget,
-      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      {
+        budget,
+        maxLengthError: `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      },
     );
     const recipientIndices = new Set<number>();
     const bundles = rawBundles.map((value, bundleOffset) => {
@@ -187,11 +188,14 @@ export function serializePathUpdateV2ForWire(
         ['recipientNodeIndex', 'ciphertext'],
         `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
         {
-          ciphertext: (bytes) => snapshotRuntimeBytes(
-            bytes, 1, MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-            `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
-            budget,
-          ),
+          ciphertext: (bytes) =>
+            snapshotRuntimeBytes(
+              bytes,
+              1,
+              MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+              `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
+              budget,
+            ),
         },
       );
       requireNonNegativeInteger(
@@ -227,9 +231,16 @@ export function serializePathUpdateV2ForWire(
       ['nodeIndex', 'publicKey'],
       `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}]`,
       {
-        publicKey: (bytes) => bytes === null ? null : snapshotRuntimeBytes(
-          bytes, 65, 65, `treeNodePublicKeys[${nodeOffset}].publicKey`, budget,
-        ),
+        publicKey: (bytes) =>
+          bytes === null
+            ? null
+            : snapshotRuntimeBytes(
+                bytes,
+                ECIES_P256_PUBLIC_KEY_LENGTH,
+                ECIES_P256_PUBLIC_KEY_LENGTH,
+                `treeNodePublicKeys[${nodeOffset}].publicKey`,
+                budget,
+              ),
       },
     );
     requireNonNegativeInteger(
@@ -253,16 +264,16 @@ export function serializePathUpdateV2ForWire(
     parentTreeHash: Base64.fromUint8Array(raw.parentTreeHash as Uint8Array),
     numLeaves,
     senderLeafIndex,
-    senderLeafPublicKey: Base64.fromUint8Array(raw.senderLeafPublicKey as Uint8Array),
+    senderLeafPublicKey: Base64.fromUint8Array(
+      raw.senderLeafPublicKey as Uint8Array,
+    ),
     nodes: nodeSnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
       publicKey: Base64.fromUint8Array(node.publicKey as Uint8Array),
-      encryptedPathKeyBundles: node.encryptedPathKeyBundles.map(
-        (bundle) => ({
-          recipientNodeIndex: bundle.recipientNodeIndex,
-          ciphertext: Base64.fromUint8Array(bundle.ciphertext as Uint8Array),
-        }),
-      ),
+      encryptedPathKeyBundles: node.encryptedPathKeyBundles.map((bundle) => ({
+        recipientNodeIndex: bundle.recipientNodeIndex,
+        ciphertext: Base64.fromUint8Array(bundle.ciphertext as Uint8Array),
+      })),
     })),
     treeNodePublicKeys: treeNodeSnapshots.map((node) => ({
       nodeIndex: node.nodeIndex,
@@ -280,9 +291,7 @@ export function serializePathUpdateV2ForWire(
 }
 
 /** Decode and structurally validate the explicit v2 wire representation. */
-export function deserializePathUpdateV2FromWire(
-  wire: unknown,
-): PathUpdateV2 {
+export function deserializePathUpdateV2FromWire(wire: unknown): PathUpdateV2 {
   const budget = createV2DecodeBudget();
   const raw = snapshotPlainObject(
     wire,
@@ -345,7 +354,7 @@ export function deserializePathUpdateV2FromWire(
     raw.nodes,
     MAX_V2_PATH_NODES,
     'Invalid PathUpdateV2: nodes',
-    budget,
+    { budget },
   );
   if (!Array.isArray(raw.treeNodePublicKeys)) {
     throw new Error(
@@ -356,7 +365,7 @@ export function deserializePathUpdateV2FromWire(
     raw.treeNodePublicKeys,
     treeWidth,
     'Invalid PathUpdateV2: treeNodePublicKeys',
-    budget,
+    { budget },
   );
   if (rawTreeNodePublicKeys.length !== treeWidth) {
     throw new Error(
@@ -373,11 +382,7 @@ export function deserializePathUpdateV2FromWire(
   const nodes: PathNodeUpdateV2[] = rawNodes.map((value, nodeOffset) => {
     const node = snapshotPlainObject(
       value,
-      [
-        'nodeIndex',
-        'publicKey',
-        'encryptedPathKeyBundles',
-      ],
+      ['nodeIndex', 'publicKey', 'encryptedPathKeyBundles'],
       `Invalid PathUpdateV2: node[${nodeOffset}]`,
     );
     requireNonNegativeInteger(
@@ -410,65 +415,65 @@ export function deserializePathUpdateV2FromWire(
       node.encryptedPathKeyBundles,
       raw.numLeaves as number,
       `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles`,
-      budget,
-      `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      {
+        budget,
+        maxLengthError: `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles exceeds numLeaves`,
+      },
     );
 
     const recipientIndices = new Set<number>();
-    const encryptedPathKeyBundles = rawBundles.map(
-      (value, bundleOffset) => {
-        const bundle = snapshotPlainObject(
-          value,
-          ['recipientNodeIndex', 'ciphertext'],
-          `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
+    const encryptedPathKeyBundles = rawBundles.map((value, bundleOffset) => {
+      const bundle = snapshotPlainObject(
+        value,
+        ['recipientNodeIndex', 'ciphertext'],
+        `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}]`,
+      );
+      requireNonNegativeInteger(
+        bundle.recipientNodeIndex,
+        `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].recipientNodeIndex`,
+        'PathUpdateV2',
+      );
+      const recipientNodeIndex = bundle.recipientNodeIndex as number;
+      if (recipientNodeIndex >= treeWidth) {
+        throw new Error(
+          `Invalid PathUpdateV2: bundle recipient ${recipientNodeIndex} is outside the tree`,
         );
-        requireNonNegativeInteger(
-          bundle.recipientNodeIndex,
-          `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].recipientNodeIndex`,
-          'PathUpdateV2',
+      }
+      if (recipientIndices.has(recipientNodeIndex)) {
+        throw new Error(
+          `Invalid PathUpdateV2: duplicate bundle recipient ${recipientNodeIndex} at node[${nodeOffset}]`,
         );
-        const recipientNodeIndex = bundle.recipientNodeIndex as number;
-        if (recipientNodeIndex >= treeWidth) {
-          throw new Error(
-            `Invalid PathUpdateV2: bundle recipient ${recipientNodeIndex} is outside the tree`,
-          );
-        }
-        if (recipientIndices.has(recipientNodeIndex)) {
-          throw new Error(
-            `Invalid PathUpdateV2: duplicate bundle recipient ${recipientNodeIndex} at node[${nodeOffset}]`,
-          );
-        }
-        recipientIndices.add(recipientNodeIndex);
-        if (typeof bundle.ciphertext !== 'string') {
-          throw new Error(
-            `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext must be a base64 string (got ${describe(bundle.ciphertext)})`,
-          );
-        }
-        const ciphertext = decodeCanonicalBase64(
-          bundle.ciphertext,
-          `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
-          MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
-          budget,
+      }
+      recipientIndices.add(recipientNodeIndex);
+      if (typeof bundle.ciphertext !== 'string') {
+        throw new Error(
+          `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext must be a base64 string (got ${describe(bundle.ciphertext)})`,
         );
-        if (
-          ciphertext.byteLength === 0 ||
-          ciphertext.byteLength > MAX_V2_BUNDLE_CIPHERTEXT_BYTES
-        ) {
-          throw new Error(
-            `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext has invalid size`,
-          );
-        }
-        return { recipientNodeIndex, ciphertext };
-      },
-    );
+      }
+      const ciphertext = decodeCanonicalBase64(
+        bundle.ciphertext,
+        `node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext`,
+        MAX_V2_BUNDLE_CIPHERTEXT_BYTES,
+        budget,
+      );
+      if (
+        ciphertext.byteLength === 0 ||
+        ciphertext.byteLength > MAX_V2_BUNDLE_CIPHERTEXT_BYTES
+      ) {
+        throw new Error(
+          `Invalid PathUpdateV2: node[${nodeOffset}].encryptedPathKeyBundles[${bundleOffset}].ciphertext has invalid size`,
+        );
+      }
+      return { recipientNodeIndex, ciphertext };
+    });
 
     const publicKey = decodeCanonicalBase64(
       node.publicKey,
       `node[${nodeOffset}].publicKey`,
-      65,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
       budget,
     );
-    if (publicKey.byteLength !== 65) {
+    if (publicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
       throw new Error(
         `Invalid PathUpdateV2: node[${nodeOffset}].publicKey must decode to 65 bytes`,
       );
@@ -481,8 +486,8 @@ export function deserializePathUpdateV2FromWire(
   });
 
   const snapshotIndices = new Set<number>();
-  const treeNodePublicKeys: WelcomeNodePublicKey[] =
-    rawTreeNodePublicKeys.map((value, nodeOffset) => {
+  const treeNodePublicKeys: WelcomeNodePublicKey[] = rawTreeNodePublicKeys.map(
+    (value, nodeOffset) => {
       const node = snapshotPlainObject(
         value,
         ['nodeIndex', 'publicKey'],
@@ -511,21 +516,22 @@ export function deserializePathUpdateV2FromWire(
           : decodeCanonicalBase64(
               node.publicKey,
               `treeNodePublicKeys[${nodeOffset}].publicKey`,
-              65,
+              ECIES_P256_PUBLIC_KEY_LENGTH,
               budget,
             );
-      if (publicKey !== null && publicKey.byteLength !== 65) {
+      if (publicKey !== null && publicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
         throw new Error(
           `Invalid PathUpdateV2: treeNodePublicKeys[${nodeOffset}].publicKey must decode to 65 bytes`,
         );
       }
       return { nodeIndex, publicKey };
-    });
+    },
+  );
 
   const senderLeafPublicKey = decodeCanonicalBase64(
     raw.senderLeafPublicKey,
     'senderLeafPublicKey',
-    65,
+    ECIES_P256_PUBLIC_KEY_LENGTH,
     budget,
   );
   const parentTreeHash = decodeCanonicalBase64(
@@ -534,13 +540,8 @@ export function deserializePathUpdateV2FromWire(
     32,
     budget,
   );
-  const treeHash = decodeCanonicalBase64(
-    raw.treeHash,
-    'treeHash',
-    32,
-    budget,
-  );
-  if (senderLeafPublicKey.byteLength !== 65) {
+  const treeHash = decodeCanonicalBase64(raw.treeHash, 'treeHash', 32, budget);
+  if (senderLeafPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH) {
     throw new Error(
       'Invalid PathUpdateV2: senderLeafPublicKey must decode to 65 bytes',
     );
@@ -734,9 +735,10 @@ function snapshotBoundedArray(
   value: unknown[],
   maxLength: number,
   context: string,
-  budget: V2DecodeBudget,
-  maxLengthError = `${context} exceeds ${maxLength} entries`,
+  options: { budget: V2DecodeBudget; maxLengthError?: string },
 ): unknown[] {
+  const { budget, maxLengthError = `${context} exceeds ${maxLength} entries` } =
+    options;
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
   if (
     lengthDescriptor === undefined ||
@@ -753,7 +755,9 @@ function snapshotBoundedArray(
   reserveV2Work(budget, length, context);
   const keys = Reflect.ownKeys(value);
   if (keys.length !== length + 1) {
-    throw new Error(`${context} must be a dense array without extra properties`);
+    throw new Error(
+      `${context} must be a dense array without extra properties`,
+    );
   }
   const snapshot = new Array<unknown>(length);
   for (let index = 0; index < length; index++) {
@@ -763,7 +767,9 @@ function snapshotBoundedArray(
       !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
       descriptor.enumerable !== true
     ) {
-      throw new Error(`${context}[${index}] must be an own enumerable data property`);
+      throw new Error(
+        `${context}[${index}] must be an own enumerable data property`,
+      );
     }
     snapshot[index] = descriptor.value;
   }
@@ -830,11 +836,7 @@ function requireNonNegativeInteger(
   field: string,
   typeName: string,
 ): void {
-  if (
-    typeof value !== 'number' ||
-    !Number.isSafeInteger(value) ||
-    value < 0
-  ) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(
       `Invalid ${typeName}: '${field}' must be a non-negative safe integer (got ${describe(value)})`,
     );
@@ -881,7 +883,9 @@ function decodeCanonicalBase64(
   try {
     decoded = Base64.toUint8Array(value);
   } catch {
-    throw new Error(`Invalid PathUpdateV2: ${fieldName} must use canonical padded base64`);
+    throw new Error(
+      `Invalid PathUpdateV2: ${fieldName} must use canonical padded base64`,
+    );
   }
   if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
     throw new Error(`Invalid PathUpdateV2: '${fieldName}' exceeds size limit`);

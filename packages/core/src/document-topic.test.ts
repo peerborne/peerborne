@@ -1,17 +1,38 @@
 import { describe, expect, test } from '@jest/globals';
-import { documentTopic, DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
+import {
+  copyDocumentPubsubConfig,
+  documentTopic,
+  DEFAULT_DOCUMENT_TOPIC_PREFIX,
+} from './document-topic.js';
 
 describe('documentTopic', () => {
-  test('uses /document/ prefix by default', () => {
-    expect(documentTopic('my-doc')).toBe('/document/my-doc');
+  test('uses the v3 document prefix by default', () => {
+    expect(documentTopic('my-doc')).toBe('/peerborne/document/v3/my-doc');
   });
 
   test('default prefix matches DEFAULT_DOCUMENT_TOPIC_PREFIX', () => {
-    expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/document/');
+    expect(DEFAULT_DOCUMENT_TOPIC_PREFIX).toBe('/peerborne/document/v3/');
+  });
+
+  test('copies explicit custom topics without replacing them with defaults', () => {
+    expect(
+      copyDocumentPubsubConfig({
+        pubsubDocumentPrefix: '/custom/',
+      }),
+    ).toEqual({
+      pubsubDocumentPrefix: '/custom/',
+    });
   });
 
   test('avoids double slash with default prefix and leading-slash path', () => {
-    expect(documentTopic('/my-doc')).toBe('/document/my-doc');
+    expect(documentTopic('/my-doc')).toBe('/peerborne/document/v3/my-doc');
+  });
+
+  test('keeps an explicitly configured custom namespace isolated', () => {
+    expect(documentTopic('my-doc', '/custom/')).toBe('/custom/my-doc');
+    expect(documentTopic('my-doc', '/custom/')).not.toBe(
+      documentTopic('my-doc'),
+    );
   });
 
   test('returns bare path when using explicit empty prefix', () => {
@@ -48,14 +69,6 @@ describe('documentTopic', () => {
 
   test('works when prefix does not end with / but path starts with /', () => {
     expect(documentTopic('/my-doc', '/docs')).toBe('/docs/my-doc');
-  });
-
-  test('applies /document/ prefix when explicitly provided', () => {
-    expect(documentTopic('my-doc', '/document/')).toBe('/document/my-doc');
-  });
-
-  test('applies /document/ prefix and avoids double slash', () => {
-    expect(documentTopic('/my-doc', '/document/')).toBe('/document/my-doc');
   });
 
   // Edge case: '/' prefix produces '/path'

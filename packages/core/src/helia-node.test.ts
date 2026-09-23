@@ -129,7 +129,7 @@ describe('Helia node startup cleanup', () => {
 
     expect(mockCreateHelia).toHaveBeenCalledWith({ bitswap });
     expect(result.heliaNode).toBe(node);
-    expect(result.openedLegacyStores).toEqual([]);
+    expect(result.openedStores).toEqual([]);
   });
 
   test('rejects an already-created libp2p node explicitly', async () => {

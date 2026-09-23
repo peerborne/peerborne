@@ -9,7 +9,7 @@ description: Build versioned local indexes and understand the trust boundary for
 
 ## Local materialized indexes
 
-**Status: Runnable from source.** V2 local schemas, planners, memory/IndexedDB physical keys, cursor pagination, malformed-value handling, and lifecycle integration have focused tests. React bindings continue to use the legacy query API. These APIs index decrypted documents already available to the local application; they are not a network crawler.
+**Status: Runnable from source.** V2 local schemas, planners, memory/IndexedDB physical keys, cursor pagination, malformed-value handling, and lifecycle integration have focused tests. React bindings use the same version 2 query contract. These APIs index decrypted documents already available to the local application; they are not a network crawler.
 
 Packages are unpublished. Use the repository workspace after following the [quick start](../../getting-started/quick-start/).
 
@@ -59,11 +59,11 @@ const result = await manager.query({
 
 `PeerborneIndexIntegration.trackDocument(docRef)` returns a readiness promise; the first call waits for initial indexing, and a repeated call for the same path waits for work already queued for that document. Await it before the first query. `untrackDocument()` returns the removal promise, and `dispose()` waits for queued index work. Untrack or dispose subscriptions during teardown.
 
-V2 rejects unindexed scans by default. Set `allowScan: true` only when a full local projection scan is an intentional cost. Results include chosen physical keys, scan and sort strategy, rows visited, schema generation, storage mode, cursor state, and explicit count semantics. The legacy `QueryOptions` interface remains available, but it does not provide nested `and`/`or`, cursor binding, projections, scan control, indexed-consistency waiting, or execution metadata.
+V2 rejects unindexed scans by default. Set `allowScan: true` only when a full local projection scan is an intentional cost. Results include chosen physical keys, scan and sort strategy, rows visited, schema generation, storage mode, cursor state, and explicit count semantics. Unversioned schemas and superseded query shapes are rejected.
 
 Every field in a physical key must be `required`. Optional fields remain materialized and can be projected or tested during an explicitly allowed full scan, but are not auto-indexed. This prevents a compound index from silently omitting documents whose trailing key field is absent.
 
-V2 defaults to memory storage. To use `IDBIndexStorage`, set `storageMode: 'cleartext-local'` explicitly: field values and ordering keys are readable at rest even though the source CRDT history is encrypted. Changing the canonical schema or generation clears incompatible persisted rows, but `defineIndex()` cannot repopulate them because it does not own the source documents. Re-track the collection or call `rebuildIndex()` with its current documents before querying. A same-name upgrade from a legacy store backfills valid rows under the declared collection prefix; malformed and wrong-prefix rows are removed. Malformed documents default to exclusion with bounded diagnostics that never include the offending value.
+V2 defaults to memory storage. To use `IDBIndexStorage`, set `storageMode: 'cleartext-local'` explicitly: field values and ordering keys are readable at rest even though the source CRDT history is encrypted. Changing the canonical schema or generation clears incompatible persisted rows, but `defineIndex()` cannot repopulate them because it does not own the source documents. Re-track the collection or call `rebuildIndex()` with its current documents before querying. Persisted rows without a matching current schema identity are discarded. Reopening a matching schema validates its rows and removes malformed or wrong-prefix rows. Malformed documents default to exclusion with bounded diagnostics that never include the offending value.
 
 ### Gate React queries after definition readiness
 
@@ -77,14 +77,16 @@ function SearchRoot({ manager }: { manager: IndexManager<Y.Doc> }) {
 
 function ReadySearch({ manager }: { manager: IndexManager<Y.Doc> }) {
   const result = useIndexQuery(manager, {
+    version: 2,
     indexName: 'articles',
-    filters: [{ path: 'author', operator: 'eq', value: 'Alice' }],
+    where: { kind: 'field', path: 'author', operator: 'eq', value: 'Alice' },
+    count: 'exact',
   });
-  return <p>{result.totalCount} result(s)</p>;
+  return <p>{result?.count.kind === 'verified' ? result.count.value : '…'} result(s)</p>;
 }
 ```
 
-`useDefineIndexes` removes its indexes on cleanup, which clears stored entries. Treat the local index as a rebuildable cache, not source data.
+`useIndexQuery` returns `undefined` until its first result and when its target index is removed. `useDefineIndexes` removes its indexes on cleanup, which clears stored entries. Treat the local index as a rebuildable cache, not source data.
 
 ## Blind-index primitives
 
@@ -127,7 +129,7 @@ Authorized candidate resolution is concurrency-, per-document timeout-, and tota
 
 Plaintext candidate requests strip the global cursor/projection, request no remote count, and cannot set `allowScan: true`; the responder must still impose its own deadline, stream, byte, and CPU budgets. Exact federated counts are computed only as verified lower bounds after candidate documents pass local authorization.
 
-The older `BloomFilterGossip` grow-only OR merge remains a compatibility primitive, not an authoritative distributed index: it cannot delete terms, and a saturated or stale update persists. The new routing registry instead authenticates source peers, bounds fill/rate/size, enforces monotonic sequences, expires snapshots, and replaces rather than merges state. Neither representation proves that a peer has a matching document.
+The routing registry authenticates source peers, bounds fill/rate/size, enforces monotonic sequences, expires snapshots, and replaces previous state. An accepted advertisement still cannot prove that a peer has a matching document.
 
 See the complete [local and distributed indexing design](https://github.com/Peerborne/peerborne/blob/main/docs/indexing-design.md) for planner rules, performance semantics, threat analysis, and the remaining integration sequence.
 

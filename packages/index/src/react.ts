@@ -1,27 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { IndexManager } from './index-manager.js';
-import { IndexDefinition, QueryOptions, QueryResult } from './types.js';
+import { IndexDefinition, QueryAst, QueryAstResult } from './types.js';
 
 /**
  * React hook that subscribes to live index query results.
  * Re-runs the query when the result set changes and when options change.
  *
  * @param manager The IndexManager to query against.
- * @param options Query options (filters, sort, limit, offset, etc.).
- * @returns The current query result, updated reactively.
+ * @param options Current query AST (predicate, ordering, cursor, and projection).
+ * @returns The current result, or undefined while the initial query is pending.
  */
 export function useIndexQuery(
   manager: IndexManager<unknown>,
-  options: QueryOptions,
-): QueryResult<Record<string, unknown>> {
-  const [result, setResult] = useState<QueryResult<Record<string, unknown>>>({
-    documents: [],
-    totalCount: 0,
-  });
+  options: QueryAst,
+): QueryAstResult<Record<string, unknown>> | undefined {
+  const [result, setResult] = useState<QueryAstResult<Record<string, unknown>>>();
 
   const serializedOptions = useMemo(() => JSON.stringify(options), [options]);
 
   useEffect(() => {
+    setResult(undefined);
     const unsub = manager.subscribe(options, (newResult) => {
       setResult(newResult);
     });

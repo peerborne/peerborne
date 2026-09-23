@@ -1,7 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
-import { tipsHash } from './tips-hash.js';
 
 const commitments = () => ({
   version: 1 as const,
@@ -13,10 +12,9 @@ const commitments = () => ({
 });
 
 describe('loadAdvertisementHash', () => {
-  test('preserves the legacy tips hash exactly without commitments', async () => {
-    expect(await loadAdvertisementHash('/doc', ['b', 'a'])).toEqual(
-      await tipsHash(['b', 'a']),
-    );
+  test('rejects omitted security commitments', async () => {
+    await expect((loadAdvertisementHash as any)('/doc', ['cid'])).rejects.toThrow();
+    await expect((loadAdvertisementHash as any)('/doc', ['cid'], undefined, new Uint8Array(32))).rejects.toThrow();
   });
 
   test('binds security commitments and document identity', async () => {

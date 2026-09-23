@@ -22,11 +22,11 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
+  isSyncMessageSignatureContext,
   describeValue,
   deserializeChangeNodeFromJSON,
   deserializeInitialLoadChallengeFromWire,
@@ -297,8 +297,7 @@ function assertAutomergeACLResourceLimits(
 }
 
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  // Start without a local `users` root so complete ACL histories produced by
-  // older random-seed releases apply without a competing root assignment.
+  // The first staged addition installs the canonical users root.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
   private _retainedChanges = new Map<
@@ -312,7 +311,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
   private readonly _queuedRemovalCommits = new WeakSet<
-    PreparedACLRemoval<BinaryChange[]>
+    PreparedACLChange<BinaryChange[]>
   >();
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<BinaryChange[]>
@@ -342,7 +341,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   private _commitQueuedRemoval(
-    prepared: PreparedACLRemoval<BinaryChange[]>,
+    prepared: PreparedACLChange<BinaryChange[]>,
   ): void {
     this._queuedRemovalCommits.add(prepared);
     try {
@@ -410,8 +409,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (getMissingDeps(this._acl, []).length > 0) {
       throw new Error(
         `Cannot ${operation}: Automerge ACL has unresolved change ` +
-          'dependencies. Replay the complete ACL history; legacy incremental ' +
-          'ACL changes that omitted their random seed cannot be migrated safely.',
+          'dependencies. Replay the complete ACL history.',
       );
     }
   }
@@ -449,6 +447,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const ancestryByHash = new Map<string, bigint>();
     const writesByKey = new Map<string, AutomergeACLKeyWrite[]>();
     let usersRootCreations = 0;
+    let canonicalUsersRoot = false;
 
     for (const binaryChange of getAllChanges(acl)) {
       const decoded = decodeChange(binaryChange);
@@ -474,6 +473,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
             );
           }
           usersRootCreations++;
+          canonicalUsersRoot = isCanonicalAutomergeACLUsersRootSeed(decoded);
         }
         if (
           usersObjectId !== undefined &&
@@ -514,6 +514,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       );
     }
     if (users === undefined) return;
+    if (!canonicalUsersRoot) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history requires the canonical users root`,
+      );
+    }
 
     for (const [key, frontier] of writesByKey) {
       // Homogeneous additions and removals are idempotent. A mixed or invalid
@@ -768,7 +773,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
     );
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
-    let prepared!: PreparedACLRemoval<BinaryChange[]>;
+    let prepared!: PreparedACLChange<BinaryChange[]>;
     const claimCommit = () => {
       if (state !== 'prepared') {
         throw new Error(
@@ -926,6 +931,8 @@ const MAX_KEYCHAIN_CHANGE_BYTES = 10 * 1024 * 1024;
  * peers do not trust each other's actor IDs.
  */
 const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
+const KEYCHAIN_PROJECTION_ACTOR_DOMAIN =
+  'peerborne:automerge-keychain-projection:v1\0';
 
 /**
  * Build a fresh keychain document. The seed change (creating the empty
@@ -935,7 +942,7 @@ const KEYCHAIN_SEED_ACTOR = 'ababababababababababababababababababababab';
  * operations let actual keychain histories merge without a root-array actor
  * conflict; filtered exports must still preserve their existing operation IDs.
  */
-function newKeychainDoc(): AutomergeKeychainDoc {
+function newKeychainDoc(actor?: string): AutomergeKeychainDoc {
   const seeded = change(
     init<{ keys: [string, string][] }>(KEYCHAIN_SEED_ACTOR),
     { time: 0 },
@@ -944,7 +951,30 @@ function newKeychainDoc(): AutomergeKeychainDoc {
     },
   );
   // clone() with no actor argument assigns a random per-instance actor.
-  return clone(seeded);
+  return actor === undefined ? clone(seeded) : clone(seeded, actor);
+}
+
+// This independently rooted current-key view is reconciled by prepareMerge:
+// a matching current tuple preserves the receiver's existing linear history
+// without applying the projection's unrelated CRDT root operations.
+let projectionTextEncoder: TextEncoder | undefined;
+
+async function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+): Promise<BinaryChange[]> {
+  const identity = (projectionTextEncoder ??= new TextEncoder()).encode(
+    `${KEYCHAIN_PROJECTION_ACTOR_DOMAIN}${JSON.stringify(entry)}`,
+  );
+  const actor = toHex(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', identity)),
+  );
+  const projection = change(newKeychainDoc(actor), { time: 0 }, (doc) => {
+    doc.keys.push([entry[0], entry[1]]);
+  });
+  validateAutomergeKeychain(projection);
+  return getAllChanges(projection).map(
+    (binaryChange) => new Uint8Array(binaryChange) as BinaryChange,
+  );
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -1281,15 +1311,10 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const changes = getChanges(base, keychainNew);
     const history = getAllChanges(keychainNew);
-    // This exact projection is safe to cache and replay because retries reuse
-    // its existing actor operation. It must not be regenerated later from a
-    // multi-key live history under a fresh actor.
-    const projectionBase = newKeychainDoc();
-    const projection = change(projectionBase, (doc) => {
-      doc.keys.push([epochIdHex, serialized]);
-    });
-    validateAutomergeKeychain(projection);
-    const currentKeyChange = getAllChanges(projection);
+    const currentKeyChange = await currentKeyProjection([
+      epochIdHex,
+      serialized,
+    ]);
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
     const claimCommit = () => {
       if (state !== 'prepared') {
@@ -1625,17 +1650,12 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<BinaryChange[]> {
-    validateAutomergeKeychain(this._keychain);
-    if (this._keychain.keys.length === 0) {
+    const entries = validateAutomergeKeychain(this._keychain);
+    if (entries.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (this._keychain.keys.length !== 1) {
-      throw new Error(
-        'Automerge cannot export the current key replay-safely',
-      );
-    }
-    return getAllChanges(this._keychain);
+    return currentKeyProjection(entries[entries.length - 1]);
   }
 
   /**
@@ -1874,6 +1894,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
     }
     const raw = decoded as {
       documentId?: unknown;
+      signatureContext?: unknown;
       changeId?: unknown;
       changes?: unknown;
       keychainChanges?: unknown;
@@ -1899,6 +1920,15 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       throw new Error(
         `Invalid sync message: 'documentId' must be a string (got ${describeValue(
           raw.documentId,
+        )})`,
+      );
+    }
+    if (
+      !isSyncMessageSignatureContext(raw.signatureContext)
+    ) {
+      throw new Error(
+        `Invalid sync message: 'signatureContext' is not a supported exact tag (got ${describeValue(
+          raw.signatureContext,
         )})`,
       );
     }
@@ -2098,6 +2128,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
         : deserializeInitialLoadChallengeFromWire(raw.loadChallenge);
     return this.orderDecodedSyncFields(raw, {
       documentId: raw.documentId,
+      signatureContext: raw.signatureContext,
       changeId: raw.changeId as string | undefined,
       signature: raw.signature as string | undefined,
       changes: raw.changes === undefined ? undefined : deserializeChangeNodeFromJSON(

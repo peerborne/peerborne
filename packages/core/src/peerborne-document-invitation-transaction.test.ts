@@ -141,6 +141,7 @@ function invitationHarness(options: {
     async (
       message: Record<string, unknown>,
       _verifySignature: boolean,
+      _context: string,
       _onStateApplicationStart: (() => void) | undefined,
       continuePending: boolean,
       _onLogicalKeychainChange: (() => void) | undefined,
@@ -165,6 +166,7 @@ function invitationHarness(options: {
   };
   const document = fakeDocument({
     documentPath: '/transactional-invitation',
+    swarm: { isPendingInvitationDocument: () => true },
     _bootstrapLoadApplicationState: 'pristine',
     _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set<string>(),
@@ -174,7 +176,9 @@ function invitationHarness(options: {
     _createdLocally: false,
     _kemKeyPair: { privateKey: {}, publicKey: {} },
     _kemPublicKeyRaw: new Uint8Array([8]),
-    _keychainProvider: { keyIDLength: 1 },
+    _keychainProvider: {
+      keyIDLength: 1,
+    },
     _keychain: {
       getKey: jest.fn(),
       keys: jest.fn(async () => []),
@@ -182,7 +186,7 @@ function invitationHarness(options: {
       ...(options.transactional === false ? {} : { prepareMerge }),
     },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: jest.fn(async (_ciphertext, key) => {
         order.push('decrypt');
         expect(key).toBe(stagedKey);
@@ -196,7 +200,7 @@ function invitationHarness(options: {
     _changesSerializer: {
       deserializeChanges: jest.fn(() => welcomeKeychainChanges),
       serializeChanges: jest.fn((changes: unknown) =>
-        changes === bootstrapKeychainChanges
+        (changes as { source?: string }).source === bootstrapKeychainChanges.source
           ? bootstrapKeychainBytes
           : welcomeKeychainBytes,
       ),
@@ -204,6 +208,8 @@ function invitationHarness(options: {
     _syncMessageSerializer: {
       deserializeSyncMessage: jest.fn(() => ({
         documentId: '/transactional-invitation',
+        signatureContext: 'invitation-bootstrap-v1',
+        tips: [],
         signature: 'AAAA',
         keychainChanges: bootstrapKeychainChanges,
       })),

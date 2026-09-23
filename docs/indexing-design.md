@@ -15,7 +15,7 @@ Implemented in `@peerborne/index`:
   semantics;
 - scan rejection unless `allowScan` is set;
 - serialized per-document updates, `flush()`/indexed consistency, generation
-  identity, persisted-schema invalidation, and legacy IndexedDB row backfill;
+  identity and persisted-schema invalidation;
 - memory-only-by-default v2 projections, with explicit opt-in for persistent
   cleartext projections;
 - a federation coordinator that treats every remote response as an untrusted
@@ -114,12 +114,12 @@ no usable leading key require a full scan. V2 rejects that plan unless
 executors support early termination. Every plan, including an exact physical
 lookup, rechecks the entire predicate against the stored local projection.
 
-### Query semantics added beyond the legacy API
+### Current query semantics
 
-The legacy `QueryOptions` interface remains available. The v2 `QueryAst` adds:
+The version 2 `QueryAst` is the only accepted query contract:
 
-- nested `and`/`or` expressions instead of an implicit conjunction only;
-- opaque schema/generation/query-bound cursors instead of offset-only pagination;
+- nested `and`/`or` expressions;
+- opaque schema/generation/query-bound cursors;
 - field projection with `select`;
 - `count: 'none' | 'exact'` so callers do not accidentally pay for or claim a
   count they did not compute;
@@ -138,7 +138,7 @@ stemming, ranking, arbitrary joins, or server-authoritative global search.
   an incremental insert/delete can shift `O(N)` entries per key in the worst
   case.
 - IndexedDB uses real compound secondary indexes over normalized key arrays.
-  A schema upgrade/backfill visits all stored rows.
+  Reopening a matching schema validates stored rows. Missing or mismatched schema identities cause the stored projection to be cleared.
 - An equality/range query visits the selected key range rather than every row.
   `rowsVisited` reports candidates read from physical storage; union lookups may
   count the same row more than once before deduplication.
@@ -193,10 +193,8 @@ and publish it on `searchIndexAdvertiseV1`. The receiver validates:
 - a strictly increasing per-peer sequence.
 
 Accepted filters replace the previous peer snapshot. They are never OR-merged
-across time. The legacy `BloomFilterGossip` grow-only merge is suitable only as
-an approximate compatibility primitive: it cannot remove terms and an
-all-ones/stale update permanently poisons routing. It must not be treated as an
-authoritative distributed index.
+across time. Only authenticated replacement advertisements are admitted to the
+routing registry; a filter cannot prove that its sender has a matching document.
 
 Bloom filters reveal approximate holdings, fill, update timing, and equality
 patterns to anyone who has or observes the relevant tokens. They have honest

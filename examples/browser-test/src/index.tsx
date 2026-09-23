@@ -30,9 +30,10 @@ import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
 
 declare global {
   interface Window {
-    __PEERBORNE_TEST_IDENTITY__?: { privateKey: JsonWebKey; publicKey: JsonWebKey };
     __PEERBORNE_TEST__?: {
+      identityFingerprint: () => string;
       open: (path: string) => Promise<unknown>;
+      create: (path: string) => Promise<unknown>;
       createInvitation: (
         path: string,
         role?: 'reader' | 'editor',
@@ -49,25 +50,34 @@ declare global {
 }
 
 const crossNatTest = import.meta.env.VITE_CROSS_NAT_TEST === '1';
-const injectedIdentity = crossNatTest
-  ? window.__PEERBORNE_TEST_IDENTITY__
+// In Chromium (our Playwright target), generated ECDSA public keys remain exportable.
+// The `extractable` flag must still keep the private key non-extractable so it can’t be exported into test artifacts.
+const userKeyPair = (await crypto.subtle.generateKey(
+  { name: 'ECDSA', namedCurve: 'P-384' },
+  false,
+  ['sign', 'verify'],
+)) as CryptoKeyPair;
+
+if (
+  crossNatTest &&
+  (userKeyPair.privateKey.extractable || !userKeyPair.publicKey.extractable)
+) {
+  throw new Error('Cross-NAT signing identity has invalid extractability');
+}
+
+async function publicKeyFingerprint(publicKey: CryptoKey): Promise<string> {
+  const rawPublicKey = await crypto.subtle.exportKey('raw', publicKey);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', rawPublicKey),
+  );
+  return Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+}
+
+const testIdentityFingerprint = crossNatTest
+  ? await publicKeyFingerprint(userKeyPair.publicKey)
   : undefined;
-const userKeyPair = injectedIdentity
-  ? {
-      privateKey: await crypto.subtle.importKey(
-        'jwk', injectedIdentity.privateKey,
-        { name: 'ECDSA', namedCurve: 'P-384' }, false, ['sign'],
-      ),
-      publicKey: await crypto.subtle.importKey(
-        'jwk', injectedIdentity.publicKey,
-        { name: 'ECDSA', namedCurve: 'P-384' }, true, ['verify'],
-      ),
-    }
-  : (await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' },
-      true,
-      ['sign', 'verify'],
-    )) as CryptoKeyPair;
 const serializer = new AutomergeJSONSerializer();
 
 const store = createStore(
@@ -109,9 +119,11 @@ function observedCircuitAddress(): string | undefined {
 // Deliberately test-only: Playwright uses this narrow bridge to exercise the
 // real Redux -> Peerborne -> Automerge path without coupling assertions to
 // jsoneditor's implementation details.
-if (crossNatTest && injectedIdentity) {
+if (testIdentityFingerprint !== undefined) {
   window.__PEERBORNE_TEST__ = {
+    identityFingerprint: () => testIdentityFingerprint,
     open: (path) => store.dispatch<any>(openDocumentAsync(path)),
+    create: (path) => store.dispatch<any>(openDocumentAsync(path, undefined, 'create')),
     createInvitation: async (path, role = 'editor') => {
       const documentRef = store.getState().documents[path]?.documentRef;
       if (!documentRef) throw new Error(`Document is not open: ${path}`);

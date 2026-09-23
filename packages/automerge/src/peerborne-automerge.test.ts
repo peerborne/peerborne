@@ -1168,8 +1168,9 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
 
     const fresh = new AutomergeACL();
-    expect(() => fresh.merge(independentChanges)).not.toThrow();
-    expect(await fresh.check(key2)).toBe(true);
+    expect(() => fresh.merge(independentChanges)).toThrow(/canonical users root/);
+    expect(fresh.current()).toEqual([]);
+    expect(await fresh.check(key2)).toBe(false);
   });
 
   test('rejects a concurrent membership assignment and deletion atomically', async () => {
@@ -1464,38 +1465,41 @@ describe('AutomergeACL', () => {
     expect(second.current()).toEqual(first.current());
   });
 
-  test('loads a complete ACL history from the legacy random-seed format', async () => {
+  test('rejects a complete ACL history with a noncanonical random seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+    expect(() => receiver.merge(getAllAutomergeChanges(noncanonicalWithMember))).toThrow(
+      /requires the canonical users root/,
+    );
 
-    expect(await receiver.check(key1)).toBe(true);
-    expect(await receiver.users()).toHaveLength(1);
+    expect(receiver.current()).toEqual([]);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.users()).toEqual([]);
   });
 
-  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+  test('fails closed for an incremental change that omitted its seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+    receiver.merge(getAutomergeChanges(noncanonicalBase, noncanonicalWithMember));
 
     await expect(receiver.check(key1)).rejects.toThrow(
       /unresolved change dependencies.*complete ACL history/i,
     );
-    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+    expect(() => receiver.current()).toThrow(/unresolved change dependencies/i);
   });
 
   test('allows valid child-before-parent delivery once dependencies arrive', async () => {
@@ -1793,7 +1797,7 @@ describe('AutomergeKeychain', () => {
     expect(result).toBeUndefined();
   });
 
-  test('currentKeyChange() reuses replay-safe history for a one-key keychain', async () => {
+  test('currentKeyChange() is stable for a one-key keychain', async () => {
     const source = new AutomergeKeychain();
     const [id] = await source.add();
 
@@ -1811,16 +1815,142 @@ describe('AutomergeKeychain', () => {
     expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
   });
 
-  test('currentKeyChange() rejects a later key rather than synthesizing a fresh actor', async () => {
+  test('currentKeyChange() exports a stable replay-safe current key after rotation', async () => {
     const source = new AutomergeKeychain();
-    await source.add();
-    await source.add();
+    const [oldID] = await source.add();
+    const [currentID, currentKey] = await source.add();
     const before = source.history().map((entry) => Array.from(entry));
 
-    await expect(source.currentKeyChange()).rejects.toThrow(
-      'Automerge cannot export the current key replay-safely',
-    );
+    const first = await source.currentKeyChange();
+    const repeated = await source.currentKeyChange();
+    const restored = new AutomergeKeychain();
+    restored.merge(source.history());
+    const afterRestore = await restored.currentKeyChange();
+    const equivalent = new AutomergeKeychain();
+    await equivalent.addEpochKey(currentID, currentKey);
+
+    expect(repeated).toEqual(first);
+    expect(afterRestore).toEqual(first);
+    expect(await equivalent.currentKeyChange()).toEqual(first);
+    const freshReceiver = new AutomergeKeychain();
+    freshReceiver.merge(first);
+    freshReceiver.merge(repeated);
+    freshReceiver.merge(afterRestore);
+    const freshKeys = await freshReceiver.keys();
+    expect(freshKeys.map(([keyID]) => keyID)).toEqual([currentID]);
+    await expect(
+      crypto.subtle.exportKey('raw', freshKeys[0][1]),
+    ).resolves.toEqual(await crypto.subtle.exportKey('raw', currentKey));
+
+    const establishedReceiver = new AutomergeKeychain();
+    establishedReceiver.merge(source.history());
+    establishedReceiver.merge(first);
+    expect(establishedReceiver.history()).toEqual(source.history());
+    expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
+      oldID,
+      currentID,
+    ]);
     expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
+  });
+
+  test('projection actor identity binds the complete key tuple', async () => {
+    const id = new Uint8Array(32).fill(0x4a);
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const first = new AutomergeKeychain();
+    const second = new AutomergeKeychain();
+    await first.addEpochKey(id, firstKey);
+    await second.addEpochKey(id, secondKey);
+
+    const firstProjection = await first.currentKeyChange();
+    const secondProjection = await second.currentKeyChange();
+    expect(decodeAutomergeChange(firstProjection[1]).actor).not.toBe(
+      decodeAutomergeChange(secondProjection[1]).actor,
+    );
+    expect(firstProjection).not.toEqual(secondProjection);
+
+    const retainedKeys: ArrayBuffer[] = [];
+    for (const [accepted, conflicting] of [
+      [firstProjection, secondProjection],
+      [secondProjection, firstProjection],
+    ] as const) {
+      const receiver = new AutomergeKeychain();
+      receiver.merge(accepted);
+      const before = receiver.history().map((change) => Array.from(change));
+      expect(() => receiver.merge(conflicting)).toThrow(
+        'Standalone keychain history is not an append-only view',
+      );
+      expect(receiver.history().map((change) => Array.from(change))).toEqual(
+        before,
+      );
+      retainedKeys.push(
+        await crypto.subtle.exportKey('raw', (await receiver.current())[1]),
+      );
+    }
+    expect(new Uint8Array(retainedKeys[0])).not.toEqual(
+      new Uint8Array(retainedKeys[1]),
+    );
+  });
+
+  test('a current-only receiver can apply the next predecessor-bound rotation', async () => {
+    const source = new AutomergeKeychain();
+    await source.add();
+    const [currentID] = await source.add();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const next = await source.prepareKey();
+    const nextID = new Uint8Array(next.keyId);
+    const distributed = next.currentKeyChange!;
+    next.commit();
+    const prepared = receiver.prepareAppend(distributed, {
+      expectedPreviousKeyId: currentID,
+      expectedNewKeyId: nextID,
+    });
+    await prepared.hydrateKeys();
+    prepared.commit();
+
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([
+      currentID,
+      nextID,
+    ]);
+    expect((await receiver.current())[0]).toEqual(nextID);
+    expect(receiver.getKey(nextID)).toBeDefined();
+  });
+
+  test('a receiver that misses a rotation rejects the later successor without mutation', async () => {
+    const source = new AutomergeKeychain();
+    const [initialID] = await source.add();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const missed = await source.prepareKey();
+    const missedID = new Uint8Array(missed.keyId);
+    missed.commit();
+    const later = await source.prepareKey();
+    const laterID = new Uint8Array(later.keyId);
+    const laterProjection = later.currentKeyChange!;
+    later.commit();
+    const before = receiver.history().map((change) => Array.from(change));
+
+    expect(() =>
+      receiver.prepareAppend(laterProjection, {
+        expectedPreviousKeyId: missedID,
+        expectedNewKeyId: laterID,
+      }),
+    ).toThrow(/predecessor does not match current key/);
+    expect(receiver.history().map((change) => Array.from(change))).toEqual(
+      before,
+    );
+    expect((await receiver.current())[0]).toEqual(initialID);
   });
 
   test('historySince() reuses replay-safe history at the first key', async () => {
@@ -2023,7 +2153,7 @@ describe('AutomergeKeychain', () => {
     expect(keychain.getKey(expectedEpochId)).toBe(key);
   });
 
-  test('legacy keychain commit uses its captured claim method', async () => {
+  test('keychain commit uses its captured claim method', async () => {
     const keychain = new AutomergeKeychain();
     const epochId = crypto.getRandomValues(new Uint8Array(32));
     const key = await crypto.subtle.generateKey(
@@ -2514,7 +2644,7 @@ describe('AutomergeKeychain', () => {
     );
   });
 
-  test('legacy merge commit ignores an accessor replacing the returned claim method', async () => {
+  test('merge commit ignores an accessor replacing the returned claim method', async () => {
     const source = new AutomergeKeychain();
     const [epochId] = await source.add();
     const receiver = new AutomergeKeychain();
@@ -3013,7 +3143,7 @@ describe('AutomergeJSONSerializer', () => {
   }
 
   test('preserves nested sync-message signing bytes across the wire', () => {
-    const unsignedMessage = {
+    const unsignedMessage = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'signed-doc',
       changeId: 'root-cid',
       changes: {
@@ -3043,7 +3173,7 @@ describe('AutomergeJSONSerializer', () => {
 
   test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
     const genericSerialize = jest.spyOn(serializer, 'serialize');
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'maximum-depth',
       changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
     });
@@ -3053,7 +3183,7 @@ describe('AutomergeJSONSerializer', () => {
     expect(genericSerialize).not.toHaveBeenCalled();
     genericSerialize.mockRestore();
     expect(() =>
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: 'over-maximum-depth',
         changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
       }),
@@ -3061,7 +3191,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('round-trips 4096 shallow history nodes with stable wire bytes', () => {
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'wide-history',
       changes: shallowTree(SHALLOW_HISTORY_NODE_COUNT),
     });
@@ -3078,8 +3208,8 @@ describe('AutomergeJSONSerializer', () => {
     ).toHaveLength(SHALLOW_HISTORY_NODE_COUNT - 1);
   });
 
-  test('preserves the existing sync-message wire bytes', () => {
-    const wire = serializer.serializeSyncMessage({
+  test('encodes the current sync-message wire bytes', () => {
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'wire-compatibility',
       changes: {
         kind: 'document',
@@ -3089,7 +3219,7 @@ describe('AutomergeJSONSerializer', () => {
     });
 
     expect(new TextDecoder().decode(wire)).toBe(
-      '{"documentId":"wire-compatibility","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
+      '{"signatureContext":"ordinary-sync-v1","documentId":"wire-compatibility","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
     );
   });
 
@@ -3199,28 +3329,28 @@ describe('AutomergeJSONSerializer', () => {
   }
 
   test('deserializeSyncMessage rejects "changes: null" (validation bypass regression)', () => {
-    const wire = buildWire({ documentId: 'doc', changes: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got null/,
     );
   });
 
   test('deserializeSyncMessage rejects "changes: 0"', () => {
-    const wire = buildWire({ documentId: 'doc', changes: 0 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: 0 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got number/,
     );
   });
 
   test('deserializeSyncMessage rejects "changes: \\"\\"" (empty string)', () => {
-    const wire = buildWire({ documentId: 'doc', changes: '' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: '' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got string/,
     );
   });
 
   test('deserializeSyncMessage accepts omitted "changes" field', () => {
-    const wire = buildWire({ documentId: 'doc' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.changes).toBeUndefined();
   });
@@ -3229,7 +3359,7 @@ describe('AutomergeJSONSerializer', () => {
     // Mirror the intended V4 response construction order: signature already
     // has an insertion slot from the cached sync message, while
     // keychainChanges is appended after the V4 challenge.
-    const message: any = {
+    const message: any = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/signed-load',
       changeId: 'ROOT',
       changes: {
@@ -3275,7 +3405,7 @@ describe('AutomergeJSONSerializer', () => {
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeEpochId for BeeKEM Welcome', () => {
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = (i * 11) & 0xff;
-    const message = {
+    const message = { signatureContext: 'beekem-welcome-v2' as const,
       documentId: 'welcome-doc',
       welcomeEpochId: epochId,
     };
@@ -3285,14 +3415,14 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage omits welcomeEpochId when absent on wire', () => {
-    const message = { documentId: 'no-welcome-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-welcome-doc' };
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.welcomeEpochId).toBeUndefined();
   });
 
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeRecipient', () => {
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'welcome-doc',
       welcomeRecipient: 'recipient-serialized-pubkey-base64',
     };
@@ -3304,14 +3434,14 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage omits welcomeRecipient when absent on wire', () => {
-    const message = { documentId: 'no-welcome-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-welcome-doc' };
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.welcomeRecipient).toBeUndefined();
   });
 
   test('deserializeSyncMessage rejects non-string welcomeRecipient', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'doc',
       welcomeRecipient: 42,
     });
@@ -3323,7 +3453,7 @@ describe('AutomergeJSONSerializer', () => {
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeRecipientKemPublicKey', () => {
     const kemPub = new Uint8Array(65);
     for (let i = 0; i < kemPub.length; i++) kemPub[i] = (i * 11) & 0xff;
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'welcome-doc',
       welcomeRecipientKemPublicKey: kemPub,
     };
@@ -3335,7 +3465,7 @@ describe('AutomergeJSONSerializer', () => {
   test('serializeSyncMessage/deserializeSyncMessage preserves eciesSealed', () => {
     const sealed = new Uint8Array(160);
     for (let i = 0; i < sealed.length; i++) sealed[i] = (i * 17) & 0xff;
-    const message = {
+    const message = { signatureContext: 'beekem-welcome-v2' as const,
       documentId: 'welcome-doc',
       eciesSealed: sealed,
     };
@@ -3366,7 +3496,7 @@ describe('AutomergeJSONSerializer', () => {
       ],
       treeHash: 'DQ4P',
     };
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'beekem-path-update-v2' as const,
       documentId: 'pathupdate-v2-doc',
       pathUpdate,
     });
@@ -3376,7 +3506,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {
-    const message = { documentId: 'no-pathupdate-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-pathupdate-doc' };
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.pathUpdate).toBeUndefined();
@@ -3385,7 +3515,7 @@ describe('AutomergeJSONSerializer', () => {
   test('serializeSyncMessage/deserializeSyncMessage preserves pathUpdateEpochId', () => {
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = (i * 7) & 0xff;
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'pathupdate-doc',
       pathUpdateEpochId: epochId,
     };
@@ -3395,7 +3525,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage rejects pathUpdate that is not an object', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'beekem-path-update-v2' as const,
       documentId: 'doc',
       pathUpdate: 'not-an-object',
     });
@@ -3405,7 +3535,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage rejects pathUpdate that is null', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'beekem-path-update-v2' as const,
       documentId: 'doc',
       pathUpdate: null,
     });
@@ -3415,7 +3545,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage rejects non-string pathUpdateEpochId', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'doc',
       pathUpdateEpochId: 42,
     });
@@ -3440,7 +3570,7 @@ describe('AutomergeJSONSerializer', () => {
   ])(
     'serializeSyncMessage/deserializeSyncMessage preserves tipsHash (quorum, %s)',
     (_label, hash) => {
-      const wire = serializer.serializeSyncMessage({
+      const wire = serializer.serializeSyncMessage({ signatureContext: 'security-advertisement-v1' as const,
         documentId: 'quorum-doc',
         tipsHash: hash,
       });
@@ -3450,7 +3580,7 @@ describe('AutomergeJSONSerializer', () => {
   );
 
   test('deserializeSyncMessage omits tipsHash when absent on wire', () => {
-    const message = { documentId: 'no-quorum-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-quorum-doc' };
     const wire = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.tipsHash).toBeUndefined();
@@ -3460,7 +3590,7 @@ describe('AutomergeJSONSerializer', () => {
   // it builds a malformed wire payload via `buildWire` to exercise the
   // deserialize-side validator -- different setup from the round-trip cases.
   test('deserializeSyncMessage rejects non-string tipsHash', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'security-advertisement-v1' as const,
       documentId: 'doc',
       tipsHash: 42,
     });
@@ -3481,7 +3611,7 @@ describe('AutomergeJSONSerializer', () => {
     'deserializeSyncMessage rejects tipsHash that is not exactly 32 bytes (%s)',
     (_label, malformedHash) => {
       const b64 = Buffer.from(malformedHash).toString('base64');
-      const wire = buildWire({ documentId: 'doc', tipsHash: b64 });
+      const wire = buildWire({ signatureContext: 'security-advertisement-v1' as const, documentId: 'doc', tipsHash: b64 });
       expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
         /tipsHash.*32 bytes/,
       );
@@ -3498,7 +3628,7 @@ describe('AutomergeJSONSerializer', () => {
   ])(
     'serializeSyncMessage/deserializeSyncMessage preserves tips (%s)',
     (_label, tips) => {
-      const wire = serializer.serializeSyncMessage({
+      const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: 'frontier-doc',
         tips,
       });
@@ -3508,7 +3638,7 @@ describe('AutomergeJSONSerializer', () => {
   );
 
   test('deserializeSyncMessage omits tips when absent on wire', () => {
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'no-frontier-doc',
     });
     const deserialized = serializer.deserializeSyncMessage(wire);
@@ -3516,12 +3646,12 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage rejects non-array tips', () => {
-    const wire = buildWire({ documentId: 'doc', tips: 'not-an-array' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', tips: 'not-an-array' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tips/);
   });
 
   test('deserializeSyncMessage rejects non-string tips entries', () => {
-    const wire = buildWire({ documentId: 'doc', tips: ['ok', 42] });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', tips: ['ok', 42] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/tips/);
   });
 
@@ -3576,49 +3706,69 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage rejects payload with non-string documentId (number)', () => {
-    const wire = buildWire({ documentId: 42 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 42 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got number/,
     );
   });
 
   test('deserializeSyncMessage rejects payload with null documentId', () => {
-    const wire = buildWire({ documentId: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got null/,
     );
   });
 
   test('deserializeSyncMessage rejects payload with object documentId', () => {
-    const wire = buildWire({ documentId: { id: 'doc' } });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: { id: 'doc' } });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got object/,
     );
   });
 
   test('deserializeSyncMessage rejects non-string changeId', () => {
-    const wire = buildWire({ documentId: 'doc', changeId: 7 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changeId: 7 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'changeId' must be a string when present.*got number/,
     );
   });
 
   test('deserializeSyncMessage rejects non-string signature', () => {
-    const wire = buildWire({ documentId: 'doc', signature: 7 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', signature: 7 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'signature' must be a string when present.*got number/,
     );
   });
 
+  test('deserializeSyncMessage preserves an exact signature context', () => {
+    const wire = buildWire({
+      documentId: 'doc',
+      signatureContext: 'invitation-bootstrap-v1',
+    });
+    expect(serializer.deserializeSyncMessage(wire).signatureContext).toBe(
+      'invitation-bootstrap-v1',
+    );
+  });
+
+  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V3'])(
+    'deserializeSyncMessage rejects noncanonical signature context %#',
+    (signatureContext) => {
+      const wire = buildWire({ documentId: 'doc', signatureContext });
+      expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+        /signatureContext.*supported exact tag/,
+      );
+    },
+  );
+
   test('deserializeSyncMessage rejects non-array keychainChanges', () => {
-    const wire = buildWire({ documentId: 'doc', keychainChanges: 'not-an-array' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', keychainChanges: 'not-an-array' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'keychainChanges' must be an array when present.*got string/,
     );
   });
 
   test('deserializeSyncMessage rejects array snapshot', () => {
-    const wire = buildWire({ documentId: 'doc', snapshot: [1, 2, 3] });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: [1, 2, 3] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got array/,
     );
@@ -3629,28 +3779,28 @@ describe('AutomergeJSONSerializer', () => {
   // payload. The fix routes any non-`undefined` value through the validator
   // so peers can't bypass it by sending `snapshot: null/0/""`.
   test('deserializeSyncMessage rejects "snapshot: null" (validation bypass regression)', () => {
-    const wire = buildWire({ documentId: 'doc', snapshot: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got null/,
     );
   });
 
   test('deserializeSyncMessage rejects "snapshot: 0"', () => {
-    const wire = buildWire({ documentId: 'doc', snapshot: 0 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: 0 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got number/,
     );
   });
 
   test('deserializeSyncMessage rejects "snapshot: \\"\\"" (empty string)', () => {
-    const wire = buildWire({ documentId: 'doc', snapshot: '' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: '' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got string/,
     );
   });
 
   test('deserializeSyncMessage accepts omitted "snapshot" field', () => {
-    const wire = buildWire({ documentId: 'doc' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.snapshot).toBeUndefined();
   });
@@ -3661,7 +3811,7 @@ describe('AutomergeJSONSerializer', () => {
   // they would leak through to downstream consumers. The fix only propagates
   // fields declared on `CRDTSyncMessage`.
   test('deserializeSyncMessage strips peer-supplied junk keys', () => {
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'doc',
       changeId: 'cid',
       somethingExtra: 'evil',
@@ -3677,7 +3827,7 @@ describe('AutomergeJSONSerializer', () => {
   });
 
   test('deserializeSyncMessage round-trips a minimal valid payload', () => {
-    const wire = buildWire({ documentId: 'doc' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.documentId).toBe('doc');
     expect(deserialized.changes).toBeUndefined();
@@ -3730,7 +3880,7 @@ describe('bounded initial invitation profile', () => {
     const cid = (label: string) => `bafy${label.repeat(55).slice(0, 55)}`;
     const founderCid = cid('f');
     const signature = 'A'.repeat(128);
-    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/capacity-growth',
       changeId: founderCid,
       changes: { kind: 'writer', change: founderChanges },
@@ -3763,7 +3913,7 @@ describe('bounded initial invitation profile', () => {
       previousNode = nextNode;
     }
 
-    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = {
+    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: baseline.documentId,
       changeId: previousCid,
       changes: previousNode,
@@ -3797,7 +3947,7 @@ describe('bounded initial invitation profile', () => {
       },
     );
     expect(document.value).toBe('founder plus one');
-    const plaintext = serializer.serializeSyncMessage({
+    const plaintext = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/real-overheads',
       changes: { kind: 'document', change: changes },
     });

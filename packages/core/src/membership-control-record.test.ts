@@ -74,6 +74,23 @@ function unsigned(
 }
 
 describe('membership control records', () => {
+  test('rejects invalid protocol identifiers after RegExp.exec is replaced', () => {
+    const invalid = { ...unsigned(0n, 1), protocol: { id: '!invalid', version: 1 } };
+    const original = RegExp.prototype.exec;
+    let rejected = false;
+    try {
+      RegExp.prototype.exec = () => ['accepted'] as RegExpExecArray;
+      try {
+        canonicalMembershipControlPayload(invalid);
+      } catch {
+        rejected = true;
+      }
+    } finally {
+      RegExp.prototype.exec = original;
+    }
+    expect(rejected).toBe(true);
+  });
+
   test('strictly round-trips canonical records across the u64 epoch range', async () => {
     const identity = await HmacIdentity.create();
     const maximum = (1n << 64n) - 1n;
@@ -115,6 +132,32 @@ describe('membership control records', () => {
     expect(() =>
       deserializeMembershipControlRecord(new Uint8Array(4 * 1024 * 1024 + 1)),
     ).toThrow(/invalid length/);
+  });
+
+  test.each(['\n', '\r', '\u2028', '\u2029'])(
+    'rejects a protocol ID with trailing line terminator %p',
+    (terminator) => {
+      expect(() =>
+        canonicalMembershipControlPayload({
+          ...unsigned(0n, 1),
+          protocol: { id: `control.test${terminator}`, version: 1 },
+        }),
+      ).toThrow(/canonical protocol identifier/);
+    },
+  );
+
+  test('rejects a decoded protocol ID with a trailing line terminator', async () => {
+    const identity = await HmacIdentity.create();
+    const malformed = new Uint8Array(
+      serializeMembershipControlRecord(
+        await signMembershipControlRecord(unsigned(0n, 1), identity.sign),
+      ),
+    );
+    const protocolOffset = 8 + 2 + 2;
+    malformed[protocolOffset + protocol.id.length - 1] = 0x0a;
+    expect(() => deserializeMembershipControlRecord(malformed)).toThrow(
+      /canonical protocol identifier/,
+    );
   });
 
   test('record identity covers canonical content but not signature bytes', async () => {
@@ -320,6 +363,98 @@ describe('membership control records', () => {
     });
     expect(chain.length).toBe(2);
     expect(chain.headRecordId).toEqual(await membershipControlRecordId(next));
+  });
+
+  test('keeps identity keys distinct after iterator and formatter mutation', async () => {
+    const identity = await HmacIdentity.create();
+    const chain = new MembershipControlChain({
+      protocol,
+      groupId,
+      verifySignature: identity.verify,
+      authorize: async () => true,
+    });
+    const genesis = await signMembershipControlRecord(
+      unsigned(0n, 1),
+      identity.sign,
+    );
+    const next = await signMembershipControlRecord(
+      unsigned(1n, 2, await membershipControlRecordId(genesis)),
+      identity.sign,
+    );
+    const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const iteratorDescriptor = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      Symbol.iterator,
+    )!;
+    const numberToStringDescriptor = Object.getOwnPropertyDescriptor(
+      Number.prototype,
+      'toString',
+    )!;
+    const bigintToStringDescriptor = Object.getOwnPropertyDescriptor(
+      BigInt.prototype,
+      'toString',
+    )!;
+    const padStartDescriptor = Object.getOwnPropertyDescriptor(
+      String.prototype,
+      'padStart',
+    )!;
+    const emptyIterator = function () {
+      return {
+        next: () => ({ done: true, value: undefined }),
+        [Symbol.iterator]() {
+          return this;
+        },
+      };
+    };
+    const collapseFormatting = () => '';
+    let first: Awaited<ReturnType<typeof chain.ingest>>;
+    let second: Awaited<ReturnType<typeof chain.ingest>>;
+    try {
+      Object.defineProperty(typedArrayPrototype, Symbol.iterator, {
+        ...iteratorDescriptor,
+        value: emptyIterator,
+      });
+      Object.defineProperty(Number.prototype, 'toString', {
+        ...numberToStringDescriptor,
+        value: collapseFormatting,
+      });
+      Object.defineProperty(BigInt.prototype, 'toString', {
+        ...bigintToStringDescriptor,
+        value: collapseFormatting,
+      });
+      Object.defineProperty(String.prototype, 'padStart', {
+        ...padStartDescriptor,
+        value: collapseFormatting,
+      });
+
+      first = await chain.ingest(genesis);
+      second = await chain.ingest(next);
+    } finally {
+      Object.defineProperty(
+        typedArrayPrototype,
+        Symbol.iterator,
+        iteratorDescriptor,
+      );
+      Object.defineProperty(
+        Number.prototype,
+        'toString',
+        numberToStringDescriptor,
+      );
+      Object.defineProperty(
+        BigInt.prototype,
+        'toString',
+        bigintToStringDescriptor,
+      );
+      Object.defineProperty(
+        String.prototype,
+        'padStart',
+        padStartDescriptor,
+      );
+    }
+
+    expect(first!).toMatchObject({ status: 'accepted' });
+    expect(second!).toMatchObject({ status: 'accepted' });
+    expect(chain.length).toBe(2);
   });
 
   test('rejects truthy non-boolean verifier and authorizer results', async () => {

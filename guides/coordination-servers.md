@@ -92,9 +92,9 @@ If you need TURN, consider [coturn](https://github.com/coturn/coturn) (open sour
 | **Required?** | **Optional** but strongly recommended for production |
 | **Protocol** | IPFS Bitswap (built into Helia) |
 
-Peerborne's Node-only `PeerborneNode` includes the listener side of a pinning flow, but the normal document commit path does not publish the announcements that activate it. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
+Peerborne's Node-only `PeerborneNode` has no document-announcement receiver or authenticated publisher. Peerborne does not currently ship a runnable end-to-end pinning daemon or durability guarantee.
 
-Self-hosted pinning therefore requires application-specific publication, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
+Self-hosted pinning therefore requires a new domain-separated, writer-authorized, replay-protected protocol plus application-specific local pin policy, persistence, and recovery integration. See the [pinning cookbook](../site/src/content/docs/cookbook/pinning.md) before designing one. For managed IPFS services, see [Public Alternatives](#4-public-alternatives).
 
 ### 1.6 DHT Bootstrap Node
 
@@ -233,9 +233,8 @@ The relay server reads the following environment variables:
 | `TCP_PORT` | TCP listen port | `9002` |
 | `WS_LISTEN` | Full WebSocket listen multiaddr | `/ip4/0.0.0.0/tcp/${WS_PORT}/ws` |
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
-| `DOCUMENT_PUBLISH_PATH` | Pubsub topic for document publish notifications | `/documents` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/document/,/documents` |
+| `TOPIC_ALLOWLIST` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
 | `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
@@ -257,6 +256,12 @@ those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions
 `MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
 `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
 the relay's application-level registry receives subscription events.
+Allowlist entries ending in `/` match a namespace prefix. Entries without a
+trailing slash match one exact topic, so `/announcements` does not also admit
+`/announcements-extra`. All peers on a custom prefix must use the current
+runtime, and every relay must include that prefix in `TOPIC_ALLOWLIST`.
+Operator-configured permanent subscriptions belong in `EXTRA_TOPICS`.
+Topic names are routing labels, not authentication or wire validation.
 
 The relay-info.json output path is determined automatically: `/shared/relay-info.json` if the `/shared` directory exists (Docker volume), otherwise `./relay-info.json` in the working directory.
 
@@ -614,12 +619,11 @@ Override relay defaults by adding entries to `[env]` in `fly.toml`:
 
 ```toml
 [env]
-  TOPIC_ALLOWLIST  = "/document/,/documents"
+  TOPIC_ALLOWLIST  = "/peerborne/document/v3/"
   MAX_AUTO_TOPICS  = "500"
   MAX_AUTO_TOPICS_PER_PEER = "32"
   GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"
   MAX_CONNECTIONS  = "256"
-  EXTRA_TOPICS     = "/documents"
 ```
 
 For secrets (e.g. future auth tokens), use `fly secrets set` instead:
@@ -735,7 +739,7 @@ See individual Dockerfile documentation in `guides/docker/` for build instructio
 
 **Causes and solutions:**
 1. **Relay not forwarding:** Ensure the relay has `floodPublish: true` and `canRelayMessage: true` in GossipSub config
-2. **Topic mismatch:** Verify both peers subscribe to the same topic (e.g., `/document/<id>`)
+2. **Topic mismatch:** Verify both peers use the same versioned topic (for example, `/peerborne/document/v3/<id>`). Earlier default document topics are rejected.
 3. **Mesh not formed:** GossipSub mesh takes 5-10 seconds to form. Wait or send warmup messages
 4. **libp2p version mismatch:** Use `@libp2p/gossipsub` v17.x with libp2p v3.x. Verify that both packages resolve to compatible `@libp2p/interface` v3.x versions.
 
@@ -771,7 +775,7 @@ localStorage.setItem('debug', 'libp2p:*')
    ```text
    PeerId: 12D3KooW...
    Multiaddrs: [ '/ip4/0.0.0.0/tcp/9001/ws/p2p/12D3KooW...' ]
-   Subscribed to topics: swarmdb._peer-discovery._p2p._pubsub /documents
+   Subscribed to configured relay topics { seedTopicCount: 2, extraTopicCount: 0 }
    ```
 
 2. **Check relay-info.json:**

@@ -1,13 +1,14 @@
+import { fixtureLoadChallenge } from './__testutils__/load-session.js';
+import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { Peerborne } from './peerborne.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  documentKeyUpdateV2,
-  documentLoadV3,
-  snapshotLoadV3,
-  tipAdvertiseV1,
+  documentLoadV4,
+  snapshotLoadV4,
+  securityAdvertiseV1,
 } from './wire-protocols.js';
 
 jest.mock(
@@ -40,14 +41,19 @@ jest.mock('@multiformats/multiaddr', () => ({ multiaddr: jest.fn() }), {
 
 type Handler = (stream: unknown) => Promise<void>;
 
+function requestBytes(documentId: string): Uint8Array {
+  return new JSONSerializer<unknown>().serializeLoadRequest({
+    documentId, signature: 'AQ==', loadChallenge: fixtureLoadChallenge(),
+  });
+}
+
 const jsonProtocols = [
-  ['doc-load', documentLoadV3, 'handleLoadRequestData'],
-  ['snapshot-load', snapshotLoadV3, 'handleSnapshotLoadRequestData'],
-  ['tip-advertise', tipAdvertiseV1, 'handleTipAdvertiseRequestData'],
+  ['doc-load', documentLoadV4, 'handleLoadRequestData'],
+  ['snapshot-load', snapshotLoadV4, 'handleSnapshotLoadRequestData'],
+  ['tip-advertise', securityAdvertiseV1, 'handleSecurityAdvertiseRequestData'],
 ] as const;
 
 const rawProtocols = [
-  ['key-update', documentKeyUpdateV2, 'handleKeyUpdateRequestData'],
   ['beekem-welcome', beekemWelcomeV2, 'handleBeeKEMWelcomeRequestData'],
   [
     'beekem-pathupdate',
@@ -168,9 +174,9 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
+          stream: ProtocolWriteStream,
         ) => {
-          await stream.sink([response]);
+          await writeStream(stream, [response]);
         },
       );
       (peerborne as any)._documentRegistry.set('/fragmented', {
@@ -178,8 +184,8 @@ describe('shared protocol request boundaries', () => {
       });
       const { iterator, resource, stream } = streamFromChunks(
         [
-          new TextEncoder().encode('{"documentId":"/frag'),
-          new TextEncoder().encode('mented","signature":"sig"}'),
+          requestBytes('/fragmented').slice(0, 20),
+          requestBytes('/fragmented').slice(20),
         ],
         {
           close: () => writeClosed.promise,
@@ -234,17 +240,15 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
-        ) => stream.sink([response]),
+          stream: ProtocolWriteStream,
+        ) => writeStream(stream, [response]),
       );
       (peerborne as any)._documentRegistry.set('/registered', {
         handleLoadRequestData: documentHandler,
       });
       const { resource, stream } = streamFromChunks(
         [
-          new TextEncoder().encode(
-            JSON.stringify({ documentId: '/registered' }),
-          ),
+          requestBytes('/registered'),
         ],
         blockedAt === 'drain'
           ? {
@@ -261,7 +265,7 @@ describe('shared protocol request boundaries', () => {
         .mockImplementation(() => undefined);
 
       try {
-        const result = handlers.get(documentLoadV3)!(stream);
+        const result = handlers.get(documentLoadV4)!(stream);
         await waitForCall(
           blockedAt === 'drain' ? stream.onDrain : stream.close,
         );
@@ -426,7 +430,7 @@ describe('shared protocol request boundaries', () => {
       },
     );
     (peerborne as any)._documentRegistry.set('/registered', {
-      handleKeyUpdateRequestData: documentHandler,
+      handleBeeKEMWelcomeRequestData: documentHandler,
     });
     const { resource, stream } = streamFromChunks(
       [pathPrefixedMessage('/registered')],
@@ -438,7 +442,7 @@ describe('shared protocol request boundaries', () => {
 
     try {
       let settled = false;
-      const result = handlers.get(documentKeyUpdateV2)!(stream).then(() => {
+      const result = handlers.get(beekemWelcomeV2)!(stream).then(() => {
         settled = true;
       });
       await commitStarted.promise;
@@ -603,7 +607,7 @@ describe('shared protocol request boundaries', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
     let settled = false;
-    const result = handlers.get(documentLoadV3)!(stream).then(() => {
+    const result = handlers.get(documentLoadV4)!(stream).then(() => {
       settled = true;
     });
 
@@ -662,15 +666,15 @@ describe('shared protocol request boundaries', () => {
   );
 
   test.each([
-    ['doc-load', documentLoadV3],
-    ['snapshot-load', snapshotLoadV3],
+    ['doc-load', documentLoadV4],
+    ['snapshot-load', snapshotLoadV4],
   ] as const)(
     'does not log an attacker-controlled unknown document ID in %s',
     async (handlerName, protocol) => {
       const { handlers } = await registerHandlers();
       const attackerId = '/private-document-id-that-must-not-reach-logs';
       const { stream } = streamFromChunks([
-        new TextEncoder().encode(JSON.stringify({ documentId: attackerId })),
+        requestBytes(attackerId),
       ]);
       const warn = jest
         .spyOn(console, 'warn')
@@ -714,9 +718,7 @@ describe('shared protocol request boundaries', () => {
       });
       const request =
         framing === 'json'
-          ? new TextEncoder().encode(
-              JSON.stringify({ documentId: '/registered' }),
-            )
+          ? requestBytes('/registered')
           : pathPrefixedMessage('/registered');
       const { resource, stream } = streamFromChunks([request], {
         endAfterChunks: framing === 'raw',

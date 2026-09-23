@@ -16,7 +16,10 @@ import {
   PeerborneDocumentChangeHandler,
   HistoryVisibility,
 } from './peerborne-document.js';
-import { CRDTSyncMessage } from './crdt-sync-message.js';
+import {
+  CRDTSyncMessage,
+  isSyncMessageSignatureContext,
+} from './crdt-sync-message.js';
 // PeerborneNode is intentionally excluded from this barrel export.
 // It is a Node-only module (imports `fs`, `@libp2p/mdns` which depends on
 // `dgram`) and must not be bundled by browser consumers. Import it from the
@@ -37,20 +40,16 @@ import {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
 } from './acl.js';
 import {
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -128,11 +127,9 @@ import { LRUCache } from './lru-cache.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
   DOC_KEY_INFO,
@@ -183,13 +180,13 @@ export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
+export * from './group-security-transition-record.js';
 export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
   retryACLConflict,
   ACLProvider,
   SubtleCrypto,
@@ -211,6 +208,7 @@ export {
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
   CRDTSyncMessage,
+  isSyncMessageSignatureContext,
   CRDTProvider,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
@@ -230,15 +228,12 @@ export {
   MembershipProposal,
   GroupKeyProvider,
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -277,13 +272,11 @@ export {
   canonicalEntryPayload,
   computeEntryHash,
   // Wire protocols
-  bloomFilterUpdateV1,
   beekemWelcomeV2,
   beekemPathUpdateV2,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
   // BeeKEM document-key derivation
   DOC_KEY_INFO,
   deriveDocumentKeyFromRootSecret,
@@ -333,6 +326,7 @@ export type {
 } from './auth-provider.js';
 export type { SubtleCryptoEncryptionResult } from './auth-subtlecrypto.js';
 export type { CRDTLoadRequest } from './crdt-load-request.js';
+export type { SyncMessageSignatureContext } from './crdt-sync-message.js';
 export type {
   CRDTDocumentChangeNode,
   CRDTWriterChangeNode,
@@ -412,12 +406,6 @@ export type {
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
 export {
-  allowsUnauthenticatedUnknownDocumentSentinel,
-  isUnknownDocumentAdvertisement,
-  unknownDocumentAdvertisement,
-} from './initial-load-sentinel-policy.js';
-export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
-export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
   cloneInitialLoadChallenge,
@@ -429,11 +417,10 @@ export {
   validateInitialLoadChallenge,
 } from './initial-load-challenge.js';
 export {
-  documentLoadV3,
   documentLoadV4,
-  snapshotLoadV3,
   snapshotLoadV4,
   securityAdvertiseV1,
+  invitationCatchUpV1,
 } from './wire-protocols.js';
 export type {
   ACLChainConfig,
@@ -450,7 +437,7 @@ export {
   copyUnsharedUint8Array,
   snapshotDeepEnumerableData,
 } from './utils.js';
-export type { DeepDataSnapshotLimits } from './utils.js';
+export type { DeepDataSnapshotLimits, DeepDataSnapshotOptions } from './utils.js';
 
 export { canonicalKeychain } from './keychain-canonical.js';
 export type {

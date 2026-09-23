@@ -131,7 +131,7 @@ describe('PeerborneDocument reader listing', () => {
     },
   );
 
-  test('falls back without a serializer and does not fan out UCAN checks', async () => {
+  test('rejects a missing serializer before any UCAN membership checks', async () => {
     const readers = [{ id: 'shared' }, { id: 'reader-only' }];
     const writers = [
       { id: 'shared' },
@@ -159,26 +159,9 @@ describe('PeerborneDocument reader listing', () => {
       _writers: { users: async () => writers },
     });
 
-    await expect(document.getReaders()).resolves.toEqual([
-      ...readers,
-      writers[1],
-      writers[2],
-    ]);
-    expect(check).toHaveBeenCalledTimes(writers.length);
+    await expect(document.getReaders()).rejects.toThrow(/requires AuthProvider.serializePublicKey/);
+    expect(check).not.toHaveBeenCalled();
   });
 
-  test('legacy fallback only treats literal true as reader membership', async () => {
-    const reader = { id: 'reader' };
-    const writer = { id: 'writer' };
-    const document = fakeDocument({
-      _authProvider: {},
-      _readers: {
-        users: async () => [reader],
-        check: async () => ({ member: true }) as unknown as boolean,
-      },
-      _writers: { users: async () => [writer] },
-    });
 
-    await expect(document.getReaders()).resolves.toEqual([reader, writer]);
-  });
 });

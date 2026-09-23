@@ -41,11 +41,15 @@ const typedArrayTagGetter = Object.getOwnPropertyDescriptor(
   Symbol.toStringTag,
 )?.get;
 const uint8ArraySet = Uint8Array.prototype.set;
+const arrayConstructor = Array;
+const uint8ArrayConstructor = Uint8Array;
 const arrayIsArray = Array.isArray;
-const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+const numberIsSafeInteger = Number.isSafeInteger;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
+const reflectHas = Reflect.has;
 const reflectOwnKeys = Reflect.ownKeys;
 const intrinsicStructuredClone = globalThis.structuredClone;
 const cryptoKeyTypeGetter =
@@ -78,7 +82,7 @@ const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
  *   [4-byte BE path length] [UTF-8 document path] [protocol body]
  *
  * Used by every shared protocol handler that routes by document path
- * (currently `documentKeyUpdateV2` and BeeKEM Welcome v1/v2). Centralizing
+ * (BeeKEM Welcome and PathUpdate). Centralizing
  * the parse here keeps the validation limits (`maxRequestSize`,
  * `maxPathLength`), the unsigned-32-bit length decode, and the
  * registry-lookup behavior consistent across protocols so the two
@@ -105,7 +109,7 @@ export type PathPrefixedHeaderDropReason =
 
 /**
  * Read and parse the path-prefixed header used by shared protocol
- * handlers (BeeKEM Welcome v1, document key-update v2), then look up
+ * handlers (BeeKEM Welcome V2 and PathUpdate V2), then look up
  * the document in the supplied registry.
  *
  * On any malformed input -- oversized request, short read, invalid
@@ -211,6 +215,9 @@ export function firstTrue(promises: Promise<boolean>[]) {
   return Promise.race(newPromises);
 }
 
+// JavaScript string lengths count UTF-16 code units, each occupying two bytes.
+const UTF16_BYTES_PER_CODE_UNIT = 2;
+
 /**
  * Detach a serializer/provider-produced record without invoking accessors or
  * reading any property more than once. Routing checks, signature verification,
@@ -219,7 +226,22 @@ export function firstTrue(promises: Promise<boolean>[]) {
 export function snapshotEnumerableOwnDataObject<T extends object>(
   value: unknown,
   field = 'value',
+  limits: Readonly<{
+    maxProperties: number;
+    maxKeyBytes: number;
+  }> = {
+    maxProperties: 131_072,
+    maxKeyBytes: 64 * 1024 * 1024,
+  },
 ): T {
+  for (const [name, limit] of [
+    ['maxProperties', limits.maxProperties],
+    ['maxKeyBytes', limits.maxKeyBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new TypeError(`${name} must be a non-negative safe integer`);
+    }
+  }
   if (value === null || typeof value !== 'object') {
     throw new TypeError(`${field} must be a plain object`);
   }
@@ -231,27 +253,52 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
   }
   if (isArray) throw new TypeError(`${field} must be a plain object`);
   let prototype: object | null;
-  let descriptors: PropertyDescriptorMap;
+  let keys: (string | symbol)[];
   try {
     prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
       | object
       | null;
-    descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
-      value,
-    ]) as PropertyDescriptorMap;
+    keys = reflectOwnKeys(value);
   } catch {
     throw new TypeError(`${field} must expose stable own data properties`);
   }
   if (prototype !== objectPrototype && prototype !== null) {
     throw new TypeError(`${field} must be a plain object`);
   }
+  if (keys.length > limits.maxProperties) {
+    throw new RangeError(
+      `${field} exceeds ${limits.maxProperties} own properties`,
+    );
+  }
 
-  const snapshot: Record<string, unknown> = {};
-  for (const key of reflectOwnKeys(descriptors)) {
+  let keyBytes = 0;
+  for (const key of keys) {
     if (typeof key !== 'string') {
       throw new TypeError(`${field} must not contain symbol properties`);
     }
-    const descriptor = descriptors[key];
+    keyBytes += key.length * UTF16_BYTES_PER_CODE_UNIT;
+    if (
+      !Number.isSafeInteger(keyBytes) ||
+      keyBytes > limits.maxKeyBytes
+    ) {
+      throw new RangeError(
+        `${field} exceeds ${limits.maxKeyBytes} own-property key bytes`,
+      );
+    }
+  }
+  const stringKeys = keys as string[];
+
+  const snapshot: Record<string, unknown> = {};
+  for (const key of stringKeys) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+        value,
+        key,
+      ]) as PropertyDescriptor | undefined;
+    } catch {
+      throw new TypeError(`${field} must expose stable own data properties`);
+    }
     if (
       descriptor === undefined ||
       descriptor.enumerable !== true ||
@@ -274,15 +321,25 @@ export interface DeepDataSnapshotLimits {
   readonly maxValueBytes: number;
 }
 
+export interface DeepDataSnapshotOptions {
+  /**
+   * Reject these properties whether they are own or inherited. This is for
+   * versioned runtime boundaries that must not erase newer-version markers
+   * while converting an input to an own-data snapshot.
+   */
+  readonly forbiddenFields?: readonly string[];
+}
+
 /**
  * Iteratively detach an untrusted codec/provider value without invoking own
- * accessors or reading an own property more than once. Plain records retain
- * their descriptor order, arrays must be dense own-data arrays, genuine
+ * accessors. Plain records retain their descriptor order and each retained
+ * field is read once; arrays retain a stable bounded length and dense own data
+ * elements while irrelevant non-index properties are ignored; genuine
  * unshared Uint8Arrays are copied through captured intrinsics, and CryptoKeys
  * are cloned as immutable platform values. Cycles, exotic objects, symbols,
- * accessors, sparse arrays, SAB views, and values exceeding the aggregate
- * work/allocation limits are rejected. Repeated aliases are copied
- * independently so a later mutation through one consumer cannot change
+ * accessors in retained fields, sparse arrays, SAB views, and values exceeding
+ * the aggregate work/allocation limits are rejected. Repeated aliases are
+ * copied independently so a later mutation through one consumer cannot change
  * another authenticated field.
  */
 export function snapshotDeepEnumerableData<T>(
@@ -290,7 +347,7 @@ export function snapshotDeepEnumerableData<T>(
   field = 'value',
   limits: DeepDataSnapshotLimits = {
     // The object-count budget already bounds the depth of an acyclic value.
-    // Keeping the default depth equal to that aggregate budget admits legacy
+    // Keeping the default depth equal to that aggregate budget admits ordinary
     // Merkle histories while explicit security-sensitive callers can still
     // impose a tighter structural limit.
     maxDepth: 32_768,
@@ -299,6 +356,7 @@ export function snapshotDeepEnumerableData<T>(
     maxArrayLength: 65_536,
     maxValueBytes: 64 * 1024 * 1024,
   },
+  options: DeepDataSnapshotOptions = {},
 ): T {
   for (const [name, limit] of Object.entries(limits)) {
     if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -366,7 +424,7 @@ export function snapshotDeepEnumerableData<T>(
     } else if (target.kind === 'array') {
       defineEnumerableDataProperty(
         target.parent,
-        String(target.index),
+        `${target.index}`,
         candidate,
       );
     } else {
@@ -398,7 +456,7 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
     if (typeof candidate === 'string') {
-      accountBytes(candidate.length * 2);
+      accountBytes(candidate.length * UTF16_BYTES_PER_CODE_UNIT);
       assign(target, candidate);
       continue;
     }
@@ -415,6 +473,27 @@ export function snapshotDeepEnumerableData<T>(
       throw new RangeError(
         `${field} exceeds ${limits.maxObjects} detached objects`,
       );
+    }
+
+    const forbiddenFields = options.forbiddenFields;
+    if (forbiddenFields !== undefined) {
+      for (let index = 0; index < forbiddenFields.length; index++) {
+        const forbiddenField = forbiddenFields[index]!;
+        let present: boolean;
+        try {
+          present = reflectApply(reflectHas, Reflect, [
+            objectCandidate,
+            forbiddenField,
+          ]) as boolean;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (present) {
+          throw new TypeError(
+            `${field} contains forbidden field '${forbiddenField}'`,
+          );
+        }
+      }
     }
 
     // Brand-check through captured typed-array intrinsics. A Proxy around a
@@ -448,40 +527,52 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
 
-    let prototype: object | null;
-    let descriptors: PropertyDescriptorMap;
+    let isArray: boolean;
     try {
-      prototype = reflectApply(objectGetPrototypeOf, Object, [
-        objectCandidate,
-      ]) as object | null;
-      descriptors = reflectApply(objectGetOwnPropertyDescriptors, Object, [
-        objectCandidate,
-      ]) as PropertyDescriptorMap;
+      isArray = reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean;
     } catch {
       throw new TypeError(`${field} contains an unstable object`);
     }
 
-    if (reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean) {
-      const lengthDescriptor = descriptors.length;
-      if (
-        lengthDescriptor === undefined ||
-        !('value' in lengthDescriptor) ||
-        !Number.isSafeInteger(lengthDescriptor.value) ||
-        lengthDescriptor.value < 0 ||
-        lengthDescriptor.value > limits.maxArrayLength
-      ) {
-        throw new TypeError(`${field} contains an invalid array`);
-      }
-      const length = lengthDescriptor.value as number;
-      const keys = reflectOwnKeys(descriptors);
-      if (keys.length !== length + 1) {
-        throw new TypeError(`${field} arrays must be dense data arrays`);
-      }
+    if (isArray) {
+      const readLength = (): number => {
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = reflectApply(
+            objectGetOwnPropertyDescriptor,
+            Object,
+            [objectCandidate, 'length'],
+          ) as PropertyDescriptor | undefined;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
+        if (
+          descriptor === undefined ||
+          !('value' in descriptor) ||
+          !Number.isSafeInteger(descriptor.value) ||
+          descriptor.value < 0 ||
+          descriptor.value > limits.maxArrayLength
+        ) {
+          throw new TypeError(`${field} contains an invalid array`);
+        }
+        return descriptor.value as number;
+      };
+
+      const length = readLength();
       accountProperties(length);
-      const copy = new Array<unknown>(length);
+      const copy = new arrayConstructor<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
-        const descriptor = descriptors[String(index)];
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = reflectApply(
+            objectGetOwnPropertyDescriptor,
+            Object,
+            [objectCandidate, `${index}`],
+          ) as PropertyDescriptor | undefined;
+        } catch {
+          throw new TypeError(`${field} contains an unstable object`);
+        }
         if (
           descriptor === undefined ||
           descriptor.enumerable !== true ||
@@ -498,6 +589,9 @@ export function snapshotDeepEnumerableData<T>(
           target: { kind: 'array', parent: copy, index },
         });
       }
+      if (readLength() !== length) {
+        throw new TypeError(`${field} contains an invalid array`);
+      }
       assign(target, copy);
       active.add(objectCandidate);
       pending.push({ kind: 'leave', candidate: objectCandidate });
@@ -505,6 +599,15 @@ export function snapshotDeepEnumerableData<T>(
         pending.push(children[index]!);
       }
       continue;
+    }
+
+    let prototype: object | null;
+    try {
+      prototype = reflectApply(objectGetPrototypeOf, Object, [
+        objectCandidate,
+      ]) as object | null;
+    } catch {
+      throw new TypeError(`${field} contains an unstable object`);
     }
 
     if (prototype !== objectPrototype && prototype !== null) {
@@ -534,15 +637,34 @@ export function snapshotDeepEnumerableData<T>(
       throw new TypeError(`${field} contains a non-plain object`);
     }
 
-    const keys = reflectOwnKeys(descriptors);
+    let keys: (string | symbol)[];
+    try {
+      keys = reflectOwnKeys(objectCandidate);
+    } catch {
+      throw new TypeError(`${field} contains an unstable object`);
+    }
+    // Reject over-budget objects before inspecting their individual key shapes.
     accountProperties(keys.length);
-    const copy: Record<string, unknown> = {};
-    const children: SnapshotTask[] = [];
     for (const key of keys) {
       if (typeof key !== 'string') {
         throw new TypeError(`${field} must not contain symbol properties`);
       }
-      const descriptor = descriptors[key];
+      accountBytes(key.length * UTF16_BYTES_PER_CODE_UNIT);
+    }
+    const stringKeys = keys as string[];
+    const copy: Record<string, unknown> = {};
+    const children: SnapshotTask[] = [];
+    for (const key of stringKeys) {
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = reflectApply(
+          objectGetOwnPropertyDescriptor,
+          Object,
+          [objectCandidate, key],
+        ) as PropertyDescriptor | undefined;
+      } catch {
+        throw new TypeError(`${field} contains an unstable object`);
+      }
       if (
         descriptor === undefined ||
         descriptor.enumerable !== true ||
@@ -611,7 +733,7 @@ export function copyUnsharedUint8Array(
   }
   if (
     tag !== 'Uint8Array' ||
-    !Number.isSafeInteger(byteLength) ||
+    !numberIsSafeInteger(byteLength) ||
     byteLength < minimumLength ||
     byteLength > maximumLength ||
     shared
@@ -619,7 +741,7 @@ export function copyUnsharedUint8Array(
     throw new TypeError(`${field} has an invalid length or backing buffer`);
   }
 
-  const copy = new Uint8Array(byteLength);
+  const copy = new uint8ArrayConstructor(byteLength);
   try {
     reflectApply(uint8ArraySet, copy, [value, 0]);
   } catch {

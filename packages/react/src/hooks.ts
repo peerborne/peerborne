@@ -162,6 +162,7 @@ export function usePeerborneDocumentState<
   >,
   documentPath: string,
   originFilter: 'all' | 'remote' | 'local' = 'all',
+  initialization: 'open' | 'create' = 'open',
 ): [
   DocType | undefined,
   (fn: ChangeFnType, message?: string) => void,
@@ -243,7 +244,7 @@ export function usePeerborneDocumentState<
             return;
           }
           openTask = (async () => {
-            await docRef.open();
+            await docRef[initialization]();
             const readers = await docRef.getReaders();
             const writers = await docRef.getWriters();
             return { docRef, readers, writers };
@@ -331,7 +332,7 @@ export function usePeerborneDocumentState<
           }
         });
     };
-  }, [documentCacheKey, documentPath, hookCaches, originFilter, peerborne]);
+  }, [documentCacheKey, documentPath, hookCaches, initialization, originFilter, peerborne]);
 
   return [
     docDataCache[documentCacheKey],

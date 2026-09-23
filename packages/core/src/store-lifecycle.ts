@@ -1,4 +1,4 @@
-/** A legacy browser store whose lifecycle uses open/close instead of start/stop. */
+/** A configured browser store whose lifecycle uses open/close. */
 export interface OpenableStore {
   open(): Promise<void>;
   close?: () => Promise<void>;
@@ -15,13 +15,12 @@ function isOpenableStore(value: unknown): value is OpenableStore {
 /**
  * Open custom Helia stores before Helia/libp2p first access them.
  *
- * Current `datastore-idb` and `blockstore-idb` expose the older `open()` /
- * `close()` lifecycle, while Helia only auto-starts stores implementing the
- * newer `start()` / `stop()` lifecycle. Helia also checks its datastore
- * version before invoking generic start hooks, so these stores must be opened
+ * Current `datastore-idb` and `blockstore-idb` expose `open()` / `close()`.
+ * Helia auto-starts stores implementing `start()` / `stop()` and checks its
+ * datastore version before those hooks, so IndexedDB stores must be opened
  * before the node starts.
  */
-export async function openLegacyHeliaStores(
+export async function openHeliaStores(
   ...stores: unknown[]
 ): Promise<OpenableStore[]> {
   const opened: OpenableStore[] = [];
@@ -33,13 +32,13 @@ export async function openLegacyHeliaStores(
     }
     return opened;
   } catch (error) {
-    await closeLegacyHeliaStores(opened);
+    await closeHeliaStores(opened);
     throw error;
   }
 }
 
 /** Close stores in reverse-open order, attempting every close operation. */
-export async function closeLegacyHeliaStores(
+export async function closeHeliaStores(
   stores: OpenableStore[],
 ): Promise<void> {
   for (const store of [...stores].reverse()) {

@@ -20,7 +20,6 @@ import {
   resolveIceServers,
 } from './peerborne-config.js';
 import { Peerborne } from './peerborne.js';
-import { PeerborneDocument } from './peerborne-document.js';
 import { CRDTProvider } from './crdt-provider.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
@@ -28,13 +27,6 @@ import { AuthProvider } from './auth-provider.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import { LoadMessageSerializer } from './load-request-serializer.js';
-import { CRDTChangeNode } from './crdt-change-node.js';
-import { collectChangeTreeCidsForPinning } from './change-tree-pinning.js';
-import { CID } from 'multiformats';
-import { EventHandler } from '@libp2p/interface';
-// libp2p v3 moved the GossipSub-specific `Message` type out of `@libp2p/interface`.
-// Import it directly from the gossipsub package instead.
-import type { Message } from '@libp2p/gossipsub';
 import { gossipsub } from '@libp2p/gossipsub';
 import { autoNAT } from '@libp2p/autonat';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
@@ -60,6 +52,10 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 import { createNodeHeliaStores } from './node-stores.js';
+import {
+  copyDocumentPubsubConfig,
+  defaultDocumentPubsubConfig,
+} from './document-topic.js';
 
 /**
  * Default config for Node.js environments.
@@ -144,8 +140,7 @@ export const defaultNodeConfig = (
         connectionGater: { denyDialMultiaddr: async () => false },
       },
     },
-    pubsubDocumentPrefix: '/document/',
-    pubsubDocumentPublishPath: '/documents',
+    ...defaultDocumentPubsubConfig(),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);
@@ -178,28 +173,6 @@ export class PeerborneNode<
     return this._swarm;
   }
 
-  private readonly _subscriptions = new Map<
-    string,
-    PeerborneDocument<
-      DocType,
-      ChangesType,
-      ChangeFnType,
-      PrivateKey,
-      PublicKey,
-      DocumentKey
-    >
-  >();
-  private readonly _seenCids = new Set<string>();
-  private readonly _pinningCids = new Set<string>();
-  /** Queue of pending pin operations waiting for a concurrency slot. */
-  private readonly _pinQueue: (() => void)[] = [];
-  /** Number of pin operations currently in flight. */
-  private _activePins = 0;
-  /** Maximum concurrent pin operations to prevent overwhelming the blockstore. */
-  private static readonly MAX_CONCURRENT_PINS = 10;
-
-  private _docPublishHandler: EventHandler<CustomEvent<Message>> | null = null;
-
   constructor(
     private readonly nodeKey: PrivateKey,
     private readonly nodePublicKey: PublicKey,
@@ -230,61 +203,6 @@ export class PeerborneNode<
       this.aclProvider,
       this.keychainProvider,
     );
-  }
-
-  /**
-   * Acquire a concurrency slot for pin operations. Resolves when a slot
-   * is available (at most MAX_CONCURRENT_PINS operations run at once).
-   */
-  private _acquirePinSlot(): Promise<void> {
-    if (this._activePins < PeerborneNode.MAX_CONCURRENT_PINS) {
-      this._activePins++;
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      this._pinQueue.push(resolve);
-    });
-  }
-
-  private _releasePinSlot(): void {
-    const next = this._pinQueue.shift();
-    if (next) {
-      next();
-    } else {
-      this._activePins--;
-    }
-  }
-
-  /**
-   * Pin a single CID with concurrency limiting.
-   */
-  private async _pinCID(cid: string): Promise<void> {
-    if (this._seenCids.has(cid) || this._pinningCids.has(cid)) {
-      return;
-    }
-    let parsedCid: CID;
-    try {
-      parsedCid = CID.parse(cid);
-    } catch (err) {
-      console.error('Skipping malformed CID', cid, err);
-      return;
-    }
-    this._pinningCids.add(cid);
-    await this._acquirePinSlot();
-    try {
-      for await (const _ of this.swarm.heliaNode.pins.add(parsedCid)) { /* drain */ }
-      this._seenCids.add(cid);
-    } catch (err) {
-      console.error('Failed to pin CID', cid, err);
-    } finally {
-      this._pinningCids.delete(cid);
-      this._releasePinSlot();
-    }
-  }
-
-  private async _pinNewCIDs(cid: string, node: CRDTChangeNode<ChangesType>) {
-    const cids = collectChangeTreeCidsForPinning(cid, node);
-    await Promise.all(cids.map((entryCid) => this._pinCID(entryCid)));
   }
 
   // Start
@@ -333,10 +251,13 @@ export class PeerborneNode<
           'secrets in clientConfig.',
       );
     }
-    const clientConfig = defaultConfig(
-      defaultBootstrapConfig(bootstrapAddresses ?? []),
-      browserSafeIceServers,
-    );
+    const clientConfig = {
+      ...defaultConfig(
+        defaultBootstrapConfig(bootstrapAddresses ?? []),
+        browserSafeIceServers,
+      ),
+      ...copyDocumentPubsubConfig(this.config),
+    };
     const clientConfigFile =
       process.env.REACT_APP_CLIENT_CONFIG_FILE || 'client-config.env';
     fs.writeFile(
@@ -350,97 +271,5 @@ export class PeerborneNode<
         }
       },
     );
-
-    // Open a pubsub channel (set by some config) for controlling this swarm of listeners.
-    this._docPublishHandler = (rawMessage) => {
-      try {
-        const thisNodeId = this.swarm.peerId.toString();
-        const senderNodeId = (() => {
-          switch (rawMessage.detail.type) {
-            case 'signed':
-              return rawMessage.detail.from.toString();
-            default:
-              return undefined;
-          }
-        })();
-
-        if (thisNodeId !== senderNodeId) {
-          const message = this.syncMessageSerializer.deserializeSyncMessage(
-            rawMessage.detail.data,
-          );
-          console.log(
-            'Received a document publish notification:',
-            message.documentId,
-          );
-          const docRef = this.swarm.doc(message.documentId);
-
-          if (docRef) {
-            // Also add a subscription that pins new received files.
-            this._subscriptions.set(message.documentId, docRef);
-            docRef.subscribe(
-              'pinning-handler',
-              (doc, readers, writers, hashes) => {
-                for (const cid of hashes) {
-                  // _pinCID handles dedup, concurrency limiting, and error handling.
-                  this._pinCID(cid).catch(() => {});
-                }
-              },
-            );
-
-            // Listen to the file.
-            docRef.open();
-
-            // Pin all of the files that were received.
-            if (message.changeId && message.changes) {
-              this._pinNewCIDs(message.changeId, message.changes).catch(() => {
-                console.error('Failed to pin CIDs for incoming message');
-              });
-            }
-          } else {
-            console.warn(
-              'Unable to load the published document: no local document handler for',
-              message.documentId,
-            );
-          }
-        } else {
-          console.log('Skipping publish message from this node...');
-        }
-      } catch (err) {
-        console.error(
-          'Failed to process an incoming document publish notification',
-        );
-        console.error('Error:', err);
-      }
-    };
-    // Cast required: EventHandler<CustomEvent<Message>> is incompatible with PubSubBaseProtocol's
-    // addEventListener due to duplicate @libp2p/interface versions in the dependency tree
-    this.swarm.heliaNode.libp2p.services.pubsub.addEventListener(
-      'message',
-      this._docPublishHandler as EventListener,
-    );
-    this.swarm.heliaNode.libp2p.services.pubsub.subscribe(
-      this.config.pubsubDocumentPublishPath,
-    );
-    console.log(
-      `Listening for pinning requests on: ${this.config.pubsubDocumentPublishPath}`,
-    );
-  }
-
-  public stop() {
-    if (this._docPublishHandler) {
-      this.swarm.heliaNode.libp2p.services.pubsub.unsubscribe(
-        this.config.pubsubDocumentPublishPath,
-      );
-      // Cast required: see addEventListener comment above
-      this.swarm.heliaNode.libp2p.services.pubsub.removeEventListener(
-        'message',
-        this._docPublishHandler as EventListener,
-      );
-    }
-    if (this._subscriptions) {
-      for (const [id, ref] of this._subscriptions) {
-        ref.unsubscribe('pinning-handler');
-      }
-    }
   }
 }

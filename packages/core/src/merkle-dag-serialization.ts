@@ -51,7 +51,7 @@ const VALID_CHANGE_NODE_KINDS: ReadonlySet<CRDTChangeNodeKind> = new Set(
 
 /**
  * Maximum number of change nodes on one root-to-leaf wire path. This shared
- * limit also bounds legacy and GossipSub trees so native JSON serialization
+ * limit also bounds GossipSub trees so native JSON serialization
  * remains stack-safe when signatures require an exact re-encoding.
  */
 export const MAX_MERKLE_DAG_DEPTH = MAX_CHANGE_TREE_DEPTH;

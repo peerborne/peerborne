@@ -1,101 +1,11 @@
-export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
+// Initial loads bind a fresh signed challenge, a complete response manifest,
+// the served frontier, and locally trusted control/group commitments.
+export const documentLoadV4 = '/peerborne/doc-load/4.0.0';
+export const snapshotLoadV4 = '/peerborne/snapshot-load/4.0.0';
+export const securityAdvertiseV1 = '/peerborne/security-advertise/1.0.0';
 
-// V3 doc-load and snapshot-load handlers use a shared handler model where
-// a single handler serves all documents. They include an explicit `tips`
-// field in the SIGNED `CRDTSyncMessage` payload so the loader can bind the
-// served state to the responder's current frontier and complete the
-// initial-load quorum check (see `tipAdvertiseV1` and #189 §5.4.2).
-//
-// Why v3 (not "v2 with an extra optional field")? Including `tips` inside
-// the signed payload changes the bytes the signer authenticated. A
-// receiver whose serializer doesn't recognise `tips` would: (1) deserialize
-// the message dropping `tips`, (2) re-serialize for signature verification,
-// (3) get bytes that differ from what the sender signed -> signature check
-// fails. Versioning the protocol id forces incompatible peers to dial a
-// protocol they don't have a handler for and fail loudly instead of
-// silently dropping the binding. There are no live users of this project,
-// so we did NOT retain a v2 alias -- removing legacy handlers keeps the
-// codebase clean.
-//
-// `documentKeyUpdateV2` is intentionally NOT bumped: its wire shape is
-// unaffected by the load-quorum work (no `tips` field, no `tipsHash`).
-export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
-// Reserved V4 contract identifiers; runtime integration lands separately. A
-// conforming V4 load response adds a signed `loadSecurityState` tuple. Its
-// quorum digest binds the control/group tuple and served frontier together
-// with a canonical complete response manifest (root, CID/kind/edge graph,
-// snapshot content/metadata, and keychain delta). Each request also signs a
-// fresh 32-byte challenge that every writer-signed advertisement/full response
-// must echo, preventing a complete older quorum transcript from being replayed
-// in a later load round. A conforming loader must recompute the manifest from
-// the actual response before sync. V4 is a separate family because older
-// serializers cannot verify the same signed bytes or binding; callers that opt
-// into it must select the family atomically and never downgrade to V3.
-export const documentLoadV4 = '/collabswarm/doc-load/4.0.0';
-export const documentKeyUpdateV2 = '/collabswarm/key-update/2.0.0';
-export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
-export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
-
-// Tip-advertise v1: lightweight initial-load quorum probe.
-//
-// Closes the "no quorum protocol for verifying initial document state" gap
-// tracked under issue #189 §5.4 item 2 (also a bullet under #186). When a
-// node opens a document, it asks up to `loadQuorumK` peers in parallel for
-// a 32-byte SHA-256 digest of their current tip set (see `tips-hash.ts`)
-// and proceeds with a full document-load only if at least `loadQuorumQ`
-// peers agree on the same hash. This defends against a single malicious or
-// partitioned peer serving a stale/maliciously-crafted initial state.
-//
-// Wire format (request and response are length-delimited single frames):
-//
-//   Request:  serialized `CRDTLoadRequest` (same shape as documentLoadV3 --
-//             reuses the existing load-request serializer so a writer can
-//             sign just the document id and the responder can authorize
-//             via the standard ACL/signature check).
-//
-//   Response: ONE of three wire shapes -- the loader's probe distinguishes
-//             them by the first-byte and length of the response:
-//
-//               (a) Empty payload (zero bytes) -- the responder declines
-//                   without disclosing whether the document exists: the
-//                   request was unauthorized, the request's documentId
-//                   did not match (signing-on-one-side mismatch), the
-//                   responder threw on serialization, etc. The loader
-//                   records this as a generic non-vote (`null` from the
-//                   probe). NOT used for the "I genuinely don't have
-//                   this document" case -- see (b).
-//
-//               (b) Single-byte `0xff` sentinel (UNKNOWN_DOC) -- the
-//                   responder has NO document registered for this path.
-//                   Distinguished from (a) so the loader can tally
-//                   disclaim votes alongside tip-hash votes via
-//                   `decideLoadQuorum` (see `load-quorum.ts`). The
-//                   sentinel is intentionally unauthenticated (no
-//                   per-doc keychain to sign/encrypt with); the quorum
-//                   gate's Q-Byzantine threshold defends against
-//                   lying-disclaim attacks AND tip-hash votes are
-//                   given precedence over disclaim votes so peers WITH
-//                   the document outvote unrelated peers in the same
-//                   mesh that don't.
-//
-//               (c) Serialized + encrypted `CRDTSyncMessage` whose
-//                   only populated payload field is `tipsHash` (plus
-//                   `documentId` and optionally `signature`). The
-//                   responder does NOT include `changes`, `snapshot`,
-//                   or `keychainChanges` -- the heavy state transfer
-//                   happens later via documentLoadV3/snapshotLoadV3
-//                   against an agreeing peer.
-//
-// Layered on documentLoadV3's transport semantics, but on a separate
-// protocol id so a slow/malicious peer that serves bogus full loads cannot
-// also cheaply poison every quorum vote at the same time.
-export const tipAdvertiseV1 = '/collabswarm/tip-advertise/1.0.0';
-// Reserved security-aware probe contract. Its signed hash covers the served
-// frontier, the complete derived load-response manifest, and the same
-// `loadSecurityState` tuple required on the subsequent V4 load. It also echoes
-// the request's fresh challenge inside the signed envelope. The unauthenticated
-// 0xff unknown-document sentinel is never valid here.
-export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
+// Catch-up after a verified invitation is authorized by its pinned issuer.
+export const invitationCatchUpV1 = '/peerborne/invitation-catch-up/1.0.0';
 
 // Public invitation join v1: a recipient opens a direct stream to an
 // inviter advertised by a signed InvitationOffer, sends one canonical signed
@@ -104,9 +14,6 @@ export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
 // (for example as a QR code or link). Message codecs, signature domains,
 // expiry checks, recipient/KEM binding, and replay guards live in
 // `invitation-wire.ts` and `invitation-replay-guard.ts`.
-//
-// This is the first protocol introduced under the Peerborne name. Existing
-// `/collabswarm/*` protocol IDs remain unchanged compatibility boundaries.
 export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 
 // Welcomes require a generation-bearing tree and recipient-sealed keychain.
@@ -116,5 +23,5 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // parent tree. Missed updates require ordered delivery or ratchet recovery.
 export const beekemPathUpdateV2 = '/peerborne/beekem-pathupdate/2.0.0';
 
-export const searchIndexAdvertiseV1 = '/collabswarm/search-index-advertise/1.0.0';
-export const searchQueryV1 = '/collabswarm/search-query/1.0.0';
+export const searchIndexAdvertiseV1 = '/peerborne/search-index-advertise/1.0.0';
+export const searchQueryV1 = '/peerborne/search-query/1.0.0';

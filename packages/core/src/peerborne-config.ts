@@ -1,3 +1,4 @@
+import type { LoadSecurityCommitments } from './load-security-state.js';
 import type { HeliaInit } from 'helia';
 import type { BitswapOptions } from '@helia/bitswap';
 import type { CreateLibp2pOptions } from '@helia/libp2p';
@@ -24,7 +25,10 @@ import { ipnsValidator } from 'ipns/validator';
 import { IDBDatastore } from 'datastore-idb';
 import { IDBBlockstore } from 'blockstore-idb';
 import { CompactionConfig } from './compaction-config.js';
-import { DEFAULT_DOCUMENT_TOPIC_PREFIX } from './document-topic.js';
+import {
+  DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  defaultDocumentPubsubConfig,
+} from './document-topic.js';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 
 /**
@@ -182,8 +186,8 @@ export const defaultConfig = (
   return ({
     // Helia configuration (ref: https://gist.github.com/bellbind/23ad8d6e3a1509335253ff074fcd3cb6)
     helia: {
-      blockstore: new IDBBlockstore('/collabswarm-blocks'),
-      datastore: new IDBDatastore('/collabswarm-data'),
+      blockstore: new IDBBlockstore('/peerborne-blocks'),
+      datastore: new IDBDatastore('/peerborne-data'),
       libp2p: {
         // https://github.com/ipfs/helia/blob/main/packages/libp2p/src/utils/libp2p-defaults.browser.ts
         addresses: {
@@ -212,7 +216,9 @@ export const defaultConfig = (
         // until at least one bootstrap address is configured.
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
-          pubsubPeerDiscovery(),
+          pubsubPeerDiscovery({
+            topics: ['peerborne._peer-discovery._p2p._pubsub'],
+          }),
         ],
         services: {
           identify: identify(),
@@ -237,8 +243,7 @@ export const defaultConfig = (
       },
     },
 
-    pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
-    pubsubDocumentPublishPath: '/documents',
+    ...defaultDocumentPubsubConfig(),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);
@@ -248,6 +253,21 @@ export const defaultConfig = (
  * PeerborneConfig is a settings object for peerborne.
  */
 export interface PeerborneConfig {
+  /** Writer identities trusted out of band for a first network load. */
+  resolveTrustedDocumentWriters?: (
+    documentPath: string,
+  ) => readonly unknown[] | Promise<readonly unknown[]>;
+
+  /**
+   * Atomic, locally trusted control/group commitments for network loads.
+   * Required when serving or loading V4 state. The loader captures one tuple
+   * before probing; a missing or invalid tuple rejects the load.
+   * This callback does not derive trust from a peer's response.
+   */
+  resolveLoadSecurityCommitments?: (
+    documentPath: string,
+  ) => LoadSecurityCommitments | Promise<LoadSecurityCommitments>;
+
   /**
    * Configuration for Helia/libp2p.
    *
@@ -263,49 +283,35 @@ export interface PeerborneConfig {
    * Prefix to apply to document pubsub topics.
    *
    * Defaults to {@link DEFAULT_DOCUMENT_TOPIC_PREFIX} to namespace document
-   * traffic on the pubsub mesh and avoid collisions with other topic types.
+   * traffic on the pubsub mesh and keep default-configured older peers on a
+   * separate topic. Topic names are routing labels, not authenticated version
+   * negotiation; wire decoding and admission checks remain mandatory.
    *
    * Set to an empty string (`''`) to disable prefixing; topic strings
-   * will be the bare document path.
+   * will be the bare document path. Custom and empty prefixes are protocol
+   * compatibility boundaries: every peer sharing one must be upgraded
+   * together.
    *
    * @default DEFAULT_DOCUMENT_TOPIC_PREFIX
    */
   pubsubDocumentPrefix: string;
 
   /**
-   * Prefix to apply to Libp2p PubSub topics for documents.
-   */
-  pubsubDocumentPublishPath: string;
-
-  /**
-   * Enable GossipSub topic validators for authorization enforcement.
-   * When enabled, messages from unauthorized peers are rejected at the
-   * transport layer (P4 penalty in peer scoring).
+   * Enable GossipSub topic validators for transport-level authorization
+   * enforcement and peer scoring. They are installed during activation and
+   * removed during close(). The application receiver still validates messages
+   * when this optional transport check is disabled.
    *
-   * Topic validators are registered during `open()` and properly removed
-   * during `close()` to prevent stale validator references.
-   *
-   * Default: false (for backward compatibility).
+   * @default false
    */
   enableTopicValidators?: boolean;
 
   /**
-   * Enable Peerborne application-level signing and verification.
-   * When false, application-level signing is bypassed: sync message signatures,
-   * load request signatures, snapshot signatures, topic validator signature
-   * checks, and key update verification. Topic validators are not registered
-   * at all when signing is disabled to avoid unnecessary per-message overhead.
-   * Note: libp2p/GossipSub transport-level signing (e.g., `globalSignaturePolicy`)
-   * is NOT affected by this flag.
+   * Enable application-level signing for ordinary sync and snapshots.
+   * Initial network loads, invitation catch-up, and BeeKEM membership operations
+   * require signing regardless of this setting.
    *
-   * **WARNING: Disabling signing removes all authentication and authorization
-   * checks. Any peer that can decrypt traffic (e.g., possesses a previous
-   * document key) can forge sync, key-update, and load messages. Peers with
-   * `enableSigning: false` will NOT interoperate with peers that have signing
-   * enabled (they will reject empty/missing signatures). Only use in trusted
-   * development/testing environments.**
-   *
-   * Default: true (signatures are computed and verified).
+   * @default true
    */
   enableSigning?: boolean;
 
@@ -350,28 +356,15 @@ export interface PeerborneConfig {
   webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>;
 
   /**
-   * Enable the initial-load quorum gate.
+   * Require Q distinct trusted signing authorities to agree on one V4
+   * security-state and complete response-manifest digest. Every vote and
+   * selected response must match the locally captured trust tuple and fresh
+   * request challenge. An explicit Q is a hard floor, independent of peer
+   * availability. Distinct transport identities do not create extra votes.
    *
-   * When `true` (the default), `PeerborneDocument.load()` queries up to
-   * {@link loadQuorumK} distinct peers in parallel through the negotiated
-   * initial-load advertisement protocol before selecting a full response.
-   * The legacy negotiation compares a digest of the advertised tip frontier.
-   * A strict security-aware negotiation uses signer-authenticated votes over
-   * a digest that also binds the document identity, durable group-security
-   * commitments, and complete response manifest. The load proceeds only when
-   * {@link loadQuorumQ} accepted votes agree on the same negotiated digest.
-   * If quorum is not met, `load()` rejects with `LoadQuorumFailedError`.
-   *
-   * This gate reduces reliance on a single source, but it is not by itself a
-   * Byzantine-consensus guarantee. Its protection depends on the configured
-   * Q-of-K threshold, peer independence, and the authentication guarantees of
-   * the negotiated protocol. In particular, an explicit Q of 1 provides no
-   * independent corroboration.
-   *
-   * Setting this to `false` uses single-source selection: the loader may
-   * proceed with the first response that passes the checks required by the
-   * negotiated protocol and the rest of the configuration. This is useful for
-   * development and intentionally accepts the weaker single-peer trust model.
+   * Setting false permits selection of one trusted signed V4 response while
+   * retaining challenge, tuple, and frontier validation. It provides no
+   * independent corroboration and never permits unsigned bootstrap.
    *
    * @default true
    */

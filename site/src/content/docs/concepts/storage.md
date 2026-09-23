@@ -51,7 +51,7 @@ In the browser, Helia stores blocks in **IndexedDB**:
 import { IDBBlockstore } from 'blockstore-idb';
 import { IDBDatastore } from 'datastore-idb';
 
-const blockstore = new IDBBlockstore('/collabswarm-blocks');
+const blockstore = new IDBBlockstore('/peerborne-blocks');
 // In practice, pass these via PeerborneConfig.helia to initialize()
 ```
 
@@ -70,8 +70,7 @@ Peerborne does not replicate blocks automatically. If you have 3 peers and one s
 
 Pinning is **incomplete**. What exists:
 
-- A `PeerborneNode` listener API for document-publish announcements
-- No publisher invocation in the normal core commit path
+- No authenticated publisher or receiver in the normal core path
 - No generic IPFS pinning client (e.g., to pin to a remote IPFS node, S3, or Filecoin)
 
 Without pinning:

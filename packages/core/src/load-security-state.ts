@@ -159,8 +159,8 @@ function validateAndCloneLoadSecurityCommitments(
 }
 
 /**
- * Return a defensive copy of the six known own-data tuple fields. Unknown
- * top-level fields are ignored for forward compatibility.
+ * Return a defensive copy of the six known own-data tuple fields. Other
+ * top-level fields are not part of the security commitment.
  */
 export function cloneLoadSecurityCommitments(
   commitments: LoadSecurityCommitments,

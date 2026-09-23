@@ -7,7 +7,7 @@
  * it publishes or acknowledges the new epoch.
  *
  * The derivation uses HKDF-SHA-256 with a fixed `info` string,
- * `"collabswarm-doc-key-v1"`, so all peers — writer and surviving
+ * `"peerborne-doc-key-v1"`, so all peers — writer and surviving
  * readers alike — converge on the same AES-GCM key given the same
  * root secret. The `salt` is left empty: BeeKEM's root secret is
  * already uniformly random and per-epoch, so additional salting
@@ -21,7 +21,7 @@
  */
 
 /** HKDF `info` label that domain-separates the doc-key derivation. */
-export const DOC_KEY_INFO = 'collabswarm-doc-key-v1';
+export const DOC_KEY_INFO = 'peerborne-doc-key-v1';
 
 /** AES-GCM key length in bits — must match the document-encryption setup. */
 const AES_KEY_BITS = 256;

@@ -16,8 +16,9 @@ import { SYSTEM_TOPIC_PREFIXES } from './config.js'
 /**
  * Input to the auto-subscribe decision.
  *
- * - `allowlist`: list of allowed topic prefixes, or null for open mode.
- *   When set, a topic must start with at least one prefix to be eligible.
+ * - `allowlist`: list of allowed exact topics and namespace prefixes, or null
+ *   for open mode. Entries ending in `/` are prefixes; every other entry is
+ *   an exact topic.
  * - `maxAutoTopics`: hard cap on auto-subscribed topics. Once reached,
  *   further subscriptions are rejected.
  * - `autoTopicCount`: number of topics currently auto-subscribed (used
@@ -100,7 +101,9 @@ export function shouldAutoSubscribe(
 
   if (
     policy.allowlist !== null &&
-    !policy.allowlist.some((prefix) => topic.startsWith(prefix))
+    !policy.allowlist.some((entry) =>
+      entry.endsWith('/') ? topic.startsWith(entry) : topic === entry,
+    )
   ) {
     return { action: 'skip', reason: 'NotInAllowlist' }
   }

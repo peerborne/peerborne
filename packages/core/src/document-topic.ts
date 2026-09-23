@@ -1,17 +1,39 @@
-/** Default topic prefix for document pubsub topics. */
-export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/document/';
+/** Default topic prefix for version-isolated document pubsub messages. */
+export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
+
+export interface DocumentPubsubConfig {
+  readonly pubsubDocumentPrefix: string;
+}
+
+/** Return a detached document-topic configuration without replacing overrides. */
+export function copyDocumentPubsubConfig(
+  config: DocumentPubsubConfig,
+): DocumentPubsubConfig {
+  return {
+    pubsubDocumentPrefix: config.pubsubDocumentPrefix,
+  };
+}
+
+/** Returns a fresh copy of the shared browser and Node document-topic defaults. */
+export function defaultDocumentPubsubConfig(): DocumentPubsubConfig {
+  return copyDocumentPubsubConfig({
+    pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  });
+}
 
 /**
  * Builds a pubsub topic string for a given document path by prepending
  * the configured topic prefix. This separates document pubsub traffic
  * from other topics on the same network.
  *
- * The default prefix is `'/document/'`, which namespaces document traffic
- * on the pubsub mesh. Pass an empty string to disable prefixing (the topic
- * will be the bare document path).
+ * The default prefix is `'/peerborne/document/v3/'`. Topic names are routing
+ * labels, not authenticated version negotiation. Every peer on a custom
+ * namespace must use the current protocol. Pass an empty string to use the
+ * bare document path.
  *
  * @param documentPath - The path identifying the document.
- * @param topicPrefix - Prefix to prepend (defaults to `'/document/'`).
+ * @param topicPrefix - Prefix to prepend (defaults to
+ *   `'/peerborne/document/v3/'`).
  * @returns The full pubsub topic string.
  */
 export function documentTopic(

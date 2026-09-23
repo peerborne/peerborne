@@ -8,7 +8,7 @@
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2'
 
 /** Topic the relay subscribes to so it can forward peer-discovery messages. */
-export const PUBSUB_PEER_DISCOVERY_TOPIC = 'swarmdb._peer-discovery._p2p._pubsub'
+export const PUBSUB_PEER_DISCOVERY_TOPIC = 'peerborne._peer-discovery._p2p._pubsub'
 
 /** Default cap on the number of auto-subscribed topics. */
 export const DEFAULT_MAX_AUTO_TOPICS = 1000
@@ -19,10 +19,9 @@ export const DEFAULT_MAX_AUTO_TOPICS_PER_PEER = 32
 /** Default GossipSub topic-name byte budget for each connected peer. */
 export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 
-/** Default topic prefixes accepted by the public relay. */
+/** Default exact topics and slash-terminated prefixes accepted by the relay. */
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
-  '/document/',
-  '/documents',
+  '/peerborne/document/v3/',
 ]
 
 /** Default websocket port. */
@@ -64,9 +63,6 @@ export const DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS = 8
 /** Maximum simultaneous outbound STOP streams per connection. */
 export const DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS = 8
 
-/** Default document publish path (matches peerborne-config.ts default). */
-export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/documents'
-
 /**
  * Topic prefixes that are treated as system/internal and should never be
  * auto-subscribed. This module is the canonical definition; `topic-policy.ts`
@@ -81,8 +77,6 @@ export const SYSTEM_TOPIC_PREFIXES: readonly string[] = ['_', 'floodsub:']
 export interface RelayConfig {
   /** Topic the relay subscribes to so it can forward peer-discovery messages. */
   readonly peerDiscoveryTopic: string
-  /** Topic used as the document publish path (seed topic). */
-  readonly documentPublishPath: string
   /** Websocket listen multiaddr. */
   readonly wsListen: string
   /** Plain-TCP listen multiaddr. */
@@ -98,7 +92,7 @@ export interface RelayConfig {
   /** File containing the protobuf-serialized libp2p private key. */
   readonly identityKeyPath: string
   /**
-   * Topic-prefix allowlist, or null for explicitly configured open mode.
+   * Exact-topic/slash-terminated-prefix allowlist, or null for open mode.
    */
   readonly topicAllowlist: string[] | null
   /** Hard cap on number of auto-subscribed topics. */
@@ -214,7 +208,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
 
   return {
     peerDiscoveryTopic: PUBSUB_PEER_DISCOVERY_TOPIC,
-    documentPublishPath: env.DOCUMENT_PUBLISH_PATH || DEFAULT_DOCUMENT_PUBLISH_PATH,
     wsListen,
     tcpListen,
     ipv6Enabled,

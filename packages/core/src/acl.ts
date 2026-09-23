@@ -87,12 +87,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareAdd?(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
+  prepareAdd(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Remove a user from the ACL.
@@ -114,12 +110,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareRemove?(
+  prepareRemove(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>>;
 
@@ -145,7 +137,7 @@ export interface ACL<ChangesType, PublicKey> {
 
   /**
    * Checks to see if the specified user has a specific capability.
-   * If capability is undefined, checks if the user is in the ACL at all (backward compatible).
+   * If capability is undefined, checks if the user is in the ACL at all.
    *
    * @param publicKey User's public key.
    * @param capability Optional capability string to check for.
@@ -155,7 +147,7 @@ export interface ACL<ChangesType, PublicKey> {
 
   /**
    * Returns the list of users with a specific capability.
-   * If capability is undefined, returns all users (backward compatible).
+   * If capability is undefined, returns all users.
    *
    * @param capability Optional capability to filter users by.
    */
@@ -176,11 +168,10 @@ export interface PreparedACLChange<ChangesType> {
    * If a later claim fails, discarding this claim MUST leave live state
    * unchanged; a fresh staging operation must remain possible.
    *
-   * Optional for compatibility. Workflows that need to compose this ACL
-   * change atomically with another provider transition must fail closed when
-   * the capability is absent.
+   * Composed transitions must claim every provider before finalizing any
+   * live-state mutation.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, stale-base-checked live-state commit. A normal
    * return proves complete application. Repeated and stale calls throw before
@@ -189,6 +180,3 @@ export interface PreparedACLChange<ChangesType> {
    */
   commit(): void;
 }
-
-/** Backwards-compatible name for a prepared ACL removal. */
-export type PreparedACLRemoval<ChangesType> = PreparedACLChange<ChangesType>;

@@ -28,9 +28,10 @@ management is the application's responsibility.
 
 No peer can serve a local copy while every holder is offline. IndexedDB bytes
 may survive offline, but complete close/restart reconstruction is not verified.
-Peerborne's pinning integration is **incomplete**: a listener API exists, but
-the normal core commit path does not publish to it. Data is lost if every local
-copy is cleared or otherwise becomes unrecoverable.
+Peerborne's pinning integration is **not implemented**: `PeerborneNode` does not
+implement an authenticated pinning protocol, and the normal core
+commit path has no authenticated publisher. Data is lost if every local copy is
+cleared or otherwise becomes unrecoverable.
 
 ## Can I use Peerborne in a mobile app?
 

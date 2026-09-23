@@ -42,10 +42,11 @@ What needs to happen:
 
 ### 4. Pinning publisher and restore
 
-**Status: Incomplete.** A `PeerborneNode` listener exists for pinning events, but the core commit path does not publish to it. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
+**Status: Not implemented.** The unauthenticated document-publish protocol has been removed, and the core commit path has no authenticated pinning publisher. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
 
 What needs to happen:
-- Publisher integration so every block write fires a pinning event
+- A versioned, domain-separated, writer-authorized, replay-protected publish protocol with explicit local pin policy
+- Publisher integration so every block write fires an authorized pinning event
 - Generic pinning client (e.g., to a remote IPFS node or S3-compatible store)
 - Restore flow with CI verification (pin → destroy local state → restore from remote)
 
@@ -127,7 +128,7 @@ What needs to happen:
 
 ## Completed recently
 
-- Rebrand the public packages and APIs as Peerborne while retaining legacy wire, key-derivation, Redux, and IndexedDB identifiers for compatibility
+- Use Peerborne package, API, wire, key-derivation, Redux, and IndexedDB identifiers without compatibility aliases
 - Documentation site with Starlight (concepts, cookbook, API reference, community)
 - Cross-NAT distinct-identity invitation and live bidirectional convergence verified in CI
 - Release workflow with secretless validation and gated publishing

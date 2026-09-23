@@ -1,68 +1,42 @@
-# Migrating to Peerborne
+# Alpha compatibility policy
 
-The project previously used the Swarmbase product name and a mix of
-`@swarmbase/*` and `Collabswarm*` API names. The public surface is now
-Peerborne. The library packages were never published to npm, so the rename is a
-clean source-level break rather than a registry migration.
+Peerborne has no deployed users and its six library packages have not been
+published to npm. The codebase supports the current APIs and formats only.
+Obsolete handlers, schemas, dependency aliases, and fallback decoders are
+removed instead of retained for compatibility.
 
-## Repository move
+## Wire and stored state
 
-The canonical repository is now `https://github.com/Peerborne/peerborne`.
-Update an existing clone with:
+All Peerborne libp2p protocol IDs use the `/peerborne/` namespace. Document
+key-derivation domains, discovery topics, default IndexedDB locations, and
+Redux action strings also use Peerborne identifiers. Old experimental
+identifiers are not aliases for the current ones.
 
-```sh
-git remote set-url origin git@github.com:Peerborne/peerborne.git
-```
+Every admitted sync message must carry the exact `signatureContext` required
+by its receiving handler. Authenticated operations sign that tag along with
+the message. Ordinary application sync uses `ordinary-sync-v1`; BeeKEM uses
+parent-bound V2 PathUpdates and generation-bearing V2 Welcomes. Receivers
+reject unsupported forms before applying state.
 
-## Package map
+Normal document and snapshot loads use V4 only. They require signing, a fresh
+request challenge, a captured trusted writer, and locally trusted security
+commitments; load quorum configuration does not disable those checks.
+Invitation catch-up uses a separate issuer-pinned protocol.
 
-| Previous package | Peerborne package |
-| --- | --- |
-| `@swarmbase/collabswarm` | `@peerborne/core` |
-| `@swarmbase/collabswarm-automerge` | `@peerborne/automerge` |
-| `@swarmbase/collabswarm-yjs` | `@peerborne/yjs` |
-| `@swarmbase/collabswarm-react` | `@peerborne/react` |
-| `@swarmbase/collabswarm-redux` | `@peerborne/redux` |
-| `@swarmbase/collabswarm-index` | `@peerborne/index` |
+`document.create()` explicitly founds a document. `document.open()` loads an
+existing document and fails when it cannot authenticate one; it never creates
+an empty document after an unsuccessful load.
 
-The matching workspace directories are `packages/core`, `packages/automerge`,
-`packages/yjs`, `packages/react`, `packages/redux`, and `packages/index`.
+The document GossipSub prefix is `/peerborne/document/v3/`. Custom document
+prefixes must be admitted by the relay's `TOPIC_ALLOWLIST`; changing a topic
+does not select another wire format. Topic names are public routing labels,
+and never replace signature verification or authorization.
 
-## API map
+## Development data
 
-| Previous API | Peerborne API |
-| --- | --- |
-| `Collabswarm` | `Peerborne` |
-| `CollabswarmConfig` | `PeerborneConfig` |
-| `CollabswarmDocument` | `PeerborneDocument` |
-| `CollabswarmNode` | `PeerborneNode` |
-| `CollabswarmPeersHandler` | `PeerbornePeersHandler` |
-| `CollabswarmDocumentChangeHandler` | `PeerborneDocumentChangeHandler` |
-| `AutomergeSwarmDocumentChangeHandler` | `AutomergeDocumentChangeHandler` |
-| `YjsSwarmDocumentChangeHandler` | `YjsDocumentChangeHandler` |
-| `useCollabswarm*` | `usePeerborne*` |
-| `CollabswarmContext*` | `PeerborneContext*` |
-| `CollabswarmActions` | `PeerborneActions` |
-| `CollabswarmState` | `PeerborneState` |
-| `CollabswarmDocumentState` | `PeerborneDocumentState` |
-| `collabswarmReducer` | `peerborneReducer` |
-| `CollabswarmIndexIntegration` | `PeerborneIndexIntegration` |
+Use fresh local state when changing protocol or storage formats during alpha
+work. The project does not provide dual-read migrations for old experimental
+databases. Keep any data needed for debugging outside the active application
+storage; do not infer compatibility from a matching document path.
 
-The Automerge and Yjs daemon commands are now `peerborne-automerge-d` and
-`peerborne-yjs-d`. No deprecated source aliases are exported.
-
-## Compatibility identifiers that did not change
-
-Branding must not change bytes that existing peers or stored data depend on.
-Peerborne therefore retains these historical identifiers:
-
-- libp2p protocol IDs under `/collabswarm/*`
-- the `collabswarm-doc-key-v1` HKDF domain-separation label
-- the `swarmdb-epoch-v1` epoch label and existing `swarmdb` discovery topics
-- the `/collabswarm-blocks` and `/collabswarm-data` IndexedDB locations
-- the `collabswarm-index` default index database name
-- the `COLLABSWARM_*` Redux action string values
-
-These strings are protocol and persistence boundaries, not current product or
-API names. Changing one requires an explicitly versioned dual-read/dual-protocol
-migration and focused compatibility tests.
+Capability and limitation claims belong in [the feature audit](docs/feature-audit.md).

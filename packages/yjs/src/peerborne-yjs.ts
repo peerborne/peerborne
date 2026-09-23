@@ -3,11 +3,11 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
+  isSyncMessageSignatureContext,
   copyUnsharedUint8Array,
   describeValue,
   deserializeInitialLoadChallengeFromWire,
@@ -216,6 +216,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
     }
     const raw = decoded as {
       documentId?: unknown;
+      signatureContext?: unknown;
       changeId?: unknown;
       changes?: unknown;
       keychainChanges?: unknown;
@@ -240,6 +241,15 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       throw new Error(
         `Invalid sync message: 'documentId' must be a string (got ${describeValue(
           raw.documentId,
+        )})`,
+      );
+    }
+    if (
+      !isSyncMessageSignatureContext(raw.signatureContext)
+    ) {
+      throw new Error(
+        `Invalid sync message: 'signatureContext' is not a supported exact tag (got ${describeValue(
+          raw.signatureContext,
         )})`,
       );
     }
@@ -341,8 +351,8 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       }
       welcomeRecipient = raw.welcomeRecipient;
     }
-    // The `pathUpdate` field is the serialized v1|v2 union. Its internal
-    // shape is validated by the decoder selected by protocol negotiation.
+    // The `pathUpdate` field carries the current V2 format. Its internal
+    // shape is validated by the strict PathUpdate decoder.
     // Reject obviously malformed
     // top-level values (null / array / primitive) here so a peer who
     // sends e.g. `pathUpdate: 42` doesn't propagate that through to the
@@ -432,6 +442,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
         : deserializeInitialLoadChallengeFromWire(raw.loadChallenge);
     return this.orderDecodedSyncFields(raw, {
       documentId: raw.documentId,
+      signatureContext: raw.signatureContext,
       changeId: raw.changeId as string | undefined,
       signature: raw.signature as string | undefined,
       changes: raw.changes === undefined ? undefined : deserializeChangeNodeFromJSON(
@@ -639,7 +650,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
   private readonly _queuedRemovalCommits = new WeakSet<
-    PreparedACLRemoval<Uint8Array>
+    PreparedACLChange<Uint8Array>
   >();
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<Uint8Array>
@@ -673,7 +684,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
 
   private _commitQueuedRemoval(
-    prepared: PreparedACLRemoval<Uint8Array>,
+    prepared: PreparedACLChange<Uint8Array>,
   ): void {
     this._queuedRemovalCommits.add(prepared);
     try {
@@ -850,7 +861,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
   async prepareRemove(
     publicKey: CryptoKey,
-  ): Promise<PreparedACLRemoval<Uint8Array>> {
+  ): Promise<PreparedACLChange<Uint8Array>> {
     this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
     assertCanonicalP384PublicKeyEncoding(hash);
@@ -873,7 +884,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     snapshotBoundedYjsACLState(staged, 'stage an ACL removal');
     const changes = new Uint8Array(privateChanges);
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
-    let prepared!: PreparedACLRemoval<Uint8Array>;
+    let prepared!: PreparedACLChange<Uint8Array>;
     const claimCommit = () => {
       if (state !== 'prepared') {
         throw new Error(
@@ -997,6 +1008,36 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
 }
 
 const KEY_ID_LENGTH_BYTES = 32;
+const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
+  'peerborne:yjs-keychain-projection:v1\0';
+
+// This independently rooted current-key view is reconciled by prepareMerge:
+// a matching current tuple preserves the receiver's existing linear history
+// without applying the projection's unrelated CRDT root operations.
+let projectionTextEncoder: TextEncoder | undefined;
+
+async function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+): Promise<Uint8Array> {
+  const identity = (projectionTextEncoder ??= new TextEncoder()).encode(
+    `${KEYCHAIN_PROJECTION_CLIENT_DOMAIN}${JSON.stringify(entry)}`,
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', identity),
+  );
+  // Five high bits plus six bytes yield a deterministic 53-bit safe integer.
+  let clientID = digest[0] & 0x1f;
+  for (let index = 1; index < 7; index++) {
+    clientID = clientID * 256 + digest[index];
+  }
+  const projection = new Doc();
+  projection.clientID = clientID;
+  projection
+    .getArray<[string, string]>('keys')
+    .push([[entry[0], entry[1]]]);
+  validateYjsKeychain(projection);
+  return new Uint8Array(encodeStateAsUpdateV2(projection));
+}
 
 function compareBytes(left: Uint8Array, right: Uint8Array): number {
   const sharedLength = Math.min(left.byteLength, right.byteLength);
@@ -1229,15 +1270,10 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const commitChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const history = encodeStateAsUpdateV2(staged);
-    // This exact projection is safe to cache and replay because retries reuse
-    // its existing client operation. It must not be regenerated later from a
-    // multi-key live history under a fresh client ID.
-    const currentProjection = new Doc();
-    currentProjection
-      .getArray<[string, string]>('keys')
-      .push([[epochIdHex, serialized]]);
-    validateYjsKeychain(currentProjection);
-    const currentKeyChange = encodeStateAsUpdateV2(currentProjection);
+    const currentKeyChange = await currentKeyProjection([
+      epochIdHex,
+      serialized,
+    ]);
     let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
     const claimCommit = () => {
       if (state !== 'prepared') {
@@ -1559,16 +1595,12 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<Uint8Array> {
-    validateYjsKeychain(this._keychain);
-    const yarr = this._keychain.getArray<[string, string]>('keys');
-    if (yarr.length === 0) {
+    const entries = validateYjsKeychain(this._keychain);
+    if (entries.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (yarr.length !== 1) {
-      throw new Error('Yjs cannot export the current key replay-safely');
-    }
-    return encodeStateAsUpdateV2(this._keychain);
+    return currentKeyProjection(entries[entries.length - 1]);
   }
 
   /**

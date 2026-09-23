@@ -66,13 +66,13 @@ for an interactive run and the exact evidence boundaries.
 | `@peerborne/yjs` | Yjs adapter and headless daemon |
 | `@peerborne/react` | React context and hooks |
 | `@peerborne/redux` | Redux actions and reducers |
-| `@peerborne/index` | Local/blind indexes, Bloom-filter gossip, and query bindings |
+| `@peerborne/index` | Local/blind indexes and current query bindings |
 
 All public packages and APIs use Peerborne names. The packages are source
 workspaces and have not been published to npm; release tooling validates packed
 tarballs in a clean external consumer. See the [migration notes](MIGRATING.md)
-for the old-to-new API map and the legacy wire/storage identifiers intentionally
-retained for compatibility.
+for the current API and wire/storage boundaries. There are no old-format
+compatibility aliases or automatic document migrations.
 
 ## Architecture and evidence
 

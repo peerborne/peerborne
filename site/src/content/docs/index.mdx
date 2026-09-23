@@ -123,7 +123,7 @@ await swarm.initialize(defaultConfig(defaultBootstrapConfig([])));
 // await swarm.connect(['/dns4/relay.example.com/tcp/443/wss/p2p/12D3...']);
 
 const todos = swarm.doc('/todo-list');
-await todos.open();
+await todos.create();
 
 todos.subscribe('ui', (state) => {
   render(state.getArray<string>('items').toArray());

@@ -14,11 +14,8 @@ export interface BlindIndexProvider {
    * Derive a field-specific key from raw key material (Uint8Array) using the field path
    * as context. This allows the caller to avoid ever creating an extractable CryptoKey,
    * which strengthens key-handling guarantees.
-   *
-   * Optional for backwards compatibility with existing implementations of this interface.
-   * Callers that need raw-key derivation should feature-detect this method before use.
    */
-  deriveFieldKeyFromRaw?(rawKeyMaterial: Uint8Array, fieldPath: string): Promise<CryptoKey>;
+  deriveFieldKeyFromRaw(rawKeyMaterial: Uint8Array, fieldPath: string): Promise<CryptoKey>;
 
   /**
    * Compute a blind index token for a single field value.
