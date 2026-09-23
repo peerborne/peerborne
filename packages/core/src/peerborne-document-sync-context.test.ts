@@ -654,7 +654,7 @@ describe('snapshot-bearing invitation sync', () => {
 
   test.each([
     ['bootstrap', 'invitation-bootstrap-v1'],
-    ['catch-up', 'load-response-v3'],
+    ['catch-up', 'load-response-v4'],
   ] as const)(
     'recognizes the applied detached snapshot during %s',
     async (phase, context) => {

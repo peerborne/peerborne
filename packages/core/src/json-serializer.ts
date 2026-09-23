@@ -14,8 +14,8 @@ import {
 import type { LoadSecurityCommitments } from './load-security-state.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { CRDTChangeBlock } from './crdt-change-block.js';
-import { CRDTLoadRequest } from './crdt-load-request.js';
-import { CRDTSyncMessage } from './crdt-sync-message.js';
+import { CRDTLoadRequest, snapshotLoadRequest } from './crdt-load-request.js';
+import { CRDTSyncMessage, isSyncMessageSignatureContext } from './crdt-sync-message.js';
 import {
   LoadMessageSerializer,
   LoadRequestCompletionDetector,
@@ -492,6 +492,11 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
    * protocol writer must not claim to reproduce for arbitrary caller values.
    */
   protected serializeNormalizedSyncWireValue(message: unknown): string {
+    const tag = message && typeof message === 'object'
+      ? Object.getOwnPropertyDescriptor(message, 'signatureContext') : undefined;
+    if (!tag || !('value' in tag) || !isSyncMessageSignatureContext(tag.value)) {
+      throw new TypeError('Sync message requires a supported signatureContext');
+    }
     // Native stringify is far faster; the iterative writer only exists for
     // histories deep enough to exhaust the call stack.
     try {
@@ -574,6 +579,9 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
       this.deserialize(this.decode(message)),
       'Sync message',
     );
+    if (!isSyncMessageSignatureContext(raw.signatureContext)) {
+      throw new TypeError('Sync message requires a supported signatureContext');
+    }
     return transformOwnFieldsInOrder(raw, (field, value) =>
       field === 'changes' && value !== undefined
         ? deserializeChangeNodeFromJSON(
@@ -584,6 +592,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     ) as CRDTSyncMessage<ChangesType, PublicKey>;
   }
   serializeLoadRequest(message: CRDTLoadRequest): Uint8Array {
+    message = snapshotLoadRequest(message);
     const wire = transformOwnFieldsInOrder(message, (field, value) =>
       field === 'loadChallenge' && value !== undefined
         ? serializeInitialLoadChallengeForWire(value as Uint8Array)
@@ -596,10 +605,10 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
       this.deserialize(this.decode(message)),
       'Load request',
     );
-    return transformOwnFieldsInOrder(raw, (field, value) =>
+    return snapshotLoadRequest(transformOwnFieldsInOrder(raw, (field, value) =>
       field === 'loadChallenge' && value !== undefined
         ? deserializeInitialLoadChallengeFromWire(value)
         : value,
-    ) as CRDTLoadRequest;
+    ));
   }
 }

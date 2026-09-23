@@ -13,7 +13,7 @@ describe('JSON sync security fields', () => {
     });
     try {
       expect(() => serializer.deserializeSyncMessage(new TextEncoder().encode(
-        JSON.stringify({ documentId: '/doc', tipsHash: 'A'.repeat(43) + '=' }),
+        JSON.stringify({ signatureContext: 'security-advertisement-v1' as const, documentId: '/doc', tipsHash: 'A'.repeat(43) + '=' }),
       ))).toThrow(new TypeError('tipsHash must be bounded canonical base64'));
     } finally {
       decoder.mockRestore();
@@ -83,7 +83,7 @@ describe('JSON sync security fields', () => {
   ] as const)(
     'rejects malformed %s bytes and wire encodings',
     (field, length) => {
-      const message = (value: unknown) => ({
+      const message = (value: unknown) => ({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: '/doc',
         [field]: value,
       });
@@ -128,7 +128,7 @@ describe('JSON sync security fields', () => {
         ],
       ] as const) {
         const wire = serializer.encode(
-          JSON.stringify({ documentId: '/doc', [field]: 'A'.repeat(length) }),
+          JSON.stringify({ signatureContext: 'ordinary-sync-v1' as const, documentId: '/doc', [field]: 'A'.repeat(length) }),
         );
         expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
           /bounded canonical base64/,

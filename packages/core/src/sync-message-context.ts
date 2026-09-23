@@ -44,16 +44,6 @@ const allowedFields: Readonly<
     'snapshot',
     'signature',
   ]),
-  'load-response-v3': new Set([
-    'documentId',
-    'signatureContext',
-    'changeId',
-    'changes',
-    'snapshot',
-    'keychainChanges',
-    'tips',
-    'signature',
-  ]),
   'load-response-v4': new Set([
     'documentId',
     'signatureContext',
@@ -67,12 +57,6 @@ const allowedFields: Readonly<
     'loadChallenge',
     'signature',
   ]),
-  'tip-advertisement-v1': new Set([
-    'documentId',
-    'signatureContext',
-    'tipsHash',
-    'signature',
-  ]),
   'security-advertisement-v1': new Set([
     'documentId',
     'signatureContext',
@@ -80,6 +64,10 @@ const allowedFields: Readonly<
     'loadSecurityState',
     'loadChallenge',
     'signature',
+  ]),
+  'invitation-catch-up-v1': new Set([
+    'documentId', 'signatureContext', 'changeId', 'changes', 'snapshot',
+    'keychainChanges', 'tips', 'loadChallenge', 'signature',
   ]),
   'invitation-bootstrap-v1': new Set([
     'documentId',

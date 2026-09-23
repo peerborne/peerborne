@@ -1,3 +1,4 @@
+import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
@@ -62,6 +63,7 @@ jest.mock('./peerborne.js', () => ({
 
 function fakeDocument(fields: Record<string, unknown>): any {
   return Object.assign(Object.create(PeerborneDocument.prototype), {
+    swarm: { config: {} },
     _keychain: { keys: async () => [] },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
@@ -89,19 +91,18 @@ function signedLoadHarness(
   verify: (...args: unknown[]) => Promise<boolean>,
   message: any = {
     documentId: '/load-race',
-    signatureContext: 'load-response-v3',
+    signatureContext: 'load-response-v4',
     signature: 'AAAA',
     tips: [],
   },
   serializeSyncMessage: (message: any) => Uint8Array = () =>
     new Uint8Array([8]),
 ) {
-  const contextMessage = Object.defineProperties(
-    { signatureContext: 'load-response-v3', tips: [] },
-    Object.getOwnPropertyDescriptors(message),
-  );
+  const contextMessage = currentLoadResponse(message);
   const document = fakeDocument({
     documentPath: message.documentId,
+    _fixtureLoadResponse: contextMessage,
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     swarm: {
       config: { enableSigning: true, loadQuorumTimeoutMs: 1000 },
       heliaNode: {
@@ -178,7 +179,11 @@ describe('document load response boundaries', () => {
     };
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+      ),
     ).resolves.toBe(false);
     expect(syncValidatedProtocolMessage).not.toHaveBeenCalled();
   });
@@ -295,7 +300,7 @@ describe('document load response boundaries', () => {
       return true;
     });
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(true);
   });
 
@@ -314,10 +319,7 @@ describe('document load response boundaries', () => {
     const sync = jest.fn(async () => true);
     document._syncUnlocked = sync;
     const queue = new InvitationMembershipQueue();
-    const loading = queue.run(() => document._sendLoadRequestAndSync(
-      stream, new Uint8Array([1]), null, 'issuer', undefined,
-      true, undefined, undefined, controller.signal,
-    ));
+    const loading = queue.run(async () => document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), stream, new Uint8Array([1]), null, undefined, true, undefined, undefined, controller.signal));
     const outcome = loading.then(() => 'resolved', (error: Error) => error.message);
     try {
       await started.promise;
@@ -1147,7 +1149,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._isLoadRequesterAuthorized({
+      document._isLoadRequesterAuthorized({ loadChallenge: fixtureLoadChallenge(),
         documentId: '/retry-load-requester',
         signature: 'AAAA',
       }),
@@ -1178,7 +1180,7 @@ describe('document load response boundaries', () => {
     );
     document._bootstrapLoadApplicationState = 'complete';
     document._syncUnlocked = jest.fn(async () => true);
-    await expect(document._sendLoadRequestAndSync(stream, new Uint8Array([1])))
+    await expect(document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])))
       .resolves.toBe(true);
     expect(peak).toBe(1);
     expect(payloads).toEqual([[8], [8], [8], [8]]);
@@ -1203,15 +1205,12 @@ describe('document load response boundaries', () => {
     document._writers = {
       users: jest.fn(async () => [...currentWriters]),
     };
-    document._writerMutationsInFlight = 1;
+    document._writerMutationsInFlight = 0;
     document._writerKeysVersion = 1;
     document._cachedWriterKeys = null;
     document._syncUnlocked = jest.fn(async () => true);
 
-    const load = document._sendLoadRequestAndSync(
-      stream,
-      new Uint8Array([1]),
-    );
+    const load = document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]));
     await verificationStarted.promise;
     currentWriters = [];
     document._writerMutationsInFlight = 0;
@@ -1227,11 +1226,10 @@ describe('document load response boundaries', () => {
   test('reports a writer conflict before a queued bootstrap load applies state', async () => {
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async (_raw, key) => key === 'bootstrap-writer',
     );
     document._syncUnlocked = jest.fn(async () => true);
+    const session = await loadSessionFixture(document, undefined);
     document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
         document._writerKeysVersion += 1;
@@ -1240,8 +1238,9 @@ describe('document load response boundaries', () => {
     };
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(session, stream, new Uint8Array([1])),
     ).rejects.toThrow(/Writer authorization changed/);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
     expect(document._syncUnlocked).not.toHaveBeenCalled();
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
@@ -1250,21 +1249,21 @@ describe('document load response boundaries', () => {
     let writerRead = 0;
     const { document, stream } = signedLoadHarness(
       async () => (++writerRead === 1 ? [] : ['current-writer']),
-      async () => false,
+      async (_raw, key) => key === 'bootstrap-writer',
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(document._getWriterKeys).toHaveBeenCalledTimes(2);
-    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(2);
   });
 
   test('rechecks original signed bytes after quorum strips inline changes', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1297,6 +1296,7 @@ describe('document load response boundaries', () => {
       },
     };
     document._changesSerializer = {
+      serializeChanges: fixtureSerializeChanges,
       deserializeChanges: jest.fn(() => ({ prefetched: true })),
     };
     document._syncUnlocked = jest.fn(
@@ -1307,14 +1307,10 @@ describe('document load response boundaries', () => {
         return true;
       },
     );
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash),
     ).resolves.toBe(true);
 
     expect(verifiedRaw).toEqual([[1], [1]]);
@@ -1330,7 +1326,7 @@ describe('document load response boundaries', () => {
   test('reuses a validated prefetched block under one aggregate byte budget', async () => {
     const message = {
       documentId: '/prefetch-cache',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1338,9 +1334,7 @@ describe('document load response boundaries', () => {
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     const get = jest.fn(async function* () {
@@ -1351,6 +1345,7 @@ describe('document load response boundaries', () => {
     document.swarm.heliaNode = { blockstore: { get } };
     document._writers = { users: jest.fn(async () => []) };
     document._changesSerializer = {
+      serializeChanges: fixtureSerializeChanges,
       deserializeChanges: jest.fn(() => decodedChanges),
     };
     document._document = {};
@@ -1388,16 +1383,10 @@ describe('document load response boundaries', () => {
     document._completeBootstrapStateApplicationUnlocked = jest.fn(
       async () => document._markBootstrapStateApplicationComplete(),
     );
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-        undefined,
-        3,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash, 3),
     ).resolves.toBe(true);
 
     expect(get).toHaveBeenCalledTimes(1);
@@ -1480,7 +1469,7 @@ describe('document load response boundaries', () => {
     async (knownBlockMode) => {
       const message = {
         documentId: '/established-prefetch',
-        signatureContext: 'load-response-v3',
+        signatureContext: 'load-response-v4',
         signature: 'AAAA',
         changeId: 'HEAD',
         tips: ['HEAD'],
@@ -1531,16 +1520,10 @@ describe('document load response boundaries', () => {
           return true;
         },
       );
-      const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
       await expect(
-        document._sendLoadRequestAndSync(
-          stream,
-          new Uint8Array([1]),
-          expectedTipsHash,
-          undefined,
-          3,
-        ),
+        document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash, 3),
       ).resolves.toBe(true);
 
       expect(get.mock.calls.map(([cid]) => cid.toString())).toEqual(['HEAD']);
@@ -1551,7 +1534,7 @@ describe('document load response boundaries', () => {
   test('does not skip prefetch for a transient hash that a queued mutation rolls back', async () => {
     const message = {
       documentId: '/transient-prefetch-hash',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1561,7 +1544,7 @@ describe('document load response boundaries', () => {
       },
     };
     const { document, stream } = signedLoadHarness(
-      async () => [],
+      async () => ['issuer'],
       async () => true,
       message,
     );
@@ -1610,15 +1593,10 @@ describe('document load response boundaries', () => {
     document._completeBootstrapStateApplicationUnlocked = jest.fn(
       async () => document._markBootstrapStateApplicationComplete(),
     );
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-        'issuer',
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document), stream, new Uint8Array([1]), expectedTipsHash),
     ).resolves.toBe(true);
     await expect(transientMutation).resolves.toBeUndefined();
 
@@ -1630,7 +1608,7 @@ describe('document load response boundaries', () => {
   test('does not require GC history below an already-applied snapshot boundary', async () => {
     const message = {
       documentId: '/snapshot-prefetch',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1670,14 +1648,10 @@ describe('document load response boundaries', () => {
       document._hashes.add('HEAD');
       return true;
     });
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash),
     ).resolves.toBe(true);
 
     expect(get.mock.calls.map(([cid]) => cid.toString())).toEqual(['HEAD']);
@@ -1688,7 +1662,7 @@ describe('document load response boundaries', () => {
     const secret = 'prefetch-provider-private-sentinel';
     const message = {
       documentId: '/prefetch-provider-range-error',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1696,9 +1670,7 @@ describe('document load response boundaries', () => {
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     document._writers = { users: jest.fn(async () => []) };
@@ -1709,18 +1681,14 @@ describe('document load response boundaries', () => {
         }),
       },
     };
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
     const consoleWarn = jest
       .spyOn(console, 'warn')
       .mockImplementation(() => undefined);
     let rejection: unknown;
 
     try {
-      await document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-      );
+      await document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash);
     } catch (error) {
       rejection = error;
     } finally {
@@ -1734,12 +1702,10 @@ describe('document load response boundaries', () => {
     expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(secret);
   });
 
-  test('accepts encrypted-channel bootstrap only for a pristine empty-writer document', async () => {
+  test('accepts an independently authenticated bootstrap only for a pristine empty-writer document', async () => {
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
     );
     document._syncUnlocked = jest.fn(
       async (
@@ -1755,7 +1721,7 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(true);
 
     document._hashes.add('existing-change');
@@ -1766,16 +1732,15 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(nextStream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), nextStream, new Uint8Array([1])),
     ).resolves.toBe(false);
-    expect(document._authProvider.verify).not.toHaveBeenCalled();
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(2);
   });
 
   test('does not restore bootstrap trust after a failed load partially applies ACL state', async () => {
     const firstMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1791,8 +1756,7 @@ describe('document load response boundaries', () => {
     };
     const secondMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1802,9 +1766,7 @@ describe('document load response boundaries', () => {
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       firstMessage,
     );
     const mergeReaders = jest.fn();
@@ -1815,7 +1777,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).rejects.toThrow(/provider failed/);
     expect(mergeReaders).toHaveBeenCalledTimes(1);
     expect(document._hashes).toEqual(new Set());
@@ -1832,14 +1794,11 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(
-        attackerStream,
-        new Uint8Array([1]),
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), attackerStream, new Uint8Array([1])),
     ).resolves.toBe(false);
     expect(mergeReaders).toHaveBeenCalledTimes(1);
     expect(document._syncDocumentChanges).toHaveBeenCalledTimes(1);
-    expect(document._authProvider.verify).not.toHaveBeenCalled();
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
     await expect(document.load()).rejects.toThrow(
       /failed after state application began/,
     );
@@ -1849,8 +1808,7 @@ describe('document load response boundaries', () => {
     let currentWriters: string[] = [];
     const firstMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1866,8 +1824,7 @@ describe('document load response boundaries', () => {
     };
     const secondMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1875,7 +1832,7 @@ describe('document load response boundaries', () => {
         change: { document: 'attacker-retry' },
       },
     };
-    const verify = jest.fn(async (_raw, key) => key === 'attacker');
+    const verify = jest.fn(async (_raw, key) => key === 'bootstrap-writer');
     const { document, stream } = signedLoadHarness(
       async () => [...currentWriters],
       verify,
@@ -1890,7 +1847,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).rejects.toThrow(/provider failed/);
     expect(currentWriters).toEqual(['attacker']);
 
@@ -1904,29 +1861,23 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(
-        attackerStream,
-        new Uint8Array([1]),
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), attackerStream, new Uint8Array([1])),
     ).resolves.toBe(false);
-    expect(verify).not.toHaveBeenCalled();
+    expect(verify).toHaveBeenCalledTimes(1);
     expect(document._syncDocumentChanges).toHaveBeenCalledTimes(1);
   });
 
   test('skips a non-quorum bootstrap peer whose hash-only blocks are unavailable before state application', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'hash-only-head',
       changes: { kind: crdtDocumentChangeNode },
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     document.swarm.heliaNode.blockstore.get = jest.fn(async function* () {
@@ -1950,7 +1901,11 @@ describe('document load response boundaries', () => {
 
     try {
       await expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(
+          await loadSessionFixture(document, undefined),
+          stream,
+          new Uint8Array([1]),
+        ),
       ).resolves.toBe(false);
     } finally {
       consoleWarn.mockRestore();
@@ -1969,7 +1924,11 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        retryStream,
+        new Uint8Array([1]),
+      ),
     ).resolves.toBe(true);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
     expect(document._bootstrapLoadApplicationState).toBe('complete');
@@ -1978,22 +1937,20 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when a response is rejected before state application', async () => {
     const validMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
+      tips: ['valid-head'],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       validMessage,
     );
     document._syncMessageSerializer.deserializeSyncMessage
-      .mockReturnValueOnce({ ...validMessage, documentId: '/wrong-document' })
-      .mockReturnValueOnce(validMessage);
+      .mockReturnValueOnce(currentLoadResponse({ ...validMessage, documentId: '/wrong-document' }))
+      .mockReturnValueOnce(currentLoadResponse(validMessage));
     document._syncUnlocked = jest.fn(
       async (
         _message: unknown,
@@ -2008,7 +1965,7 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
 
     const retryStream = {
@@ -2018,7 +1975,7 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), retryStream, new Uint8Array([1])),
     ).resolves.toBe(true);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
@@ -2026,8 +1983,8 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when sync rejects before mutating state', async () => {
     const unsignedMessage = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
+      tips: ['valid-head'],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2038,24 +1995,21 @@ describe('document load response boundaries', () => {
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       unsignedMessage,
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
 
-    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(currentLoadResponse({
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changes: { kind: crdtDocumentChangeNode },
-    });
+    }));
     const malformedStream = {
       ...stream,
       [Symbol.asyncIterator]: async function* () {
@@ -2063,16 +2017,11 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(
-        malformedStream,
-        new Uint8Array([1]),
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), malformedStream, new Uint8Array([1])),
     ).rejects.toThrow(/missing its root CID/);
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
 
-    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
-      validMessage,
-    );
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(currentLoadResponse(validMessage));
     document._syncUnlocked = jest.fn(
       async (
         _message: unknown,
@@ -2092,7 +2041,7 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), retryStream, new Uint8Array([1])),
     ).resolves.toBe(true);
   });
 
@@ -2100,13 +2049,12 @@ describe('document load response boundaries', () => {
     let currentWriters: string[] = [];
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
     };
-    const verify = jest.fn(async (_raw, key) => key === 'writer');
+    const verify = jest.fn(async (_raw, key) => key === 'writer' || key === 'bootstrap-writer');
     const { document, stream } = signedLoadHarness(
       async () => [...currentWriters],
       verify,
@@ -2127,7 +2075,7 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(true);
     expect(document._bootstrapLoadApplicationState).toBe('complete');
 
@@ -2138,9 +2086,9 @@ describe('document load response boundaries', () => {
       },
     };
     await expect(
-      document._sendLoadRequestAndSync(writerStream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), writerStream, new Uint8Array([1])),
     ).resolves.toBe(true);
-    expect(verify).toHaveBeenCalledTimes(2);
+    expect(verify).toHaveBeenCalledTimes(3);
     expect(document._syncUnlocked).toHaveBeenCalledTimes(2);
   });
 
@@ -2154,12 +2102,7 @@ describe('document load response boundaries', () => {
     document._bootstrapLoadApplicationState = 'pending';
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'pinned-writer',
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null),
     ).resolves.toBe(false);
 
     expect(stream.send).not.toHaveBeenCalled();
@@ -2193,12 +2136,7 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'pinned-writer',
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null),
     ).resolves.toBe(true);
 
     expect(document._getWriterKeys).not.toHaveBeenCalled();
@@ -2214,8 +2152,7 @@ describe('document load response boundaries', () => {
       async (_raw, key) => key === 'pinned-writer',
       {
         documentId: '/load-race',
-        signatureContext: 'load-response-v3',
-        tips: [],
+        signatureContext: 'load-response-v4',
         signature: 'AAAA',
         keychainChanges: [],
       },
@@ -2255,16 +2192,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'pinned-writer',
-        undefined,
-        true,
-        undefined,
-        assertMembership,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null, undefined, true, undefined, assertMembership),
     ).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledTimes(1);
@@ -2283,8 +2211,7 @@ describe('document load response boundaries', () => {
       async (_raw, key) => key === 'pinned-writer',
       {
         documentId: '/load-race',
-        signatureContext: 'load-response-v3',
-        tips: [],
+        signatureContext: 'load-response-v4',
         signature: 'AAAA',
         changeId: 'new-head',
         changes: {
@@ -2322,12 +2249,7 @@ describe('document load response boundaries', () => {
     expect(notificationTail).toBeDefined();
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'pinned-writer',
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null),
     ).resolves.toBe(false);
 
     expect(document._syncUnlocked).not.toHaveBeenCalled();
@@ -2344,17 +2266,14 @@ describe('document load response boundaries', () => {
   test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'legacy-head',
       changes: { kind: crdtDocumentChangeNode },
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     const handler = jest.fn();
@@ -2373,181 +2292,30 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).rejects.toThrow(/bootstrap state is incomplete/);
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(handler).not.toHaveBeenCalled();
   });
 
-  test('tracks partial state application when signing is disabled', async () => {
-    const message = {
-      documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
-      changeId: 'unsigned-head',
-      changes: { kind: crdtDocumentChangeNode },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => {
-        throw new Error('unsigned admission must not read the writer ACL');
-      },
-      async () => {
-        throw new Error('unsigned admission must not verify signatures');
-      },
-      message,
-    );
+  test('rejects initial loading when signing is disabled before applying state', async () => {
+    const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
     document.swarm.config.enableSigning = false;
-    document._syncUnlocked = jest.fn(
-      async (
-        _message: unknown,
-        _verifySignature: boolean,
-        _context: string,
-        onStateApplicationStart?: () => void,
-      ) => {
-        onStateApplicationStart?.();
-        throw new Error('provider failed after unsigned state application');
-      },
-    );
-
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).rejects.toThrow(/provider failed/);
-    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    document._syncUnlocked = jest.fn();
+    await expect(document._sendLoadRequestAndSync(fixedLoadSession(document), stream, new Uint8Array([1])))
+      .rejects.toThrow(/require a trusted signing authority/);
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
     expect(document._getWriterKeys).not.toHaveBeenCalled();
     expect(document._authProvider.verify).not.toHaveBeenCalled();
-  });
-
-  test('keeps an established unsigned document usable after a failed catch-up', async () => {
-    const message = {
-      documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
-      changeId: 'unsigned-head',
-      changes: { kind: crdtDocumentChangeNode },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => {
-        throw new Error('unsigned admission must not read the writer ACL');
-      },
-      async () => {
-        throw new Error('unsigned admission must not verify signatures');
-      },
-      message,
-    );
-    document.swarm.config.enableSigning = false;
-    document._bootstrapLoadApplicationState = 'complete';
-    document._hashes.add('established-head');
-    document._syncUnlocked = jest.fn(
-      async (
-        _message: unknown,
-        _verifySignature: boolean,
-        _context: string,
-        onStateApplicationStart?: () => void,
-      ) => {
-        expect(onStateApplicationStart).toBeUndefined();
-        expect(document._bootstrapLoadApplicationState).toBe('complete');
-        throw new Error('provider failed after unsigned state application');
-      },
-    );
-
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).rejects.toThrow(/provider failed/);
-    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
-    expect(document._bootstrapLoadApplicationState).toBe('complete');
-    expect(() => document._assertNoIncompleteBootstrapLoad()).not.toThrow();
-  });
-
-  test('applies an established unsigned catch-up without bootstrap fetch caps', async () => {
-    const message = {
-      documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
-      changeId: 'unsigned-head',
-      changes: { kind: crdtDocumentChangeNode },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => {
-        throw new Error('unsigned admission must not read the writer ACL');
-      },
-      async () => {
-        throw new Error('unsigned admission must not verify signatures');
-      },
-      message,
-    );
-    document.swarm.config.enableSigning = false;
-    document._bootstrapLoadApplicationState = 'complete';
-    document._hashes.add('established-head');
-    document._readBlock = jest.fn(async () => {
-      throw new Error('ordinary catch-up must not pre-fetch blocks');
-    });
-    document._syncUnlocked = jest.fn(
-      async (
-        _message: unknown,
-        _verifySignature: boolean,
-        _context: string,
-        onStateApplicationStart: unknown,
-        _continuing: unknown,
-        _onKeychain: unknown,
-        fetchOptions: Record<string, unknown> | undefined,
-      ) => {
-        expect(onStateApplicationStart).toBeUndefined();
-        expect(fetchOptions?.maxBlockBytes).toBeUndefined();
-        expect(fetchOptions?.maxAggregateBlockBytes).toBeUndefined();
-        expect(fetchOptions?.aggregateBudget).toBeUndefined();
-        document._hashes.add('unsigned-head');
-        return true;
-      },
-    );
-
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).resolves.toBe(true);
-    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
-    expect(document._readBlock).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('complete');
-  });
-
-  test('skips an ordinary unsigned catch-up that is no longer established at the queue', async () => {
-    const message = {
-      documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
-      changeId: 'unsigned-head',
-      changes: { kind: crdtDocumentChangeNode },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => {
-        throw new Error('unsigned admission must not read the writer ACL');
-      },
-      async () => {
-        throw new Error('unsigned admission must not verify signatures');
-      },
-      message,
-    );
-    document.swarm.config.enableSigning = false;
-    document._bootstrapLoadApplicationState = 'complete';
-    document._hashes.add('established-head');
-    document._mutationQueue = {
-      run: (operation: () => Promise<unknown>) => {
-        document._hashes.clear();
-        return operation();
-      },
-    };
-    document._syncUnlocked = jest.fn(async () => true);
-
-    await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
-    ).resolves.toBe(false);
     expect(document._syncUnlocked).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(stream.send).not.toHaveBeenCalled();
+    expect(stream.abort).toHaveBeenCalledTimes(1);
   });
 
   test('tracks and defers an incomplete signer-pinned catch-up', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'pinned-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -2575,14 +2343,7 @@ describe('document load response boundaries', () => {
     );
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'pinned-writer',
-        undefined,
-        true,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null, undefined, true),
     ).rejects.toThrow(/catch-up state is incomplete/);
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(handler).not.toHaveBeenCalled();
@@ -2721,9 +2482,7 @@ describe('document load response boundaries', () => {
     const getWriterKeys = jest.fn(async () => [] as string[]);
     const { document, stream } = signedLoadHarness(
       getWriterKeys,
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
     );
     document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
@@ -2734,7 +2493,7 @@ describe('document load response boundaries', () => {
     };
     document._syncUnlocked = jest.fn(async () => true);
 
-    const load = document._sendLoadRequestAndSync(stream, new Uint8Array([1]));
+    const load = document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]));
     await queued.promise;
     document._bootstrapLoadApplicationState = 'pending';
     release.resolve();
@@ -2747,14 +2506,12 @@ describe('document load response boundaries', () => {
   test('rejects a tracked bootstrap response that applies no state', async () => {
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
     );
     document._syncUnlocked = jest.fn(async () => true);
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
@@ -2769,23 +2526,20 @@ describe('document load response boundaries', () => {
     async (_name, changes) => {
       const message = {
         documentId: '/load-race',
-        signatureContext: 'load-response-v3',
-        tips: [],
+        signatureContext: 'load-response-v4',
         signature: 'AAAA',
         keychainChanges: changes,
       };
       const { document, stream } = signedLoadHarness(
         async () => [],
-        async () => {
-          throw new Error('bootstrap must not invoke signature verification');
-        },
+        async () => true,
         message,
       );
       const merge = jest.fn();
       document._keychain.merge = merge;
 
       await expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
       ).rejects.toThrow(/prepareMerge/);
 
       expect(merge).not.toHaveBeenCalled();
@@ -2797,16 +2551,13 @@ describe('document load response boundaries', () => {
   test.each([false, true])('handles a provider-semantic no-op with commit failure %p', async (commitFails) => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'empty' },
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     const commit = jest.fn(() => {
@@ -2828,7 +2579,7 @@ describe('document load response boundaries', () => {
       merge,
     };
 
-    const result = document._sendLoadRequestAndSync(stream, new Uint8Array([1]));
+    const result = document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]));
     if (commitFails) {
       await expect(result).rejects.toThrow('indeterminate no-op commit');
     } else {
@@ -2876,12 +2627,11 @@ describe('document load response boundaries', () => {
         document._syncUnlocked(
           {
             documentId: '/keychain-hydration-failure',
-            signatureContext: 'load-response-v3',
-            tips: [],
+            signatureContext: 'load-response-v4',
             keychainChanges: { providerEncoding: 'one-key' },
           },
           false,
-          'load-response-v3',
+          'load-response-v4',
           beginStateApplication,
         ),
       ).rejects.toBe(sentinel);
@@ -2926,8 +2676,7 @@ describe('document load response boundaries', () => {
     const sync = document._syncUnlocked(
       {
         documentId: '/acl-prepass-reservation',
-        signatureContext: 'load-response-v3',
-        tips: [],
+        signatureContext: 'load-response-v4',
         changeId: 'READER',
         changes: {
           kind: crdtReaderChangeNode,
@@ -2935,7 +2684,7 @@ describe('document load response boundaries', () => {
         },
       },
       false,
-      'load-response-v3',
+      'load-response-v4',
       beginStateApplication,
     );
     await mergeStarted.promise;
@@ -2971,8 +2720,7 @@ describe('document load response boundaries', () => {
         document._syncUnlocked(
           {
             documentId: '/snapshot-redaction',
-            signatureContext: 'load-response-v3',
-            tips: [],
+            signatureContext: 'load-response-v4',
             signature: 'AAAA',
             snapshot: {
               state: {},
@@ -2982,7 +2730,7 @@ describe('document load response boundaries', () => {
             },
           },
           false,
-          'load-response-v3',
+          'load-response-v4',
         ),
       ).resolves.toBe(true);
 
@@ -3001,7 +2749,7 @@ describe('document load response boundaries', () => {
     const document = fakeDocument({
       documentPath: '/load-redaction',
       swarm: {
-        config: { enableSigning: false, loadQuorumEnabled: false },
+        config: { enableSigning: true, loadQuorumEnabled: false },
         heliaNode: {
           libp2p: {
             dialProtocol: jest.fn(async () => {
@@ -3010,6 +2758,8 @@ describe('document load response boundaries', () => {
           },
         },
       },
+      _captureLoadSession: async () => fixedLoadSession(document),
+      _authProvider: { sign: async () => new Uint8Array([1]) },
       _bootstrapLoadApplicationState: 'pristine',
       _hashes: new Set<string>(),
       _compactionConfig: { enabled: false },
@@ -3033,13 +2783,12 @@ describe('document load response boundaries', () => {
     }
   });
 
-  test.each(['pinned', 'unsigned'] as const)(
+  test.each(['pinned'] as const)(
     'counts a committed logical keychain change as %s load progress',
     async (admission) => {
       const message = {
         documentId: '/load-race',
-        signatureContext: 'load-response-v3',
-        tips: [],
+        signatureContext: 'load-response-v4',
         signature: 'AAAA',
         keychainChanges: { providerEncoding: 'one-key' },
       };
@@ -3072,12 +2821,7 @@ describe('document load response boundaries', () => {
       };
 
       await expect(
-        document._sendLoadRequestAndSync(
-          stream,
-          new Uint8Array([1]),
-          null,
-          admission === 'pinned' ? 'pinned-writer' : undefined,
-        ),
+        document._sendLoadRequestAndSync(await loadSessionFixture(document, admission === 'pinned' ? 'pinned-writer' : undefined), stream, new Uint8Array([1]), null),
       ).resolves.toBe(true);
 
       expect(commit).toHaveBeenCalledTimes(1);
@@ -3088,16 +2832,13 @@ describe('document load response boundaries', () => {
   test('does not establish unpinned bootstrap authority from a keychain-only change', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     const commit = jest.fn();
@@ -3116,7 +2857,7 @@ describe('document load response boundaries', () => {
     };
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(commit).toHaveBeenCalledTimes(1);
@@ -3126,15 +2867,13 @@ describe('document load response boundaries', () => {
   test('does not admit bootstrap state on an already-subscribed instance', async () => {
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
     );
     document._subscribed = true;
     document._syncUnlocked = jest.fn(async () => true);
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(document._syncUnlocked).not.toHaveBeenCalled();
@@ -3152,18 +2891,7 @@ describe('document load response boundaries', () => {
       document._syncUnlocked = jest.fn(async () => true);
 
       await expect(
-        document._sendLoadRequestAndSync(
-          stream,
-          new Uint8Array([1]),
-          null,
-          'issuer',
-          undefined,
-          true,
-          undefined,
-          undefined,
-          undefined,
-          forgedContinuation,
-        ),
+        document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), stream, new Uint8Array([1]), null, undefined, true, undefined, undefined, undefined, forgedContinuation),
       ).resolves.toBe(false);
 
       expect(stream.abort).toHaveBeenCalledTimes(1);
@@ -3191,18 +2919,7 @@ describe('document load response boundaries', () => {
       return true;
     });
 
-    const staleLoad = document._sendLoadRequestAndSync(
-      stream,
-      new Uint8Array([1]),
-      null,
-      'issuer',
-      undefined,
-      true,
-      undefined,
-      undefined,
-      undefined,
-      continuation,
-    );
+    const staleLoad = document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), stream, new Uint8Array([1]), null, undefined, true, undefined, undefined, undefined, continuation);
     await sourceStarted.promise;
 
     // Model the outer deadline path revoking its per-acceptance capability
@@ -3260,7 +2977,7 @@ describe('document load response boundaries', () => {
     const syncing = document._syncUnlocked(
       {
         documentId: '/revoked-acl-prepass',
-        signatureContext: 'load-response-v3',
+        signatureContext: 'load-response-v4',
         changeId: 'HEAD',
         changes: { kind: crdtDocumentChangeNode },
         snapshot: {
@@ -3272,7 +2989,7 @@ describe('document load response boundaries', () => {
         },
       },
       false,
-      'load-response-v3',
+      'load-response-v4',
       undefined,
       true,
       undefined,
@@ -3677,7 +3394,52 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('open rechecks pending state after asynchronous path validation', async () => {
+  test('a failed open never authorizes founding a new document', async () => {
+    const load = jest.fn(async () => false);
+    const registerDocument = jest.fn();
+    const founder = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/existing', _hashes: new Set(),
+      _bootstrapLoadApplicationState: 'pristine',
+      _computeTopic: () => '/topic', load,
+      _prepareWriterAdd: founder, swarm: { config: {}, registerDocument },
+    });
+    await expect(document.open()).rejects.toThrow(/use create/);
+    expect(founder).not.toHaveBeenCalled();
+    expect(registerDocument).not.toHaveBeenCalled();
+    expect(document._createdLocally).toBeUndefined();
+  });
+
+  test('an in-flight open excludes creation and a second open', async () => {
+    const response = deferred<boolean>();
+    const document = fakeDocument({
+      documentPath: '/existing', _hashes: new Set(),
+      _bootstrapLoadApplicationState: 'pristine',
+      _computeTopic: () => '/topic', load: () => response.promise,
+      swarm: { config: {} },
+    });
+    const first = document.open();
+    await expect(document.create()).rejects.toThrow(/Cannot create/);
+    await expect(document.open()).rejects.toThrow(/activation is in progress/);
+    response.resolve(false);
+    await expect(first).rejects.toThrow(/use create/);
+    expect(document._activationInProgress).toBe(false);
+  });
+
+  test('explicit creation validates its path without querying peers', async () => {
+    const load = jest.fn();
+    const validateDocumentPath = jest.fn(async () => false);
+    const document = fakeDocument({
+      documentPath: '/new', _hashes: new Set(), _userPublicKey: 'owner',
+      _bootstrapLoadApplicationState: 'pristine', _computeTopic: () => '/topic',
+      load, swarm: { config: {}, validateDocumentPath },
+    });
+    await expect(document.create()).rejects.toThrow(/not allowed/);
+    expect(validateDocumentPath).toHaveBeenCalledWith('/new', 'owner');
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  test('create rechecks pending state after asynchronous path validation', async () => {
     const validationStarted = deferred<void>();
     const releaseValidation = deferred<void>();
     const registerDocument = jest.fn();
@@ -3701,7 +3463,8 @@ describe('document load response boundaries', () => {
       },
     });
 
-    const open = document.open();
+    document.swarm.validateDocumentPath = document.swarm.config.validateDocumentPath;
+    const open = document.create();
     await validationStarted.promise;
     document._bootstrapLoadApplicationState = 'pending';
     releaseValidation.resolve();
@@ -3879,7 +3642,9 @@ describe('document load response boundaries', () => {
       documentPath: '/response-aba',
       _bootstrapLoadApplicationState: 'complete',
       _bootstrapLoadApplicationRevision: 2,
-      swarm: { config: { enableSigning: false } },
+      swarm: { config: { enableSigning: true } },
+      _isLoadRequesterAuthorized: async () => true,
+      _createLoadResponsePlan: async (request: any) => currentLoadResponse({ documentId: '/response-aba', loadChallenge: request.loadChallenge }),
       _servedFrontier: jest.fn(() => []),
       _signAsWriter: jest.fn(async () => {
         signingStarted.resolve();
@@ -3901,8 +3666,8 @@ describe('document load response boundaries', () => {
       },
     });
 
-    const response = document.handleTipAdvertiseRequestData(
-      { documentId: '/response-aba' },
+    const response = document.handleSecurityAdvertiseRequestData(
+      { loadChallenge: fixtureLoadChallenge(), signature: 'AQ==', documentId: '/response-aba' },
       { send: responseSend, close: responseClose, onDrain: async () => {} },
     );
     await signingStarted.promise;
@@ -3926,7 +3691,7 @@ describe('document load response boundaries', () => {
   test.each([
     'handleLoadRequestData',
     'handleSnapshotLoadRequestData',
-    'handleTipAdvertiseRequestData',
+    'handleSecurityAdvertiseRequestData',
   ] as const)(
     '%s rechecks the requester against the queued current ACL before send',
     async (methodName) => {
@@ -3942,18 +3707,20 @@ describe('document load response boundaries', () => {
         _bootstrapLoadApplicationRevision: 2,
         _encoder: new TextEncoder(),
         _mutationQueue: mutationQueue,
-        swarm: { config: { enableSigning: true } },
+        swarm: { config: { enableSigning: true }, resolveLoadSecurityCommitments: fixtureLoadCommitments },
         _readers: {
           users: jest.fn(async () =>
             authorized ? ['revoked-reader'] : [],
           ),
         },
         _writers: { users: jest.fn(async () => []) },
-        _createSyncMessage: jest.fn(() => ({
+        _createSyncMessage: jest.fn((context: string) => ({
+          signatureContext: context,
           documentId: '/response-revocation',
         })),
         _keychainChangesForVisibility: jest.fn(async () => ({ keys: [] })),
-        _latestSnapshot: { lastChangeNodeCID: 'SNAPSHOT' },
+        _changesSerializer: { serializeChanges: fixtureSerializeChanges },
+        _latestSnapshot: { state: {}, lastChangeNodeCID: 'SNAPSHOT', compactedCount: 1, timestamp: 1, signature: new Uint8Array([1]) },
         _servedFrontier: jest.fn(() => []),
         _signAsWriter: jest.fn(async () => {
           responseConstructionPaused.resolve();
@@ -3978,7 +3745,7 @@ describe('document load response boundaries', () => {
       });
 
       const response = document[methodName](
-        { documentId: '/response-revocation', signature: 'AAAA' },
+        { loadChallenge: fixtureLoadChallenge(), documentId: '/response-revocation', signature: 'AAAA' },
         { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
       await responseConstructionPaused.promise;
@@ -4027,6 +3794,11 @@ describe('document load response boundaries', () => {
       _writers: {
         users: conflictingACL === 'writers' ? conflictingUsers : otherUsers,
       },
+      _createLoadResponsePlan: async (request: any) =>
+        currentLoadResponse({
+          documentId: '/queued-authorization-conflict',
+          loadChallenge: request.loadChallenge,
+        }),
       _servedFrontier: jest.fn(() => []),
       _signAsWriter: jest.fn(async () => 'response-signature'),
       _syncMessageSerializer: {
@@ -4071,9 +3843,10 @@ describe('document load response boundaries', () => {
       } =
         queuedAuthorizationConflictHarness(conflictingACL, settled.promise);
 
-      const handling = document.handleTipAdvertiseRequestData(
+      const handling = document.handleSecurityAdvertiseRequestData(
         {
           documentId: '/queued-authorization-conflict',
+          loadChallenge: fixtureLoadChallenge(),
           signature: 'AAAA',
         },
         responseStream,
@@ -4104,9 +3877,10 @@ describe('document load response boundaries', () => {
       runMutation: jest.fn(),
     };
 
-    const handling = document.handleTipAdvertiseRequestData(
+    const handling = document.handleSecurityAdvertiseRequestData(
       {
         documentId: '/queued-authorization-conflict',
+        loadChallenge: fixtureLoadChallenge(),
         signature: 'AAAA',
       },
       responseStream,
@@ -4416,8 +4190,11 @@ describe('document load response boundaries', () => {
             return new Promise<never>(() => {});
           }),
         },
+        _isSigningEnabled: () => true,
         _sendLoadRequestAndSync: sendLoadRequest,
       });
+      document._captureLoadSession = async () =>
+        fixedLoadSession(document, 'issuer');
 
       const catchUp = document._loadInvitationCatchUp(
         '/founder',
@@ -4473,7 +4250,7 @@ describe('document load response boundaries', () => {
   test('does not notify a pre-bootstrap subscriber when completeness later fails', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -4485,9 +4262,7 @@ describe('document load response boundaries', () => {
     const handler = jest.fn();
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     document._remoteHandlers.preBootstrap = handler;
@@ -4506,6 +4281,7 @@ describe('document load response boundaries', () => {
       },
     };
     document._changesSerializer = {
+      serializeChanges: fixtureSerializeChanges,
       deserializeChanges: jest.fn(() => ({ prefetched: true })),
     };
     document._syncUnlocked = jest.fn(
@@ -4520,14 +4296,10 @@ describe('document load response boundaries', () => {
         return true;
       },
     );
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash),
     ).rejects.toThrow(/completed sync.*not retrievable/);
 
     expect(document._bootstrapLoadApplicationState).toBe('pending');
@@ -4542,8 +4314,7 @@ describe('document load response boundaries', () => {
   test('validates pinned catch-up membership before completion and notification', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: {},
     };
@@ -4576,16 +4347,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        'issuer',
-        undefined,
-        true,
-        undefined,
-        assertMembership,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), stream, new Uint8Array([1]), null, undefined, true, undefined, assertMembership),
     ).rejects.toThrow(/membership topology is invalid/);
 
     expect(assertMembership).toHaveBeenCalledTimes(1);
@@ -4600,8 +4362,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4649,17 +4410,7 @@ describe('document load response boundaries', () => {
         async () => rawStream,
         async (openedStream, signal) => {
           try {
-            return await document._sendLoadRequestAndSync(
-              openedStream,
-              new Uint8Array([1]),
-              null,
-              'issuer',
-              undefined,
-              true,
-              1000,
-              undefined,
-              signal,
-            );
+            return await document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), openedStream, new Uint8Array([1]), null, undefined, true, 1000, undefined, signal);
           } finally {
             backgroundFinished.resolve();
           }
@@ -4688,8 +4439,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4731,20 +4481,10 @@ describe('document load response boundaries', () => {
         async () => rawStream,
         async (openedStream, signal) => {
           try {
-            return await document._sendLoadRequestAndSync(
-              openedStream,
-              new Uint8Array([1]),
-              null,
-              'issuer',
-              undefined,
-              true,
-              1000,
-              async () => {
+            return await document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), openedStream, new Uint8Array([1]), null, undefined, true, 1000, async () => {
                 topologyStarted.resolve();
                 await releaseTopology.promise;
-              },
-              signal,
-            );
+              }, signal);
           } finally {
             backgroundFinished.resolve();
           }
@@ -4773,8 +4513,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
-      tips: [],
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4825,17 +4564,7 @@ describe('document load response boundaries', () => {
         async () => rawStream,
         async (openedStream, signal) => {
           try {
-            return await document._sendLoadRequestAndSync(
-              openedStream,
-              new Uint8Array([1]),
-              null,
-              'issuer',
-              undefined,
-              true,
-              1000,
-              async () => undefined,
-              signal,
-            );
+            return await document._sendLoadRequestAndSync(await loadSessionFixture(document, 'issuer'), openedStream, new Uint8Array([1]), null, undefined, true, 1000, async () => undefined, signal);
           } finally {
             backgroundFinished.resolve();
           }
@@ -4876,7 +4605,7 @@ describe('document load response boundaries', () => {
   test('notifies a pre-bootstrap subscriber once and only after completion', async () => {
     const message = {
       documentId: '/load-race',
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -4889,9 +4618,7 @@ describe('document load response boundaries', () => {
     const receivedHashes: string[][] = [];
     const { document, stream } = signedLoadHarness(
       async () => [],
-      async () => {
-        throw new Error('bootstrap must not invoke signature verification');
-      },
+      async () => true,
       message,
     );
     document._document = { value: 'complete' };
@@ -4921,6 +4648,7 @@ describe('document load response boundaries', () => {
       },
     };
     document._changesSerializer = {
+      serializeChanges: fixtureSerializeChanges,
       deserializeChanges: jest.fn(() => ({ prefetched: true })),
     };
     document._syncUnlocked = jest.fn(
@@ -4937,14 +4665,10 @@ describe('document load response boundaries', () => {
         return true;
       },
     );
-    const expectedTipsHash = tipsHashToHex(await tipsHash(['HEAD']));
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        expectedTipsHash,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash),
     ).resolves.toBe(true);
 
     expect(document._bootstrapLoadApplicationState).toBe('complete');
@@ -5333,7 +5057,7 @@ describe('document load response boundaries', () => {
     };
 
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
     ).rejects.toThrow(/maximum allowed size/);
     expect(abort).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Document load response rejected' }),
@@ -5355,13 +5079,7 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._sendLoadRequestAndSync(
-        stream,
-        new Uint8Array([1]),
-        null,
-        undefined,
-        0,
-      ),
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), null, 0),
     ).rejects.toThrow(/positive safe integer/);
     expect(stream.send).not.toHaveBeenCalled();
   });
@@ -5386,7 +5104,7 @@ describe('document load response boundaries', () => {
 
     try {
       const result = expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
       ).rejects.toThrow(/response deadline exceeded/);
       await jest.advanceTimersByTimeAsync(25);
       await result;
@@ -5401,64 +5119,6 @@ describe('document load response boundaries', () => {
       jest.useRealTimers();
     }
   });
-
-  test.each([1, 2])(
-    'rejects a tip advertisement serializer that mutates on call %i',
-    async (mutationCall) => {
-      const rawStream = {
-        send: jest.fn(() => true),
-        onDrain: jest.fn(async () => undefined),
-        close: jest.fn(async () => undefined),
-        closeRead: jest.fn(async () => undefined),
-        abort: jest.fn(),
-        async *[Symbol.asyncIterator]() {
-          yield new Uint8Array([1, 2, 3]);
-        },
-      };
-      const message = {
-        documentId: '/tip-advertisement',
-        signatureContext: 'tip-advertisement-v1',
-        tipsHash: new Uint8Array(32).fill(1),
-        signature: 'AQ==',
-      };
-      let serializationCount = 0;
-      const document = fakeDocument({
-        documentPath: '/tip-advertisement',
-        swarm: {
-          heliaNode: {
-            libp2p: { dialProtocol: jest.fn(async () => rawStream) },
-          },
-        },
-        _keychainProvider: { keyIDLength: 1 },
-        _keychain: { getKey: () => ({}) },
-        _authProvider: {
-          nonceBytes: 1,
-          decrypt: async () => new Uint8Array([1]),
-          verify: async () => true,
-        },
-        _syncMessageSerializer: {
-          deserializeSyncMessage: () => message,
-          serializeSyncMessage: (unsigned: typeof message) => {
-            serializationCount += 1;
-            if (serializationCount === mutationCall) {
-              unsigned.tipsHash[0] = 2;
-            }
-            return new Uint8Array([1]);
-          },
-        },
-        _isSigningEnabled: () => true,
-        _deserializeSignature: () => new Uint8Array([1]),
-        _getWriterKeys: async () => ['writer'],
-        _writerKeysVersion: 0,
-        _writerMutationsInFlight: 0,
-      });
-
-      await expect(
-        document._probeTipAdvertise({}, new Uint8Array([1])),
-      ).resolves.toBeNull();
-      expect(serializationCount).toBe(mutationCall);
-    },
-  );
 
   test('fully aborts a completed probe even when the peer response ends early', async () => {
     const rawStream = {
@@ -5480,8 +5140,8 @@ describe('document load response boundaries', () => {
     });
 
     await expect(
-      document._probeTipAdvertise({}, new Uint8Array([1])),
-    ).resolves.toBe('unknown-doc');
+      document._probeSecurityAdvertise(await loadSessionFixture(document, undefined), {}, new Uint8Array([1])),
+    ).resolves.toBeNull();
     expect(rawStream.close).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledWith(
@@ -5519,13 +5179,13 @@ describe('document load response boundaries', () => {
       _syncMessageSerializer: {
         deserializeSyncMessage: jest.fn(() => ({
           documentId: '/doc',
-          signatureContext: 'load-response-v3',
+          signatureContext: 'load-response-v4',
         })),
       },
     });
 
     await expect(
-      document._probeTipAdvertise({}, new Uint8Array([1])),
+      document._probeSecurityAdvertise(await loadSessionFixture(document, undefined), {}, new Uint8Array([1])),
     ).resolves.toBeNull();
     expect(verify).not.toHaveBeenCalled();
   });
@@ -5534,12 +5194,10 @@ describe('document load response boundaries', () => {
 test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
   'rejects invalid configured response limit %p before stream work',
   async (limit) => {
-    const document = Object.create(PeerborneDocument.prototype) as any;
+    const document = fakeDocument({});
     const responseSend = jest.fn();
     const responseClose = jest.fn(async () => undefined);
-    await expect(document._sendLoadRequestAndSync(
-      { send: responseSend, close: responseClose, onDrain: async () => {} }, new Uint8Array([1]), null, undefined, limit,
-    )).rejects.toThrow(RangeError);
+    await expect(document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), { send: responseSend, close: responseClose, onDrain: async () => {} }, new Uint8Array([1]), null, limit)).rejects.toThrow(RangeError);
     expect(responseSend).not.toHaveBeenCalled();
     expect(responseClose).not.toHaveBeenCalled();
   },
