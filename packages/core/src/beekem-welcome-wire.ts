@@ -49,6 +49,10 @@ export interface SerializedBeeKEMWelcomeV2 {
   numLeaves: number;
 }
 
+/**
+ * Encode a detached current Welcome. Inputs must be plain records with exactly
+ * the specified enumerable data fields, without metadata or accessors.
+ */
 export function serializeBeeKEMWelcomeV2ForWire(
   welcome: BeeKEMWelcomeV2,
 ): SerializedBeeKEMWelcomeV2 {

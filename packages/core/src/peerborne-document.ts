@@ -192,12 +192,6 @@ import {
 } from './shared-protocol-admission.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
-/**
- * Constant-time byte-array equality. Used by the BeeKEM PathUpdateV2
- * receive path to compare epoch IDs without leaking which prefix
- * matched. Returns `false` for mismatched lengths (also in constant
- * time across same-length inputs).
- */
 
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
