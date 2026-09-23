@@ -2107,4 +2107,14 @@ describe('quorum protocol separation', () => {
       probeFn: async () => null, documentPath: '/missing-family',
     })).rejects.toMatchObject({ reason: 'invalid-config' });
   });
+
+  test('accepts a detached signer-attributed record from another realm', async () => {
+    const vote = runInNewContext('({ hash: new Uint8Array(32).fill(0xaa), signerAuthority: "writer-a" })');
+    await expect(runLoadQuorum({
+      protocol: 'security-advertise-v1',
+      peers: ['a'], peerIdOf, probeFn: async () => vote,
+      documentPath: '/cross-realm-vote', config: { allowSinglePeer: true },
+    })).resolves.toMatchObject({ ok: true });
+  });
+
 });

@@ -364,7 +364,7 @@ function snapshotLoadSecurityFrontier(value: unknown): string[] {
       MAX_LOAD_SECURITY_FRONTIER_ENTRY_BYTES,
     );
     if (seen.has(entry)) {
-      throw new Error(`frontier contains duplicate entry: ${entry}`);
+      throw new TypeError('frontier contains a duplicate entry');
     }
     seen.add(entry);
     defineEnumerableDataProperty(snapshot, String(index), entry);
