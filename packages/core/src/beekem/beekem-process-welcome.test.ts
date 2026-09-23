@@ -1123,3 +1123,39 @@ test('retains only the newest valid staged Welcome while newer work is pending',
   target._settleWelcomeCandidates();
   await expect(winner).resolves.toEqual(valid.rootSecret);
 });
+
+
+describe('Welcome candidate secret disposal', () => {
+  test('wipes a candidate rejected before registration', async () => {
+    const receiver = new BeeKEM() as any;
+    const rootSecret = new Uint8Array(32).fill(0x5a);
+    await expect(receiver._registerWelcomeCandidate(
+      1n, new BeeKEM(), rootSecret, 1n,
+    )).rejects.toThrow(/superseded/);
+    expect(rootSecret.every((byte) => byte === 0)).toBe(true);
+  });
+
+  test.each(['generation', 'initialized', 'loser'])(
+    'wipes a staged candidate rejected because of %s', (reason) => {
+      const receiver = new BeeKEM() as any;
+      const rootSecret = new Uint8Array(32).fill(0x5a);
+      const reject = jest.fn();
+      receiver._stagedWelcomeCandidates.set(1n, {
+        receiverGeneration: reason === 'generation' ? 1n : 0n,
+        nodes: new Map(), numLeaves: 1, leafIndex: 0,
+        rootSecret, resolve: jest.fn(), reject,
+      });
+      if (reason === 'initialized') receiver._numLeaves = 1;
+      if (reason === 'loser') {
+        receiver._stagedWelcomeCandidates.set(2n, {
+          receiverGeneration: 0n, nodes: new Map(), numLeaves: 1, leafIndex: 0,
+          rootSecret: new Uint8Array(32).fill(0x6b),
+          resolve: jest.fn(), reject: jest.fn(),
+        });
+      }
+      receiver._settleWelcomeCandidates();
+      expect(reject).toHaveBeenCalledTimes(1);
+      expect(rootSecret.every((byte) => byte === 0)).toBe(true);
+    },
+  );
+});

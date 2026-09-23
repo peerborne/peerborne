@@ -805,6 +805,7 @@ export class BeeKEM {
         receiverGeneration !== this._receiverGeneration ||
         !this._isFreshWelcomeTarget()
       ) {
+        rootSecret.fill(0);
         reject(
           new Error(
             WELCOME_SUPERSEDED_MESSAGE,
@@ -842,6 +843,7 @@ export class BeeKEM {
     for (const [revision, candidate] of this._stagedWelcomeCandidates) {
       if (candidate.receiverGeneration !== this._receiverGeneration) {
         this._stagedWelcomeCandidates.delete(revision);
+        candidate.rootSecret.fill(0);
         candidate.reject(
           new Error(
             WELCOME_SUPERSEDED_MESSAGE,
@@ -855,6 +857,7 @@ export class BeeKEM {
       const candidates = [...this._stagedWelcomeCandidates.values()];
       this._stagedWelcomeCandidates.clear();
       for (const candidate of candidates) {
+        candidate.rootSecret.fill(0);
         candidate.reject(
           new Error(
             WELCOME_SUPERSEDED_MESSAGE,
@@ -890,6 +893,7 @@ export class BeeKEM {
     winner.resolve(winner.rootSecret);
     for (const [revision, candidate] of candidates) {
       if (revision !== winnerRevision) {
+        candidate.rootSecret.fill(0);
         candidate.reject(
           new Error(WELCOME_SUPERSEDED_MESSAGE),
         );
