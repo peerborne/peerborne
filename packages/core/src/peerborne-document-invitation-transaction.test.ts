@@ -166,6 +166,7 @@ function invitationHarness(options: {
   };
   const document = fakeDocument({
     documentPath: '/transactional-invitation',
+    swarm: { isPendingInvitationDocument: () => true },
     _bootstrapLoadApplicationState: 'pristine',
     _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set<string>(),
@@ -175,7 +176,9 @@ function invitationHarness(options: {
     _createdLocally: false,
     _kemKeyPair: { privateKey: {}, publicKey: {} },
     _kemPublicKeyRaw: new Uint8Array([8]),
-    _keychainProvider: { keyIDLength: 1 },
+    _keychainProvider: {
+      keyIDLength: 1,
+    },
     _keychain: {
       getKey: jest.fn(),
       keys: jest.fn(async () => []),
@@ -207,6 +210,7 @@ function invitationHarness(options: {
       deserializeSyncMessage: jest.fn(() => ({
         documentId: '/transactional-invitation',
         signatureContext: 'invitation-bootstrap-v1',
+        tips: [],
         signature: 'AAAA',
         keychainChanges: bootstrapKeychainChanges,
       })),

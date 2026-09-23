@@ -101,7 +101,7 @@ describe('BeeKEM', () => {
       const member = await generateECDHKeyPair();
 
       await expect(beekem.addMember(member.publicKey)).rejects.toThrow(
-        /tree is limited/,
+        /tree lifetime leaf limit/,
       );
       expect(internals._nodes).toBe(nodes);
       expect(internals._nodes).toEqual(before);

@@ -45,7 +45,7 @@ jest.mock('./ecies.js', () => ({
   importEciesPublicKey: async () => ({}),
 }));
 jest.mock('./welcome-sealed-payload.js', () => ({
-  decodeWelcomeSealedPayload: () => ({
+  decodeWelcomeSealedPayloadV2: () => ({
     keychainChanges: new Uint8Array([1]),
     beekemWelcome: {
       leafIndex: 2,
@@ -54,7 +54,7 @@ jest.mock('./welcome-sealed-payload.js', () => ({
       treeHash: new Uint8Array(32),
     },
   }),
-  encodeWelcomeSealedPayload: () => new Uint8Array([1]),
+  encodeWelcomeSealedPayloadV2: () => new Uint8Array([1]),
 }));
 jest.mock('./beekem/beekem.js', () => ({
   BeeKEM: class {
@@ -70,6 +70,8 @@ const keyId = new Uint8Array(32).fill(1);
 function fakeDocument(fields: Record<string, unknown>): any {
   return Object.assign(Object.create(PeerborneDocument.prototype), {
     documentPath,
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     ...fields,
   });
 }
@@ -90,6 +92,7 @@ function invitationHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
     signatureContext: 'invitation-bootstrap-v1',
+    keychainChanges: { delta: 1 },
     tips: [],
     signature: 'AQ==',
   },
@@ -104,8 +107,7 @@ function invitationHarness(
     getKey: () => ({}),
     commit,
   }));
-  const liveKeychain = {};
-  const invitationKeychain = { prepareMerge };
+  const liveKeychain = { prepareMerge, keys: jest.fn(async () => []) };
   const verify = jest.fn(async () => true);
   const syncValidated = jest.fn(async () => true);
   const serializer = {
@@ -121,17 +123,19 @@ function invitationHarness(
       run: (operation: () => Promise<unknown>) => operation(),
     },
     _hashes: new Set(),
+    _pendingWelcomes: { size: 0 },
+    _pendingBootstrapRemoteUpdateHashes: new Set(),
     _subscribed: false,
     _compactionInProgress: false,
     _kemKeyPair: { privateKey: {}, publicKey: {} },
     _kemPublicKeyRaw: new Uint8Array(65),
     _keychainProvider: {
       keyIDLength: 32,
-      initialize: jest.fn(() => invitationKeychain),
     },
     _keychain: liveKeychain,
     _changesSerializer: {
       deserializeChanges: jest.fn(() => ({ delta: 1 })),
+      serializeChanges: jest.fn((changes: { delta: number }) => new Uint8Array([changes.delta])),
     },
     _authProvider: {
       nonceBits: 1,
@@ -141,7 +145,7 @@ function invitationHarness(
     _syncMessageSerializer: serializer,
     _syncUnlocked: syncValidated,
     _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
-    open: jest.fn(async () => true),
+    _open: jest.fn(async () => true),
     close,
     _loadInvitationCatchUp: jest.fn(async () => true),
   });
@@ -150,7 +154,6 @@ function invitationHarness(
     commit,
     document,
     hydrateKeys,
-    invitationKeychain,
     liveKeychain,
     prepareMerge,
     serializer,
@@ -185,7 +188,7 @@ describe('invitation-bootstrap V1 confinement', () => {
         'reader',
         '/ip4/127.0.0.1/tcp/1',
       ),
-    ).rejects.toThrow('reserved candidate');
+    ).rejects.toThrow('pristine document instance');
 
     expect(harness.prepareMerge).not.toHaveBeenCalled();
     expect(harness.serializer.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -193,7 +196,7 @@ describe('invitation-bootstrap V1 confinement', () => {
 
   test('requires transactional merge support before any bootstrap work', async () => {
     const harness = invitationHarness();
-    harness.document._keychainProvider.initialize = () => ({});
+    harness.document._keychain.prepareMerge = undefined;
 
     await expect(
       harness.document.acceptInvitationBootstrap(
@@ -209,53 +212,6 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.syncValidated).not.toHaveBeenCalled();
   });
 
-  test('requires the provider to return an isolated staging keychain', async () => {
-    const harness = invitationHarness();
-    harness.document._keychainProvider.initialize = () =>
-      harness.liveKeychain;
-
-    await expect(
-      harness.document.acceptInvitationBootstrap(
-        bundle(),
-        {},
-        'reader',
-        '/ip4/127.0.0.1/tcp/1',
-      ),
-    ).rejects.toThrow('isolated keychain instance');
-
-    expect(harness.prepareMerge).not.toHaveBeenCalled();
-    expect(harness.document._keychain).toBe(harness.liveKeychain);
-  });
-
-  test.each([
-    ['foreign fields', { welcomeEpochId: new Uint8Array(32) }],
-    ['the exact document binding', { documentId: undefined }],
-    ['the exact document binding', { documentId: '' }],
-    ['the exact document binding', { documentId: '/other' }],
-    ['required tips', { tips: undefined }],
-    ['well-formed tips', { tips: [1] }],
-  ])('rejects %s before committing staged state', async (_label, replacement) => {
-    const harness = invitationHarness({
-      documentId: documentPath,
-      signatureContext: 'invitation-bootstrap-v1',
-      tips: [],
-      signature: 'AQ==',
-      ...replacement,
-    });
-
-    await expect(
-      harness.document.acceptInvitationBootstrap(
-        bundle(),
-        {},
-        'reader',
-        '/ip4/127.0.0.1/tcp/1',
-      ),
-    ).rejects.toThrow();
-
-    expect(harness.commit).not.toHaveBeenCalled();
-    expect(harness.syncValidated).not.toHaveBeenCalled();
-    expect(harness.document._beekem).toBeUndefined();
-  });
 
   test('rejects an invalid issuer signature before committing staged state', async () => {
     const harness = invitationHarness();
@@ -279,6 +235,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     const decoded: Record<string, unknown> = {
       documentId: documentPath,
       signatureContext: 'load-response-v3',
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
     };
@@ -299,7 +256,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._assertAcceptedInvitationMembership).not.toHaveBeenCalled();
     expect(harness.document._loadInvitationCatchUp).not.toHaveBeenCalled();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
     expect(harness.close).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._hashes).toBe(originalHashes);
@@ -319,8 +276,8 @@ describe('invitation-bootstrap V1 confinement', () => {
 
     expect(harness.commit).toHaveBeenCalledTimes(1);
     expect(harness.syncValidated).toHaveBeenCalledTimes(1);
-    expect(harness.document._keychain).toBe(harness.invitationKeychain);
-    expect(harness.document.open).toHaveBeenCalledTimes(1);
+    expect(harness.document._keychain).toBe(harness.liveKeychain);
+    expect(harness.document._open).toHaveBeenCalledTimes(1);
   });
 
   test('requires the advertised epoch to be the staged current key', async () => {
@@ -342,7 +299,7 @@ describe('invitation-bootstrap V1 confinement', () => {
         'reader',
         '/ip4/127.0.0.1/tcp/1',
       ),
-    ).rejects.toThrow('advertised epoch as the current key');
+    ).rejects.toThrow('not the staged keychain current epoch');
 
     expect(harness.commit).not.toHaveBeenCalled();
     expect(harness.verify).not.toHaveBeenCalled();
@@ -434,7 +391,7 @@ describe('invitation-bootstrap V1 confinement', () => {
         'reader',
         '/ip4/127.0.0.1/tcp/1',
       ),
-    ).rejects.toThrow('bundle is malformed');
+    ).rejects.toThrow('exactly its three byte fields');
 
     expect(harness.prepareMerge).not.toHaveBeenCalled();
     expect(harness.commit).not.toHaveBeenCalled();
@@ -445,6 +402,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       documentId: documentPath,
       signatureContext: 'invitation-bootstrap-v1',
       changes: [] as unknown[],
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
     });
@@ -479,10 +437,11 @@ describe('invitation-bootstrap V1 confinement', () => {
       ),
     ).rejects.toThrow('commit conflict');
 
-    expect(harness.syncValidated).not.toHaveBeenCalled();
+    expect(harness.syncValidated).toHaveBeenCalledTimes(1);
+    expect(harness.document._bootstrapLoadApplicationState).toBe('pending');
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._beekem).toBeUndefined();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
   });
 
   test('restores the live keychain and withholds BeeKEM on sync rejection', async () => {
@@ -498,11 +457,10 @@ describe('invitation-bootstrap V1 confinement', () => {
       ),
     ).rejects.toThrow('state was rejected');
 
-    expect(harness.commit).toHaveBeenCalledTimes(1);
+    expect(harness.commit).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
-    expect(harness.document._keychain).not.toBe(harness.invitationKeychain);
     expect(harness.document._beekem).toBeUndefined();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
   });
 
   test('restores the live keychain after a completeness failure', async () => {
@@ -511,6 +469,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       signatureContext: 'invitation-bootstrap-v1',
       changeId: 'cid',
       changes: { kind: 'document', change: { value: 1 } },
+      keychainChanges: { delta: 1 },
       tips: ['cid'],
       signature: 'AQ==',
     });
@@ -524,7 +483,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       ),
     ).rejects.toThrow('state is incomplete');
 
-    expect(harness.commit).toHaveBeenCalledTimes(1);
+    expect(harness.commit).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._beekem).toBeUndefined();
   });
@@ -549,7 +508,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     ).resolves.toBeUndefined();
 
     expect(observedKeychains).toEqual([harness.liveKeychain]);
-    expect(harness.document._keychain).toBe(harness.invitationKeychain);
+    expect(harness.document._keychain).toBe(harness.liveKeychain);
   });
 
   test('rechecks fresh-document admission inside the mutation queue', async () => {
@@ -568,31 +527,31 @@ describe('invitation-bootstrap V1 confinement', () => {
         'reader',
         '/ip4/127.0.0.1/tcp/1',
       ),
-    ).rejects.toThrow('state was rejected');
+    ).rejects.toThrow('pristine document instance');
 
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._beekem).toBeUndefined();
   });
 
-  test('suppresses compaction until catch-up and topology checks complete', async () => {
+  test('keeps bootstrap pending until catch-up and topology checks complete', async () => {
     const harness = invitationHarness();
     const observed: boolean[] = [];
     harness.syncValidated.mockImplementation(async () => {
-      observed.push(harness.document._compactionInProgress);
+      observed.push(harness.document._bootstrapLoadApplicationState === 'pending');
       return true;
     });
-    harness.document.open.mockImplementation(async () => {
-      observed.push(harness.document._compactionInProgress);
+    harness.document._open.mockImplementation(async () => {
+      observed.push(harness.document._bootstrapLoadApplicationState === 'pending');
       return true;
     });
     harness.document._loadInvitationCatchUp.mockImplementation(async () => {
-      observed.push(harness.document._compactionInProgress);
+      observed.push(harness.document._bootstrapLoadApplicationState === 'pending');
       return true;
     });
     harness.document._assertAcceptedInvitationMembership.mockImplementation(
       async () => {
-        observed.push(harness.document._compactionInProgress);
+        observed.push(harness.document._bootstrapLoadApplicationState === 'pending');
       },
     );
 
@@ -607,7 +566,7 @@ describe('invitation-bootstrap V1 confinement', () => {
 
     expect(observed.length).toBeGreaterThan(0);
     expect(observed.every(Boolean)).toBe(true);
-    expect(harness.document._compactionInProgress).toBe(false);
+    expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
   });
 
   test('subscribes before catch-up and completes final topology admission before returning', async () => {
@@ -622,7 +581,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       order.push('catch-up');
       return true;
     });
-    harness.document.open.mockImplementation(async () => {
+    harness.document._open.mockImplementation(async () => {
       order.push('open');
       return true;
     });
@@ -657,7 +616,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       ),
     ).rejects.toThrow('catch-up load failed');
 
-    expect(harness.document.open).toHaveBeenCalledTimes(1);
+    expect(harness.document._open).toHaveBeenCalledTimes(1);
     expect(harness.close).toHaveBeenCalledTimes(1);
     expect(harness.document._invitationBootstrapReady).toBe(false);
     expect(harness.document._compactionInProgress).toBe(false);

@@ -144,15 +144,6 @@ async function invitationHarness(message: any) {
       }),
     },
   });
-  document._keychainProvider.initialize = () => ({
-    prepareMerge: () => ({
-      hydrateKeys: async () => [[epoch, {}]],
-      currentKeyId: epoch,
-      keyIds: [epoch],
-      getKey: () => ({}),
-      commit: () => undefined,
-    }),
-  });
   return {
     document, verify,
     bundle: {
