@@ -218,7 +218,7 @@ function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
   }
   if (changeCount > MAX_AUTOMERGE_ACL_CHANGES_WITH_USERS_ROOT_SEED) {
     throw new RangeError(
-      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit (+1 canonical users-root seed allowed)`,
     );
   }
 
@@ -247,7 +247,7 @@ function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
     !hasCanonicalAutomergeACLUsersRootSeed(stableChanges)
   ) {
     throw new RangeError(
-      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit (+1 canonical users-root seed allowed)`,
     );
   }
   return stableChanges;
@@ -264,7 +264,7 @@ function assertAutomergeACLResourceLimits(
       !hasCanonicalAutomergeACLUsersRootSeed(history))
   ) {
     throw new RangeError(
-      `Cannot ${operation}: Automerge ACL history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      `Cannot ${operation}: Automerge ACL history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit (+1 canonical users-root seed allowed)`,
     );
   }
   let historyBytes = 0;
@@ -317,6 +317,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   private readonly _queuedAdditionCommits = new WeakSet<
     PreparedACLChange<BinaryChange[]>
   >();
+  // Once a prepared delta escapes, its actor must remain burned even if the
+  // caller abandons it: an observer may already have received those operations.
+  // The bounded reservation budget is per ACL instance.
   private readonly _stagedAdditionActors = new Set<string>();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
@@ -568,7 +571,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         retainedChangeCount + 1 > MAX_AUTOMERGE_ACL_CHANGES
       ) {
         throw new RangeError(
-          `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+          `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit (+1 canonical users-root seed allowed)`,
         );
       }
       if (

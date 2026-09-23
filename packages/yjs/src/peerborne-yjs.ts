@@ -647,6 +647,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   // A stale preparation may already have been published. Retain its exact
   // client/clock tuple for this ACL's bounded lifetime so a later live-base
   // replacement cannot expose a different struct under the same identifier.
+  // Exposed prepared updates may already exist on another replica, so their
+  // operation/client identifiers remain burned even when abandoned locally.
+  // The bounded reservation budget is per ACL instance.
   private readonly _stagedAdditionOperations = new Set<string>();
   private readonly _stagedAdditionClientIDs = new Set<number>();
 
