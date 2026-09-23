@@ -1,3 +1,4 @@
+import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
@@ -79,7 +80,7 @@ function tipStream(response = encryptedPayload()) {
 function loadHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
-    signatureContext: 'load-response-v3',
+    signatureContext: 'load-response-v4',
     tips: [],
     signature: 'AQ==',
   },
@@ -87,15 +88,18 @@ function loadHarness(
   const serializer = new JSONSerializer<any>();
   const verify = jest.fn(async () => true);
   const syncUnlocked = jest.fn(async () => true);
-  const deserializeSyncMessage = jest.fn(() => decoded);
+  const deserializeSyncMessage = jest.fn(() => currentLoadResponse(decoded, decoded.signatureContext as string));
   const document = fakeDocument({
     swarm: { config: {} },
     _writerKeysVersion: 4,
     _writerMutationsInFlight: 0,
     _getWriterKeys: async () => [{}],
     _keychainProvider: { keyIDLength: 32 },
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _authProvider: {
       nonceBytes: 1,
+      serializePublicKey: async () => 'fixture-writer',
+      deserializePublicKey: async () => ({}),
       decrypt: async () => new Uint8Array([1]),
       verify,
     },
@@ -113,7 +117,7 @@ function loadHarness(
 function tipHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
-    signatureContext: 'tip-advertisement-v1',
+    signatureContext: 'security-advertisement-v1',
     tipsHash: new Uint8Array(32).fill(5),
     signature: 'AQ==',
   },
@@ -121,7 +125,7 @@ function tipHarness(
   const serializer = new JSONSerializer<any>();
   const verify = jest.fn(async () => true);
   const rawStream = tipStream();
-  const deserializeSyncMessage = jest.fn(() => decoded);
+  const deserializeSyncMessage = jest.fn(() => currentLoadResponse(decoded, decoded.signatureContext as string));
   const document = fakeDocument({
     _writerKeysVersion: 3,
     _writerMutationsInFlight: 0,
@@ -132,9 +136,12 @@ function tipHarness(
       },
     },
     _keychainProvider: { keyIDLength: 32 },
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _keychain: { getKey: jest.fn(() => ({})) },
     _authProvider: {
       nonceBytes: 1,
+      serializePublicKey: async () => 'fixture-writer',
+      deserializePublicKey: async () => ({}),
       decrypt: jest.fn(async () => new Uint8Array([1])),
       verify,
     },
@@ -161,9 +168,23 @@ afterEach(() => {
   for (const spy of consoleSpies) spy.mockRestore();
 });
 
-describe('load-response V3 confinement', () => {
+test('request serialization cannot replace the captured freshness challenge', async () => {
+  const { document } = loadHarness();
+  const session = fixedLoadSession(document);
+  document._authProvider.sign = async () => new Uint8Array([1]);
+  document._loadMessageSerializer = { serializeLoadRequest: (request: any) => {
+    request.loadChallenge.fill(0);
+    return new Uint8Array([1]);
+  } };
+  await expect(document._serializeInitialLoadRequest(session)).rejects.toThrow(/changed during serialization/);
+  expect(session.challenge).toEqual(fixtureLoadChallenge());
+});
+
+describe('load-response V4 confinement', () => {
   test.each([
     ['a foreign field', { welcomeEpochId: new Uint8Array(32) }],
+    ['the current challenge', { loadChallenge: new Uint8Array(32).fill(9) }],
+    ['the trusted security tuple', { loadSecurityState: { ...fixtureLoadCommitments(), epoch: 2n } }],
     ['the required tips', { tips: undefined }],
     ['well-formed tips', { tips: [1] }],
     ['an exact document ID', { documentId: undefined }],
@@ -172,17 +193,14 @@ describe('load-response V3 confinement', () => {
   ])('rejects a response without %s before sync', async (_label, replacement) => {
     const harness = loadHarness({
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       tips: [],
       signature: 'AQ==',
       ...replacement,
     });
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -191,7 +209,7 @@ describe('load-response V3 confinement', () => {
   test('detaches nested state before deferred verification', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       changes: { kind: 'document', change: { value: 1 } },
       snapshot: {
         state: { value: 2 },
@@ -215,10 +233,7 @@ describe('load-response V3 confinement', () => {
     });
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(true);
 
     const applied = harness.syncUnlocked.mock.calls[0][0] as typeof decoded;
@@ -228,10 +243,29 @@ describe('load-response V3 confinement', () => {
     expect(applied.tips).toEqual(['cid']);
   });
 
+  test('isolates manifest serializers from the authenticated response applied to state', async () => {
+    const decoded = {
+      documentId: documentPath, signatureContext: 'load-response-v4',
+      changeId: 'cid', changes: { kind: 'document', change: { value: 1 } },
+      tips: ['cid'], signature: 'AQ==',
+    };
+    const harness = loadHarness(decoded);
+    harness.document._changesSerializer.serializeChanges = (change: any) => {
+      const bytes = fixtureSerializeChanges(change);
+      change.value = 99;
+      return bytes;
+    };
+    await expect(harness.document._sendLoadRequestAndSync(
+      fixedLoadSession(harness.document), loadStream(), new Uint8Array([1]),
+    )).resolves.toBe(true);
+    expect((harness.syncUnlocked.mock.calls[0][0] as any).changes.change.value).toBe(1);
+    expect(decoded.changes.change.value).toBe(1);
+  });
+
   test('rejects serialization that mutates the authenticated snapshot', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       changes: { kind: 'document', change: { value: 1 } },
       tips: [],
       signature: 'AQ==',
@@ -249,10 +283,7 @@ describe('load-response V3 confinement', () => {
     };
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -266,10 +297,7 @@ describe('load-response V3 confinement', () => {
     });
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -285,10 +313,7 @@ describe('load-response V3 confinement', () => {
     };
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -304,10 +329,7 @@ describe('load-response V3 confinement', () => {
     };
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -318,10 +340,7 @@ describe('load-response V3 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(0);
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -333,13 +352,7 @@ describe('load-response V3 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(65);
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-        null,
-        undefined,
-        64,
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1]), null, 64),
     ).resolves.toBe(false);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -353,10 +366,7 @@ describe('load-response V3 confinement', () => {
     harness.document._authProvider.nonceBytes = 0;
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(decrypt).not.toHaveBeenCalled();
@@ -370,19 +380,18 @@ describe('load-response V3 confinement', () => {
     );
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        oversizedStream,
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), oversizedStream, new Uint8Array([1])),
     ).rejects.toThrow(/maximum allowed size/);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
   });
 });
 
-describe('tip-advertisement V1 confinement', () => {
+describe('security-advertisement V1 confinement', () => {
   test.each([
     ['a foreign field', { tips: [] }],
+    ['the current challenge', { loadChallenge: new Uint8Array(32).fill(9) }],
+    ['the trusted security tuple', { loadSecurityState: { ...fixtureLoadCommitments(), epoch: 2n } }],
     ['an exact document ID', { documentId: undefined }],
     ['an exact document ID', { documentId: '' }],
     ['an exact document ID', { documentId: '/other' }],
@@ -390,17 +399,14 @@ describe('tip-advertisement V1 confinement', () => {
   ])('rejects a response without %s', async (_label, replacement) => {
     const harness = tipHarness({
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: new Uint8Array(32).fill(5),
       signature: 'AQ==',
       ...replacement,
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
@@ -409,7 +415,7 @@ describe('tip-advertisement V1 confinement', () => {
     const expected = new Uint8Array(advertised);
     const harness = tipHarness({
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: advertised,
       signature: 'AQ==',
     });
@@ -420,17 +426,14 @@ describe('tip-advertisement V1 confinement', () => {
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toEqual(expected);
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
+    ).resolves.toEqual({ hash: expected, signerAuthority: 'fixture-writer' });
   });
 
-  test('rejects a serializer that mutates the verified advertisement', async () => {
+  test('rejects serializer mutation of the verified advertisement', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: new Uint8Array(32).fill(5),
       signature: 'AQ==',
     };
@@ -445,10 +448,7 @@ describe('tip-advertisement V1 confinement', () => {
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
@@ -460,26 +460,21 @@ describe('tip-advertisement V1 confinement', () => {
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
   test('captures writer authorization before resolving writer keys', async () => {
     const harness = tipHarness();
+    harness.document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     harness.document._getWriterKeys = async () => {
       harness.document._writerKeysVersion += 1;
       return [{}];
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toBeNull();
+      harness.document._captureLoadSession(),
+    ).rejects.toThrow(/Writer authorization changed/);
   });
 
   test('rejects a vote while a writer mutation is in flight', async () => {
@@ -487,10 +482,7 @@ describe('tip-advertisement V1 confinement', () => {
     harness.document._writerMutationsInFlight = 1;
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.verify).not.toHaveBeenCalled();
@@ -498,17 +490,15 @@ describe('tip-advertisement V1 confinement', () => {
 
   test('rejects a vote when a writer mutation starts during key lookup', async () => {
     const harness = tipHarness();
+    harness.document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     harness.document._getWriterKeys = async () => {
       harness.document._writerMutationsInFlight = 1;
       return [{}];
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toBeNull();
+      harness.document._captureLoadSession(),
+    ).rejects.toThrow(/Writer authorization changed/);
 
     expect(harness.verify).not.toHaveBeenCalled();
   });
@@ -518,10 +508,7 @@ describe('tip-advertisement V1 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(0);
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -532,10 +519,7 @@ describe('tip-advertisement V1 confinement', () => {
     harness.document._authProvider.nonceBytes = 0;
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.document._authProvider.decrypt).not.toHaveBeenCalled();

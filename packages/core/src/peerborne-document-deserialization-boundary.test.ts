@@ -1,3 +1,4 @@
+import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import { eciesSeal } from './ecies.js';
@@ -52,15 +53,15 @@ function fakeDocument(fields: Record<string, unknown>): any {
 
 const documentPath = '/detached-load';
 
-function loadHarness(message: any, context = 'load-response-v3') {
-  const contextualMessage = Object.create(
+function loadHarness(message: any, context = 'load-response-v4') {
+  const contextualMessage = currentLoadResponse(Object.create(
     Object.getPrototypeOf(message),
     {
       ...Object.getOwnPropertyDescriptors(message),
       tips: { value: [], enumerable: true },
       signatureContext: { value: context, enumerable: true },
     },
-  );
+  ), context);
   const verify = jest.fn(async () => true);
   const sync = jest.fn(async () => true);
   const document = fakeDocument({
@@ -70,6 +71,7 @@ function loadHarness(message: any, context = 'load-response-v3') {
       isPendingInvitationDocument: () => true,
     },
     _writerKeysVersion: 0,
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _writerMutationsInFlight: 0,
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
@@ -165,7 +167,7 @@ describe('deserialized load message boundaries', () => {
       Object.defineProperty(message, field, { enumerable: true, get: getter });
       const { document, stream, verify, sync } = loadHarness(message);
       await expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(fixedLoadSession(document), stream, new Uint8Array([1])),
       ).resolves.toBe(false);
       expect(getter).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
@@ -186,7 +188,7 @@ describe('deserialized load message boundaries', () => {
       return ['writer'];
     };
     await expect(
-      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      document._sendLoadRequestAndSync(fixedLoadSession(document), stream, new Uint8Array([1])),
     ).resolves.toBe(true);
     expect(sync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -194,7 +196,7 @@ describe('deserialized load message boundaries', () => {
         changes: { kind: 'document', change: { value: 1 } },
       }),
       false,
-      'load-response-v3',
+      'load-response-v4',
       undefined,
       false,
       undefined,
@@ -222,7 +224,11 @@ describe('deserialized load message boundaries', () => {
         return new Uint8Array([1]);
       };
       await expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(
+          await loadSessionFixture(document, undefined),
+          stream,
+          new Uint8Array([1]),
+        ),
       ).resolves.toBe(false);
       expect(sync).not.toHaveBeenCalled();
     },

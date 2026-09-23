@@ -249,7 +249,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       );
     }
     if (
-      raw.signatureContext !== undefined &&
       !isSyncMessageSignatureContext(raw.signatureContext)
     ) {
       throw new Error(

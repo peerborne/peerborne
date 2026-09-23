@@ -7,6 +7,12 @@ import { JSONSerializer } from './json-serializer.js';
 import type { SyncMessageContext } from './sync-message-context.js';
 
 import { PeerborneDocument } from './peerborne-document.js';
+import {
+  fixedLoadSession,
+  fixtureLoadChallenge,
+  fixtureLoadCommitments,
+  fixtureSerializeChanges,
+} from './__testutils__/load-session.js';
 
 jest.mock(
   'it-pipe',
@@ -81,9 +87,15 @@ async function signedWire(
     signatureContext: signedAs,
     changeId: 'root',
     changes: { kind: 'document', change: { value: 1 } },
-    ...(deliveredAs === 'load-response-v3' ||
+    ...(deliveredAs === 'load-response-v4' ||
     deliveredAs === 'invitation-bootstrap-v1'
       ? { tips: ['root'] }
+      : {}),
+    ...(deliveredAs === 'load-response-v4'
+      ? {
+          loadChallenge: fixtureLoadChallenge(),
+          loadSecurityState: fixtureLoadCommitments(),
+        }
       : {}),
     ...extraFields,
   };
@@ -109,6 +121,7 @@ function loadHarness(plaintext: Uint8Array) {
     },
     _isSigningEnabled: () => true,
     _getWriterKeys: async () => [writer.publicKey],
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
     _hashes: new Set(),
@@ -219,9 +232,9 @@ describe('context-relabeled signed sync messages', () => {
     });
 
     test.each([
-      'load-response-v3',
+      'load-response-v4',
       'invitation-bootstrap-v1',
-      'document-publish-v1',
+      'invitation-catch-up-v1',
     ] as const)(
       'rejects a %s signature relabeled as ordinary sync',
       async (signedAs) => {
@@ -235,18 +248,27 @@ describe('context-relabeled signed sync messages', () => {
     );
   });
 
-  describe('load response v3', () => {
+  describe('load response v4', () => {
+    const writerSession = (document: unknown) => ({
+      ...fixedLoadSession(document),
+      authorities: [{ authorityId: 'writer', publicKey: writer.publicKey }],
+    });
+
     test('accepts a genuinely signed load response', async () => {
       const { document, stream, sync } = loadHarness(
-        await signedWire('load-response-v3', 'load-response-v3'),
+        await signedWire('load-response-v4', 'load-response-v4'),
       );
       await expect(
-        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+        document._sendLoadRequestAndSync(
+          writerSession(document),
+          stream,
+          new Uint8Array([1]),
+        ),
       ).resolves.toBe(true);
       expect(sync).toHaveBeenCalledWith(
-        expect.objectContaining({ signatureContext: 'load-response-v3' }),
+        expect.objectContaining({ signatureContext: 'load-response-v4' }),
         false,
-        'load-response-v3',
+        'load-response-v4',
         undefined,
         false,
         undefined,
@@ -257,15 +279,19 @@ describe('context-relabeled signed sync messages', () => {
     test.each([
       'ordinary-sync-v1',
       'invitation-bootstrap-v1',
-      'document-publish-v1',
+      'invitation-catch-up-v1',
     ] as const)(
       'rejects a %s signature relabeled as a load response',
       async (signedAs) => {
         const { document, stream, sync } = loadHarness(
-          await signedWire(signedAs, 'load-response-v3'),
+          await signedWire(signedAs, 'load-response-v4'),
         );
         await expect(
-          document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+          document._sendLoadRequestAndSync(
+            writerSession(document),
+            stream,
+            new Uint8Array([1]),
+          ),
         ).resolves.toBe(false);
         expect(sync).not.toHaveBeenCalled();
       },
@@ -299,9 +325,9 @@ describe('context-relabeled signed sync messages', () => {
     });
 
     test.each([
-      'load-response-v3',
+      'load-response-v4',
       'ordinary-sync-v1',
-      'document-publish-v1',
+      'invitation-catch-up-v1',
     ] as const)(
       'rejects a %s signature relabeled as an invitation bootstrap',
       async (signedAs) => {

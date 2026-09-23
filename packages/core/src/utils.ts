@@ -355,7 +355,7 @@ export function snapshotDeepEnumerableData<T>(
   field = 'value',
   limits: DeepDataSnapshotLimits = {
     // The object-count budget already bounds the depth of an acyclic value.
-    // Keeping the default depth equal to that aggregate budget admits legacy
+    // Keeping the default depth equal to that aggregate budget admits ordinary
     // Merkle histories while explicit security-sensitive callers can still
     // impose a tighter structural limit.
     maxDepth: 32_768,

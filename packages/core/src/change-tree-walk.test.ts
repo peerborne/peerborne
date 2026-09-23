@@ -463,7 +463,7 @@ describe('bounded iterative change-tree consumers', () => {
         document._syncUnlocked(
           {
             documentId: '/cid-preflight',
-            signatureContext: 'load-response-v3',
+            signatureContext: 'load-response-v4',
             changeId,
             changes,
             keychainChanges: new Uint8Array([9]),
@@ -476,7 +476,7 @@ describe('bounded iterative change-tree consumers', () => {
             },
           },
           false,
-          'load-response-v3',
+          'load-response-v4',
         ),
       ).rejects.toThrow(/canonical CID/);
 
@@ -522,12 +522,12 @@ describe('bounded iterative change-tree consumers', () => {
         document._syncUnlocked(
           {
             documentId: '/missing-root-preflight',
-            signatureContext: 'load-response-v3',
+            signatureContext: 'load-response-v4',
             changes,
             keychainChanges: new Uint8Array([9]),
           },
           false,
-          'load-response-v3',
+          'load-response-v4',
         ),
       ).rejects.toThrow();
       expect(mergeKeychain).not.toHaveBeenCalled();

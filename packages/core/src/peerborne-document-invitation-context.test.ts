@@ -234,7 +234,7 @@ describe('invitation-bootstrap V1 confinement', () => {
   test('rejects a wrong-context bootstrap with zero live mutation and permits a corrected retry', async () => {
     const decoded: Record<string, unknown> = {
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
