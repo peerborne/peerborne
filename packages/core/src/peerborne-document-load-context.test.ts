@@ -54,10 +54,12 @@ function encryptedPayload(): Uint8Array {
 
 function loadStream(response = encryptedPayload()) {
   return {
-    sink: async () => undefined,
-    source: (async function* () {
+    send: () => true,
+    onDrain: async () => undefined,
+    close: async () => undefined,
+    [Symbol.asyncIterator]: async function* () {
       yield response;
-    })(),
+    },
   };
 }
 

@@ -89,8 +89,10 @@ function loadHarness(message: any, context = 'load-response-v3') {
     _mutationQueue: { run: (operation: () => Promise<unknown>) => operation() },
   });
   const stream = {
-    sink: async () => undefined,
-    source: (async function* () { yield new Uint8Array([1, 2, 3]); })(),
+    send: () => true,
+    onDrain: async () => undefined,
+    close: async () => undefined,
+    [Symbol.asyncIterator]: async function* () { yield new Uint8Array([1, 2, 3]); },
     abort: jest.fn(),
   };
   return { document, stream, verify, sync };

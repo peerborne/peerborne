@@ -339,19 +339,21 @@ describe('writer ACL publication boundary', () => {
       new Set(['parent-cid', 'remote-tip-cid']),
     );
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
-    const sink = jest.fn(async () => undefined);
+    const responseSend = jest.fn(() => true);
+    const responseClose = jest.fn(async () => undefined);
     const consoleError = jest
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
     try {
       await document.handleLoadRequestData(
         { documentId: '/writer-publication', signature: 'AA==' },
-        { sink },
+        { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
     } finally {
       consoleError.mockRestore();
     }
-    expect(sink).toHaveBeenCalledWith([]);
+    expect(responseSend).not.toHaveBeenCalled();
+    expect(responseClose).toHaveBeenCalled();
   });
 
   test.each([
@@ -816,8 +818,8 @@ describe('writer ACL publication boundary', () => {
       state: { stable: true },
       signature: new Uint8Array([1]),
     };
-    const loadSink = jest.fn(async () => undefined);
-    const snapshotSink = jest.fn(async () => undefined);
+    const loadSend = jest.fn(() => true);
+    const snapshotSend = jest.fn(() => true);
 
     const addition = document.addWriter('candidate');
     const additionResult = expect(addition).rejects.toThrow(
@@ -827,24 +829,24 @@ describe('writer ACL publication boundary', () => {
 
     const loadResponse = document.handleLoadRequestData(
       { documentId: '/writer-publication', signature: 'AA==' },
-      { sink: loadSink },
+      { send: loadSend, onDrain: async () => {}, close: async () => {} },
     );
     const snapshotResponse = document.handleSnapshotLoadRequestData(
       { documentId: '/writer-publication', signature: 'AA==' },
-      { sink: snapshotSink },
+      { send: snapshotSend, onDrain: async () => {}, close: async () => {} },
     );
 
     await Promise.resolve();
-    expect(loadSink).not.toHaveBeenCalled();
-    expect(snapshotSink).not.toHaveBeenCalled();
+    expect(loadSend).not.toHaveBeenCalled();
+    expect(snapshotSend).not.toHaveBeenCalled();
 
     pendingEncryption.reject(new Error('encryption rejected'));
     await additionResult;
     await expect(loadResponse).resolves.toBeUndefined();
     await expect(snapshotResponse).resolves.toBeUndefined();
 
-    expect(loadSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
-    expect(snapshotSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
+    expect(loadSend).toHaveBeenCalledWith(expect.any(Uint8Array));
+    expect(snapshotSend).toHaveBeenCalledWith(expect.any(Uint8Array));
     expect(serializedMessages).toHaveLength(3);
     for (const served of serializedMessages.slice(1)) {
       expect(served.changeId).toBe('parent-cid');
