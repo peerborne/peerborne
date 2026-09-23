@@ -226,7 +226,7 @@ What exists:
 // Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
-`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort. Receivers reject skipped generations, stale updates, and updates from a different parent tree before committing an epoch. Every member must apply transitions in order; a gap requires ordered redelivery, persisted ratchet recovery, or a fresh authenticated Welcome. An ordinary document load cannot reconstruct private ratchet state. Only the current V2 PathUpdate and generation-bearing Welcome formats are supported; earlier formats and key-only Welcome payloads are rejected.
+`removeReader` generates and distributes BeeKEM PathUpdates internally as part of the operation. PathUpdate distribution is best-effort. Receivers reject skipped generations, stale updates, and updates from a different parent tree before committing an epoch. Every member must apply transitions in order; a gap requires ordered redelivery, persisted ratchet recovery, or a fresh authenticated Welcome. An ordinary document load cannot reconstruct private ratchet state. Peerborne does not automatically re-invite members or run a key-recovery flow. Only the current V2 PathUpdate and generation-bearing Welcome formats are supported; earlier formats and key-only Welcome payloads are rejected.
 
 The bundled Yjs and Automerge providers compose the local reader-ACL removal,
 epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through
