@@ -366,6 +366,10 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
+
+  test('rejects the removed document publication purpose', () => {
+    expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
+  });
 });
 
 describe('sync message root snapshot limits', () => {
@@ -484,8 +488,4 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
       syncMessageMatchesSnapshot(expected, candidate, 'ordinary-sync-v1'),
     ).toBe(false);
   });
-});
-
-test('rejects the removed document publication purpose', () => {
-  expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
 });
