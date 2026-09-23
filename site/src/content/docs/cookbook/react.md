@@ -95,6 +95,8 @@ function Note({ swarm }: { swarm: YjsSwarm }) {
   const [doc, changeDoc, acl] = usePeerborneDocumentState(
     swarm,
     '/notes/hello',
+    'all',
+    'create',
   );
 
   if (!doc) return <p>Opening…</p>;

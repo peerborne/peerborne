@@ -32,7 +32,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 ## Storage and persistence
 
 - **No replication factor guarantee.** Peerborne does not ensure encrypted payloads are stored on at least N origins. No peer can serve a local copy while every holder is offline, and data is lost if every copy is cleared or otherwise unrecoverable.
-- **Pinning is not implemented.** `PeerborneNode` does not subscribe to any document-publish topic because V1 cannot authenticate or authorize pin requests, and the normal core commit path has no publisher. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
+- **Pinning is not implemented.** There is no authenticated pin-request protocol or core pinning publisher. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
 - **Automatic compaction is off by default.** When enabled, snapshots can prune the in-memory shadow tree; stored blocks are deleted only with opt-in `gcAfterPrune`.
 - **Snapshot-only first load can fail.** A quorum-bound first load has no prior writer set for snapshot authentication and rejects a response that contains only a snapshot.
 - **No size-based garbage collection policy.** Opt-in post-prune GC is destructive for the local copy. There is no TTL, quota, or size-limit-based automatic cleanup.
