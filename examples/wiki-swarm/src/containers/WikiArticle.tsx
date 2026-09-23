@@ -42,6 +42,7 @@ function stampTimestamps(doc: WikiSwarmArticle) {
 
 interface WikiArticleOwnProps {
   documentId: string;
+  create?: boolean;
 }
 
 interface WikiArticleProps extends WikiArticleOwnProps {
@@ -51,6 +52,7 @@ interface WikiArticleProps extends WikiArticleOwnProps {
   onInitialize: (config: PeerborneConfig) => Promise<AutomergeSwarm>;
   onDocumentOpen: (
     documentPath: string,
+    initialization?: 'open' | 'create',
   ) => Promise<AutomergeSwarmDocument<WikiSwarmArticle> | null>;
   onDocumentClose: (documentPath: string) => Promise<void>;
   onDocumentChange: (
@@ -61,6 +63,7 @@ interface WikiArticleProps extends WikiArticleOwnProps {
 }
 
 interface WikiArticleState {
+  loadError?: string;
   aclReaders: string[];
   aclWriters: string[];
 }
@@ -124,9 +127,9 @@ class WikiArticle extends React.Component<
       this.props
         .onInitialize(config)
         .then(() =>
-          this.props.onDocumentOpen(this.props.documentId),
+          this.props.onDocumentOpen(this.props.documentId, this.props.create ? 'create' : 'open'),
         )
-        .then((loaded) => console.log('Loaded article:', loaded));
+        .catch(() => { if (this._mounted) this.setState({ loadError: 'Unable to open this article. Check its invitation and connection.' }); });
     }
   }
 
@@ -141,6 +144,7 @@ class WikiArticle extends React.Component<
 
   // https://caffeinecoding.com/react-redux-draftjs/
   render() {
+    if (this.state.loadError) return <p role="alert">{this.state.loadError}</p>;
     if (this.props.document) {
       if (!this.props.document.content) {
         console.warn(
@@ -148,9 +152,7 @@ class WikiArticle extends React.Component<
           this.props.document,
         );
       }
-      // `title` is declared required in the model, but a document opened
-      // before the title field was wired in may legitimately lack it; fall
-      // back to '' so the controlled input still renders.
+      // A newly created article has no title until its first edit.
       const currentTitle = this.props.document.title?.toString() ?? '';
       return (
         <div className="m-3">
@@ -250,8 +252,8 @@ function mapDispatchToProps(
   return {
     onInitialize: (config: PeerborneConfig) =>
       dispatch(initializeAsync(config, selectAutomergeSwarmState)),
-    onDocumentOpen: (documentId: string) =>
-      dispatch(openDocumentAsync(documentId, selectAutomergeSwarmState)),
+    onDocumentOpen: (documentId: string, initialization: 'open' | 'create' = 'open') =>
+      dispatch(openDocumentAsync(documentId, selectAutomergeSwarmState, initialization)),
     onDocumentClose: (documentId: string) =>
       dispatch(closeDocumentAsync(documentId, selectAutomergeSwarmState)),
     onDocumentChange: (

@@ -187,7 +187,7 @@ export class PeerborneNoteSession {
   async createNote(): Promise<NoteSnapshot> {
     if (this.document) throw new Error('A note is already open');
     const document = this.peerborne.doc(`/notes/${crypto.randomUUID()}`);
-    await document.open();
+    await document.create();
     document.historyVisibility = 'full_history';
     await document.change((draft) => {
       draft.body = '';
