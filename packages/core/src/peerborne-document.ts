@@ -3488,10 +3488,7 @@ export class PeerborneDocument<
    */
   private async _authenticateMembershipMessage(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
-    context: Extract<
-      SyncMessageContext,
-      'beekem-path-update-v1' | 'key-update-v2'
-    >,
+    context: Extract<SyncMessageContext, 'beekem-path-update-v1'>,
   ): Promise<
     | { kind: 'authenticated'; writerKeysVersion: number }
     | {
@@ -9129,7 +9126,7 @@ export class PeerborneDocument<
    * application-layer ECIES seal is the primary confidentiality
    * guarantee against on-path connected peers.
    *
-   * Wire format (mirrors `documentKeyUpdateV2`):
+   * Wire format:
    *   [4-byte BE doc-path length] [UTF-8 doc-path] [serialized sync message]
    */
   private async _sendBeeKEMWelcome(
@@ -10411,7 +10408,7 @@ export class PeerborneDocument<
    * are both performed inside `removeMember`; no follow-up
    * `BeeKEM.update()` call is involved).
    *
-   * Wire format mirrors `documentKeyUpdateV2`: a 4-byte big-endian
+   * Wire format starts with a 4-byte big-endian
    * document-path length, the UTF-8 path bytes, then the serialized
    * sync message body (which carries the `pathUpdate` /
    * `pathUpdateEpochId` / `signature` fields). The message is
@@ -10489,7 +10486,7 @@ export class PeerborneDocument<
    * `PathUpdateV2`, applies it to the local BeeKEM tree via
    * `processPathUpdate`, and installs the resulting document key
    * under the supplied epoch ID. Mirrors the wire framing used by
-   * `handleKeyUpdateRequestData` and `handleBeeKEMWelcomeRequestData`.
+   * `handleBeeKEMWelcomeRequestData`.
    *
    * SECURITY: the writer signature is **always** verified, regardless
    * of the swarm-wide `enableSigning` toggle. An unsigned or
@@ -10709,152 +10706,6 @@ export class PeerborneDocument<
       console.log('Installed BeeKEM-derived epoch key via PathUpdateV2');
     } catch {
       console.error('Shared BeeKEM PathUpdateV2 handling failed');
-    }
-  }
-
-  /**
-   * Handles a key-update request with pre-read payload data. Called by
-   * the shared protocol handler in Peerborne after reading the document
-   * path header and routing.
-   *
-   * @internal
-   * @param payload The encrypted key-update payload (without the document
-   *   path header that was already stripped by the shared handler).
-   */
-  public async handleKeyUpdateRequestData(
-    payload: Uint8Array,
-    admission?: SharedProtocolHandlerAdmission,
-  ): Promise<void> {
-    return this._runStateMutation(async () => {
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      await this._handleKeyUpdateRequestDataUnlocked(payload, admission);
-    });
-  }
-
-  private async _handleKeyUpdateRequestDataUnlocked(
-    payload: Uint8Array,
-    admission?: SharedProtocolHandlerAdmission,
-  ): Promise<void> {
-    try {
-      const keyIDLength = this._keychainProvider.keyIDLength;
-      const nonceLength = this._authProvider.nonceBits;
-      if (
-        !Number.isSafeInteger(keyIDLength) ||
-        keyIDLength <= 0 ||
-        !Number.isSafeInteger(nonceLength) ||
-        nonceLength <= 0 ||
-        !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
-        keyIDLength + nonceLength + 1 > MAX_SHARED_PROTOCOL_REQUEST_BYTES
-      ) {
-        console.warn('Dropping key-update request with invalid framing widths');
-        return;
-      }
-      let stablePayload: Uint8Array;
-      try {
-        stablePayload = copyUnsharedUint8Array(
-          payload,
-          keyIDLength + nonceLength + 1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Document key-update payload',
-        );
-      } catch {
-        console.warn('Dropping malformed key-update request framing');
-        return;
-      }
-
-      // Decrypt the key update message.
-      const blockKeyID = stablePayload.slice(0, keyIDLength);
-      const blockNonce = stablePayload.slice(
-        keyIDLength,
-        keyIDLength + nonceLength,
-      );
-      const blockData = stablePayload.slice(keyIDLength + nonceLength);
-
-      let rawContent: Uint8Array | undefined;
-      try {
-        const decrypted = await this._decryptBlock(
-          blockKeyID,
-          blockNonce,
-          blockData,
-        );
-        if (decrypted !== undefined) {
-          rawContent = copyUnsharedUint8Array(
-            decrypted,
-            1,
-            MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-            'Decrypted document key-update message',
-          );
-        }
-      } catch {
-        console.warn('Failed to decrypt shared key-update request');
-        return;
-      }
-
-      if (!rawContent) {
-        console.warn('Unable to decrypt shared key-update request');
-        return;
-      }
-      if (!isSharedProtocolHandlerActive(admission)) return;
-
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
-      try {
-        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
-          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-          'key-update-v2',
-        );
-      } catch {
-        console.warn('Dropping malformed or cross-context key-update request');
-        return;
-      }
-
-      // The shared V2 key-update handler already routes by the
-      // length-prefixed document-path header and drops invalid headers;
-      // this check is kept as a defense-in-depth guard against malformed
-      // or misrouted messages.
-      if (message.documentId !== this.documentPath) {
-        console.warn('Ignoring key-update for the wrong document');
-        return;
-      }
-
-      if (message.keychainChanges == null) {
-        console.warn('Dropping key-update without keychain changes');
-        return;
-      }
-
-      const authentication = await this._authenticateMembershipMessage(
-        message,
-        'key-update-v2',
-      );
-      if (authentication.kind !== 'authenticated') {
-        console.warn(
-          {
-            'missing-signature': 'Dropping unsigned key-update request',
-            malformed: 'Dropping malformed key-update request',
-            'invalid-signature': 'Dropping key-update with an invalid signature',
-            changed: 'Dropping key-update after payload or writer ACL changed during verification',
-          }[authentication.kind],
-        );
-        return;
-      }
-      const { writerKeysVersion } = authentication;
-
-      console.log('Received shared key-update request');
-
-      // Merge keychain changes.
-      try {
-        const committed = await runSharedProtocolMutation(admission, () => {
-          if (this._writerKeysVersion !== writerKeysVersion) {
-            throw new Error('Writer ACL changed before key-update commit');
-          }
-          this._keychain.merge(message.keychainChanges!);
-        });
-        if (!committed.admitted) return;
-        console.log('Updated keychain via shared key-update protocol');
-      } catch {
-        console.error('Failed to merge shared key-update changes');
-      }
-    } catch {
-      console.error('Shared key-update request handling failed');
     }
   }
 

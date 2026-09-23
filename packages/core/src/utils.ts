@@ -81,7 +81,7 @@ const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
  *   [4-byte BE path length] [UTF-8 document path] [protocol body]
  *
  * Used by every shared protocol handler that routes by document path
- * (currently `documentKeyUpdateV2` and BeeKEM Welcome v1/v2). Centralizing
+ * (BeeKEM Welcome and PathUpdate). Centralizing
  * the parse here keeps the validation limits (`maxRequestSize`,
  * `maxPathLength`), the unsigned-32-bit length decode, and the
  * registry-lookup behavior consistent across protocols so the two
