@@ -16,9 +16,6 @@ export const bloomFilterUpdateV1 = '/collabswarm/bloom-index/1.0.0';
 // silently dropping the binding. There are no live users of this project,
 // so we did NOT retain a v2 alias -- removing legacy handlers keeps the
 // codebase clean.
-//
-// `documentKeyUpdateV2` is intentionally NOT bumped: its wire shape is
-// unaffected by the load-quorum work (no `tips` field, no `tipsHash`).
 export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
 // Reserved V4 contract identifiers; runtime integration lands separately. A
 // conforming V4 load response adds a signed `loadSecurityState` tuple. Its
@@ -32,7 +29,6 @@ export const documentLoadV3 = '/collabswarm/doc-load/3.0.0';
 // serializers cannot verify the same signed bytes or binding; callers that opt
 // into it must select the family atomically and never downgrade to V3.
 export const documentLoadV4 = '/collabswarm/doc-load/4.0.0';
-export const documentKeyUpdateV2 = '/collabswarm/key-update/2.0.0';
 export const snapshotLoadV3 = '/collabswarm/snapshot-load/3.0.0';
 export const snapshotLoadV4 = '/collabswarm/snapshot-load/4.0.0';
 

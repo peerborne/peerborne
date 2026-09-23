@@ -290,7 +290,6 @@ describe('concrete inbound handler log redaction', () => {
   test.each([
     'handleBeeKEMWelcomeRequestData',
     'handleBeeKEMPathUpdateRequestData',
-    'handleKeyUpdateRequestData',
   ] as const)(
     '%s does no work after shared-handler admission expires',
     async (methodName) => {
@@ -310,49 +309,6 @@ describe('concrete inbound handler log redaction', () => {
       expect(admission.runMutation).not.toHaveBeenCalled();
     },
   );
-
-  test('key-update cannot merge after admission expires during verification', async () => {
-    let active = true;
-    const merge = jest.fn();
-    const admission = {
-      isActive: () => active,
-      runMutation: jest.fn(async (operation: () => unknown) => {
-        if (!active) return { admitted: false as const };
-        return { admitted: true as const, value: await operation() };
-      }),
-    };
-    const document = fakeDocument({
-      _authProvider: { nonceBits: 1 },
-      _keychainProvider: { keyIDLength: 1 },
-      _decryptBlock: async () => new Uint8Array([9]),
-      _syncMessageSerializer: {
-        deserializeSyncMessage: () => ({
-          documentId: privatePath,
-          signature: 'AA==',
-          keychainChanges: new Uint8Array([7]),
-        }),
-        serializeSyncMessage: () => new Uint8Array([8]),
-      },
-      _isSigningEnabled: () => true,
-      _verifyWriterSignature: async () => {
-        active = false;
-        return true;
-      },
-      _keychain: { merge },
-    });
-    const logs = captureFailureLogs();
-
-    try {
-      await document.handleKeyUpdateRequestData(
-        new Uint8Array([1, 2, 3]),
-        admission,
-      );
-      expect(admission.runMutation).not.toHaveBeenCalled();
-      expect(merge).not.toHaveBeenCalled();
-    } finally {
-      logs.restore();
-    }
-  });
 
   test.each([
     [
@@ -436,31 +392,6 @@ describe('concrete inbound handler log redaction', () => {
       await document.handleBeeKEMPathUpdateRequestData(new Uint8Array([2]));
       expect(logs.warn).toHaveBeenCalledWith(
         'Dropping malformed BeeKEM PathUpdateV2',
-      );
-      expect(logs.text()).not.toContain(privateFailure);
-      expect(logs.text()).not.toContain(privatePath);
-    } finally {
-      logs.restore();
-    }
-  });
-
-  test('redacts a decryptor failure in the real key-update handler', async () => {
-    const document = fakeDocument({
-      _authProvider: {
-        nonceBits: 1,
-        decrypt: async () => {
-          throw new Error(privateFailure);
-        },
-      },
-      _keychain: { getKey: () => ({}) },
-      _keychainProvider: { keyIDLength: 1 },
-    });
-    const logs = captureFailureLogs();
-
-    try {
-      await document.handleKeyUpdateRequestData(new Uint8Array([3, 4, 5]));
-      expect(logs.warn).toHaveBeenCalledWith(
-        'Unable to decrypt shared key-update request',
       );
       expect(logs.text()).not.toContain(privateFailure);
       expect(logs.text()).not.toContain(privatePath);
