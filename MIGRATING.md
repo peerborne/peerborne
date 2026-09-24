@@ -96,6 +96,27 @@ versions, but the exact behavior is route-dependent. Coordinate upgrades of
 direct peers instead of relying on protocol negotiation. Stored document IDs,
 CRDT state, and keychain entries are unchanged.
 
+## UCAN ACL identity codecs
+
+`UCANACL` and `UCANACLProvider` now take a third `deserializePublicKey`
+argument, and it is required whenever identities are objects or functions,
+such as `CryptoKey`. Without it, every membership, capability, listing, and
+entry operation on such an identity rejects. The deserializer must return a
+detached identity whose `serializePublicKey` encoding matches its input:
+
+```ts
+import { UCANACLProvider } from '@peerborne/core';
+import { YjsACLProvider, deserializeKey, serializeKey } from '@peerborne/yjs';
+
+new UCANACLProvider(
+  new YjsACLProvider(),
+  serializeKey,
+  deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, ['verify']),
+);
+```
+
+Primitive identities such as strings still work with the two-argument form.
+
 ## Compatibility identifiers that did not change
 
 Branding must not change bytes that existing peers or stored data depend on.
