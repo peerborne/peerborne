@@ -59,7 +59,6 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
   };
 }
 
-const MAX_STABLE_READ_ATTEMPTS = 3;
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
 /** Hard limit that keeps one backing listing's identity-codec fanout bounded. */
@@ -110,10 +109,7 @@ interface CachedListingIdentity<PublicKey> {
  * synchronous backing-to-wrapper recursion is also rejected. Any rejected
  * local opaque mutation poisons the instance because the generic ACL contract
  * does not identify which memberships may already have changed. A rejected
- * remote merge does not, so malformed remote input cannot disable the ACL. A failed backing
- * addition also quarantines its requested identity, while a previously granted
- * UCAN is preserved only when stable backing membership was proven before the
- * attempt.
+ * remote merge does not, so malformed remote input cannot disable the ACL.
  *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
@@ -129,12 +125,7 @@ interface CachedListingIdentity<PublicKey> {
 export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicKey> {
   private _entries: Map<string, UCANACLEntry> = new Map(); // publicKeyBase64 -> entry
   private _revokedKeys: Set<string> = new Set(); // set of revoked public key base64 strings
-  private _metadataRevision: object = {};
   private _backingRevision: object = {};
-  private _failedAdditions: Set<string> = new Set();
-  private _pendingAdditions: Map<string, number> = new Map();
-  private _pendingGrants: Set<string> = new Set();
-  private _pendingRemovals: Map<string, number> = new Map();
   private _publicOperationsInFlight = 0;
   private _backingOperationsInFlight = 0;
   private _backingInvocationDepth = 0;
@@ -328,10 +319,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey: PublicKey;
       keyBase64: string;
     }) => Promise<T>,
-    reserve?: (snapshot: {
-      publicKey: PublicKey;
-      keyBase64: string;
-    }) => (() => void) | undefined,
     captureInputs?: () => void,
   ): Promise<T> {
     this._assertPublicOperationAvailable(operationName);
@@ -342,25 +329,13 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       // invoking a caller-supplied codec. Both can execute synchronously and
       // must not reenter the wrapper around this operation.
       captureInputs?.();
-      const snapshot = this._snapshotPublicKey(publicKey, operationName);
-      let releaseReservation: (() => void) | undefined;
-      try {
-        const stableSnapshot = await snapshot;
-        this._assertHealthy(operationName);
-        releaseReservation = reserve?.(stableSnapshot);
-        this._assertHealthy(operationName);
-        return await operation(stableSnapshot);
-      } finally {
-        releaseReservation?.();
-      }
+      const snapshot = await this._snapshotPublicKey(publicKey, operationName);
+      this._assertHealthy(operationName);
+      return operation(snapshot);
     })();
     return mutation.finally(() => {
       finishPublicOperation();
     });
-  }
-
-  private _markMetadataMutation(): void {
-    this._metadataRevision = {};
   }
 
   private _markBackingMutation(): void {
@@ -514,43 +489,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
-  private _quarantineAddition(keyBase64: string): void {
-    this._failedAdditions.add(keyBase64);
-    this._markMetadataMutation();
-  }
-
-  private async _hasStablePriorEntry(
-    publicKey: PublicKey,
-    keyBase64: string,
-    operation: string,
-  ): Promise<boolean> {
-    const entry = this._entries.get(keyBase64);
-    if (
-      !entry ||
-      this._pendingRemovals.has(keyBase64) ||
-      this._revokedKeys.has(keyBase64) ||
-      this._failedAdditions.has(keyBase64)
-    ) {
-      return false;
-    }
-
-    const metadataRevision = this._metadataRevision;
-    const backingRevision = this._backingRevision;
-    const isMember =
-      (await this._runBackingRead(() => this._backing.check(publicKey))) ===
-      true;
-    this._assertBackingOperationAvailable(operation);
-    return (
-      isMember &&
-      this._metadataRevision === metadataRevision &&
-      this._backingRevision === backingRevision &&
-      this._entries.get(keyBase64) === entry &&
-      !this._pendingRemovals.has(keyBase64) &&
-      !this._revokedKeys.has(keyBase64) &&
-      !this._failedAdditions.has(keyBase64)
-    );
-  }
-
   private async _runBackingMutation<T>(
     operation: () => Promise<T>,
   ): Promise<T> {
@@ -595,57 +533,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
-  private _reservePendingRemoval(keyBase64: string): () => void {
-    this._pendingRemovals.set(
-      keyBase64,
-      (this._pendingRemovals.get(keyBase64) ?? 0) + 1,
-    );
-    return () => {
-      const remaining = (this._pendingRemovals.get(keyBase64) ?? 1) - 1;
-      if (remaining === 0) {
-        this._pendingRemovals.delete(keyBase64);
-      } else {
-        this._pendingRemovals.set(keyBase64, remaining);
-      }
-    };
-  }
-
-  private _reservePendingAddition(keyBase64: string): () => void {
-    this._pendingAdditions.set(
-      keyBase64,
-      (this._pendingAdditions.get(keyBase64) ?? 0) + 1,
-    );
-    return () => {
-      const remaining = (this._pendingAdditions.get(keyBase64) ?? 1) - 1;
-      if (remaining === 0) {
-        this._pendingAdditions.delete(keyBase64);
-      } else {
-        this._pendingAdditions.set(keyBase64, remaining);
-      }
-    };
-  }
-
-  private _assertMetadataRevision(
-    expected: object,
-    operation: string,
-  ): void {
-    if (this._metadataRevision !== expected) {
-      throw new Error(
-        `${operation} became stale after UCAN metadata changed`,
-      );
-    }
-  }
-
   private _isLocallyAuthorized(
     keyBase64: string,
     capability?: string,
   ): boolean {
-    if (
-      this._pendingRemovals.has(keyBase64) ||
-      this._failedAdditions.has(keyBase64)
-    ) {
-      return false;
-    }
     // Membership queries report the replicated backing ACL so callers can
     // detect and re-remove an identity that a remote change re-added.
     if (capability === undefined) {
@@ -655,19 +546,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       return false;
     }
     const entry = this._entries.get(keyBase64);
-    if (entry) {
-      return (
-        capability === undefined ||
-        entry.capabilities.some((held) => capabilityImplies(held, capability))
-      );
-    }
-    if (
-      this._pendingAdditions.has(keyBase64) ||
-      this._pendingGrants.has(keyBase64)
-    ) {
-      return false;
-    }
-    return true;
+    return (
+      entry === undefined ||
+      entry.capabilities.some((held) => capabilityImplies(held, capability))
+    );
   }
 
   async add(publicKey: PublicKey): Promise<ChangesType> {
@@ -675,26 +557,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'ACL addition',
       async (snapshot) => {
-        const preservePriorEntry = await this._hasStablePriorEntry(
-          snapshot.publicKey,
-          snapshot.keyBase64,
-          'ACL addition',
+        const changes = await this._runBackingMutation(() =>
+          this._backing.add(snapshot.publicKey),
         );
-        let metadataRevision!: object;
-        const changes = await this._runBackingMutation(() => {
-          if (!preservePriorEntry) {
-            this._quarantineAddition(snapshot.keyBase64);
-          }
-          metadataRevision = this._metadataRevision;
-          return this._backing.add(snapshot.publicKey);
-        });
-        this._assertMetadataRevision(metadataRevision, 'ACL addition');
         this._revokedKeys.delete(snapshot.keyBase64);
-        this._failedAdditions.delete(snapshot.keyBase64);
-        this._markMetadataMutation();
         return changes;
       },
-      (snapshot) => this._reservePendingAddition(snapshot.keyBase64),
     );
   }
 
@@ -707,22 +575,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           this._backing.remove(snapshot.publicKey),
         );
         this._revokedKeys.add(snapshot.keyBase64);
-        this._failedAdditions.delete(snapshot.keyBase64);
         this._entries.delete(snapshot.keyBase64);
-        this._markMetadataMutation();
         return changes;
       },
-      (snapshot) => this._reservePendingRemoval(snapshot.keyBase64),
     );
   }
 
   current(): ChangesType {
     this._assertPublicOperationAvailable('ACL current-state read');
-    if (this._failedAdditions.size !== 0) {
-      throw new Error(
-        'ACL current-state read is unavailable while an unproven backing addition is quarantined',
-      );
-    }
     return this._invokeSynchronousBacking(
       () => this._backing.current(),
       'Backing ACL current-state read',
@@ -767,37 +627,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         publicKey,
         'ACL check',
       );
-      for (
-        let attempt = 0;
-        attempt < MAX_STABLE_READ_ATTEMPTS;
-        attempt++
-      ) {
-        this._assertBackingOperationAvailable('ACL check');
-        if (this._pendingRemovals.has(snapshot.keyBase64)) {
-          return false;
-        }
-
-        const backingRevision = this._backingRevision;
-        const metadataRevision = this._metadataRevision;
-        const isMember =
-          (await this._runBackingRead(() =>
-            this._backing.check(snapshot.publicKey),
-          )) === true;
-        this._assertBackingOperationAvailable('ACL check');
-        if (
-          this._backingRevision !== backingRevision ||
-          this._metadataRevision !== metadataRevision
-        ) {
-          continue;
-        }
-        if (!isMember) {
-          return false;
-        }
-
-        return this._isLocallyAuthorized(snapshot.keyBase64, capability);
-      }
-      throw new Error(
-        `ACL check remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
+      const isMember =
+        (await this._runBackingRead(() =>
+          this._backing.check(snapshot.publicKey),
+        )) === true;
+      return (
+        isMember && this._isLocallyAuthorized(snapshot.keyBase64, capability)
       );
     });
   }
@@ -807,93 +642,53 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       throw new TypeError('capability must be a non-empty string when provided');
     }
     return this._runPublicOperation('ACL listing', async () => {
-      for (
-        let attempt = 0;
-        attempt < MAX_STABLE_READ_ATTEMPTS;
-        attempt++
-      ) {
-        this._assertBackingOperationAvailable('ACL listing');
-        const backingRevision = this._backingRevision;
-        const metadataRevision = this._metadataRevision;
-        const allUsers = await this._runBackingRead(() =>
-          this._backing.users(),
-        );
-        this._assertBackingOperationAvailable('ACL listing');
+      const backingRevision = this._backingRevision;
+      const allUsers = await this._runBackingRead(() => this._backing.users());
+      const snapshotTasks: Array<
+        Promise<{ publicKey: PublicKey; keyBase64: string }>
+      > = [];
+      let enumerationFailed = false;
+      let enumerationError: unknown;
+      try {
+        const isArray = reflectApply(arrayIsArray, Array, [
+          allUsers,
+        ]) as boolean;
+        const length = isArray ? reflectGet(allUsers, 'length') : undefined;
         if (
-          this._backingRevision !== backingRevision ||
-          this._metadataRevision !== metadataRevision
+          !isArray ||
+          !Number.isSafeInteger(length) ||
+          (length as number) < 0
         ) {
-          continue;
+          throw new TypeError('Backing ACL listing must return a stable array');
         }
-        const snapshotTasks: Array<
-          Promise<{ publicKey: PublicKey; keyBase64: string }>
-        > = [];
-        let enumerationFailed = false;
-        let enumerationError: unknown;
-        try {
-          const isArray = reflectApply(arrayIsArray, Array, [
-            allUsers,
-          ]) as boolean;
-          const length = isArray
-            ? reflectGet(allUsers, 'length')
-            : undefined;
-          if (
-            !isArray ||
-            !Number.isSafeInteger(length) ||
-            (length as number) < 0
-          ) {
-            throw new TypeError(
-              'Backing ACL listing must return a stable array',
-            );
-          }
-          if ((length as number) > MAX_UCAN_ACL_LISTING_IDENTITIES) {
-            throw new RangeError(
-              `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
-            );
-          }
-          // Start each bounded codec before suspending so it captures every
-          // caller-owned identity in this listing before the caller can mutate it.
-          for (let index = 0; index < (length as number); index++) {
-            const user = reflectGet(allUsers, String(index)) as PublicKey;
-            snapshotTasks.push(
-              this._snapshotListedPublicKey(
-                user,
-                'ACL listing',
-                backingRevision,
-              ),
-            );
-          }
-        } catch (error) {
-          enumerationFailed = true;
-          enumerationError = error;
+        if ((length as number) > MAX_UCAN_ACL_LISTING_IDENTITIES) {
+          throw new RangeError(
+            `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
+          );
         }
-        const snapshotResults = await Promise.allSettled(snapshotTasks);
-        if (enumerationFailed) throw enumerationError;
-        for (const result of snapshotResults) {
-          if (result.status === 'rejected') throw result.reason;
+        // Start each bounded codec before suspending so it captures every
+        // caller-owned identity in this listing before the caller can mutate it.
+        for (let index = 0; index < (length as number); index++) {
+          const user = reflectGet(allUsers, String(index)) as PublicKey;
+          snapshotTasks.push(
+            this._snapshotListedPublicKey(user, 'ACL listing', backingRevision),
+          );
         }
-        const snapshots = snapshotResults.map((result) => {
-          if (result.status !== 'fulfilled') {
-            throw new Error('ACL listing identity snapshot did not settle');
-          }
-          return result.value;
-        });
-        this._assertBackingOperationAvailable('ACL listing');
-        if (
-          this._backingRevision !== backingRevision ||
-          this._metadataRevision !== metadataRevision
-        ) {
-          continue;
-        }
-        return snapshots
-          .filter(({ keyBase64 }) =>
-            this._isLocallyAuthorized(keyBase64, capability),
-          )
-          .map(({ publicKey }) => publicKey);
+      } catch (error) {
+        enumerationFailed = true;
+        enumerationError = error;
       }
-      throw new Error(
-        `ACL listing remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
-      );
+      const snapshotResults = await Promise.allSettled(snapshotTasks);
+      if (enumerationFailed) throw enumerationError;
+      const snapshots = snapshotResults.map((result) => {
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      });
+      return snapshots
+        .filter(({ keyBase64 }) =>
+          this._isLocallyAuthorized(keyBase64, capability),
+        )
+        .map(({ publicKey }) => publicKey);
     });
   }
 
@@ -930,37 +725,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           epochId: stableEpochId,
           revoked: false,
         });
-        const preservePriorEntry = await this._hasStablePriorEntry(
-          snapshot.publicKey,
-          snapshot.keyBase64,
-          'Capability grant',
-        );
-        let additionMetadataRevision!: object;
-        const changes = await this._runBackingMutation(() => {
-          if (!preservePriorEntry) {
-            this._quarantineAddition(snapshot.keyBase64);
-          }
-          additionMetadataRevision = this._metadataRevision;
-          return this._backing.add(snapshot.publicKey);
-        });
-        this._assertMetadataRevision(
-          additionMetadataRevision,
-          'Capability grant',
+        const changes = await this._runBackingMutation(() =>
+          this._backing.add(snapshot.publicKey),
         );
         this._revokedKeys.delete(snapshot.keyBase64);
-        this._failedAdditions.delete(snapshot.keyBase64);
         this._entries.set(snapshot.keyBase64, entry);
-        this._markMetadataMutation();
         return changes;
-      },
-      (snapshot) => {
-        if (this._pendingGrants.has(snapshot.keyBase64)) {
-          throw new Error(
-            'A capability grant for this user is already in progress',
-          );
-        }
-        this._pendingGrants.add(snapshot.keyBase64);
-        return () => this._pendingGrants.delete(snapshot.keyBase64);
       },
       () => {
         stableProofs = [...proofs];
