@@ -3330,7 +3330,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/mdns@npm:^12.0.24, @libp2p/mdns@npm:^12.0.29":
+"@libp2p/mdns@npm:^12.0.24":
   version: 12.0.29
   resolution: "@libp2p/mdns@npm:12.0.29"
   dependencies:
@@ -3344,6 +3344,23 @@ __metadata:
     main-event: "npm:^1.0.1"
     multicast-dns: "npm:^7.2.5"
   checksum: 10/f7a33dde2fcc2dfcb776face86cbde9a285b65dc782bcf296ae7f90a0f26861d04a0fb03ce63136db4431a6d95de3a45b30e3cd5d554496f515780efa6b438a1
+  languageName: node
+  linkType: hard
+
+"@libp2p/mdns@npm:^12.0.32":
+  version: 12.0.32
+  resolution: "@libp2p/mdns@npm:12.0.32"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.13"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/utils": "npm:^7.4.1"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@types/multicast-dns": "npm:^7.2.4"
+    dns-packet: "npm:^5.6.1"
+    main-event: "npm:^1.0.1"
+    multicast-dns: "npm:^7.2.5"
+  checksum: 10/8461e53ca5b28c40689a2d4a657d4915a812fbb94e1ee820c823bc06722d9096ee2f8ecf99d57673c50db89d0348fccba1678155642ce8015b15885c12d0d089
   languageName: node
   linkType: hard
 
@@ -4451,7 +4468,7 @@ __metadata:
     "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/kad-dht": "npm:^16.4.5"
-    "@libp2p/mdns": "npm:^12.0.29"
+    "@libp2p/mdns": "npm:^12.0.32"
     "@libp2p/peer-id": "npm:^6.0.14"
     "@libp2p/ping": "npm:^3.1.13"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"

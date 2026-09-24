@@ -99,7 +99,7 @@
     "@libp2p/identify": "^4.1.14",
     "@libp2p/interface": "^3.2.5",
     "@libp2p/kad-dht": "^16.4.5",
-    "@libp2p/mdns": "^12.0.29",
+    "@libp2p/mdns": "^12.0.32",
     "@libp2p/peer-id": "^6.0.14",
     "@libp2p/ping": "^3.1.13",
     "@libp2p/pubsub-peer-discovery": "^12.0.0",
