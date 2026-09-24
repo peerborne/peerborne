@@ -21,6 +21,7 @@ import {
 import { wrapStream, type DuplexStream } from './stream-adapter.js';
 import { CRDTProvider } from './crdt-provider.js';
 import { AuthProvider, requireSerializePublicKey } from './auth-provider.js';
+import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import {
   CRDTChangeNode,
   crdtChangeNodeDeferred,
@@ -292,21 +293,10 @@ function assertCanonicalACLIdentity(
       'AuthProvider.serializePublicKey must return a non-empty string',
     );
   }
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(
-          'AuthProvider.serializePublicKey must return well-formed UTF-16',
-        );
-      }
-      index++;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError(
-        'AuthProvider.serializePublicKey must return well-formed UTF-16',
-      );
-    }
+  if (!isWellFormedUtf16(value)) {
+    throw new TypeError(
+      'AuthProvider.serializePublicKey must return well-formed UTF-16',
+    );
   }
 }
 
