@@ -498,7 +498,7 @@ export async function runLoadQuorum<T>(opts: {
     throw new LoadQuorumFailedError({
       documentPath,
       reason: 'equivocating-authority',
-      respondingCount: 0,
+      respondingCount: probeResults.filter(({ result }) => result.kind === 'vote').length,
       requiredQ: q,
       agreement: new Map(),
     });
