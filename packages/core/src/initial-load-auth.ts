@@ -78,28 +78,20 @@ function captureVerificationInputs<PublicKey>(
   }
 }
 
-function isRepeatedKey<PublicKey>(
-  keys: readonly PublicKey[],
-  index: number,
-): boolean {
-  for (let earlier = 0; earlier < index; earlier++) {
-    if (Object.is(keys[earlier], keys[index])) return true;
-  }
-  return false;
-}
-
 async function verifiedSignerIndexes<PublicKey>(
   keys: readonly PublicKey[],
   inputs: InitialLoadVerificationInputs<PublicKey>,
   stopAtFirst: boolean,
 ): Promise<number[]> {
   const indexes: number[] = [];
+  const seenKeys = new Set<PublicKey>();
   // Verify sequentially with disposable copies. A custom verifier may retain
   // and later mutate its arguments, so checking for immediate mutation cannot
   // make shared payload buffers safe for the next authority.
   for (let index = 0; index < keys.length; index++) {
     // The same key listed twice must not make its own signature ambiguous.
-    if (isRepeatedKey(keys, index)) continue;
+    if (seenKeys.has(keys[index])) continue;
+    seenKeys.add(keys[index]);
     try {
       const payload = copyUnsharedUint8Array(
         inputs.payload,
