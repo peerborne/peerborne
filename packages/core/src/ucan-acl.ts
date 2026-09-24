@@ -105,8 +105,9 @@ interface CachedListingIdentity<PublicKey> {
  * retry. Backing ACL implementations and identity codecs must instead
  * propagate it because they may own the operation that must settle. Direct
  * synchronous backing-to-wrapper recursion is also rejected. Any rejected
- * opaque mutation poisons the instance because the generic ACL contract does
- * not identify which memberships may already have changed. A failed backing
+ * local opaque mutation poisons the instance because the generic ACL contract
+ * does not identify which memberships may already have changed. A rejected
+ * remote merge does not, so malformed remote input cannot disable the ACL. A failed backing
  * addition also quarantines its requested identity, while a previously granted
  * UCAN is preserved only when stable backing membership was proven before the
  * attempt.
@@ -723,7 +724,10 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   /**
    * Apply remote membership only while no local mutation is admitted or
    * executing. Callers must retry the same changes after the local operation
-   * settles when this method rejects.
+   * settles when this method rejects with a retryable conflict. A rejected
+   * backing merge does not poison the wrapper: remote changes may already
+   * change arbitrary memberships, so a partially applied merge leaves no local
+   * metadata invariant that depends on which memberships changed.
    */
   merge(changes: ChangesType): void {
     this._assertPublicOperationAvailable('ACL merge');
@@ -734,10 +738,9 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         'Backing ACL merge',
       );
     } catch (error) {
-      this._backingStateUncertain = true;
       if (error instanceof ACLOperationInProgressError) {
         throw new Error(
-          'Backing ACL merge reported a retry conflict after invocation; backing state is uncertain',
+          'Backing ACL merge reported a retry conflict after invocation',
         );
       }
       throw error;

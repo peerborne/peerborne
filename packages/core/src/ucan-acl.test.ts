@@ -1117,7 +1117,7 @@ describe('UCANACL', () => {
     expect(backing.remove).not.toHaveBeenCalled();
   });
 
-  test('poisons when a backing merge propagates a foreign conflict', async () => {
+  test('reports a foreign backing merge conflict without poisoning', async () => {
     let settle!: () => void;
     const settlement = new Promise<void>((resolve) => {
       settle = resolve;
@@ -1134,12 +1134,10 @@ describe('UCANACL', () => {
 
     const merge = retryACLConflict(() => acl.merge('incoming-changes'));
     await expect(merge).rejects.toThrow(
-      /retry conflict after invocation; backing state is uncertain/,
+      /Backing ACL merge reported a retry conflict after invocation/,
     );
     expect(backing.merge).toHaveBeenCalledTimes(1);
-    expect(() => acl.current()).toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
+    expect(acl.current()).toBe('current-state');
 
     settle();
     await Promise.resolve();
@@ -1168,9 +1166,9 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledTimes(1);
   });
 
-  test('poisons all future operations after a partially applied failed merge', async () => {
+  test('keeps the ACL available after a partially applied failed merge', async () => {
     let isMember = false;
-    backing.merge.mockImplementation(() => {
+    backing.merge.mockImplementationOnce(() => {
       isMember = true;
       throw new Error('backing merge failed after mutation');
     });
@@ -1179,46 +1177,24 @@ describe('UCANACL', () => {
     backing.users.mockImplementation(async () =>
       isMember ? ['key1'] : [],
     );
+    backing.remove.mockImplementation(async () => {
+      isMember = false;
+      return 'remove-changes';
+    });
 
-    expect(() => acl.merge('incoming-changes')).toThrow(
+    expect(() => acl.merge('malformed-remote-changes')).toThrow(
       'backing merge failed after mutation',
     );
 
-    expect(() => acl.current()).toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.check('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.getEntry('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.add('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.remove('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(
-      acl.grant(
-        'key1',
-        '/doc/read',
-        'doc-1',
-        {} as CryptoKey,
-        'issuer',
-      ),
-    ).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    expect(() => acl.merge('retry')).toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    expect(backing.add).not.toHaveBeenCalled();
-    expect(backing.remove).not.toHaveBeenCalled();
-    expect(backing.current).not.toHaveBeenCalled();
+    expect(acl.current()).toBe('partially-mutated-state');
+    await expect(acl.check('key1')).resolves.toBe(true);
+    await expect(acl.users()).resolves.toEqual(['key1']);
+    await expect(acl.getEntry('key1')).resolves.toBeUndefined();
+    expect(() => acl.merge('valid-remote-changes')).not.toThrow();
+    expect(backing.merge).toHaveBeenCalledTimes(2);
+    await expect(acl.remove('key1')).resolves.toBe('remove-changes');
+    await expect(acl.check('key1')).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
   });
 
   test('rejects merge while identity admission is pending', async () => {
@@ -1422,9 +1398,7 @@ describe('UCANACL', () => {
     await expect(authorization).resolves.toBe(false);
     await (conflict as any).waitForSettlement();
     expect(() => acl.merge('remote-changes')).toThrow('backing merge failed');
-    await expect(acl.check('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
+    await expect(acl.check('key1')).resolves.toBe(false);
   });
 
   test('check with capability falls back to backing ACL when no UCAN entry', async () => {
