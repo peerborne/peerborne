@@ -5,6 +5,7 @@ import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import {
   copyUnsharedUint8Array,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+  tryDecodeCanonicalBase64,
 } from './utils.js';
 import {
   serializeLoadSecurityCommitmentsForWire,
@@ -72,25 +73,11 @@ function deserializeSyncBinaryField(field: string, value: unknown): unknown {
     return deserializeLoadSecurityCommitmentsFromWire(value);
   const bounds = syncBinaryFieldBounds(field);
   if (bounds === undefined) return value;
-  if (
-    typeof value !== 'string' ||
-    value.length < Math.ceil(bounds[0] / 3) * 4 ||
-    value.length > Math.ceil(bounds[1] / 3) * 4 ||
-    value.length % 4 !== 0
-  ) {
-    throw new TypeError(`${field} must be bounded canonical base64`);
-  }
-  let decoded: Uint8Array;
-  try {
-    decoded = Base64.toUint8Array(value);
-  } catch {
-    throw new TypeError(`${field} must be bounded canonical base64`);
-  }
-  if (
-    decoded.byteLength < bounds[0] ||
-    decoded.byteLength > bounds[1] ||
-    Base64.fromUint8Array(decoded) !== value
-  ) {
+  const decoded =
+    typeof value === 'string'
+      ? tryDecodeCanonicalBase64(value, bounds[1])
+      : undefined;
+  if (decoded === undefined || decoded.byteLength < bounds[0]) {
     throw new TypeError(`${field} must be bounded canonical base64`);
   }
   return decoded;

@@ -36,6 +36,7 @@ import {
 import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   copyUnsharedUint8Array,
+  tryDecodeCanonicalBase64,
 } from './utils.js';
 
 /**
@@ -249,25 +250,8 @@ export function decodeWelcomeSealedPayloadV2(
       "welcome-sealed-payload v2: 'k' must be a base64 string",
     );
   }
-  if (
-    raw.k.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      raw.k,
-    )
-  ) {
-    throw new Error(
-      "welcome-sealed-payload v2: 'k' must use canonical padded base64",
-    );
-  }
-  let keychainChanges: Uint8Array;
-  try {
-    keychainChanges = Base64.toUint8Array(raw.k);
-  } catch {
-    throw new Error(
-      "welcome-sealed-payload v2: invalid base64 for field 'k'",
-    );
-  }
-  if (Base64.fromUint8Array(keychainChanges) !== raw.k) {
+  const keychainChanges = tryDecodeCanonicalBase64(raw.k);
+  if (keychainChanges === undefined) {
     throw new Error(
       "welcome-sealed-payload v2: 'k' must use canonical padded base64",
     );

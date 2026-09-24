@@ -1,4 +1,5 @@
 import { defineEnumerableDataProperty } from './internal/data-property.js';
+import { Base64 } from 'js-base64';
 import type { Uint8ArrayList } from 'uint8arraylist';
 import type { AesAlgorithmName } from './auth-provider.js';
 
@@ -873,4 +874,34 @@ export async function generateAndExportSymmetricKey(
     ['encrypt', 'decrypt'],
   );
   return await crypto.subtle.exportKey('jwk', documentKey);
+}
+
+const CANONICAL_PADDED_BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Decode canonical padded base64, or return `undefined` when `value` is not
+ * canonical or decodes to more than `maxBytes`. Callers supply their own
+ * error message.
+ */
+export function tryDecodeCanonicalBase64(
+  value: string,
+  maxBytes?: number,
+): Uint8Array | undefined {
+  if (maxBytes !== undefined && value.length > Math.ceil(maxBytes / 3) * 4) {
+    return undefined;
+  }
+  if (value.length % 4 !== 0 || !CANONICAL_PADDED_BASE64.test(value)) {
+    return undefined;
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = Base64.toUint8Array(value);
+  } catch {
+    return undefined;
+  }
+  if (maxBytes !== undefined && decoded.byteLength > maxBytes) {
+    return undefined;
+  }
+  return Base64.fromUint8Array(decoded) === value ? decoded : undefined;
 }
