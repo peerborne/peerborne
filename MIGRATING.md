@@ -115,6 +115,27 @@ durable retention is not validated. See the
 limits. The relay's `DOCUMENT_PUBLISH_PATH` setting only
 controls which topic the relay admits and subscribes to.
 
+## UCAN ACL identity codecs
+
+`UCANACL` and `UCANACLProvider` now take a third `deserializePublicKey`
+argument, and it is required whenever identities are objects or functions,
+such as `CryptoKey`. Without it, every membership, capability, listing, and
+entry operation on such an identity rejects. The deserializer must return a
+detached identity whose `serializePublicKey` encoding matches its input:
+
+```ts
+import { UCANACLProvider } from '@peerborne/core';
+import { YjsACLProvider, deserializeKey, serializeKey } from '@peerborne/yjs';
+
+new UCANACLProvider(
+  new YjsACLProvider(),
+  serializeKey,
+  deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, ['verify']),
+);
+```
+
+Primitive identities such as strings still work with the two-argument form.
+
 ## Compatibility identifiers that did not change
 
 Branding must not change bytes that existing peers or stored data depend on.

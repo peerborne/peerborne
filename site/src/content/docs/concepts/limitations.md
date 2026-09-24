@@ -128,7 +128,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   UX, or a delivery guarantee. Its source smoke test is not proof that the
   public relay or deployment will remain available.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
-- **No general migration guide.** `MIGRATING.md` covers the source rename and the document-topic boundary, not arbitrary upgrades between Peerborne commits.
+- **No general migration guide.** `MIGRATING.md` covers the source rename, the document-topic boundary, and the UCAN ACL identity-codec requirement, not arbitrary upgrades between Peerborne commits.
 - **No changelog.** Release notes and version history are not published.
 
 ## What is verified
