@@ -54,7 +54,7 @@ class InMemoryKeychain {
   historySince(id: Uint8Array): { id: string; key: string }[] {
     const target = InMemoryKeychain.toHex(id);
     const idx = this._keys.findIndex((k) => k.id === target);
-    if (idx === -1) return this._keys.slice(); // fallback to full history
+    if (idx === -1) return this.currentKeyChange();
     return this._keys.slice(idx);
   }
 
@@ -439,7 +439,7 @@ describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
     expect(slice[0].id).toBe(InMemoryKeychain.toHex(id2));
   });
 
-  test('since_invited with an unknown epoch falls back to full history', () => {
+  test('since_invited with an unknown epoch falls back to current-only', () => {
     const kc = new InMemoryKeychain();
     const id1 = new Uint8Array(32).fill(1);
     const id2 = new Uint8Array(32).fill(2);
@@ -448,12 +448,11 @@ describe('Epoch-based keychain visibility filtering (Issue #179)', () => {
 
     const unknown = new Uint8Array(32).fill(0xff);
     const slice = keychainChangesForVisibility(kc, 'since_invited', unknown);
-    // Boundary key not found -- the underlying historySince() falls
-    // back to full history rather than returning an empty slice (which
-    // would wedge the recipient). Note this is `historySince`'s
-    // recovery path for malformed input, not the
-    // founder/unset-invitationEpoch path covered above.
-    expect(slice).toHaveLength(2);
+    // A malformed or stale boundary must not widen disclosure to pre-invite
+    // epochs. Current-only preserves confidentiality and permits a future
+    // authenticated Welcome/remove-rejoin recovery.
+    expect(slice).toHaveLength(1);
+    expect(slice[0].id).toBe(InMemoryKeychain.toHex(id2));
   });
 
   test('full_history returns every key', () => {

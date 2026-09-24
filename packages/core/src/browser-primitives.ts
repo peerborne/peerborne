@@ -10,6 +10,12 @@ export {
 export { LRUCache } from './lru-cache.js';
 export { TIPS_HASH_LENGTH } from './tips-hash.js';
 export { SubtleCrypto } from './auth-subtlecrypto.js';
+export { copyUnsharedUint8Array } from './utils.js';
+export {
+  computeKeychainStateCommitment,
+  MAX_KEYCHAIN_EPOCHS,
+} from './keychain.js';
+export { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 export {
   deserializeInitialLoadChallengeFromWire,
   serializeInitialLoadChallengeForWire,
@@ -25,4 +31,7 @@ export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
+export * from './group-security-transition-record.js';
 export * from './webcrypto-group-state-protector.js';
+
+export { canonicalKeychain } from './keychain-canonical.js';

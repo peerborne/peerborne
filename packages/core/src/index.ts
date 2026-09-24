@@ -36,10 +36,14 @@ import { ACL } from './acl.js';
 import {
   Keychain,
   TransactionalKeychain,
+  PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
+  KeychainAppendIntent,
+  MAX_KEYCHAIN_EPOCHS,
+  computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
 } from './keychain.js';
 import {
   requireDeserializePublicKey,
@@ -177,6 +181,7 @@ export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
+export * from './group-security-transition-record.js';
 export * from './webcrypto-group-state-protector.js';
 
 export {
@@ -221,10 +226,14 @@ export {
   GroupKeyProvider,
   Keychain,
   TransactionalKeychain,
+  PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
+  KeychainAppendIntent,
+  MAX_KEYCHAIN_EPOCHS,
+  computeKeychainStateCommitment,
   isTransactionalKeychain,
-  keychainHistorySinceOrFull,
+  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -447,3 +456,9 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+
+export { canonicalKeychain } from './keychain-canonical.js';
+export type {
+  CanonicalKeychainEntry,
+  CanonicalAppendIntent,
+} from './keychain-canonical.js';

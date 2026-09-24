@@ -4,6 +4,7 @@
 // only exercises the CRDT serialization and crypto providers. The site's Vite
 // config aliases bare `@peerborne/core` imports to this module.
 export {
+  canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
@@ -12,4 +13,12 @@ export {
   LRUCache,
   TIPS_HASH_LENGTH,
   SubtleCrypto,
+  copyUnsharedUint8Array,
+  computeKeychainStateCommitment,
+  MAX_KEYCHAIN_EPOCHS,
+  INITIAL_INVITATION_CAPACITY_PROFILE,
+  deserializeInitialLoadChallengeFromWire,
+  serializeInitialLoadChallengeForWire,
+  deserializeLoadSecurityCommitmentsFromWire,
+  serializeLoadSecurityCommitmentsForWire,
 } from '@peerborne/core/browser-primitives';
