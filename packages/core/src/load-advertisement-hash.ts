@@ -7,25 +7,10 @@ import {
   loadSecurityStateHashToHex,
 } from './load-security-state.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import { concatenate, encodeUtf8 } from './internal/canonical-encoding.js';
 
 const SECURITY_LOAD_ADVERTISEMENT_DOMAIN =
   'peerborne/security-load-advertisement/v2\0';
-
-function encodeUtf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) length += part.length;
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
 
 /**
  * Hash a legacy served frontier, or the complete security-aware load tuple.

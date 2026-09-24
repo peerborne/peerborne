@@ -5,7 +5,6 @@ import {
   dedupePeersByPeerId,
   defaultQuorumQ,
   effectiveK,
-  effectiveQ,
   formatConfigValue,
   LOAD_QUORUM_TIMEOUT_MS_MAX,
   LoadQuorumFailedError,
@@ -73,6 +72,39 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
       expect(decision.reason).toBe('no-majority');
       expect(decision.respondingCount).toBe(3);
       expect(decision.agreement.size).toBe(3);
+    }
+  });
+
+  test('two hashes both reaching a non-majority Q fail as conflicting-quorum', () => {
+    for (const order of [
+      [HASH_A, HASH_A, HASH_B, HASH_B],
+      [HASH_B, HASH_B, HASH_A, HASH_A],
+    ]) {
+      const decision = decideLoadQuorum(
+        order.map((hash, i) => ({ peerId: `p${i}`, hash })),
+        2,
+      );
+      expect(decision.ok).toBe(false);
+      if (!decision.ok) {
+        expect(decision.reason).toBe('conflicting-quorum');
+      }
+    }
+  });
+
+  test('a larger bucket does not win when a conflicting bucket also reaches Q', () => {
+    const decision = decideLoadQuorum(
+      [
+        { peerId: 'p1', hash: HASH_A },
+        { peerId: 'p2', hash: HASH_A },
+        { peerId: 'p3', hash: HASH_A },
+        { peerId: 'p4', hash: HASH_B },
+        { peerId: 'p5', hash: HASH_B },
+      ],
+      2,
+    );
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) {
+      expect(decision.reason).toBe('conflicting-quorum');
     }
   });
 
@@ -316,20 +348,12 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
   });
 });
 
-describe('effectiveK / effectiveQ', () => {
+describe('effectiveK', () => {
   test('effectiveK clamps to known-peer count', () => {
     expect(effectiveK(3, 5)).toBe(3);
     expect(effectiveK(3, 2)).toBe(2);
     expect(effectiveK(3, 0)).toBe(0);
     expect(effectiveK(0, 5)).toBe(0);
-  });
-
-  test('effectiveQ preserves an explicit trust floor instead of scarcity-clamping', () => {
-    expect(effectiveQ(2, 3)).toBe(2);
-    expect(effectiveQ(5, 3)).toBe(5); // Q > K remains unreachable
-    expect(effectiveQ(0, 3)).toBe(1); // Q < 1 -> 1
-    expect(effectiveQ(-1, 3)).toBe(1);
-    expect(effectiveQ(2, 0)).toBe(2); // no peers cannot lower explicit Q
   });
 
   // A fractional `configuredK`
@@ -358,36 +382,6 @@ describe('effectiveK / effectiveQ', () => {
       expect(effectiveK(3, 5)).toBe(3);
       expect(effectiveK(1, 5)).toBe(1);
       expect(effectiveK(7, 10)).toBe(7);
-    });
-  });
-
-  // `effectiveQ(NaN, 3)`
-  // previously returned `NaN` because all comparisons against NaN are
-  // false (so `configuredQ < 1` and `configuredQ > k` both fell through
-  // to `return configuredQ`). `decideLoadQuorum` then evaluated
-  // `bestPeers.length < NaN` as false and quorum passed with a single
-  // responding peer. The defensive guard collapses NaN/Infinity to
-  // `defaultQuorumQ(k)`.
-  describe('effectiveQ defensive guards', () => {
-    test('NaN configuredQ collapses to defaultQuorumQ(k) (was: returned NaN, gate silently passed)', () => {
-      expect(effectiveQ(NaN, 3)).toBe(defaultQuorumQ(3)); // 2
-      expect(effectiveQ(NaN, 5)).toBe(defaultQuorumQ(5)); // 3
-      expect(effectiveQ(NaN, 1)).toBe(defaultQuorumQ(1)); // 1
-    });
-
-    test('Infinity configuredQ collapses to defaultQuorumQ(k)', () => {
-      expect(effectiveQ(Infinity, 3)).toBe(defaultQuorumQ(3));
-      expect(effectiveQ(-Infinity, 5)).toBe(defaultQuorumQ(5));
-    });
-
-    test('fractional Q is floored', () => {
-      expect(effectiveQ(2.5, 3)).toBe(2);
-      expect(effectiveQ(1.9, 3)).toBe(1);
-    });
-
-    test('integer Q still flows through unchanged', () => {
-      expect(effectiveQ(2, 3)).toBe(2);
-      expect(effectiveQ(3, 3)).toBe(3);
     });
   });
 });
@@ -439,6 +433,28 @@ describe('validateLoadQuorumConfig startup input validation', () => {
         loadQuorumK: NaN,
       }),
     ).toThrow(/loadQuorumAllowSinglePeer must be a boolean/);
+  });
+
+  test('rejects loadQuorumQ greater than loadQuorumK', () => {
+    expect(() =>
+      validateLoadQuorumConfig({ loadQuorumK: 3, loadQuorumQ: 4 }),
+    ).toThrow(/loadQuorumQ \(4\) must not exceed loadQuorumK \(3\)/);
+  });
+
+  test('rejects loadQuorumQ greater than the default K', () => {
+    expect(() => validateLoadQuorumConfig({ loadQuorumQ: 4 })).toThrow(
+      /must not exceed loadQuorumK \(3\)/,
+    );
+  });
+
+  test('ignores dormant Q > K when quorum is disabled', () => {
+    expect(() =>
+      validateLoadQuorumConfig({
+        loadQuorumEnabled: false,
+        loadQuorumK: 1,
+        loadQuorumQ: 4,
+      }),
+    ).not.toThrow();
   });
 
   test.each([NaN, Infinity, 0, -1, 1.5])(
@@ -1006,7 +1022,7 @@ describe('founding-case removal (#186)', () => {
     // Simulate "fresh open with peers available": local hashes empty
     // (irrelevant to these pure helpers), known peers = 3, configured K = 3.
     const k = effectiveK(3, 3);
-    const q = effectiveQ(defaultQuorumQ(3), k);
+    const q = defaultQuorumQ(k);
     expect(k).toBe(3);
     expect(q).toBe(2); // strict majority; founders no longer get a free pass
   });

@@ -2058,6 +2058,50 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       expect(result.narrowedPeers).toEqual(['peer-a', 'peer-b']);
     });
 
+    test('one signer voting for two different hashes fails the round', async () => {
+      const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
+      const err = await runLoadQuorum({
+        protocol: 'security-advertise-v1',
+        peers,
+        peerIdOf,
+        probeFn: async (peer) => ({
+          hash: peer === 'peer-b' ? HASH_Y : HASH_X,
+          signerAuthority: peer === 'peer-c' ? 'writer-c' : 'writer-a',
+        }),
+        documentPath: '/equivocation',
+        config: { enabled: true, k: 3, q: 2 },
+      }).catch((error: unknown) => error);
+
+      expect(err).toBeInstanceOf(LoadQuorumFailedError);
+      expect((err as LoadQuorumFailedError).reason).toBe(
+        'equivocating-authority',
+      );
+    });
+
+    test('K-of-Q probe failures log the error name and message', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await runLoadQuorum({
+          protocol: 'tip-advertise-v1',
+          peers: ['p1', 'p2', 'p3'],
+          peerIdOf,
+          probeFn: async (peer) => {
+            if (peer === 'p1') throw new TypeError('bad frame');
+            return HASH_X;
+          },
+          documentPath: '/probe-error',
+          config: { enabled: true, k: 3, q: 2 },
+        });
+        expect(
+          warn.mock.calls.some(([message]) =>
+            String(message).includes('Cause: TypeError: bad frame'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     test('legacy bare-hash probes retain PeerId-based tally semantics', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b'];
       const result = await runLoadQuorum({

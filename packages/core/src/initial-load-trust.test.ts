@@ -1,7 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import {
   captureInitialLoadSignerAuthorities,
-  MAX_INITIAL_LOAD_SIGNER_AUTHORITIES,
+  MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
 } from './initial-load-trust.js';
 
 describe('captureInitialLoadSignerAuthorities', () => {
@@ -141,15 +141,29 @@ describe('captureInitialLoadSignerAuthorities', () => {
     ).rejects.toThrow(/well-formed|exceeds/);
   });
 
-  test('rejects an over-limit trust set before serializing it', async () => {
+  test('captures more existing writers than the bootstrap cap', async () => {
+    const authorities = await captureInitialLoadSignerAuthorities({
+      documentPath: '/doc',
+      existingWriterKeys: Array.from(
+        { length: MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS + 1 },
+        (_, index) => index,
+      ),
+      serializePublicKey: async (key: number) => String(key),
+    });
+    expect(authorities).toHaveLength(MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS + 1);
+  });
+
+  test('rejects an over-limit bootstrap trust set before serializing it', async () => {
     const serializePublicKey = jest.fn(async (key: number) => String(key));
     await expect(
       captureInitialLoadSignerAuthorities({
         documentPath: '/doc',
-        existingWriterKeys: Array.from(
-          { length: MAX_INITIAL_LOAD_SIGNER_AUTHORITIES + 1 },
-          (_, index) => index,
-        ),
+        existingWriterKeys: [],
+        resolveTrustedDocumentWriters: () =>
+          Array.from(
+            { length: MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS + 1 },
+            (_, index) => index,
+          ),
         serializePublicKey,
       }),
     ).rejects.toThrow(/exceeds 256 entries/);

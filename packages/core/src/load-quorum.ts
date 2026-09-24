@@ -107,6 +107,7 @@ export type LoadQuorumDecision =
       reason:
         | 'insufficient-responses'
         | 'no-majority'
+        | 'conflicting-quorum'
         | 'no-peers-queried';
       respondingCount: number;
       effectiveQ: number;
@@ -133,17 +134,14 @@ export function decideLoadQuorum(
   // could otherwise pass `q <= 0` / `NaN` / non-integer and silently
   // disable the quorum gate -- the largest-bucket size would always be
   // `>= 0 >= q` and a single peer's vote would pass. The orchestrator
-  // already normalizes via `effectiveQ`, but this guard is the load-bearing
+  // validates Q before calling here, but this guard is the load-bearing
   // backstop for any other code path that builds the advertisements list
   // by hand. Coding-guideline rule applies here: throw on programming
   // mistakes (vs. logging warnings for runtime issues) so the failure is
   // loud at the first call site.
   if (!Number.isInteger(q) || q < 1) {
     throw new Error(
-      `decideLoadQuorum: q must be a positive integer; got ${String(q)}. ` +
-        `Pass the value through effectiveQ() / runLoadQuorum() so the ` +
-        `positive-integer normalization fires before reaching this ` +
-        `function.`,
+      `decideLoadQuorum: q must be a positive integer; got ${String(q)}.`,
     );
   }
   if (advertisements.length === 0) {
@@ -237,22 +235,24 @@ export function decideLoadQuorum(
       )
     : [...agreement.entries()];
 
-  // Find the largest bucket among ELIGIBLE buckets. Ties are broken
-  // arbitrarily by Map iteration order (insertion order); ties never
-  // affect ok/!ok because both buckets would have the same size and we
-  // only accept if size >= q.
+  // Find the largest bucket among ELIGIBLE buckets. An explicit
+  // non-majority Q lets two conflicting buckets both reach Q; that is a
+  // conflict, not an outcome, so the decision fails instead of letting
+  // probe order pick a winner.
   let bestKey: string | null = null;
   let bestPeers: string[] = [];
+  let bucketsMeetingQ = 0;
   for (const [key, peers] of eligibleBuckets) {
+    if (peers.length >= q) bucketsMeetingQ++;
     if (peers.length > bestPeers.length) {
       bestKey = key;
       bestPeers = peers;
     }
   }
 
-  if (bestKey === null || bestPeers.length < q) {
-    // Either no responses (handled above) or the largest agreeing cohort
-    // is too small. Build a compact `hash -> count` snapshot for diagnostics.
+  if (bestKey === null || bestPeers.length < q || bucketsMeetingQ > 1) {
+    // No bucket reached Q, or more than one did. Build a compact
+    // `hash -> count` snapshot for diagnostics.
     const summary = new Map<string, number>();
     for (const [key, peers] of agreement.entries()) {
       summary.set(key, peers.length);
@@ -260,7 +260,11 @@ export function decideLoadQuorum(
     // Distinguish "we got responses but none agreed enough" from the
     // earlier "no one responded" branch.
     const reason =
-      respondingCount < q ? 'insufficient-responses' : 'no-majority';
+      bucketsMeetingQ > 1
+        ? 'conflicting-quorum'
+        : respondingCount < q
+          ? 'insufficient-responses'
+          : 'no-majority';
     return {
       ok: false,
       reason,
@@ -388,30 +392,6 @@ export function effectiveK(
 }
 
 /**
- * Normalize a configured `Q` (quorum threshold). Explicit positive values
- * are never reduced to the effective K: Q is a trust floor, and peer
- * scarcity must make the load fail closed rather than lower that floor.
- * `Q <= 0` is normalized to 1 as a defensive backstop; public entry points
- * reject it during configuration validation.
- *
- * Defensive against non-finite inputs as a second line of defence behind
- * {@link validateLoadQuorumConfig}. Without the `Number.isFinite` guard,
- * `effectiveQ(NaN, 3)` returned `NaN` (all comparisons against `NaN` are
- * false), and `decideLoadQuorum` then evaluated `bestPeers.length < NaN`
- * as false — so the gate passed with a single responding peer. We
- * collapse NaN/Infinity to {@link defaultQuorumQ}(k) here as a fallback
- * that mirrors the orchestrator's `?? defaultQuorumQ(k)` default.
- */
-export function effectiveQ(configuredQ: number, k: number): number {
-  if (!Number.isFinite(configuredQ)) return defaultQuorumQ(k);
-  if (configuredQ < 1) return 1;
-  // Floor for the same reason as `effectiveK`: a fractional Q would
-  // otherwise produce a non-integer threshold that compares strangely
-  // against integer vote counts.
-  return Math.floor(configuredQ);
-}
-
-/**
  * Upper bound (milliseconds) for {@link validateLoadQuorumConfig}'s
  * `loadQuorumTimeoutMs` check. Five minutes is comfortably larger than any
  * realistic per-probe budget on a wide-area mesh (the default is 5 s) but
@@ -420,6 +400,9 @@ export function effectiveQ(configuredQ: number, k: number): number {
  * absurd duration.
  */
 export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
+
+/** Default `loadQuorumK` when the operator does not configure one. */
+export const DEFAULT_LOAD_QUORUM_K = 3;
 
 /**
  * Validate the load-quorum tuning knobs from {@link PeerborneConfig}.
@@ -430,7 +413,7 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  * slipped through `Math.min(configuredK, peersLen)` to produce
  * `peers.slice(0, 1.5)`
  * which probes only 1 peer (silent single-peer load); `loadQuorumQ: NaN`
- * propagated through `effectiveQ` to make `bestPeers.length < NaN`
+ * made `bestPeers.length < NaN`
  * evaluate as false (silent single-peer quorum pass). Both classes of
  * misconfig are now rejected here with a clear operator-visible error.
  *
@@ -454,6 +437,8 @@ export const LOAD_QUORUM_TIMEOUT_MS_MAX = 5 * 60 * 1000;
  *   - non-integers (e.g. 1.5, 2.7) (all knobs)
  *   - zero and negative values (0, -1) (all knobs)
  *   - `loadQuorumTimeoutMs > LOAD_QUORUM_TIMEOUT_MS_MAX`
+ *   - `loadQuorumQ` greater than `loadQuorumK` (or
+ *     {@link DEFAULT_LOAD_QUORUM_K} when K is not configured)
  * Accepts:
  *   - `undefined` (operator did not override; the orchestrator's defaults apply)
  *   - any positive integer (1, 2, 3, ...) for K/Q
@@ -552,6 +537,17 @@ export function validateLoadQuorumConfig(config: {
   if (config.loadQuorumEnabled === false) return;
   checkPositiveInt('loadQuorumK', config.loadQuorumK);
   checkPositiveInt('loadQuorumQ', config.loadQuorumQ);
+  const k = config.loadQuorumK ?? DEFAULT_LOAD_QUORUM_K;
+  if (config.loadQuorumQ !== undefined && config.loadQuorumQ > k) {
+    throw new LoadQuorumFailedError({
+      documentPath: '<config>',
+      reason: 'invalid-config',
+      respondingCount: 0,
+      requiredQ: 0,
+      agreement: new Map(),
+      detail: `loadQuorumQ (${config.loadQuorumQ}) must not exceed loadQuorumK (${k})`,
+    });
+  }
 }
 
 /**
@@ -599,6 +595,12 @@ export function formatConfigValue(value: unknown): string {
  *   - `'no-majority'` — historical identifier retained for compatibility:
  *     peers responded but no single tip-set hash reached Q. Q may be an
  *     explicitly configured non-majority threshold.
+ *   - `'conflicting-quorum'` — more than one distinct tip-set hash reached
+ *     Q. Only possible with an explicit non-majority Q; the loader refuses
+ *     to let probe order choose between conflicting states.
+ *   - `'equivocating-authority'` — one V4 signing authority voted for two
+ *     different tip-set hashes in the same round (key compromise or a
+ *     fork), so the round fails rather than counting either vote.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
  *   - `'invalid-config'` — the operator misconfigured the gate (e.g.
@@ -620,6 +622,8 @@ export function formatConfigValue(value: unknown): string {
 export type LoadQuorumFailedReason =
   | 'insufficient-responses'
   | 'no-majority'
+  | 'conflicting-quorum'
+  | 'equivocating-authority'
   | 'no-peers-queried'
   | 'invalid-config'
   | 'bind-check-failed-all-agreeing-peers'
@@ -702,6 +706,10 @@ export class LoadQuorumFailedError extends Error {
           ? `only ${opts.respondingCount} of the required ${opts.requiredQ} peers responded`
           : opts.reason === 'invalid-config'
             ? (opts.detail ?? 'invalid load-quorum configuration')
+            : opts.reason === 'conflicting-quorum'
+              ? `more than one tip-set hash reached the required ${opts.requiredQ} votes`
+            : opts.reason === 'equivocating-authority'
+              ? 'a signing authority voted for conflicting tip-set hashes'
             : opts.reason === 'bind-check-failed-all-agreeing-peers'
               ? `quorum agreed on a tip-set hash but every peer in the agreeing cohort ` +
                 `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +

@@ -678,18 +678,14 @@ export class Peerborne<
     // invalid-config)` rather than silently degrading every subsequent
     // `load()` to a single-peer probe. Fractional K let
     // `peers.slice(0, 1.5)` slip through to a 1-peer probe, and
-    // NaN Q propagated through `effectiveQ` so `bestPeers.length < NaN`
-    // evaluated as false and the gate passed with a single responder.
+    // NaN Q made `bestPeers.length < NaN` evaluate as false and the gate
+    // passed with a single responder.
     //
-    // Skip validation when the feature is explicitly disabled -- a
-    // shared config object that carries leftover quorum knobs alongside
-    // `loadQuorumEnabled: false` should still initialize cleanly via
-    // the legacy load path. `runLoadQuorum` mirrors this early-exit
-    // ordering: `enabled === false` is checked before validation, so
-    // the two boundaries stay consistent.
-    if (config.loadQuorumEnabled !== false) {
-      validateLoadQuorumConfig(config);
-    }
+    // Validate even when the feature is disabled: the validator ignores
+    // dormant K/Q in that case but still checks the booleans and timeout,
+    // exactly as `runLoadQuorum` does on every load, so a config accepted
+    // here cannot fail later at load time.
+    validateLoadQuorumConfig(config);
 
     this._config = config;
 
