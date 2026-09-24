@@ -3712,7 +3712,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/websockets@npm:^10.1.14, @libp2p/websockets@npm:^10.1.19":
+"@libp2p/websockets@npm:^10.1.14":
   version: 10.1.19
   resolution: "@libp2p/websockets@npm:10.1.19"
   dependencies:
@@ -3728,6 +3728,25 @@ __metadata:
     uint8arrays: "npm:^6.1.1"
     ws: "npm:^8.18.3"
   checksum: 10/29e826801dccc620c82b87bf88c4ebab4221fa7788a3a0e98fd15fa4e2fdfe00b85f142935d48ee4cdea92dee3ad9b1178f6695376986e4d126c489592b830d9
+  languageName: node
+  linkType: hard
+
+"@libp2p/websockets@npm:^10.1.21":
+  version: 10.1.21
+  resolution: "@libp2p/websockets@npm:10.1.21"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/utils": "npm:^7.4.1"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@multiformats/multiaddr-matcher": "npm:^3.0.2"
+    "@multiformats/multiaddr-to-uri": "npm:^12.0.0"
+    main-event: "npm:^1.0.1"
+    p-event: "npm:^7.0.0"
+    progress-events: "npm:^1.0.1"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+    ws: "npm:^8.18.3"
+  checksum: 10/aab3586a0c3639cd26fa3317c3698820e47238497bc9f0fbd96a63ca50257e12aa3dcc8542c9b7be1faf5e4c22d1e8408a4ad19057b924652984db5ec0d16c91
   languageName: node
   linkType: hard
 
@@ -4400,7 +4419,7 @@ __metadata:
     "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/tcp": "npm:^11.0.27"
-    "@libp2p/websockets": "npm:^10.1.19"
+    "@libp2p/websockets": "npm:^10.1.21"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
     "@peerborne/redux": "workspace:packages/redux"
@@ -4456,7 +4475,7 @@ __metadata:
     "@libp2p/ping": "npm:^3.1.13"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
     "@libp2p/webrtc": "npm:^6.0.29"
-    "@libp2p/websockets": "npm:^10.1.19"
+    "@libp2p/websockets": "npm:^10.1.21"
     "@libp2p/webtransport": "npm:^6.0.37"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@peculiar/webcrypto": "npm:^1.7.1"
