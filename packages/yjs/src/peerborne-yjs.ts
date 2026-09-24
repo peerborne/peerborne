@@ -596,9 +596,9 @@ const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
 // without applying the projection's unrelated CRDT root operations.
 let projectionTextEncoder: TextEncoder | undefined;
 
-async function currentKeyProjection(
+async function currentKeyProjectionClientID(
   entry: CanonicalKeychainEntry,
-): Promise<Uint8Array> {
+): Promise<number> {
   const identity = (projectionTextEncoder ??= new TextEncoder()).encode(
     `${KEYCHAIN_PROJECTION_CLIENT_DOMAIN}${JSON.stringify(entry)}`,
   );
@@ -610,6 +610,13 @@ async function currentKeyProjection(
   for (let index = 1; index < 7; index++) {
     clientID = clientID * 256 + digest[index];
   }
+  return clientID;
+}
+
+function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+  clientID: number,
+): Uint8Array {
   const projection = new Doc();
   projection.clientID = clientID;
   projection
@@ -832,6 +839,8 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAesGcmDocumentKey(key);
     const serialized = await serializeKey(key);
     assertSerializedDocumentKey(serialized);
+    const entry: CanonicalKeychainEntry = [epochIdHex, serialized];
+    const projectionClientID = await currentKeyProjectionClientID(entry);
     const baseEntries = validateYjsKeychain(this._keychain);
     if (baseEntries.length === MAX_KEYCHAIN_EPOCHS) {
       throw new Error('Keychain exceeds the supported epoch limit');
@@ -841,6 +850,9 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     }
     const baseRevision = this._revision;
     const staged = new Doc();
+    // A first key is authored under its projection identity so the live
+    // one-key history and every current-only export of it share one lineage.
+    if (baseEntries.length === 0) staged.clientID = projectionClientID;
     applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
     const beforeSV = encodeStateVector(staged);
     staged.getArray<[string, string]>('keys').push([[epochIdHex, serialized]]);
@@ -848,10 +860,10 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const commitChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const history = encodeStateAsUpdateV2(staged);
-    const currentKeyChange = await currentKeyProjection([
-      epochIdHex,
-      serialized,
-    ]);
+    const currentKeyChange =
+      stagedEntries.length === 1
+        ? new Uint8Array(history)
+        : currentKeyProjection(entry, projectionClientID);
     let committed = false;
     return {
       changes: new Uint8Array(commitChanges),
@@ -1114,7 +1126,14 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    return currentKeyProjection(entries[entries.length - 1]);
+    if (entries.length === 1) {
+      return encodeStateAsUpdateV2(this._keychain);
+    }
+    const current = entries[entries.length - 1];
+    return currentKeyProjection(
+      current,
+      await currentKeyProjectionClientID(current),
+    );
   }
 
   /**

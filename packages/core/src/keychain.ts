@@ -172,6 +172,10 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * tuple across repeated calls, restored instances, and equivalent replicas.
    * Implementations may synthesize a standalone projection only with stable,
    * content-derived CRDT operation identity; otherwise they MUST reject.
+   * A one-key keychain MUST export its live history so receivers share the
+   * author's lineage and can merge the author's next `add()` delta. Receivers
+   * of a projected later key hold an independent lineage and cannot merge
+   * rotation deltas authored on the full history.
    *
    * @return A replay-safe block of change(s) containing only the current key.
    */

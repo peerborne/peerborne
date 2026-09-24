@@ -611,6 +611,50 @@ describe('AutomergeKeychain', () => {
     expect(source.history().map((entry) => Array.from(entry))).toEqual(before);
   });
 
+  test('a receiver seeded from a one-key export merges the next rotation delta', async () => {
+    const source = new AutomergeKeychain();
+    const [firstID] = await source.add();
+    const receiver = new AutomergeKeychain();
+    receiver.merge(await source.currentKeyChange());
+    expect(receiver.history()).toEqual(source.history());
+
+    const [nextID, , delta] = await source.add();
+    receiver.merge(delta);
+
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([
+      firstID,
+      nextID,
+    ]);
+    expect(receiver.history()).toEqual(source.history());
+  });
+
+  test('a first key is authored under its projection identity', async () => {
+    const source = new AutomergeKeychain();
+    const prepared = await source.prepareKey();
+    expect(prepared.currentKeyChange).toEqual(prepared.history);
+    prepared.commit();
+
+    const equivalent = new AutomergeKeychain();
+    await equivalent.addEpochKey(prepared.keyId, prepared.key);
+    expect(equivalent.history()).toEqual(source.history());
+    expect(await equivalent.currentKeyChange()).toEqual(prepared.history);
+  });
+
+  test('a full-history peer keeps the author lineage when a one-key export arrives', async () => {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const source = new AutomergeKeychain();
+      await source.add();
+      const peer = new AutomergeKeychain();
+      peer.merge(source.history());
+      peer.merge(await source.currentKeyChange());
+      expect(peer.history()).toEqual(source.history());
+
+      const [, , delta] = await source.add();
+      peer.merge(delta);
+      expect(peer.history()).toEqual(source.history());
+    }
+  });
+
   test('projection actor identity binds the complete key tuple', async () => {
     const id = new Uint8Array(32).fill(0x4a);
     const firstKey = await crypto.subtle.generateKey(
@@ -1247,7 +1291,7 @@ describe('AutomergeKeychain', () => {
     await right.addEpochKey(epochId, epochKey);
     const originalLeftHistory = left.history();
     const originalRightHistory = right.history();
-    expect(originalLeftHistory).not.toEqual(originalRightHistory);
+    expect(originalLeftHistory).toEqual(originalRightHistory);
     expect(await left.stateCommitment()).toEqual(
       await right.stateCommitment(),
     );
