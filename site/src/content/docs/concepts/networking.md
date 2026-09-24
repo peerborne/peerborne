@@ -40,9 +40,22 @@ In practice, browser peers typically use WebSocket to reach a relay, and may upg
 Document updates are announced and delivered via **GossipSub** — a pubsub protocol built on libp2p. Each document has a corresponding pubsub topic derived from its document ID:
 
 ```ts
-// Document /todo-list → topic: /document/todo-list
+// Document /todo-list → topic: /peerborne/document/v3/todo-list
 // Changes published to this topic reach all subscribed peers.
 ```
+
+Relays admit the current document namespace and the exact
+`/peerborne/documents/v3` notification topic by default. Earlier default topics
+are rejected. A custom `pubsubDocumentPrefix` requires a matching
+slash-terminated namespace in every relay's `TOPIC_ALLOWLIST`. With an empty
+prefix, allow each concrete document topic or explicitly select unrestricted
+`*` mode. A custom `pubsubDocumentPublishPath` must match the relay's
+`DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or an exact allowlist entry. All peers
+must use the same current runtime; custom topics do not select an older format.
+
+Topic names are public routing labels, not authenticated version negotiation,
+authorization, or wire validation. Application URLs such as `/document/:id`
+are unrelated and do not change.
 
 GossipSub is **best-effort**:
 
