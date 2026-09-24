@@ -4419,8 +4419,17 @@ export class PeerborneDocument<
   public async sync(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
   ): Promise<boolean> {
+    let detached: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      detached = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        message,
+        'ordinary-sync-v1',
+      );
+    } catch {
+      return false;
+    }
     return this._mutationQueue.run(() =>
-      this._syncUnlocked(message, true, 'ordinary-sync-v1'),
+      this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
     );
   }
 
@@ -4457,8 +4466,8 @@ export class PeerborneDocument<
     >,
   ): Promise<boolean> {
     let sourceSnapshot: object | undefined;
-    try {
-      if (context !== 'ordinary-sync-v1') {
+    if (context !== 'ordinary-sync-v1') {
+      try {
         const descriptor = Object.getOwnPropertyDescriptor(message, 'snapshot');
         if (
           descriptor !== undefined &&
@@ -4468,13 +4477,13 @@ export class PeerborneDocument<
         ) {
           sourceSnapshot = descriptor.value as object;
         }
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          message,
+          context,
+        );
+      } catch {
+        return false;
       }
-      message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
-        message,
-        context,
-      );
-    } catch {
-      return false;
     }
     if (message.documentId !== this.documentPath) {
       return false;

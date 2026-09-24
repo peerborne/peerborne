@@ -176,6 +176,56 @@ describe('ordinary sync-message context confinement', () => {
     expect(collectACL.mock.calls[0][0]).not.toBe(changes);
   });
 
+  test('detaches the message before waiting for the mutation queue', async () => {
+    const collectACL = jest.fn(() => undefined);
+    let releaseQueue!: () => void;
+    const queued = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const document = fakeDocument({
+      _mutationQueue: {
+        run: async (operation: () => Promise<unknown>) => {
+          await queued;
+          return operation();
+        },
+      },
+      _syncMessageSerializer: new JSONSerializer<any>(),
+      _isSigningEnabled: () => true,
+      _verifyWriterSignature: async () => true,
+      _collectACLFromTree: collectACL,
+    });
+    const message: any = {
+      documentId: documentPath,
+      changeId: 'root',
+      changes: { kind: 'document', change: { value: 1 } },
+      signature: 'AQ==',
+    };
+
+    const result = document.sync(message);
+    message.changes.change.value = 9;
+    message.keychainChanges = { delta: 1 };
+    releaseQueue();
+
+    await expect(result).resolves.toBe(true);
+    expect(collectACL).toHaveBeenCalledWith(
+      { kind: 'document', change: { value: 1 } },
+      'root',
+    );
+  });
+
+  test('rejects a specialized field before waiting for the mutation queue', async () => {
+    const run = jest.fn();
+    const document = fakeDocument({ _mutationQueue: { run } });
+
+    await expect(
+      document.sync({
+        documentId: documentPath,
+        welcomeEpochId: new Uint8Array(32),
+      }),
+    ).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test('rejects a serializer alias changed during verification', async () => {
     const json = new JSONSerializer<any>();
     let captured:
