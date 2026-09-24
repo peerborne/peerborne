@@ -182,3 +182,49 @@ describe('PeerborneDocument reader listing', () => {
     await expect(document.getReaders()).resolves.toEqual([reader, writer]);
   });
 });
+
+describe('PeerborneDocument writer removal', () => {
+  test('re-removes a writer that a remote change re-added after a local revocation', async () => {
+    const members = new Set(['writer']);
+    const backing = {
+      add: async (key: string) => {
+        members.add(key);
+        return new Uint8Array([1]);
+      },
+      remove: jest.fn(async (key: string) => {
+        members.delete(key);
+        return new Uint8Array([2]);
+      }),
+      current: () => new Uint8Array(),
+      merge: () => {
+        members.add('writer');
+      },
+      check: async (key: string) => members.has(key),
+      users: async () => [...members],
+    };
+    const writersACL = new UCANACL(backing, async (key: string) => key);
+    const makeChange = jest.fn(async () => undefined);
+    const distributeKeyUpdate = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      _writers: writersACL,
+      _writerMutationsInFlight: 0,
+      _invalidateWriterKeyCache: () => undefined,
+      _ensureCurrentUserCanWrite: async () => undefined,
+      _makeChange: makeChange,
+      _keychain: {
+        current: async () => 'previous-key',
+        add: async () => ['key-id', 'next-key', 'keychain-changes'],
+      },
+      _distributeKeyUpdate: distributeKeyUpdate,
+    });
+
+    await document._removeWriterUnlocked('writer');
+    writersACL.merge(new Uint8Array([3]));
+    await document._removeWriterUnlocked('writer');
+
+    expect(backing.remove).toHaveBeenCalledTimes(2);
+    expect(makeChange).toHaveBeenCalledTimes(2);
+    expect(distributeKeyUpdate).toHaveBeenCalledTimes(2);
+    expect(members.has('writer')).toBe(false);
+  });
+});

@@ -89,10 +89,13 @@ interface CachedListingIdentity<PublicKey> {
  * require current backing membership first, so a remote removal takes effect
  * locally even while a stale metadata entry remains cached. Because generic
  * backing changes do not identify affected users, a remote merge never clears
- * a local tombstone: a remotely re-added identity stays denied until an
- * explicit local `add` or `grant`. A removal observed only through a remote
- * merge cannot create such a tombstone, so this wrapper does not provide
- * distributed strong-removal semantics by itself.
+ * a local tombstone: a remotely re-added identity is denied every capability
+ * until an explicit local `add` or `grant`. Membership queries without a
+ * capability report the replicated backing membership instead, so the
+ * re-added identity is visible there and callers can remove it again. A
+ * removal observed only through a remote merge cannot create such a
+ * tombstone, so this wrapper does not provide distributed strong-removal
+ * semantics by itself.
  *
  * The generic ACL contract exposes one opaque mutable state and does not
  * promise key-isolated commits, so overlapping calls could derive changes
@@ -639,11 +642,16 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): boolean {
     if (
       this._pendingRemovals.has(keyBase64) ||
-      this._revokedKeys.has(keyBase64)
+      this._failedAdditions.has(keyBase64)
     ) {
       return false;
     }
-    if (this._failedAdditions.has(keyBase64)) {
+    // Membership queries report the replicated backing ACL so callers can
+    // detect and re-remove an identity that a remote change re-added.
+    if (capability === undefined) {
+      return true;
+    }
+    if (this._revokedKeys.has(keyBase64)) {
       return false;
     }
     const entry = this._entries.get(keyBase64);
