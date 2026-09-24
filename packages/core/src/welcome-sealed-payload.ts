@@ -54,7 +54,11 @@ export interface WelcomeSealedPayload {
   beekemWelcome: BeeKEMWelcome | null;
 }
 
-export interface WelcomeSealedPayloadV2 extends WelcomeSealedPayload {
+/** Parsed shape of the v2 sealed-payload envelope. */
+export interface WelcomeSealedPayloadV2 {
+  /** Provider-specific serialized keychain delta (raw bytes). */
+  keychainChanges: Uint8Array;
+  /** Required generation-bearing BeeKEM Welcome. */
   beekemWelcome: BeeKEMWelcomeV2;
 }
 

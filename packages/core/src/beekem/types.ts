@@ -107,10 +107,8 @@ export interface WelcomeNodePublicKey {
   publicKey: Uint8Array | null;
 }
 
-/**
- * Welcome message for a new member joining the group.
- */
-export interface BeeKEMWelcome {
+/** Fields shared by every BeeKEM Welcome protocol version. */
+export interface BeeKEMWelcomeFields {
   /** The new member's leaf index. */
   leafIndex: number;
   /** Path keys from the new leaf to root, encrypted to the new member. */
@@ -123,18 +121,26 @@ export interface BeeKEMWelcome {
   treeNodePublicKeys: WelcomeNodePublicKey[];
   /** Serialized tree state hash for verification. */
   treeHash: Uint8Array;
-  /** Sender generation. Omitted on the legacy v1 Welcome shape. */
-  generation?: number;
-  /** Exact leaf count. Omitted on the legacy v1 Welcome shape. */
-  numLeaves?: number;
-  /** Explicit protocol version. Omitted on the legacy v1 Welcome shape. */
-  version?: 2;
+}
+
+/**
+ * Legacy v1 Welcome message for a new member joining the group. The v2-only
+ * fields are typed `never` so a v2 Welcome cannot be passed where v1 is
+ * expected.
+ */
+export interface BeeKEMWelcome extends BeeKEMWelcomeFields {
+  version?: never;
+  generation?: never;
+  numLeaves?: never;
 }
 
 /** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
-export interface BeeKEMWelcomeV2 extends BeeKEMWelcome {
+export interface BeeKEMWelcomeV2 extends BeeKEMWelcomeFields {
+  /** Explicit protocol version. */
   version: 2;
+  /** Sender generation. */
   generation: number;
+  /** Exact leaf count. */
   numLeaves: number;
 }
 

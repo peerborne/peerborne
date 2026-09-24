@@ -31,6 +31,7 @@ describe('BeeKEM wire-version separation', () => {
       generation: 1,
       numLeaves: 2,
     };
+    // @ts-expect-error a v2 Welcome is not a v1 Welcome
     expect(() => serializeBeeKEMWelcomeForWire(v2)).toThrow(/v2-only.*v1/);
 
     for (const marker of [
@@ -42,10 +43,21 @@ describe('BeeKEM wire-version separation', () => {
         serializeBeeKEMWelcomeForWire({
           ...welcomeV1(),
           ...marker,
-        } as BeeKEMWelcome),
+        } as unknown as BeeKEMWelcome),
       ).toThrow(/v2-only.*v1/);
     }
     expect(() => serializeBeeKEMWelcomeForWire(welcomeV1())).not.toThrow();
+  });
+
+  test('v1 Welcome serializer accepts v2 field names that are present but undefined', () => {
+    expect(() =>
+      serializeBeeKEMWelcomeForWire({
+        ...welcomeV1(),
+        version: undefined,
+        generation: undefined,
+        numLeaves: undefined,
+      }),
+    ).not.toThrow();
   });
 
   test('v1 PathUpdate serializer rejects complete and nested-only v2 shapes', () => {
@@ -71,7 +83,7 @@ describe('BeeKEM wire-version separation', () => {
           encryptedPathKeyBundles: [],
         },
       ],
-    } as PathUpdate;
+    } as unknown as PathUpdate;
     expect(() => serializePathUpdateForWire(nestedMarker)).toThrow(
       /encryptedPathKeyBundles.*v1/,
     );

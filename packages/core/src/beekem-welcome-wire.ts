@@ -79,7 +79,11 @@ export function serializeBeeKEMWelcomeForWire(
   welcome: BeeKEMWelcome,
 ): SerializedBeeKEMWelcome {
   for (const field of ['version', 'generation', 'numLeaves']) {
-    if (Reflect.has(welcome, field)) {
+    const descriptor = Object.getOwnPropertyDescriptor(welcome, field);
+    if (
+      descriptor !== undefined &&
+      !('value' in descriptor && descriptor.value === undefined)
+    ) {
       throw new Error(
         `Cannot serialize BeeKEMWelcome with v2-only field '${field}' as v1`,
       );
