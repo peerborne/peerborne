@@ -5,6 +5,7 @@ import {
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayload,
   decodeWelcomeSealedPayloadV2,
+  MAX_WELCOME_SEALED_PLAINTEXT_BYTES,
 } from './welcome-sealed-payload';
 import {
   deserializeBeeKEMWelcomeV2FromWire,
@@ -283,12 +284,18 @@ describe('welcome-sealed-payload V2 boundary', () => {
     }
   });
 
+  test('the sealed plaintext limit leaves room for base64 and framing', () => {
+    expect(
+      Math.ceil(MAX_WELCOME_SEALED_PLAINTEXT_BYTES / 3) * 4,
+    ).toBeLessThan(MAX_SHARED_PROTOCOL_REQUEST_BYTES);
+  });
+
   test('rejects oversized or shared V2 plaintext before parsing', () => {
     const decodeSpy = jest.spyOn(TextDecoder.prototype, 'decode');
     try {
       expect(() =>
         decodeWelcomeSealedPayloadV2(
-          new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES + 1),
+          new Uint8Array(MAX_WELCOME_SEALED_PLAINTEXT_BYTES + 1),
         ),
       ).toThrow(/plaintext must be an unshared Uint8Array no larger than/);
       expect(decodeSpy).not.toHaveBeenCalled();
@@ -345,7 +352,7 @@ describe('welcome-sealed-payload V2 boundary', () => {
       beekemWelcome,
     });
     const remainingBase64Quartets = Math.floor(
-      (MAX_SHARED_PROTOCOL_REQUEST_BYTES - baseline.byteLength) / 4,
+      (MAX_WELCOME_SEALED_PLAINTEXT_BYTES - baseline.byteLength) / 4,
     );
     const boundaryKeychainLength = 3 * (1 + remainingBase64Quartets);
 
@@ -354,10 +361,10 @@ describe('welcome-sealed-payload V2 boundary', () => {
       beekemWelcome,
     });
     expect(boundary.byteLength).toBeLessThanOrEqual(
-      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      MAX_WELCOME_SEALED_PLAINTEXT_BYTES,
     );
     expect(
-      MAX_SHARED_PROTOCOL_REQUEST_BYTES - boundary.byteLength,
+      MAX_WELCOME_SEALED_PLAINTEXT_BYTES - boundary.byteLength,
     ).toBeLessThan(4);
 
     expect(() =>

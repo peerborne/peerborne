@@ -35,11 +35,37 @@ import {
 } from './beekem-welcome-wire.js';
 import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  assertSharedProtocolRequestSize,
   copyUnsharedUint8Array,
 } from './utils.js';
 
-const MAX_V2_KEYCHAIN_CHANGES_BYTES = 10 * 1024 * 1024;
+/**
+ * Bytes of a shared-protocol Welcome frame reserved for everything except
+ * the base64-encoded `eciesSealed` field: the path header, the other signed
+ * JSON fields, the signature, and the ECIES ephemeral key, salt, nonce and tag.
+ */
+const WELCOME_FRAME_RESERVED_BYTES = 64 * 1024;
+
+/**
+ * Largest sealed plaintext whose Welcome can still fit in one shared-protocol
+ * frame. `eciesSealed` is base64-encoded inside the signed JSON sync message,
+ * so the plaintext budget is three quarters of the unreserved frame.
+ */
+export const MAX_WELCOME_SEALED_PLAINTEXT_BYTES = Math.floor(
+  ((MAX_SHARED_PROTOCOL_REQUEST_BYTES - WELCOME_FRAME_RESERVED_BYTES) * 3) / 4,
+);
+
+/** Throw before sealing when a Welcome plaintext cannot fit in a frame. */
+export function assertWelcomeSealedPlaintextSize(
+  byteLength: number,
+  label: string,
+): void {
+  if (byteLength > MAX_WELCOME_SEALED_PLAINTEXT_BYTES) {
+    throw new RangeError(
+      `${label} exceeds ${MAX_WELCOME_SEALED_PLAINTEXT_BYTES} bytes ` +
+        `(got ${byteLength}); a larger sealed Welcome cannot fit in one frame`,
+    );
+  }
+}
 const V2_ENVELOPE_FIXED_JSON_BYTES = '{"k":"","bk":'.length + '}'.length;
 
 /** Parsed shape of the sealed-payload envelope. */
@@ -88,12 +114,12 @@ export function encodeWelcomeSealedPayloadV2(
     keychainChanges = copyUnsharedUint8Array(
       raw.keychainChanges,
       0,
-      MAX_V2_KEYCHAIN_CHANGES_BYTES,
+      MAX_WELCOME_SEALED_PLAINTEXT_BYTES,
       'welcome-sealed-payload v2 keychainChanges',
     );
   } catch {
     throw new Error(
-      `welcome-sealed-payload v2: 'keychainChanges' must be an unshared Uint8Array no larger than ${MAX_V2_KEYCHAIN_CHANGES_BYTES} bytes`,
+      `welcome-sealed-payload v2: 'keychainChanges' must be an unshared Uint8Array no larger than ${MAX_WELCOME_SEALED_PLAINTEXT_BYTES} bytes`,
     );
   }
   const beekemWelcome = serializeBeeKEMWelcomeV2ForWire(
@@ -106,7 +132,7 @@ export function encodeWelcomeSealedPayloadV2(
     beekemWelcomeJson.length;
   // The v2 shape contains only ASCII JSON. Check the exact final plaintext
   // length before allocating the potentially large keychain Base64 string.
-  assertSharedProtocolRequestSize(
+  assertWelcomeSealedPlaintextSize(
     projectedEnvelopeBytes,
     'BeeKEM Welcome v2 sealed payload',
   );
@@ -115,7 +141,7 @@ export function encodeWelcomeSealedPayloadV2(
     bk: beekemWelcome,
   };
   const encoded = new TextEncoder().encode(JSON.stringify(envelope));
-  assertSharedProtocolRequestSize(
+  assertWelcomeSealedPlaintextSize(
     encoded.byteLength,
     'BeeKEM Welcome v2 sealed payload',
   );
@@ -197,12 +223,12 @@ export function decodeWelcomeSealedPayloadV2(
     plaintext = copyUnsharedUint8Array(
       bytes,
       0,
-      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      MAX_WELCOME_SEALED_PLAINTEXT_BYTES,
       'welcome-sealed-payload v2 plaintext',
     );
   } catch {
     throw new Error(
-      `welcome-sealed-payload v2: plaintext must be an unshared Uint8Array no larger than ${MAX_SHARED_PROTOCOL_REQUEST_BYTES} bytes`,
+      `welcome-sealed-payload v2: plaintext must be an unshared Uint8Array no larger than ${MAX_WELCOME_SEALED_PLAINTEXT_BYTES} bytes`,
     );
   }
   const raw = parseV2Envelope(plaintext);

@@ -74,6 +74,7 @@ import {
   serializePathUpdateForWire,
 } from './path-update-wire.js';
 import {
+  assertWelcomeSealedPlaintextSize,
   decodeWelcomeSealedPayload,
   encodeWelcomeSealedPayload,
 } from './welcome-sealed-payload.js';
@@ -1796,6 +1797,33 @@ export class PeerborneDocument<
   }
 
   private _encoder = new TextEncoder();
+
+  /**
+   * Build a shared-protocol request: 4-byte big-endian path length, UTF-8
+   * document path, then `parts`. Validates the path and the frame size
+   * before allocating the frame.
+   */
+  private _buildPathPrefixedFrame(
+    protocol: string,
+    ...parts: Uint8Array[]
+  ): Uint8Array {
+    const pathBytes = this._encoder.encode(this.documentPath);
+    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
+      throw new Error(
+        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
+          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the ${protocol} protocol`,
+      );
+    }
+    const pathHeader = new Uint8Array(4);
+    new DataView(pathHeader.buffer).setUint32(0, pathBytes.length, false);
+    let frameLength = pathHeader.byteLength + pathBytes.byteLength;
+    for (const part of parts) frameLength += part.byteLength;
+    assertSharedProtocolRequestSize(
+      frameLength,
+      `${protocol} shared protocol request`,
+    );
+    return concatUint8Arrays(pathHeader, pathBytes, ...parts);
+  }
 
   private _deserializeSignature(signature: string): Uint8Array {
     return Base64.toUint8Array(signature);
@@ -5903,7 +5931,7 @@ export class PeerborneDocument<
       keychainChanges: keychainPlaintextBytes,
       beekemWelcome,
     });
-    assertSharedProtocolRequestSize(
+    assertWelcomeSealedPlaintextSize(
       sealedPayloadBytes.byteLength,
       'BeeKEM Welcome sealed payload',
     );
@@ -5934,27 +5962,9 @@ export class PeerborneDocument<
       this._syncMessageSerializer.serializeSyncMessage(welcomeMessage);
 
     // Build the V1 path-prefixed payload that the shared handler routes.
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM Welcome v1 protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    assertSharedProtocolRequestSize(
-      pathHeader.byteLength + pathBytes.byteLength + serialized.byteLength,
-      'BeeKEM Welcome shared protocol request',
-    );
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
-    assertSharedProtocolRequestSize(
-      payload.byteLength,
-      'BeeKEM Welcome shared protocol request',
+    const payload = this._buildPathPrefixedFrame(
+      'BeeKEM Welcome v1',
+      serialized,
     );
 
     // Best-effort fan-out to all connected peers. Each peer will either
@@ -7179,27 +7189,9 @@ export class PeerborneDocument<
 
     const serialized = this._syncMessageSerializer.serializeSyncMessage(message);
 
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM PathUpdate v1 protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    assertSharedProtocolRequestSize(
-      pathHeader.byteLength + pathBytes.byteLength + serialized.byteLength,
-      'BeeKEM PathUpdate shared protocol request',
-    );
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
-    assertSharedProtocolRequestSize(
-      payload.byteLength,
-      'BeeKEM PathUpdate shared protocol request',
+    const payload = this._buildPathPrefixedFrame(
+      'BeeKEM PathUpdate v1',
+      serialized,
     );
 
     const peers =
@@ -7447,37 +7439,11 @@ export class PeerborneDocument<
       .getConnections()
       ?.map((x) => x.remoteAddr);
 
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-        `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the V2 key-update protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    assertSharedProtocolRequestSize(
-      pathHeader.byteLength +
-        pathBytes.byteLength +
-        previousKeyID.byteLength +
-        nonce.byteLength +
-        data.byteLength,
-      'Document key-update shared protocol request',
-    );
-    const v2Payload = concatUint8Arrays(
-      pathHeader,
-      pathBytes,
+    const v2Payload = this._buildPathPrefixedFrame(
+      'Document key-update v2',
       previousKeyID,
       nonce,
       data,
-    );
-    assertSharedProtocolRequestSize(
-      v2Payload.byteLength,
-      'Document key-update shared protocol request',
     );
 
     // WARNING: If some peers fail to receive this update, they will be unable
