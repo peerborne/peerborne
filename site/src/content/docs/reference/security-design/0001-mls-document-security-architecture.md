@@ -6,7 +6,7 @@ description: Proposed architecture and acceptance gates for future MLS-secured P
 - Status: Proposed
 - Date: 2026-08-21
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
-- Follow-up evaluations: ADR 0002 (dependency selection, [PR #457](https://github.com/Peerborne/peerborne/pull/457)) and ADR 0003 (authorization proofs, [PR #456](https://github.com/Peerborne/peerborne/pull/456)); proposed in separate changes.
+- Follow-up evaluations: [ADR 0002](../0002-mls-implementation-dependency/) (dependency selection) and ADR 0003 (authorization proofs, [PR #456](https://github.com/Peerborne/peerborne/pull/456); proposed in a separate change).
 
 ## Context
 
@@ -545,3 +545,4 @@ adversarial tests are all part of the security boundary.
 
 - [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)
 - [RFC 9750: The Messaging Layer Security Architecture](https://www.rfc-editor.org/rfc/rfc9750.html)
+- [ADR 0002: MLS implementation dependency](../0002-mls-implementation-dependency/)
