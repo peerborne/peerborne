@@ -346,20 +346,19 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     });
   });
 
-  test('allows the ACL check to be bypassed when writer-authorized bootstrap is enabled', async () => {
-    let readerCheckCalled = false;
+  test('reports not-in-readers-acl, with a buffered copy, when the writer keys are not known yet', async () => {
     const result = await evaluateBeeKEMWelcome(
       baseAcceptableMessage(),
       makeDeps({
-        allowWriterAuthorizedBootstrap: true,
-        isReader: async () => {
-          readerCheckCalled = true;
-          return false;
-        },
+        isReader: async () => false,
+        verifyWriterSignature: async () => false,
       }),
     );
-    expect(result.kind).toBe('accept');
-    expect(readerCheckCalled).toBe(false);
+    expect(result).toMatchObject({
+      kind: 'drop-unauthorized',
+      reason: 'not-in-readers-acl',
+    });
+    expect(result.kind === 'drop-unauthorized' && result.message).toBeTruthy();
   });
 
   test('drops unsigned Welcomes unconditionally (writer-auth is mandatory)', async () => {
@@ -615,28 +614,19 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     expect(isReaderCalled).toBe(false);
   });
 
-  test('gate ordering: signature verification runs before the readers-ACL check', async () => {
-    let verifyCalled = false;
-    let isReaderCalled = false;
+  test('gate ordering: a non-reader gets not-in-readers-acl even with an invalid signature', async () => {
     const msg = { ...baseAcceptableMessage(), signature: 'sig' };
     const result = await evaluateBeeKEMWelcome(
       msg,
       makeDeps({
-        isReader: async () => {
-          isReaderCalled = true;
-          return false;
-        },
-        verifyWriterSignature: async () => {
-          verifyCalled = true;
-          return false;
-        },
+        isReader: async () => false,
+        verifyWriterSignature: async () => false,
       }),
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'drop-unauthorized',
-      reason: 'invalid-signature',
+      reason: 'not-in-readers-acl',
+      authenticated: false,
     });
-    expect(verifyCalled).toBe(true);
-    expect(isReaderCalled).toBe(false);
   });
 });

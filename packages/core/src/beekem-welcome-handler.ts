@@ -51,8 +51,15 @@ export type WelcomeValidationResult<ChangesType = unknown, PublicKey = unknown> 
   | {
       kind: 'drop-unauthorized';
       reason: WelcomeUnauthorizedReason;
-      /** Present only after mandatory writer authentication succeeded. */
+      /**
+       * Detached canonical message, present only for `not-in-readers-acl`
+       * so the caller can buffer it. It is NOT necessarily authenticated:
+       * a recipient that is not yet a reader may also lack the writer keys
+       * needed to verify it. Replays must re-run full validation.
+       */
       message?: CRDTSyncMessage<ChangesType, PublicKey>;
+      /** Whether the writer signature on `message` verified. */
+      authenticated?: boolean;
     };
 
 export type WelcomeMalformedReason =
@@ -96,11 +103,6 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
   serializePublicKey: (pk: PublicKey) => Promise<string>;
   /** Check whether `pk` is currently a reader on the document. */
   isReader: (pk: PublicKey) => Promise<boolean>;
-  /**
-   * Treat an exact recipient-bound, current-writer-signed Welcome as the
-   * onboarding grant when the recipient cannot yet decrypt the readers ACL.
-   */
-  allowWriterAuthorizedBootstrap?: boolean;
   /**
    * Verify a writer signature over the canonical (signature-stripped)
    * serialization of the message. Returns `true` iff the signature is
@@ -288,22 +290,24 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   } catch {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
-  if ((await deps.verifyWriterSignature(raw, signature)) !== true) {
-    return { kind: 'drop-unauthorized', reason: 'invalid-signature' };
-  }
+  const signatureValid =
+    (await deps.verifyWriterSignature(raw, signature)) === true;
 
-  // A caller may treat the exact identity+KEM-bound, current-writer signature
-  // above as an onboarding grant by enabling `allowWriterAuthorizedBootstrap`.
-  // Otherwise retain the defense-in-depth readers-ACL prerequisite.
-  if (
-    deps.allowWriterAuthorizedBootstrap !== true &&
-    (await deps.isReader(deps.localUserPublicKey)) !== true
-  ) {
+  // The readers ACL is a mandatory prerequisite. A recipient that is not yet
+  // a reader is still waiting for the ACL update that races this Welcome,
+  // and that same update may carry the writer keys needed to verify it. So
+  // report `not-in-readers-acl` (which the caller buffers and replays with
+  // full re-validation) before treating a signature failure as final.
+  if ((await deps.isReader(deps.localUserPublicKey)) !== true) {
     return {
       kind: 'drop-unauthorized',
       reason: 'not-in-readers-acl',
       message,
+      authenticated: signatureValid,
     };
+  }
+  if (!signatureValid) {
+    return { kind: 'drop-unauthorized', reason: 'invalid-signature' };
   }
 
   return { kind: 'accept', message };

@@ -70,6 +70,7 @@ class PendingWelcomesHarness {
     string,
     {
       message: CRDTSyncMessage<ChangesType, PublicKey>;
+      authenticated: boolean;
       bufferedAtMs: number;
     }
   >();
@@ -112,7 +113,10 @@ class PendingWelcomesHarness {
         decision.message?.welcomeEpochId !== undefined &&
         decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
       ) {
-        this.bufferPendingWelcome(decision.message);
+        this.bufferPendingWelcome(
+          decision.message,
+          decision.authenticated === true,
+        );
       }
       return false;
     }
@@ -123,17 +127,27 @@ class PendingWelcomesHarness {
   /** Mirror of `_bufferPendingWelcome`. */
   bufferPendingWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
+    authenticated: boolean,
   ): void {
     const epochId = message.welcomeEpochId;
     if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = hex(epochId);
+    if (this.pendingWelcomes.has(key) && !authenticated) return;
     this.pendingWelcomes.delete(key);
     if (this.pendingWelcomes.size >= PENDING_WELCOMES_MAX_ENTRIES) {
-      const oldestKey = this.pendingWelcomes.keys().next().value;
-      if (oldestKey !== undefined) this.pendingWelcomes.delete(oldestKey);
+      let evictKey: string | undefined;
+      for (const [candidateKey, candidate] of this.pendingWelcomes) {
+        if (!candidate.authenticated) {
+          evictKey = candidateKey;
+          break;
+        }
+      }
+      evictKey ??= this.pendingWelcomes.keys().next().value;
+      if (evictKey !== undefined) this.pendingWelcomes.delete(evictKey);
     }
     this.pendingWelcomes.set(key, {
       message,
+      authenticated,
       bufferedAtMs: this.nowMs,
     });
   }
@@ -310,6 +324,63 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
         h.pendingWelcomes.get(key)!.message,
       ),
     ).toEqual(originalPayload);
+  });
+
+  test('buffers an unverifiable Welcome and applies it once the ACL (and writer keys) arrive', async () => {
+    const h = new PendingWelcomesHarness();
+    h.signatureResult = false;
+    await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
+    expect(h.pendingWelcomes.size).toBe(1);
+
+    h.signatureResult = true;
+    await h.mergeReadersAddingLocal();
+    expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.appliedEpochs).toHaveLength(1);
+  });
+
+  test('an unverifiable duplicate cannot replace an unverifiable buffered Welcome', async () => {
+    const h = new PendingWelcomesHarness();
+    h.signatureResult = false;
+    await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
+    const original = h.pendingWelcomes.get(key)!.message;
+
+    const forged = welcomeFor(7);
+    forged.eciesSealed = new Uint8Array([9, 9, 9]);
+    await h.evaluateAndApply(forged, { fromBuffer: false });
+    expect(h.pendingWelcomes.get(key)!.message).toBe(original);
+  });
+
+  test('a verified Welcome replaces an unverified one for the same epoch', async () => {
+    const h = new PendingWelcomesHarness();
+    h.signatureResult = false;
+    const forged = welcomeFor(7);
+    forged.eciesSealed = new Uint8Array([9, 9, 9]);
+    await h.evaluateAndApply(forged, { fromBuffer: false });
+
+    h.signatureResult = true;
+    await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
+    const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
+    expect(h.pendingWelcomes.get(key)!.authenticated).toBe(true);
+    expect(h.pendingWelcomes.get(key)!.message.eciesSealed).toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+  });
+
+  test('a full buffer evicts unverified entries before verified ones', async () => {
+    const h = new PendingWelcomesHarness();
+    await h.evaluateAndApply(welcomeFor(1), { fromBuffer: false });
+    h.signatureResult = false;
+    for (let i = 2; i <= PENDING_WELCOMES_MAX_ENTRIES + 1; i++) {
+      await h.evaluateAndApply(welcomeFor(i), { fromBuffer: false });
+    }
+    expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
+    expect(
+      h.pendingWelcomes.has(hex(new Uint8Array(EPOCH_ID_LENGTH).fill(1))),
+    ).toBe(true);
+    expect(
+      h.pendingWelcomes.has(hex(new Uint8Array(EPOCH_ID_LENGTH).fill(2))),
+    ).toBe(false);
   });
 
   test('buffers the authenticated detached Welcome when the input mutates during validation', async () => {

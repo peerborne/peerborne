@@ -438,7 +438,11 @@ export class PeerborneDocument<
   // so duplicate Welcomes (same epoch) coalesce automatically.
   private _pendingWelcomes = new Map<
     string,
-    { message: CRDTSyncMessage<ChangesType, PublicKey>; bufferedAtMs: number }
+    {
+      message: CRDTSyncMessage<ChangesType, PublicKey>;
+      authenticated: boolean;
+      bufferedAtMs: number;
+    }
   >();
   private static readonly _PENDING_WELCOMES_MAX_ENTRIES = 16;
   private static readonly _PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
@@ -6097,9 +6101,10 @@ export class PeerborneDocument<
             decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
           ) {
             const pendingWelcome = decision.message;
+            const authenticated = decision.authenticated === true;
             const buffered = await runSharedProtocolMutation(
               admission,
-              () => this._bufferPendingWelcome(pendingWelcome),
+              () => this._bufferPendingWelcome(pendingWelcome, authenticated),
             );
             if (!buffered.admitted) return false;
           } else if (
@@ -6325,32 +6330,46 @@ export class PeerborneDocument<
    */
   private _bufferPendingWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
+    authenticated: boolean,
   ): void {
     const epochId = message.welcomeEpochId;
     if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = this._hexEncode(epochId);
+    // An unverified Welcome never replaces a buffered one for the same
+    // epoch: it may be a forged copy of a genuine Welcome that could not
+    // be verified yet either. A verified Welcome replaces anything.
+    const existing = this._pendingWelcomes.get(key);
+    if (existing !== undefined && !authenticated) return;
     // Refresh recency for duplicate Welcomes: delete-then-set so the
     // Map iteration order puts this entry at the back, matching the
     // intent of insertion-order eviction.
     this._pendingWelcomes.delete(key);
 
-    // Bound: if at capacity, evict the oldest entry (first in Map
-    // iteration order).
+    // Bound: if at capacity, evict the oldest unverified entry, or the
+    // oldest entry when every entry is verified.
     if (
       this._pendingWelcomes.size >=
       PeerborneDocument._PENDING_WELCOMES_MAX_ENTRIES
     ) {
-      const oldestKey = this._pendingWelcomes.keys().next().value;
-      if (oldestKey !== undefined) {
-        this._pendingWelcomes.delete(oldestKey);
+      let evictKey: string | undefined;
+      for (const [candidateKey, candidate] of this._pendingWelcomes) {
+        if (!candidate.authenticated) {
+          evictKey = candidateKey;
+          break;
+        }
+      }
+      evictKey ??= this._pendingWelcomes.keys().next().value;
+      if (evictKey !== undefined) {
+        this._pendingWelcomes.delete(evictKey);
         console.warn(
-          'Pending BeeKEM Welcome buffer is full; evicting its oldest entry',
+          'Pending BeeKEM Welcome buffer is full; evicting an entry',
         );
       }
     }
 
     this._pendingWelcomes.set(key, {
       message,
+      authenticated,
       bufferedAtMs: this._now(),
     });
     console.log('Buffered BeeKEM Welcome pending readers-ACL update');
