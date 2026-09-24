@@ -2904,10 +2904,19 @@ export class PeerborneDocument<
               );
               return false;
             }
-            const { signature, ...messageWithoutSignature } = message;
-            const raw = this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
+            const signature = message.signature;
+            const unsigned = this._serializeUnsignedForVerification(
+              message,
+              'load-response-v3',
+              responseLimit,
             );
+            if (unsigned === undefined) {
+              console.warn(
+                `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
+              );
+              return false;
+            }
+            const raw = unsigned.raw;
             // Mirror `_verifyWriterSignature`: a malformed/non-string signature
             // can cause `js-base64` to throw. Treat decode failure as a
             // verification failure for this peer (skip and let the caller try
@@ -2938,6 +2947,12 @@ export class PeerborneDocument<
             if (verified !== true) {
               console.warn(
                 `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
+              );
+              return false;
+            }
+            if (!unsigned.unchanged()) {
+              console.warn(
+                `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
               );
               return false;
             }
@@ -3496,20 +3511,24 @@ export class PeerborneDocument<
           if (!message.signature) {
             return null;
           }
-          const { signature, ...messageWithoutSignature } = message;
-          const raw = this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
+          const unsigned = this._serializeUnsignedForVerification(
+            message,
+            'tip-advertisement-v1',
+            MAX_TIP_ADVERTISE_RESPONSE_SIZE,
           );
+          if (unsigned === undefined) {
+            return null;
+          }
           let signatureBytes: Uint8Array;
           try {
-            signatureBytes = this._deserializeSignature(signature);
+            signatureBytes = this._deserializeSignature(message.signature);
           } catch {
             return null;
           }
           const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(raw, writerKey, signatureBytes),
+            this._authProvider.verify(unsigned.raw, writerKey, signatureBytes),
           );
-          if ((await firstTrue(verifyTasks)) !== true) {
+          if ((await firstTrue(verifyTasks)) !== true || !unsigned.unchanged()) {
             return null;
           }
         }
@@ -4454,6 +4473,56 @@ export class PeerborneDocument<
     );
   }
 
+  /**
+   * Serialize a detached unsigned copy of `message` for signature
+   * verification. The returned `unchanged` check re-serializes after
+   * verification and rejects serializer-driven drift from `message`.
+   */
+  private _serializeUnsignedForVerification(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    context: SyncMessageContext,
+    maxBytes: number,
+  ): { raw: Uint8Array; unchanged: () => boolean } | undefined {
+    const { signature: _expectedSignature, ...expected } = message;
+    let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      const { signature: _signature, ...detached } =
+        snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+      unsigned = detached;
+    } catch {
+      return undefined;
+    }
+    const serialize = (): Uint8Array =>
+      copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(unsigned),
+        1,
+        maxBytes,
+        'Unsigned sync message',
+      );
+    let raw: Uint8Array;
+    try {
+      raw = serialize();
+    } catch {
+      return undefined;
+    }
+    if (!syncMessageMatchesSnapshot(expected, unsigned, context)) {
+      return undefined;
+    }
+    return {
+      raw,
+      unchanged: () => {
+        try {
+          return (
+            constantTimeEqual(raw, serialize()) &&
+            syncMessageMatchesSnapshot(expected, unsigned, context)
+          );
+        } catch {
+          return false;
+        }
+      },
+    };
+  }
+
   /** Apply a sync message after any required membership-queue admission. */
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
@@ -4497,54 +4566,21 @@ export class PeerborneDocument<
     // Only serialize for signature verification -- skip when signing is disabled
     // to avoid expensive serialization of large messages.
     if (signingEnabled && verifySignature) {
-      const { signature: _signature, ...expectedUnsigned } = message;
-      let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
-      try {
-        const verificationMessage = snapshotSyncMessageForContext<
-          ChangesType,
-          PublicKey
-        >(message, context);
-        const { signature: _signature, ...unsigned } = verificationMessage;
-        messageWithoutSignature = unsigned;
-      } catch {
+      const unsigned = this._serializeUnsignedForVerification(
+        message,
+        context,
+        MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      );
+      if (unsigned === undefined) {
         return false;
       }
-      let raw: Uint8Array;
-      try {
-        raw = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned sync message',
-        );
-      } catch {
-        return false;
-      }
-      if (!syncMessageMatchesSnapshot(expectedUnsigned, messageWithoutSignature, context)) {
-        return false;
-      }
-      if ((await this._verifyWriterSignature(raw, signature!)) !== true) {
+      if ((await this._verifyWriterSignature(unsigned.raw, signature!)) !== true) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
         );
         return false;
       }
-      let rawAfterVerification: Uint8Array;
-      try {
-        rawAfterVerification = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned sync message',
-        );
-      } catch {
-        return false;
-      }
-      if (!constantTimeEqual(raw, rawAfterVerification) || !syncMessageMatchesSnapshot(expectedUnsigned, messageWithoutSignature, context)) {
+      if (!unsigned.unchanged()) {
         return false;
       }
     }
@@ -5966,23 +6002,31 @@ export class PeerborneDocument<
     if (!bootstrapMessage.signature) {
       throw new Error('Invitation bootstrap is missing its issuer signature');
     }
-    const { signature, ...unsignedBootstrap } = bootstrapMessage;
     let signatureBytes: Uint8Array;
     try {
-      signatureBytes = this._deserializeSignature(signature);
+      signatureBytes = this._deserializeSignature(bootstrapMessage.signature);
     } catch {
       throw new Error('Invitation bootstrap signature is malformed');
     }
-    const signedBytes =
-      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
+    const unsignedBootstrap = this._serializeUnsignedForVerification(
+      bootstrapMessage,
+      'invitation-bootstrap-v1',
+      bootstrapPlaintext.length,
+    );
+    if (unsignedBootstrap === undefined) {
+      throw new Error('Invitation bootstrap serialization is unstable');
+    }
     if (
       (await this._authProvider.verify(
-        signedBytes,
+        unsignedBootstrap.raw,
         issuerPublicKey,
         signatureBytes,
       )) !== true
     ) {
       throw new Error('Invitation bootstrap signature does not match the offer issuer');
+    }
+    if (!unsignedBootstrap.unchanged()) {
+      throw new Error('Invitation bootstrap serialization is unstable');
     }
 
     if (

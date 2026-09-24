@@ -166,6 +166,58 @@ describe('deserialized load message boundaries', () => {
     );
   });
 
+  test.each([1, 2])(
+    'rejects a load serializer that mutates on call %i',
+    async (mutationCall) => {
+      const message = {
+        documentId: documentPath,
+        signature: 'AQ==',
+        changes: { kind: 'document', change: { value: 1 } },
+      };
+      const { document, stream, sync } = loadHarness(message);
+      let serializationCount = 0;
+      document._syncMessageSerializer.serializeSyncMessage = (
+        unsigned: typeof message,
+      ) => {
+        serializationCount += 1;
+        if (serializationCount === mutationCall) {
+          unsigned.changes.change.value = 9;
+        }
+        return new Uint8Array([1]);
+      };
+      await expect(
+        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      ).resolves.toBe(false);
+      expect(sync).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([1, 2])(
+    'rejects an invitation serializer that mutates on call %i',
+    async (mutationCall) => {
+      const message = {
+        documentId: documentPath,
+        signature: 'AQ==',
+        changes: { kind: 'document', change: { value: 1 } },
+      };
+      const { document, bundle, verify } = await invitationHarness(message);
+      let serializationCount = 0;
+      document._syncMessageSerializer.serializeSyncMessage = (
+        unsigned: typeof message,
+      ) => {
+        serializationCount += 1;
+        if (serializationCount === mutationCall) {
+          unsigned.changes.change.value = 9;
+        }
+        return new Uint8Array([1]);
+      };
+      await expect(
+        document.acceptInvitationBootstrap(bundle, 'issuer', 'reader', '/founder'),
+      ).rejects.toThrow('Invitation bootstrap serialization is unstable');
+      expect(verify).toHaveBeenCalledTimes(mutationCall === 1 ? 0 : 1);
+    },
+  );
+
   test.each(['documentId', 'changes'])(
     'rejects an accessor-backed invitation %s before routing or verification',
     async (field) => {
