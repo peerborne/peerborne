@@ -674,12 +674,16 @@ describe('UCANACL', () => {
     const pendingRemoval = new Promise<string>((resolve) => {
       resolveRemoval = resolve;
     });
+    let isMember = true;
     backing.remove.mockImplementation(() => {
       removalStarted();
-      return pendingRemoval;
+      return pendingRemoval.then((changes) => {
+        isMember = false;
+        return changes;
+      });
     });
-    backing.check.mockResolvedValue(true);
-    backing.users.mockResolvedValue(['key1']);
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () => (isMember ? ['key1'] : []));
 
     const removal = retryACLConflict(() => acl.remove('key1'));
     await started;
@@ -1007,13 +1011,19 @@ describe('UCANACL', () => {
     const pendingRemoval = new Promise<string>((resolve) => {
       resolveRemoval = resolve;
     });
-    backing.check.mockImplementation(() => {
-      checkStarted();
-      return pendingCheck;
-    });
+    let isMember = true;
+    backing.check
+      .mockImplementationOnce(() => {
+        checkStarted();
+        return pendingCheck;
+      })
+      .mockImplementation(async () => isMember);
     backing.remove.mockImplementation(() => {
       removalStarted();
-      return pendingRemoval;
+      return pendingRemoval.then((changes) => {
+        isMember = false;
+        return changes;
+      });
     });
 
     const authorization = retryACLConflict(() => acl.check('key1'));
@@ -2016,7 +2026,7 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/write')).toBe(false);
   });
 
-  test('a remote re-add cannot clear a local revocation tombstone', async () => {
+  test('a remote re-add cannot clear a local capability tombstone', async () => {
     let isMember = false;
     mockCreateUCAN.mockResolvedValue(
       makeFakeUcan({
@@ -2050,10 +2060,16 @@ describe('UCANACL', () => {
     await acl.revoke('user1');
     acl.merge('remote-re-add');
 
-    expect(await acl.check('user1')).toBe(false);
+    expect(await acl.check('user1')).toBe(true);
     expect(await acl.check('user1', '/doc/write')).toBe(false);
-    expect(await acl.users()).toEqual([]);
+    expect(await acl.check('user1', '/doc/read')).toBe(false);
+    expect(await acl.users()).toEqual(['user1']);
     expect(await acl.users('/doc/write')).toEqual([]);
+
+    await expect(acl.revoke('user1')).resolves.toBe('remove-changes');
+    expect(backing.remove).toHaveBeenCalledTimes(2);
+    expect(await acl.check('user1')).toBe(false);
+    acl.merge('remote-re-add');
 
     await acl.grant(
       'user1',
