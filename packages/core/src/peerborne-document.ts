@@ -436,6 +436,9 @@ export class PeerborneDocument<
   // `Uint8Array`), chosen so the buffer's identity matches the
   // canonical epoch identifier used elsewhere in the receive path and
   // so duplicate Welcomes (same epoch) coalesce automatically.
+  // Cached wire form of `_userPublicKey` for the Welcome recipient fast path.
+  private _serializedUserPublicKey: Promise<string> | undefined;
+
   private _pendingWelcomes = new Map<
     string,
     {
@@ -6064,10 +6067,17 @@ export class PeerborneDocument<
       this._authProvider,
       'BeeKEM Welcome onboarding',
     );
+    this._serializedUserPublicKey ??= serializePublicKey(
+      this._userPublicKey,
+    ).catch((err: unknown) => {
+      this._serializedUserPublicKey = undefined;
+      throw err;
+    });
+    const localSerializedPublicKey = await this._serializedUserPublicKey;
     const decision = await evaluateBeeKEMWelcome(message, {
       documentPath: this.documentPath,
       localUserPublicKey: this._userPublicKey,
-      serializePublicKey,
+      localSerializedPublicKey,
       isReader: (pk) => this._readers.check(pk),
       // Welcomes always require writer-auth, independent of the
       // swarm-wide `enableSigning` toggle -- wire the unconditional

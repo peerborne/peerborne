@@ -99,8 +99,8 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
   documentPath: string;
   /** Local user's public key, used for the recipient binding check. */
   localUserPublicKey: PublicKey;
-  /** Serialize a public key into the wire form the Welcome carries. */
-  serializePublicKey: (pk: PublicKey) => Promise<string>;
+  /** `localUserPublicKey` in the wire form the Welcome recipient carries. */
+  localSerializedPublicKey: string;
   /** Check whether `pk` is currently a reader on the document. */
   isReader: (pk: PublicKey) => Promise<boolean>;
   /**
@@ -138,6 +138,25 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   message: CRDTSyncMessage<ChangesType, PublicKey>,
   deps: WelcomeValidationDeps<ChangesType, PublicKey>,
 ): Promise<WelcomeValidationResult<ChangesType, PublicKey>> {
+  // Welcomes are broadcast to every peer. Reject ones addressed elsewhere
+  // before paying for canonicalization of a payload that can be megabytes.
+  // This is only a fast path: the binding is re-checked on the detached
+  // canonical copy below. It stays synchronous so the message is still
+  // detached before the first async provider call.
+  const localSerializedKey = deps.localSerializedPublicKey;
+  let claimedRecipient: unknown;
+  try {
+    claimedRecipient = message.welcomeRecipient;
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  if (
+    typeof claimedRecipient === 'string' &&
+    claimedRecipient !== localSerializedKey
+  ) {
+    return { kind: 'drop-not-for-us' };
+  }
+
   // Canonicalize and detach the complete message before the first async
   // provider call. This prevents a caller-owned view/object from changing
   // between signature verification and the caller's eventual state commit.
@@ -246,9 +265,6 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   }
   message = { ...message, eciesSealed };
 
-  const localSerializedKey = await deps.serializePublicKey(
-    deps.localUserPublicKey,
-  );
   if (message.welcomeRecipient !== localSerializedKey) {
     // Not addressed to us. Not necessarily an attack -- a legitimate
     // Welcome to another peer flows past our connection too. Silently

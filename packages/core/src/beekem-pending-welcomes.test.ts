@@ -85,8 +85,8 @@ class PendingWelcomesHarness {
     return {
       documentPath: '/doc/welcome',
       localUserPublicKey: { id: 'me' },
-      serializePublicKey: async (pk) => pk.id,
-      isReader: async () => this.isReader,
+      localSerializedPublicKey: 'me',
+            isReader: async () => this.isReader,
       // Welcomes are unconditionally writer-authenticated; the test
       // messages below always carry a `signature` field so this stub
       // verifier just returns `true` for any signed payload.

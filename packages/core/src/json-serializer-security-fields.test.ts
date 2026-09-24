@@ -59,7 +59,7 @@ describe('JSON sync security fields', () => {
     const result = await evaluateBeeKEMWelcome(decoded, {
       documentPath: '/welcome',
       localUserPublicKey: keys.publicKey,
-      serializePublicKey: async () => 'recipient',
+      localSerializedPublicKey: 'recipient',
       isReader: async () => true,
       syncMessageSerializer: serializer,
       verifyWriterSignature: (payload, value) =>

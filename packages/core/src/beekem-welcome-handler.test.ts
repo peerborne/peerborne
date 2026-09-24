@@ -54,8 +54,8 @@ function makeDeps(
   return {
     documentPath: '/doc/welcome',
     localUserPublicKey: { id: 'my-pubkey' },
-    serializePublicKey: async (pk) => pk.id,
-    isReader: async () => true,
+    localSerializedPublicKey: 'my-pubkey',
+        isReader: async () => true,
     verifyWriterSignature: async () => true,
     syncMessageSerializer: stubSerializer,
     ...overrides,
@@ -612,6 +612,26 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     );
     expect(result).toEqual({ kind: 'drop-not-for-us' });
     expect(isReaderCalled).toBe(false);
+  });
+
+  test('drops Welcomes for another recipient before canonicalizing them', async () => {
+    let serializeCalls = 0;
+    const deps = makeDeps();
+    const result = await evaluateBeeKEMWelcome(
+      { ...baseAcceptableMessage(), welcomeRecipient: 'someone-else' },
+      {
+        ...deps,
+        syncMessageSerializer: {
+          ...deps.syncMessageSerializer,
+          serializeSyncMessage: (message) => {
+            serializeCalls++;
+            return deps.syncMessageSerializer.serializeSyncMessage(message);
+          },
+        } as typeof deps.syncMessageSerializer,
+      },
+    );
+    expect(result).toEqual({ kind: 'drop-not-for-us' });
+    expect(serializeCalls).toBe(0);
   });
 
   test('gate ordering: a non-reader gets not-in-readers-acl even with an invalid signature', async () => {
