@@ -5,24 +5,15 @@ import {
   evaluateBeeKEMWelcome,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 /**
- * Direct unit-test coverage for the security-critical gates of the
- * BeeKEM Welcome receive path.
+ * Direct unit-test coverage for BeeKEM Welcome validation gates.
  *
  * The validation gates have been extracted from
  * `PeerborneDocument.handleBeeKEMWelcomeRequestData` into the pure
  * `evaluateBeeKEMWelcome` helper so each gate can be exercised directly
- * here with small mocks (mock `AuthProvider`, ACL, and `Keychain`),
- * rather than requiring a full libp2p/Helia stack to construct a
- * `PeerborneDocument`. Prior coverage only mirrored the decision
- * logic in a helper; this file is the integration-style coverage of
- * the real receive-side validation.
- *
- * The production handler calls this same helper and applies
- * keychain.merge + `_invitationEpoch` assignment when the result is
- * `accept`; tests that exercise the mutation side-effects live in
- * `beekem-welcome.test.ts` against the in-memory keychain.
+ * here with injected collaborators rather than a full libp2p/Helia stack.
  */
 
 type ChangesType = Uint8Array;
@@ -36,10 +27,24 @@ type PublicKey = { id: string };
  */
 const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
   serializeSyncMessage(message: CRDTSyncMessage<ChangesType, PublicKey>) {
-    return new TextEncoder().encode(JSON.stringify(message));
+    return new TextEncoder().encode(
+      JSON.stringify(message, (_key, value) =>
+        value instanceof Uint8Array
+          ? { __testBytes: Array.from(value) }
+          : value,
+      ),
+    );
   },
-  deserializeSyncMessage(_data: Uint8Array) {
-    throw new Error('not used in evaluation');
+  deserializeSyncMessage(data: Uint8Array) {
+    return JSON.parse(
+      new TextDecoder().decode(data),
+      (_key, value) =>
+        value &&
+        typeof value === 'object' &&
+        Array.isArray(value.__testBytes)
+          ? new Uint8Array(value.__testBytes)
+          : value,
+    ) as CRDTSyncMessage<ChangesType, PublicKey>;
   },
 } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
 
@@ -49,8 +54,8 @@ function makeDeps(
   return {
     documentPath: '/doc/welcome',
     localUserPublicKey: { id: 'my-pubkey' },
-    serializePublicKey: async (pk) => pk.id,
-    isReader: async () => true,
+    localSerializedPublicKey: 'my-pubkey',
+        isReader: async () => true,
     verifyWriterSignature: async () => true,
     syncMessageSerializer: stubSerializer,
     ...overrides,
@@ -58,11 +63,8 @@ function makeDeps(
 }
 
 /**
- * A fully-valid Welcome message. SECURITY: Welcomes are
- * **unconditionally** writer-authenticated -- the
- * validator no longer has an `isSigningEnabled` toggle -- so the base
- * acceptable message must carry a `signature` for the happy-path
- * assertions to hold.
+ * A structurally acceptable Welcome under the injected verifier. The base
+ * message carries a signature so the unit fixture reaches the accept path.
  *
  * Note: confidentiality is enforced via the `eciesSealed` field
  * (encrypted to `welcomeRecipientKemPublicKey`); the validator
@@ -81,8 +83,8 @@ function baseAcceptableMessage(): CRDTSyncMessage<ChangesType, PublicKey> {
   };
 }
 
-describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
-  test('accepts a fully-valid signed Welcome', async () => {
+describe('evaluateBeeKEMWelcome unit gates', () => {
+  test('accepts a structurally acceptable Welcome under the injected verifier', async () => {
     const result = await evaluateBeeKEMWelcome(baseAcceptableMessage(), makeDeps());
     expect(result.kind).toBe('accept');
   });
@@ -92,6 +94,85 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     const result = await evaluateBeeKEMWelcome(msg, makeDeps());
     expect(result).toEqual({ kind: 'drop-malformed', reason: 'wrong-document' });
   });
+
+  test('routes and verifies only the exact detached codec snapshot', async () => {
+    const target = {
+      ...baseAcceptableMessage(),
+      documentId: '/doc/other',
+    };
+    let documentIdReads = 0;
+    const unstable = new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === 'documentId') {
+          documentIdReads++;
+          return documentIdReads === 1 ? '/doc/welcome' : '/doc/other';
+        }
+        return Reflect.get(object, property, receiver);
+      },
+    });
+    let verified = false;
+    const serializer = {
+      serializeSyncMessage: () => new Uint8Array([1]),
+      deserializeSyncMessage: () => unstable,
+    } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async () => {
+          verified = true;
+          return true;
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: 'drop-malformed', reason: 'wrong-document' });
+    expect(documentIdReads).toBe(0);
+    expect(verified).toBe(false);
+  });
+
+  test('rejects accessor-backed codec output without invoking it', async () => {
+    let getterCalls = 0;
+    const accessorMessage = { ...baseAcceptableMessage() };
+    Object.defineProperty(accessorMessage, 'documentId', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return '/doc/welcome';
+      },
+    });
+    const serializer = {
+      serializeSyncMessage: () => new Uint8Array([1]),
+      deserializeSyncMessage: () => accessorMessage,
+    } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    await expect(
+      evaluateBeeKEMWelcome(
+        baseAcceptableMessage(),
+        makeDeps({ syncMessageSerializer: serializer }),
+      ),
+    ).resolves.toEqual({
+      kind: 'drop-malformed',
+      reason: 'invalid-welcome-encoding',
+    });
+    expect(getterCalls).toBe(0);
+  });
+
+  test.each([undefined, ''])(
+    'drops Welcomes with a missing or empty document path (%p)',
+    async (documentId) => {
+      const msg = {
+        ...baseAcceptableMessage(),
+        documentId,
+      } as unknown as CRDTSyncMessage<ChangesType, PublicKey>;
+      const result = await evaluateBeeKEMWelcome(msg, makeDeps());
+      expect(result).toEqual({
+        kind: 'drop-malformed',
+        reason: 'wrong-document',
+      });
+    },
+  );
 
   test('drops Welcomes missing welcomeEpochId', async () => {
     const msg = baseAcceptableMessage();
@@ -119,6 +200,23 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
       reason: 'missing-welcome-epoch-id',
     });
   });
+
+  test.each([31, 33])(
+    'drops Welcomes whose epoch ID is not exactly 32 bytes (%i)',
+    async (length) => {
+      const result = await evaluateBeeKEMWelcome(
+        {
+          ...baseAcceptableMessage(),
+          welcomeEpochId: new Uint8Array(length),
+        },
+        makeDeps(),
+      );
+      expect(result).toEqual({
+        kind: 'drop-malformed',
+        reason: 'missing-welcome-epoch-id',
+      });
+    },
+  );
 
   test('drops Welcomes missing welcomeRecipient (recipient-binding gate)', async () => {
     const msg = baseAcceptableMessage();
@@ -148,7 +246,7 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     const result = await evaluateBeeKEMWelcome(msg, makeDeps());
     expect(result).toEqual({
       kind: 'drop-malformed',
-      reason: 'missing-recipient-kem-public-key',
+      reason: 'invalid-recipient-kem-public-key-length',
     });
   });
 
@@ -229,7 +327,7 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
       baseAcceptableMessage(),
       makeDeps({ isReader: async () => false }),
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'drop-unauthorized',
       reason: 'not-in-readers-acl',
     });
@@ -242,10 +340,25 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
         isReader: async () => ({ member: true }) as unknown as boolean,
       }),
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'drop-unauthorized',
       reason: 'not-in-readers-acl',
     });
+  });
+
+  test('reports not-in-readers-acl, with a buffered copy, when the writer keys are not known yet', async () => {
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        isReader: async () => false,
+        verifyWriterSignature: async () => false,
+      }),
+    );
+    expect(result).toMatchObject({
+      kind: 'drop-unauthorized',
+      reason: 'not-in-readers-acl',
+    });
+    expect(result.kind === 'drop-unauthorized' && result.message).toBeTruthy();
   });
 
   test('drops unsigned Welcomes unconditionally (writer-auth is mandatory)', async () => {
@@ -278,19 +391,38 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     });
   });
 
-  test('does not treat a truthy non-boolean signature result as valid', async () => {
-    const result = await evaluateBeeKEMWelcome(
-      baseAcceptableMessage(),
-      makeDeps({
-        verifyWriterSignature: async () =>
-          ({ verified: true }) as unknown as boolean,
-      }),
-    );
-    expect(result).toEqual({
-      kind: 'drop-unauthorized',
-      reason: 'invalid-signature',
-    });
-  });
+  test.each(['false', {}])(
+    'rejects truthy non-boolean writer verification result %#',
+    async (verificationResult) => {
+      const result = await evaluateBeeKEMWelcome(
+        baseAcceptableMessage(),
+        makeDeps({
+          verifyWriterSignature: async () =>
+            verificationResult as unknown as boolean,
+        }),
+      );
+      expect(result).toEqual({
+        kind: 'drop-unauthorized',
+        reason: 'invalid-signature',
+      });
+    },
+  );
+
+  test.each(['false', {}])(
+    'rejects truthy non-boolean reader authorization result %#',
+    async (readerResult) => {
+      const result = await evaluateBeeKEMWelcome(
+        baseAcceptableMessage(),
+        makeDeps({
+          isReader: async () => readerResult as unknown as boolean,
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: 'drop-unauthorized',
+        reason: 'not-in-readers-acl',
+      });
+    },
+  );
 
   test('accepts signed Welcomes when the writer signature verifies', async () => {
     let verifiedRawLength = 0;
@@ -317,6 +449,133 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     expect(verifiedRawLength).toBeGreaterThan(0);
     const reSerialized = stubSerializer.serializeSyncMessage(msg);
     expect(verifiedRawLength).toBeLessThan(reSerialized.length);
+  });
+
+  test('detaches signature bytes before invoking an async verifier', async () => {
+    let serializeCalls = 0;
+    let verifiedByte = -1;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ): Uint8Array {
+        serializeCalls++;
+        if (serializeCalls === 1) {
+          return stubSerializer.serializeSyncMessage(message);
+        }
+        const aliased = new Uint8Array([1]);
+        queueMicrotask(() => {
+          aliased[0] = 2;
+        });
+        return aliased;
+      },
+      deserializeSyncMessage(data: Uint8Array) {
+        return stubSerializer.deserializeSyncMessage(data);
+      },
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async (raw) => {
+          await Promise.resolve();
+          verifiedByte = raw[0];
+          return true;
+        },
+      }),
+    );
+
+    expect(result.kind).toBe('accept');
+    expect(verifiedByte).toBe(1);
+  });
+
+  test.each([
+    ['empty bytes', () => new Uint8Array(0)],
+    [
+      'typed-array lookalike',
+      () =>
+        ({
+          length: 1,
+          byteLength: 1,
+          0: 1,
+        }) as unknown as Uint8Array,
+    ],
+    [
+      'oversized bytes',
+      () => new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES + 1),
+    ],
+  ])(
+    'drops malformed signature-stripped serializer output: %s',
+    async (_name, makeMalformedBytes) => {
+      let serializeCalls = 0;
+      let verifyCalled = false;
+      const serializer = {
+        serializeSyncMessage(
+          message: CRDTSyncMessage<ChangesType, PublicKey>,
+        ): Uint8Array {
+          serializeCalls++;
+          return serializeCalls === 1
+            ? stubSerializer.serializeSyncMessage(message)
+            : makeMalformedBytes();
+        },
+        deserializeSyncMessage(data: Uint8Array) {
+          return stubSerializer.deserializeSyncMessage(data);
+        },
+      } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+      const result = await evaluateBeeKEMWelcome(
+        baseAcceptableMessage(),
+        makeDeps({
+          syncMessageSerializer: serializer,
+          verifyWriterSignature: async () => {
+            verifyCalled = true;
+            return true;
+          },
+        }),
+      );
+
+      expect(result).toEqual({
+        kind: 'drop-malformed',
+        reason: 'invalid-welcome-encoding',
+      });
+      expect(verifyCalled).toBe(false);
+    },
+  );
+
+  test('drops SharedArrayBuffer-backed signature-stripped bytes', async () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    let serializeCalls = 0;
+    let verifyCalled = false;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ): Uint8Array {
+        serializeCalls++;
+        return serializeCalls === 1
+          ? stubSerializer.serializeSyncMessage(message)
+          : new Uint8Array(new SharedArrayBuffer(1));
+      },
+      deserializeSyncMessage(data: Uint8Array) {
+        return stubSerializer.deserializeSyncMessage(data);
+      },
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async () => {
+          verifyCalled = true;
+          return true;
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'drop-malformed',
+      reason: 'invalid-welcome-encoding',
+    });
+    expect(verifyCalled).toBe(false);
   });
 
   test('gate ordering: missing welcomeEpochId takes precedence over missing welcomeRecipient', async () => {
@@ -355,26 +614,39 @@ describe('evaluateBeeKEMWelcome (security-critical gates)', () => {
     expect(isReaderCalled).toBe(false);
   });
 
-  test('gate ordering: readers-ACL check runs before signature verification', async () => {
-    // A non-member should be rejected even if the signature would
-    // verify; we should not feed the signature path with unauthorized
-    // inputs.
-    let verifyCalled = false;
+  test('drops Welcomes for another recipient before canonicalizing them', async () => {
+    let serializeCalls = 0;
+    const deps = makeDeps();
+    const result = await evaluateBeeKEMWelcome(
+      { ...baseAcceptableMessage(), welcomeRecipient: 'someone-else' },
+      {
+        ...deps,
+        syncMessageSerializer: {
+          ...deps.syncMessageSerializer,
+          serializeSyncMessage: (message) => {
+            serializeCalls++;
+            return deps.syncMessageSerializer.serializeSyncMessage(message);
+          },
+        } as typeof deps.syncMessageSerializer,
+      },
+    );
+    expect(result).toEqual({ kind: 'drop-not-for-us' });
+    expect(serializeCalls).toBe(0);
+  });
+
+  test('gate ordering: a non-reader gets not-in-readers-acl even with an invalid signature', async () => {
     const msg = { ...baseAcceptableMessage(), signature: 'sig' };
     const result = await evaluateBeeKEMWelcome(
       msg,
       makeDeps({
         isReader: async () => false,
-        verifyWriterSignature: async () => {
-          verifyCalled = true;
-          return true;
-        },
+        verifyWriterSignature: async () => false,
       }),
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'drop-unauthorized',
       reason: 'not-in-readers-acl',
+      authenticated: false,
     });
-    expect(verifyCalled).toBe(false);
   });
 });

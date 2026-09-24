@@ -10,6 +10,7 @@ import { Libp2p } from 'libp2p';
 import { Peerborne, MAX_DOCUMENT_PATH_LENGTH } from './peerborne.js';
 import type { CreateInvitationOptions } from './peerborne.js';
 import {
+  assertSharedProtocolRequestSize,
   concatUint8Arrays,
   firstTrue,
   readUint8Iterable,
@@ -73,6 +74,7 @@ import {
   serializePathUpdateForWire,
 } from './path-update-wire.js';
 import {
+  assertWelcomeSealedPlaintextSize,
   decodeWelcomeSealedPayload,
   encodeWelcomeSealedPayload,
 } from './welcome-sealed-payload.js';
@@ -80,6 +82,7 @@ import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
@@ -434,9 +437,16 @@ export class PeerborneDocument<
   // `Uint8Array`), chosen so the buffer's identity matches the
   // canonical epoch identifier used elsewhere in the receive path and
   // so duplicate Welcomes (same epoch) coalesce automatically.
+  // Cached wire form of `_userPublicKey` for the Welcome recipient fast path.
+  private _serializedUserPublicKey: Promise<string> | undefined;
+
   private _pendingWelcomes = new Map<
     string,
-    { message: CRDTSyncMessage<ChangesType, PublicKey>; bufferedAtMs: number }
+    {
+      message: CRDTSyncMessage<ChangesType, PublicKey>;
+      authenticated: boolean;
+      bufferedAtMs: number;
+    }
   >();
   private static readonly _PENDING_WELCOMES_MAX_ENTRIES = 16;
   private static readonly _PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
@@ -1787,6 +1797,33 @@ export class PeerborneDocument<
   }
 
   private _encoder = new TextEncoder();
+
+  /**
+   * Build a shared-protocol request: 4-byte big-endian path length, UTF-8
+   * document path, then `parts`. Validates the path and the frame size
+   * before allocating the frame.
+   */
+  private _buildPathPrefixedFrame(
+    protocol: string,
+    ...parts: Uint8Array[]
+  ): Uint8Array {
+    const pathBytes = this._encoder.encode(this.documentPath);
+    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
+      throw new Error(
+        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
+          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the ${protocol} protocol`,
+      );
+    }
+    const pathHeader = new Uint8Array(4);
+    new DataView(pathHeader.buffer).setUint32(0, pathBytes.length, false);
+    let frameLength = pathHeader.byteLength + pathBytes.byteLength;
+    for (const part of parts) frameLength += part.byteLength;
+    assertSharedProtocolRequestSize(
+      frameLength,
+      `${protocol} shared protocol request`,
+    );
+    return concatUint8Arrays(pathHeader, pathBytes, ...parts);
+  }
 
   private _deserializeSignature(signature: string): Uint8Array {
     return Base64.toUint8Array(signature);
@@ -5894,6 +5931,10 @@ export class PeerborneDocument<
       keychainChanges: keychainPlaintextBytes,
       beekemWelcome,
     });
+    assertWelcomeSealedPlaintextSize(
+      sealedPayloadBytes.byteLength,
+      'BeeKEM Welcome sealed payload',
+    );
 
     // Seal the envelope to the recipient's ECDH public key. Only the
     // recipient holding the matching ECDH private key can recover the
@@ -5921,20 +5962,10 @@ export class PeerborneDocument<
       this._syncMessageSerializer.serializeSyncMessage(welcomeMessage);
 
     // Build the V1 path-prefixed payload that the shared handler routes.
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM Welcome v1 protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
+    const payload = this._buildPathPrefixedFrame(
+      'BeeKEM Welcome v1',
+      serialized,
+    );
 
     // Best-effort fan-out to all connected peers. Each peer will either
     // process the Welcome (if it identifies as the new reader) or drop it.
@@ -6046,10 +6077,17 @@ export class PeerborneDocument<
       this._authProvider,
       'BeeKEM Welcome onboarding',
     );
+    this._serializedUserPublicKey ??= serializePublicKey(
+      this._userPublicKey,
+    ).catch((err: unknown) => {
+      this._serializedUserPublicKey = undefined;
+      throw err;
+    });
+    const localSerializedPublicKey = await this._serializedUserPublicKey;
     const decision = await evaluateBeeKEMWelcome(message, {
       documentPath: this.documentPath,
       localUserPublicKey: this._userPublicKey,
-      serializePublicKey,
+      localSerializedPublicKey,
       isReader: (pk) => this._readers.check(pk),
       // Welcomes always require writer-auth, independent of the
       // swarm-wide `enableSigning` toggle -- wire the unconditional
@@ -6079,12 +6117,14 @@ export class PeerborneDocument<
           if (
             decision.reason === 'not-in-readers-acl' &&
             !opts.fromBuffer &&
-            message.welcomeEpochId &&
-            message.welcomeEpochId.length > 0
+            decision.message?.welcomeEpochId !== undefined &&
+            decision.message.welcomeEpochId.byteLength === EPOCH_ID_LENGTH
           ) {
+            const pendingWelcome = decision.message;
+            const authenticated = decision.authenticated === true;
             const buffered = await runSharedProtocolMutation(
               admission,
-              () => this._bufferPendingWelcome(message),
+              () => this._bufferPendingWelcome(pendingWelcome, authenticated),
             );
             if (!buffered.admitted) return false;
           } else if (
@@ -6106,6 +6146,10 @@ export class PeerborneDocument<
           return false;
       }
     }
+
+    // Continue only with the detached canonical message whose exact bytes the
+    // validator authenticated, never the caller-owned serializer result.
+    message = decision.message;
 
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
@@ -6306,32 +6350,46 @@ export class PeerborneDocument<
    */
   private _bufferPendingWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
+    authenticated: boolean,
   ): void {
     const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.length === 0) return;
+    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
     const key = this._hexEncode(epochId);
+    // An unverified Welcome never replaces a buffered one for the same
+    // epoch: it may be a forged copy of a genuine Welcome that could not
+    // be verified yet either. A verified Welcome replaces anything.
+    const existing = this._pendingWelcomes.get(key);
+    if (existing !== undefined && !authenticated) return;
     // Refresh recency for duplicate Welcomes: delete-then-set so the
     // Map iteration order puts this entry at the back, matching the
     // intent of insertion-order eviction.
     this._pendingWelcomes.delete(key);
 
-    // Bound: if at capacity, evict the oldest entry (first in Map
-    // iteration order).
+    // Bound: if at capacity, evict the oldest unverified entry, or the
+    // oldest entry when every entry is verified.
     if (
       this._pendingWelcomes.size >=
       PeerborneDocument._PENDING_WELCOMES_MAX_ENTRIES
     ) {
-      const oldestKey = this._pendingWelcomes.keys().next().value;
-      if (oldestKey !== undefined) {
-        this._pendingWelcomes.delete(oldestKey);
+      let evictKey: string | undefined;
+      for (const [candidateKey, candidate] of this._pendingWelcomes) {
+        if (!candidate.authenticated) {
+          evictKey = candidateKey;
+          break;
+        }
+      }
+      evictKey ??= this._pendingWelcomes.keys().next().value;
+      if (evictKey !== undefined) {
+        this._pendingWelcomes.delete(evictKey);
         console.warn(
-          'Pending BeeKEM Welcome buffer is full; evicting its oldest entry',
+          'Pending BeeKEM Welcome buffer is full; evicting an entry',
         );
       }
     }
 
     this._pendingWelcomes.set(key, {
       message,
+      authenticated,
       bufferedAtMs: this._now(),
     });
     console.log('Buffered BeeKEM Welcome pending readers-ACL update');
@@ -7131,20 +7189,10 @@ export class PeerborneDocument<
 
     const serialized = this._syncMessageSerializer.serializeSyncMessage(message);
 
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-          `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the BeeKEM PathUpdate v1 protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    const payload = concatUint8Arrays(pathHeader, pathBytes, serialized);
+    const payload = this._buildPathPrefixedFrame(
+      'BeeKEM PathUpdate v1',
+      serialized,
+    );
 
     const peers =
       this.swarm.heliaNode.libp2p
@@ -7391,20 +7439,12 @@ export class PeerborneDocument<
       .getConnections()
       ?.map((x) => x.remoteAddr);
 
-    const pathBytes = this._encoder.encode(this.documentPath);
-    if (pathBytes.length === 0 || pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
-      throw new Error(
-        `Document path "${this.documentPath}" encoded length (${pathBytes.length}) exceeds ` +
-        `the maximum allowed path length (${MAX_DOCUMENT_PATH_LENGTH} bytes) for the V2 key-update protocol`,
-      );
-    }
-    const pathHeader = new Uint8Array(4);
-    pathHeader[0] = (pathBytes.length >> 24) & 0xff;
-    pathHeader[1] = (pathBytes.length >> 16) & 0xff;
-    pathHeader[2] = (pathBytes.length >> 8) & 0xff;
-    pathHeader[3] = pathBytes.length & 0xff;
-
-    const v2Payload = concatUint8Arrays(pathHeader, pathBytes, previousKeyID, nonce, data);
+    const v2Payload = this._buildPathPrefixedFrame(
+      'Document key-update v2',
+      previousKeyID,
+      nonce,
+      data,
+    );
 
     // WARNING: If some peers fail to receive this update, they will be unable
     // to decrypt future messages encrypted with the new key. They will need to

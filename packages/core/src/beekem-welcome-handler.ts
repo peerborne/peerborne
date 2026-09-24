@@ -19,7 +19,13 @@
 
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
+import {
+  copyUnsharedUint8Array,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+  snapshotEnumerableOwnDataObject,
+} from './utils.js';
 
 /**
  * Outcome of validating an incoming Welcome.
@@ -35,14 +41,30 @@ import { SyncMessageSerializer } from './sync-message-serializer.js';
  *   (not in readers ACL, unsigned when signing is enabled, invalid
  *   signature). The `reason` distinguishes the specific failure.
  */
-export type WelcomeValidationResult =
-  | { kind: 'accept' }
+export type WelcomeValidationResult<ChangesType = unknown, PublicKey = unknown> =
+  | {
+      kind: 'accept';
+      message: CRDTSyncMessage<ChangesType, PublicKey>;
+    }
   | { kind: 'drop-not-for-us' }
   | { kind: 'drop-malformed'; reason: WelcomeMalformedReason }
-  | { kind: 'drop-unauthorized'; reason: WelcomeUnauthorizedReason };
+  | {
+      kind: 'drop-unauthorized';
+      reason: WelcomeUnauthorizedReason;
+      /**
+       * Detached canonical message, present only for `not-in-readers-acl`
+       * so the caller can buffer it. It is NOT necessarily authenticated:
+       * a recipient that is not yet a reader may also lack the writer keys
+       * needed to verify it. Replays must re-run full validation.
+       */
+      message?: CRDTSyncMessage<ChangesType, PublicKey>;
+      /** Whether the writer signature on `message` verified. */
+      authenticated?: boolean;
+    };
 
 export type WelcomeMalformedReason =
   | 'wrong-document'
+  | 'invalid-welcome-encoding'
   | 'missing-welcome-epoch-id'
   | 'missing-welcome-recipient'
   | 'missing-recipient-kem-public-key'
@@ -77,8 +99,8 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
   documentPath: string;
   /** Local user's public key, used for the recipient binding check. */
   localUserPublicKey: PublicKey;
-  /** Serialize a public key into the wire form the Welcome carries. */
-  serializePublicKey: (pk: PublicKey) => Promise<string>;
+  /** `localUserPublicKey` in the wire form the Welcome recipient carries. */
+  localSerializedPublicKey: string;
   /** Check whether `pk` is currently a reader on the document. */
   isReader: (pk: PublicKey) => Promise<boolean>;
   /**
@@ -115,28 +137,69 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
 export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   message: CRDTSyncMessage<ChangesType, PublicKey>,
   deps: WelcomeValidationDeps<ChangesType, PublicKey>,
-): Promise<WelcomeValidationResult> {
+): Promise<WelcomeValidationResult<ChangesType, PublicKey>> {
+  // Welcomes are broadcast to every peer. Reject ones addressed elsewhere
+  // before paying for canonicalization of a payload that can be megabytes.
+  // This is only a fast path: the binding is re-checked on the detached
+  // canonical copy below. It stays synchronous so the message is still
+  // detached before the first async provider call.
+  const localSerializedKey = deps.localSerializedPublicKey;
+  let claimedRecipient: unknown;
+  try {
+    claimedRecipient = message.welcomeRecipient;
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  if (
+    typeof claimedRecipient === 'string' &&
+    claimedRecipient !== localSerializedKey
+  ) {
+    return { kind: 'drop-not-for-us' };
+  }
+
+  // Canonicalize and detach the complete message before the first async
+  // provider call. This prevents a caller-owned view/object from changing
+  // between signature verification and the caller's eventual state commit.
+  try {
+    const encoded = copyUnsharedUint8Array(
+      deps.syncMessageSerializer.serializeSyncMessage(message),
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      'BeeKEM Welcome encoding',
+    );
+    message = snapshotEnumerableOwnDataObject<
+      CRDTSyncMessage<ChangesType, PublicKey>
+    >(
+      deps.syncMessageSerializer.deserializeSyncMessage(encoded),
+      'BeeKEM Welcome message',
+    );
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+
   // Defense in depth: the shared protocol handler routes by document
   // path header, but a misrouted or hand-crafted message could still
   // carry a mismatched `documentId`. Drop these without further work.
-  if (message.documentId && message.documentId !== deps.documentPath) {
+  if (message.documentId !== deps.documentPath) {
     return { kind: 'drop-malformed', reason: 'wrong-document' };
   }
 
-  // The Welcome MUST carry an invitation epoch ID -- without it we
-  // cannot record the recipient's join boundary, which is the entire
-  // reason the Welcome exists.
-  //
-  // We also treat a zero-length `Uint8Array` as malformed: a truthy
-  // check alone passes empty buffers, but recording an empty epoch ID
-  // as `_invitationEpoch` would later make every `historySince` lookup
-  // miss (key IDs in the keychain are always non-empty, so the
-  // "boundary not found" recovery would kick in on every load and
-  // silently return the full history -- defeating `since_invited`
-  // filtering).
-  if (!message.welcomeEpochId || message.welcomeEpochId.length === 0) {
+  // The Welcome MUST carry an exact epoch ID so the recipient can bind the
+  // installed keychain delta to the BeeKEM root and retain a monotonic local
+  // invitation anchor. A truthy check is insufficient because it admits empty
+  // or malformed IDs.
+  let welcomeEpochId: Uint8Array;
+  try {
+    welcomeEpochId = copyUnsharedUint8Array(
+      message.welcomeEpochId,
+      EPOCH_ID_LENGTH,
+      EPOCH_ID_LENGTH,
+      'welcomeEpochId',
+    );
+  } catch {
     return { kind: 'drop-malformed', reason: 'missing-welcome-epoch-id' };
   }
+  message = { ...message, welcomeEpochId };
 
   // Recipient binding: Welcomes are broadcast to every connected peer
   // (the inviter cannot identify the new reader's libp2p connection
@@ -154,10 +217,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // identity-to-encryption-key mapping; without it, an attacker
   // controlling one of the two keys alone could attempt to substitute
   // the sealed payload.
-  if (
-    !message.welcomeRecipientKemPublicKey ||
-    message.welcomeRecipientKemPublicKey.byteLength === 0
-  ) {
+  if (!message.welcomeRecipientKemPublicKey) {
     return {
       kind: 'drop-malformed',
       reason: 'missing-recipient-kem-public-key',
@@ -172,72 +232,44 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // (e.g. `importEciesPublicKey` rejects on length mismatch) with a
   // less specific error. Treating it as malformed lets the bounded
   // pending-Welcome buffer drop it cleanly without retrying.
-  if (
-    message.welcomeRecipientKemPublicKey.byteLength !==
-    ECIES_P256_PUBLIC_KEY_LENGTH
-  ) {
+  let welcomeRecipientKemPublicKey: Uint8Array;
+  try {
+    welcomeRecipientKemPublicKey = copyUnsharedUint8Array(
+      message.welcomeRecipientKemPublicKey,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      'welcomeRecipientKemPublicKey',
+    );
+  } catch {
     return {
       kind: 'drop-malformed',
       reason: 'invalid-recipient-kem-public-key-length',
     };
   }
+  message = { ...message, welcomeRecipientKemPublicKey };
 
-  // A Welcome without an `eciesSealed` payload is useless: the
-  // recipient would record `welcomeEpochId` as their invitation epoch
-  // (gating future `since_invited` history filtering) without
-  // installing the corresponding document key, leaving them unable to
-  // decrypt any pubsub traffic. Worse, recording an epoch the
-  // recipient cannot back up with a key in their keychain can make
-  // later visibility filtering misbehave (the local view believes "I
-  // joined at epoch E" but has no E key). Treat a missing/empty
-  // sealed payload as malformed and refuse to record the epoch.
-  if (!message.eciesSealed || message.eciesSealed.byteLength === 0) {
+  // A Welcome without an `eciesSealed` payload is useless: the recipient
+  // would record an invitation anchor without installing the corresponding
+  // document key, leaving it unable to decrypt pubsub traffic. Treat a
+  // missing/empty sealed payload as malformed and refuse to record the epoch.
+  let eciesSealed: Uint8Array;
+  try {
+    eciesSealed = copyUnsharedUint8Array(
+      message.eciesSealed,
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      'eciesSealed',
+    );
+  } catch {
     return { kind: 'drop-malformed', reason: 'missing-ecies-sealed' };
   }
+  message = { ...message, eciesSealed };
 
-  const localSerializedKey = await deps.serializePublicKey(
-    deps.localUserPublicKey,
-  );
   if (message.welcomeRecipient !== localSerializedKey) {
     // Not addressed to us. Not necessarily an attack -- a legitimate
     // Welcome to another peer flows past our connection too. Silently
     // ignore.
     return { kind: 'drop-not-for-us' };
-  }
-
-  // Defense in depth: the local user must already be in the readers
-  // ACL by the time the Welcome arrives (the inviter sends the ACL
-  // add ahead of the Welcome). Catches misordered or replayed
-  // Welcomes where we have not been added (or have been removed
-  // since).
-  //
-  // KNOWN RACE: the inviter publishes the ACL update over pubsub and
-  // sends the Welcome over a direct stream. Network reordering can
-  // cause the Welcome to arrive on the recipient before the ACL
-  // update has been applied -- in which case `isReader` legitimately
-  // returns `false` here even though the Welcome is genuine.
-  //
-  // Mitigation: this gate still
-  // returns `drop-unauthorized` / `not-in-readers-acl` so the
-  // validator stays pure, but the production receive path in
-  // `PeerborneDocument._evaluateAndApplyBeeKEMWelcome` treats this
-  // specific drop reason as a signal to *buffer* the Welcome in a
-  // bounded `pendingWelcomes: Map<hex(welcomeEpochId), ...>` (max 16
-  // entries, ~5 min TTL) rather than dropping it forever. The buffer
-  // is drained by `_drainPendingWelcomes` after every readers-ACL
-  // `merge`, so a Welcome that arrived before the ACL update gets
-  // replayed as soon as the ACL catches up.
-  //
-  // The inviter does **not** retry Welcomes (`_sendBeeKEMWelcome` is
-  // fire-and-forget by design -- no ack protocol exists in this
-  // protocol version). Buffering on the recipient is therefore the
-  // authoritative race mitigation; documentation in
-  // `_sendBeeKEMWelcome` and `wire-protocols.ts` reflects that. A
-  // Welcome that exhausts the TTL without an unblocking ACL update
-  // is discarded and the recipient must rely on a fresh
-  // document-load against an authorized peer to recover.
-  if ((await deps.isReader(deps.localUserPublicKey)) !== true) {
-    return { kind: 'drop-unauthorized', reason: 'not-in-readers-acl' };
   }
 
   // Verify the writer signature **unconditionally**. The signing
@@ -261,12 +293,38 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     return { kind: 'drop-unauthorized', reason: 'missing-signature' };
   }
   const { signature, ...messageWithoutSignature } = message;
-  const raw = deps.syncMessageSerializer.serializeSyncMessage(
-    messageWithoutSignature,
-  );
-  if ((await deps.verifyWriterSignature(raw, signature)) !== true) {
+  let raw: Uint8Array;
+  try {
+    raw = copyUnsharedUint8Array(
+      deps.syncMessageSerializer.serializeSyncMessage(
+        messageWithoutSignature,
+      ),
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      'BeeKEM Welcome signature encoding',
+    );
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  const signatureValid =
+    (await deps.verifyWriterSignature(raw, signature)) === true;
+
+  // The readers ACL is a mandatory prerequisite. A recipient that is not yet
+  // a reader is still waiting for the ACL update that races this Welcome,
+  // and that same update may carry the writer keys needed to verify it. So
+  // report `not-in-readers-acl` (which the caller buffers and replays with
+  // full re-validation) before treating a signature failure as final.
+  if ((await deps.isReader(deps.localUserPublicKey)) !== true) {
+    return {
+      kind: 'drop-unauthorized',
+      reason: 'not-in-readers-acl',
+      message,
+      authenticated: signatureValid,
+    };
+  }
+  if (!signatureValid) {
     return { kind: 'drop-unauthorized', reason: 'invalid-signature' };
   }
 
-  return { kind: 'accept' };
+  return { kind: 'accept', message };
 }

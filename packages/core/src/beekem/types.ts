@@ -51,6 +51,40 @@ export interface PathUpdate {
   nodes: PathNodeUpdate[];
 }
 
+/** One authenticated ancestor-key bundle sealed to a copath resolution node. */
+export interface EncryptedPathKeyBundle {
+  /** Tree node whose public key was used to seal the bundle. */
+  recipientNodeIndex: number;
+  /** ECIES ciphertext containing private path keys from this level to root. */
+  ciphertext: Uint8Array;
+}
+
+/** A v2 path node with one bundle per non-blank copath resolution node. */
+export interface PathNodeUpdateV2 {
+  nodeIndex: number;
+  publicKey: Uint8Array;
+  encryptedPathKeyBundles: EncryptedPathKeyBundle[];
+}
+
+/**
+ * Parent-bound, ordered update used by the BeeKEM PathUpdate v2 protocol.
+ * The full public snapshot commits to the resulting tree, while
+ * `parentTreeHash` prevents a higher-generation stale fork from replacing the
+ * receiver's current membership state.
+ */
+export interface PathUpdateV2 {
+  senderLeafIndex: number;
+  senderLeafPublicKey: Uint8Array;
+  version: 2;
+  generation: number;
+  /** Hash of the exact generation immediately preceding this update. */
+  parentTreeHash: Uint8Array;
+  numLeaves: number;
+  nodes: PathNodeUpdateV2[];
+  treeNodePublicKeys: WelcomeNodePublicKey[];
+  treeHash: Uint8Array;
+}
+
 /**
  * A single node update in a path update message.
  */
@@ -73,10 +107,8 @@ export interface WelcomeNodePublicKey {
   publicKey: Uint8Array | null;
 }
 
-/**
- * Welcome message for a new member joining the group.
- */
-export interface BeeKEMWelcome {
+/** Fields shared by every BeeKEM Welcome protocol version. */
+export interface BeeKEMWelcomeFields {
   /** The new member's leaf index. */
   leafIndex: number;
   /** Path keys from the new leaf to root, encrypted to the new member. */
@@ -90,3 +122,33 @@ export interface BeeKEMWelcome {
   /** Serialized tree state hash for verification. */
   treeHash: Uint8Array;
 }
+
+/**
+ * Legacy v1 Welcome message for a new member joining the group. The v2-only
+ * fields are typed `never` so a v2 Welcome cannot be passed where v1 is
+ * expected.
+ */
+export interface BeeKEMWelcome extends BeeKEMWelcomeFields {
+  version?: never;
+  generation?: never;
+  numLeaves?: never;
+}
+
+/** Generation-bearing Welcome required by the BeeKEM Welcome v2 protocol. */
+export interface BeeKEMWelcomeV2 extends BeeKEMWelcomeFields {
+  /** Explicit protocol version. */
+  version: 2;
+  /** Sender generation. */
+  generation: number;
+  /** Exact leaf count. */
+  numLeaves: number;
+}
+
+/**
+ * V2 wire-codec leaf bound.
+ *
+ * The conservative limit bounds tree traversal and per-update structural
+ * work. Transport senders separately enforce the document protocol's frame
+ * limit on the complete signed and framed request.
+ */
+export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
