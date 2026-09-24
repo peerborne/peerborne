@@ -357,9 +357,14 @@ History policy is immutable in genesis:
   whose keys were neither retained nor re-shared.
 
 The current document-load protocol cannot authenticate a
-requester-specific invitation boundary, so its `since_invited` response is
-fail-closed to the current key only. The explicit bounded suffix above is the
-target coordinator policy, not a capability claim for ordinary load.
+requester-specific invitation boundary. Its `since_invited` load and snapshot
+responses are keyed to the responder's own recorded invitation epoch, not the
+requester's: a responder that joined by Welcome at an earlier epoch returns
+its retained keychain suffix from that epoch, so a later invitee loading from
+it can receive keys older than its own invitation. Only a responder with no
+recorded invitation epoch returns the current key alone; the Welcome path is
+current-only. The explicit bounded suffix above is the target coordinator
+policy, not a capability claim for ordinary load.
 
 JavaScript erasure is best-effort and backups/copies are part of the analysis.
 After acceptance, the narrow claims are: a removed member cannot derive keys
@@ -405,8 +410,8 @@ any mutation. Quorum is an availability/fork signal, not a substitute for
 cryptography. An identical frontier paired with a different control head,
 epoch, tree closure, snapshot, or keychain delta is not an agreeing vote.
 
-The loader pins one local tuple and writer-authority set before its first V4
-probe. Every advertisement, full-document response, and snapshot candidate
+The target V4 loader pins one local tuple and writer-authority set before its
+first V4 probe. Every advertisement, full-document response, and snapshot candidate
 must match that tuple. Votes are deduplicated by the verified writer's canonical
 `AuthProvider.serializePublicKey` value, so one credential presented through
 many libp2p PeerIds contributes one vote. This relies on that serialization
@@ -424,21 +429,25 @@ not a timestamp or durable replay ledger, and it does not stop an authorized or
 compromised writer from signing stale state again in the current round. Legacy
 V3 wire behavior is unchanged.
 
-The current seam requires exact equality with the captured tuple. It cannot
+The target seam requires exact equality with the captured tuple. It cannot
 yet authenticate and replay a newer control suffix from an older checkpoint,
 so a stale local checkpoint fails closed instead of using quorum state as a
 new trust root.
 
-The repository includes versioned V4 load/advertisement codecs, challenge
-binding, complete served-response-manifest recomputation, and strict
-pinned-writer bootstrap checks. The current runtime compares the remote tuple
-to one locally resolved/captured tuple; it does not yet independently replay an
-MLS genesis/control suffix or learn a newer security state from peers. Without
-an integrated reviewed provider and live hostile-peer tests, this remains
-partial evidence only.
+The repository includes versioned V4 load/advertisement codecs, a
+`security-advertise-v1` quorum-orchestrator mode, challenge binding, complete
+served-response-manifest recomputation, strict pinned-writer bootstrap checks,
+and a sentinel-policy helper. These are isolated primitives with unit tests;
+none is wired into the runtime. `PeerborneDocument.load()` still runs the
+`tip-advertise-v1` quorum without a challenge, security tuple, or control-head
+binding; no handlers are registered for the reserved V4 protocol IDs; and
+there is no strict-mode configuration. The runtime counts the unauthenticated
+`0xff` “unknown document” sentinel as a vote, so a Q-of-K set of peers that
+disclaim a document lets `open()` create a fresh one. The paragraphs above
+describe target behavior, not a runtime capability.
 
-Strict mode does not count the unauthenticated `0xff` “unknown
-document” sentinel as a vote. Consequently, a client cannot infer that a name
+In the target architecture, strict mode does not count the `0xff` sentinel
+as a vote. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
 existing swarm needs an application-authorized create decision or a future
 authenticated nonexistence protocol; this is an intentional availability
@@ -453,10 +462,15 @@ The proposed MLS family uses distinct bounded protocols:
 /peerborne/mls-control/1.0.0
 /peerborne/mls-welcome/1.0.0
 /peerborne/mls-ack/1.0.0
-/peerborne/doc-load/4.0.0
-/peerborne/snapshot-load/4.0.0
-/peerborne/security-advertise/1.0.0
+/collabswarm/doc-load/4.0.0
+/collabswarm/snapshot-load/4.0.0
+/collabswarm/security-advertise/1.0.0
 ```
+
+The last three are the IDs already reserved as `documentLoadV4`,
+`snapshotLoadV4`, and `securityAdvertiseV1` in `wire-protocols.ts`. Renaming
+them to the `/peerborne/` prefix is a separate wire change that must update
+those constants and this list together.
 
 Runtime integration must replace older load and snapshot formats with this
 single protocol family and remove their decoders and schemas. It must not
