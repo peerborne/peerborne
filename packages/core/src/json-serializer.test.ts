@@ -384,6 +384,26 @@ describe('signed top-level wire field order', () => {
   });
 });
 
+describe('top-level wire shape', () => {
+  test.each(['"abc"', '[1,2]', '5', 'null', 'true'])(
+    'rejects non-object sync message %s',
+    (text) => {
+      expect(() =>
+        jsonSerializer.deserializeSyncMessage(new TextEncoder().encode(text)),
+      ).toThrow(/must be a JSON object/);
+    },
+  );
+
+  test.each(['"abc"', '[1,2]', '5', 'null'])(
+    'rejects non-object load request %s',
+    (text) => {
+      expect(() =>
+        jsonSerializer.deserializeLoadRequest(new TextEncoder().encode(text)),
+      ).toThrow(/must be a JSON object/);
+    },
+  );
+});
+
 describe('stack-safe JSON serialization', () => {
   const chain = (depth: number): CRDTChangeNode<unknown> => {
     const root: CRDTChangeNode<unknown> = { kind: 'document' };
@@ -528,6 +548,23 @@ describe('stack-safe JSON serialization', () => {
       } else {
         Object.defineProperty(prototype, 'toJSON', original);
       }
+    }
+  });
+
+  test('falls back to the iterative writer when native stringify overflows the stack', () => {
+    const message = { documentId: '/doc', changes: chain(8) };
+    const expected = jsonSerializer.serializeSyncMessage(message);
+    const nativeStringify = JSON.stringify;
+    const spy = jest
+      .spyOn(JSON, 'stringify')
+      .mockImplementationOnce(() => {
+        throw new RangeError('Maximum call stack size exceeded');
+      })
+      .mockImplementation(nativeStringify);
+    try {
+      expect(jsonSerializer.serializeSyncMessage(message)).toEqual(expected);
+    } finally {
+      spy.mockRestore();
     }
   });
 

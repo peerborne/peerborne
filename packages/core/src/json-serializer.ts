@@ -251,6 +251,21 @@ function prepareJSONValue(holder: object, key: string): PreparedJSONValue {
   }
 }
 
+function isStackOverflowError(err: unknown): boolean {
+  // V8 and JavaScriptCore throw RangeError; SpiderMonkey throws InternalError.
+  return (
+    err instanceof RangeError ||
+    (err instanceof Error && err.name === 'InternalError')
+  );
+}
+
+function requireJSONObject(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError(`${what} must be a JSON object`);
+  }
+  return value as Record<string, unknown>;
+}
+
 /**
  * Stack-safe equivalent of `JSON.stringify(value)` without a replacer or
  * indentation. Primitive encoding is delegated to the native implementation;
@@ -475,6 +490,13 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
    * protocol writer must not claim to reproduce for arbitrary caller values.
    */
   protected serializeNormalizedSyncWireValue(message: unknown): string {
+    // Native stringify is far faster; the iterative writer only exists for
+    // histories deep enough to exhaust the call stack.
+    try {
+      return JSON.stringify(message) as string;
+    } catch (err) {
+      if (!isStackOverflowError(err)) throw err;
+    }
     return stringifyJSONIteratively(message) as string;
   }
   deserialize(message: string): unknown {
@@ -546,11 +568,10 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
   deserializeSyncMessage(
     message: Uint8Array,
   ): CRDTSyncMessage<ChangesType, PublicKey> {
-    // Shape validated by subclass overrides; base class trusts JSON.parse output matches CRDTSyncMessage
-    const raw = this.deserialize(this.decode(message)) as Record<
-      string,
-      unknown
-    >;
+    const raw = requireJSONObject(
+      this.deserialize(this.decode(message)),
+      'Sync message',
+    );
     return transformOwnFieldsInOrder(raw, (field, value) =>
       field === 'changes' && value !== undefined
         ? deserializeChangeNodeFromJSON(
@@ -569,11 +590,10 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     return this.encode(this.serialize(wire));
   }
   deserializeLoadRequest(message: Uint8Array): CRDTLoadRequest {
-    // Shape validated by subclass overrides; base class trusts JSON.parse output matches CRDTLoadRequest
-    const raw = this.deserialize(this.decode(message)) as Record<
-      string,
-      unknown
-    >;
+    const raw = requireJSONObject(
+      this.deserialize(this.decode(message)),
+      'Load request',
+    );
     return transformOwnFieldsInOrder(raw, (field, value) =>
       field === 'loadChallenge' && value !== undefined
         ? deserializeInitialLoadChallengeFromWire(value)
