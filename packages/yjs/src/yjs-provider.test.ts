@@ -11,6 +11,7 @@ import {
   snapshotDeepEnumerableData,
   type CRDTChangeNode,
   MAX_MERKLE_DAG_DEPTH,
+  UCANACL,
 } from '@peerborne/core';
 import {
   YjsProvider,
@@ -20,6 +21,7 @@ import {
   YjsKeychainProvider,
   YjsJSONSerializer,
   serializeKey,
+  deserializeKey,
 } from './peerborne-yjs.js';
 
 // ECDSA P-384 test keys (extractable, verify-only)
@@ -192,6 +194,31 @@ describe('YjsACL delta encoding', () => {
     acl2.merge(changes);
     const users = await acl2.users();
     expect(users).toHaveLength(0);
+  });
+});
+
+describe('UCANACL over YjsACL', () => {
+  test('a malformed remote ACL update does not disable the reader ACL', async () => {
+    const acl = new UCANACL(
+      new YjsACL(),
+      serializeKey,
+      deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, ['verify']),
+    );
+    const remote = new YjsACL();
+    await acl.add(key1);
+
+    expect(() => acl.merge(new Uint8Array([0xff, 0xff, 0xff]))).toThrow();
+
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(1);
+    acl.merge(await remote.add(key2));
+    expect(await acl.check(key2)).toBe(true);
+    await acl.remove(key1);
+    expect(await acl.check(key1)).toBe(false);
+    const peer = new YjsACL();
+    peer.merge(acl.current());
+    expect(await peer.check(key1)).toBe(false);
+    expect(await peer.check(key2)).toBe(true);
   });
 });
 
