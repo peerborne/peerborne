@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { crdtDocumentChangeNode } from './crdt-change-node.js';
+import { syncInvitationMessageCompletely } from './invitation-catch-up.js';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
@@ -415,5 +417,112 @@ describe('ordinary sync-message context confinement', () => {
     expect(decryptBlock).not.toHaveBeenCalled();
     expect(load).not.toHaveBeenCalled();
     await document.close();
+  });
+});
+
+describe('snapshot-bearing invitation sync', () => {
+  function snapshotMessage() {
+    return {
+      documentId: documentPath,
+      changeId: 'head-cid',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        children: {
+          'recent-cid': {
+            kind: crdtDocumentChangeNode,
+            children: {
+              'boundary-cid': {
+                kind: crdtDocumentChangeNode,
+                children: {
+                  'old-cid': { kind: crdtDocumentChangeNode },
+                },
+              },
+            },
+          },
+        },
+      },
+      snapshot: {
+        state: new Uint8Array([1, 2, 3]),
+        lastChangeNodeCID: 'boundary-cid',
+        compactedCount: 10,
+        signature: new Uint8Array([4]),
+        timestamp: 1,
+      },
+    } as any;
+  }
+
+  function snapshotDocument(latestSnapshot?: unknown): any {
+    const hashes = new Set<string>();
+    return fakeDocument({
+      _hashes: hashes,
+      _latestSnapshot: latestSnapshot,
+      _documentChangeCount: 0,
+      _isSigningEnabled: () => false,
+      _crdtProvider: { remoteChange: (_doc: unknown, state: unknown) => state },
+      _collectACLFromTree: () => ({ aclEntries: [], changes: [] }),
+      _applyCollectedACL: () => undefined,
+      _syncDocumentChanges: async () => {
+        hashes.add('head-cid');
+        hashes.add('recent-cid');
+      },
+    });
+  }
+
+  test.each([
+    ['bootstrap', 'invitation-bootstrap-v1'],
+    ['catch-up', 'load-response-v3'],
+  ] as const)(
+    'recognizes the applied detached snapshot during %s',
+    async (phase, context) => {
+      const document = snapshotDocument();
+      const message = snapshotMessage();
+
+      await expect(
+        syncInvitationMessageCompletely(
+          message,
+          document._hashes,
+          () => document._syncValidatedProtocolMessage(message, context),
+          phase,
+          { isSnapshotApplied: () => document._isLatestSnapshotFrom(message) },
+        ),
+      ).resolves.toBe(true);
+      expect(document._latestSnapshot).not.toBe(message.snapshot);
+      expect(document._latestSnapshot.lastChangeNodeCID).toBe('boundary-cid');
+      expect(document._hashes.has('old-cid')).toBe(false);
+    },
+  );
+
+  test('requires history below a snapshot that was not applied', async () => {
+    const document = snapshotDocument({
+      lastChangeNodeCID: 'newer-cid',
+      compactedCount: 20,
+    });
+    const message = snapshotMessage();
+
+    await expect(
+      syncInvitationMessageCompletely(
+        message,
+        document._hashes,
+        () =>
+          document._syncValidatedProtocolMessage(
+            message,
+            'invitation-bootstrap-v1',
+          ),
+        'bootstrap',
+        { isSnapshotApplied: () => document._isLatestSnapshotFrom(message) },
+      ),
+    ).rejects.toThrow(/advertised CIDs were not installed/);
+    expect(document._isLatestSnapshotFrom(message)).toBe(false);
+  });
+
+  test('does not attribute a snapshot to an ordinary sync source', async () => {
+    const document = snapshotDocument();
+    const message = snapshotMessage();
+    delete message.changeId;
+    delete message.changes;
+
+    await expect(document.sync(message)).resolves.toBe(true);
+    expect(document._latestSnapshot?.lastChangeNodeCID).toBe('boundary-cid');
+    expect(document._isLatestSnapshotFrom(message)).toBe(false);
   });
 });

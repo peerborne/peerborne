@@ -770,6 +770,7 @@ export class PeerborneDocument<
   // Compaction state.
   private _compactionConfig: CompactionConfig;
   private _latestSnapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  private _latestSnapshotSource?: object;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
   private _snapshotUnsupported = false;
@@ -3311,7 +3312,7 @@ export class PeerborneDocument<
                     ? undefined
                     : new Set([snapshotBoundaryBeforeSync]),
                 isSnapshotApplied: () =>
-                  this._latestSnapshot === message.snapshot,
+                  this._isLatestSnapshotFrom(message),
               },
             )
           : await this._syncValidatedProtocolMessage(
@@ -4435,6 +4436,15 @@ export class PeerborneDocument<
     );
   }
 
+  private _isLatestSnapshotFrom(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): boolean {
+    return (
+      message.snapshot !== undefined &&
+      this._latestSnapshotSource === message.snapshot
+    );
+  }
+
   /** Apply a sync message after any required membership-queue admission. */
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
@@ -4446,7 +4456,19 @@ export class PeerborneDocument<
       | 'invitation-bootstrap-v1'
     >,
   ): Promise<boolean> {
+    let sourceSnapshot: object | undefined;
     try {
+      if (context !== 'ordinary-sync-v1') {
+        const descriptor = Object.getOwnPropertyDescriptor(message, 'snapshot');
+        if (
+          descriptor !== undefined &&
+          'value' in descriptor &&
+          typeof descriptor.value === 'object' &&
+          descriptor.value !== null
+        ) {
+          sourceSnapshot = descriptor.value as object;
+        }
+      }
       message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
         message,
         context,
@@ -4608,6 +4630,7 @@ export class PeerborneDocument<
             ? this._crdtProvider.applySnapshot(this._document, incoming.state)
             : this._crdtProvider.remoteChange(this._document, incoming.state);
           this._latestSnapshot = incoming;
+          this._latestSnapshotSource = sourceSnapshot;
           // Ensure our local document change count is at least as high as
           // the snapshot's compactedCount. This prevents re-triggering
           // compaction below the threshold after applying a remote snapshot.
@@ -5056,6 +5079,7 @@ export class PeerborneDocument<
     };
 
     this._latestSnapshot = snapshotNode;
+    this._latestSnapshotSource = undefined;
     this._changesSinceSnapshot = 0;
 
     // Prune old change nodes from the in-memory sync tree if configured.
@@ -5970,7 +5994,7 @@ export class PeerborneDocument<
                   this._latestSnapshot.lastChangeNodeCID,
                 ]),
           isSnapshotApplied: () =>
-            this._latestSnapshot === bootstrapMessage.snapshot,
+            this._isLatestSnapshotFrom(bootstrapMessage),
         },
       ))
     ) {
