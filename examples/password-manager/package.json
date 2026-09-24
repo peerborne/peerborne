@@ -31,7 +31,7 @@
     "@types/react-bootstrap": "^1.1.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.1.0"
+    "vite": "^8.3.0"
   },
   "scripts": {
     "build": "tsc --noEmit && vite build",
