@@ -1,4 +1,4 @@
-import { assertWellFormedUtf16 } from './internal/utf16.js';
+import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import { ACL, ACLOperationInProgressError } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
@@ -183,7 +183,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         `${operation} requires a non-empty canonical public-key encoding`,
       );
     }
-    assertWellFormedUtf16(keyBase64, `${operation} canonical public-key encoding`);
+    if (!isWellFormedUtf16(keyBase64)) {
+      throw new TypeError(
+        `${operation} canonical public-key encoding must be well-formed UTF-16`,
+      );
+    }
     return keyBase64;
   }
 
