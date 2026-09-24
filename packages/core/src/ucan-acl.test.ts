@@ -629,7 +629,7 @@ describe('UCANACL', () => {
     );
   });
 
-  test('does not quarantine an addition rejected before backing admission', async () => {
+  test('keeps current state available after an addition rejected before admission', async () => {
     let checkStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       checkStarted = resolve;
