@@ -42,7 +42,7 @@ function makeFakeUcan(overrides: Partial<UCAN> = {}): UCAN {
 }
 
 function makeMockAcl() {
-  return {
+  const acl: Record<string, any> = {
     add: jest.fn(),
     remove: jest.fn(),
     current: jest.fn(),
@@ -50,6 +50,18 @@ function makeMockAcl() {
     check: jest.fn(),
     users: jest.fn(),
   };
+  const stage = (method: 'add' | 'remove') =>
+    jest.fn(async (key: unknown) => {
+      const changes = await acl[method](key);
+      return {
+        changes,
+        commit: () => undefined,
+        claimCommit: () => ({ finalize: () => undefined }),
+      };
+    });
+  acl.prepareAdd = stage('add');
+  acl.prepareRemove = stage('remove');
+  return acl;
 }
 
 function preparedClaim<T extends { changes: unknown; commit: () => unknown }>(prepared: T) {
@@ -106,6 +118,18 @@ describe('UCANACL', () => {
     return backing;
   };
 
+  // Capability grants still invoke the backing ACL's direct add operation.
+  const grantWithDirectBackingAdd = (key: string) => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        issuer: 'issuer',
+        audience: `serialized:${key}`,
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+      }),
+    );
+    return acl.grant(key, '/doc/write', 'doc-1', {} as CryptoKey, 'issuer');
+  };
+
   beforeEach(() => {
     backing = makeMockAcl();
     acl = new UCANACLImpl(backing, jest.fn(async (key: string) => `serialized:${key}`));
@@ -147,19 +171,19 @@ describe('UCANACL', () => {
     expect(await acl.check('key1', '/doc/read')).toBe(true);
   });
 
-  test('a failed local add poisons reads even with a prior tombstone', async () => {
+  test('a failed direct grant poisons reads even with a prior tombstone', async () => {
     backing.remove.mockResolvedValue('remove-changes');
     backing.add.mockRejectedValue(new Error('backing add failed'));
     backing.check.mockResolvedValue(true);
     await acl.remove('key1');
 
-    await expect(acl.add('key1')).rejects.toThrow('backing add failed');
+    await expect(grantWithDirectBackingAdd('key1')).rejects.toThrow('backing add failed');
     await expect(acl.check('key1', '/doc/read')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
   });
 
-  test('poisons all identities after a failed add mutates an unrelated member', async () => {
+  test('poisons all identities after a failed direct grant mutates an unrelated member', async () => {
     const members = new Set<string>();
     let addStarted!: () => void;
     const addWasStarted = new Promise<void>((resolve) => {
@@ -178,7 +202,7 @@ describe('UCANACL', () => {
     backing.users.mockImplementation(async () => [...members]);
     backing.current.mockReturnValue('current-state');
 
-    const addition = acl.add('key1');
+    const addition = grantWithDirectBackingAdd('key1');
     await addWasStarted;
     const pendingCheck = expect(
       retryACLConflict(() => acl.check('attacker')),
@@ -207,7 +231,7 @@ describe('UCANACL', () => {
     expect(() => acl.current()).toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.add('key1')).rejects.toThrow(
+    await expect(grantWithDirectBackingAdd('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
     expect(backing.add).toHaveBeenCalledTimes(1);
@@ -641,8 +665,8 @@ describe('UCANACL', () => {
       .mockRejectedValueOnce(new Error('first add failed'))
       .mockResolvedValueOnce('second-changes');
 
-    const first = acl.add('key1');
-    const second = retryACLConflict(() => acl.add('key2'));
+    const first = grantWithDirectBackingAdd('key1');
+    const second = retryACLConflict(() => grantWithDirectBackingAdd('key2'));
 
     await expect(first).rejects.toThrow('first add failed');
     await expect(second).rejects.toThrow(
@@ -1252,10 +1276,10 @@ describe('UCANACL', () => {
       configurable: true,
       value: 'not-a-function',
     });
-    backing.add.mockResolvedValue('legacy-addition');
+    backing.add.mockResolvedValue('direct-addition');
 
     await expect(acl.add('user1')).rejects.toThrow(
-      'Backing ACL prepareAdd property must be a function when present',
+      'Backing ACL does not support staged addition',
     );
 
     expect(backing.add).not.toHaveBeenCalled();
@@ -1511,12 +1535,16 @@ describe('UCANACL', () => {
     );
   });
 
-  test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
-    await expect(acl.prepareAdd('key1')).rejects.toThrow(
-      'Backing ACL does not support staged addition',
-    );
-    expect(backing.add).not.toHaveBeenCalled();
-  });
+  test.each(['add', 'prepareAdd'] as const)(
+    '%s fails closed when the backing ACL lacks staging',
+    async (method) => {
+      delete backing.prepareAdd;
+      await expect(acl[method]('key1')).rejects.toThrow(
+        'Backing ACL does not support staged addition',
+      );
+      expect(backing.add).not.toHaveBeenCalled();
+    },
+  );
 
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
@@ -1572,13 +1600,13 @@ describe('UCANACL', () => {
     await expect(capabilityListing).resolves.toEqual([]);
   });
 
-  test('rejects a check reentered by a backing addition without deadlocking', async () => {
+  test('rejects a check reentered by a direct backing addition without deadlocking', async () => {
     backing.add.mockImplementation(async () => {
       await acl.check('key2');
       return 'changes';
     });
 
-    await expect(acl.add('key1')).rejects.toThrow(
+    await expect(grantWithDirectBackingAdd('key1')).rejects.toThrow(
       /cannot reenter the UCAN ACL from a backing ACL operation/,
     );
     await expect(acl.check('key2')).rejects.toThrow(
@@ -1586,21 +1614,7 @@ describe('UCANACL', () => {
     );
   });
 
-  test('rejects a listing reentered by a backing removal without deadlocking', async () => {
-    backing.remove.mockImplementation(async () => {
-      await acl.users();
-      return 'changes';
-    });
-
-    await expect(acl.remove('key1')).rejects.toThrow(
-      /cannot reenter the UCAN ACL from a backing ACL operation/,
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-  });
-
-  test('rejects a check reentered after a backing addition suspends', async () => {
+  test('rejects a check reentered after a direct backing addition suspends', async () => {
     backing.add.mockImplementation(async () => {
       await Promise.resolve();
       await acl.check('key2');
@@ -1608,7 +1622,7 @@ describe('UCANACL', () => {
     });
 
     await expect(
-      settleWithinMicrotasks(acl.add('key1')),
+      settleWithinMicrotasks(grantWithDirectBackingAdd('key1')),
     ).resolves.toEqual(
       expect.objectContaining({
         status: 'rejected',
@@ -1624,31 +1638,7 @@ describe('UCANACL', () => {
     );
   });
 
-  test('rejects a listing reentered after a backing removal suspends', async () => {
-    backing.remove.mockImplementation(async () => {
-      await Promise.resolve();
-      await acl.users();
-      return 'changes';
-    });
-
-    await expect(
-      settleWithinMicrotasks(acl.remove('key1')),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        status: 'rejected',
-        reason: expect.objectContaining({
-          message: expect.stringMatching(
-            /retry conflict.*backing state is uncertain/,
-          ),
-        }),
-      }),
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-  });
-
-  test('rejects a mutation reentered after a backing addition suspends', async () => {
+  test('rejects a mutation reentered after a direct backing addition suspends', async () => {
     backing.add.mockImplementation(async () => {
       await Promise.resolve();
       await acl.remove('key2');
@@ -1656,7 +1646,7 @@ describe('UCANACL', () => {
     });
 
     await expect(
-      settleWithinMicrotasks(acl.add('key1')),
+      settleWithinMicrotasks(grantWithDirectBackingAdd('key1')),
     ).resolves.toEqual(
       expect.objectContaining({
         status: 'rejected',
@@ -1765,7 +1755,7 @@ describe('UCANACL', () => {
     expect(backing.users).toHaveBeenCalledTimes(2);
   });
 
-  test('poisons when a backing addition propagates a foreign conflict', async () => {
+  test('poisons when a direct backing addition propagates a foreign conflict', async () => {
     let settle!: () => void;
     const settlement = new Promise<void>((resolve) => {
       settle = resolve;
@@ -1780,7 +1770,7 @@ describe('UCANACL', () => {
       .mockResolvedValueOnce('changes');
     backing.current.mockReturnValue('current-state');
 
-    const addition = retryACLConflict(() => acl.add('key1'));
+    const addition = retryACLConflict(() => grantWithDirectBackingAdd('key1'));
     await expect(addition).rejects.toThrow(
       /retry conflict.*backing state is uncertain/,
     );
@@ -1792,35 +1782,6 @@ describe('UCANACL', () => {
     settle();
     await Promise.resolve();
     expect(backing.add).toHaveBeenCalledTimes(1);
-  });
-
-  test('poisons when a backing removal propagates a foreign conflict', async () => {
-    let settle!: () => void;
-    const settlement = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    backing.remove
-      .mockRejectedValueOnce(
-        new ACLOperationInProgressError(
-          'Nested ACL removal',
-          settlement,
-        ),
-      )
-      .mockResolvedValueOnce('changes');
-    backing.current.mockReturnValue('current-state');
-
-    const removal = retryACLConflict(() => acl.remove('key1'));
-    await expect(removal).rejects.toThrow(
-      /retry conflict.*backing state is uncertain/,
-    );
-    expect(backing.remove).toHaveBeenCalledTimes(1);
-    expect(() => acl.current()).toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-
-    settle();
-    await Promise.resolve();
-    expect(backing.remove).toHaveBeenCalledTimes(1);
   });
 
   test('reports overlapping reads and permits an external retry', async () => {
@@ -1898,39 +1859,6 @@ describe('UCANACL', () => {
     resolveRemoval('changes');
     await expect(removal).resolves.toBe('changes');
     await expect(acl.check('key1')).resolves.toBe(false);
-  });
-
-  test('poisons access after a pending backing removal fails', async () => {
-    let removalStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      removalStarted = resolve;
-    });
-    let rejectRemoval!: (error: Error) => void;
-    const pendingRemoval = new Promise<string>((_resolve, reject) => {
-      rejectRemoval = reject;
-    });
-    backing.remove.mockImplementation(() => {
-      removalStarted();
-      return pendingRemoval;
-    });
-    backing.check.mockResolvedValue(true);
-    backing.users.mockResolvedValue(['key1']);
-
-    const removal = acl.remove('key1');
-    await started;
-    const pendingCheck = expect(
-      retryACLConflict(() => acl.check('key1')),
-    ).rejects.toThrow(/failed ACL backing mutation may have partially changed/);
-
-    rejectRemoval(new Error('backing remove failed'));
-    await expect(removal).rejects.toThrow('backing remove failed');
-    await pendingCheck;
-    await expect(acl.check('key1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.users()).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
   });
 
   test('prepareRemove leaves UCAN state unchanged until backing commit', async () => {
@@ -2177,16 +2105,18 @@ describe('UCANACL', () => {
     expect(target.remove).toHaveBeenCalledWith('user1');
   });
 
-  test('treats an explicit undefined staging data property as absent', async () => {
+  test('rejects an explicit undefined staging data property', async () => {
     Object.defineProperty(backing, 'prepareRemove', {
       configurable: true,
       value: undefined,
     });
-    backing.remove.mockResolvedValue('legacy-removal');
+    backing.remove.mockResolvedValue('direct-removal');
 
-    await expect(acl.remove('user1')).resolves.toBe('legacy-removal');
+    await expect(acl.remove('user1')).rejects.toThrow(
+      'Backing ACL does not support staged removal',
+    );
 
-    expect(backing.remove).toHaveBeenCalledWith('user1');
+    expect(backing.remove).not.toHaveBeenCalled();
   });
 
   test('rejects an accessor-backed staging capability without falling back', async () => {
@@ -2672,42 +2602,16 @@ describe('UCANACL', () => {
     expect(await acl.check('user1', '/doc/read')).toBe(false);
   });
 
-  test('prepareRemove fails closed when the backing ACL lacks staging', async () => {
-    await expect(acl.prepareRemove('user1')).rejects.toThrow(
-      'Backing ACL does not support staged removal',
-    );
-    expect(backing.remove).not.toHaveBeenCalled();
-  });
-
-  test('legacy backing removal failure poisons subsequent reads', async () => {
-    const fakeUcan = makeFakeUcan({
-      issuer: 'issuer',
-      audience: 'serialized:user1',
-      capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
-    });
-    mockCreateUCAN.mockResolvedValue(fakeUcan);
-    backing.add.mockResolvedValue('add-changes');
-    backing.check.mockResolvedValue(true);
-    backing.remove.mockRejectedValue(new Error('legacy removal failed'));
-    await acl.grant(
-      'user1',
-      '/doc/write',
-      'doc-1',
-      {} as CryptoKey,
-      'issuer',
-    );
-
-    await expect(acl.remove('user1')).rejects.toThrow(
-      'legacy removal failed',
-    );
-
-    await expect(acl.getEntry('user1')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-    await expect(acl.check('user1', '/doc/write')).rejects.toThrow(
-      /failed ACL backing mutation may have partially changed/,
-    );
-  });
+  test.each(['remove', 'prepareRemove'] as const)(
+    '%s fails closed when the backing ACL lacks staging',
+    async (method) => {
+      delete backing.prepareRemove;
+      await expect(acl[method]('user1')).rejects.toThrow(
+        'Backing ACL does not support staged removal',
+      );
+      expect(backing.remove).not.toHaveBeenCalled();
+    },
+  );
 
   test('current delegates to backing ACL', () => {
     backing.current.mockReturnValue('current-state');
