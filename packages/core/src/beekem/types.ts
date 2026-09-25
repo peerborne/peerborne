@@ -149,7 +149,7 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcomeFields {
  *
  * The conservative limit bounds tree traversal and per-update structural
  * work. `BeeKEM.addMember()` rejects growth past it before mutating state,
- * and the PathUpdate and Welcome v2 wire codecs reject trees that exceed it.
+ * and the PathUpdate and Welcome wire codecs reject trees that exceed it.
  * Transport senders separately enforce the document protocol's frame limit
  * on the complete signed and framed request.
  */
