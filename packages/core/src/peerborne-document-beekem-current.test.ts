@@ -47,6 +47,8 @@ describe('document current BeeKEM delivery', () => {
   test('signed skipped, stale, obsolete, and wrong-parent updates cannot replace the live tree or append an epoch', async () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
+    const debug = jest.spyOn(console, 'debug').mockImplementation(() => {});
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     const founderKeys = await generateEciesKeyPair();
     const readerKeys = await generateEciesKeyPair();
     const founder = new BeeKEM();
@@ -143,6 +145,11 @@ describe('document current BeeKEM delivery', () => {
     expect(
       Buffer.from(committedRoot).equals(Buffer.from(second.rootSecret)),
     ).toBe(true);
+
+    await deliver(second);
+    expect(debug).toHaveBeenCalledWith('Ignoring duplicate BeeKEM PathUpdateV2');
+    expect(error).not.toHaveBeenCalled();
+    expect(document._beekem).toBe(committedTree);
 
     await deliver(first);
     await deliver(first, true);
