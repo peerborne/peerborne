@@ -64,6 +64,7 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
   };
 }
 
+const MAX_STABLE_READ_ATTEMPTS = 3;
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const wrappedBackingAcls = new WeakSet<object>();
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
@@ -80,12 +81,47 @@ const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
 const arrayIsArray = Array.isArray;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const nativeObjectConstructor = Object;
+const nativeObjectPrototype = Object.prototype;
+const nativeFunctionPrototype = Function.prototype;
 const reflectApply = Reflect.apply;
 const reflectGet = Reflect.get;
+const emptyBackingArguments: never[] = [];
+const nativePromiseConstructor = Promise;
+const nativePromisePrototype = Promise.prototype;
+const promiseThen = Promise.prototype.then;
+const nativePromiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
+  nativePromiseConstructor,
+  Symbol.species,
+);
+const ignorePromiseSettlement = (_value: unknown): undefined => undefined;
+const ignoredPromiseSettlementArguments = [
+  ignorePromiseSettlement,
+  ignorePromiseSettlement,
+];
+
+function observeNativePromiseSettlement(value: object): boolean {
+  try {
+    void reflectApply(
+      promiseThen,
+      value,
+      ignoredPromiseSettlementArguments,
+    );
+    return true;
+  } catch {
+    // Non-native thenables are never assimilated.
+    return false;
+  }
+}
 
 interface CachedListingIdentity<PublicKey> {
   readonly backingRevision: object;
   readonly template: PublicKey;
+}
+
+interface CapturedBackingFinalizer {
+  readonly receiver: object;
+  readonly method: (...args: never[]) => unknown;
 }
 
 /**
@@ -121,6 +157,21 @@ interface CachedListingIdentity<PublicKey> {
  * does not identify which memberships may already have changed. A rejected
  * remote merge does not, so malformed remote input cannot disable the ACL.
  *
+ * A backing commit claim consumed by this wrapper must be a plain record whose
+ * immediate prototype is `Object.prototype` or `null`. Class instances are
+ * rejected so a custom constructor or Promise species hook cannot disguise an
+ * asynchronous claim as a synchronous record. `Promise.prototype` is allowed
+ * only through inspection so a safe rejection handler can be attached before
+ * the asynchronous result is rejected; a Promise is never accepted as a claim.
+ * Promises with unsafe constructor/species hooks cannot be safely observed and
+ * may still produce an unhandled rejection; backing providers must not return
+ * asynchronous values from synchronous operations.
+ * Backing `current()` remains an opaque generic value for compatibility. Its
+ * synchronous contract is mandatory: runtime checks detect ordinary native
+ * Promises and visible thenables, but JavaScript exposes no hook-free Promise
+ * brand predicate for an object with deliberately forged prototype and
+ * constructor state.
+ *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
  * first asynchronous suspension. Object and function identities additionally
@@ -139,6 +190,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _publicOperationsInFlight = 0;
   private _backingOperationsInFlight = 0;
   private _backingInvocationDepth = 0;
+  private _backingReentryAttempts = 0;
   private readonly _backingOperationSettlements = new Set<Promise<void>>();
   private readonly _publicOperationSettlements = new Set<Promise<void>>();
   private readonly _issuedOperationConflicts = new WeakSet<
@@ -365,6 +417,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 
   private _assertHealthy(operation: string): void {
     if (this._backingInvocationDepth !== 0) {
+      this._backingReentryAttempts++;
       throw new Error(
         `${operation} cannot reenter the UCAN ACL from a backing ACL operation`,
       );
@@ -395,32 +448,139 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _invokeSynchronousBacking<T>(
     operation: () => T,
     operationName: string,
+    resultPolicy: 'opaque' | 'plain-claim' | 'void' = 'opaque',
   ): T {
     return this._invokeBacking(() => {
       const result = operation();
+      if (
+        resultPolicy === 'void' &&
+        typeof result !== 'object' &&
+        typeof result !== 'function'
+      ) {
+        // A `void` method may still return a synchronous value; only an
+        // asynchronous result violates the synchronous contract.
+        return undefined as T;
+      }
+
+      const requirePlainClaimResult = resultPolicy === 'plain-claim';
+      let hasThenProperty = false;
       let then: unknown;
+      let isNativePromise = false;
       if (
         (typeof result === 'object' && result !== null) ||
         typeof result === 'function'
       ) {
+        let plainClaimPrototype: object | null | undefined;
+        if (requirePlainClaimResult) {
+          try {
+            plainClaimPrototype = reflectApply(objectGetPrototypeOf, Object, [
+              result,
+            ]) as object | null;
+          } catch {
+            this._backingSyncContractViolated = true;
+            throw new TypeError(
+              `${operationName} returned an invalid claim record`,
+            );
+          }
+          if (
+            plainClaimPrototype !== null &&
+            plainClaimPrototype !== nativeObjectPrototype &&
+            plainClaimPrototype !== nativePromisePrototype
+          ) {
+            this._backingSyncContractViolated = true;
+            throw new TypeError(
+              `${operationName} returned an invalid asynchronous result: expected a plain claim record`,
+            );
+          }
+        }
         try {
-          then = reflectGet(result, 'then');
+          const thenProperty = this._backingDataProperty(
+            result,
+            'then',
+            `${operationName} result then`,
+          );
+          hasThenProperty = thenProperty.found;
+          then = thenProperty.value;
         } catch {
           this._backingSyncContractViolated = true;
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
           throw new TypeError(
             `${operationName} returned an invalid asynchronous result`,
           );
         }
+        let observationIsSafe = false;
+        try {
+          observationIsSafe = this._canSafelyObserveNativePromise(
+            result,
+            `${operationName} result`,
+          );
+        } catch {
+          if (requirePlainClaimResult) {
+            this._backingSyncContractViolated = true;
+            this._observeInvalidNativePromiseReturn(
+              result,
+              `${operationName} result`,
+            );
+            throw new TypeError(
+              `${operationName} returned an invalid asynchronous result`,
+            );
+          }
+        }
+        if (requirePlainClaimResult && !hasThenProperty && !observationIsSafe) {
+          this._backingSyncContractViolated = true;
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
+          throw new TypeError(
+            `${operationName} returned an invalid asynchronous result`,
+          );
+        }
+        if (observationIsSafe) {
+          // The captured intrinsic checks the internal Promise brand without
+          // assimilating a custom thenable. Attempt it for every object whose
+          // species path is known to be hook-free. Plain claim results fail
+          // closed when that proof is unavailable; opaque current-state reads
+          // retain arbitrary synchronous ChangesType compatibility and rely
+          // on the provider contract for deliberately ambiguous object shapes.
+          isNativePromise = observeNativePromiseSettlement(result);
+        }
+        if (
+          requirePlainClaimResult &&
+          !isNativePromise &&
+          plainClaimPrototype === nativePromisePrototype
+        ) {
+          this._backingSyncContractViolated = true;
+          throw new TypeError(
+            `${operationName} returned an invalid asynchronous result: expected a plain claim record`,
+          );
+        }
       }
-      if (typeof then === 'function') {
-        // Poison before assimilating the thenable. Its continuation may have
-        // already been scheduled and must not be able to reenter this wrapper
-        // after the synchronous invocation guard is released.
+      if (
+        isNativePromise ||
+        (requirePlainClaimResult
+          ? hasThenProperty
+          : typeof then === 'function')
+      ) {
+        // Custom thenables are never invoked by this wrapper. Native async
+        // work may already be scheduled and must find later operations closed.
         this._backingSyncContractViolated = true;
-        void Promise.resolve(result).catch(() => undefined);
+        if (
+          !isNativePromise &&
+          ((typeof result === 'object' && result !== null) ||
+            typeof result === 'function')
+        ) {
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
+        }
         throw new TypeError(`${operationName} must complete synchronously`);
       }
-      return result;
+      return resultPolicy === 'void' ? (undefined as T) : result;
     });
   }
 
@@ -688,12 +848,125 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return { found: false };
   }
 
+  /**
+   * Promise.prototype.then performs species construction after its internal
+   * Promise brand check. Preflight that later step without invoking accessors
+   * or constructors so a hostile branded Promise cannot turn a species throw
+   * into a false "not a Promise" result.
+   */
+  private _canSafelyObserveNativePromise(
+    target: object,
+    field: string,
+  ): boolean {
+    const constructorProperty = this._backingDataProperty(
+      target,
+      'constructor',
+      `${field} constructor`,
+    );
+    if (
+      !constructorProperty.found ||
+      constructorProperty.value === undefined
+    ) {
+      return true;
+    }
+    const constructor = constructorProperty.value;
+    if (
+      (typeof constructor !== 'object' || constructor === null) &&
+      typeof constructor !== 'function'
+    ) {
+      return false;
+    }
+
+    if (constructor === nativePromiseConstructor) {
+      const currentSpeciesDescriptor = reflectApply(
+        objectGetOwnPropertyDescriptor,
+        Object,
+        [nativePromiseConstructor, Symbol.species],
+      ) as PropertyDescriptor | undefined;
+      if (
+        currentSpeciesDescriptor !== undefined &&
+        !('value' in currentSpeciesDescriptor)
+      ) {
+        return (
+          nativePromiseSpeciesDescriptor !== undefined &&
+          !('value' in nativePromiseSpeciesDescriptor) &&
+          currentSpeciesDescriptor.get ===
+            nativePromiseSpeciesDescriptor.get &&
+          currentSpeciesDescriptor.set ===
+            nativePromiseSpeciesDescriptor.set
+        );
+      }
+      const species = currentSpeciesDescriptor?.value;
+      return (
+        currentSpeciesDescriptor !== undefined &&
+        (species === undefined ||
+          species === null ||
+          species === nativePromiseConstructor)
+      );
+    }
+
+    // An arbitrary object or function can be a Proxy whose descriptor trap
+    // reports a harmless data property while its ordinary `get` trap throws or
+    // mutates state when Promise.prototype.then performs species lookup. Only
+    // trust the captured intrinsic Object constructor and its pristine
+    // prototype chain. Plain claim records use exactly this path; custom class
+    // instances are rejected by the stricter claim-result policy.
+    if (constructor !== nativeObjectConstructor) return false;
+    if (
+      reflectApply(objectGetPrototypeOf, Object, [
+        nativeObjectConstructor,
+      ]) !== nativeFunctionPrototype ||
+      reflectApply(objectGetPrototypeOf, Object, [
+        nativeFunctionPrototype,
+      ]) !== nativeObjectPrototype ||
+      reflectApply(objectGetPrototypeOf, Object, [nativeObjectPrototype]) !==
+        null
+    ) {
+      return false;
+    }
+    for (const owner of [
+      nativeObjectConstructor,
+      nativeFunctionPrototype,
+      nativeObjectPrototype,
+    ]) {
+      const descriptor = reflectApply(
+        objectGetOwnPropertyDescriptor,
+        Object,
+        [owner, Symbol.species],
+      ) as PropertyDescriptor | undefined;
+      if (descriptor === undefined) continue;
+      if (!('value' in descriptor)) return false;
+      return (
+        descriptor.value === undefined ||
+        descriptor.value === null ||
+        descriptor.value === nativePromiseConstructor
+      );
+    }
+    return true;
+  }
+
+  /** Observe only a safely branded forbidden Promise return. */
+  private _observeInvalidNativePromiseReturn(
+    value: object,
+    field: string,
+  ): void {
+    try {
+      if (this._canSafelyObserveNativePromise(value, field)) {
+        observeNativePromiseSettlement(value);
+      }
+    } catch {
+      // The result is rejected below regardless; never invoke unsafe species
+      // hooks merely to suppress a malicious provider's rejection.
+    }
+  }
+
   private _captureBackingPreparedChange(
     prepared: unknown,
     changeName: 'addition' | 'removal',
   ): {
     readonly changes: ChangesType;
     readonly commit: () => void;
+    readonly claimCommit?: () => unknown;
   } {
     const preparedName = `prepared-${changeName}`;
     return this._runBackingInspection(
@@ -728,9 +1001,28 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             `Backing ACL prepared ${changeName} must provide a commit function`,
           );
         }
+        const claimProperty = this._backingDataProperty(
+          prepared,
+          'claimCommit',
+          `Backing ACL ${preparedName} claimCommit`,
+        );
+        const claimCommit = claimProperty.value;
+        if (
+          claimProperty.found &&
+          claimCommit !== undefined &&
+          typeof claimCommit !== 'function'
+        ) {
+          throw new TypeError(
+            `Backing ACL prepared ${changeName} claimCommit must be a function when present`,
+          );
+        }
         return {
           changes: changesProperty.value as ChangesType,
           commit: () => reflectApply(commit, prepared, []),
+          claimCommit:
+            typeof claimCommit === 'function'
+              ? () => reflectApply(claimCommit, prepared, [])
+              : undefined,
         };
       },
     );
@@ -740,7 +1032,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     this._assertBackingOperationAvailable('ACL backing commit');
     const finishBackingOperation = this._beginBackingOperation();
     try {
-      this._invokeSynchronousBacking(operation, 'Backing ACL commit');
+      this._invokeSynchronousBacking(
+        operation,
+        'Backing ACL commit',
+        'void',
+      );
     } catch (error) {
       this._backingStateUncertain = true;
       if (error instanceof ACLOperationInProgressError) {
@@ -752,6 +1048,165 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     } finally {
       this._markBackingMutation();
       finishBackingOperation();
+    }
+  }
+
+  private _runBackingClaim(
+    operation: () => unknown,
+    changeName: 'addition' | 'removal',
+  ): CapturedBackingFinalizer {
+    const operationName = `Backing ACL ${changeName} commit claim`;
+    this._assertBackingOperationAvailable(operationName);
+    const finishBackingOperation = this._beginBackingOperation();
+    const reentryAttempts = this._backingReentryAttempts;
+    let rotateBackingRevision = true;
+    try {
+      let claim: unknown;
+      try {
+        claim = this._invokeSynchronousBacking(
+          operation,
+          operationName,
+          'plain-claim',
+        );
+      } catch (error) {
+        const foreignConflict = this._isForeignOperationConflict(error);
+        if (
+          foreignConflict &&
+          this._backingReentryAttempts === reentryAttempts &&
+          !this._backingSyncContractViolated
+        ) {
+          // The conflict class certifies rejection at the backing provider's
+          // own pre-invocation boundary, so this exact stage may be retried.
+          rotateBackingRevision = false;
+        }
+        if (
+          this._backingReentryAttempts !== reentryAttempts ||
+          this._backingSyncContractViolated ||
+          (error instanceof ACLOperationInProgressError && !foreignConflict)
+        ) {
+          this._backingStateUncertain = true;
+          if (error instanceof ACLOperationInProgressError) {
+            throw new Error(
+              `${operationName} reported a retry conflict after invocation; backing state is uncertain`,
+            );
+          }
+        }
+        throw error;
+      }
+      if (this._backingReentryAttempts !== reentryAttempts) {
+        this._backingStateUncertain = true;
+        throw new Error(
+          `${operationName} attempted to reenter the UCAN ACL; backing state is uncertain`,
+        );
+      }
+
+      try {
+        const finalize = this._invokeBacking(() => {
+          if (
+            (typeof claim !== 'object' || claim === null) &&
+            typeof claim !== 'function'
+          ) {
+            throw new TypeError(
+              `Backing ACL ${changeName} commit claim must be an object`,
+            );
+          }
+          const finalizeProperty = this._backingDataProperty(
+            claim,
+            'finalize',
+            `Backing ACL ${changeName} commit claim finalizer`,
+          );
+          const capturedFinalize = finalizeProperty.value;
+          if (
+            !finalizeProperty.found ||
+            typeof capturedFinalize !== 'function'
+          ) {
+            throw new TypeError(
+              `Backing ACL ${changeName} commit claim must provide a finalize function`,
+            );
+          }
+          return {
+            receiver: claim,
+            method: capturedFinalize as (...args: never[]) => unknown,
+          };
+        });
+        if (this._backingReentryAttempts !== reentryAttempts) {
+          throw new Error(
+            `${operationName} attempted to reenter the UCAN ACL; backing state is uncertain`,
+          );
+        }
+        return finalize;
+      } catch (error) {
+        this._backingStateUncertain = true;
+        if (error instanceof ACLOperationInProgressError) {
+          throw new Error(
+            `${operationName} reported a retry conflict after returning a claim; backing state is uncertain`,
+          );
+        }
+        throw error;
+      }
+    } finally {
+      // A claim may reserve opaque private staged state even though it cannot
+      // change live membership. Rotate after success and uncertified failures
+      // so older stages and cached listings cannot survive that transition.
+      if (rotateBackingRevision) this._markBackingMutation();
+      finishBackingOperation();
+    }
+  }
+
+  private _runBackingClaimFinalizer(
+    finalizer: CapturedBackingFinalizer,
+  ): void {
+    const reentryAttempts = this._backingReentryAttempts;
+    try {
+      // A successful claim already proved every fallible precondition, and a
+      // composed commit may have installed other providers' claims. Poisoning
+      // after the claim keeps later operations closed but must not skip this
+      // transition and leave the composed commit partially applied.
+      if (this._backingInvocationDepth !== 0) {
+        this._backingReentryAttempts++;
+        throw new Error(
+          'Backing ACL commit claim finalizer cannot reenter the UCAN ACL from a backing ACL operation',
+        );
+      }
+      this._backingInvocationDepth++;
+      let result: unknown;
+      try {
+        result = reflectApply(
+          finalizer.method,
+          finalizer.receiver,
+          emptyBackingArguments,
+        );
+      } finally {
+        this._backingInvocationDepth--;
+      }
+      if (result !== undefined) {
+        this._backingSyncContractViolated = true;
+        if (
+          (typeof result === 'object' && result !== null) ||
+          typeof result === 'function'
+        ) {
+          this._observeInvalidNativePromiseReturn(
+            result,
+            'Backing ACL commit claim finalizer result',
+          );
+        }
+        throw new TypeError(
+          'Backing ACL commit claim finalizer must complete synchronously without a return value',
+        );
+      }
+      if (this._backingReentryAttempts !== reentryAttempts) {
+        throw new Error(
+          'Backing ACL commit claim finalizer attempted to reenter the UCAN ACL',
+        );
+      }
+    } catch (error) {
+      this._backingStateUncertain = true;
+      if (error instanceof ACLOperationInProgressError) {
+        throw new Error(
+          'Backing ACL commit claim finalizer reported a retry conflict; backing state is uncertain',
+        );
+      }
+      throw error;
     }
   }
 
@@ -836,6 +1291,68 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       throw new Error(
         'Prepared ACL addition became stale after backing ACL changed',
       );
+    }
+    const backingClaimCommit = captured.claimCommit;
+    if (backingClaimCommit) {
+      let state:
+        | 'prepared'
+        | 'claimed'
+        | 'finalizing'
+        | 'committed'
+        | 'failed' = 'prepared';
+      const claimCommit = () => {
+        this._assertHealthy('Prepared ACL addition');
+        if (state !== 'prepared') {
+          throw new Error(
+            'Prepared ACL addition was already committed or claimed',
+          );
+        }
+        if (!allowActiveMutation) {
+          this._assertPublicOperationAvailable(
+            'Prepared ACL addition claim',
+          );
+        }
+        if (this._backingRevision !== backingRevision) {
+          throw new Error(
+            'Prepared ACL addition became stale after backing ACL changed',
+          );
+        }
+
+        const committedRevokedKeys = new Set(this._revokedKeys);
+        committedRevokedKeys.delete(keyBase64);
+        const committedBackingRevision = {};
+        const finalizeBacking = this._runBackingClaim(
+          backingClaimCommit,
+          'addition',
+        );
+        state = 'claimed';
+        return {
+          finalize: () => {
+            if (state === 'committed') return;
+            if (state !== 'claimed') {
+              throw new Error(
+                'Prepared ACL addition claim cannot be finalized',
+              );
+            }
+            state = 'finalizing';
+            try {
+              this._runBackingClaimFinalizer(finalizeBacking);
+            } catch (error) {
+              this._backingRevision = committedBackingRevision;
+              state = 'failed';
+              throw error;
+            }
+            this._revokedKeys = committedRevokedKeys;
+            this._backingRevision = committedBackingRevision;
+            state = 'committed';
+          },
+        };
+      };
+      return {
+        changes: captured.changes,
+        claimCommit,
+        commit: () => claimCommit().finalize(),
+      };
     }
     let committed = false;
     return {
@@ -932,6 +1449,71 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         'Prepared ACL removal became stale after backing ACL changed',
       );
     }
+    const backingClaimCommit = captured.claimCommit;
+    if (backingClaimCommit) {
+      let state:
+        | 'prepared'
+        | 'claimed'
+        | 'finalizing'
+        | 'committed'
+        | 'failed' = 'prepared';
+      const claimCommit = () => {
+        this._assertHealthy('Prepared ACL removal');
+        if (state !== 'prepared') {
+          throw new Error(
+            'Prepared ACL removal was already committed or claimed',
+          );
+        }
+        if (!allowActiveMutation) {
+          this._assertPublicOperationAvailable(
+            'Prepared ACL removal claim',
+          );
+        }
+        if (this._backingRevision !== backingRevision) {
+          throw new Error(
+            'Prepared ACL removal became stale after backing ACL changed',
+          );
+        }
+
+        const committedRevokedKeys = new Set(this._revokedKeys);
+        committedRevokedKeys.add(keyBase64);
+        const committedEntries = new Map(this._entries);
+        committedEntries.delete(keyBase64);
+        const committedBackingRevision = {};
+        const finalizeBacking = this._runBackingClaim(
+          backingClaimCommit,
+          'removal',
+        );
+        state = 'claimed';
+        return {
+          finalize: () => {
+            if (state === 'committed') return;
+            if (state !== 'claimed') {
+              throw new Error(
+                'Prepared ACL removal claim cannot be finalized',
+              );
+            }
+            state = 'finalizing';
+            try {
+              this._runBackingClaimFinalizer(finalizeBacking);
+            } catch (error) {
+              this._backingRevision = committedBackingRevision;
+              state = 'failed';
+              throw error;
+            }
+            this._revokedKeys = committedRevokedKeys;
+            this._entries = committedEntries;
+            this._backingRevision = committedBackingRevision;
+            state = 'committed';
+          },
+        };
+      };
+      return {
+        changes: captured.changes,
+        claimCommit,
+        commit: () => claimCommit().finalize(),
+      };
+    }
     let committed = false;
     return {
       changes: captured.changes,
@@ -981,6 +1563,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       this._invokeSynchronousBacking(
         () => this._backing.merge(changes),
         'Backing ACL merge',
+        'void',
       );
     } catch (error) {
       if (error instanceof ACLOperationInProgressError) {
@@ -1004,12 +1587,27 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         publicKey,
         'ACL check',
       );
-      const isMember =
-        (await this._runBackingRead(() =>
-          this._backing.check(snapshot.publicKey),
-        )) === true;
-      return (
-        isMember && this._isLocallyAuthorized(snapshot.keyBase64, capability)
+      // A claimed prepared commit may finalize while this read is pending, so
+      // only a read that spans no backing revision change is authoritative.
+      for (
+        let attempt = 0;
+        attempt < MAX_STABLE_READ_ATTEMPTS;
+        attempt++
+      ) {
+        const backingRevision = this._backingRevision;
+        const isMember =
+          (await this._runBackingRead(() =>
+            this._backing.check(snapshot.publicKey),
+          )) === true;
+        this._assertBackingOperationAvailable('ACL check');
+        if (this._backingRevision !== backingRevision) continue;
+        return (
+          isMember &&
+          this._isLocallyAuthorized(snapshot.keyBase64, capability)
+        );
+      }
+      throw new Error(
+        `ACL check remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
       );
     });
   }
@@ -1019,53 +1617,64 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       throw new TypeError('capability must be a non-empty string when provided');
     }
     return this._runPublicOperation('ACL listing', async () => {
-      const backingRevision = this._backingRevision;
-      const allUsers = await this._runBackingRead(() => this._backing.users());
-      const snapshotTasks: Array<
-        Promise<{ publicKey: PublicKey; keyBase64: string }>
-      > = [];
-      let enumerationFailed = false;
-      let enumerationError: unknown;
-      try {
-        const isArray = reflectApply(arrayIsArray, Array, [
-          allUsers,
-        ]) as boolean;
-        const length = isArray ? reflectGet(allUsers, 'length') : undefined;
-        if (
-          !isArray ||
-          !Number.isSafeInteger(length) ||
-          (length as number) < 0
-        ) {
-          throw new TypeError('Backing ACL listing must return a stable array');
+      for (
+        let attempt = 0;
+        attempt < MAX_STABLE_READ_ATTEMPTS;
+        attempt++
+      ) {
+        const backingRevision = this._backingRevision;
+        const allUsers = await this._runBackingRead(() => this._backing.users());
+        const snapshotTasks: Array<
+          Promise<{ publicKey: PublicKey; keyBase64: string }>
+        > = [];
+        let enumerationFailed = false;
+        let enumerationError: unknown;
+        try {
+          const isArray = reflectApply(arrayIsArray, Array, [
+            allUsers,
+          ]) as boolean;
+          const length = isArray ? reflectGet(allUsers, 'length') : undefined;
+          if (
+            !isArray ||
+            !Number.isSafeInteger(length) ||
+            (length as number) < 0
+          ) {
+            throw new TypeError('Backing ACL listing must return a stable array');
+          }
+          if ((length as number) > MAX_UCAN_ACL_LISTING_IDENTITIES) {
+            throw new RangeError(
+              `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
+            );
+          }
+          // Start each bounded codec before suspending so it captures every
+          // caller-owned identity in this listing before the caller can mutate it.
+          for (let index = 0; index < (length as number); index++) {
+            const user = reflectGet(allUsers, String(index)) as PublicKey;
+            snapshotTasks.push(
+              this._snapshotListedPublicKey(user, 'ACL listing', backingRevision),
+            );
+          }
+        } catch (error) {
+          enumerationFailed = true;
+          enumerationError = error;
         }
-        if ((length as number) > MAX_UCAN_ACL_LISTING_IDENTITIES) {
-          throw new RangeError(
-            `Backing ACL listing exceeds ${MAX_UCAN_ACL_LISTING_IDENTITIES} identities`,
-          );
-        }
-        // Start each bounded codec before suspending so it captures every
-        // caller-owned identity in this listing before the caller can mutate it.
-        for (let index = 0; index < (length as number); index++) {
-          const user = reflectGet(allUsers, String(index)) as PublicKey;
-          snapshotTasks.push(
-            this._snapshotListedPublicKey(user, 'ACL listing', backingRevision),
-          );
-        }
-      } catch (error) {
-        enumerationFailed = true;
-        enumerationError = error;
+        const snapshotResults = await Promise.allSettled(snapshotTasks);
+        if (enumerationFailed) throw enumerationError;
+        const snapshots = snapshotResults.map((result) => {
+          if (result.status === 'rejected') throw result.reason;
+          return result.value;
+        });
+        this._assertBackingOperationAvailable('ACL listing');
+        if (this._backingRevision !== backingRevision) continue;
+        return snapshots
+          .filter(({ keyBase64 }) =>
+            this._isLocallyAuthorized(keyBase64, capability),
+          )
+          .map(({ publicKey }) => publicKey);
       }
-      const snapshotResults = await Promise.allSettled(snapshotTasks);
-      if (enumerationFailed) throw enumerationError;
-      const snapshots = snapshotResults.map((result) => {
-        if (result.status === 'rejected') throw result.reason;
-        return result.value;
-      });
-      return snapshots
-        .filter(({ keyBase64 }) =>
-          this._isLocallyAuthorized(keyBase64, capability),
-        )
-        .map(({ publicKey }) => publicKey);
+      throw new Error(
+        `ACL listing remained stale after ${MAX_STABLE_READ_ATTEMPTS} attempts`,
+      );
     });
   }
 
