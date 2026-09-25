@@ -20,6 +20,13 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  * unknown wire fields, but must preserve the incoming order of recognized
  * fields.
  *
+ * `signatureContext` is a recognized field. Implementations must encode it
+ * and decode it unchanged in its original field position. Every admission
+ * path rejects a decoded message whose tag is missing or differs from the
+ * receiving handler's context, so a serializer that drops the tag rejects
+ * all inbound sync, load, invitation, Welcome, PathUpdate, and key-update
+ * traffic.
+ *
  * @typeParam ChangesType Type describing changes made to a CRDT document. CRDT implementation dependent.
  */
 export interface SyncMessageSerializer<ChangesType, PublicKey = unknown> {

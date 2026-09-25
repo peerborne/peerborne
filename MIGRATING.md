@@ -80,6 +80,9 @@ bootstrap, or a BeeKEM control message. Receivers derive the expected tag from
 the handler and reject missing or different tags before signature
 verification; there is no legacy retry. Direct callers of
 `PeerborneDocument.sync()` must set `signatureContext: 'ordinary-sync-v1'`.
+Custom `SyncMessageSerializer` implementations must encode and decode
+`signatureContext` unchanged in its original field position; a serializer that
+drops it causes every inbound message to be rejected.
 
 This is an intentional alpha wire break. Stop writers, upgrade every peer that
 shares a document, and use an isolated versioned GossipSub prefix while
