@@ -1,6 +1,7 @@
 import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
+import * as TreeMath from './beekem/tree-math.js';
 import {
   deserializeBeeKEMWelcomeV2FromWire,
   serializeBeeKEMWelcomeV2ForWire,
@@ -128,6 +129,54 @@ describe('beekem-welcome-wire', () => {
     );
 
     expect(Buffer.from(bobRoot).equals(Buffer.from(aliceRoot))).toBe(true);
+  });
+
+  test('seals Welcomes with blank join-path parents for sequential joins', async () => {
+    const alice = new BeeKEM();
+    const aliceKeys = await generateECDHKeyPair();
+    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+    const gappedLeafCounts: number[] = [];
+
+    for (let numLeaves = 2; numLeaves <= 8; numLeaves++) {
+      const joinerKeys = await generateECDHKeyPair();
+      const { welcome, rootSecret } = await alice.addMember(
+        joinerKeys.publicKey,
+      );
+      const restored = decodeWelcomeSealedPayloadV2(
+        encodeWelcomeSealedPayloadV2({
+          keychainChanges: new Uint8Array([1, 2, 3]),
+          beekemWelcome: welcome,
+        }),
+      ).beekemWelcome;
+      const directPath = TreeMath.directPath(
+        restored.leafIndex,
+        restored.numLeaves,
+      );
+      if (restored.pathKeys.length < directPath.length) {
+        gappedLeafCounts.push(restored.numLeaves);
+        const pathKeyIndices = new Set(
+          restored.pathKeys.map((node) => node.nodeIndex),
+        );
+        for (const nodeIndex of directPath) {
+          if (pathKeyIndices.has(nodeIndex)) continue;
+          expect(restored.treeNodePublicKeys).toContainEqual({
+            nodeIndex,
+            publicKey: null,
+          });
+        }
+      }
+
+      const joiner = new BeeKEM();
+      await expect(
+        joiner.processWelcome(
+          restored,
+          joinerKeys.privateKey,
+          joinerKeys.publicKey,
+        ),
+      ).resolves.toEqual(rootSecret);
+    }
+
+    expect(gappedLeafCounts).toEqual(expect.arrayContaining([4, 6, 7, 8]));
   });
 
   test.each([

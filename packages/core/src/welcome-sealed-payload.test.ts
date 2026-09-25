@@ -175,7 +175,7 @@ describe('welcome-sealed-payload V2 boundary', () => {
     expect(entryReads).toBe(0);
   });
 
-  test('requires every Welcome path key from the new leaf through the root', () => {
+  test('accepts Welcome path gaps only at blank direct-path nodes', () => {
     const publicKey = (fill: number) => new Uint8Array(65).fill(fill);
     const completeWelcome = {
       ...beekemWelcome,
@@ -201,28 +201,79 @@ describe('welcome-sealed-payload V2 boundary', () => {
       ],
     };
     const completeWire = serializeBeeKEMWelcomeV2ForWire(completeWelcome);
-    const nonContiguousWire = {
-      ...completeWire,
-      pathKeys: [completeWire.pathKeys[1]],
-      treeNodePublicKeys: [
-        ...completeWire.treeNodePublicKeys,
-        { nodeIndex: 5, publicKey: null },
-      ],
-    };
+    const gappedWire = serializeBeeKEMWelcomeV2ForWire({
+      ...completeWelcome,
+      pathKeys: [completeWelcome.pathKeys[1]],
+    });
 
+    expect(gappedWire.treeNodePublicKeys).toContainEqual({
+      nodeIndex: 5,
+      publicKey: null,
+    });
+    expect(
+      deserializeBeeKEMWelcomeV2FromWire(gappedWire).pathKeys.map(
+        (node) => node.nodeIndex,
+      ),
+    ).toEqual([3]);
     expect(() =>
-      deserializeBeeKEMWelcomeV2FromWire(nonContiguousWire),
-    ).toThrow(/non-contiguous/);
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...gappedWire,
+        treeNodePublicKeys: gappedWire.treeNodePublicKeys.map((node) =>
+          node.nodeIndex === 5
+            ? { nodeIndex: 5, publicKey: completeWire.pathKeys[0].publicKey }
+            : node,
+        ),
+      }),
+    ).toThrow(/direct-path node 5 must be blank/);
     expect(() =>
       serializeBeeKEMWelcomeV2ForWire({
         ...completeWelcome,
         pathKeys: [completeWelcome.pathKeys[1]],
         treeNodePublicKeys: [
           ...completeWelcome.treeNodePublicKeys,
+          { nodeIndex: 5, publicKey: publicKey(5) },
+        ],
+      }),
+    ).toThrow(/direct-path node 5 must be blank/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...gappedWire,
+        treeNodePublicKeys: gappedWire.treeNodePublicKeys.filter(
+          (node) => node.nodeIndex !== 5,
+        ),
+      }),
+    ).toThrow(/complete tree/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [...completeWire.pathKeys].reverse(),
+      }),
+    ).toThrow(/pathKeys\[1\] has an invalid, duplicate, or out-of-order/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [
+          { ...completeWire.pathKeys[0], nodeIndex: 1 },
+          completeWire.pathKeys[1],
+        ],
+        treeNodePublicKeys: [
+          ...completeWire.treeNodePublicKeys.filter(
+            (node) => node.nodeIndex !== 1,
+          ),
           { nodeIndex: 5, publicKey: null },
         ],
       }),
-    ).toThrow(/non-contiguous/);
+    ).toThrow(/pathKeys\[0\] has an invalid, duplicate, or out-of-order/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [completeWire.pathKeys[0]],
+        treeNodePublicKeys: [
+          ...completeWire.treeNodePublicKeys,
+          { nodeIndex: 3, publicKey: null },
+        ],
+      }),
+    ).toThrow(/must end at the root/);
   });
 
   test('detaches keychain bytes using their intrinsic length', () => {

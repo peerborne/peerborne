@@ -265,11 +265,11 @@ export function deserializeBeeKEMWelcomeV2FromWire(
     const pathOffset = directPath.indexOf(nodeIndex);
     if (
       nodeIndex >= treeWidth ||
-      pathOffset !== previousPathOffset + 1 ||
+      pathOffset <= previousPathOffset ||
       covered.has(nodeIndex)
     ) {
       throw new Error(
-        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, out-of-order, or non-contiguous nodeIndex`,
+        `Invalid BeeKEMWelcomeV2: pathKeys[${offset}] has an invalid, duplicate, or out-of-order nodeIndex`,
       );
     }
     previousPathOffset = pathOffset;
