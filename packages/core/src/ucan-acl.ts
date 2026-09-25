@@ -1,5 +1,11 @@
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import {
+  canSafelyObserveNativePromise,
+  observeInvalidNativePromiseReturn,
+  observeNativePromiseSettlement,
+  readDataProperty,
+} from './internal/native-promise-observation.js';
+import {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
@@ -68,7 +74,6 @@ const MAX_STABLE_READ_ATTEMPTS = 3;
 const MAX_CACHED_LISTING_IDENTITIES = 128;
 const wrappedBackingAcls = new WeakSet<object>();
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
-const MAX_BACKING_PROPERTY_PROTOTYPE_DEPTH = 32;
 /** Hard limit that keeps one backing listing's identity-codec fanout bounded. */
 export const MAX_UCAN_ACL_LISTING_IDENTITIES = 4096;
 const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
@@ -79,40 +84,12 @@ const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
   maxValueBytes: 8 * 1024,
 } as const;
 const arrayIsArray = Array.isArray;
-const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
-const nativeObjectConstructor = Object;
 const nativeObjectPrototype = Object.prototype;
-const nativeFunctionPrototype = Function.prototype;
 const reflectApply = Reflect.apply;
 const reflectGet = Reflect.get;
 const emptyBackingArguments: never[] = [];
-const nativePromiseConstructor = Promise;
 const nativePromisePrototype = Promise.prototype;
-const promiseThen = Promise.prototype.then;
-const nativePromiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
-  nativePromiseConstructor,
-  Symbol.species,
-);
-const ignorePromiseSettlement = (_value: unknown): undefined => undefined;
-const ignoredPromiseSettlementArguments = [
-  ignorePromiseSettlement,
-  ignorePromiseSettlement,
-];
-
-function observeNativePromiseSettlement(value: object): boolean {
-  try {
-    void reflectApply(
-      promiseThen,
-      value,
-      ignoredPromiseSettlementArguments,
-    );
-    return true;
-  } catch {
-    // Non-native thenables are never assimilated.
-    return false;
-  }
-}
 
 interface CachedListingIdentity<PublicKey> {
   readonly backingRevision: object;
@@ -494,7 +471,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           }
         }
         try {
-          const thenProperty = this._backingDataProperty(
+          const thenProperty = readDataProperty(
             result,
             'then',
             `${operationName} result then`,
@@ -503,7 +480,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           then = thenProperty.value;
         } catch {
           this._backingSyncContractViolated = true;
-          this._observeInvalidNativePromiseReturn(
+          observeInvalidNativePromiseReturn(
             result,
             `${operationName} result`,
           );
@@ -513,14 +490,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         }
         let observationIsSafe = false;
         try {
-          observationIsSafe = this._canSafelyObserveNativePromise(
+          observationIsSafe = canSafelyObserveNativePromise(
             result,
             `${operationName} result`,
           );
         } catch {
           if (requirePlainClaimResult) {
             this._backingSyncContractViolated = true;
-            this._observeInvalidNativePromiseReturn(
+            observeInvalidNativePromiseReturn(
               result,
               `${operationName} result`,
             );
@@ -531,7 +508,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         }
         if (requirePlainClaimResult && !hasThenProperty && !observationIsSafe) {
           this._backingSyncContractViolated = true;
-          this._observeInvalidNativePromiseReturn(
+          observeInvalidNativePromiseReturn(
             result,
             `${operationName} result`,
           );
@@ -573,7 +550,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           ((typeof result === 'object' && result !== null) ||
             typeof result === 'function')
         ) {
-          this._observeInvalidNativePromiseReturn(
+          observeInvalidNativePromiseReturn(
             result,
             `${operationName} result`,
           );
@@ -768,7 +745,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._runBackingInspection(
       'Backing ACL addition preparation lookup',
       () => {
-        const property = this._backingDataProperty(
+        const property = readDataProperty(
           this._backing,
           'prepareAdd',
           'Backing ACL prepareAdd',
@@ -794,7 +771,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._runBackingInspection(
       'Backing ACL preparation lookup',
       () => {
-        const property = this._backingDataProperty(
+        const property = readDataProperty(
           this._backing,
           'prepareRemove',
           'Backing ACL prepareRemove',
@@ -812,152 +789,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         >;
       },
     );
-  }
-
-  private _backingDataProperty(
-    target: object,
-    property: PropertyKey,
-    field: string,
-  ): { readonly found: boolean; readonly value?: unknown } {
-    let owner: object | null = target;
-    const visited = new Set<object>();
-    let depth = 0;
-    while (owner !== null) {
-      if (
-        visited.has(owner) ||
-        depth++ >= MAX_BACKING_PROPERTY_PROTOTYPE_DEPTH
-      ) {
-        throw new TypeError(`${field} has an invalid prototype chain`);
-      }
-      visited.add(owner);
-      const descriptor = reflectApply(
-        objectGetOwnPropertyDescriptor,
-        Object,
-        [owner, property],
-      ) as PropertyDescriptor | undefined;
-      if (descriptor !== undefined) {
-        if (!('value' in descriptor)) {
-          throw new TypeError(`${field} must be a data property`);
-        }
-        return { found: true, value: descriptor.value };
-      }
-      owner = reflectApply(objectGetPrototypeOf, Object, [owner]) as
-        | object
-        | null;
-    }
-    return { found: false };
-  }
-
-  /**
-   * Promise.prototype.then performs species construction after its internal
-   * Promise brand check. Preflight that later step without invoking accessors
-   * or constructors so a hostile branded Promise cannot turn a species throw
-   * into a false "not a Promise" result.
-   */
-  private _canSafelyObserveNativePromise(
-    target: object,
-    field: string,
-  ): boolean {
-    const constructorProperty = this._backingDataProperty(
-      target,
-      'constructor',
-      `${field} constructor`,
-    );
-    if (
-      !constructorProperty.found ||
-      constructorProperty.value === undefined
-    ) {
-      return true;
-    }
-    const constructor = constructorProperty.value;
-    if (
-      (typeof constructor !== 'object' || constructor === null) &&
-      typeof constructor !== 'function'
-    ) {
-      return false;
-    }
-
-    if (constructor === nativePromiseConstructor) {
-      const currentSpeciesDescriptor = reflectApply(
-        objectGetOwnPropertyDescriptor,
-        Object,
-        [nativePromiseConstructor, Symbol.species],
-      ) as PropertyDescriptor | undefined;
-      if (
-        currentSpeciesDescriptor !== undefined &&
-        !('value' in currentSpeciesDescriptor)
-      ) {
-        return (
-          nativePromiseSpeciesDescriptor !== undefined &&
-          !('value' in nativePromiseSpeciesDescriptor) &&
-          currentSpeciesDescriptor.get ===
-            nativePromiseSpeciesDescriptor.get &&
-          currentSpeciesDescriptor.set ===
-            nativePromiseSpeciesDescriptor.set
-        );
-      }
-      const species = currentSpeciesDescriptor?.value;
-      return (
-        currentSpeciesDescriptor !== undefined &&
-        (species === undefined ||
-          species === null ||
-          species === nativePromiseConstructor)
-      );
-    }
-
-    // An arbitrary object or function can be a Proxy whose descriptor trap
-    // reports a harmless data property while its ordinary `get` trap throws or
-    // mutates state when Promise.prototype.then performs species lookup. Only
-    // trust the captured intrinsic Object constructor and its pristine
-    // prototype chain. Plain claim records use exactly this path; custom class
-    // instances are rejected by the stricter claim-result policy.
-    if (constructor !== nativeObjectConstructor) return false;
-    if (
-      reflectApply(objectGetPrototypeOf, Object, [
-        nativeObjectConstructor,
-      ]) !== nativeFunctionPrototype ||
-      reflectApply(objectGetPrototypeOf, Object, [
-        nativeFunctionPrototype,
-      ]) !== nativeObjectPrototype ||
-      reflectApply(objectGetPrototypeOf, Object, [nativeObjectPrototype]) !==
-        null
-    ) {
-      return false;
-    }
-    for (const owner of [
-      nativeObjectConstructor,
-      nativeFunctionPrototype,
-      nativeObjectPrototype,
-    ]) {
-      const descriptor = reflectApply(
-        objectGetOwnPropertyDescriptor,
-        Object,
-        [owner, Symbol.species],
-      ) as PropertyDescriptor | undefined;
-      if (descriptor === undefined) continue;
-      if (!('value' in descriptor)) return false;
-      return (
-        descriptor.value === undefined ||
-        descriptor.value === null ||
-        descriptor.value === nativePromiseConstructor
-      );
-    }
-    return true;
-  }
-
-  /** Observe only a safely branded forbidden Promise return. */
-  private _observeInvalidNativePromiseReturn(
-    value: object,
-    field: string,
-  ): void {
-    try {
-      if (this._canSafelyObserveNativePromise(value, field)) {
-        observeNativePromiseSettlement(value);
-      }
-    } catch {
-      // The result is rejected below regardless; never invoke unsafe species
-      // hooks merely to suppress a malicious provider's rejection.
-    }
   }
 
   private _captureBackingPreparedChange(
@@ -980,7 +811,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             `Backing ACL prepared ${changeName} must be an object or function`,
           );
         }
-        const changesProperty = this._backingDataProperty(
+        const changesProperty = readDataProperty(
           prepared,
           'changes',
           `Backing ACL ${preparedName} changes`,
@@ -990,7 +821,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             `Backing ACL prepared ${changeName} must provide changes`,
           );
         }
-        const commitProperty = this._backingDataProperty(
+        const commitProperty = readDataProperty(
           prepared,
           'commit',
           `Backing ACL ${preparedName} commit`,
@@ -1001,7 +832,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             `Backing ACL prepared ${changeName} must provide a commit function`,
           );
         }
-        const claimProperty = this._backingDataProperty(
+        const claimProperty = readDataProperty(
           prepared,
           'claimCommit',
           `Backing ACL ${preparedName} claimCommit`,
@@ -1110,7 +941,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
               `Backing ACL ${changeName} commit claim must be an object`,
             );
           }
-          const finalizeProperty = this._backingDataProperty(
+          const finalizeProperty = readDataProperty(
             claim,
             'finalize',
             `Backing ACL ${changeName} commit claim finalizer`,
@@ -1185,7 +1016,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           (typeof result === 'object' && result !== null) ||
           typeof result === 'function'
         ) {
-          this._observeInvalidNativePromiseReturn(
+          observeInvalidNativePromiseReturn(
             result,
             'Backing ACL commit claim finalizer result',
           );

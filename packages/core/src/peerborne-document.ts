@@ -1,5 +1,11 @@
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
+import {
+  canSafelyObserveNativePromise,
+  observeInvalidNativePromiseReturn,
+  observeNativePromiseSettlement,
+  readDataProperty,
+} from './internal/native-promise-observation.js';
 /**
  * Document  is just for opening documents right now
  * @remarks
@@ -264,30 +270,12 @@ export interface InvitationBootstrapBundle {
   encryptedBootstrap: Uint8Array;
 }
 
-const reflectOwnKeys = Reflect.ownKeys;
 const documentReflectApply = Reflect.apply;
-const documentGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const documentGetPrototypeOf = Object.getPrototypeOf;
 const documentObjectConstructor = Object;
 const documentObjectPrototype = Object.prototype;
-const documentFunctionPrototype = Function.prototype;
 const emptyCommitArguments: never[] = [];
-const documentPromiseConstructor = Promise;
 const documentPromisePrototype = Promise.prototype;
-const documentPromiseThen = Promise.prototype.then;
-const documentPromiseSpeciesDescriptor = documentGetOwnPropertyDescriptor(
-  documentPromiseConstructor,
-  Symbol.species,
-);
-const ignoreDocumentPromiseSettlement = (_value: unknown): undefined =>
-  undefined;
-const ignoredDocumentPromiseSettlementArguments = [
-  ignoreDocumentPromiseSettlement,
-  ignoreDocumentPromiseSettlement,
-];
-// Bound hostile prototype traversal well above normal provider inheritance.
-// Custom providers must expose prepared methods within this depth.
-const MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH = 32;
 
 interface CapturedDataMethod {
   readonly receiver: object;
@@ -310,34 +298,7 @@ function preparedDataProperty(
   ) {
     throw new TypeError(`${label} must be provided by an object`);
   }
-
-  let owner: object | null = value as object;
-  const visited = new Set<object>();
-  let depth = 0;
-  while (owner !== null) {
-    if (
-      visited.has(owner) ||
-      depth++ >= MAX_PREPARED_PROPERTY_PROTOTYPE_DEPTH
-    ) {
-      throw new TypeError(`${label} has an invalid prototype chain`);
-    }
-    visited.add(owner);
-    const descriptor = documentReflectApply(
-      documentGetOwnPropertyDescriptor,
-      Object,
-      [owner, property],
-    ) as PropertyDescriptor | undefined;
-    if (descriptor !== undefined) {
-      if (!('value' in descriptor)) {
-        throw new TypeError(`${label} must be a data property`);
-      }
-      return { found: true, value: descriptor.value };
-    }
-    owner = documentReflectApply(documentGetPrototypeOf, Object, [owner]) as
-      | object
-      | null;
-  }
-  return { found: false };
+  return readDataProperty(value as object, property, label);
 }
 
 function capturePreparedDataMethod(
@@ -353,121 +314,6 @@ function capturePreparedDataMethod(
     receiver: value as object,
     method: captured.value as (...args: unknown[]) => unknown,
   };
-}
-
-function canSafelyObservePreparedNativePromise(
-  target: object,
-  label: string,
-): boolean {
-  const constructorProperty = preparedDataProperty(
-    target,
-    'constructor',
-    `${label} constructor`,
-  );
-  if (
-    !constructorProperty.found ||
-    constructorProperty.value === undefined
-  ) {
-    return true;
-  }
-  const constructor = constructorProperty.value;
-  if (
-    (typeof constructor !== 'object' || constructor === null) &&
-    typeof constructor !== 'function'
-  ) {
-    return false;
-  }
-  if (constructor === documentPromiseConstructor) {
-    const currentSpeciesDescriptor = documentReflectApply(
-      documentGetOwnPropertyDescriptor,
-      Object,
-      [documentPromiseConstructor, Symbol.species],
-    ) as PropertyDescriptor | undefined;
-    if (
-      currentSpeciesDescriptor !== undefined &&
-      !('value' in currentSpeciesDescriptor)
-    ) {
-      return (
-        documentPromiseSpeciesDescriptor !== undefined &&
-        !('value' in documentPromiseSpeciesDescriptor) &&
-        currentSpeciesDescriptor.get ===
-          documentPromiseSpeciesDescriptor.get &&
-        currentSpeciesDescriptor.set ===
-          documentPromiseSpeciesDescriptor.set
-      );
-    }
-    const species = currentSpeciesDescriptor?.value;
-    return (
-      currentSpeciesDescriptor !== undefined &&
-      (species === undefined ||
-        species === null ||
-        species === documentPromiseConstructor)
-    );
-  }
-  // An arbitrary constructor can be a Proxy whose descriptor trap reports a
-  // harmless species while its ordinary `get` trap throws or mutates state
-  // when Promise.prototype.then performs species lookup. Only trust the
-  // captured intrinsic Object constructor and its pristine prototype chain.
-  if (constructor !== documentObjectConstructor) return false;
-  if (
-    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
-      documentObjectConstructor,
-    ]) !== documentFunctionPrototype ||
-    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
-      documentFunctionPrototype,
-    ]) !== documentObjectPrototype ||
-    documentReflectApply(documentGetPrototypeOf, documentObjectConstructor, [
-      documentObjectPrototype,
-    ]) !== null
-  ) {
-    return false;
-  }
-  for (const owner of [
-    documentObjectConstructor,
-    documentFunctionPrototype,
-    documentObjectPrototype,
-  ]) {
-    const descriptor = documentReflectApply(
-      documentGetOwnPropertyDescriptor,
-      documentObjectConstructor,
-      [owner, Symbol.species],
-    ) as PropertyDescriptor | undefined;
-    if (descriptor === undefined) continue;
-    if (!('value' in descriptor)) return false;
-    return (
-      descriptor.value === undefined ||
-      descriptor.value === null ||
-      descriptor.value === documentPromiseConstructor
-    );
-  }
-  return true;
-}
-
-function observePreparedNativePromiseSettlement(value: object): boolean {
-  try {
-    void documentReflectApply(
-      documentPromiseThen,
-      value,
-      ignoredDocumentPromiseSettlementArguments,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function observeInvalidPreparedNativePromiseReturn(
-  value: object,
-  label: string,
-): void {
-  try {
-    if (canSafelyObservePreparedNativePromise(value, label)) {
-      observePreparedNativePromiseSettlement(value);
-    }
-  } catch {
-    // The caller rejects the result regardless; do not invoke unsafe species
-    // hooks merely to suppress a malicious provider's rejection.
-  }
 }
 
 function invokePreparedCommitClaim(
@@ -512,7 +358,7 @@ function invokePreparedCommitClaim(
       `${label} result then`,
     );
   } catch {
-    observeInvalidPreparedNativePromiseReturn(
+    observeInvalidNativePromiseReturn(
       claim,
       `${label} result`,
     );
@@ -520,23 +366,23 @@ function invokePreparedCommitClaim(
   }
   let observationIsSafe = false;
   try {
-    observationIsSafe = canSafelyObservePreparedNativePromise(
+    observationIsSafe = canSafelyObserveNativePromise(
       claim as object,
       `${label} result`,
     );
   } catch {
-    observeInvalidPreparedNativePromiseReturn(
+    observeInvalidNativePromiseReturn(
       claim,
       `${label} result`,
     );
     throw new TypeError(`${label} returned an invalid asynchronous result`);
   }
   if (!thenProperty.found && !observationIsSafe) {
-    observeInvalidPreparedNativePromiseReturn(claim, `${label} result`);
+    observeInvalidNativePromiseReturn(claim, `${label} result`);
     throw new TypeError(`${label} returned an invalid asynchronous result`);
   }
   const isNativePromise = observationIsSafe
-    ? observePreparedNativePromiseSettlement(claim)
+    ? observeNativePromiseSettlement(claim)
     : false;
   if (thenProperty.found || isNativePromise) {
     throw new TypeError(`${label} must complete synchronously`);
@@ -577,7 +423,7 @@ function finalizePreparedCommitClaim(
       (typeof result === 'object' && result !== null) ||
       typeof result === 'function'
     ) {
-      observeInvalidPreparedNativePromiseReturn(
+      observeInvalidNativePromiseReturn(
         result,
         `${label} finalizer result`,
       );
