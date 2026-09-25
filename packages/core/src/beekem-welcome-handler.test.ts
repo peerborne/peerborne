@@ -602,6 +602,43 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     },
   );
 
+  test('drops a Welcome whose serializer mutates the unsigned snapshot before signing bytes', async () => {
+    let mutated = false;
+    let verifyCalled = false;
+    const serializer = {
+      serializeSyncMessage(
+        message: CRDTSyncMessage<ChangesType, PublicKey>,
+      ): Uint8Array {
+        if (!mutated && message.signature === undefined) {
+          mutated = true;
+          (message.eciesSealed as Uint8Array)[0] = 9;
+        }
+        return stubSerializer.serializeSyncMessage(message);
+      },
+      deserializeSyncMessage(data: Uint8Array) {
+        return stubSerializer.deserializeSyncMessage(data);
+      },
+    } as SyncMessageSerializer<ChangesType, PublicKey>;
+
+    const result = await evaluateBeeKEMWelcome(
+      baseAcceptableMessage(),
+      makeDeps({
+        syncMessageSerializer: serializer,
+        verifyWriterSignature: async () => {
+          verifyCalled = true;
+          return true;
+        },
+      }),
+    );
+
+    expect(mutated).toBe(true);
+    expect(result).toEqual({
+      kind: 'drop-malformed',
+      reason: 'invalid-welcome-encoding',
+    });
+    expect(verifyCalled).toBe(false);
+  });
+
   test('drops SharedArrayBuffer-backed signature-stripped bytes', async () => {
     if (typeof SharedArrayBuffer === 'undefined') return;
     let serializeCalls = 0;

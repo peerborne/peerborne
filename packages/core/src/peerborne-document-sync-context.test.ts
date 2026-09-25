@@ -289,6 +289,34 @@ describe('ordinary sync-message context confinement', () => {
     expect(collectACL).not.toHaveBeenCalled();
   });
 
+  test('membership authentication rejects a serializer that mutates before signing bytes', async () => {
+    const verify = jest.fn(async () => true);
+    const document = fakeDocument({
+      _writerKeysVersion: 0,
+      _verifyMembershipWriterSignature: verify,
+      _syncMessageSerializer: {
+        serializeSyncMessage: (message: {
+          keychainChanges?: { delta: number };
+        }) => {
+          message.keychainChanges!.delta = 9;
+          return new Uint8Array([1]);
+        },
+      },
+    });
+
+    await expect(
+      document._authenticateMembershipMessage(
+        {
+          documentId: documentPath,
+          keychainChanges: { delta: 1 },
+          signature: 'AQ==',
+        },
+        'key-update-v2',
+      ),
+    ).resolves.toEqual({ kind: 'malformed' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   test('GossipSub validator rejects a specialized body before signature work', async () => {
     const serializer = new JSONSerializer<any>();
     const validators = new Map<string, (...args: any[]) => Promise<unknown>>();

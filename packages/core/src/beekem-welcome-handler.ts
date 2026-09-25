@@ -22,7 +22,10 @@ import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
 import { constantTimeEqual } from './internal/constant-time-equal.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
-import { snapshotSyncMessageForContext } from './sync-message-context.js';
+import {
+  snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
+} from './sync-message-context.js';
 import {
   copyUnsharedUint8Array,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
@@ -303,6 +306,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   }
   const signature = message.signature;
   let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
+  let expected: CRDTSyncMessage<ChangesType, PublicKey>;
   try {
     const verificationMessage = snapshotSyncMessageForContext<
       ChangesType,
@@ -310,6 +314,11 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     >(message, 'beekem-welcome-v1');
     const { signature: _signature, ...unsigned } = verificationMessage;
     messageWithoutSignature = unsigned;
+    expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      unsigned,
+      'beekem-welcome-v1',
+      { retainCryptoKeys: true },
+    );
   } catch {
     return {
       kind: 'drop-malformed',
@@ -327,6 +336,15 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
       'BeeKEM Welcome signature encoding',
     );
   } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  if (
+    !syncMessageMatchesSnapshot(
+      expected,
+      messageWithoutSignature,
+      'beekem-welcome-v1',
+    )
+  ) {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
   const signatureValid =

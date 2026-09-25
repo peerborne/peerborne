@@ -1812,6 +1812,7 @@ export class PeerborneDocument<
     const signature = message.signature;
     if (!signature) return { kind: 'missing-signature' };
     let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
+    let expected: CRDTSyncMessage<ChangesType, PublicKey>;
     let raw: Uint8Array;
     const serialize = (): Uint8Array =>
       copyUnsharedUint8Array(
@@ -1824,8 +1825,16 @@ export class PeerborneDocument<
       const { signature: _signature, ...detached } =
         snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
       unsigned = detached;
+      expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        unsigned,
+        context,
+        { retainCryptoKeys: true },
+      );
       raw = serialize();
     } catch {
+      return { kind: 'malformed' };
+    }
+    if (!syncMessageMatchesSnapshot(expected, unsigned, context)) {
       return { kind: 'malformed' };
     }
     const writerKeysVersion = this._writerKeysVersion;
