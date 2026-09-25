@@ -151,6 +151,7 @@ describe('document load response boundaries', () => {
       };
       const message = {
         documentId: '/tip-advertisement',
+        signatureContext: 'tip-advertisement-v1',
         tipsHash: new Uint8Array(32).fill(1),
         signature: 'AQ==',
       };

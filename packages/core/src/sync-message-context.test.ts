@@ -401,6 +401,7 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
   test('accepts the same CryptoKey object', async () => {
     const candidate = {
       documentId: '/doc',
+      signatureContext: 'ordinary-sync-v1',
       changes: { writer: await generateKey() },
     };
     expect(
@@ -418,8 +419,13 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
     ['an empty object', async () => ({})],
   ])('rejects a CryptoKey replaced with %s', async (_label, replace) => {
     const key = await generateKey();
-    const candidate: { documentId: string; changes: { writer: unknown } } = {
+    const candidate: {
+      documentId: string;
+      signatureContext: string;
+      changes: { writer: unknown };
+    } = {
       documentId: '/doc',
+      signatureContext: 'ordinary-sync-v1',
       changes: { writer: key },
     };
     const expected = expectedFor(candidate);

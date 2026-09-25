@@ -322,6 +322,7 @@ async function welcomeHarness() {
   );
   const message = {
     documentId: documentPath,
+    signatureContext: 'beekem-welcome-v1',
     welcomeEpochId: new Uint8Array(32).fill(7),
     welcomeRecipient: 'local-user',
     welcomeRecipientKemPublicKey: kemPublicKeyRaw,

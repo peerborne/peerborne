@@ -203,6 +203,7 @@ describe('ordinary sync-message context confinement', () => {
     });
     const message: any = {
       documentId: documentPath,
+      signatureContext: 'ordinary-sync-v1',
       changeId: 'root',
       changes: { kind: 'document', change: { value: 1 } },
       signature: 'AQ==',
@@ -442,6 +443,7 @@ describe('ordinary sync-message context confinement', () => {
       decryptBlock.mockResolvedValueOnce(
         json.serializeSyncMessage({
           documentId: documentPath,
+          signatureContext: 'ordinary-sync-v1',
           changeId: 'root',
           changes: { kind: 'document', change: { value: 1 } },
           signature: 'AQ==',
@@ -577,9 +579,10 @@ describe('ordinary sync-message context confinement', () => {
 });
 
 describe('snapshot-bearing invitation sync', () => {
-  function snapshotMessage() {
+  function snapshotMessage(context: string) {
     return {
       documentId: documentPath,
+      signatureContext: context,
       changeId: 'head-cid',
       changes: {
         kind: crdtDocumentChangeNode,
@@ -631,7 +634,7 @@ describe('snapshot-bearing invitation sync', () => {
     'recognizes the applied detached snapshot during %s',
     async (phase, context) => {
       const document = snapshotDocument();
-      const message = snapshotMessage();
+      const message = snapshotMessage(context);
 
       await expect(
         syncInvitationMessageCompletely(
@@ -653,7 +656,7 @@ describe('snapshot-bearing invitation sync', () => {
       lastChangeNodeCID: 'newer-cid',
       compactedCount: 20,
     });
-    const message = snapshotMessage();
+    const message = snapshotMessage('invitation-bootstrap-v1');
 
     await expect(
       syncInvitationMessageCompletely(
@@ -673,7 +676,7 @@ describe('snapshot-bearing invitation sync', () => {
 
   test('does not attribute a snapshot to an ordinary sync source', async () => {
     const document = snapshotDocument();
-    const message = snapshotMessage();
+    const message = snapshotMessage('ordinary-sync-v1');
     delete message.changeId;
     delete message.changes;
 
