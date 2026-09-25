@@ -6801,7 +6801,12 @@ export class PeerborneDocument<
     return this._pendingWelcomes.size;
   }
 
-  /** Exact number of serialized Welcome bytes retained by the buffer. */
+  /**
+   * Test/inspection helper: exact number of serialized Welcome bytes
+   * retained by the pending-welcomes buffer.
+   *
+   * @internal exposed only for unit tests.
+   */
   public get pendingWelcomesRetainedBytes(): number {
     return this._pendingWelcomes.retainedBytes;
   }
