@@ -653,6 +653,68 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('complete');
   });
 
+  test('lets an in-flight sibling ACL merge settle after a certified rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    let releaseBad!: () => void;
+    const badFetched = new Promise<void>((resolve) => {
+      releaseBad = resolve;
+    });
+    let finishGood!: () => void;
+    const goodMerged = new Promise<void>((resolve) => {
+      finishGood = resolve;
+    });
+    const merge = jest.fn((changes: { id: string }) => {
+      if (changes.id === 'BAD') throw rejection;
+      releaseBad();
+      return goodMerged;
+    });
+    const document = fakeDocument({
+      documentPath: '/deferred-sibling-acl',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['BAD', crdtWriterChangeNode, undefined],
+        ['GOOD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => {
+        const id = cid.toString();
+        if (id === 'BAD') await badFetched;
+        return { id };
+      }),
+      _writers: { merge },
+      _writerMutationsInFlight: 0,
+      _writerPublicationsInFlight: 0,
+      _invalidateWriterKeyCache: jest.fn(),
+      _trackTip: jest.fn(),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    const syncing = document._syncDocumentChanges('BAD', {
+      kind: crdtWriterChangeNode,
+    });
+    let settled = false;
+    void syncing.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let i = 0; i < 20 && merge.mock.calls.length < 2; i++) {
+      await Promise.resolve();
+    }
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    finishGood();
+
+    await expect(syncing).rejects.toBe(rejection);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document._hashes).toEqual(new Set(['GOOD']));
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),

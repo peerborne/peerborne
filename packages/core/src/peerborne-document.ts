@@ -1997,7 +1997,9 @@ export class PeerborneDocument<
     // deadline has rejected. An indeterminate ACL merge instead poisons the
     // document, aborts sibling fetches, and releases the queue immediately;
     // the poison assertion prevents an abort-ignoring fetch from applying
-    // state if it ever settles later.
+    // state if it ever settles later. A certified ACL rejection stops new
+    // claims but lets in-flight siblings settle under the load signal, because
+    // abandoning an opaque sibling merge would poison the document.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
@@ -2026,7 +2028,7 @@ export class PeerborneDocument<
       };
       let certifiedACLRejection: ACLMergeRejectedError | undefined;
       const worker = async (): Promise<void> => {
-        while (!fetchLimitExceeded) {
+        while (!fetchLimitExceeded && !certifiedACLRejection) {
           assertWorkerActive();
           const index = nextIndex++;
           if (index >= missingDocumentHashes.length) return;
@@ -2109,9 +2111,6 @@ export class PeerborneDocument<
             if (signal?.aborted) throwIfLoadAborted(signal);
             if (error instanceof ACLMergeRejectedError) {
               certifiedACLRejection ??= error;
-              if (!fetchController.signal.aborted) {
-                fetchController.abort(error);
-              }
               throw error;
             }
             if (fetchLimitExceeded && fetchController.signal.aborted) return;
