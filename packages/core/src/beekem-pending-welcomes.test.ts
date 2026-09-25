@@ -1,10 +1,20 @@
 import { describe, expect, test } from '@jest/globals';
+import { Base64 } from 'js-base64';
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import {
   evaluateBeeKEMWelcome,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
+import {
+  PendingWelcomeBuffer,
+  PendingWelcomeBodyLimitError,
+  PENDING_WELCOME_MAX_BODY_BYTES,
+  PENDING_WELCOMES_MAX_ENTRIES,
+  PENDING_WELCOMES_MAX_RETAINED_BYTES,
+  PENDING_WELCOMES_TTL_MS,
+} from './pending-welcome-buffer.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 
 /**
@@ -16,8 +26,8 @@ import { SyncMessageSerializer } from './sync-message-serializer.js';
  * drain state machine against a minimal in-memory harness. The mirror
  * matches:
  *
- *   - `_bufferPendingWelcome`: keyed by `hex(welcomeEpochId)`, capacity
- *     16, oldest-evicted-on-overflow (Map iteration order).
+ *   - `_bufferPendingWelcome`: keyed by `hex(welcomeEpochId)`, with exact
+ *     serialized-byte and entry limits plus oldest-first eviction.
  *   - `_drainPendingWelcomes`: replay each entry through
  *     `evaluateBeeKEMWelcome`; remove on `accept`; discard entries past
  *     TTL (5 min); leave others in place.
@@ -34,7 +44,7 @@ const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
     return new TextEncoder().encode(
       JSON.stringify(message, (_key, value) =>
         value instanceof Uint8Array
-          ? { __testBytes: Array.from(value) }
+          ? { __testBytes: Base64.fromUint8Array(value) }
           : value,
       ),
     );
@@ -45,15 +55,12 @@ const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
       (_key, value) =>
         value &&
         typeof value === 'object' &&
-        Array.isArray(value.__testBytes)
-          ? new Uint8Array(value.__testBytes)
+        typeof value.__testBytes === 'string'
+          ? Base64.toUint8Array(value.__testBytes)
           : value,
     ) as CRDTSyncMessage<ChangesType, PublicKey>;
   },
 } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
-
-const PENDING_WELCOMES_MAX_ENTRIES = 16;
-const PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
 
 function hex(b: Uint8Array): string {
   let s = '';
@@ -66,20 +73,14 @@ function hex(b: Uint8Array): string {
  * drain machinery on `PeerborneDocument`.
  */
 class PendingWelcomesHarness {
-  pendingWelcomes = new Map<
-    string,
-    {
-      message: CRDTSyncMessage<ChangesType, PublicKey>;
-      authenticated: boolean;
-      bufferedAtMs: number;
-    }
-  >();
+  pendingWelcomes = new PendingWelcomeBuffer();
   appliedEpochs: Uint8Array[] = [];
   /** Local clock; tests can advance it to exercise TTL. */
   nowMs = 0;
   /** Whether the local user is currently in the readers ACL. */
   isReader = false;
   signatureResult: unknown = true;
+  verificationCalls = 0;
 
   private depsFor(): WelcomeValidationDeps<ChangesType, PublicKey> {
     return {
@@ -90,8 +91,10 @@ class PendingWelcomesHarness {
       // Welcomes are unconditionally writer-authenticated; the test
       // messages below always carry a `signature` field so this stub
       // verifier just returns `true` for any signed payload.
-      verifyWriterSignature: async () =>
-        this.signatureResult as boolean,
+      verifyWriterSignature: async () => {
+        this.verificationCalls++;
+        return this.signatureResult as boolean;
+      },
       syncMessageSerializer: stubSerializer,
     };
   }
@@ -128,43 +131,47 @@ class PendingWelcomesHarness {
   bufferPendingWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     authenticated: boolean,
-  ): void {
+  ): boolean {
     const epochId = message.welcomeEpochId;
-    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
+    if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return false;
     const key = hex(epochId);
-    if (this.pendingWelcomes.has(key) && !authenticated) return;
-    this.pendingWelcomes.delete(key);
-    if (this.pendingWelcomes.size >= PENDING_WELCOMES_MAX_ENTRIES) {
-      let evictKey: string | undefined;
-      for (const [candidateKey, candidate] of this.pendingWelcomes) {
-        if (!candidate.authenticated) {
-          evictKey = candidateKey;
-          break;
-        }
-      }
-      evictKey ??= this.pendingWelcomes.keys().next().value;
-      if (evictKey !== undefined) this.pendingWelcomes.delete(evictKey);
+    try {
+      return this.pendingWelcomes.storeMessage(
+        key,
+        message,
+        stubSerializer,
+        this.nowMs,
+        authenticated,
+      ).stored;
+    } catch (error) {
+      if (!(error instanceof PendingWelcomeBodyLimitError)) throw error;
+      return false;
     }
-    this.pendingWelcomes.set(key, {
-      message,
-      authenticated,
-      bufferedAtMs: this.nowMs,
-    });
   }
 
   /** Mirror of `_drainPendingWelcomes`. */
   async drainPendingWelcomes(): Promise<void> {
     if (this.pendingWelcomes.size === 0) return;
     const now = this.nowMs;
-    const entries = Array.from(this.pendingWelcomes.entries());
-    for (const [key, entry] of entries) {
+    const keys = this.pendingWelcomes.keysSnapshot();
+    for (const key of keys) {
+      const entry = this.pendingWelcomes.get(key);
+      if (entry === undefined) continue;
       if (now - entry.bufferedAtMs > PENDING_WELCOMES_TTL_MS) {
         this.pendingWelcomes.delete(key);
         continue;
       }
-      const accepted = await this.evaluateAndApply(entry.message, {
-        fromBuffer: true,
-      });
+      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      try {
+        message = stubSerializer.deserializeSyncMessage(entry.body);
+      } catch {
+        this.pendingWelcomes.delete(key);
+        continue;
+      }
+      const accepted = await this.evaluateAndApply(
+        message,
+        { fromBuffer: true },
+      );
       if (accepted) this.pendingWelcomes.delete(key);
     }
   }
@@ -200,6 +207,154 @@ function welcomeFor(
   };
 }
 
+describe('PendingWelcomeBuffer byte accounting', () => {
+  test('accepts the exact per-body boundary and preserves an existing duplicate when replacement is oversized', () => {
+    const buffer = new PendingWelcomeBuffer();
+    const original = new Uint8Array([1, 2, 3]);
+    buffer.store('epoch', original, 1, true);
+
+    expect(() =>
+      buffer.store(
+        'epoch',
+        new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES + 1),
+        2,
+        true,
+      ),
+    ).toThrow(PendingWelcomeBodyLimitError);
+    expect(buffer.size).toBe(1);
+    expect(buffer.retainedBytes).toBe(original.byteLength);
+    expect(buffer.get('epoch')?.body).toEqual(original);
+
+    expect(() =>
+      buffer.store(
+        'boundary',
+        new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES),
+        3,
+        true,
+      ),
+    ).not.toThrow();
+    expect(buffer.retainedBytes).toBe(
+      original.byteLength + PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+  });
+
+  test('accounts duplicate replacement exactly and refreshes its recency', () => {
+    const buffer = new PendingWelcomeBuffer();
+    buffer.store('first', new Uint8Array(11), 1, true);
+    buffer.store('second', new Uint8Array(23), 2, true);
+
+    const result = buffer.store('first', new Uint8Array(37), 3, true);
+
+    expect(result.replaced).toBe(true);
+    expect(result.evictedKeys).toEqual([]);
+    expect(buffer.keysSnapshot()).toEqual(['second', 'first']);
+    expect(buffer.size).toBe(2);
+    expect(buffer.retainedBytes).toBe(23 + 37);
+  });
+
+  test('evicts by aggregate bytes before the entry-count limit is reached', () => {
+    const buffer = new PendingWelcomeBuffer();
+    const fullBodies = Math.floor(
+      PENDING_WELCOMES_MAX_RETAINED_BYTES / PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+    for (let index = 0; index < fullBodies; index++) {
+      buffer.store(
+        `epoch-${index}`,
+        new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES),
+        index,
+        true,
+      );
+    }
+    expect(buffer.size).toBe(fullBodies);
+    expect(buffer.retainedBytes).toBe(
+      fullBodies * PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+
+    const filler =
+      PENDING_WELCOMES_MAX_RETAINED_BYTES - buffer.retainedBytes;
+    if (filler > 0) {
+      buffer.store('filler', new Uint8Array(filler), fullBodies, true);
+    }
+    expect(buffer.retainedBytes).toBe(PENDING_WELCOMES_MAX_RETAINED_BYTES);
+    const sizeAtLimit = buffer.size;
+
+    const result = buffer.store('newest', new Uint8Array(1), 99, true);
+
+    expect(result.evictedKeys).toEqual(['epoch-0']);
+    expect(buffer.size).toBe(sizeAtLimit);
+    expect(buffer.size).toBeLessThan(PENDING_WELCOMES_MAX_ENTRIES);
+    expect(buffer.retainedBytes).toBe(
+      PENDING_WELCOMES_MAX_RETAINED_BYTES - PENDING_WELCOME_MAX_BODY_BYTES + 1,
+    );
+    expect(buffer.retainedBytes).toBeLessThanOrEqual(
+      PENDING_WELCOMES_MAX_RETAINED_BYTES,
+    );
+  });
+
+  test('admits a body as large as the shared-protocol request limit', () => {
+    expect(PENDING_WELCOME_MAX_BODY_BYTES).toBe(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    expect(PENDING_WELCOMES_MAX_RETAINED_BYTES).toBeGreaterThanOrEqual(
+      PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+    const buffer = new PendingWelcomeBuffer();
+    buffer.store(
+      'large',
+      new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES),
+      0,
+      true,
+    );
+    expect(buffer.retainedBytes).toBe(MAX_SHARED_PROTOCOL_REQUEST_BYTES);
+  });
+
+  test('an unauthenticated duplicate never replaces a retained entry', () => {
+    const buffer = new PendingWelcomeBuffer();
+    buffer.store('epoch', new Uint8Array([1]), 1, false);
+
+    const result = buffer.store('epoch', new Uint8Array([2, 2]), 2, false);
+
+    expect(result).toEqual({ stored: false, replaced: false, evictedKeys: [] });
+    expect(buffer.get('epoch')).toEqual({
+      body: new Uint8Array([1]),
+      authenticated: false,
+      bufferedAtMs: 1,
+    });
+    expect(buffer.retainedBytes).toBe(1);
+
+    const upgraded = buffer.store('epoch', new Uint8Array([3, 3]), 3, true);
+    expect(upgraded.stored).toBe(true);
+    expect(upgraded.replaced).toBe(true);
+    expect(buffer.get('epoch')?.authenticated).toBe(true);
+    expect(buffer.retainedBytes).toBe(2);
+  });
+
+  test('byte-limit eviction removes unauthenticated entries before older authenticated ones', () => {
+    const buffer = new PendingWelcomeBuffer();
+    const half = PENDING_WELCOMES_MAX_RETAINED_BYTES / 2;
+    buffer.store('authenticated', new Uint8Array(half), 1, true);
+    buffer.store('unauthenticated', new Uint8Array(half), 2, false);
+
+    const result = buffer.store('newest', new Uint8Array(1), 3, true);
+
+    expect(result.evictedKeys).toEqual(['unauthenticated']);
+    expect(buffer.keysSnapshot()).toEqual(['authenticated', 'newest']);
+    expect(buffer.retainedBytes).toBe(half + 1);
+  });
+
+  test('owns retained bytes and returns detached replay copies', () => {
+    const buffer = new PendingWelcomeBuffer();
+    const callerBody = new Uint8Array([1, 2, 3]);
+    buffer.store('epoch', callerBody, 0, true);
+    callerBody.fill(9);
+    const replayBody = buffer.get('epoch')!.body;
+    replayBody.fill(8);
+
+    expect(buffer.get('epoch')!.body).toEqual(new Uint8Array([1, 2, 3]));
+    expect(buffer.retainedBytes).toBe(3);
+  });
+});
+
 describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', () => {
   test('buffers a Welcome dropped only because the local user is not yet a reader', async () => {
     const h = new PendingWelcomesHarness();
@@ -214,6 +369,8 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(accepted).toBe(false);
     expect(h.appliedEpochs).toHaveLength(0);
     expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBeGreaterThan(0);
+    expect(h.verificationCalls).toBe(1);
   });
 
   test('drains and applies buffered Welcome when readers ACL adds the local user', async () => {
@@ -225,7 +382,11 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.mergeReadersAddingLocal();
 
     expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.pendingWelcomes.retainedBytes).toBe(0);
     expect(h.appliedEpochs).toHaveLength(1);
+    // The serialized buffer is not an authentication cache: replay verifies
+    // the writer signature again before applying any state.
+    expect(h.verificationCalls).toBe(2);
     expect(Array.from(h.appliedEpochs[0])).toEqual(
       Array.from(new Uint8Array(EPOCH_ID_LENGTH).fill(7)),
     );
@@ -278,6 +439,56 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(1);
   });
 
+  test('buffers and replays a large-group Welcome larger than 1 MiB', async () => {
+    const h = new PendingWelcomesHarness();
+    const message = welcomeFor(7);
+    message.eciesSealed = new Uint8Array(2 * 1024 * 1024).fill(5);
+    const serializedBytes =
+      stubSerializer.serializeSyncMessage(message).byteLength;
+    expect(serializedBytes).toBeGreaterThan(1024 * 1024);
+
+    await h.evaluateAndApply(message, { fromBuffer: false });
+    expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBe(serializedBytes);
+
+    await h.mergeReadersAddingLocal();
+    expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.appliedEpochs).toHaveLength(1);
+  });
+
+  test('does not retain a Welcome whose canonical body exceeds the pending limit', () => {
+    const h = new PendingWelcomesHarness();
+    const retained = welcomeFor(1);
+    expect(h.bufferPendingWelcome(retained, true)).toBe(true);
+    const retainedBytes = h.pendingWelcomes.retainedBytes;
+    const message = welcomeFor(7);
+    message.eciesSealed = new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES);
+    expect(
+      stubSerializer.serializeSyncMessage(message).byteLength,
+    ).toBeGreaterThan(PENDING_WELCOME_MAX_BODY_BYTES);
+
+    expect(h.bufferPendingWelcome(message, true)).toBe(false);
+
+    expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytes);
+    expect(h.appliedEpochs).toHaveLength(0);
+  });
+
+  test('accepts the same large Welcome live that it would buffer before the ACL update', async () => {
+    const h = new PendingWelcomesHarness();
+    h.isReader = true;
+    const message = welcomeFor(7);
+    message.eciesSealed = new Uint8Array(2 * 1024 * 1024).fill(5);
+
+    const accepted = await h.evaluateAndApply(message, { fromBuffer: false });
+
+    expect(accepted).toBe(true);
+    expect(h.verificationCalls).toBe(1);
+    expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.pendingWelcomes.retainedBytes).toBe(0);
+    expect(h.appliedEpochs).toHaveLength(1);
+  });
+
   test('refreshes an authenticated duplicate before insertion-order eviction', async () => {
     const h = new PendingWelcomesHarness();
     h.isReader = false;
@@ -307,9 +518,8 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     const h = new PendingWelcomesHarness();
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
-    const originalPayload = stubSerializer.serializeSyncMessage(
-      h.pendingWelcomes.get(key)!.message,
-    );
+    const originalPayload = h.pendingWelcomes.get(key)!.body;
+    const retainedBytes = h.pendingWelcomes.retainedBytes;
 
     const unsigned = welcomeFor(7);
     delete unsigned.signature;
@@ -320,11 +530,8 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.evaluateAndApply(forged, { fromBuffer: false });
 
     expect(h.pendingWelcomes.size).toBe(1);
-    expect(
-      stubSerializer.serializeSyncMessage(
-        h.pendingWelcomes.get(key)!.message,
-      ),
-    ).toEqual(originalPayload);
+    expect(h.pendingWelcomes.get(key)!.body).toEqual(originalPayload);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytes);
   });
 
   test('buffers an unverifiable Welcome and applies it once the ACL (and writer keys) arrive', async () => {
@@ -344,12 +551,13 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     h.signatureResult = false;
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
-    const original = h.pendingWelcomes.get(key)!.message;
+    const original = h.pendingWelcomes.get(key)!.body;
 
     const forged = welcomeFor(7);
     forged.eciesSealed = new Uint8Array([9, 9, 9]);
     await h.evaluateAndApply(forged, { fromBuffer: false });
-    expect(h.pendingWelcomes.get(key)!.message).toBe(original);
+    expect(h.pendingWelcomes.get(key)!.body).toEqual(original);
+    expect(h.pendingWelcomes.get(key)!.authenticated).toBe(false);
   });
 
   test('a verified Welcome replaces an unverified one for the same epoch', async () => {
@@ -363,9 +571,10 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
     expect(h.pendingWelcomes.get(key)!.authenticated).toBe(true);
-    expect(h.pendingWelcomes.get(key)!.message.eciesSealed).toEqual(
-      new Uint8Array([1, 2, 3]),
-    );
+    expect(
+      stubSerializer.deserializeSyncMessage(h.pendingWelcomes.get(key)!.body)
+        .eciesSealed,
+    ).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   test('a full buffer evicts unverified entries before verified ones', async () => {
@@ -394,7 +603,9 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
 
     const key = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(7));
     const mutatedKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(9));
-    const retained = h.pendingWelcomes.get(key)!.message;
+    const retained = stubSerializer.deserializeSyncMessage(
+      h.pendingWelcomes.get(key)!.body,
+    );
     expect(h.pendingWelcomes.has(mutatedKey)).toBe(false);
     expect(retained.welcomeEpochId).toEqual(
       new Uint8Array(EPOCH_ID_LENGTH).fill(7),
@@ -410,6 +621,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
       await h.evaluateAndApply(welcomeFor(i + 1), { fromBuffer: false });
     }
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
+    const retainedBytesAtCapacity = h.pendingWelcomes.retainedBytes;
     // The oldest entry corresponds to epoch byte 1.
     const oldestKey = hex(new Uint8Array(EPOCH_ID_LENGTH).fill(1));
     expect(h.pendingWelcomes.has(oldestKey)).toBe(true);
@@ -420,6 +632,10 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
       fromBuffer: false,
     });
     expect(h.pendingWelcomes.size).toBe(PENDING_WELCOMES_MAX_ENTRIES);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytesAtCapacity);
+    expect(h.pendingWelcomes.retainedBytes).toBeLessThanOrEqual(
+      PENDING_WELCOMES_MAX_RETAINED_BYTES,
+    );
     expect(h.pendingWelcomes.has(oldestKey)).toBe(false);
     const newestKey = hex(
       new Uint8Array(EPOCH_ID_LENGTH).fill(
@@ -443,6 +659,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     // should be discarded outright rather than applied.
     await h.mergeReadersAddingLocal();
     expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.pendingWelcomes.retainedBytes).toBe(0);
     expect(h.appliedEpochs).toHaveLength(0);
   });
 
@@ -450,11 +667,13 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     const h = new PendingWelcomesHarness();
     h.isReader = false;
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
+    const retainedBytes = h.pendingWelcomes.retainedBytes;
 
     // Drain without flipping isReader true. The buffer entry must
     // remain so a later (correct) ACL merge can drain it.
     await h.drainPendingWelcomes();
     expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytes);
     expect(h.appliedEpochs).toHaveLength(0);
   });
 
@@ -467,11 +686,27 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     h.isReader = false;
     await h.evaluateAndApply(welcomeFor(7), { fromBuffer: false });
     const sizeBefore = h.pendingWelcomes.size;
+    const retainedBytesBefore = h.pendingWelcomes.retainedBytes;
 
     // Drain (still not a reader). The size must not change due to a
     // re-buffer; it stays the same because the original entry remains
     // parked.
     await h.drainPendingWelcomes();
     expect(h.pendingWelcomes.size).toBe(sizeBefore);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytesBefore);
   });
+});
+
+
+describe('pending Welcome byte view admission', () => {
+  test.each([new Uint16Array([1]), new Uint8Array(0)])(
+    'rejects an invalid body without replacing a retained Welcome',
+    (body) => {
+      const buffer = new PendingWelcomeBuffer();
+      buffer.store('retained', new Uint8Array([1]), 0, true);
+      expect(() => buffer.store('retained', body, 1, true)).toThrow();
+      expect(buffer.get('retained')?.body).toEqual(new Uint8Array([1]));
+      expect(buffer.retainedBytes).toBe(1);
+    },
+  );
 });

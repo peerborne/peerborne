@@ -155,12 +155,17 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 // in this version, and the inviter does NOT retry. Instead, the recipient's
 // `PeerborneDocument._evaluateAndApplyBeeKEMWelcome` buffers Welcomes
 // dropped solely because the local user is not yet in the readers ACL into a
-// small bounded `pendingWelcomes` Map (max 16 entries, ~5 min TTL) keyed by
-// `hex(welcomeEpochId)`. The buffer is drained on every readers-ACL merge,
-// so a Welcome that arrived before its corresponding ACL update gets
-// replayed automatically. A Welcome that exhausts the TTL without an
-// unblocking ACL update is discarded; the recipient must then rely on a
-// fresh document-load against an authorized peer to recover keychain state.
+// small bounded `pendingWelcomes` buffer keyed by `hex(welcomeEpochId)`.
+// It retains canonical serialized bodies rather than decoded object graphs.
+// Each Welcome may use the full shared-protocol request limit (10 MiB), which
+// matches what a sender can emit; the buffer retains at most 20 MiB in total
+// and 16 entries, each for ~5 min.
+// The buffer is drained on every readers-ACL merge, so a Welcome that arrived
+// before its corresponding ACL update gets replayed automatically through the
+// full authentication path. A Welcome that exceeds a size bound or exhausts
+// the TTL without an unblocking ACL update is discarded; the recipient must
+// then obtain a fresh recipient-bound Welcome or use another explicit key
+// recovery path.
 //
 // Note: only the reader-onboarding path is currently wired through
 // `PeerborneDocument.addReader`. A writer-onboarding flow that
