@@ -43,6 +43,7 @@ import {
   Doc,
   encodeStateAsUpdateV2,
   encodeStateVector,
+  getState,
   ID,
   Item,
 } from 'yjs';
@@ -600,17 +601,7 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
       structureCount += range.len;
     }
   }
-  assertValidEncodedYjsACLMembership(decoded.structs, operation);
-  const users = existingYjsACLUsers(doc);
-  let memberCount = 0;
-  for (const item of users?._map.values() ?? []) {
-    if (!item.deleted) memberCount++;
-  }
-  if (memberCount > MAX_YJS_ACL_MEMBERS) {
-    throw new RangeError(
-      `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
-    );
-  }
+  assertValidEncodedYjsACLMembership(doc, decoded.structs, operation);
   assertValidYjsACLHistory(doc, operation);
   return state;
 }
@@ -647,8 +638,11 @@ function assertValidYjsACLMembershipValue(item: Item, operation: string): void {
 // resolve it through the encoded origins the way Item.getMissing() will. An
 // origin that is still missing may lead to the users map, the only type an ACL
 // holds, so such an item must carry a membership value; its key is inherited
-// from that origin and is validated once the origin arrives.
+// from that origin and is validated once the origin arrives. Pending items are
+// not yet in the users map, so each one that could add a member counts toward
+// the member limit.
 function assertValidEncodedYjsACLMembership(
+  doc: Doc,
   structs: readonly unknown[],
   operation: string,
 ): void {
@@ -707,20 +701,33 @@ function assertValidEncodedYjsACLMembership(
     return result;
   };
 
-  for (const items of itemsByClient.values()) {
+  const members = new Set<string>();
+  for (const [key, item] of existingYjsACLUsers(doc)?._map ?? []) {
+    if (!item.deleted) members.add(key);
+  }
+  let unkeyedPendingItems = 0;
+  for (const [client, items] of itemsByClient) {
+    const integratedClock = getState(doc.store, client);
     for (const item of items) {
+      const pending = item.id.clock >= integratedClock;
       const resolvedParent = resolveParent(item);
       if (resolvedParent === null) {
         assertValidYjsACLMembershipValue(item, operation);
-        continue;
+        if (pending) unkeyedPendingItems++;
+      } else if (resolvedParent.parent === 'users') {
+        assertValidYjsACLMembershipItem(
+          item,
+          resolvedParent.parentSub,
+          operation,
+        );
+        if (pending) members.add(resolvedParent.parentSub as string);
       }
-      if (resolvedParent.parent !== 'users') continue;
-      assertValidYjsACLMembershipItem(
-        item,
-        resolvedParent.parentSub,
-        operation,
-      );
     }
+  }
+  if (members.size + unkeyedPendingItems > MAX_YJS_ACL_MEMBERS) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
+    );
   }
 }
 
