@@ -702,36 +702,6 @@ describe('UCANACL', () => {
     expect(backing.add).not.toHaveBeenCalled();
   });
 
-  test('a rejected staged preparation quarantines an unproven addition until retry', async () => {
-    const members = new Set<string>();
-    backing.current.mockReturnValue('current-state');
-    backing.check.mockImplementation(async (key: string) => members.has(key));
-    backing.users.mockImplementation(async () => [...members]);
-    backing.prepareAdd = jest
-      .fn()
-      .mockImplementationOnce(async (key: string) => {
-        members.add(key);
-        throw new Error('staging failed after partial mutation');
-      })
-      .mockResolvedValueOnce({
-        changes: 'retry-changes',
-        commit: () => {
-          members.add('key1');
-        },
-      });
-
-    await expect(acl.add('key1')).rejects.toThrow(
-      'staging failed after partial mutation',
-    );
-    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
-    await expect(acl.check('key1')).resolves.toBe(false);
-    await expect(acl.users()).resolves.toEqual([]);
-
-    await expect(acl.add('key1')).resolves.toBe('retry-changes');
-    await expect(acl.check('key1')).resolves.toBe(true);
-    expect(acl.current()).toBe('current-state');
-  });
-
   test('prepareAdd delegates without committing backing membership', async () => {
     const commit = jest.fn();
     backing.prepareAdd = jest.fn(async () => ({
@@ -747,26 +717,7 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  test('prepareAdd quarantines a rejected unproven backing preparation', async () => {
-    const members = new Set<string>();
-    backing.current.mockReturnValue('current-state');
-    backing.check.mockImplementation(async (key: string) => members.has(key));
-    backing.users.mockImplementation(async () => [...members]);
-    backing.prepareAdd = jest.fn(async (key: string) => {
-      members.add(key);
-      throw new Error('preparation failed after partial mutation');
-    });
-
-    await expect(acl.prepareAdd('key1')).rejects.toThrow(
-      'preparation failed after partial mutation',
-    );
-
-    await expect(acl.check('key1')).resolves.toBe(false);
-    await expect(acl.users()).resolves.toEqual([]);
-    expect(() => acl.current()).toThrow(/backing addition is quarantined/);
-  });
-
-  test('a preparation preflight rejection does not quarantine an addition', async () => {
+  test('a preparation preflight rejection leaves the ACL available', async () => {
     backing.current.mockReturnValue('current-state');
     backing.check.mockResolvedValue(true);
     backing.prepareAdd = jest.fn();
@@ -845,7 +796,7 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  test('a backing-commit preflight rejection does not quarantine an addition', async () => {
+  test('a backing-commit preflight rejection leaves membership unchanged', async () => {
     const commit = jest.fn();
     backing.prepareAdd = jest.fn(async () => ({
       changes: 'staged-changes',
@@ -1038,7 +989,7 @@ describe('UCANACL', () => {
         ? pendingSerialization
         : Promise.resolve(`serialized:${key}`),
     );
-    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
     const members = new Set(['user-b']);
     const addCommit = jest.fn(() => {
       members.add('user-a');
@@ -1089,7 +1040,7 @@ describe('UCANACL', () => {
       changes: 'add-changes',
       commit,
     }));
-    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+    const objectAcl = new UCANACLImpl(rewrapBacking(), serialize, deserialize);
 
     const preparation = objectAcl.prepareAdd(callerIdentity);
     callerIdentity.id = 'user-b';
@@ -1221,7 +1172,7 @@ describe('UCANACL', () => {
       changes: 'add-changes',
       commit,
     }));
-    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
 
     const preparation = orderedAcl.prepareAdd('user-a');
     await started;
@@ -1469,7 +1420,7 @@ describe('UCANACL', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  test('retries a foreign addition-preparation conflict without quarantine', async () => {
+  test('retries a foreign addition-preparation conflict', async () => {
     let settle!: () => void;
     const settlement = new Promise<void>((resolve) => {
       settle = resolve;

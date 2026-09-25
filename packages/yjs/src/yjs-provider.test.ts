@@ -512,12 +512,13 @@ describe('YjsACL', () => {
     async (dependencyType) => {
       const source = new Doc();
       const users = source.getMap('users');
-      users.set('first', true);
+      const first = await serializeKey(key1);
+      users.set(first, true);
       const beforeDependentUpdate = encodeStateVector(source);
       if (dependencyType === 'missing structs') {
-        users.set('second', true);
+        users.set(await serializeKey(key2), true);
       } else {
-        users.delete('first');
+        users.delete(first);
       }
       const dependencyIncomplete = encodeStateAsUpdateV2(
         source,
