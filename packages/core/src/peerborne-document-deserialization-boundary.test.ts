@@ -79,7 +79,12 @@ function loadHarness(message: any, context = 'load-response-v3') {
     _isSigningEnabled: () => true,
     _deserializeSignature: () => new Uint8Array([1]),
     _getWriterKeys: async () => ['writer'],
-    _syncValidatedProtocolMessage: sync,
+    _mutationQueue: {
+      run: (operation: () => Promise<unknown>) => operation(),
+    },
+    _hashes: new Set(),
+    _bootstrapLoadApplicationState: 'complete',
+    _syncUnlocked: sync,
   });
   const stream = {
     sink: async () => undefined,
@@ -109,8 +114,11 @@ async function invitationHarness(message: any) {
   const { document, verify } = loadHarness(message, 'invitation-bootstrap-v1');
   const epoch = new Uint8Array([1]);
   Object.assign(document, {
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set(),
     _subscribed: false,
+    _createdLocally: false,
     _kemKeyPair: recipient,
     _kemPublicKeyRaw: new Uint8Array(
       await crypto.subtle.exportKey('raw', recipient.publicKey),
@@ -118,8 +126,16 @@ async function invitationHarness(message: any) {
     _changesSerializer: { deserializeChanges: () => ({}) },
     _keychain: {
       merge: () => undefined,
-      keys: async () => [[epoch, {}]],
-      getKey: () => ({}),
+      keys: async () => [],
+      getKey: () => undefined,
+      prepareMerge: () => ({
+        changes: {},
+        keyIds: [epoch],
+        currentKeyId: epoch,
+        hydrateKeys: async () => [[epoch, {}]],
+        getKey: () => ({}),
+        commit: () => undefined,
+      }),
     },
   });
   return {
@@ -169,7 +185,12 @@ describe('deserialized load message boundaries', () => {
         documentId: documentPath,
         changes: { kind: 'document', change: { value: 1 } },
       }),
+      false,
       'load-response-v3',
+      undefined,
+      false,
+      undefined,
+      expect.anything(),
     );
   });
 

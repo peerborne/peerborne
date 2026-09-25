@@ -74,12 +74,14 @@ function fakeDocument(fields: Record<string, unknown>): any {
 async function signedWire(
   signedAs: SyncMessageContext,
   deliveredAs: SyncMessageContext,
+  extraFields: Record<string, unknown> = {},
 ): Promise<Uint8Array> {
   const body = {
     documentId: documentPath,
     signatureContext: signedAs,
     changeId: 'root',
     changes: { kind: 'document', change: { value: 1 } },
+    ...extraFields,
   };
   const signer = fakeDocument({ _userKey: writer.privateKey });
   const signature: string = await signer._signAsWriterUnconditional(body);
@@ -103,7 +105,9 @@ function loadHarness(plaintext: Uint8Array) {
     },
     _isSigningEnabled: () => true,
     _getWriterKeys: async () => [writer.publicKey],
-    _syncValidatedProtocolMessage: sync,
+    _hashes: new Set(),
+    _bootstrapLoadApplicationState: 'complete',
+    _syncUnlocked: sync,
   });
   const stream = {
     sink: async () => undefined,
@@ -145,19 +149,33 @@ async function invitationHarness(plaintext: Uint8Array) {
       decrypt: async () => plaintext,
       verify: auth.verify.bind(auth),
     },
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set(),
     _subscribed: false,
+    _createdLocally: false,
     _kemKeyPair: recipient,
     _kemPublicKeyRaw: new Uint8Array(
       await crypto.subtle.exportKey('raw', recipient.publicKey),
     ),
-    _changesSerializer: { deserializeChanges: () => ({}) },
+    _changesSerializer: {
+      deserializeChanges: () => ({}),
+      serializeChanges: () => new Uint8Array([1]),
+    },
     _keychain: {
       merge: () => undefined,
-      keys: async () => [[epoch, {}]],
-      getKey: () => ({}),
+      keys: async () => [],
+      getKey: () => undefined,
+      prepareMerge: () => ({
+        changes: {},
+        keyIds: [epoch],
+        currentKeyId: epoch,
+        hydrateKeys: async () => [[epoch, {}]],
+        getKey: () => ({}),
+        commit: () => undefined,
+      }),
     },
-    _syncValidatedProtocolMessage: sync,
+    _syncUnlocked: sync,
   });
   return {
     document,
@@ -218,7 +236,12 @@ describe('context-relabeled signed sync messages', () => {
       ).resolves.toBe(true);
       expect(sync).toHaveBeenCalledWith(
         expect.objectContaining({ signatureContext: 'load-response-v3' }),
+        false,
         'load-response-v3',
+        undefined,
+        false,
+        undefined,
+        expect.anything(),
       );
     });
 
@@ -243,7 +266,9 @@ describe('context-relabeled signed sync messages', () => {
   describe('invitation bootstrap', () => {
     test('verifies a genuinely signed invitation bootstrap', async () => {
       const { document, bundle, sync } = await invitationHarness(
-        await signedWire('invitation-bootstrap-v1', 'invitation-bootstrap-v1'),
+        await signedWire('invitation-bootstrap-v1', 'invitation-bootstrap-v1', {
+          keychainChanges: { key: 'epoch' },
+        }),
       );
       await expect(
         document.acceptInvitationBootstrap(
@@ -255,7 +280,12 @@ describe('context-relabeled signed sync messages', () => {
       ).rejects.toThrow(/advertised CIDs were not installed/);
       expect(sync).toHaveBeenCalledWith(
         expect.objectContaining({ signatureContext: 'invitation-bootstrap-v1' }),
+        false,
         'invitation-bootstrap-v1',
+        undefined,
+        true,
+        undefined,
+        expect.anything(),
       );
     });
 
