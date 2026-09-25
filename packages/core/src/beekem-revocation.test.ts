@@ -696,8 +696,8 @@ describe('BeeKEM reader revocation', () => {
     //   Both broadcast steps are wrapped in try/catch + log + fall
     //   through; the local keychain install must always run.
     //
-    // Surviving readers that miss the PathUpdate fall back to a
-    // fresh document load to recover key state; this test focuses on
+    // Surviving readers that miss the PathUpdate need explicit
+    // recipient-bound recovery; this test focuses on
     // the WRITER side of the invariant (writer never gets stuck on
     // the previous epoch).
     type StubKey = { readonly id: string; readonly cryptoKey: CryptoKey };
