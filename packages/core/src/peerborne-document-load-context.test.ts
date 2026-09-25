@@ -226,7 +226,7 @@ describe('load-response V3 confinement', () => {
     expect(applied.tips).toEqual(['cid']);
   });
 
-  test('keeps applied state disjoint from serializer aliases', async () => {
+  test('rejects a response whose serializer mutates signed content', async () => {
     const decoded = {
       documentId: documentPath,
       signatureContext: 'load-response-v3',
@@ -251,9 +251,9 @@ describe('load-response V3 confinement', () => {
         loadStream(),
         new Uint8Array([1]),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
 
-    expect(harness.syncUnlocked.mock.calls[0][0].changes.change.value).toBe(1);
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
   test('rejects a response when writer authorization changes during verification', async () => {
@@ -425,7 +425,7 @@ describe('tip-advertisement V1 confinement', () => {
     ).resolves.toEqual(expected);
   });
 
-  test('keeps the returned hash disjoint from serializer aliases', async () => {
+  test('rejects a vote whose serializer mutates signed content', async () => {
     const decoded = {
       documentId: documentPath,
       signatureContext: 'tip-advertisement-v1',
@@ -447,7 +447,7 @@ describe('tip-advertisement V1 confinement', () => {
         { toString: () => '/peer/one' },
         new Uint8Array([1]),
       ),
-    ).resolves.toEqual(new Uint8Array(32).fill(5));
+    ).resolves.toBeNull();
   });
 
   test('invalidates a vote when writer authorization changes', async () => {
