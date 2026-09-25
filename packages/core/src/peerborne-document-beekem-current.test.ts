@@ -79,6 +79,7 @@ describe('document current BeeKEM delivery', () => {
         _bootstrapLoadApplicationState: 'complete',
         _beekem: reader,
         _beekemInitialized: true,
+        _writerKeysVersion: 0,
         _syncMessageSerializer: serializer,
         _keychain: { prepareEpochKey },
         _getWriterKeys: async () => [signing.publicKey],
@@ -111,6 +112,7 @@ describe('document current BeeKEM delivery', () => {
       }
       const message = {
         documentId: document.documentPath,
+        signatureContext: 'beekem-path-update-v1',
         pathUpdate,
         pathUpdateEpochId: await deriveEpochIdFromRootSecret(update.rootSecret),
       };

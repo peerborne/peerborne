@@ -4,7 +4,13 @@ import { deriveEpochIdFromRootSecret } from './derive-doc-key.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
-import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
+import { BeeKEM } from './beekem/beekem.js';
+import {
+  deserializePathUpdateV2FromWire,
+  serializePathUpdateV2ForWire,
+} from './path-update-wire.js';
+import { pathUpdateFixture } from './__testutils__/beekem-v2.js';
 
 jest.mock(
   'it-pipe',
@@ -50,17 +56,16 @@ function validMessage(epochId: Uint8Array) {
   return {
     documentId: documentPath,
     signatureContext: 'beekem-path-update-v1' as const,
-    pathUpdate: {
-      senderLeafIndex: 0,
-      senderLeafPublicKey: Base64.fromUint8Array(
-        new Uint8Array(65).fill(1),
-      ),
-      nodes: [],
-    },
+    pathUpdate: serializePathUpdateV2ForWire(pathUpdateFixture()),
     pathUpdateEpochId: epochId,
     signature: 'AQ==',
   };
 }
+
+const expectedPathUpdate = () =>
+  deserializePathUpdateV2FromWire(
+    serializePathUpdateV2ForWire(pathUpdateFixture()),
+  );
 
 function pathHarness(
   decoded: Record<string, unknown>,
@@ -70,6 +75,15 @@ function pathHarness(
   const verify = jest.fn(async () => true);
   const processPathUpdate = jest.fn();
   const addEpochKey = jest.fn();
+  const prepareEpochKey = jest.fn(
+    async (epochId: Uint8Array, key: unknown) => ({
+      claimCommit: () => ({
+        finalize: () => {
+          addEpochKey(epochId, key);
+        },
+      }),
+    }),
+  );
   const deserializeSyncMessage = jest.fn(() => decoded);
   const document = fakeDocument({
     _writerKeysVersion: 1,
@@ -80,7 +94,7 @@ function pathHarness(
     _verifyMembershipWriterSignature: verify,
     _beekemInitialized: true,
     _beekem: { clone: () => ({ processPathUpdate }) },
-    _keychain: { addEpochKey },
+    _keychain: { prepareEpochKey },
     ...fields,
   });
   return {
@@ -192,11 +206,9 @@ describe('BeeKEM PathUpdate context confinement', () => {
       new Uint8Array([1]),
     );
 
-    expect(harness.processPathUpdate).toHaveBeenCalledWith({
-      senderLeafIndex: 0,
-      senderLeafPublicKey: new Uint8Array(65).fill(1),
-      nodes: [],
-    });
+    expect(harness.processPathUpdate).toHaveBeenCalledWith(
+      expectedPathUpdate(),
+    );
     expect(harness.addEpochKey).toHaveBeenCalledWith(
       expectedEpochId,
       expect.anything(),
@@ -226,11 +238,9 @@ describe('BeeKEM PathUpdate context confinement', () => {
       new Uint8Array([1]),
     );
 
-    expect(harness.processPathUpdate).toHaveBeenCalledWith({
-      senderLeafIndex: 0,
-      senderLeafPublicKey: new Uint8Array(65).fill(1),
-      nodes: [],
-    });
+    expect(harness.processPathUpdate).toHaveBeenCalledWith(
+      expectedPathUpdate(),
+    );
     expect(harness.addEpochKey).toHaveBeenCalledTimes(1);
   });
 
@@ -316,17 +326,22 @@ async function welcomeHarness() {
   const kemPublicKeyRaw = new Uint8Array(
     await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
   );
+  const founderKeyPair = await generateEciesKeyPair();
+  const founder = new BeeKEM();
+  await founder.initialize(founderKeyPair.privateKey, founderKeyPair.publicKey);
+  const { welcome } = await founder.addMember(kemKeyPair.publicKey);
   const eciesSealed = await eciesSeal(
-    encodeWelcomeSealedPayload({
+    encodeWelcomeSealedPayloadV2({
       keychainChanges: new Uint8Array([1]),
-      beekemWelcome: null,
+      beekemWelcome: welcome,
     }),
     kemKeyPair.publicKey,
   );
+  const welcomeEpochId = new Uint8Array(32).fill(7);
   const message = {
     documentId: documentPath,
     signatureContext: 'beekem-welcome-v1',
-    welcomeEpochId: new Uint8Array(32).fill(7),
+    welcomeEpochId,
     welcomeRecipient: 'local-user',
     welcomeRecipientKemPublicKey: kemPublicKeyRaw,
     eciesSealed,
@@ -334,6 +349,18 @@ async function welcomeHarness() {
   };
   const verify = jest.fn(async () => true);
   const merge = jest.fn();
+  const epochKey = { algorithm: { name: 'AES-GCM' } };
+  const prepareMerge = jest.fn((changes: unknown) => ({
+    currentKeyId: new Uint8Array(welcomeEpochId),
+    keyIds: [new Uint8Array(welcomeEpochId)],
+    hydrateKeys: async () => [[new Uint8Array(welcomeEpochId), epochKey]],
+    getKey: () => epochKey,
+    claimCommit: () => ({
+      finalize: () => {
+        merge(changes);
+      },
+    }),
+  }));
   const document = fakeDocument({
     _writerKeysVersion: 1,
     _authProvider: { serializePublicKey: async () => 'local-user' },
@@ -344,7 +371,7 @@ async function welcomeHarness() {
     _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
     _kemKeyPair: kemKeyPair,
     _kemPublicKeyRaw: kemPublicKeyRaw,
-    _keychain: { merge },
+    _keychain: { prepareMerge },
     _invitationEpoch: undefined,
   });
   return { document, merge, message, verify };
@@ -358,7 +385,7 @@ describe('BeeKEM Welcome writer authorization races', () => {
       harness.document._evaluateAndApplyBeeKEMWelcome(harness.message, {
         fromBuffer: false,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('applied');
 
     expect(harness.merge).toHaveBeenCalledWith({ delta: 1 });
     expect(harness.document._invitationEpoch).toEqual(
@@ -377,7 +404,7 @@ describe('BeeKEM Welcome writer authorization races', () => {
       harness.document._evaluateAndApplyBeeKEMWelcome(harness.message, {
         fromBuffer: false,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe('retry');
 
     expect(harness.merge).not.toHaveBeenCalled();
     expect(harness.document._invitationEpoch).toBeUndefined();
@@ -399,7 +426,7 @@ describe('BeeKEM Welcome writer authorization races', () => {
         { fromBuffer: false },
         admission,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe('retry');
 
     expect(harness.merge).not.toHaveBeenCalled();
     expect(harness.document._invitationEpoch).toBeUndefined();
