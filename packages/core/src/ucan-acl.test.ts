@@ -1223,7 +1223,7 @@ describe('UCANACL', () => {
       'issuer',
     );
 
-    expect(() => prepared.commit()).toThrow(/UCAN metadata changed/);
+    expect(() => prepared.commit()).toThrow(/Prepared ACL removal became stale/);
     expect(commit).not.toHaveBeenCalled();
     expect((await acl.getEntry('user1'))?.ucan.nonce).toBe('nonce-2');
     expect(await acl.check('user1', '/doc/admin')).toBe(true);
@@ -1292,7 +1292,7 @@ describe('UCANACL', () => {
 
     const prepared = await preparation;
     await expect(grant).resolves.toBe('add-changes');
-    expect(() => prepared.commit()).toThrow(/UCAN metadata changed/);
+    expect(() => prepared.commit()).toThrow(/Prepared ACL removal became stale/);
     expect(commit).not.toHaveBeenCalled();
     expect((await acl.getEntry('user1'))?.ucan.nonce).toBe('nonce-2');
     expect(await acl.check('user1', '/doc/admin')).toBe(true);
@@ -1749,7 +1749,7 @@ describe('UCANACL', () => {
         ? pendingSerialization
         : Promise.resolve(`serialized:${key}`),
     );
-    const orderedAcl = new UCANACLImpl(backing, serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
     const members = new Set(['user-a']);
     const removeCommit = jest.fn(() => {
       members.delete('user-a');
@@ -1815,7 +1815,7 @@ describe('UCANACL', () => {
       changes: 'remove-changes',
       commit,
     }));
-    const objectAcl = new UCANACLImpl(backing, serialize, deserialize);
+    const objectAcl = new UCANACLImpl(rewrapBacking(), serialize, deserialize);
 
     const preparation = objectAcl.prepareRemove(callerIdentity);
     callerIdentity.id = 'user-b';
