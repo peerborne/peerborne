@@ -168,9 +168,14 @@ export interface Keychain<KeychainChange, DocumentKey> {
    * redact retained CRDT operations encrypted during that epoch.
    *
    * The returned value MUST be safe to regenerate and replay without creating
-   * a second logical keychain entry. Implementations whose CRDT operation
-   * history cannot represent the isolated current key replay-safely MUST
-   * reject instead of synthesizing a fresh actor/client operation.
+   * a second logical keychain entry, and byte-stable for the same logical key
+   * tuple across repeated calls, restored instances, and equivalent replicas.
+   * Implementations may synthesize a standalone projection only with stable,
+   * content-derived CRDT operation identity; otherwise they MUST reject.
+   * A one-key keychain MUST export its live history so receivers share the
+   * author's lineage and can merge the author's next `add()` delta. Receivers
+   * of a projected later key hold an independent lineage and cannot merge
+   * rotation deltas authored on the full history.
    *
    * @return A replay-safe block of change(s) containing only the current key.
    */
@@ -301,9 +306,9 @@ export interface PreparedKeychainEpoch<KeychainChange> {
   /** Standalone full staged keychain history. */
   readonly history: KeychainChange;
   /**
-   * Standalone staged current-key-only state. Callers may cache and replay
-   * these exact bytes, but MUST NOT regenerate an equivalent projection under
-   * fresh CRDT operation IDs after the staged transition has committed.
+   * Standalone staged current-key-only state. Implementations MUST make this
+   * projection replay-safe and byte-stable for the same logical key tuple
+   * across repeated calls, restored instances, and equivalent replicas.
    * `undefined` means callers that require current-only distribution must fail
    * closed.
    */

@@ -405,7 +405,7 @@ describe('YjsKeychain', () => {
     expect(keychain.getKey(unknownID)).toBeUndefined();
   });
 
-  test('currentKeyChange() reuses replay-safe history for a one-key keychain', async () => {
+  test('currentKeyChange() is stable for a one-key keychain', async () => {
     const source = new YjsKeychain();
     const [id] = await source.add();
 
@@ -423,16 +423,186 @@ describe('YjsKeychain', () => {
     expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([id]);
   });
 
-  test('currentKeyChange() rejects a later key rather than synthesizing a fresh client', async () => {
+  test('currentKeyChange() exports a stable replay-safe current key after rotation', async () => {
     const source = new YjsKeychain();
-    await source.add();
-    await source.add();
+    const [oldID] = await source.add();
+    const [currentID, currentKey] = await source.add();
     const before = source.history();
 
-    await expect(source.currentKeyChange()).rejects.toThrow(
-      'Yjs cannot export the current key replay-safely',
-    );
+    const first = await source.currentKeyChange();
+    const repeated = await source.currentKeyChange();
+    const restored = new YjsKeychain();
+    restored.merge(source.history());
+    const afterRestore = await restored.currentKeyChange();
+    const equivalent = new YjsKeychain();
+    await equivalent.addEpochKey(currentID, currentKey);
+
+    expect(repeated).toEqual(first);
+    expect(afterRestore).toEqual(first);
+    expect(await equivalent.currentKeyChange()).toEqual(first);
+    const freshReceiver = new YjsKeychain();
+    freshReceiver.merge(first);
+    freshReceiver.merge(repeated);
+    freshReceiver.merge(afterRestore);
+    const freshKeys = await freshReceiver.keys();
+    expect(freshKeys.map(([keyID]) => keyID)).toEqual([currentID]);
+    await expect(
+      crypto.subtle.exportKey('raw', freshKeys[0][1]),
+    ).resolves.toEqual(await crypto.subtle.exportKey('raw', currentKey));
+
+    const establishedReceiver = new YjsKeychain();
+    establishedReceiver.merge(source.history());
+    establishedReceiver.merge(first);
+    expect(establishedReceiver.history()).toEqual(source.history());
+    expect((await establishedReceiver.keys()).map(([keyID]) => keyID)).toEqual([
+      oldID,
+      currentID,
+    ]);
     expect(source.history()).toEqual(before);
+  });
+
+  test('a receiver seeded from a one-key export merges the next rotation delta', async () => {
+    const source = new YjsKeychain();
+    const [firstID] = await source.add();
+    const receiver = new YjsKeychain();
+    receiver.merge(await source.currentKeyChange());
+    expect(receiver.history()).toEqual(source.history());
+
+    const [nextID, , delta] = await source.add();
+    receiver.merge(delta);
+
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([
+      firstID,
+      nextID,
+    ]);
+    expect(receiver.history()).toEqual(source.history());
+  });
+
+  test('a first key is authored under its projection identity', async () => {
+    const source = new YjsKeychain();
+    const prepared = await source.prepareKey();
+    expect(prepared.currentKeyChange).toEqual(prepared.history);
+    prepared.commit();
+
+    const equivalent = new YjsKeychain();
+    await equivalent.addEpochKey(prepared.keyId, prepared.key);
+    expect(equivalent.history()).toEqual(source.history());
+    expect(await equivalent.currentKeyChange()).toEqual(prepared.history);
+  });
+
+  test('a full-history peer keeps the author lineage when a one-key export arrives', async () => {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const source = new YjsKeychain();
+      await source.add();
+      const peer = new YjsKeychain();
+      peer.merge(source.history());
+      peer.merge(await source.currentKeyChange());
+      expect(peer.history()).toEqual(source.history());
+
+      const [, , delta] = await source.add();
+      peer.merge(delta);
+      expect(peer.history()).toEqual(source.history());
+    }
+  });
+
+  test('projection client identity binds the complete key tuple', async () => {
+    const id = new Uint8Array(32).fill(0x4a);
+    const firstKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const secondKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+    const first = new YjsKeychain();
+    const second = new YjsKeychain();
+    await first.addEpochKey(id, firstKey);
+    await second.addEpochKey(id, secondKey);
+
+    const firstProjection = await first.currentKeyChange();
+    const secondProjection = await second.currentKeyChange();
+    const firstDoc = new Doc();
+    const secondDoc = new Doc();
+    applyUpdateV2(firstDoc, firstProjection);
+    applyUpdateV2(secondDoc, secondProjection);
+    expect([...firstDoc.store.clients.keys()]).not.toEqual([
+      ...secondDoc.store.clients.keys(),
+    ]);
+    expect(firstProjection).not.toEqual(secondProjection);
+
+    const retainedKeys: ArrayBuffer[] = [];
+    for (const [accepted, conflicting] of [
+      [firstProjection, secondProjection],
+      [secondProjection, firstProjection],
+    ] as const) {
+      const receiver = new YjsKeychain();
+      receiver.merge(accepted);
+      const before = receiver.history();
+      expect(() => receiver.merge(conflicting)).toThrow(
+        'Standalone keychain history is not an append-only view',
+      );
+      expect(receiver.history()).toEqual(before);
+      retainedKeys.push(
+        await crypto.subtle.exportKey('raw', (await receiver.current())[1]),
+      );
+    }
+    expect(new Uint8Array(retainedKeys[0])).not.toEqual(
+      new Uint8Array(retainedKeys[1]),
+    );
+  });
+
+  test('a current-only receiver can apply the next predecessor-bound rotation', async () => {
+    const source = new YjsKeychain();
+    await source.add();
+    const [currentID] = await source.add();
+    const receiver = new YjsKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const next = await source.prepareKey();
+    const nextID = new Uint8Array(next.keyId);
+    const distributed = next.currentKeyChange!;
+    next.commit();
+    const prepared = receiver.prepareAppend(distributed, {
+      expectedPreviousKeyId: currentID,
+      expectedNewKeyId: nextID,
+    });
+    await prepared.hydrateKeys();
+    prepared.commit();
+
+    expect((await receiver.keys()).map(([keyID]) => keyID)).toEqual([
+      currentID,
+      nextID,
+    ]);
+    expect((await receiver.current())[0]).toEqual(nextID);
+    expect(receiver.getKey(nextID)).toBeDefined();
+  });
+
+  test('a receiver that misses a rotation rejects the later successor without mutation', async () => {
+    const source = new YjsKeychain();
+    const [initialID] = await source.add();
+    const receiver = new YjsKeychain();
+    receiver.merge(await source.currentKeyChange());
+
+    const missed = await source.prepareKey();
+    const missedID = new Uint8Array(missed.keyId);
+    missed.commit();
+    const later = await source.prepareKey();
+    const laterID = new Uint8Array(later.keyId);
+    const laterProjection = later.currentKeyChange!;
+    later.commit();
+    const before = receiver.history();
+
+    expect(() =>
+      receiver.prepareAppend(laterProjection, {
+        expectedPreviousKeyId: missedID,
+        expectedNewKeyId: laterID,
+      }),
+    ).toThrow(/predecessor does not match current key/);
+    expect(receiver.history()).toEqual(before);
+    expect((await receiver.current())[0]).toEqual(initialID);
   });
 
   test('current() throws on empty keychain', async () => {
@@ -1053,7 +1223,7 @@ describe('YjsKeychain', () => {
     await right.addEpochKey(epochId, epochKey);
     const originalLeftHistory = left.history();
     const originalRightHistory = right.history();
-    expect(originalLeftHistory).not.toEqual(originalRightHistory);
+    expect(originalLeftHistory).toEqual(originalRightHistory);
     expect(await left.stateCommitment()).toEqual(
       await right.stateCommitment(),
     );
@@ -1369,24 +1539,38 @@ describe('YjsKeychain', () => {
     void id3;
   });
 
-  test('since_invited visibility rejects an unsafe current-only projection when invitation epoch is unset', async () => {
+  test('since_invited visibility exports only the current key when invitation epoch is unset', async () => {
     const sender = new YjsKeychain();
-    const [id1] = await sender.add();
-    const [id2] = await sender.add();
-    void id1;
-    await expect(
-      keychainChangesForVisibility(sender, 'since_invited', undefined),
-    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
-    void id2;
+    await sender.add();
+    const [currentID, currentKey] = await sender.add();
+    const receiver = new YjsKeychain();
+
+    receiver.merge(
+      await keychainChangesForVisibility(sender, 'since_invited', undefined),
+    );
+
+    const keys = await receiver.keys();
+    expect(keys.map(([keyID]) => keyID)).toEqual([currentID]);
+    await expect(crypto.subtle.exportKey('raw', keys[0][1])).resolves.toEqual(
+      await crypto.subtle.exportKey('raw', currentKey),
+    );
   });
 
-  test('current_only visibility rejects an unsafe multi-key projection', async () => {
+  test('current_only visibility exports only the current key', async () => {
     const sender = new YjsKeychain();
     await sender.add();
-    await sender.add();
-    await expect(
-      keychainChangesForVisibility(sender, 'current_only', undefined),
-    ).rejects.toThrow('Yjs cannot export the current key replay-safely');
+    const [currentID, currentKey] = await sender.add();
+    const receiver = new YjsKeychain();
+
+    receiver.merge(
+      await keychainChangesForVisibility(sender, 'current_only', undefined),
+    );
+
+    const keys = await receiver.keys();
+    expect(keys.map(([keyID]) => keyID)).toEqual([currentID]);
+    await expect(crypto.subtle.exportKey('raw', keys[0][1])).resolves.toEqual(
+      await crypto.subtle.exportKey('raw', currentKey),
+    );
   });
 
   test('full_history visibility returns all keys', async () => {

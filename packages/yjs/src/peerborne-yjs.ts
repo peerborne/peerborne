@@ -588,6 +588,43 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
 }
 
 const KEY_ID_LENGTH_BYTES = 32;
+const KEYCHAIN_PROJECTION_CLIENT_DOMAIN =
+  'peerborne:yjs-keychain-projection:v1\0';
+
+// This independently rooted current-key view is reconciled by prepareMerge:
+// a matching current tuple preserves the receiver's existing linear history
+// without applying the projection's unrelated CRDT root operations.
+let projectionTextEncoder: TextEncoder | undefined;
+
+async function currentKeyProjectionClientID(
+  entry: CanonicalKeychainEntry,
+): Promise<number> {
+  const identity = (projectionTextEncoder ??= new TextEncoder()).encode(
+    `${KEYCHAIN_PROJECTION_CLIENT_DOMAIN}${JSON.stringify(entry)}`,
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', identity),
+  );
+  // Five high bits plus six bytes yield a deterministic 53-bit safe integer.
+  let clientID = digest[0] & 0x1f;
+  for (let index = 1; index < 7; index++) {
+    clientID = clientID * 256 + digest[index];
+  }
+  return clientID;
+}
+
+function currentKeyProjection(
+  entry: CanonicalKeychainEntry,
+  clientID: number,
+): Uint8Array {
+  const projection = new Doc();
+  projection.clientID = clientID;
+  projection
+    .getArray<[string, string]>('keys')
+    .push([[entry[0], entry[1]]]);
+  validateYjsKeychain(projection);
+  return new Uint8Array(encodeStateAsUpdateV2(projection));
+}
 
 function compareBytes(left: Uint8Array, right: Uint8Array): number {
   const sharedLength = Math.min(left.byteLength, right.byteLength);
@@ -802,6 +839,8 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAesGcmDocumentKey(key);
     const serialized = await serializeKey(key);
     assertSerializedDocumentKey(serialized);
+    const entry: CanonicalKeychainEntry = [epochIdHex, serialized];
+    const projectionClientID = await currentKeyProjectionClientID(entry);
     const baseEntries = validateYjsKeychain(this._keychain);
     if (baseEntries.length === MAX_KEYCHAIN_EPOCHS) {
       throw new Error('Keychain exceeds the supported epoch limit');
@@ -811,6 +850,9 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     }
     const baseRevision = this._revision;
     const staged = new Doc();
+    // A first key is authored under its projection identity so the live
+    // one-key history and every current-only export of it share one lineage.
+    if (baseEntries.length === 0) staged.clientID = projectionClientID;
     applyUpdateV2(staged, encodeStateAsUpdateV2(this._keychain));
     const beforeSV = encodeStateVector(staged);
     staged.getArray<[string, string]>('keys').push([[epochIdHex, serialized]]);
@@ -818,20 +860,15 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     assertAppendOnlyTransition(baseEntries, stagedEntries);
     const commitChanges = encodeStateAsUpdateV2(staged, beforeSV);
     const history = encodeStateAsUpdateV2(staged);
-    // This exact projection is safe to cache and replay because retries reuse
-    // its existing client operation. It must not be regenerated later from a
-    // multi-key live history under a fresh client ID.
-    const currentProjection = new Doc();
-    currentProjection
-      .getArray<[string, string]>('keys')
-      .push([[epochIdHex, serialized]]);
-    validateYjsKeychain(currentProjection);
-    const currentKeyChange = encodeStateAsUpdateV2(currentProjection);
+    const currentKeyChange =
+      stagedEntries.length === 1
+        ? new Uint8Array(history)
+        : currentKeyProjection(entry, projectionClientID);
     let committed = false;
     return {
       changes: new Uint8Array(commitChanges),
       history: new Uint8Array(history),
-      currentKeyChange: new Uint8Array(currentKeyChange),
+      currentKeyChange,
       commit: () => {
         if (committed) {
           throw new Error('Prepared epoch key was already committed');
@@ -1084,16 +1121,19 @@ export class YjsKeychain implements Keychain<Uint8Array, CryptoKey> {
     return [keyIDBytes, key];
   }
   async currentKeyChange(): Promise<Uint8Array> {
-    validateYjsKeychain(this._keychain);
-    const yarr = this._keychain.getArray<[string, string]>('keys');
-    if (yarr.length === 0) {
+    const entries = validateYjsKeychain(this._keychain);
+    if (entries.length === 0) {
       throw new Error("Can't get current key change from an empty keychain");
     }
 
-    if (yarr.length !== 1) {
-      throw new Error('Yjs cannot export the current key replay-safely');
+    if (entries.length === 1) {
+      return encodeStateAsUpdateV2(this._keychain);
     }
-    return encodeStateAsUpdateV2(this._keychain);
+    const current = entries[entries.length - 1];
+    return currentKeyProjection(
+      current,
+      await currentKeyProjectionClientID(current),
+    );
   }
 
   /**
