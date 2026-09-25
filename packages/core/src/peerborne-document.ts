@@ -3907,12 +3907,22 @@ export class PeerborneDocument<
           this._lastSyncMessage !== undefined ||
           this._latestSnapshot !== undefined;
         const syncTrackedLoadMessageUnlocked = async (): Promise<boolean> => {
-          // Established pinned/unsigned catch-up can temporarily return a
-          // complete document to the pending bootstrap state. Do not begin
-          // that transition while an older observer notification is waiting:
+          // Signing-disabled loads carry no admission authority, so an
+          // established healthy document applies them as ordinary catch-up
+          // instead of risking a permanent pending bootstrap state.
+          const establishedUnsignedLoad =
+            loadWriterAdmission === 'unsigned' &&
+            !continuingInvitationBootstrap &&
+            this._bootstrapLoadApplicationState === 'complete' &&
+            hasReplicatedState();
+          // Established pinned catch-up can temporarily return a complete
+          // document to the pending bootstrap state. Do not begin that
+          // transition while an older observer notification is waiting:
           // finalization cannot await the observer without retaining this
           // queue slot, and dispatching first would overtake it.
-          if (this._remoteUpdateNotificationTail) return false;
+          if (!establishedUnsignedLoad && this._remoteUpdateNotificationTail) {
+            return false;
+          }
           const hashesBefore = this._hashes.size;
           const lastSyncMessageBefore = this._lastSyncMessage;
           const latestSnapshotBefore = this._latestSnapshot;
@@ -3926,7 +3936,7 @@ export class PeerborneDocument<
             message,
             false,
             'load-response-v3',
-            continuingInvitationBootstrap
+            continuingInvitationBootstrap || establishedUnsignedLoad
               ? undefined
               : beginBootstrapStateApplication,
             continuingInvitationBootstrap,

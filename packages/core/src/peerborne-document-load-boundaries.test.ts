@@ -1889,6 +1889,46 @@ describe('document load response boundaries', () => {
     expect(document._authProvider.verify).not.toHaveBeenCalled();
   });
 
+  test('keeps an established unsigned document usable after a failed catch-up', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      changeId: 'unsigned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('unsigned admission must not read the writer ACL');
+      },
+      async () => {
+        throw new Error('unsigned admission must not verify signatures');
+      },
+      message,
+    );
+    document.swarm.config.enableSigning = false;
+    document._bootstrapLoadApplicationState = 'complete';
+    document._hashes.add('established-head');
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        _context: string,
+        onStateApplicationStart?: () => void,
+      ) => {
+        expect(onStateApplicationStart).toBeUndefined();
+        expect(document._bootstrapLoadApplicationState).toBe('complete');
+        throw new Error('provider failed after unsigned state application');
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/provider failed/);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(() => document._assertNoIncompleteBootstrapLoad()).not.toThrow();
+  });
+
   test('tracks and defers an incomplete signer-pinned catch-up', async () => {
     const message = {
       documentId: '/load-race',
