@@ -34,6 +34,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import {
+  collectBoundedChangeTree,
   snapshotBoundedChangeTree,
   type BoundedChangeTreeEntry,
 } from './change-tree-walk.js';
@@ -4063,6 +4064,114 @@ export class PeerborneDocument<
               : Promise.resolve(false),
           );
         };
+        const unknownLoadCids = async (
+          cids: readonly string[],
+        ): Promise<string[] | undefined> => {
+          // Snapshot only committed-known hashes while serialized with state
+          // mutation. Reading the live Set outside the queue could observe a
+          // hash installed by a mutation that later rolls back, skip its
+          // prefetch, and let sync partially mutate before discovering the
+          // block is unavailable. Invitation catch-up already owns this
+          // queue slot, so its direct snapshot is equally stable.
+          const knownHashes = continuingInvitationBootstrap
+            ? canUseCurrentBootstrapState()
+              ? new Set(this._hashes)
+              : undefined
+            : await this._mutationQueue.run(async () =>
+                canUseCurrentBootstrapState()
+                  ? new Set(this._hashes)
+                  : undefined,
+              );
+          return knownHashes === undefined
+            ? undefined
+            : cids.filter((cid) => !knownHashes.has(cid));
+        };
+        const prefetchLoadBlocks = async (
+          cidsToPrefetch: readonly string[],
+        ): Promise<{ missingCids: string[]; limitExceeded: boolean }> => {
+          const missingCids: string[] = [];
+          let nextIndex = 0;
+          let prefetchLimitExceeded = false;
+          const consumePrefetchedBytes = (byteLength: number): void =>
+            consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
+          const prefetchController = new AbortController();
+          const forwardPrefetchAbort = (): void => {
+            if (!prefetchController.signal.aborted) {
+              prefetchController.abort(signal?.reason);
+            }
+          };
+          if (signal?.aborted) {
+            forwardPrefetchAbort();
+          } else {
+            signal?.addEventListener('abort', forwardPrefetchAbort, {
+              once: true,
+            });
+          }
+          const prefetchSignal = prefetchController.signal;
+          const workerCount = Math.min(
+            LOAD_PREFETCH_MAX_CONCURRENCY,
+            cidsToPrefetch.length,
+          );
+          const worker = async (): Promise<void> => {
+            while (!prefetchLimitExceeded) {
+              throwIfLoadAborted(signal);
+              const i = nextIndex++;
+              if (i >= cidsToPrefetch.length) return;
+              const cidStr = cidsToPrefetch[i]!;
+              try {
+                const cid = CID.parse(cidStr);
+                // Fetch once before state application. Helia validates
+                // content vs CID on `get`; caching the bounded raw block lets
+                // `_syncDocumentChanges` decrypt and deserialize that exact
+                // value without a second blockstore read or byte budget.
+                const block = await this._readBlock(cid, {
+                  signal: prefetchSignal,
+                  maxBlockBytes: trackedBootstrapLoad
+                    ? responseLimit
+                    : undefined,
+                  consumeBytes: trackedBootstrapLoad
+                    ? consumePrefetchedBytes
+                    : undefined,
+                });
+                throwIfLoadAborted(prefetchSignal);
+                prefetchedBlocks.set(cidStr, block);
+              } catch (error) {
+                if (signal?.aborted) throwIfLoadAborted(signal);
+                if (
+                  prefetchLimitExceeded &&
+                  prefetchController.signal.aborted
+                ) {
+                  return;
+                }
+                if (error instanceof _LoadFetchLimitExceededError) {
+                  prefetchLimitExceeded = true;
+                  prefetchController.abort(
+                    new _LoadFetchLimitExceededError(
+                      'Load pre-fetch limits exceeded',
+                    ),
+                  );
+                  return;
+                }
+                missingCids.push(cidStr);
+              }
+            }
+          };
+          let prefetchResults: PromiseSettledResult<void>[];
+          try {
+            prefetchResults = await Promise.allSettled(
+              Array.from({ length: workerCount }, () => worker()),
+            );
+          } finally {
+            signal?.removeEventListener('abort', forwardPrefetchAbort);
+          }
+          throwIfLoadAborted(signal);
+          const prefetchFailure = prefetchResults.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === 'rejected',
+          );
+          if (prefetchFailure) throw prefetchFailure.reason;
+          return { missingCids, limitExceeded: prefetchLimitExceeded };
+        };
         // Quorum frontier binding (#186 / #189 §5.4.2). When the loader
         // ran a quorum probe round, the served full-load payload must
         // structurally describe the same tip set the responder voted
@@ -4321,111 +4430,15 @@ export class PeerborneDocument<
           // the loader. Block bytes are cached locally on success; the
           // subsequent `sync()` call only does local lookups for those
           // CIDs and applies them.
-          let cidsToPrefetch: string[] = [];
-          if (expectedCids.length > 0) {
-            // Snapshot only committed-known hashes while serialized with state
-            // mutation. Reading the live Set outside the queue could observe a
-            // hash installed by a mutation that later rolls back, skip its
-            // prefetch, and let sync partially mutate before discovering the
-            // block is unavailable. Invitation catch-up already owns this
-            // queue slot, so its direct snapshot is equally stable.
-            const knownHashesBeforePrefetch = continuingInvitationBootstrap
-              ? canUseCurrentBootstrapState()
-                ? new Set(this._hashes)
-                : undefined
-              : await this._mutationQueue.run(async () =>
-                  canUseCurrentBootstrapState()
-                    ? new Set(this._hashes)
-                    : undefined,
-                );
-            if (knownHashesBeforePrefetch === undefined) return false;
-            cidsToPrefetch = expectedCids.filter(
-              (cid) => !knownHashesBeforePrefetch.has(cid),
-            );
-          }
+          const cidsToPrefetch =
+            expectedCids.length > 0
+              ? await unknownLoadCids(expectedCids)
+              : [];
+          if (cidsToPrefetch === undefined) return false;
           if (cidsToPrefetch.length > 0) {
-            const missingCids: string[] = [];
-            let nextIndex = 0;
-            let prefetchLimitExceeded = false;
-            const consumePrefetchedBytes = (byteLength: number): void =>
-              consumeDocumentChangeFetchBytes(aggregateBudget, byteLength);
-            const prefetchController = new AbortController();
-            const forwardPrefetchAbort = (): void => {
-              if (!prefetchController.signal.aborted) {
-                prefetchController.abort(signal?.reason);
-              }
-            };
-            if (signal?.aborted) {
-              forwardPrefetchAbort();
-            } else {
-              signal?.addEventListener('abort', forwardPrefetchAbort, {
-                once: true,
-              });
-            }
-            const prefetchSignal = prefetchController.signal;
-            const workerCount = Math.min(
-              LOAD_PREFETCH_MAX_CONCURRENCY,
-              cidsToPrefetch.length,
-            );
-            const worker = async (): Promise<void> => {
-              while (!prefetchLimitExceeded) {
-                throwIfLoadAborted(signal);
-                const i = nextIndex++;
-                if (i >= cidsToPrefetch.length) return;
-                const cidStr = cidsToPrefetch[i]!;
-                try {
-                  const cid = CID.parse(cidStr);
-                  // Fetch once before state application. Helia validates
-                  // content vs CID on `get`; caching the bounded raw block lets
-                  // `_syncDocumentChanges` decrypt and deserialize that exact
-                  // value without a second blockstore read or byte budget.
-                  const block = await this._readBlock(cid, {
-                    signal: prefetchSignal,
-                    maxBlockBytes: trackedBootstrapLoad
-                      ? responseLimit
-                      : undefined,
-                    consumeBytes: trackedBootstrapLoad
-                      ? consumePrefetchedBytes
-                      : undefined,
-                  });
-                  throwIfLoadAborted(prefetchSignal);
-                  prefetchedBlocks.set(cidStr, block);
-                } catch (error) {
-                  if (signal?.aborted) throwIfLoadAborted(signal);
-                  if (
-                    prefetchLimitExceeded &&
-                    prefetchController.signal.aborted
-                  ) {
-                    return;
-                  }
-                  if (error instanceof _LoadFetchLimitExceededError) {
-                    prefetchLimitExceeded = true;
-                    prefetchController.abort(
-                      new _LoadFetchLimitExceededError(
-                        'Load pre-fetch limits exceeded',
-                      ),
-                    );
-                    return;
-                  }
-                  missingCids.push(cidStr);
-                }
-              }
-            };
-            let prefetchResults: PromiseSettledResult<void>[];
-            try {
-              prefetchResults = await Promise.allSettled(
-                Array.from({ length: workerCount }, () => worker()),
-              );
-            } finally {
-              signal?.removeEventListener('abort', forwardPrefetchAbort);
-            }
-            throwIfLoadAborted(signal);
-            const prefetchFailure = prefetchResults.find(
-              (result): result is PromiseRejectedResult =>
-                result.status === 'rejected',
-            );
-            if (prefetchFailure) throw prefetchFailure.reason;
-            if (prefetchLimitExceeded) {
+            const { missingCids, limitExceeded } =
+              await prefetchLoadBlocks(cidsToPrefetch);
+            if (limitExceeded) {
               throw new _QuorumBindCheckFailedError(
                 '(prefetch-limits-exceeded)',
                 'Quorum-bound load pre-fetch exceeded block retrieval limits',
@@ -4507,6 +4520,59 @@ export class PeerborneDocument<
 
         const snapshotBoundaryBeforeSync =
           this._latestSnapshot?.lastChangeNodeCID;
+        if (trackedBootstrapLoad) {
+          // Tracked loads cannot recover from a partial application, so fetch
+          // every hash-only node before state application. A peer whose
+          // advertised blocks are unavailable is skipped with state unchanged.
+          const servedSnapshotBoundary = message.snapshot?.lastChangeNodeCID;
+          const stopBelowNodeIds = new Set<string>();
+          if (snapshotBoundaryBeforeSync !== undefined) {
+            stopBelowNodeIds.add(snapshotBoundaryBeforeSync);
+          }
+          if (servedSnapshotBoundary !== undefined) {
+            stopBelowNodeIds.add(servedSnapshotBoundary);
+          }
+          let hashOnlyCids: string[];
+          try {
+            hashOnlyCids =
+              message.changes === undefined
+                ? message.changeId === undefined
+                  ? []
+                  : [message.changeId]
+                : collectBoundedChangeTree(message.changeId, message.changes, {
+                    stopBelowNodeIds,
+                  }).flatMap(({ nodeId, change }) =>
+                    nodeId !== undefined && change === undefined
+                      ? [nodeId]
+                      : [],
+                  );
+          } catch {
+            console.warn(
+              `Load response for ${this.documentPath}: malformed change tree, skipping peer`,
+            );
+            return false;
+          }
+          hashOnlyCids = hashOnlyCids.filter(
+            (cid) => cid !== servedSnapshotBoundary,
+          );
+          const cidsToPrefetch =
+            hashOnlyCids.length > 0
+              ? await unknownLoadCids(hashOnlyCids)
+              : [];
+          if (cidsToPrefetch === undefined) return false;
+          if (cidsToPrefetch.length > 0) {
+            const { missingCids, limitExceeded } =
+              await prefetchLoadBlocks(cidsToPrefetch);
+            if (limitExceeded || missingCids.length > 0) {
+              console.warn(
+                `Load response for ${this.documentPath}: ` +
+                  `${limitExceeded ? 'block retrieval limits exceeded' : `${missingCids.length} of ${cidsToPrefetch.length} blocks unavailable`}` +
+                  ` before state application, skipping peer`,
+              );
+              return false;
+            }
+          }
+        }
         // Legacy/non-quorum loads need the same advertised-CID completeness
         // gate as invitation catch-up. `_syncDocumentChanges` deliberately
         // logs and swallows individual block fetch failures, so `true` alone

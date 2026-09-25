@@ -94,7 +94,16 @@ function signedLoadHarness(
 ) {
   const document = fakeDocument({
     documentPath: message.documentId,
-    swarm: { config: { enableSigning: true, loadQuorumTimeoutMs: 1000 } },
+    swarm: {
+      config: { enableSigning: true, loadQuorumTimeoutMs: 1000 },
+      heliaNode: {
+        blockstore: {
+          get: jest.fn(async function* () {
+            yield new Uint8Array([1]);
+          }),
+        },
+      },
+    },
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: jest.fn(() => ({})) },
     _authProvider: {
@@ -1453,6 +1462,67 @@ describe('document load response boundaries', () => {
     ).resolves.toBe(false);
     expect(verify).not.toHaveBeenCalled();
     expect(document._syncDocumentChanges).toHaveBeenCalledTimes(1);
+  });
+
+  test('skips a non-quorum bootstrap peer whose hash-only blocks are unavailable before state application', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      signature: 'AAAA',
+      changeId: 'hash-only-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+      message,
+    );
+    document.swarm.heliaNode.blockstore.get = jest.fn(async function* () {
+      throw new Error('block unavailable');
+    });
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        _context: string,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        document._hashes.add('hash-only-head');
+        return true;
+      },
+    );
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+      ).resolves.toBe(false);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    expect(() => document._assertNoIncompleteBootstrapLoad()).not.toThrow();
+
+    document.swarm.heliaNode.blockstore.get = jest.fn(async function* () {
+      yield new Uint8Array([1]);
+    });
+    const retryStream = {
+      ...stream,
+      source: (async function* () {
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    };
+    await expect(
+      document._sendLoadRequestAndSync(retryStream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
   });
 
   test('keeps bootstrap retryable when a response is rejected before state application', async () => {
