@@ -3141,6 +3141,22 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@libp2p/keychain@npm:^6.1.7":
+  version: 6.1.7
+  resolution: "@libp2p/keychain@npm:6.1.7"
+  dependencies:
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@noble/hashes": "npm:^2.0.1"
+    asn1js: "npm:^3.0.6"
+    interface-datastore: "npm:^10.0.1"
+    multiformats: "npm:^14.0.0"
+    sanitize-filename: "npm:^1.6.3"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/d179e45b7ee964c34590f81eaa4c2774dc0df7b296f8fb938ff71c6d83de5e020d1fe27ddaf37809255272a2d437df4acf4ee6c00e3075e2abe4cb1750fc0595
+  languageName: node
+  linkType: hard
+
 "@libp2p/logger@npm:^6.0.4, @libp2p/logger@npm:^6.0.5, @libp2p/logger@npm:^6.2.12, @libp2p/logger@npm:^6.2.4, @libp2p/logger@npm:^6.2.8":
   version: 6.2.12
   resolution: "@libp2p/logger@npm:6.2.12"
@@ -3225,6 +3241,27 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/8aee039c3e62f5e6aa5c971b86daf1b18662a5c3778ef9c71e95350816f98d22f009ddbfa2242bafbaa490bac877707314cccc6d0d4e197fb8deac8d51c74d93
+  languageName: node
+  linkType: hard
+
+"@libp2p/noise@npm:^17.0.2":
+  version: 17.0.3
+  resolution: "@libp2p/noise@npm:17.0.3"
+  dependencies:
+    "@chainsafe/as-chacha20poly1305": "npm:^0.1.0"
+    "@chainsafe/as-sha256": "npm:^1.2.0"
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/utils": "npm:^7.4.1"
+    "@noble/ciphers": "npm:^2.0.1"
+    "@noble/curves": "npm:^2.0.1"
+    "@noble/hashes": "npm:^2.0.1"
+    protons-runtime: "npm:^7.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+    wherearewe: "npm:^2.0.1"
+  checksum: 10/08559f377a431dca6ce2765382b5e39b1ae1d027b96ad9c4d34f301e98615ae483458875b0f1a91f385a23141c8658b8eb5a5ffcc239179cbd4b0cfd8ca94b08
   languageName: node
   linkType: hard
 
@@ -3525,7 +3562,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/webrtc@npm:^6.0.24, @libp2p/webrtc@npm:^6.0.29":
+"@libp2p/webrtc@npm:^6.0.24":
   version: 6.0.29
   resolution: "@libp2p/webrtc@npm:6.0.29"
   dependencies:
@@ -3563,6 +3600,47 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/94d2b21f03f2c3ebee5da470b7b4dc556154a48228f8acd1d5c6ac813d6038ac4f6ad71bfdac6de21c69a125a1dc6732b50b3be684b9cb1cf05bb3fde83a4315
+  languageName: node
+  linkType: hard
+
+"@libp2p/webrtc@npm:^6.0.32":
+  version: 6.0.32
+  resolution: "@libp2p/webrtc@npm:6.0.32"
+  dependencies:
+    "@chainsafe/is-ip": "npm:^2.1.0"
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.13"
+    "@libp2p/keychain": "npm:^6.1.7"
+    "@libp2p/noise": "npm:^17.0.2"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/utils": "npm:^7.4.1"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@multiformats/multiaddr-matcher": "npm:^3.0.2"
+    "@peculiar/webcrypto": "npm:^1.5.0"
+    "@peculiar/x509": "npm:^2.0.0"
+    get-port: "npm:^7.1.0"
+    interface-datastore: "npm:^10.0.1"
+    it-length-prefixed: "npm:^11.0.1"
+    it-protobuf-stream: "npm:^3.0.0"
+    it-pushable: "npm:^3.2.3"
+    it-stream-types: "npm:^2.0.2"
+    main-event: "npm:^1.0.1"
+    multiformats: "npm:^14.0.0"
+    node-datachannel: "npm:^0.33.0"
+    p-defer: "npm:^4.0.1"
+    p-event: "npm:^7.0.0"
+    p-timeout: "npm:^7.0.0"
+    p-wait-for: "npm:^6.0.0"
+    progress-events: "npm:^1.0.1"
+    protons-runtime: "npm:^7.0.0"
+    race-signal: "npm:^2.0.0"
+    react-native-webrtc: "npm:^124.0.6"
+    reflect-metadata: "npm:^0.2.2"
+    uint8-varint: "npm:^3.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/f1ff91998caaf26c51e6173e1a3bd8dd6c5f6c7b453f6f9944d6cb1b1c96ea7ea546494838f7c8c24ae0ab1a6f1fc59aedd6effe7de932c288dbd5f6494ede84
   languageName: node
   linkType: hard
 
@@ -3777,6 +3855,69 @@ __metadata:
   version: 2.0.1
   resolution: "@noble/hashes@npm:2.0.1"
   checksum: 10/f4d00e7564eb4ff4e6d16be151dd0e404aede35f91e4372b0a8a6ec888379c1dd1e02c721b480af8e7853bea9637185b5cb9533970c5b77d60c254ead0cfd8f7
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/android-arm64@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/android-arm64@npm:0.33.4"
+  conditions: os=android & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/darwin-arm64@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/darwin-arm64@npm:0.33.4"
+  conditions: os=darwin & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/darwin-x64@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/darwin-x64@npm:0.33.4"
+  conditions: os=darwin & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/linux-arm64-gnu@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/linux-arm64-gnu@npm:0.33.4"
+  conditions: os=linux & cpu=arm64 & libc=glibc
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/linux-arm64-musl@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/linux-arm64-musl@npm:0.33.4"
+  conditions: os=linux & cpu=arm64 & libc=musl
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/linux-x64-gnu@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/linux-x64-gnu@npm:0.33.4"
+  conditions: os=linux & cpu=x64 & libc=glibc
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/linux-x64-musl@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/linux-x64-musl@npm:0.33.4"
+  conditions: os=linux & cpu=x64 & libc=musl
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/win32-arm64-msvc@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/win32-arm64-msvc@npm:0.33.4"
+  conditions: os=win32 & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@node-datachannel/win32-x64-msvc@npm:0.33.4":
+  version: 0.33.4
+  resolution: "@node-datachannel/win32-x64-msvc@npm:0.33.4"
+  conditions: os=win32 & cpu=x64
   languageName: node
   linkType: hard
 
@@ -4334,7 +4475,7 @@ __metadata:
     "@libp2p/peer-id": "npm:^6.0.14"
     "@libp2p/ping": "npm:^3.1.13"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
-    "@libp2p/webrtc": "npm:^6.0.29"
+    "@libp2p/webrtc": "npm:^6.0.32"
     "@libp2p/websockets": "npm:^10.1.21"
     "@libp2p/webtransport": "npm:^6.0.37"
     "@multiformats/multiaddr": "npm:^13.0.3"
@@ -7081,7 +7222,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"detect-libc@npm:^2.0.3, detect-libc@npm:^2.1.2":
+"detect-libc@npm:^2.0.3, detect-libc@npm:^2.0.4, detect-libc@npm:^2.1.2":
   version: 2.1.2
   resolution: "detect-libc@npm:2.1.2"
   checksum: 10/b736c8d97d5d46164c0d1bed53eb4e6a3b1d8530d460211e2d52f1c552875e706c58a5376854e4e54f8b828c9cada58c855288c968522eb93ac7696d65970766
@@ -11906,6 +12047,43 @@ __metadata:
     node-gyp: "npm:latest"
     prebuild-install: "npm:^7.1.3"
   checksum: 10/a4404d4fa2d09cbdca9d356d409b4f7cbdfcd2cd4b83e3bf7e50fed7e79c08243760579dc3881891646fed42232963708fdd2760efcc69151e3f7945008ee767
+  languageName: node
+  linkType: hard
+
+"node-datachannel@npm:^0.33.0":
+  version: 0.33.4
+  resolution: "node-datachannel@npm:0.33.4"
+  dependencies:
+    "@node-datachannel/android-arm64": "npm:0.33.4"
+    "@node-datachannel/darwin-arm64": "npm:0.33.4"
+    "@node-datachannel/darwin-x64": "npm:0.33.4"
+    "@node-datachannel/linux-arm64-gnu": "npm:0.33.4"
+    "@node-datachannel/linux-arm64-musl": "npm:0.33.4"
+    "@node-datachannel/linux-x64-gnu": "npm:0.33.4"
+    "@node-datachannel/linux-x64-musl": "npm:0.33.4"
+    "@node-datachannel/win32-arm64-msvc": "npm:0.33.4"
+    "@node-datachannel/win32-x64-msvc": "npm:0.33.4"
+    detect-libc: "npm:^2.0.4"
+  dependenciesMeta:
+    "@node-datachannel/android-arm64":
+      optional: true
+    "@node-datachannel/darwin-arm64":
+      optional: true
+    "@node-datachannel/darwin-x64":
+      optional: true
+    "@node-datachannel/linux-arm64-gnu":
+      optional: true
+    "@node-datachannel/linux-arm64-musl":
+      optional: true
+    "@node-datachannel/linux-x64-gnu":
+      optional: true
+    "@node-datachannel/linux-x64-musl":
+      optional: true
+    "@node-datachannel/win32-arm64-msvc":
+      optional: true
+    "@node-datachannel/win32-x64-msvc":
+      optional: true
+  checksum: 10/5ed4a9fb62d4c9e9453deaee5eae2500d6a63176741db7712a041249c531f3e25313e3f48619e61fd45d10a743f769f656ae8b0d381e34b3f698f5feb201449d
   languageName: node
   linkType: hard
 
