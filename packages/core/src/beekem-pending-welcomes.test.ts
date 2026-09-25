@@ -14,6 +14,7 @@ import {
   PENDING_WELCOMES_MAX_RETAINED_BYTES,
   PENDING_WELCOMES_TTL_MS,
 } from './pending-welcome-buffer.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 
 /**
@@ -253,7 +254,10 @@ describe('PendingWelcomeBuffer byte accounting', () => {
 
   test('evicts by aggregate bytes before the entry-count limit is reached', () => {
     const buffer = new PendingWelcomeBuffer();
-    for (let index = 0; index < 4; index++) {
+    const fullBodies = Math.floor(
+      PENDING_WELCOMES_MAX_RETAINED_BYTES / PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+    for (let index = 0; index < fullBodies; index++) {
       buffer.store(
         `epoch-${index}`,
         new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES),
@@ -261,22 +265,81 @@ describe('PendingWelcomeBuffer byte accounting', () => {
         true,
       );
     }
-    expect(buffer.size).toBe(4);
+    expect(buffer.size).toBe(fullBodies);
     expect(buffer.retainedBytes).toBe(
-      PENDING_WELCOMES_MAX_RETAINED_BYTES,
+      fullBodies * PENDING_WELCOME_MAX_BODY_BYTES,
     );
 
-    const result = buffer.store('epoch-4', new Uint8Array(1), 4, true);
+    const filler =
+      PENDING_WELCOMES_MAX_RETAINED_BYTES - buffer.retainedBytes;
+    if (filler > 0) {
+      buffer.store('filler', new Uint8Array(filler), fullBodies, true);
+    }
+    expect(buffer.retainedBytes).toBe(PENDING_WELCOMES_MAX_RETAINED_BYTES);
+    const sizeAtLimit = buffer.size;
+
+    const result = buffer.store('newest', new Uint8Array(1), 99, true);
 
     expect(result.evictedKeys).toEqual(['epoch-0']);
-    expect(buffer.size).toBe(4);
+    expect(buffer.size).toBe(sizeAtLimit);
     expect(buffer.size).toBeLessThan(PENDING_WELCOMES_MAX_ENTRIES);
     expect(buffer.retainedBytes).toBe(
-      3 * PENDING_WELCOME_MAX_BODY_BYTES + 1,
+      PENDING_WELCOMES_MAX_RETAINED_BYTES - PENDING_WELCOME_MAX_BODY_BYTES + 1,
     );
     expect(buffer.retainedBytes).toBeLessThanOrEqual(
       PENDING_WELCOMES_MAX_RETAINED_BYTES,
     );
+  });
+
+  test('admits a body as large as the shared-protocol request limit', () => {
+    expect(PENDING_WELCOME_MAX_BODY_BYTES).toBe(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    expect(PENDING_WELCOMES_MAX_RETAINED_BYTES).toBeGreaterThanOrEqual(
+      PENDING_WELCOME_MAX_BODY_BYTES,
+    );
+    const buffer = new PendingWelcomeBuffer();
+    buffer.store(
+      'large',
+      new Uint8Array(MAX_SHARED_PROTOCOL_REQUEST_BYTES),
+      0,
+      true,
+    );
+    expect(buffer.retainedBytes).toBe(MAX_SHARED_PROTOCOL_REQUEST_BYTES);
+  });
+
+  test('an unauthenticated duplicate never replaces a retained entry', () => {
+    const buffer = new PendingWelcomeBuffer();
+    buffer.store('epoch', new Uint8Array([1]), 1, false);
+
+    const result = buffer.store('epoch', new Uint8Array([2, 2]), 2, false);
+
+    expect(result).toEqual({ stored: false, replaced: false, evictedKeys: [] });
+    expect(buffer.get('epoch')).toEqual({
+      body: new Uint8Array([1]),
+      authenticated: false,
+      bufferedAtMs: 1,
+    });
+    expect(buffer.retainedBytes).toBe(1);
+
+    const upgraded = buffer.store('epoch', new Uint8Array([3, 3]), 3, true);
+    expect(upgraded.stored).toBe(true);
+    expect(upgraded.replaced).toBe(true);
+    expect(buffer.get('epoch')?.authenticated).toBe(true);
+    expect(buffer.retainedBytes).toBe(2);
+  });
+
+  test('byte-limit eviction removes unauthenticated entries before older authenticated ones', () => {
+    const buffer = new PendingWelcomeBuffer();
+    const half = PENDING_WELCOMES_MAX_RETAINED_BYTES / 2;
+    buffer.store('authenticated', new Uint8Array(half), 1, true);
+    buffer.store('unauthenticated', new Uint8Array(half), 2, false);
+
+    const result = buffer.store('newest', new Uint8Array(1), 3, true);
+
+    expect(result.evictedKeys).toEqual(['unauthenticated']);
+    expect(buffer.keysSnapshot()).toEqual(['authenticated', 'newest']);
+    expect(buffer.retainedBytes).toBe(half + 1);
   });
 
   test('owns retained bytes and returns detached replay copies', () => {
@@ -376,31 +439,46 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
     expect(h.pendingWelcomes.size).toBe(1);
   });
 
-  test('authenticates but does not retain an oversized pending Welcome or apply state', async () => {
+  test('buffers and replays a large-group Welcome larger than 1 MiB', async () => {
     const h = new PendingWelcomesHarness();
+    const message = welcomeFor(7);
+    message.eciesSealed = new Uint8Array(2 * 1024 * 1024).fill(5);
+    const serializedBytes =
+      stubSerializer.serializeSyncMessage(message).byteLength;
+    expect(serializedBytes).toBeGreaterThan(1024 * 1024);
+
+    await h.evaluateAndApply(message, { fromBuffer: false });
+    expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBe(serializedBytes);
+
+    await h.mergeReadersAddingLocal();
+    expect(h.pendingWelcomes.size).toBe(0);
+    expect(h.appliedEpochs).toHaveLength(1);
+  });
+
+  test('does not retain a Welcome whose canonical body exceeds the pending limit', () => {
+    const h = new PendingWelcomesHarness();
+    const retained = welcomeFor(1);
+    expect(h.bufferPendingWelcome(retained, true)).toBe(true);
+    const retainedBytes = h.pendingWelcomes.retainedBytes;
     const message = welcomeFor(7);
     message.eciesSealed = new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES);
     expect(
       stubSerializer.serializeSyncMessage(message).byteLength,
     ).toBeGreaterThan(PENDING_WELCOME_MAX_BODY_BYTES);
 
-    const accepted = await h.evaluateAndApply(message, { fromBuffer: false });
+    expect(h.bufferPendingWelcome(message, true)).toBe(false);
 
-    expect(accepted).toBe(false);
-    expect(h.verificationCalls).toBe(1);
-    expect(h.pendingWelcomes.size).toBe(0);
-    expect(h.pendingWelcomes.retainedBytes).toBe(0);
+    expect(h.pendingWelcomes.size).toBe(1);
+    expect(h.pendingWelcomes.retainedBytes).toBe(retainedBytes);
     expect(h.appliedEpochs).toHaveLength(0);
   });
 
-  test('does not impose the pending-buffer cap on an already-authorized live Welcome', async () => {
+  test('accepts the same large Welcome live that it would buffer before the ACL update', async () => {
     const h = new PendingWelcomesHarness();
     h.isReader = true;
     const message = welcomeFor(7);
-    message.eciesSealed = new Uint8Array(PENDING_WELCOME_MAX_BODY_BYTES);
-    expect(
-      stubSerializer.serializeSyncMessage(message).byteLength,
-    ).toBeGreaterThan(PENDING_WELCOME_MAX_BODY_BYTES);
+    message.eciesSealed = new Uint8Array(2 * 1024 * 1024).fill(5);
 
     const accepted = await h.evaluateAndApply(message, { fromBuffer: false });
 

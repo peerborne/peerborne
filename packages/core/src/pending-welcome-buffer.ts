@@ -1,10 +1,20 @@
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  copyUnsharedUint8Array,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './utils.js';
 
-export const PENDING_WELCOME_MAX_BODY_BYTES = 1024 * 1024;
-export const PENDING_WELCOMES_MAX_RETAINED_BYTES = 4 * 1024 * 1024;
+/**
+ * A pending Welcome may be as large as any Welcome the live receive path
+ * accepts: senders bound the serialized Welcome by the shared-protocol request
+ * limit, so a smaller cap here would permanently drop valid Welcomes for large
+ * groups whenever they arrive before the readers-ACL update.
+ */
+export const PENDING_WELCOME_MAX_BODY_BYTES = MAX_SHARED_PROTOCOL_REQUEST_BYTES;
+export const PENDING_WELCOMES_MAX_RETAINED_BYTES =
+  2 * PENDING_WELCOME_MAX_BODY_BYTES;
 export const PENDING_WELCOMES_MAX_ENTRIES = 16;
 export const PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
 

@@ -426,12 +426,13 @@ export class PeerborneDocument<
   // Welcomes after every readers-ACL `merge` (`_drainPendingWelcomesUnlocked`).
   //
   // Bounding:
-  //  - each canonical serialized body is capped at 1 MiB and the buffer
-  //    retains at most 4 MiB total, so the 10 MiB shared-protocol request
-  //    ceiling cannot be multiplied by the entry count;
+  //  - each canonical serialized body may use the 10 MiB shared-protocol
+  //    request limit, matching what a sender can emit, and the buffer
+  //    retains at most 20 MiB total, so that ceiling cannot be multiplied
+  //    by the entry count;
   //  - `PENDING_WELCOMES_MAX_ENTRIES` (16) separately bounds bookkeeping;
-  //    older entries are evicted in insertion order when either bound is
-  //    reached;
+  //    the oldest unauthenticated entry, then the oldest entry, is evicted
+  //    when either bound is reached;
   //  - `PENDING_WELCOMES_TTL_MS` (5 min): caps how long any Welcome
   //    sits unresolved. Entries past their TTL are discarded on the
   //    next drain attempt. Five minutes is well above the worst-case

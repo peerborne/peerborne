@@ -156,8 +156,10 @@ export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 // `PeerborneDocument._evaluateAndApplyBeeKEMWelcome` buffers Welcomes
 // dropped solely because the local user is not yet in the readers ACL into a
 // small bounded `pendingWelcomes` buffer keyed by `hex(welcomeEpochId)`.
-// It retains canonical serialized bodies rather than decoded object graphs,
-// with limits of 1 MiB per Welcome, 4 MiB total, 16 entries, and ~5 min TTL.
+// It retains canonical serialized bodies rather than decoded object graphs.
+// Each Welcome may use the full shared-protocol request limit (10 MiB), which
+// matches what a sender can emit; the buffer retains at most 20 MiB in total
+// and 16 entries, each for ~5 min.
 // The buffer is drained on every readers-ACL merge, so a Welcome that arrived
 // before its corresponding ACL update gets replayed automatically through the
 // full authentication path. A Welcome that exceeds a size bound or exhausts
