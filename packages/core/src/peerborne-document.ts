@@ -2298,20 +2298,35 @@ export class PeerborneDocument<
     bootstrapRevision: number,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
-    const dispatch = await this._runStateMutation(async () => {
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      // A provider-reported conflict cannot be awaited while this operation
-      // owns the document FIFO. Fail closed so a hung provider cannot retain
-      // the queue after the request deadline.
-      if (!(await this._isLoadRequesterAuthorized(message, false))) {
+    for (;;) {
+      let conflict: ACLOperationInProgressError | undefined;
+      const dispatch = await this._runStateMutation(async () => {
         if (!isSharedProtocolHandlerActive(admission)) return;
-        return { completion: stream.sink([] as Iterable<Uint8Array>) };
+        // A provider-reported conflict cannot be awaited while this operation
+        // owns the document FIFO. Release the queue, wait for settlement, and
+        // re-authorize in a fresh queue slot.
+        let authorized: boolean;
+        try {
+          authorized = await this._isLoadRequesterAuthorized(message, false);
+        } catch (error) {
+          if (!(error instanceof ACLOperationInProgressError)) throw error;
+          conflict = error;
+          return;
+        }
+        if (!isSharedProtocolHandlerActive(admission)) return;
+        if (!authorized) {
+          return { completion: stream.sink([] as Iterable<Uint8Array>) };
+        }
+        this._assertBootstrapResponseRevision(bootstrapRevision);
+        return { completion: stream.sink(data) };
+      });
+      if (conflict === undefined) {
+        await dispatch?.completion;
+        return;
       }
+      await (conflict as ACLOperationInProgressError).waitForSettlement();
       if (!isSharedProtocolHandlerActive(admission)) return;
-      this._assertBootstrapResponseRevision(bootstrapRevision);
-      return { completion: stream.sink(data) };
-    });
-    await dispatch?.completion;
+    }
   }
 
   /**
