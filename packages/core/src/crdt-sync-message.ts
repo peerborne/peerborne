@@ -153,18 +153,16 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   /**
    * Sealed payload for BeeKEM Welcome messages. The wire field carries the
    * output of `eciesSeal` over a Welcome envelope encrypted under the
-   * recipient's ECDH public key (`welcomeRecipientKemPublicKey`). V1 permits a
-   * missing/null legacy bootstrap; the separate V2 envelope requires a
-   * non-null generation- and leaf-count-bearing Welcome. Integrations MUST
-   * select the decoder from the negotiated protocol rather than infer a
-   * version from payload contents.
+   * recipient's ECDH public key (`welcomeRecipientKemPublicKey`). Only the V2
+   * envelope is accepted, and it requires a non-null generation- and
+   * leaf-count-bearing Welcome.
    *
    * The sealed bytes are base64-encoded on the wire for JSON
    * transport.
    *
    * SECURITY: the writer signature covers the sealed bytes, not the
    * plaintext, so alteration fails signature verification. Exact replay
-   * retains a valid signature; V2 integrations MUST also enforce the Welcome
+   * retains a valid signature; receivers MUST also enforce the Welcome
    * generation transition. AES-GCM authenticates the ciphertext under the
    * derived per-message key, so a non-recipient cannot read or alter the
    * plaintext without detection.
