@@ -1,4 +1,3 @@
-import { constantTimeEqual } from './internal/constant-time-equal.js';
 /**
  * Pure validation logic for incoming BeeKEM Welcome messages.
  *
@@ -21,6 +20,7 @@ import { constantTimeEqual } from './internal/constant-time-equal.js';
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
 import {

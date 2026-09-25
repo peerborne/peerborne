@@ -1,4 +1,3 @@
-import { constantTimeEqual } from './internal/constant-time-equal.js';
 /**
  * Document  is just for opening documents right now
  * @remarks
@@ -169,6 +168,7 @@ import {
   runSharedProtocolMutation,
   type SharedProtocolHandlerAdmission,
 } from './shared-protocol-admission.js';
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
 /** Opaque, recipient-bound material returned by the invitation join handler. */
@@ -1790,6 +1790,61 @@ export class PeerborneDocument<
       );
     }
     return firstTrue(verificationTasks);
+  }
+
+  /**
+   * Authenticate a membership-control message against the current writer
+   * ACL. The unsigned bytes must be unchanged and the writer ACL version
+   * must be unchanged after verification.
+   */
+  private async _authenticateMembershipMessage(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    context: Extract<
+      SyncMessageContext,
+      'beekem-path-update-v1' | 'key-update-v2'
+    >,
+  ): Promise<
+    | { kind: 'authenticated'; writerKeysVersion: number }
+    | {
+        kind: 'missing-signature' | 'malformed' | 'invalid-signature' | 'changed';
+      }
+  > {
+    const signature = message.signature;
+    if (!signature) return { kind: 'missing-signature' };
+    let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
+    let raw: Uint8Array;
+    const serialize = (): Uint8Array =>
+      copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(unsigned),
+        1,
+        MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+        'Unsigned membership message',
+      );
+    try {
+      const { signature: _signature, ...detached } =
+        snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+      unsigned = detached;
+      raw = serialize();
+    } catch {
+      return { kind: 'malformed' };
+    }
+    const writerKeysVersion = this._writerKeysVersion;
+    if ((await this._verifyMembershipWriterSignature(raw, signature)) !== true) {
+      return { kind: 'invalid-signature' };
+    }
+    let rawAfterVerification: Uint8Array;
+    try {
+      rawAfterVerification = serialize();
+    } catch {
+      return { kind: 'changed' };
+    }
+    if (
+      !constantTimeEqual(raw, rawAfterVerification) ||
+      this._writerKeysVersion !== writerKeysVersion
+    ) {
+      return { kind: 'changed' };
+    }
+    return { kind: 'authenticated', writerKeysVersion };
   }
 
   private _encoder = new TextEncoder();
@@ -6432,7 +6487,7 @@ export class PeerborneDocument<
     if (
       !messageKemPublic ||
       messageKemPublic.byteLength !== localKemPublicRaw.byteLength ||
-      !this._constantTimeEquals(messageKemPublic, localKemPublicRaw)
+      !constantTimeEqual(messageKemPublic, localKemPublicRaw)
     ) {
       console.warn('Dropping BeeKEM Welcome for a different KEM public key');
       return false;
@@ -6570,15 +6625,7 @@ export class PeerborneDocument<
           // cases (different epoch ID that is not strictly later than
           // the current anchor). Only the latter is worth warning about;
           // duplicates are silently ignored to avoid log noise.
-          let isDuplicate = false;
-          if (this._invitationEpoch.byteLength === newEpochId.byteLength) {
-            let diff = 0;
-            for (let i = 0; i < this._invitationEpoch.byteLength; i++) {
-              diff |= this._invitationEpoch[i] ^ newEpochId[i];
-            }
-            isDuplicate = diff === 0;
-          }
-          if (!isDuplicate) {
+          if (!constantTimeEqual(this._invitationEpoch, newEpochId)) {
             console.warn('Ignoring out-of-order BeeKEM Welcome');
           }
         },
@@ -6709,22 +6756,6 @@ export class PeerborneDocument<
       s += bytes[i].toString(16).padStart(2, '0');
     }
     return s;
-  }
-
-  /**
-   * Constant-time byte-equality check. Used by the BeeKEM Welcome
-   * receive path to compare the writer-signed
-   * `welcomeRecipientKemPublicKey` against the locally-installed KEM
-   * public key without leaking byte-position timing on a mismatch.
-   * Callers must supply equal-length buffers.
-   */
-  private _constantTimeEquals(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.length !== b.length) return false;
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) {
-      diff |= a[i] ^ b[i];
-    }
-    return diff === 0;
   }
 
   /**
@@ -7574,62 +7605,22 @@ export class PeerborneDocument<
       }
 
       // Writer signature is mandatory.
-      if (!message.signature) {
-        console.warn('Dropping BeeKEM PathUpdate without a signature');
-        return;
-      }
-      const signature = message.signature;
-      let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
-      let raw: Uint8Array;
-      try {
-        const verificationMessage = snapshotSyncMessageForContext<
-          ChangesType,
-          PublicKey
-        >(message, 'beekem-path-update-v1');
-        const { signature: _signature, ...unsigned } = verificationMessage;
-        messageWithoutSignature = unsigned;
-        raw = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned BeeKEM PathUpdate message',
-        );
-      } catch {
-        console.warn('Dropping malformed BeeKEM PathUpdate');
-        return;
-      }
-      const writerKeysVersion = this._writerKeysVersion;
-      if (
-        (await this._verifyMembershipWriterSignature(raw, signature)) !== true
-      ) {
-        console.warn('Dropping BeeKEM PathUpdate with an invalid signature');
-        return;
-      }
-      let rawAfterVerification: Uint8Array;
-      try {
-        rawAfterVerification = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned BeeKEM PathUpdate message',
-        );
-      } catch {
-        console.warn('Dropping BeeKEM PathUpdate changed during verification');
-        return;
-      }
-      if (
-        !constantTimeEqual(raw, rawAfterVerification) ||
-        this._writerKeysVersion !== writerKeysVersion
-      ) {
+      const authentication = await this._authenticateMembershipMessage(
+        message,
+        'beekem-path-update-v1',
+      );
+      if (authentication.kind !== 'authenticated') {
         console.warn(
-          'Dropping BeeKEM PathUpdate after payload or writer ACL changed during verification',
+          {
+            'missing-signature': 'Dropping BeeKEM PathUpdate without a signature',
+            malformed: 'Dropping malformed BeeKEM PathUpdate',
+            'invalid-signature': 'Dropping BeeKEM PathUpdate with an invalid signature',
+            changed: 'Dropping BeeKEM PathUpdate after payload or writer ACL changed during verification',
+          }[authentication.kind],
         );
         return;
       }
+      const { writerKeysVersion } = authentication;
 
       // Apply the path update to the local BeeKEM tree. Two failure
       // modes need different handling here:
@@ -7922,62 +7913,22 @@ export class PeerborneDocument<
         return;
       }
 
-      if (!message.signature) {
-        console.warn('Dropping unsigned key-update request');
-        return;
-      }
-      const signature = message.signature;
-      let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
-      let raw: Uint8Array;
-      try {
-        const verificationMessage = snapshotSyncMessageForContext<
-          ChangesType,
-          PublicKey
-        >(message, 'key-update-v2');
-        const { signature: _signature, ...unsigned } = verificationMessage;
-        messageWithoutSignature = unsigned;
-        raw = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned received key-update message',
-        );
-      } catch {
-        console.warn('Dropping malformed key-update request');
-        return;
-      }
-      const writerKeysVersion = this._writerKeysVersion;
-      if (
-        (await this._verifyMembershipWriterSignature(raw, signature)) !== true
-      ) {
-        console.warn('Dropping key-update with an invalid signature');
-        return;
-      }
-      let rawAfterVerification: Uint8Array;
-      try {
-        rawAfterVerification = copyUnsharedUint8Array(
-          this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
-          ),
-          1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Unsigned received key-update message',
-        );
-      } catch {
-        console.warn('Dropping key-update that changed during verification');
-        return;
-      }
-      if (
-        !constantTimeEqual(raw, rawAfterVerification) ||
-        this._writerKeysVersion !== writerKeysVersion
-      ) {
+      const authentication = await this._authenticateMembershipMessage(
+        message,
+        'key-update-v2',
+      );
+      if (authentication.kind !== 'authenticated') {
         console.warn(
-          'Dropping key-update after payload or writer ACL changed during verification',
+          {
+            'missing-signature': 'Dropping unsigned key-update request',
+            malformed: 'Dropping malformed key-update request',
+            'invalid-signature': 'Dropping key-update with an invalid signature',
+            changed: 'Dropping key-update after payload or writer ACL changed during verification',
+          }[authentication.kind],
         );
         return;
       }
+      const { writerKeysVersion } = authentication;
 
       console.log('Received shared key-update request');
 
