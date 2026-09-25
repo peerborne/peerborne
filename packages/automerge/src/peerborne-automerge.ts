@@ -423,40 +423,41 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   // Automerge retains changes with missing dependencies outside
-  // getAllChanges(), so validate their membership operations on admission.
+  // getAllChanges(), and the object they write may be created by a change that
+  // is still missing. Such an object could be the users root, so writes to an
+  // object not known to be unrelated must be valid membership writes.
   private _assertValidIncomingUsersOperations(
     acl: AutomergeACLDoc,
     changes: readonly BinaryChange[],
     operation: string,
   ): void {
-    const users = acl.users as unknown;
-    const usersObjectIds = new Set<string>();
-    if (typeof users === 'object' && users !== null) {
-      const usersObjectId = getObjectId(users as Record<string, true>);
-      if (usersObjectId) usersObjectIds.add(usersObjectId);
-    }
-    const decodedChanges = changes.map((binaryChange) =>
+    const unrelatedObjectIds = new Set<string>();
+    const incoming = changes.map((binaryChange) => decodeChange(binaryChange));
+    const history = getAllChanges(acl).map((binaryChange) =>
       decodeChange(binaryChange),
     );
-    for (const decoded of decodedChanges) {
+    for (const decoded of [...history, ...incoming]) {
       decoded.ops.forEach((operationEntry, index) => {
         if (
-          operationEntry.obj !== '_root' ||
-          operationEntry.key !== 'users'
+          operationEntry.action.startsWith('make') &&
+          (operationEntry.obj !== '_root' || operationEntry.key !== 'users')
         ) {
-          return;
+          unrelatedObjectIds.add(`${decoded.startOp + index}@${decoded.actor}`);
         }
-        if (operationEntry.action !== 'makeMap') {
-          throw new Error(
-            `Cannot ${operation}: Automerge ACL history mutates the users root`,
-          );
-        }
-        usersObjectIds.add(`${decoded.startOp + index}@${decoded.actor}`);
       });
     }
-    for (const decoded of decodedChanges) {
+    for (const decoded of incoming) {
       for (const operationEntry of decoded.ops) {
-        if (usersObjectIds.has(operationEntry.obj)) {
+        if (operationEntry.obj === '_root') {
+          if (
+            operationEntry.key === 'users' &&
+            operationEntry.action !== 'makeMap'
+          ) {
+            throw new Error(
+              `Cannot ${operation}: Automerge ACL history mutates the users root`,
+            );
+          }
+        } else if (!unrelatedObjectIds.has(operationEntry.obj)) {
           this._assertValidMembershipOperation(operationEntry, operation);
         }
       }
