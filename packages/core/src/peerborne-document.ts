@@ -125,6 +125,7 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import {
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   retryACLConflict,
   type PreparedACLChange,
@@ -2396,19 +2397,42 @@ export class PeerborneDocument<
   ): Promise<void> {
     await retryLoadACLConflict(async () => {
       assertStillActive?.();
-      try {
-        // Once an opaque merge starts, abort cannot prove that it stopped mutating.
-        await awaitLoadWork(this._readers.merge(changes), signal);
-      } catch (error) {
-        if (!(error instanceof ACLOperationInProgressError)) {
-          this._markDocumentStatePoisoned();
-        }
-        throw error;
-      }
+      await this._awaitACLMerge(() => this._readers.merge(changes), signal);
     }, signal);
     assertStillActive?.();
     if (!this._isStateApplicationBlocked()) {
       this._schedulePendingWelcomeDrain();
+    }
+  }
+
+  /**
+   * Run a remote ACL merge under an optional load deadline. Only a certified
+   * pre-mutation rejection leaves authorization determinate: any other
+   * failure, or abandoning a merge that has not settled, poisons the document
+   * instance because an opaque merge may already have changed membership.
+   */
+  private async _awaitACLMerge<T>(
+    merge: () => T | PromiseLike<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    let settled = false;
+    let tracked: Promise<T> | undefined;
+    try {
+      tracked = Promise.resolve(merge()).finally(() => {
+        settled = true;
+      });
+      return await awaitLoadWork(tracked, signal);
+    } catch (error) {
+      if (tracked && !settled) {
+        void tracked.catch(() => undefined);
+        this._markDocumentStatePoisoned();
+      } else if (
+        !(error instanceof ACLOperationInProgressError) &&
+        !(error instanceof ACLMergeRejectedError)
+      ) {
+        this._markDocumentStatePoisoned();
+      }
+      throw error;
     }
   }
 
@@ -2619,15 +2643,10 @@ export class PeerborneDocument<
           );
         }
         assertStillActive?.();
-        try {
-          // Once an opaque merge starts, abort cannot prove that it stopped mutating.
-          return await awaitLoadWork(this._writers.merge(changes), signal);
-        } catch (error) {
-          if (!(error instanceof ACLOperationInProgressError)) {
-            this._markDocumentStatePoisoned();
-          }
-          throw error;
-        }
+        return await this._awaitACLMerge(
+          () => this._writers.merge(changes),
+          signal,
+        );
       }, signal);
       assertStillActive?.();
     } finally {
