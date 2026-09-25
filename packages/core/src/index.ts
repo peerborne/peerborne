@@ -352,8 +352,6 @@ export type {
   CRDTReaderChangeNode,
 } from './crdt-change-node.js';
 export type {
-} from './path-update-wire.js';
-export type {
   SerializedEncryptedPathKeyBundle,
   SerializedPathNodeUpdateV2,
   SerializedPathTreeNodePublicKey,
