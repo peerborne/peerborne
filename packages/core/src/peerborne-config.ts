@@ -27,6 +27,7 @@ import { IDBBlockstore } from 'blockstore-idb';
 import { CompactionConfig } from './compaction-config.js';
 import {
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   defaultDocumentPubsubConfig,
 } from './document-topic.js';
 import { hasBootstrapPeers } from './bootstrap-config.js';
@@ -217,7 +218,7 @@ export const defaultConfig = (
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
           pubsubPeerDiscovery({
-            topics: ['peerborne._peer-discovery._p2p._pubsub'],
+            topics: [DEFAULT_PEER_DISCOVERY_TOPIC],
           }),
         ],
         services: {

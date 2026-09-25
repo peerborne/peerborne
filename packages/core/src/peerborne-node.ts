@@ -54,6 +54,7 @@ import { hasBootstrapPeers } from './bootstrap-config.js';
 import { createNodeHeliaStores } from './node-stores.js';
 import {
   copyDocumentPubsubConfig,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   defaultDocumentPubsubConfig,
 } from './document-topic.js';
 
@@ -116,7 +117,9 @@ export const defaultNodeConfig = (
         streamMuxers: [yamux()],
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
-          pubsubPeerDiscovery(),
+          pubsubPeerDiscovery({
+            topics: [DEFAULT_PEER_DISCOVERY_TOPIC],
+          }),
           mdns(),
         ],
         services: {
