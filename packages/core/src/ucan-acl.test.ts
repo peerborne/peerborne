@@ -503,6 +503,31 @@ describe('UCANACL', () => {
     expect(serialize).not.toHaveBeenCalled();
   });
 
+  test('rejects listings with holes before reading inherited entries', async () => {
+    const serialize = jest.fn(async (key: string) => `serialized:${key}`);
+    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const sparse: string[] = new Array(2);
+    sparse[1] = 'key1';
+    const inherited = Object.getOwnPropertyDescriptor(Array.prototype, '0');
+    Object.defineProperty(Array.prototype, '0', {
+      configurable: true,
+      value: 'phantom',
+    });
+    try {
+      backing.users.mockResolvedValueOnce(sparse);
+      await expect(boundedAcl.users()).rejects.toThrow(
+        'Backing ACL listing must not contain holes',
+      );
+    } finally {
+      delete (Array.prototype as unknown as Record<string, unknown>)['0'];
+      if (inherited) Object.defineProperty(Array.prototype, '0', inherited);
+    }
+    expect(serialize).not.toHaveBeenCalled();
+
+    backing.users.mockResolvedValueOnce(['key1']);
+    await expect(boundedAcl.users()).resolves.toEqual(['key1']);
+  });
+
   test('preserves a throwing listing length and releases admission', async () => {
     const serialize = jest.fn(async (key: string) => `serialized:${key}`);
     const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize);
