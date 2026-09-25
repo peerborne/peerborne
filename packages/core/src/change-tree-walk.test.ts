@@ -536,6 +536,75 @@ describe('bounded iterative change-tree consumers', () => {
     },
   );
 
+  function aclThenKeychainDocument(
+    mergeWriters: (changes: Change) => Promise<void>,
+    mergeKeychain: (changes: Change) => void,
+  ): any {
+    return fakeDocument({
+      documentPath: '/acl-before-keychain',
+      _isSigningEnabled: () => false,
+      _keychain: { merge: mergeKeychain },
+      _mergeReaders: jest.fn(),
+      _mergeWriters: mergeWriters,
+    });
+  }
+
+  function aclThenKeychainMessage(): unknown {
+    return {
+      documentId: '/acl-before-keychain',
+      signatureContext: 'load-response-v3',
+      changeId: 'root',
+      changes: { kind: crdtWriterChangeNode, change: new Uint8Array([1]) },
+      keychainChanges: new Uint8Array([9]),
+    };
+  }
+
+  test('a rejected ACL pre-pass leaves the keychain unchanged', async () => {
+    const failure = new Error('writer ACL merge failed');
+    const mergeWriters = jest.fn(async () => {
+      throw failure;
+    });
+    const mergeKeychain = jest.fn();
+    const document = aclThenKeychainDocument(mergeWriters, mergeKeychain);
+
+    await expect(
+      document._syncUnlocked(
+        aclThenKeychainMessage(),
+        false,
+        'load-response-v3',
+      ),
+    ).rejects.toBe(failure);
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(mergeKeychain).not.toHaveBeenCalled();
+  });
+
+  test('merges the keychain only after the ACL pre-pass settles', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeWriters = jest.fn(() => settlement);
+    const stop = new Error('stop after keychain merge');
+    const mergeKeychain = jest.fn(() => {
+      throw stop;
+    });
+    const document = aclThenKeychainDocument(mergeWriters, mergeKeychain);
+
+    const outcome = document
+      ._syncUnlocked(aclThenKeychainMessage(), false, 'load-response-v3')
+      .then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+    await Promise.resolve();
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(mergeKeychain).not.toHaveBeenCalled();
+
+    settle();
+    await expect(outcome).resolves.toBe(stop);
+    expect(mergeKeychain).toHaveBeenCalledTimes(1);
+  });
+
   test('pruning uses one detached tree view and never partially mutates proxies', () => {
     let sourceMutationObserved = false;
     const firstChildren = {

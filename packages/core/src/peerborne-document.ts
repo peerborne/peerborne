@@ -4690,6 +4690,16 @@ export class PeerborneDocument<
       );
     }
 
+    // Pre-pass: apply only ACL nodes from the change tree to populate
+    // _writers/_readers. This is needed before snapshot verification since
+    // _verifySnapshotSignature() requires writer keys. ACL merges are
+    // idempotent, so re-applying them in _syncDocumentChanges() is safe.
+    // It runs before the keychain merge so a rejected ACL merge leaves the
+    // keychain unchanged.
+    if (changeTreePreflight) {
+      await this._applyCollectedACL(changeTreePreflight.aclEntries);
+    }
+
     // Update/replace list of document keys (if provided).
     if (message.keychainChanges) {
       try {
@@ -4702,14 +4712,6 @@ export class PeerborneDocument<
         );
         throw e;
       }
-    }
-
-    // Pre-pass: apply only ACL nodes from the change tree to populate
-    // _writers/_readers. This is needed before snapshot verification since
-    // _verifySnapshotSignature() requires writer keys. ACL merges are
-    // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    if (changeTreePreflight) {
-      await this._applyCollectedACL(changeTreePreflight.aclEntries);
     }
 
     // Apply snapshot if present and more recent than ours.
