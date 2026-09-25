@@ -1,6 +1,10 @@
 /** Default topic prefix for version-isolated document pubsub messages. */
 export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
+/** Shared GossipSub peer-discovery topic for browser, Node, and relay peers. */
+export const DEFAULT_PEER_DISCOVERY_TOPIC =
+  'peerborne._peer-discovery._p2p._pubsub';
+
 export interface DocumentPubsubConfig {
   readonly pubsubDocumentPrefix: string;
 }

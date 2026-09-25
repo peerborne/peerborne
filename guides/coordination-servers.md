@@ -28,7 +28,7 @@ Peerborne uses [libp2p](https://libp2p.io/) for networking. The following server
 | **Protocol** | WebSocket (`/ip4/<IP>/tcp/<PORT>/ws`) or WebSocket Secure (`/ip4/<IP>/tcp/<PORT>/wss`) |
 | **Ports** | TCP 9001 (WebSocket), TCP 9002 (TCP for node-to-node) |
 
-In Peerborne, the bootstrap node and relay node are combined into a single process (`relay-server/`). The relay server listens on WebSocket (port 9001) and TCP (port 9002), runs the libp2p identify protocol, and participates in GossipSub peer discovery via the `swarmdb._peer-discovery._p2p._pubsub` topic.
+In Peerborne, the bootstrap node and relay node are combined into a single process (`relay-server/`). The relay server listens on WebSocket (port 9001) and TCP (port 9002), runs the libp2p identify protocol, and participates in GossipSub peer discovery via the `peerborne._peer-discovery._p2p._pubsub` topic.
 
 **How it works:**
 1. Browser client is configured with the relay's multiaddress (e.g., `/ip4/1.2.3.4/tcp/9001/ws/p2p/<PEER_ID>`)
