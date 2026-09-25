@@ -50,7 +50,7 @@ function requestBytes(documentId: string): Uint8Array {
 const jsonProtocols = [
   ['doc-load', documentLoadV4, 'handleLoadRequestData'],
   ['snapshot-load', snapshotLoadV4, 'handleSnapshotLoadRequestData'],
-  ['tip-advertise', securityAdvertiseV1, 'handleSecurityAdvertiseRequestData'],
+  ['security-advertise', securityAdvertiseV1, 'handleSecurityAdvertiseRequestData'],
 ] as const;
 
 const rawProtocols = [

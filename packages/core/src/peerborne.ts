@@ -227,7 +227,7 @@ type SharedProtocolName =
   | 'snapshot-load'
   | 'beekem-welcome'
   | 'beekem-pathupdate'
-  | 'tip-advertise';
+  | 'security-advertise';
 
 function sharedProtocolRequestTimeoutMs(configured: unknown): number {
   return typeof configured === 'number' &&
@@ -945,7 +945,7 @@ export class Peerborne<
    * document path, and routes to the matching PeerborneDocument instance in
    * the registry.
    *
-   * For doc-load, snapshot-load, and tip-advertise, the path is extracted by
+   * For doc-load, snapshot-load, and security-advertise, the path is extracted by
    * deserializing the CRDTLoadRequest. The three update protocols use a
    * 4-byte length-prefixed document path before their payload.
    */
@@ -1189,14 +1189,14 @@ export class Peerborne<
       });
     };
 
-    // Handler implementation for tip-advertise requests (initial-load
+    // Handler implementation for security-advertise requests (initial-load
     // quorum probe; see `wire-protocols.ts::securityAdvertiseV1`). Wire format
     // mirrors documentLoadV4: a single serialized CRDTLoadRequest in,
     // a single (small) encrypted/serialized CRDTSyncMessage out (whose
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    const tipAdvertiseHandler = (rawStream: Stream) => {
+    const securityAdvertiseHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
         stream,
@@ -1222,13 +1222,13 @@ export class Peerborne<
                   ? 'request too large'
                   : 'failed to read request';
             await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            console.warn(`Shared tip-advertise handler: ${reason}, dropping`);
+            console.warn(`Shared security-advertise handler: ${reason}, dropping`);
             return [];
           }
           await runSharedProtocolHandlerPhase(
             stream,
             requestTimeoutMs,
-            'tip-advertise',
+            'security-advertise',
             async (admission) => {
               const doc = this._documentRegistry.get(request.documentId);
               if (!doc) {
@@ -1245,7 +1245,7 @@ export class Peerborne<
           return [];
         },
       ).then(() => undefined).catch(() => {
-        console.error('Shared tip-advertise handler failed');
+        console.error('Shared security-advertise handler failed');
       });
     };
 
@@ -1292,7 +1292,7 @@ export class Peerborne<
       this.libp2p.handle(snapshotLoadV4, snapshotLoadHandler, relayProtocolOptions),
       this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(securityAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
+      this.libp2p.handle(securityAdvertiseV1, securityAdvertiseHandler, relayProtocolOptions),
       this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;
