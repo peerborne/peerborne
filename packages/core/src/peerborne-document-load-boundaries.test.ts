@@ -12,6 +12,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
+import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
@@ -3646,6 +3647,69 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationRevision).toBe(1);
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  test.each(['membership', 'finalization'] as const)(
+    'bounds a hung post-catch-up invitation %s with a deadline',
+    async (stage) => {
+      jest.useFakeTimers();
+      try {
+        const close = jest.fn(async () => undefined);
+        const continuation = {};
+        const started = deferred<void>();
+        const hung = (): Promise<never> => {
+          started.resolve();
+          return new Promise<never>(() => {});
+        };
+        const dispatch = jest.fn();
+        const document = fakeDocument({
+          documentPath: '/hung-invitation-finalization',
+          _bootstrapLoadApplicationState: 'pending',
+          _bootstrapLoadApplicationRevision: 1,
+          _invitationBootstrapReady: true,
+          _activeInvitationBootstrapContinuation: continuation,
+          _open: jest.fn(async () => true),
+          _loadInvitationCatchUp: jest.fn(async () => true),
+          _authProvider: {
+            serializePublicKey: jest.fn(async (key: string) => key),
+          },
+          _userPublicKey: 'recipient',
+          _readers: {
+            users: jest.fn(
+              stage === 'membership'
+                ? hung
+                : async () => ['recipient'],
+            ),
+          },
+          _writers: { users: jest.fn(async () => ['issuer']) },
+          _pendingWelcomes: new Map(),
+          _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+          _bootstrapCompactionDeferred: false,
+          _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(hung),
+          _dispatchRemoteUpdateHandlers: dispatch,
+          close,
+        });
+
+        const activation = document._activateAcceptedInvitationBootstrap(
+          '/founder',
+          'issuer',
+          'reader',
+          continuation,
+        );
+        const rejection = expect(activation).rejects.toThrow(
+          /finalization deadline exceeded/,
+        );
+        await started.promise;
+        await jest.advanceTimersByTimeAsync(INVITATION_STREAM_TIMEOUT_MS);
+        await rejection;
+
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(document._bootstrapLoadApplicationState).toBe('pending');
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   test('publishes invitation completion only after open, catch-up, and final membership', async () => {
     const order: string[] = [];

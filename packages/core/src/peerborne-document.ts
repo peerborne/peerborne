@@ -7422,18 +7422,42 @@ export class PeerborneDocument<
       ) {
         throw new Error('Invitation bootstrap catch-up load failed');
       }
-      await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
-      if (
-        !this._isActiveInvitationBootstrapContinuation(bootstrapContinuation)
-      ) {
-        throw new Error('Invitation bootstrap continuation is no longer active');
+      // The catch-up stream deadline has ended. Bound the remaining ACL and
+      // finalization awaits separately so a hung provider cannot retain the
+      // invitation transaction's `_mutationQueue` slot indefinitely.
+      const finalization = new AbortController();
+      const finalizationTimer = setTimeout(
+        () =>
+          finalization.abort(
+            new Error('Invitation bootstrap finalization deadline exceeded'),
+          ),
+        INVITATION_STREAM_TIMEOUT_MS,
+      );
+      try {
+        await this._assertAcceptedInvitationMembership(
+          issuerPublicKey,
+          role,
+          finalization.signal,
+        );
+        if (
+          !this._isActiveInvitationBootstrapContinuation(bootstrapContinuation)
+        ) {
+          throw new Error(
+            'Invitation bootstrap continuation is no longer active',
+          );
+        }
+        // No continuation path is needed beyond this point. Retire the exact
+        // capability while state is still pending so completion can publish a
+        // healthy document to synchronous handlers and reentrant public reads.
+        // If finalization fails, the pending marker remains the durable gate.
+        this._activeInvitationBootstrapContinuation = undefined;
+        await this._completeBootstrapStateApplicationUnlocked(
+          undefined,
+          finalization.signal,
+        );
+      } finally {
+        clearTimeout(finalizationTimer);
       }
-      // No continuation path is needed beyond this point. Retire the exact
-      // capability while state is still pending so completion can publish a
-      // healthy document to synchronous handlers and reentrant public reads.
-      // If finalization fails, the pending marker remains the durable gate.
-      this._activeInvitationBootstrapContinuation = undefined;
-      await this._completeBootstrapStateApplicationUnlocked();
     } catch (error) {
       this._invitationBootstrapReady = false;
       // The invitation remains pending throughout open and catch-up. Cleanup
