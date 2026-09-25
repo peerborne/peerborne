@@ -607,9 +607,11 @@ export class PeerborneDocument<
   // Surviving readers feed the update into `processPathUpdate` and
   // re-derive the document encryption key from the fresh root secret
   // (see `derive-doc-key.ts`). The removed reader's leaf is blanked,
-  // so they cannot recompute the root secret -- this closes the
-  // revocation-latency gap of the previous "encrypt the new key under
-  // the old key" rotation scheme.
+  // so they cannot recompute the root secret from the PathUpdate. This
+  // is a primitive-level property: PathUpdate delivery is best-effort,
+  // BeeKEM state is memory-only, and a surviving reader that misses the
+  // update needs a recipient-bound re-invitation or explicit
+  // key-recovery flow, which Peerborne does not run automatically.
   //
   // The tree is initialized in one of two ways:
   //
@@ -6620,9 +6622,10 @@ export class PeerborneDocument<
    *     failures are logged but do not unwind the BeeKEM advance. The
    *     writer is always left in a consistent state -- BeeKEM advanced,
    *     local keychain updated with the new epoch key, outgoing traffic
-   *     encrypted under the new key. Surviving readers may need to
-   *     re-sync via a fresh document load if the ACL change or
-   *     PathUpdate broadcast was dropped.
+   *     encrypted under the new key. A surviving reader that misses
+   *     the PathUpdate cannot decrypt later traffic or load responses,
+   *     which are encrypted under the new key; recovery requires a
+   *     recipient-bound re-invitation or explicit key-recovery flow.
    *
    * ## Ordering on the wire
    *
@@ -6660,14 +6663,17 @@ export class PeerborneDocument<
    *      still encrypted under the **previous** keychain key (so
    *      surviving readers can decrypt regardless of PathUpdate
    *      arrival order). On failure: log a warning and fall through;
-   *      surviving readers can recover the new ACL via a fresh
-   *      document load.
+   *      a surviving reader that receives the step-5 PathUpdate can
+   *      observe the ACL removal through a later load, which is
+   *      encrypted under the new key.
    *   5. Broadcast the signed `PathUpdate` over `beekemPathUpdateV1`
    *      to every connected peer. Surviving readers feed it into
    *      `BeeKEM.processPathUpdate` and re-derive the same document
    *      key + epoch ID. On failure: log a warning and fall through;
-   *      surviving readers can recover via a fresh document load.
-   *      The local keychain install in step 6 still runs so the
+   *      an ordinary load cannot recover the missed epoch, so
+   *      surviving readers need a recipient-bound re-invitation or
+   *      explicit key-recovery flow. The local keychain install in
+   *      step 6 still runs so the
    *      WRITER transitions to the new key.
    *   6. Install the new key into the LOCAL keychain. From this
    *      point on every subsequent outgoing message is encrypted
@@ -6694,7 +6700,10 @@ export class PeerborneDocument<
    * the removed reader cannot derive the new key even if they were
    * connected at the moment of revocation: their leaf is blanked and
    * the new path key material is encrypted to subtrees they no longer
-   * occupy. This closes the revocation-latency gap (#189 §5.4 item 5).
+   * occupy. This addresses the revocation-latency gap (#189 §5.4 item 5)
+   * only at the BeeKEM primitive level: it does not guarantee that
+   * surviving readers receive the new epoch, and BeeKEM state is not
+   * persisted across restarts.
    *
    * @param reader User's public key.
    * @throws If the BeeKEM tree has no record of this reader (e.g.
@@ -6857,7 +6866,8 @@ export class PeerborneDocument<
     //    serialization, pubsub publish failure, IPFS write error,
     //    etc.) we log + fall through. The BeeKEM tree has already
     //    advanced; unwinding it is not possible. Surviving readers
-    //    can re-sync the ACL via a fresh document load. We deliberately
+    //    that receive the step-5 PathUpdate can observe the ACL
+    //    removal through a later load. We deliberately
     //    do not retry: a failed pubsub publish typically indicates a
     //    transport-level issue that the caller is better placed to
     //    diagnose than this routine.
@@ -6868,8 +6878,9 @@ export class PeerborneDocument<
       console.warn(
         `[${this.documentPath}] removeReader: ACL-removal broadcast failed; ` +
           `BeeKEM state has advanced locally and the new epoch key will be ` +
-          `installed in the local keychain. Surviving readers may need to ` +
-          `re-load the document to observe the ACL change.`,
+          `installed in the local keychain. Surviving readers that receive ` +
+          `the PathUpdate may need to re-load the document to observe the ` +
+          `ACL change.`,
         err,
       );
       // Fall through: still distribute the PathUpdate and install
@@ -6910,16 +6921,18 @@ export class PeerborneDocument<
     //    fan-out propagated) we log + fall through to `addEpochKey`
     //    so the writer still transitions to the new key for
     //    outgoing encryption. Surviving readers that miss the
-    //    PathUpdate can recover via a fresh document load (the new
-    //    epoch key is part of the keychain CRDT once the next ACL
-    //    or document change is broadcast and observed).
+    //    PathUpdate cannot recover the new epoch with an ordinary
+    //    load, because load responses and later changes are
+    //    encrypted under the new key; recovery requires a
+    //    recipient-bound re-invitation or explicit key-recovery flow.
     try {
       await this._distributeBeeKEMPathUpdate(pathUpdate, derivedEpochId32);
     } catch (err) {
       console.warn(
         `[${this.documentPath}] removeReader: PathUpdate broadcast failed; ` +
           `BeeKEM state has advanced locally and the new key will be installed. ` +
-          `Surviving readers may need to re-load the document.`,
+          `Surviving readers that missed it cannot recover the new epoch ` +
+          `with an ordinary load and need a recipient-bound re-invitation.`,
         err,
       );
       // Fall through to addEpochKey so the writer transitions to
@@ -7208,8 +7221,9 @@ export class PeerborneDocument<
    *
    * Best-effort fan-out: each failed dial is logged but does not
    * abort the broadcast. A surviving reader that misses the
-   * PathUpdate falls back to a fresh document load to recover key
-   * state, matching the legacy `_distributeKeyUpdate` posture.
+   * PathUpdate cannot recover the new epoch with an ordinary load;
+   * recovery requires a recipient-bound re-invitation or explicit
+   * key-recovery flow.
    */
   private async _distributeBeeKEMPathUpdate(
     pathUpdate: PathUpdate,
@@ -7381,7 +7395,7 @@ export class PeerborneDocument<
         rootSecret = await beekem.processPathUpdate(pathUpdate);
       } catch {
         console.warn(
-          'Failed to apply BeeKEM PathUpdate; a fresh document load may be required',
+          'Failed to apply BeeKEM PathUpdate; recovering the new epoch requires a recipient-bound re-invitation',
         );
         return;
       }
@@ -7430,9 +7444,10 @@ export class PeerborneDocument<
    *
    * `removeReader` no longer uses this path: it rotates the document
    * key via BeeKEM's ratchet tree and broadcasts a signed
-   * `PathUpdate` over `beekemPathUpdateV1` instead, which closes the
-   * revocation-latency gap where a removed-but-still-connected
-   * reader could decrypt the rotation message (#189 §5.4 item 5).
+   * `PathUpdate` over `beekemPathUpdateV1` instead, so a
+   * removed-but-still-connected reader cannot decrypt the rotation
+   * message (#189 §5.4 item 5). Delivery to surviving readers remains
+   * best-effort.
    *
    * `removeWriter` continues to use this method: writer revocation
    * has different threat properties (the removed writer no longer
@@ -7486,8 +7501,8 @@ export class PeerborneDocument<
     );
 
     // WARNING: If some peers fail to receive this update, they will be unable
-    // to decrypt future messages encrypted with the new key. They will need to
-    // perform a fresh document load to recover the keychain state.
+    // to decrypt future messages or load responses encrypted with the new key.
+    // An ordinary load cannot recover the missed key.
     const failedPeers: string[] = [];
     for (const peer of peers) {
       try {

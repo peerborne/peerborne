@@ -184,9 +184,10 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // and re-derives the document key from
 // the fresh root secret (see `derive-doc-key.ts`). The removed reader
 // cannot derive the new key — their leaf is blanked and the new path key
-// material is encrypted to subtrees they no longer occupy — which closes
-// the revocation-latency gap of the previous "encrypt new key under old
-// key" rotation scheme.
+// material is encrypted to subtrees they no longer occupy. This is a
+// primitive-level property: delivery to surviving readers is best-effort,
+// and a reader that misses the update cannot recover the new epoch with an
+// ordinary load.
 //
 // =============================================================================
 // SAFETY-CRITICAL: writer-only
