@@ -91,26 +91,37 @@ export function PermissionsTable({
                   <Button
                     variant="danger"
                     onClick={() => {
-                      switch (permission.permissions) {
-                        case 'r': {
-                          removeReader(permission.key).then(() =>
-                            console.log('Removed reader: ', permission),
+                      (async () => {
+                        try {
+                          switch (permission.permissions) {
+                            case 'r': {
+                              await removeReader(permission.key);
+                              console.log('Removed reader: ', permission);
+                              break;
+                            }
+                            case 'rw': {
+                              // Writers keep an explicit reader row, so demote
+                              // before revoking read access.
+                              await removeWriter(permission.key);
+                              await removeReader(permission.key);
+                              console.log('Removed editor: ', permission);
+                              break;
+                            }
+                            default: {
+                              console.warn(
+                                'Found unrecognized permission type: ',
+                                permission,
+                              );
+                            }
+                          }
+                        } catch {
+                          alert(
+                            'Unable to remove this member. The document ' +
+                              'founder cannot be removed, and an editor must ' +
+                              'also hold reader access before demotion.',
                           );
-                          break;
                         }
-                        case 'rw': {
-                          removeWriter(permission.key).then(() =>
-                            console.log('Removed writer: ', permission),
-                          );
-                          break;
-                        }
-                        default: {
-                          console.warn(
-                            'Found unrecognized permission type: ',
-                            permission,
-                          );
-                        }
-                      }
+                      })();
                     }}
                   >
                     Remove
