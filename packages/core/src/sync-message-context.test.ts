@@ -305,3 +305,51 @@ test('snapshot comparison rejects different array lengths even without enumerabl
     'ordinary-sync-v1',
   )).toBe(false);
 });
+
+describe('snapshot comparison of opaque CryptoKeys', () => {
+  async function generateKey(): Promise<CryptoKey> {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify'],
+    );
+    return pair.publicKey;
+  }
+
+  function expectedFor(candidate: unknown) {
+    return snapshotSyncMessageForContext(candidate, 'ordinary-sync-v1', {
+      retainCryptoKeys: true,
+    });
+  }
+
+  test('accepts the same CryptoKey object', async () => {
+    const candidate = {
+      documentId: '/doc',
+      changes: { writer: await generateKey() },
+    };
+    expect(
+      syncMessageMatchesSnapshot(
+        expectedFor(candidate),
+        candidate,
+        'ordinary-sync-v1',
+      ),
+    ).toBe(true);
+  });
+
+  test.each([
+    ['another CryptoKey', async () => generateKey()],
+    ['a structured clone of the key', async (key: CryptoKey) => structuredClone(key)],
+    ['an empty object', async () => ({})],
+  ])('rejects a CryptoKey replaced with %s', async (_label, replace) => {
+    const key = await generateKey();
+    const candidate: { documentId: string; changes: { writer: unknown } } = {
+      documentId: '/doc',
+      changes: { writer: key },
+    };
+    const expected = expectedFor(candidate);
+    candidate.changes.writer = await replace(key);
+    expect(
+      syncMessageMatchesSnapshot(expected, candidate, 'ordinary-sync-v1'),
+    ).toBe(false);
+  });
+});

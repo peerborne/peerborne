@@ -4469,12 +4469,17 @@ export class PeerborneDocument<
     context: SyncMessageContext,
     maxBytes: number,
   ): { raw: Uint8Array; unchanged: () => boolean } | undefined {
-    const { signature: _expectedSignature, ...expected } = message;
     let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
+    let expected: CRDTSyncMessage<ChangesType, PublicKey>;
     try {
       const { signature: _signature, ...detached } =
         snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
       unsigned = detached;
+      expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        unsigned,
+        context,
+        { retainCryptoKeys: true },
+      );
     } catch {
       return undefined;
     }

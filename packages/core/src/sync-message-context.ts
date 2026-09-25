@@ -5,6 +5,7 @@ import {
   MAX_CHANGE_TREE_NODES,
 } from './change-tree-walk.js';
 import {
+  isNativeCryptoKey,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
@@ -117,6 +118,7 @@ const allowedFields: Readonly<Record<SyncMessageContext, ReadonlySet<string>>> =
 export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
   value: unknown,
   context: SyncMessageContext,
+  options: { retainCryptoKeys?: boolean } = {},
 ): CRDTSyncMessage<ChangesType, PublicKey> {
   const message = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
     value,
@@ -139,10 +141,14 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
     message,
     `${context} message`,
     syncMessageSnapshotLimits,
+    options,
   ) as CRDTSyncMessage<ChangesType, PublicKey>;
 }
 
-/** @internal Compare an untrusted serializer input with the detached state to apply. */
+/**
+ * @internal Compare an untrusted serializer input with the detached state to
+ * apply. Opaque CryptoKey values match only when they are the same objects.
+ */
 export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
   expected: CRDTSyncMessage<ChangesType, PublicKey>,
   candidate: unknown,
@@ -150,7 +156,9 @@ export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
 ): boolean {
   let actual: CRDTSyncMessage<ChangesType, PublicKey>;
   try {
-    actual = snapshotSyncMessageForContext(candidate, context);
+    actual = snapshotSyncMessageForContext(candidate, context, {
+      retainCryptoKeys: true,
+    });
   } catch {
     return false;
   }
@@ -158,6 +166,7 @@ export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
   while (pending.length > 0) {
     const [left, right] = pending.pop()!;
     if (Object.is(left, right)) continue;
+    if (isNativeCryptoKey(left) || isNativeCryptoKey(right)) return false;
     if (
       left === null ||
       right === null ||
