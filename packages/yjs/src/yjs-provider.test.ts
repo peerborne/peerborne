@@ -10,6 +10,7 @@ import {
   Map as YMap,
 } from 'yjs';
 import {
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   MAX_KEYCHAIN_EPOCHS,
   retryACLConflict,
@@ -251,7 +252,9 @@ describe('UCANACL over YjsACL', () => {
     const remote = new YjsACL();
     await acl.add(key1);
 
-    expect(() => acl.merge(new Uint8Array([0xff, 0xff, 0xff]))).toThrow();
+    expect(() => acl.merge(new Uint8Array([0xff, 0xff, 0xff]))).toThrow(
+      ACLMergeRejectedError,
+    );
 
     expect(await acl.check(key1)).toBe(true);
     expect(await acl.users()).toHaveLength(1);
@@ -271,7 +274,9 @@ describe('YjsACL', () => {
     const acl = new YjsACL();
     const live = (acl as any)._acl as Doc;
     const before = new Map(live.share);
-    expect(() => acl.merge(new Uint8Array([255]))).toThrow();
+    expect(() => acl.merge(new Uint8Array([255]))).toThrow(
+      ACLMergeRejectedError,
+    );
     expect(live.share).toEqual(before);
     expect(live.share.has('users')).toBe(false);
   });

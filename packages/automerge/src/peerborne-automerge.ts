@@ -20,6 +20,7 @@ import {
 
 import {
   ACL,
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
@@ -840,6 +841,17 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return getAllChanges(this._acl);
   }
   merge(change: BinaryChange[]): void {
+    const base = this._acl;
+    try {
+      this._mergeStaged(change);
+    } catch (error) {
+      if (error instanceof ACLOperationInProgressError || this._acl !== base) {
+        throw error;
+      }
+      throw new ACLMergeRejectedError(error);
+    }
+  }
+  private _mergeStaged(change: BinaryChange[]): void {
     if (this._pendingMutations !== 0) {
       throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
     }

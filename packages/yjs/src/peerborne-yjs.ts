@@ -1,5 +1,6 @@
 import {
   ACL,
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
@@ -1008,6 +1009,17 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
+    const base = this._acl;
+    try {
+      this._mergeStaged(change);
+    } catch (error) {
+      if (error instanceof ACLOperationInProgressError || this._acl !== base) {
+        throw error;
+      }
+      throw new ACLMergeRejectedError(error);
+    }
+  }
+  private _mergeStaged(change: Uint8Array): void {
     if (this._pendingMutations !== 0) {
       throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
     }
