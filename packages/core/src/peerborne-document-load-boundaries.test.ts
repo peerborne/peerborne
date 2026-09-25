@@ -5023,7 +5023,7 @@ describe('document load response boundaries', () => {
     expect(rawStream.close).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'tip-advertise probe completed' }),
+      expect.objectContaining({ message: 'security-advertise probe completed' }),
     );
     expect(rawStream.closeRead).not.toHaveBeenCalled();
   });

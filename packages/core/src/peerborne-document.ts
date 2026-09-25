@@ -4336,7 +4336,7 @@ export class PeerborneDocument<
   }
 
   /**
-   * Handles an initial-load quorum tip-advertise request with pre-read
+   * Handles an initial-load quorum security-advertise request with pre-read
    * stream data. Called by the shared protocol handler in Peerborne
    * after reading and routing.
    *
@@ -4378,7 +4378,7 @@ export class PeerborneDocument<
 
       if (message.documentId !== this.documentPath) {
         console.warn(
-          'Shared tip-advertise request targeted the wrong document',
+          'Shared security-advertise request targeted the wrong document',
         );
         await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
@@ -4387,7 +4387,7 @@ export class PeerborneDocument<
       // Signing-disabled deployments retain the same trust posture across
       // all shared load protocols through the common authorization helper.
       if (!(await this._isLoadRequesterAuthorized(message))) {
-        console.warn('Shared tip-advertise request was unauthorized');
+        console.warn('Shared security-advertise request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
           await writeStream(stream, [] as Iterable<Uint8Array>);
         }
@@ -4427,10 +4427,10 @@ export class PeerborneDocument<
         documentKey,
       );
       if (!nonce) {
-        throw new Error(`Failed to encrypt tip-advertise response! Nonce cannot be empty`);
+        throw new Error(`Failed to encrypt security-advertise response! Nonce cannot be empty`);
       }
       const assembled = concatUint8Arrays(documentKeyID, nonce, data);
-      console.log('Sending encrypted shared tip-advertise response');
+      console.log('Sending encrypted shared security-advertise response');
 
       await this._sendAuthorizedLoadResponse(
         message,
@@ -4440,7 +4440,7 @@ export class PeerborneDocument<
         admission,
       );
     } catch {
-      console.error('Shared tip-advertise request handling failed');
+      console.error('Shared security-advertise request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
@@ -5657,10 +5657,10 @@ export class PeerborneDocument<
           .catch(() => undefined);
       }
     };
-    const onAbort = () => abortStream('tip-advertise probe aborted');
+    const onAbort = () => abortStream('security-advertise probe aborted');
     if (signal) {
       if (signal.aborted) {
-        abortStream('tip-advertise probe aborted');
+        abortStream('security-advertise probe aborted');
         return null;
       }
       signal.addEventListener('abort', onAbort, { once: true });
@@ -5771,12 +5771,12 @@ export class PeerborneDocument<
       if (signal) {
         signal.removeEventListener('abort', onAbort);
       }
-      abortStream('tip-advertise probe completed');
+      abortStream('security-advertise probe completed');
     }
   }
 
   /**
-   * Run a single tip-advertise probe with a hard timeout. The probe itself
+   * Run a single security-advertise probe with a hard timeout. The probe itself
    * never throws (`_probeSecurityAdvertise` returns `null` on any failure
    * mode); a timeout also resolves to `null` so the caller can treat the
    * peer as a non-vote rather than a disagreement.
