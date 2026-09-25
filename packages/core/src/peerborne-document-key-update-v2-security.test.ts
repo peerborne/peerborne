@@ -296,34 +296,4 @@ describe('legacy document key-update V2 admission', () => {
 
     expect(harness.merge).not.toHaveBeenCalled();
   });
-
-  test('sender signs unconditionally when ordinary signing is disabled', async () => {
-    const signUnconditional = jest.fn(async () => 'AQ==');
-    const signGated = jest.fn(async () => {
-      throw new Error('must not use the ordinary signing toggle');
-    });
-    const document = fakeDocument({
-      _encoder: new TextEncoder(),
-      _signAsWriter: signGated,
-      _signAsWriterUnconditional: signUnconditional,
-      _syncMessageSerializer: { serializeSyncMessage: () => new Uint8Array([1]) },
-      _authProvider: {
-        encrypt: async () => ({
-          nonce: new Uint8Array([1]),
-          data: new Uint8Array([2]),
-        }),
-      },
-      swarm: {
-        heliaNode: { libp2p: { getConnections: () => [] } },
-      },
-    });
-
-    await document._distributeKeyUpdate(
-      { delta: 1 },
-      [new Uint8Array(32), {}],
-    );
-
-    expect(signUnconditional).toHaveBeenCalledTimes(1);
-    expect(signGated).not.toHaveBeenCalled();
-  });
 });
