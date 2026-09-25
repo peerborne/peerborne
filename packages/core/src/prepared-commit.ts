@@ -17,6 +17,14 @@
  * synchronous commit boundary. Callers must fail closed when any participating
  * provider cannot supply a claim.
  *
+ * Core security wrappers accept claims only as same-realm plain records with
+ * `Object.prototype` or `null` as their direct prototype. `finalize` must
+ * resolve through a data-property function descriptor; accessors, thenables,
+ * promises, class instances, and cross-realm records are rejected after the
+ * claim method has been invoked and therefore poison the owning document.
+ * Providers intended for those wrappers should return an object literal such
+ * as `{ finalize() { ... } }`.
+ *
  * From a successful claim until it is finalized or permanently abandoned,
  * the caller MUST serialize every conflicting mutation of that provider's
  * staged revision. It MUST NOT independently compose multiple claims that

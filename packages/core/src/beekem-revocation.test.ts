@@ -23,8 +23,8 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import {
-  deserializePathUpdateFromWire,
-  serializePathUpdateForWire,
+  deserializePathUpdateV2FromWire,
+  serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
@@ -70,7 +70,7 @@ describe('BeeKEM reader revocation', () => {
     // Alice (writer) sets up a 2-member group (Alice + Bob). The test
     // focuses on the simplest configuration that exercises the
     // revocation security property: a removed reader cannot derive the
-    // new document key from the writer-broadcast PathUpdate. Larger
+    // new document key from the writer-broadcast PathUpdateV2. Larger
     // tree configurations are exercised by the wire-integration tests
     // in `beekem-revocation-wire.test.ts`.
     // Tree layout (2 leaves):
@@ -86,16 +86,16 @@ describe('BeeKEM reader revocation', () => {
     await bob.processWelcome(bobWelcome, bobKeys.privateKey, bobKeys.publicKey);
 
     // For the 3+ member tests below, Bob has stale tree state until
-    // he processes each subsequent addMember PathUpdate. The
+    // he processes each subsequent addMember PathUpdateV2. The
     // BeeKEM module's current implementation cannot apply an
-    // addMember PathUpdate from an even-sized tree growth without
+    // addMember PathUpdateV2 from an even-sized tree growth without
     // additional Welcome material, so we keep the test focused on
     // the 2-member case where the security property is unambiguous.
 
     // Alice revokes Bob. `removeMember` itself blanks Bob's leaf,
     // blanks every internal node on Bob's direct path, AND re-derives
     // fresh key material along Alice's path to root. The returned
-    // `PathUpdate` + `rootSecret` are exactly what `removeReader`
+    // `PathUpdateV2` + `rootSecret` are exactly what `removeReader`
     // broadcasts and installs in the keychain -- no follow-up
     // `update()` call is involved. Asserting against `removeMember`'s
     // return values mirrors what the integration code actually ships
@@ -104,16 +104,16 @@ describe('BeeKEM reader revocation', () => {
     const { pathUpdate, rootSecret: aliceNewRoot } =
       await alice.removeMember(bobLeafIndex);
 
-    // Wire-format round-trip: PathUpdate goes over the
-    // beekemPathUpdateV1 protocol, so the security claim must hold
+    // Wire-format round-trip: PathUpdateV2 goes over the
+    // beekemPathUpdateV2 protocol, so the security claim must hold
     // through serialization too.
     const wire = JSON.parse(
-      JSON.stringify(serializePathUpdateForWire(pathUpdate)),
+      JSON.stringify(serializePathUpdateV2ForWire(pathUpdate)),
     );
-    const restored = deserializePathUpdateFromWire(wire);
+    const restored = deserializePathUpdateV2FromWire(wire);
 
     // Bob -- the removed reader -- cannot derive the new root from
-    // the PathUpdate. With his leaf blanked, processPathUpdate has
+    // the PathUpdateV2. With his leaf blanked, processPathUpdate has
     // no intersection with his (now empty) direct path, so it
     // throws.
     let bobDerivedKey: CryptoKey | null = null;
@@ -154,7 +154,7 @@ describe('BeeKEM reader revocation', () => {
     // Two-member group: Alice (writer) + Bob (survivor). Alice
     // performs a `BeeKEM.update` to simulate the path-rotation step
     // of removeReader (the `removeMember` half is exercised in the
-    // test above). Bob applies the PathUpdate and must converge on
+    // test above). Bob applies the PathUpdateV2 and must converge on
     // the same root secret -- and therefore the same document key
     // and epoch ID -- as Alice.
     const alice = new BeeKEM();
@@ -168,9 +168,9 @@ describe('BeeKEM reader revocation', () => {
 
     const { pathUpdate, rootSecret: aliceRoot } = await alice.update();
     const wire = JSON.parse(
-      JSON.stringify(serializePathUpdateForWire(pathUpdate)),
+      JSON.stringify(serializePathUpdateV2ForWire(pathUpdate)),
     );
-    const restored = deserializePathUpdateFromWire(wire);
+    const restored = deserializePathUpdateV2FromWire(wire);
     const bobRoot = await bob.processPathUpdate(restored);
 
     expect(Buffer.from(aliceRoot).equals(Buffer.from(bobRoot))).toBe(true);
@@ -195,7 +195,7 @@ describe('BeeKEM reader revocation', () => {
     expect(await decryptUnder(bobKey, iv, ct)).toEqual(secret);
   });
 
-  test('tampered PathUpdate fails closed on the survivor', async () => {
+  test('tampered PathUpdateV2 fails closed on the survivor', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await generateECDHKeyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
@@ -211,7 +211,7 @@ describe('BeeKEM reader revocation', () => {
     // want a non-trivial tree.)
 
     const { pathUpdate } = await alice.update();
-    const wire = serializePathUpdateForWire(pathUpdate);
+    const wire = serializePathUpdateV2ForWire(pathUpdate);
 
     // Flip a bit in the first node's encryptedPrivateKey. The
     // BeeKEM module's AES-GCM-backed ECIES has built-in
@@ -220,12 +220,12 @@ describe('BeeKEM reader revocation', () => {
     // attacker-controlled derived key.
     const tampered = JSON.parse(JSON.stringify(wire));
     if (tampered.nodes.length > 0) {
-      const bytes = Buffer.from(tampered.nodes[0].encryptedPrivateKey, 'base64');
+      const bytes = Buffer.from(tampered.nodes[0].encryptedPathKeyBundles[0].ciphertext, 'base64');
       bytes[bytes.length - 1] ^= 0xff; // flip last byte
-      tampered.nodes[0].encryptedPrivateKey = bytes.toString('base64');
+      tampered.nodes[0].encryptedPathKeyBundles[0].ciphertext = bytes.toString('base64');
     }
 
-    const restored = deserializePathUpdateFromWire(tampered);
+    const restored = deserializePathUpdateV2FromWire(tampered);
     await expect(bob.processPathUpdate(restored)).rejects.toThrow();
   });
 
@@ -305,7 +305,7 @@ describe('BeeKEM reader revocation', () => {
     //
     //   The `removeReader` flow broadcasts two messages: a gossipsub
     //   ACL-change message (encrypted under the current keychain key)
-    //   and a unicast PathUpdate (which carries enough state for
+    //   and a unicast PathUpdateV2 (which carries enough state for
     //   surviving readers to derive the NEW key). Those two
     //   broadcasts are independent; either can arrive at a surviving
     //   reader first.
@@ -313,15 +313,15 @@ describe('BeeKEM reader revocation', () => {
     //   If the writer installed the new key into its keychain BEFORE
     //   broadcasting the ACL change, the ACL change would be
     //   encrypted under the new key -- which a surviving reader
-    //   doesn't have until they process the PathUpdate. They'd be
-    //   unable to decrypt the ACL change unless the PathUpdate
+    //   doesn't have until they process the PathUpdateV2. They'd be
+    //   unable to decrypt the ACL change unless the PathUpdateV2
     //   happens to arrive first, an ordering the wire does not
     //   guarantee.
     //
     //   The fix: stage the new key without live mutation, publish the
     //   ACL change under the previous key, then synchronously commit
-    //   the staged key before PathUpdate fan-out. The ACL ciphertext
-    //   is therefore independent of PathUpdate arrival order.
+    //   the staged key before PathUpdateV2 fan-out. The ACL ciphertext
+    //   is therefore independent of PathUpdateV2 arrival order.
     //
     // This test models the writer-side sequence with a stub keychain
     // and asserts: a surviving reader holding only the
@@ -403,7 +403,7 @@ describe('BeeKEM reader revocation', () => {
       aclChangePlaintext,
     );
 
-    // Commit the staged key after the ACL publication resolves. PathUpdate
+    // Commit the staged key after the ACL publication resolves. PathUpdateV2
     // fan-out happens only after this local commit in the document flow.
     writerKeychain.install('post-revocation', newKey);
 
@@ -420,7 +420,7 @@ describe('BeeKEM reader revocation', () => {
     // INVARIANT (b) -- surviving-reader decryptability:
     //   A surviving reader has the pre-revocation key (received via
     //   the keychain delta back when they joined). They have not yet
-    //   processed any PathUpdate-derived key. They must be able to
+    //   processed any PathUpdateV2-derived key. They must be able to
     //   decrypt the ACL change with the pre-revocation key alone.
     const survivorDecrypted = await decryptUnder(
       preRevocationKey,
@@ -541,14 +541,14 @@ describe('BeeKEM reader revocation', () => {
     ).toBe(false);
   });
 
-  test('keeps the committed epoch after best-effort PathUpdate fan-out fails', async () => {
+  test('keeps the committed epoch after best-effort PathUpdateV2 fan-out fails', async () => {
     // ACL publication is the failure boundary: if it rejects, live ACL,
     // keychain, and tree state do not advance. Once publication succeeds,
-    // the staged key is committed locally before best-effort PathUpdate
+    // the staged key is committed locally before best-effort PathUpdateV2
     // fan-out. This primitive test only pins the resulting key usability;
     // PeerborneDocument transaction/failure paths are tested separately.
     //
-    // Surviving readers that miss the PathUpdate need explicit
+    // Surviving readers that miss the PathUpdateV2 need explicit
     // recipient-bound recovery or re-invitation; this test focuses
     // on the WRITER side of the invariant (writer never gets stuck
     // on the previous epoch).
@@ -585,10 +585,10 @@ describe('BeeKEM reader revocation', () => {
     // epoch commit.
     writerKeychain.install('post-revocation', newKey);
 
-    // PathUpdate fan-out then fails. The production path logs this failure
+    // PathUpdateV2 fan-out then fails. The production path logs this failure
     // without rolling back already-committed local membership state.
     const distributeStub = async () => {
-      throw new Error('injected: PathUpdate dial failed');
+      throw new Error('injected: PathUpdateV2 dial failed');
     };
     let pathUpdateLoggedFailure = false;
     try {

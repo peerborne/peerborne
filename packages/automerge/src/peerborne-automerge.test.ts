@@ -47,7 +47,7 @@ import {
   SubtleCrypto,
   UCANACL,
   eciesSeal,
-  encodeWelcomeSealedPayload,
+  encodeWelcomeSealedPayloadV2,
   type CRDTChangeNode,
   type CRDTSyncMessage,
 } from '@peerborne/core';
@@ -2363,7 +2363,7 @@ describe('AutomergeKeychain', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // BeeKEM PathUpdate compatibility: the flow installs
+  // BeeKEM PathUpdateV2 compatibility: the flow installs
   // epoch keys via addEpochKey(...) using the FULL 32-byte HKDF output
   // (no truncation). The keychain MUST store the key under a cache-key
   // form that round-trips with getKey() on the exact same 32 bytes.
@@ -3846,38 +3846,17 @@ describe('AutomergeJSONSerializer', () => {
     expect(deserialized.eciesSealed).toEqual(sealed);
   });
 
-  test('serializeSyncMessage/deserializeSyncMessage preserves pathUpdate for BeeKEM revocation', () => {
-    // Synthetic `SerializedPathUpdate` shape -- the wire layer
-    // shouldn't care about cryptographic validity, only that the
-    // structure round-trips faithfully.
-    const pathUpdate = {
-      senderLeafIndex: 0,
-      senderLeafPublicKey: 'AAAA',
-      nodes: [
-        { nodeIndex: 1, publicKey: 'AQID', encryptedPrivateKey: 'BAUG' },
-        { nodeIndex: 3, publicKey: 'BwgJ', encryptedPrivateKey: 'CgsM' },
-      ],
-    };
-    const message = {
-      documentId: 'pathupdate-doc',
-      pathUpdate,
-    };
-    const wire = serializer.serializeSyncMessage(message);
-    const deserialized = serializer.deserializeSyncMessage(wire);
-    expect(deserialized.pathUpdate).toEqual(pathUpdate);
-  });
-
-  test('serializeSyncMessage/deserializeSyncMessage preserves PathUpdate v2 fields', () => {
+  test('serializeSyncMessage/deserializeSyncMessage preserves all current PathUpdate fields', () => {
     const pathUpdate = {
       version: 2 as const,
       generation: 7,
+      parentTreeHash: 'AQID',
       numLeaves: 2,
       senderLeafIndex: 0,
       senderLeafPublicKey: 'AAAA',
       nodes: [{
         nodeIndex: 1,
         publicKey: 'AQID',
-        encryptedPrivateKey: 'BAUG',
         encryptedPathKeyBundles: [
           { recipientNodeIndex: 2, ciphertext: 'BwgJ' },
         ],
@@ -4390,21 +4369,23 @@ describe('bounded initial invitation profile', () => {
     const keychain = new AutomergeKeychain();
     await keychain.add();
     const keychainBytes = serializer.serializeChanges(keychain.history());
-    const withoutBeeKEM = encodeWelcomeSealedPayload({
+    const welcomePlaintext = encodeWelcomeSealedPayloadV2({
       keychainChanges: keychainBytes,
-      beekemWelcome: null,
+      beekemWelcome: welcome,
     });
+    const encodedTree = JSON.parse(new TextDecoder().decode(welcomePlaintext)).bk;
+    const withoutBeeKEMBytes = welcomePlaintext.byteLength -
+      new TextEncoder().encode(JSON.stringify(encodedTree)).byteLength;
     const sealedWelcome = await eciesSeal(
-      encodeWelcomeSealedPayload({
-        keychainChanges: keychainBytes,
-        beekemWelcome: welcome,
-      }),
+      welcomePlaintext,
       recipientKemPair.publicKey,
     );
 
-    const sealedWelcomeGrowth =
-      sealedWelcome.byteLength - withoutBeeKEM.byteLength;
-    expect(sealedWelcomeGrowth).toBe(845);
+    const treePlaintextGrowth = welcomePlaintext.byteLength - withoutBeeKEMBytes;
+    const eciesFramingBytes = sealedWelcome.byteLength - welcomePlaintext.byteLength;
+    expect(eciesFramingBytes).toBeGreaterThan(0);
+    // The capacity profile reserves both the encoded tree and ECIES framing.
+    const sealedWelcomeGrowth = treePlaintextGrowth + eciesFramingBytes;
     expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
       INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
     );
