@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import { eciesSeal } from './ecies.js';
-import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { JSONSerializer } from './json-serializer.js';
 import type { SyncMessageContext } from './sync-message-context.js';
@@ -134,7 +134,7 @@ async function invitationHarness(plaintext: Uint8Array) {
   await tree.initialize(founder.privateKey, founder.publicKey);
   const { welcome } = await tree.addMember(recipient.publicKey);
   const sealedWelcome = await eciesSeal(
-    encodeWelcomeSealedPayload({
+    encodeWelcomeSealedPayloadV2({
       beekemWelcome: welcome,
       keychainChanges: new Uint8Array([1]),
     }),
