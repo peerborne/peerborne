@@ -327,6 +327,38 @@ describe('snapshotDeepEnumerableData', () => {
     ).toThrow(/detached properties/);
     expect(descriptorCalls).toBe(0);
   });
+
+  test.each([
+    ['a non-index key', ['length', 'fake']],
+    ['a symbol key', [Symbol('extra'), 'length']],
+    ['reordered keys', ['length', '0']],
+  ])(
+    'rejects arrays whose own keys contain %s before reading descriptors',
+    (_label, ownKeys) => {
+      let descriptorCalls = 0;
+      const array = new Proxy([1], {
+        ownKeys: () => ownKeys,
+        getOwnPropertyDescriptor(target, property) {
+          descriptorCalls++;
+          if (property === 'fake' || typeof property === 'symbol') {
+            return { value: 2, writable: true, enumerable: true, configurable: true };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
+
+      expect(() =>
+        snapshotDeepEnumerableData({ array }, 'bounded', {
+          maxDepth: 8,
+          maxObjects: 8,
+          maxProperties: 8,
+          maxArrayLength: 8,
+          maxValueBytes: 128,
+        }),
+      ).toThrow(/dense data arrays/);
+      expect(descriptorCalls).toBe(1);
+    },
+  );
 });
 
 describe('concatUint8Arrays', () => {

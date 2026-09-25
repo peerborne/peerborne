@@ -558,6 +558,14 @@ export function snapshotDeepEnumerableData<T>(
       // Array index keys never appear in encoded input; accountProperties
       // bounds their descriptor work without charging them as value bytes.
       accountProperties(length);
+      for (let index = 0; index < length; index++) {
+        if (keys[index] !== String(index)) {
+          throw new TypeError(`${field} arrays must be dense data arrays`);
+        }
+      }
+      if (keys[length] !== 'length') {
+        throw new TypeError(`${field} arrays must be dense data arrays`);
+      }
       const copy = new Array<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
