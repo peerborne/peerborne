@@ -621,6 +621,10 @@ function assertValidYjsACLMembershipItem(
   operation: string,
 ): void {
   assertCanonicalP384PublicKeyEncoding(key);
+  assertValidYjsACLMembershipValue(item, operation);
+}
+
+function assertValidYjsACLMembershipValue(item: Item, operation: string): void {
   if (item.content instanceof ContentDeleted) {
     throw new Error(
       `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
@@ -640,7 +644,10 @@ function assertValidYjsACLMembershipItem(
 
 // Encoded state also carries structs Yjs keeps pending until their causal
 // dependencies arrive. Their parent is implicit when they have an origin, so
-// resolve it through the encoded origins the way Item.getMissing() will.
+// resolve it through the encoded origins the way Item.getMissing() will. An
+// origin that is still missing may lead to the users map, the only type an ACL
+// holds, so such an item must carry a membership value; its key is inherited
+// from that origin and is validated once the origin arrives.
 function assertValidEncodedYjsACLMembership(
   structs: readonly unknown[],
   operation: string,
@@ -703,7 +710,11 @@ function assertValidEncodedYjsACLMembership(
   for (const items of itemsByClient.values()) {
     for (const item of items) {
       const resolvedParent = resolveParent(item);
-      if (resolvedParent?.parent !== 'users') continue;
+      if (resolvedParent === null) {
+        assertValidYjsACLMembershipValue(item, operation);
+        continue;
+      }
+      if (resolvedParent.parent !== 'users') continue;
       assertValidYjsACLMembershipItem(
         item,
         resolvedParent.parentSub,
