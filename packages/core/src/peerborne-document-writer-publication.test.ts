@@ -319,13 +319,13 @@ describe('writer ACL publication boundary', () => {
       document.sync(
         {
           documentId: '/writer-publication',
+          signatureContext: 'ordinary-sync-v1',
           changeId: 'poison-bypass-cid',
           changes: {
             kind: crdtDocumentChangeNode,
             change: { attackerControlled: true },
           },
         },
-        false,
       ),
     ).rejects.toThrow(/indeterminate authorization state/);
     expect(document._hashes).toEqual(
@@ -1122,7 +1122,10 @@ describe('writer ACL publication boundary', () => {
         /discard this document instance/,
       );
       await expect(
-        document.sync({ documentId: '/writer-publication' }),
+        document.sync({
+          documentId: '/writer-publication',
+          signatureContext: 'ordinary-sync-v1',
+        }),
       ).rejects.toThrow(/discard this document instance/);
     },
   );

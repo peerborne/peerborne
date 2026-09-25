@@ -191,10 +191,16 @@ describe('PeerborneDocument writer removal', () => {
         members.add(key);
         return new Uint8Array([1]);
       },
-      remove: jest.fn(async (key: string) => {
+      remove: async (key: string) => {
         members.delete(key);
         return new Uint8Array([2]);
-      }),
+      },
+      prepareRemove: jest.fn(async (key: string) => ({
+        changes: new Uint8Array([2]),
+        commit: () => {
+          members.delete(key);
+        },
+      })),
       current: () => new Uint8Array(),
       merge: () => {
         members.add('writer');
@@ -203,28 +209,23 @@ describe('PeerborneDocument writer removal', () => {
       users: async () => [...members],
     };
     const writersACL = new UCANACL(backing, async (key: string) => key);
-    const makeChange = jest.fn(async () => undefined);
-    const distributeKeyUpdate = jest.fn(async () => undefined);
+    const publish = jest.fn(
+      async (prepared: { commit(): void }) => prepared.commit(),
+    );
     const document = fakeDocument({
+      _readers: { check: async () => true },
       _writers: writersACL,
-      _writerMutationsInFlight: 0,
-      _invalidateWriterKeyCache: () => undefined,
       _ensureCurrentUserCanWrite: async () => undefined,
-      _makeChange: makeChange,
-      _keychain: {
-        current: async () => 'previous-key',
-        add: async () => ['key-id', 'next-key', 'keychain-changes'],
-      },
-      _distributeKeyUpdate: distributeKeyUpdate,
+      _publishPreparedWriterChange: publish,
     });
 
-    await document._removeWriterUnlocked('writer');
+    await document._removeWriterUnlocked('writer', true);
     writersACL.merge(new Uint8Array([3]));
-    await document._removeWriterUnlocked('writer');
+    await document._removeWriterUnlocked('writer', true);
 
-    expect(backing.remove).toHaveBeenCalledTimes(2);
-    expect(makeChange).toHaveBeenCalledTimes(2);
-    expect(distributeKeyUpdate).toHaveBeenCalledTimes(2);
+    expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledTimes(2);
     expect(members.has('writer')).toBe(false);
   });
+});
 });
