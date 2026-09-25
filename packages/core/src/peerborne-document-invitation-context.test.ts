@@ -373,17 +373,6 @@ describe('invitation-bootstrap V1 confinement', () => {
       harness.document._hashes.add('cid');
       return true;
     });
-    let serializations = 0;
-    harness.serializer.serializeSyncMessage.mockImplementation(
-      (message: typeof decoded) => {
-        serializations += 1;
-        if (serializations === 2 && message.changes) {
-          message.changes.change.value = 9;
-          message.keychainChanges.delta = 9;
-        }
-        return new Uint8Array([1]);
-      },
-    );
 
     await expect(
       harness.document.acceptInvitationBootstrap(
@@ -400,6 +389,40 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(applied.changes.change.value).toBe(1);
     expect(applied.keychainChanges).toBeUndefined();
     expect(applied.tips).toEqual([]);
+  });
+
+  test('rejects a bootstrap whose serializer mutates signed content', async () => {
+    const decoded = {
+      documentId: documentPath,
+      signatureContext: 'invitation-bootstrap-v1',
+      changeId: 'cid',
+      changes: { kind: 'document', change: { value: 1 } },
+      tips: [],
+      signature: 'AQ==',
+    };
+    const harness = invitationHarness(decoded);
+    let serializations = 0;
+    harness.serializer.serializeSyncMessage.mockImplementation(
+      (message: typeof decoded) => {
+        serializations += 1;
+        if (serializations === 2 && message.changes) {
+          message.changes.change.value = 9;
+        }
+        return new Uint8Array([1]);
+      },
+    );
+
+    await expect(
+      harness.document.acceptInvitationBootstrap(
+        bundle(),
+        {},
+        'reader',
+        '/ip4/127.0.0.1/tcp/1',
+      ),
+    ).rejects.toThrow(/serialization is unstable/);
+
+    expect(harness.commit).not.toHaveBeenCalled();
+    expect(harness.syncValidated).not.toHaveBeenCalled();
   });
 
   test('detaches the bootstrap bundle before asynchronous processing', async () => {
