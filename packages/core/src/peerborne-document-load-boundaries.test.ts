@@ -79,7 +79,12 @@ function deferred<T>() {
 function signedLoadHarness(
   getWriterKeys: () => Promise<string[]>,
   verify: (...args: unknown[]) => Promise<boolean>,
-  message: any = { documentId: '/load-race', signature: 'AAAA', tips: [] },
+  message: any = {
+    documentId: '/load-race',
+    signatureContext: 'load-response-v3',
+    signature: 'AAAA',
+    tips: [],
+  },
   serializeSyncMessage: (message: any) => Uint8Array = () =>
     new Uint8Array([8]),
 ) {
@@ -258,7 +263,7 @@ describe('document load response boundaries', () => {
     );
     document._bootstrapLoadApplicationState = 'complete';
     document._syncUnlocked = jest.fn(async (...args: any[]) => {
-      const options = args[5];
+      const options = args[6];
       expect(options.maxBlockBytes).toBeUndefined();
       expect(options.maxAggregateBlockBytes).toBeUndefined();
       expect(options.aggregateBudget).toBeUndefined();
@@ -803,6 +808,7 @@ describe('document load response boundaries', () => {
   test('rechecks original signed bytes after quorum strips inline changes', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -856,13 +862,19 @@ describe('document load response boundaries', () => {
     ).resolves.toBe(true);
 
     expect(verifiedRaw).toEqual([[1], [1]]);
-    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(serialize).toHaveBeenCalled();
+    for (const [unsigned] of serialize.mock.calls) {
+      expect(unsigned.changes.change).toEqual({
+        value: 'signed-inline-change',
+      });
+    }
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
   test('reuses a validated prefetched block under one aggregate byte budget', async () => {
     const message = {
       documentId: '/prefetch-cache',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -901,6 +913,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
         _onLogicalKeychainChange: (() => void) | undefined,
@@ -1011,6 +1024,7 @@ describe('document load response boundaries', () => {
     async (knownBlockMode) => {
       const message = {
         documentId: '/established-prefetch',
+        signatureContext: 'load-response-v3',
         signature: 'AAAA',
         changeId: 'HEAD',
         tips: ['HEAD'],
@@ -1047,6 +1061,7 @@ describe('document load response boundaries', () => {
         async (
           appliedMessage: any,
           _verifySignature: boolean,
+          _context: string,
           _onStateApplicationStart: (() => void) | undefined,
           _continuePending: boolean,
           _onLogicalKeychainChange: (() => void) | undefined,
@@ -1080,6 +1095,7 @@ describe('document load response boundaries', () => {
   test('does not skip prefetch for a transient hash that a queued mutation rolls back', async () => {
     const message = {
       documentId: '/transient-prefetch-hash',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1123,6 +1139,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
         _onLogicalKeychainChange: (() => void) | undefined,
@@ -1157,6 +1174,7 @@ describe('document load response boundaries', () => {
   test('does not require GC history below an already-applied snapshot boundary', async () => {
     const message = {
       documentId: '/snapshot-prefetch',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1214,6 +1232,7 @@ describe('document load response boundaries', () => {
     const secret = 'prefetch-provider-private-sentinel';
     const message = {
       documentId: '/prefetch-provider-range-error',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -1270,6 +1289,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1298,6 +1318,7 @@ describe('document load response boundaries', () => {
   test('does not restore bootstrap trust after a failed load partially applies ACL state', async () => {
     const firstMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1313,6 +1334,7 @@ describe('document load response boundaries', () => {
     };
     const secondMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1369,6 +1391,7 @@ describe('document load response boundaries', () => {
     let currentWriters: string[] = [];
     const firstMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1384,6 +1407,7 @@ describe('document load response boundaries', () => {
     };
     const secondMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1432,6 +1456,7 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when a response is rejected before state application', async () => {
     const validMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1450,6 +1475,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1477,6 +1503,7 @@ describe('document load response boundaries', () => {
   test('keeps bootstrap retryable when sync rejects before mutating state', async () => {
     const unsignedMessage = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1500,6 +1527,7 @@ describe('document load response boundaries', () => {
 
     document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changes: { kind: crdtDocumentChangeNode },
     });
@@ -1524,6 +1552,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1546,6 +1575,7 @@ describe('document load response boundaries', () => {
     let currentWriters: string[] = [];
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1560,6 +1590,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1626,6 +1657,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1656,6 +1688,7 @@ describe('document load response boundaries', () => {
       async (_raw, key) => key === 'pinned-writer',
       {
         documentId: '/load-race',
+        signatureContext: 'load-response-v3',
         signature: 'AAAA',
         keychainChanges: [],
       },
@@ -1723,6 +1756,7 @@ describe('document load response boundaries', () => {
       async (_raw, key) => key === 'pinned-writer',
       {
         documentId: '/load-race',
+        signatureContext: 'load-response-v3',
         signature: 'AAAA',
         changeId: 'new-head',
         changes: {
@@ -1782,6 +1816,7 @@ describe('document load response boundaries', () => {
   test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'legacy-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1799,6 +1834,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1817,6 +1853,7 @@ describe('document load response boundaries', () => {
   test('tracks partial state application when signing is disabled', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1834,6 +1871,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1852,6 +1890,7 @@ describe('document load response boundaries', () => {
   test('tracks and defers an incomplete signer-pinned catch-up', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'pinned-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1869,6 +1908,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -1939,7 +1979,10 @@ describe('document load response boundaries', () => {
     await expect(document.getWriters()).rejects.toThrow(
       /discard this document instance/,
     );
-    await expect(document.sync({ documentId: '/poisoned' })).rejects.toThrow(
+    await expect(document.sync({
+        documentId: '/poisoned',
+        signatureContext: 'ordinary-sync-v1',
+      })).rejects.toThrow(
       /discard this document instance/,
     );
     await expect(document.change(jest.fn())).rejects.toThrow(
@@ -2001,7 +2044,10 @@ describe('document load response boundaries', () => {
       _syncUnlocked: syncUnlocked,
     });
 
-    const sync = document.sync({ documentId: '/queued-before-poison' });
+    const sync = document.sync({
+      documentId: '/queued-before-poison',
+      signatureContext: 'ordinary-sync-v1',
+    });
     await queued.promise;
     document._bootstrapLoadApplicationState = 'pending';
     release.resolve();
@@ -2064,6 +2110,7 @@ describe('document load response boundaries', () => {
     async (_name, changes) => {
       const message = {
         documentId: '/load-race',
+        signatureContext: 'load-response-v3',
         signature: 'AAAA',
         keychainChanges: changes,
       };
@@ -2091,6 +2138,7 @@ describe('document load response boundaries', () => {
   test.each([false, true])('handles a provider-semantic no-op with commit failure %p', async (commitFails) => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'empty' },
     };
@@ -2168,9 +2216,11 @@ describe('document load response boundaries', () => {
         document._syncUnlocked(
           {
             documentId: '/keychain-hydration-failure',
+            signatureContext: 'load-response-v3',
             keychainChanges: { providerEncoding: 'one-key' },
           },
           false,
+          'load-response-v3',
           beginStateApplication,
         ),
       ).rejects.toBe(sentinel);
@@ -2215,6 +2265,7 @@ describe('document load response boundaries', () => {
     const sync = document._syncUnlocked(
       {
         documentId: '/acl-prepass-reservation',
+        signatureContext: 'load-response-v3',
         changeId: 'READER',
         changes: {
           kind: crdtReaderChangeNode,
@@ -2222,6 +2273,7 @@ describe('document load response boundaries', () => {
         },
       },
       false,
+      'load-response-v3',
       beginStateApplication,
     );
     await mergeStarted.promise;
@@ -2257,6 +2309,7 @@ describe('document load response boundaries', () => {
         document._syncUnlocked(
           {
             documentId: '/snapshot-redaction',
+            signatureContext: 'load-response-v3',
             signature: 'AAAA',
             snapshot: {
               state: {},
@@ -2266,6 +2319,7 @@ describe('document load response boundaries', () => {
             },
           },
           false,
+          'load-response-v3',
         ),
       ).resolves.toBe(true);
 
@@ -2321,6 +2375,7 @@ describe('document load response boundaries', () => {
     async (admission) => {
       const message = {
         documentId: '/load-race',
+        signatureContext: 'load-response-v3',
         signature: 'AAAA',
         keychainChanges: { providerEncoding: 'one-key' },
       };
@@ -2369,6 +2424,7 @@ describe('document load response boundaries', () => {
   test('does not establish unpinned bootstrap authority from a keychain-only change', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -2539,6 +2595,7 @@ describe('document load response boundaries', () => {
     const syncing = document._syncUnlocked(
       {
         documentId: '/revoked-acl-prepass',
+        signatureContext: 'load-response-v3',
         changeId: 'HEAD',
         changes: { kind: crdtDocumentChangeNode },
         snapshot: {
@@ -2550,6 +2607,7 @@ describe('document load response boundaries', () => {
         },
       },
       false,
+      'load-response-v3',
       undefined,
       true,
       undefined,
@@ -2897,7 +2955,11 @@ describe('document load response boundaries', () => {
     });
     const deserializeSyncMessage = jest.fn(() => {
       order.push('deserialize');
-      return { documentId: '/validator-bootstrap', signature: 'AAAA' };
+      return {
+        documentId: '/validator-bootstrap',
+        signatureContext: 'ordinary-sync-v1',
+        signature: 'AAAA',
+      };
     });
     const serializeSyncMessage = jest.fn(() => {
       order.push('serialize');
@@ -2996,6 +3058,7 @@ describe('document load response boundaries', () => {
           order.push('deserialize');
           return {
             documentId: '/validator-authorization',
+            signatureContext: 'ordinary-sync-v1',
             signature: 'AAAA',
           };
         }),
@@ -3039,6 +3102,7 @@ describe('document load response boundaries', () => {
       'serialize',
       'queue',
       'verify',
+      'serialize',
     ]);
   });
 
@@ -3475,6 +3539,7 @@ describe('document load response boundaries', () => {
   test('does not notify a pre-bootstrap subscriber when completeness later fails', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -3513,6 +3578,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -3542,6 +3608,7 @@ describe('document load response boundaries', () => {
   test('validates pinned catch-up membership before completion and notification', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: {},
     };
@@ -3559,6 +3626,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
@@ -3597,6 +3665,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -3683,6 +3752,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };
@@ -3760,6 +3830,7 @@ describe('document load response boundaries', () => {
     jest.useFakeTimers();
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };
@@ -3855,6 +3926,7 @@ describe('document load response boundaries', () => {
   test('notifies a pre-bootstrap subscriber once and only after completion', async () => {
     const message = {
       documentId: '/load-race',
+      signatureContext: 'load-response-v3',
       signature: 'AAAA',
       changeId: 'HEAD',
       tips: ['HEAD'],
@@ -3905,6 +3977,7 @@ describe('document load response boundaries', () => {
       async (
         _message: unknown,
         _verifySignature: boolean,
+        _context: string,
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();

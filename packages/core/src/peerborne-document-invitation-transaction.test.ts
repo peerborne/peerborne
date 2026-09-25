@@ -141,6 +141,7 @@ function invitationHarness(options: {
     async (
       message: Record<string, unknown>,
       _verifySignature: boolean,
+      _context: string,
       _onStateApplicationStart: (() => void) | undefined,
       continuePending: boolean,
       _onLogicalKeychainChange: (() => void) | undefined,
@@ -196,7 +197,8 @@ function invitationHarness(options: {
     _changesSerializer: {
       deserializeChanges: jest.fn(() => welcomeKeychainChanges),
       serializeChanges: jest.fn((changes: unknown) =>
-        changes === bootstrapKeychainChanges
+        (changes as { source?: string }).source ===
+        bootstrapKeychainChanges.source
           ? bootstrapKeychainBytes
           : welcomeKeychainBytes,
       ),
@@ -204,6 +206,7 @@ function invitationHarness(options: {
     _syncMessageSerializer: {
       deserializeSyncMessage: jest.fn(() => ({
         documentId: '/transactional-invitation',
+        signatureContext: 'invitation-bootstrap-v1',
         signature: 'AAAA',
         keychainChanges: bootstrapKeychainChanges,
       })),
@@ -490,7 +493,10 @@ describe('invitation bootstrap keychain transaction', () => {
     expect(harness.activate).not.toHaveBeenCalled();
     expect(() => harness.document.document).toThrow(/discard this document/);
     await expect(
-      harness.document.sync({ documentId: '/transactional-invitation' }),
+      harness.document.sync({
+        documentId: '/transactional-invitation',
+        signatureContext: 'ordinary-sync-v1',
+      }),
     ).rejects.toThrow(/discard this document/);
     await expect(harness.document.load()).rejects.toThrow(
       /discard this document/,

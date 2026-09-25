@@ -42,9 +42,11 @@ describe('Yjs bootstrap keychain application', () => {
       document._syncUnlocked(
         {
           documentId: '/yjs-bootstrap-keychain',
+          signatureContext: 'load-response-v3',
           keychainChanges: emptyHistory,
         },
         false,
+        'load-response-v3',
         beginStateApplication,
         false,
         logicalKeychainChange,
@@ -62,9 +64,11 @@ describe('Yjs bootstrap keychain application', () => {
       document._syncUnlocked(
         {
           documentId: '/yjs-bootstrap-keychain',
+          signatureContext: 'load-response-v3',
           keychainChanges: dependentChanges,
         },
         false,
+        'load-response-v3',
         beginStateApplication,
         false,
         logicalKeychainChange,
