@@ -21,7 +21,7 @@
     "@libp2p/pubsub-peer-discovery": "^12.0.0",
     "@libp2p/tcp": "^11.0.26",
     "@libp2p/websockets": "^10.1.19",
-    "libp2p": "^3.3.8",
+    "libp2p": "^3.3.11",
     "uint8arraylist": "^3.0.2"
   },
   "resolutions": {
