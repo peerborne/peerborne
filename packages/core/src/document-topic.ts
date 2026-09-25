@@ -1,12 +1,8 @@
 /** Default topic prefix for version-isolated document pubsub messages. */
 export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
-/** Default topic for version-bound document publish notifications. */
-export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/peerborne/documents/v3';
-
 export interface DocumentPubsubConfig {
   readonly pubsubDocumentPrefix: string;
-  readonly pubsubDocumentPublishPath: string;
 }
 
 /** Return a detached document-topic configuration without replacing overrides. */
@@ -15,7 +11,6 @@ export function copyDocumentPubsubConfig(
 ): DocumentPubsubConfig {
   return {
     pubsubDocumentPrefix: config.pubsubDocumentPrefix,
-    pubsubDocumentPublishPath: config.pubsubDocumentPublishPath,
   };
 }
 
@@ -23,7 +18,6 @@ export function copyDocumentPubsubConfig(
 export function defaultDocumentPubsubConfig(): DocumentPubsubConfig {
   return copyDocumentPubsubConfig({
     pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
-    pubsubDocumentPublishPath: DEFAULT_DOCUMENT_PUBLISH_PATH,
   });
 }
 

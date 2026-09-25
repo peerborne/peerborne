@@ -1,3 +1,4 @@
+import { isSyncMessageSignatureContext } from './crdt-sync-message.js';
 import { describe, expect, test } from '@jest/globals';
 import {
   MAX_CHANGE_TREE_DEPTH,
@@ -22,10 +23,6 @@ function tagged<T extends Record<string, unknown>>(
 describe('sync message wire-context separation', () => {
   test.each([
     ['ordinary-sync-v1', { documentId: '/doc', changes: {}, signature: 'sig' }],
-    [
-      'document-publish-v1',
-      { documentId: '/doc', changes: {}, signature: 'sig' },
-    ],
     [
       'load-response-v3',
       {
@@ -105,7 +102,6 @@ describe('sync message wire-context separation', () => {
 
   test.each([
     'ordinary-sync-v1',
-    'document-publish-v1',
     'load-response-v3',
     'load-response-v4',
     'tip-advertisement-v1',
@@ -163,8 +159,6 @@ describe('sync message wire-context separation', () => {
     ['ordinary-sync-v1', { welcomeEpochId: new Uint8Array(32) }],
     ['ordinary-sync-v1', { pathUpdate: {} }],
     ['ordinary-sync-v1', { tipsHash: new Uint8Array(32) }],
-    ['document-publish-v1', { snapshot: {} }],
-    ['document-publish-v1', { keychainChanges: {} }],
     ['load-response-v3', { tipsHash: new Uint8Array(32) }],
     ['load-response-v3', { loadSecurityState: {} }],
     ['load-response-v4', { welcomeEpochId: new Uint8Array(32) }],
@@ -371,6 +365,10 @@ describe('sync message wire-context separation', () => {
         'ordinary-sync-v1',
       ),
     ).toThrow(/maximum depth/);
+  });
+
+  test('rejects the removed document publication purpose', () => {
+    expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
   });
 });
 

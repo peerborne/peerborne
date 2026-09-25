@@ -72,7 +72,7 @@ function fakeDocument(fields: Record<string, unknown>): any {
 }
 
 async function signedWire(
-  signedAs: SyncMessageContext,
+  signedAs: string,
   deliveredAs: SyncMessageContext,
 ): Promise<Uint8Array> {
   const body = {

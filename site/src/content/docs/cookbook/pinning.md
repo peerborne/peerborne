@@ -1,6 +1,6 @@
 ---
 title: Keeping data alive (pinning)
-description: Design and validate a pinning integration without treating the current listener as a durability service.
+description: Requirements and current limitations for an authenticated pinning integration.
 ---
 
 **Status: Deferred/incomplete integration.**
@@ -9,14 +9,11 @@ Peerborne does not currently provide a runnable, end-to-end pinning daemon or du
 
 ## What exists
 
-The Node-only `PeerborneNode` contains a listener for
-`pubsubDocumentPublishPath` (default `/peerborne/documents/v3`). Given an
-announcement, it can open that document, observe its change graph, and call
-Helia's pin API for announced CIDs with de-duplication and bounded concurrency.
-Relays reject the earlier notification topic by default. A custom notification
-topic requires matching explicit relay configuration.
+The Node-only `PeerborneNode` has no document-announcement receiver, decoder, or compatibility setting. Remote announcements cannot create or open documents, attach subscriptions, or request pinning.
 
-That listener is only one side of a protocol. The normal core document commit path does **not** publish document announcements to it, so ordinary application changes do not activate automatic pinning. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
+A remotely initiated pinning protocol needs an authenticated envelope with an explicit signed purpose, signer authorization, local pin policy, and replay protection. An ordinary signed sync message does not grant pinning authority to a node that has not opened the document and has no trusted writer ACL.
+
+The normal document commit path does not publish document announcements. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
 The default Node configuration uses the repository's IndexedDB-backed stores. Durable restart/recovery for a Node pinning process has not been validated, including stable storage paths, process identity, graph restoration, subscriptions, keys, and serving retained data after restart.
 

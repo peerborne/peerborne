@@ -103,7 +103,7 @@ Peerborne documents can sync over peer-to-peer links, but most deployments need 
 | **Relay node** | For browser peers | Bridges NAT; peers behind restrictive firewalls connect through it |
 | **Bootstrap node** | For initial discovery | Provides a well-known entry point for the libp2p network |
 | **STUN/TURN server** | For WebRTC direct connections | Helps peers establish direct browser-to-browser links |
-| **Remote pinning** | Optional (integration incomplete) | Would persist encrypted blocks when all local peers go offline; the listener API exists but the current commit path does not invoke a publisher |
+| **Remote pinning** | Not implemented | Would persist encrypted blocks when all local peers go offline; `PeerborneNode` does not subscribe to unauthorizable legacy V1 announcements, and no authenticated publisher exists |
 | **Identity service** | Application responsibility | Peerborne does not provide user authentication or key management |
 
 The relay server source is in `relay-server/`. The Docker Compose files in the repository root provide ready-to-run multi-node topologies for testing.
@@ -115,7 +115,7 @@ See the [limitations page](../limitations/) for a complete list. Key architectur
 - **No durable outbox**: local blocks are stored in IndexedDB, but an unreachable peer may not receive the update; there is no delivery retry queue
 - **No durable reconnect-and-replay guarantee**: libp2p may redial and explicit loads or later sync history may catch a peer up, but connection restoration and replay of every missed update are not guaranteed
 - **No pass/fail performance budgets**: benchmarks exist but have no thresholds
-- **Pinning is incomplete**: the listener exists but the publisher does not
+- **Pinning is not implemented**: `PeerborneNode` has no document-announcement receiver and no authenticated publisher exists
 - **Browser restart recovery is unverified**: IndexedDB persistence works in tests but full close/reopen cycles are not proven in CI
 
 ## Next steps

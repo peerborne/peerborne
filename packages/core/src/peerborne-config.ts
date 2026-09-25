@@ -279,15 +279,6 @@ export interface PeerborneConfig {
   pubsubDocumentPrefix: string;
 
   /**
-   * GossipSub topic used for document publish notifications.
-   *
-   * Defaults to `/peerborne/documents/v3`. Custom
-   * values are protocol compatibility boundaries and require a matching relay
-   * `DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or `TOPIC_ALLOWLIST` entry.
-   */
-  pubsubDocumentPublishPath: string;
-
-  /**
    * Enable GossipSub topic validators for authorization enforcement.
    * When enabled, messages from unauthorized peers are rejected at the
    * transport layer (P4 penalty in peer scoring).

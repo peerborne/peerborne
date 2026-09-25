@@ -68,10 +68,9 @@ Peerborne does not replicate blocks automatically. If you have 3 peers and one s
 
 ## Pinning status
 
-Pinning is **incomplete**. What exists:
+Pinning is **not implemented**. What is missing:
 
-- A `PeerborneNode` listener API for document-publish announcements
-- No publisher invocation in the normal core commit path
+- No authenticated document-publish publisher or receiver; `PeerborneNode` does not subscribe to document announcements
 - No generic IPFS pinning client (e.g., to pin to a remote IPFS node, S3, or Filecoin)
 
 Without pinning:
