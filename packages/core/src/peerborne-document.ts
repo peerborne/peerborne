@@ -4865,7 +4865,7 @@ export class PeerborneDocument<
                   )
                 : await awaitLoadWork(
                     this._authProvider.verify(
-                      originalUnsigned.raw,
+                      new Uint8Array(originalUnsigned.raw),
                       requiredResponseSigner,
                       new Uint8Array(signatureBytes),
                     ),
@@ -5859,7 +5859,11 @@ export class PeerborneDocument<
             return null;
           }
           const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(unsigned.raw, writerKey, signatureBytes),
+            this._authProvider.verify(
+              new Uint8Array(unsigned.raw),
+              writerKey,
+              new Uint8Array(signatureBytes),
+            ),
           );
           if ((await firstTrue(verifyTasks)) !== true || !unsigned.unchanged()) {
             return null;
@@ -8956,7 +8960,9 @@ export class PeerborneDocument<
             'invitation-bootstrap-v1',
           );
         } catch {
-          throw new Error('Invitation bootstrap has an invalid wire context');
+          throw new Error(
+            'Invitation bootstrap contains malformed or cross-context fields',
+          );
         }
         if (bootstrapMessage.documentId !== this.documentPath) {
           throw new Error('Invitation bootstrap document binding does not match');
@@ -8988,7 +8994,7 @@ export class PeerborneDocument<
         }
         if (
           (await this._authProvider.verify(
-            unsignedBootstrap.raw,
+            new Uint8Array(unsignedBootstrap.raw),
             issuerPublicKey,
             new Uint8Array(signatureBytes),
           )) !== true

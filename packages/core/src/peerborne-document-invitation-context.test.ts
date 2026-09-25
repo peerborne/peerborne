@@ -330,18 +330,6 @@ describe('invitation-bootstrap V1 confinement', () => {
       harness.document._hashes.add('cid');
       return true;
     });
-    let serializations = 0;
-    harness.serializer.serializeSyncMessage.mockImplementation(
-      (message: typeof decoded) => {
-        serializations += 1;
-        if (serializations === 2 && message.changes) {
-          message.changes.change.value = 9;
-          message.keychainChanges.delta = 9;
-        }
-        return new Uint8Array([1]);
-      },
-    );
-
     await expect(
       harness.document.acceptInvitationBootstrap(
         bundle(),

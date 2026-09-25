@@ -425,7 +425,7 @@ describe('tip-advertisement V1 confinement', () => {
     ).resolves.toEqual(expected);
   });
 
-  test('keeps the returned hash disjoint from serializer aliases', async () => {
+  test('rejects a serializer that mutates the verified advertisement', async () => {
     const decoded = {
       documentId: documentPath,
       signatureContext: 'tip-advertisement-v1',
@@ -447,7 +447,7 @@ describe('tip-advertisement V1 confinement', () => {
         { toString: () => '/peer/one' },
         new Uint8Array([1]),
       ),
-    ).resolves.toEqual(new Uint8Array(32).fill(5));
+    ).resolves.toBeNull();
   });
 
   test('invalidates a vote when writer authorization changes', async () => {

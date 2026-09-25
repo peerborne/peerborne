@@ -261,7 +261,7 @@ describe('deserialized load message boundaries', () => {
       const { document, bundle, verify } = await invitationHarness(message);
       await expect(
         document.acceptInvitationBootstrap(bundle, 'issuer', 'reader', '/founder'),
-      ).rejects.toThrow(/invalid wire context/);
+      ).rejects.toThrow(/malformed or cross-context fields/);
       expect(getter).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
     },

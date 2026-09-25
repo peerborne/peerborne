@@ -81,6 +81,10 @@ async function signedWire(
     signatureContext: signedAs,
     changeId: 'root',
     changes: { kind: 'document', change: { value: 1 } },
+    ...(deliveredAs === 'load-response-v3' ||
+    deliveredAs === 'invitation-bootstrap-v1'
+      ? { tips: ['root'] }
+      : {}),
     ...extraFields,
   };
   const signer = fakeDocument({ _userKey: writer.privateKey });
@@ -105,6 +109,8 @@ function loadHarness(plaintext: Uint8Array) {
     },
     _isSigningEnabled: () => true,
     _getWriterKeys: async () => [writer.publicKey],
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
     _hashes: new Set(),
     _bootstrapLoadApplicationState: 'complete',
     _syncUnlocked: sync,
@@ -143,6 +149,7 @@ async function invitationHarness(plaintext: Uint8Array) {
   const epoch = new Uint8Array([1]);
   const sync = jest.fn(async () => true);
   const document = fakeDocument({
+    swarm: { isPendingInvitationDocument: () => true },
     _keychainProvider: { keyIDLength: 1 },
     _authProvider: {
       nonceBytes: 1,
