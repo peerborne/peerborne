@@ -117,6 +117,20 @@ new UCANACLProvider(
 
 Primitive identities such as strings still work with the two-argument form.
 
+Custom codecs and providers must also meet these requirements:
+
+- `serializePublicKey` must be canonical and collision-free, and must read any
+  mutable caller-owned identity state before its first `await` or other
+  asynchronous suspension.
+- Backing `ACL` implementations must compare identities by canonical key
+  material, not object reference, because `UCANACL` passes fresh detached
+  identities to each operation.
+- Each `ACLProvider.initialize()` call must return an ACL with logically
+  isolated mutable state. `UCANACLProvider` rejects a backing ACL instance it
+  has already wrapped.
+- Backing ACLs and codecs must propagate `ACLOperationInProgressError` instead
+  of waiting on it.
+
 ## Compatibility identifiers that did not change
 
 Branding must not change bytes that existing peers or stored data depend on.
