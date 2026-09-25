@@ -103,6 +103,61 @@ describe('document load response boundaries', () => {
     }
   });
 
+  test.each([1, 2])(
+    'rejects a tip advertisement serializer that mutates on call %i',
+    async (mutationCall) => {
+      const rawStream = {
+        send: jest.fn(() => true),
+        onDrain: jest.fn(async () => undefined),
+        close: jest.fn(async () => undefined),
+        closeRead: jest.fn(async () => undefined),
+        abort: jest.fn(),
+        async *[Symbol.asyncIterator]() {
+          yield new Uint8Array([1, 2, 3]);
+        },
+      };
+      const message = {
+        documentId: '/tip-advertisement',
+        tipsHash: new Uint8Array(32).fill(1),
+        signature: 'AQ==',
+      };
+      let serializationCount = 0;
+      const document = fakeDocument({
+        documentPath: '/tip-advertisement',
+        swarm: {
+          heliaNode: {
+            libp2p: { dialProtocol: jest.fn(async () => rawStream) },
+          },
+        },
+        _keychainProvider: { keyIDLength: 1 },
+        _keychain: { getKey: () => ({}) },
+        _authProvider: {
+          nonceBits: 1,
+          decrypt: async () => new Uint8Array([1]),
+          verify: async () => true,
+        },
+        _syncMessageSerializer: {
+          deserializeSyncMessage: () => message,
+          serializeSyncMessage: (unsigned: typeof message) => {
+            serializationCount += 1;
+            if (serializationCount === mutationCall) {
+              unsigned.tipsHash[0] = 2;
+            }
+            return new Uint8Array([1]);
+          },
+        },
+        _isSigningEnabled: () => true,
+        _deserializeSignature: () => new Uint8Array([1]),
+        _getWriterKeys: async () => ['writer'],
+      });
+
+      await expect(
+        document._probeTipAdvertise({}, new Uint8Array([1])),
+      ).resolves.toBeNull();
+      expect(serializationCount).toBe(mutationCall);
+    },
+  );
+
   test('fully aborts a completed probe even when the peer response ends early', async () => {
     const rawStream = {
       send: jest.fn(() => true),

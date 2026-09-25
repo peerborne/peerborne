@@ -19,10 +19,11 @@ import {
   defaultConfig,
   resolveIceServers,
 } from './peerborne-config.js';
-import { Peerborne } from './peerborne.js';
+import { MAX_DOCUMENT_PATH_LENGTH, Peerborne } from './peerborne.js';
 import { PeerborneDocument } from './peerborne-document.js';
 import { CRDTProvider } from './crdt-provider.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
+import { decodeDocumentPublishMessage } from './document-publish-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { AuthProvider } from './auth-provider.js';
 import { ACLProvider } from './acl-provider.js';
@@ -290,6 +291,73 @@ export class PeerborneNode<
     await Promise.all(cids.map((entryCid) => this._pinCID(entryCid)));
   }
 
+  private _handleDocumentPublishMessage(rawMessage: CustomEvent<Message>): void {
+    try {
+      if (rawMessage.detail.topic !== this.config.pubsubDocumentPublishPath) {
+        return;
+      }
+      const thisNodeId = this.swarm.peerId.toString();
+      const senderNodeId = (() => {
+        switch (rawMessage.detail.type) {
+          case 'signed':
+            return rawMessage.detail.from.toString();
+          default:
+            return undefined;
+        }
+      })();
+
+      if (thisNodeId === senderNodeId) {
+        console.log('Skipping publish message from this node...');
+        return;
+      }
+
+      const message = decodeDocumentPublishMessage(
+        rawMessage.detail,
+        this.config.pubsubDocumentPublishPath,
+        MAX_DOCUMENT_PATH_LENGTH,
+        this.syncMessageSerializer,
+      );
+      if (!message) return;
+      console.log(
+        'Received a document publish notification:',
+        message.documentId,
+      );
+      const docRef = this.swarm.doc(message.documentId);
+
+      if (docRef) {
+        // Also add a subscription that pins new received files.
+        this._subscriptions.set(message.documentId, docRef);
+        docRef.subscribe(
+          'pinning-handler',
+          (doc, readers, writers, hashes) => {
+            for (const cid of hashes) {
+              // _pinCID handles dedup, concurrency limiting, and error handling.
+              this._pinCID(cid).catch(() => {});
+            }
+          },
+        );
+
+        // Listen to the file.
+        docRef.open();
+
+        // Pin all of the files that were received.
+        if (message.changeId && message.changes) {
+          this._pinNewCIDs(message.changeId, message.changes).catch(() => {
+            console.error('Failed to pin CIDs for incoming message');
+          });
+        }
+      } else {
+        console.warn(
+          'Unable to load the published document: no local document handler for',
+          message.documentId,
+        );
+      }
+    } catch (err) {
+      console.error('Failed to process an incoming document publish notification');
+      console.error('Error:', err);
+    }
+  }
+
   // Start
   public async start(bootstrapAddresses?: string[]) {
     await this.swarm.initialize(this.config);
@@ -358,66 +426,8 @@ export class PeerborneNode<
     );
 
     // Open a pubsub channel (set by some config) for controlling this swarm of listeners.
-    this._docPublishHandler = (rawMessage) => {
-      try {
-        const thisNodeId = this.swarm.peerId.toString();
-        const senderNodeId = (() => {
-          switch (rawMessage.detail.type) {
-            case 'signed':
-              return rawMessage.detail.from.toString();
-            default:
-              return undefined;
-          }
-        })();
-
-        if (thisNodeId !== senderNodeId) {
-          const message = this.syncMessageSerializer.deserializeSyncMessage(
-            rawMessage.detail.data,
-          );
-          console.log(
-            'Received a document publish notification:',
-            message.documentId,
-          );
-          const docRef = this.swarm.doc(message.documentId);
-
-          if (docRef) {
-            // Also add a subscription that pins new received files.
-            this._subscriptions.set(message.documentId, docRef);
-            docRef.subscribe(
-              'pinning-handler',
-              (doc, readers, writers, hashes) => {
-                for (const cid of hashes) {
-                  // _pinCID handles dedup, concurrency limiting, and error handling.
-                  this._pinCID(cid).catch(() => {});
-                }
-              },
-            );
-
-            // Listen to the file.
-            docRef.open();
-
-            // Pin all of the files that were received.
-            if (message.changeId && message.changes) {
-              this._pinNewCIDs(message.changeId, message.changes).catch(() => {
-                console.error('Failed to pin CIDs for incoming message');
-              });
-            }
-          } else {
-            console.warn(
-              'Unable to load the published document: no local document handler for',
-              message.documentId,
-            );
-          }
-        } else {
-          console.log('Skipping publish message from this node...');
-        }
-      } catch (err) {
-        console.error(
-          'Failed to process an incoming document publish notification',
-        );
-        console.error('Error:', err);
-      }
-    };
+    this._docPublishHandler = (rawMessage) =>
+      this._handleDocumentPublishMessage(rawMessage);
     // Cast required: EventHandler<CustomEvent<Message>> is incompatible with PubSubBaseProtocol's
     // addEventListener due to duplicate @libp2p/interface versions in the dependency tree
     this.swarm.heliaNode.libp2p.services.pubsub.addEventListener(

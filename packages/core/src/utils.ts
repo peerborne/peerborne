@@ -277,6 +277,23 @@ export interface DeepDataSnapshotLimits {
   readonly maxValueBytes: number;
 }
 
+/** @internal Whether `value` carries the native CryptoKey brand. */
+export function isNativeCryptoKey(value: unknown): boolean {
+  if (
+    cryptoKeyTypeGetter === undefined ||
+    typeof value !== 'object' ||
+    value === null
+  ) {
+    return false;
+  }
+  try {
+    reflectApply(cryptoKeyTypeGetter, value, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Iteratively detach an untrusted codec/provider value without invoking own
  * accessors or reading an own property more than once. Plain records retain
@@ -302,6 +319,7 @@ export function snapshotDeepEnumerableData<T>(
     maxArrayLength: 65_536,
     maxValueBytes: 64 * 1024 * 1024,
   },
+  options: { retainCryptoKeys?: boolean } = {},
 ): T {
   for (const [name, limit] of Object.entries(limits)) {
     if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -527,7 +545,7 @@ export function snapshotDeepEnumerableData<T>(
             reflectApply(cryptoKeyTypeGetter, copy, []) ===
             reflectApply(cryptoKeyTypeGetter, objectCandidate, [])
           ) {
-            assign(target, copy);
+            assign(target, options.retainCryptoKeys ? objectCandidate : copy);
             continue;
           }
         } catch {

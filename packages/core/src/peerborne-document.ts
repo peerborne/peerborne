@@ -12,7 +12,9 @@ import type { CreateInvitationOptions } from './peerborne.js';
 import {
   assertSharedProtocolRequestSize,
   concatUint8Arrays,
+  copyUnsharedUint8Array,
   firstTrue,
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
 } from './utils.js';
@@ -48,6 +50,11 @@ import {
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
+import {
+  snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
+  type SyncMessageContext,
+} from './sync-message-context.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
 import {
   snapshotKemKeyPair,
@@ -763,6 +770,7 @@ export class PeerborneDocument<
   // Compaction state.
   private _compactionConfig: CompactionConfig;
   private _latestSnapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  private _latestSnapshotSource?: object;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
   private _snapshotUnsupported = false;
@@ -2863,7 +2871,10 @@ export class PeerborneDocument<
           return false;
         }
 
-        const message = this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+        const message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+          'load-response-v3',
+        );
         if (message.documentId !== this.documentPath) {
           console.warn(
             `Load response documentId mismatch: expected ${this.documentPath}, got ${message.documentId}`,
@@ -2893,10 +2904,19 @@ export class PeerborneDocument<
               );
               return false;
             }
-            const { signature, ...messageWithoutSignature } = message;
-            const raw = this._syncMessageSerializer.serializeSyncMessage(
-              messageWithoutSignature,
+            const signature = message.signature;
+            const unsigned = this._serializeUnsignedForVerification(
+              message,
+              'load-response-v3',
+              responseLimit,
             );
+            if (unsigned === undefined) {
+              console.warn(
+                `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
+              );
+              return false;
+            }
+            const raw = unsigned.raw;
             // Mirror `_verifyWriterSignature`: a malformed/non-string signature
             // can cause `js-base64` to throw. Treat decode failure as a
             // verification failure for this peer (skip and let the caller try
@@ -2927,6 +2947,12 @@ export class PeerborneDocument<
             if (verified !== true) {
               console.warn(
                 `Load response for ${this.documentPath} failed writer signature verification, skipping peer`,
+              );
+              return false;
+            }
+            if (!unsigned.unchanged()) {
+              console.warn(
+                `Load response for ${this.documentPath}: unstable unsigned serialization, skipping peer`,
               );
               return false;
             }
@@ -3124,7 +3150,8 @@ export class PeerborneDocument<
           // Snapshot-only first-load detection: after the snapshot drop
           // above, if the response now carries NO changes tree AND NO
           // snapshot, the responder served us nothing usable. Without
-          // this guard the path falls through to `sync(message, false)`
+          // this guard the path falls through to the validated load-response
+          // sync boundary
           // (which returns `true` for a vacuously-empty message because
           // there is nothing to merge / reject) and this method reports
           // success — `load()` then returns `true` with neither state
@@ -3236,7 +3263,10 @@ export class PeerborneDocument<
             }
           }
 
-          const syncResult = await this.sync(message, false);
+          const syncResult = await this._syncValidatedProtocolMessage(
+            message,
+            'load-response-v3',
+          );
           if (syncResult !== true) {
             console.warn(
               `sync rejected message during load for ${this.documentPath}`,
@@ -3285,7 +3315,11 @@ export class PeerborneDocument<
           ? await syncInvitationMessageCompletely(
               message,
               this._hashes,
-              () => this.sync(message, false),
+              () =>
+                this._syncValidatedProtocolMessage(
+                  message,
+                  'load-response-v3',
+                ),
               'catch-up',
               {
                 provenSnapshotBoundariesBeforeSync:
@@ -3293,10 +3327,13 @@ export class PeerborneDocument<
                     ? undefined
                     : new Set([snapshotBoundaryBeforeSync]),
                 isSnapshotApplied: () =>
-                  this._latestSnapshot === message.snapshot,
+                  this._isLatestSnapshotFrom(message),
               },
             )
-          : await this.sync(message, false);
+          : await this._syncValidatedProtocolMessage(
+              message,
+              'load-response-v3',
+            );
         if (syncResult !== true) {
           console.warn(
             `sync rejected message during load for ${this.documentPath}`,
@@ -3452,7 +3489,10 @@ export class PeerborneDocument<
       }
       let message: CRDTSyncMessage<ChangesType, PublicKey>;
       try {
-        message = this._syncMessageSerializer.deserializeSyncMessage(decrypted);
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          this._syncMessageSerializer.deserializeSyncMessage(decrypted),
+          'tip-advertisement-v1',
+        );
       } catch {
         return null;
       }
@@ -3471,20 +3511,24 @@ export class PeerborneDocument<
           if (!message.signature) {
             return null;
           }
-          const { signature, ...messageWithoutSignature } = message;
-          const raw = this._syncMessageSerializer.serializeSyncMessage(
-            messageWithoutSignature,
+          const unsigned = this._serializeUnsignedForVerification(
+            message,
+            'tip-advertisement-v1',
+            MAX_TIP_ADVERTISE_RESPONSE_SIZE,
           );
+          if (unsigned === undefined) {
+            return null;
+          }
           let signatureBytes: Uint8Array;
           try {
-            signatureBytes = this._deserializeSignature(signature);
+            signatureBytes = this._deserializeSignature(message.signature);
           } catch {
             return null;
           }
           const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(raw, writerKey, signatureBytes),
+            this._authProvider.verify(unsigned.raw, writerKey, signatureBytes),
           );
-          if ((await firstTrue(verifyTasks)) !== true) {
+          if ((await firstTrue(verifyTasks)) !== true || !unsigned.unchanged()) {
             return null;
           }
         }
@@ -4145,6 +4189,8 @@ export class PeerborneDocument<
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
     this._pubsubHandler = (rawMessage) => {
+      if (rawMessage.detail.topic !== this._topic) return;
+
       // Decrypt sync message.
       const blockKeyID = rawMessage.detail.data.slice(
         0,
@@ -4170,8 +4216,14 @@ export class PeerborneDocument<
             return this.load(senderPeer);
           }
 
-          const message =
-            this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+          const message = snapshotSyncMessageForContext<
+            ChangesType,
+            PublicKey
+          >(
+            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+            'ordinary-sync-v1',
+          );
+          if (message.documentId !== this.documentPath) return false;
 
           return this.sync(message);
         })
@@ -4233,26 +4285,50 @@ export class PeerborneDocument<
                   return TopicValidatorResult.Ignore;
                 }
 
-                const syncMessage =
-                  this._syncMessageSerializer.deserializeSyncMessage(rawContent);
+                let syncMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+                try {
+                  syncMessage = snapshotSyncMessageForContext<
+                    ChangesType,
+                    PublicKey
+                  >(
+                    this._syncMessageSerializer.deserializeSyncMessage(
+                      rawContent,
+                    ),
+                    'ordinary-sync-v1',
+                  );
+                } catch {
+                  return TopicValidatorResult.Reject;
+                }
+
+                if (syncMessage.documentId !== this.documentPath) {
+                  return TopicValidatorResult.Reject;
+                }
 
                 if (!syncMessage.signature) {
                   return TopicValidatorResult.Reject;
                 }
 
-                const { signature, ...messageWithoutSignature } = syncMessage;
-                const raw =
-                  this._syncMessageSerializer.serializeSyncMessage(
-                    messageWithoutSignature,
-                  );
+                const unsigned = this._serializeUnsignedForVerification(
+                  syncMessage,
+                  'ordinary-sync-v1',
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+                );
+                if (unsigned === undefined) {
+                  return TopicValidatorResult.Reject;
+                }
 
                 // Verify the message was signed by an authorized writer for this document
                 if (
-                  (await this._verifyWriterSignature(raw, signature)) === true
+                  (await this._verifyWriterSignature(
+                    unsigned.raw,
+                    syncMessage.signature,
+                  )) !== true
                 ) {
-                  return TopicValidatorResult.Accept;
+                  return TopicValidatorResult.Reject;
                 }
-                return TopicValidatorResult.Reject;
+                return unsigned.unchanged()
+                  ? TopicValidatorResult.Accept
+                  : TopicValidatorResult.Reject;
               } catch {
                 console.warn(`[${this.documentPath}] Topic validator: unexpected error, ignoring message`);
                 return TopicValidatorResult.Ignore;
@@ -4335,29 +4411,144 @@ export class PeerborneDocument<
    * - Apply new changes to the existing CRDT document.
    *
    * @param message A sync message to apply.
-   * @param verifySignature Whether to verify the message signature (default: true).
    * @returns `true` if the message was applied successfully, `false` if rejected due to auth failure.
    *
    * **BREAKING CHANGE:** Return type changed from `Promise<void>` to
    * `Promise<boolean>`. TypeScript callers with explicit `Promise<void>` type
    * annotations will need to update. Callers should now check the returned
-   * boolean to determine whether the message was applied successfully.
+   * boolean to determine whether the message was applied successfully. The
+   * former public `verifySignature` bypass was also removed; ordinary sync
+   * always verifies signatures when signing is enabled. Protocol handlers
+   * that already verified a specialized message use an internal boundary.
    */
   public async sync(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
-    verifySignature = true,
+  ): Promise<boolean> {
+    let detached: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      detached = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        message,
+        'ordinary-sync-v1',
+      );
+    } catch {
+      return false;
+    }
+    return this._mutationQueue.run(() =>
+      this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
+    );
+  }
+
+  private async _syncValidatedProtocolMessage(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    context: Extract<
+      SyncMessageContext,
+      'load-response-v3' | 'invitation-bootstrap-v1'
+    >,
   ): Promise<boolean> {
     return this._mutationQueue.run(() =>
-      this._syncUnlocked(message, verifySignature),
+      this._syncUnlocked(message, false, context),
     );
+  }
+
+  private _isLatestSnapshotFrom(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+  ): boolean {
+    return (
+      message.snapshot !== undefined &&
+      this._latestSnapshotSource === message.snapshot
+    );
+  }
+
+  /**
+   * Serialize a detached unsigned copy of `message` for signature
+   * verification. The returned `unchanged` check re-serializes after
+   * verification and rejects serializer-driven drift from `message`.
+   */
+  private _serializeUnsignedForVerification(
+    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    context: SyncMessageContext,
+    maxBytes: number,
+  ): { raw: Uint8Array; unchanged: () => boolean } | undefined {
+    let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
+    let expected: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      const { signature: _signature, ...detached } =
+        snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+      unsigned = detached;
+      expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        unsigned,
+        context,
+        { retainCryptoKeys: true },
+      );
+    } catch {
+      return undefined;
+    }
+    const serialize = (): Uint8Array =>
+      copyUnsharedUint8Array(
+        this._syncMessageSerializer.serializeSyncMessage(unsigned),
+        1,
+        maxBytes,
+        'Unsigned sync message',
+      );
+    let raw: Uint8Array;
+    try {
+      raw = serialize();
+    } catch {
+      return undefined;
+    }
+    if (!syncMessageMatchesSnapshot(expected, unsigned, context)) {
+      return undefined;
+    }
+    return {
+      raw,
+      unchanged: () => {
+        try {
+          return (
+            constantTimeEqual(raw, serialize()) &&
+            syncMessageMatchesSnapshot(expected, unsigned, context)
+          );
+        } catch {
+          return false;
+        }
+      },
+    };
   }
 
   /** Apply a sync message after any required membership-queue admission. */
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     verifySignature: boolean,
+    context: Extract<
+      SyncMessageContext,
+      | 'ordinary-sync-v1'
+      | 'load-response-v3'
+      | 'invitation-bootstrap-v1'
+    >,
   ): Promise<boolean> {
-    const { signature, ...messageWithoutSignature } = message;
+    let sourceSnapshot: object | undefined;
+    if (context !== 'ordinary-sync-v1') {
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(message, 'snapshot');
+        if (
+          descriptor !== undefined &&
+          'value' in descriptor &&
+          typeof descriptor.value === 'object' &&
+          descriptor.value !== null
+        ) {
+          sourceSnapshot = descriptor.value as object;
+        }
+        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          message,
+          context,
+        );
+      } catch {
+        return false;
+      }
+    }
+    if (message.documentId !== this.documentPath) {
+      return false;
+    }
+    const signature = message.signature;
     const signingEnabled = this._isSigningEnabled();
     if (signingEnabled && !signature) {
       return false;
@@ -4366,13 +4557,21 @@ export class PeerborneDocument<
     // Only serialize for signature verification -- skip when signing is disabled
     // to avoid expensive serialization of large messages.
     if (signingEnabled && verifySignature) {
-      const raw = this._syncMessageSerializer.serializeSyncMessage(
-        messageWithoutSignature,
+      const unsigned = this._serializeUnsignedForVerification(
+        message,
+        context,
+        MAX_SHARED_PROTOCOL_REQUEST_BYTES,
       );
-      if ((await this._verifyWriterSignature(raw, signature!)) !== true) {
+      if (unsigned === undefined) {
+        return false;
+      }
+      if ((await this._verifyWriterSignature(unsigned.raw, signature!)) !== true) {
         console.warn(
           `Received a sync message with an invalid signature for ${message.documentId}`,
         );
+        return false;
+      }
+      if (!unsigned.unchanged()) {
         return false;
       }
     }
@@ -4467,6 +4666,7 @@ export class PeerborneDocument<
             ? this._crdtProvider.applySnapshot(this._document, incoming.state)
             : this._crdtProvider.remoteChange(this._document, incoming.state);
           this._latestSnapshot = incoming;
+          this._latestSnapshotSource = sourceSnapshot;
           // Ensure our local document change count is at least as high as
           // the snapshot's compactedCount. This prevents re-triggering
           // compaction below the threshold after applying a remote snapshot.
@@ -4915,6 +5115,7 @@ export class PeerborneDocument<
     };
 
     this._latestSnapshot = snapshotNode;
+    this._latestSnapshotSource = undefined;
     this._changesSinceSnapshot = 0;
 
     // Prune old change nodes from the in-memory sync tree if configured.
@@ -5779,38 +5980,55 @@ export class PeerborneDocument<
       throw new Error('Invitation encrypted bootstrap could not be decrypted');
     }
 
-    const bootstrapMessage =
-      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext);
+    const bootstrapMessage = snapshotSyncMessageForContext<
+      ChangesType,
+      PublicKey
+    >(
+      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext),
+      'invitation-bootstrap-v1',
+    );
     if (bootstrapMessage.documentId !== this.documentPath) {
       throw new Error('Invitation bootstrap document binding does not match');
     }
     if (!bootstrapMessage.signature) {
       throw new Error('Invitation bootstrap is missing its issuer signature');
     }
-    const { signature, ...unsignedBootstrap } = bootstrapMessage;
     let signatureBytes: Uint8Array;
     try {
-      signatureBytes = this._deserializeSignature(signature);
+      signatureBytes = this._deserializeSignature(bootstrapMessage.signature);
     } catch {
       throw new Error('Invitation bootstrap signature is malformed');
     }
-    const signedBytes =
-      this._syncMessageSerializer.serializeSyncMessage(unsignedBootstrap);
+    const unsignedBootstrap = this._serializeUnsignedForVerification(
+      bootstrapMessage,
+      'invitation-bootstrap-v1',
+      bootstrapPlaintext.length,
+    );
+    if (unsignedBootstrap === undefined) {
+      throw new Error('Invitation bootstrap serialization is unstable');
+    }
     if (
       (await this._authProvider.verify(
-        signedBytes,
+        unsignedBootstrap.raw,
         issuerPublicKey,
         signatureBytes,
       )) !== true
     ) {
       throw new Error('Invitation bootstrap signature does not match the offer issuer');
     }
+    if (!unsignedBootstrap.unchanged()) {
+      throw new Error('Invitation bootstrap serialization is unstable');
+    }
 
     if (
       !(await syncInvitationMessageCompletely(
         bootstrapMessage,
         this._hashes,
-        () => this.sync(bootstrapMessage, false),
+        () =>
+          this._syncValidatedProtocolMessage(
+            bootstrapMessage,
+            'invitation-bootstrap-v1',
+          ),
         'bootstrap',
         {
           provenSnapshotBoundariesBeforeSync:
@@ -5820,7 +6038,7 @@ export class PeerborneDocument<
                   this._latestSnapshot.lastChangeNodeCID,
                 ]),
           isSnapshotApplied: () =>
-            this._latestSnapshot === bootstrapMessage.snapshot,
+            this._isLatestSnapshotFrom(bootstrapMessage),
         },
       ))
     ) {
