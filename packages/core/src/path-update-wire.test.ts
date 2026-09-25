@@ -7,6 +7,7 @@ import {
   serializePathUpdateForWire,
   serializePathUpdateV2ForWire,
 } from './path-update-wire.js';
+import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -358,6 +359,36 @@ describe('path-update-wire V1 outbound boundary', () => {
     expect(restored.nodes[0].encryptedPrivateKey).toEqual(
       new Uint8Array(125).fill(3),
     );
+  });
+
+  test('bounds the largest accepted payload well below the shared request limit', () => {
+    const update = {
+      senderLeafIndex: 0,
+      senderLeafPublicKey: new Uint8Array(65).fill(1),
+      nodes: Array.from({ length: 13 }, (_, offset) => ({
+        nodeIndex: 2 * offset + 1,
+        publicKey: new Uint8Array(65).fill(2),
+        encryptedPrivateKey: new Uint8Array(4096).fill(3),
+      })),
+    };
+    const wire = serializePathUpdateForWire(update);
+    expect(JSON.stringify(wire).length).toBeLessThan(
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES / 64,
+    );
+    expect(deserializePathUpdateFromWire(wire).nodes).toHaveLength(13);
+    expect(() =>
+      serializePathUpdateForWire({
+        ...update,
+        nodes: [
+          ...update.nodes,
+          {
+            nodeIndex: 27,
+            publicKey: new Uint8Array(65),
+            encryptedPrivateKey: new Uint8Array(0),
+          },
+        ],
+      }),
+    ).toThrow(/nodes exceeds 13 entries/);
   });
 
   test('rejects malformed runtime byte fields instead of normalizing them', () => {
