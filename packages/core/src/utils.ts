@@ -719,7 +719,6 @@ export async function readUint8Iterable(
     | AsyncIterable<Uint8Array | Uint8ArrayList | BufferListLike>
     | Iterable<Uint8Array | Uint8ArrayList | BufferListLike>,
   maxSize?: number,
-  consumeBytes?: (byteLength: number) => void,
 ): Promise<Uint8Array> {
   let assembled: Uint8Array = new Uint8Array(0);
   let length = 0;
@@ -739,7 +738,6 @@ export async function readUint8Iterable(
         `Stream exceeded maximum allowed size of ${maxSize} bytes`,
       );
     }
-    consumeBytes?.(chunk.length);
     assembled = growStreamBuffer(assembled, length, nextLength, maxSize);
     appendStreamChunk(assembled, length, chunk);
     length = nextLength;
