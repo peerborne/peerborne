@@ -25,7 +25,6 @@ import {
 } from './beekem/types.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import * as TreeMath from './beekem/tree-math.js';
-import { assertSharedProtocolRequestSize } from './utils.js';
 import {
   createV2DecodeBudget,
   decodeV2Bytes,
@@ -129,6 +128,9 @@ export interface SerializedPathUpdateV2 {
 /**
  * Convert a plain, own-data `PathUpdate` to a detached JSON-safe wire value.
  * Class instances and accessor properties are rejected at this boundary.
+ *
+ * The per-field bounds cap the result far below the shared-protocol request
+ * limit; the transport sender enforces that limit on the complete frame.
  */
 export function serializePathUpdateForWire(
   update: PathUpdate,
@@ -194,7 +196,7 @@ export function serializePathUpdateForWire(
     );
     return { nodeIndex, publicKey, encryptedPrivateKey };
   });
-  const wire: SerializedPathUpdate = {
+  return {
     senderLeafIndex,
     senderLeafPublicKey: encodeRuntimeBytes(
       raw.senderLeafPublicKey,
@@ -205,12 +207,6 @@ export function serializePathUpdateForWire(
     ),
     nodes,
   };
-  assertSharedProtocolRequestSize(
-    // Fixed ASCII keys, integer indices and base64 make code units equal bytes.
-    JSON.stringify(wire).length,
-    'BeeKEM PathUpdate v1 wire payload',
-  );
-  return wire;
 }
 
 /**
