@@ -18,6 +18,7 @@ import {
 
 import {
   ACL,
+  ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLRemoval,
@@ -561,7 +562,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
   merge(change: BinaryChange[]): void {
     if (this._pendingMutations !== 0) {
-      throw new Error('Cannot merge during a local ACL mutation');
+      throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
     }
     // Detach caller-owned buffers before capturing the live baseline. Array
     // accessors and Proxy traps can invoke a prepared commit reentrantly; that
@@ -569,7 +570,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     // by a result derived from a stale document reference.
     const stableChanges = copyAutomergeACLChanges(change);
     if (this._pendingMutations !== 0) {
-      throw new Error('Cannot merge during a local ACL mutation');
+      throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
     }
     const baseRevision = this._revision;
     const base = this._acl;
@@ -591,14 +592,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
     this._assertComplete('check ACL membership');
-    const baseRevision = this._revision;
-    const base = this._acl;
     const hash = await serializeKey(publicKey);
     this._assertComplete('check ACL membership');
-    if (this._revision !== baseRevision || this._acl !== base) {
-      throw new Error('ACL changed while membership was being checked');
-    }
-    return base.users?.[hash] !== undefined;
+    return this._acl.users?.[hash] !== undefined;
   }
   // The capability parameter is accepted for interface compatibility but ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
@@ -625,7 +621,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     );
     this._assertComplete('list ACL members');
     if (this._revision !== baseRevision || this._acl !== base) {
-      throw new Error('ACL changed while members were being listed');
+      throw new ACLOperationInProgressError(
+        'ACL membership listing',
+        Promise.resolve(),
+      );
     }
     return users;
   }

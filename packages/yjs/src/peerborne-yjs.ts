@@ -1,5 +1,6 @@
 import {
   ACL,
+  ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLRemoval,
@@ -774,7 +775,7 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
   merge(change: Uint8Array): void {
     if (this._pendingMutations !== 0) {
-      throw new Error('Cannot merge during a local ACL mutation');
+      throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
     }
     // Capture first and reject reentrant changes during detachment; no update
     // may publish against a baseline different from the one this call admitted.
@@ -816,14 +817,9 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
     this._assertComplete('check ACL membership');
-    const baseRevision = this._revision;
-    const base = this._acl;
     const hash = await serializeKey(publicKey);
     this._assertComplete('check ACL membership');
-    if (this._revision !== baseRevision || this._acl !== base) {
-      throw new Error('ACL changed while membership was being checked');
-    }
-    return base.getMap('users').has(hash);
+    return this._acl.getMap('users').has(hash);
   }
   async users(): Promise<CryptoKey[]> {
     this._assertComplete('list ACL members');
@@ -847,7 +843,10 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     );
     this._assertComplete('list ACL members');
     if (this._revision !== baseRevision || this._acl !== base) {
-      throw new Error('ACL changed while members were being listed');
+      throw new ACLOperationInProgressError(
+        'ACL membership listing',
+        Promise.resolve(),
+      );
     }
     return users;
   }
