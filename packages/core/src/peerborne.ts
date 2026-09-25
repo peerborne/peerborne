@@ -1175,7 +1175,7 @@ export class Peerborne<
       });
     };
 
-    // Handler for BeeKEM PathUpdateV2 v1 (reader-revocation rotations).
+    // Handler for BeeKEM PathUpdate V2 (reader-revocation rotations).
     // Wire format mirrors key-update v2 / BeeKEM Welcome V2: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
