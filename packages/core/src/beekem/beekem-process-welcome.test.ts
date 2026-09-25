@@ -563,6 +563,15 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     const { welcome, recipientKeys } = await createTwoMemberWelcome();
     const initializedKeys = await generateKeyPair();
     const target = new BeeKEM();
+    const stagedSecrets: Uint8Array[] = [];
+    const originalGetRootSecret = BeeKEM.prototype.getRootSecret;
+    const rootSecretSpy = jest
+      .spyOn(BeeKEM.prototype, 'getRootSecret')
+      .mockImplementation(async function (this: BeeKEM) {
+        const secret = await originalGetRootSecret.call(this);
+        if (this !== target) stagedSecrets.push(secret);
+        return secret;
+      });
     const digest = pauseNextDigest();
     const processing = target.processWelcome(
       copyWelcome(welcome),
@@ -588,6 +597,7 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
     } finally {
       digest.release();
       digest.restore();
+      rootSecretSpy.mockRestore();
     }
 
     expect(settled.kind).toBe('rejected');
@@ -598,6 +608,8 @@ describe('BeeKEM.processWelcome runtime boundary', () => {
         }),
       );
     }
+    expect(stagedSecrets).toHaveLength(1);
+    expect(stagedSecrets[0]).toEqual(new Uint8Array(32));
     await expectTargetUnchanged(target, initializedKeys, initializedRoot);
   });
 
