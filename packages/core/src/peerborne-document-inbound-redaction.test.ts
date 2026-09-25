@@ -6,7 +6,11 @@ jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
 jest.mock('@helia/unixfs', () => ({ unixfs: jest.fn() }), { virtual: true });
 jest.mock(
   '@libp2p/gossipsub',
-  () => ({ TopicValidatorResult: { Accept: 'accept', Reject: 'reject' } }),
+  () => ({ TopicValidatorResult: {
+      Accept: 'accept',
+      Ignore: 'ignore',
+      Reject: 'reject',
+    }, }),
   { virtual: true },
 );
 jest.mock('@multiformats/multiaddr', () => ({ multiaddr: jest.fn() }), {
@@ -68,18 +72,40 @@ function captureFailureLogs() {
 }
 
 describe('concrete inbound handler log redaction', () => {
-  test('does not amplify an unknown-key pubsub message into a document load', async () => {
+  const undecryptableCases = [
+    {
+      name: 'an unknown key ID',
+      getKey: () => undefined,
+      decrypt: async (): Promise<Uint8Array> => {
+        throw new Error('decrypt must not run without a key');
+      },
+    },
+    {
+      name: 'a known key with a failed authentication tag',
+      getKey: () => new Uint8Array([7]),
+      decrypt: async (): Promise<Uint8Array> => {
+        throw new Error(privateFailure);
+      },
+    },
+  ];
+
+  function undecryptableDocument(
+    testCase: (typeof undecryptableCases)[number],
+    extra: Record<string, unknown> = {},
+  ) {
     const addEventListener = jest.fn();
     const subscribe = jest.fn();
+    const topicValidators = new Map<string, unknown>();
     const load = jest.fn(async () => true);
     const deserializeSyncMessage = jest.fn();
+    const decrypt = jest.fn(testCase.decrypt);
     const document = fakeDocument({
       _invitationBootstrapReady: true,
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
-      _decryptBlock: async () => undefined,
+      _keychain: { getKey: jest.fn(testCase.getKey) },
+      _authProvider: { nonceBits: 1, decrypt },
       _syncMessageSerializer: { deserializeSyncMessage },
       load,
       swarm: {
@@ -88,36 +114,81 @@ describe('concrete inbound handler log redaction', () => {
         heliaNode: {
           libp2p: {
             services: {
-              pubsub: { addEventListener, subscribe },
+              pubsub: { addEventListener, subscribe, topicValidators },
             },
           },
         },
       },
+      ...extra,
     });
-    const logs = captureFailureLogs();
+    return { document, load, deserializeSyncMessage, topicValidators };
+  }
 
-    try {
-      await document.open();
-      load.mockClear();
-      deserializeSyncMessage.mockClear();
-      document._pubsubHandler({
-        detail: {
-          data: new Uint8Array([1, 2, 3]),
-          topic: '/topic',
-          type: 'signed',
-          from: { toString: () => 'untrusted-sender' },
-        },
-      });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+  test.each(undecryptableCases)(
+    'drops a pubsub message with $name without load or logs',
+    async (testCase) => {
+      const { document, load, deserializeSyncMessage } =
+        undecryptableDocument(testCase);
+      const logs = captureFailureLogs();
 
-      expect(load).not.toHaveBeenCalled();
-      expect(deserializeSyncMessage).not.toHaveBeenCalled();
-      expect(logs.warn).not.toHaveBeenCalled();
-      expect(logs.text()).not.toContain(privatePath);
-    } finally {
-      logs.restore();
-    }
-  });
+      try {
+        await document.open();
+        load.mockClear();
+        deserializeSyncMessage.mockClear();
+        for (let i = 0; i < 3; i++) {
+          document._pubsubHandler({
+            detail: {
+              data: new Uint8Array([1, 2, 3]),
+              topic: '/topic',
+              type: 'signed',
+              from: { toString: () => 'untrusted-sender' },
+            },
+          });
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(load).not.toHaveBeenCalled();
+        expect(deserializeSyncMessage).not.toHaveBeenCalled();
+        expect(logs.text()).toBe('');
+      } finally {
+        logs.restore();
+      }
+    },
+  );
+
+  test.each(undecryptableCases)(
+    'topic validator ignores a message with $name without logs',
+    async (testCase) => {
+      const { document, deserializeSyncMessage, topicValidators } =
+        undecryptableDocument(testCase, { _isSigningEnabled: () => true });
+      document.swarm.config.enableTopicValidators = true;
+      const logs = captureFailureLogs();
+
+      try {
+        await document.open();
+        const validator = topicValidators.get('/topic') as (
+          peerId: unknown,
+          message: { data: Uint8Array },
+        ) => Promise<string>;
+        expect(validator).toBeDefined();
+        deserializeSyncMessage.mockClear();
+
+        for (let i = 0; i < 3; i++) {
+          await expect(
+            validator(
+              { toString: () => 'untrusted-sender' },
+              { data: new Uint8Array([1, 2, 3]) },
+            ),
+          ).resolves.toBe('ignore');
+        }
+
+        expect(deserializeSyncMessage).not.toHaveBeenCalled();
+        expect(logs.text()).toBe('');
+      } finally {
+        logs.restore();
+      }
+    },
+  );
 
   test('observes and redacts rejected pubsub receive work', async () => {
     const addEventListener = jest.fn();
@@ -389,7 +460,7 @@ describe('concrete inbound handler log redaction', () => {
     try {
       await document.handleKeyUpdateRequestData(new Uint8Array([3, 4, 5]));
       expect(logs.warn).toHaveBeenCalledWith(
-        'Failed to decrypt shared key-update request',
+        'Unable to decrypt shared key-update request',
       );
       expect(logs.text()).not.toContain(privateFailure);
       expect(logs.text()).not.toContain(privatePath);

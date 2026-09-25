@@ -944,16 +944,17 @@ export class PeerborneDocument<
     nonce: Uint8Array,
     data: Uint8Array,
   ) {
+    // Inbound ciphertext is untrusted, so key misses and authentication
+    // failures stay silent here; callers decide whether a failure is reportable.
     try {
       const key = this._keychain.getKey(blockKeyID);
       if (key) {
-        return this._authProvider.decrypt(data, key, nonce);
-      } else {
-        console.warn('Unable to find a document key for encrypted data');
+        return await this._authProvider.decrypt(data, key, nonce);
       }
     } catch {
-      console.warn('Failed to decrypt encrypted document data');
+      return undefined;
     }
+    return undefined;
   }
 
   private async _getBlock(hash: CID): Promise<ChangesType> {
@@ -4333,8 +4334,8 @@ export class PeerborneDocument<
                   blockData,
                 );
                 if (!rawContent) {
-                  // Decryption failed -- key may not be in keychain yet
-                  console.warn(`[${this.documentPath}] Topic validator: decryption failed, ignoring message`);
+                  // Unknown-key and forged packets are ignored without a
+                  // per-packet log so untrusted peers cannot amplify logging.
                   return TopicValidatorResult.Ignore;
                 }
 
@@ -4383,7 +4384,7 @@ export class PeerborneDocument<
                   ? TopicValidatorResult.Accept
                   : TopicValidatorResult.Reject;
               } catch {
-                console.warn(`[${this.documentPath}] Topic validator: unexpected error, ignoring message`);
+                console.warn('Topic validator: unexpected error, ignoring message');
                 return TopicValidatorResult.Ignore;
               }
             };
