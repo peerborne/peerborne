@@ -1017,6 +1017,44 @@ describe('AutomergeACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('rejects malformed membership changes whose users root is still missing', async () => {
+    const serialized1 = await serializeKey(key1);
+    const founder = automergeChange(
+      automergeInit<{ users: Record<string, unknown> }>(),
+      (doc) => {
+        doc.users = {};
+        doc.users[serialized1] = true;
+      },
+    );
+    const founderChanges = getAllAutomergeChanges(founder);
+    const invalidKey = automergeChange(automergeClone(founder), (doc) => {
+      doc.users['not-a-p384-key'] = true;
+    });
+    const invalidValue = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized1] = 'member';
+    });
+    const serialized2 = await serializeKey(key2);
+    const valid = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized2] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    expect(() =>
+      receiver.merge(getAutomergeChanges(founder, invalidKey)),
+    ).toThrow();
+    expect(() =>
+      receiver.merge(getAutomergeChanges(founder, invalidValue)),
+    ).toThrow(/membership values must be true/);
+
+    receiver.merge(getAutomergeChanges(founder, valid));
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/,
+    );
+    receiver.merge(founderChanges);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
   test('a new dependency-incomplete change still stales prepared removal', async () => {
     const receiver = new AutomergeACL();
     await receiver.add(key1);
