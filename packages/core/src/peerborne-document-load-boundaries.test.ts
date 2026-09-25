@@ -66,6 +66,13 @@ function fakeDocument(fields: Record<string, unknown>): any {
   });
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100 && !predicate(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(predicate()).toBe(true);
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((resolvePromise) => {
@@ -3222,81 +3229,116 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test.each(['readers', 'writers'] as const)(
-    'fails closed on a queued %s conflict without retaining the mutation FIFO',
-    async (conflictingACL) => {
-      const mutationQueue = new InvitationMembershipQueue();
-      const neverSettles = new Promise<void>(() => {});
-      let conflictingReads = 0;
-      const conflictingUsers = jest.fn(async () => {
-        if (++conflictingReads === 1) return ['requester'];
+  function queuedAuthorizationConflictHarness(
+    conflictingACL: 'readers' | 'writers',
+    settlement: Promise<void>,
+  ) {
+    const mutationQueue = new InvitationMembershipQueue();
+    let conflictingReads = 0;
+    const conflictingUsers = jest.fn(async () => {
+      if (++conflictingReads === 2) {
         throw new ACLOperationInProgressError(
           'queued authorization conflict',
-          neverSettles,
+          settlement,
         );
-      });
-      const otherUsers = jest.fn(async () => [] as string[]);
-      const sink = jest.fn(async () => undefined);
-      const document = fakeDocument({
-        documentPath: '/queued-authorization-conflict',
-        _bootstrapLoadApplicationState: 'complete',
-        _bootstrapLoadApplicationRevision: 2,
-        _encoder: new TextEncoder(),
-        _mutationQueue: mutationQueue,
-        swarm: { config: { enableSigning: true } },
-        _readers: {
-          users:
-            conflictingACL === 'readers' ? conflictingUsers : otherUsers,
-        },
-        _writers: {
-          users:
-            conflictingACL === 'writers' ? conflictingUsers : otherUsers,
-        },
-        _servedFrontier: jest.fn(() => []),
-        _signAsWriter: jest.fn(async () => 'response-signature'),
-        _syncMessageSerializer: {
-          serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
-        },
-        _keychainProvider: { keyIDLength: 1 },
-        _keychain: {
-          current: jest.fn(async () => [new Uint8Array([1]), {}]),
-        },
-        _authProvider: {
-          nonceBits: 1,
-          verify: jest.fn(async () => true),
-          encrypt: jest.fn(async () => ({
-            nonce: new Uint8Array([2]),
-            data: new Uint8Array([3]),
-          })),
-        },
-      });
-      const consoleError = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => undefined);
-
-      try {
-        await expect(
-          document.handleTipAdvertiseRequestData(
-            {
-              documentId: '/queued-authorization-conflict',
-              signature: 'AAAA',
-            },
-            { sink },
-          ),
-        ).resolves.toBeUndefined();
-      } finally {
-        consoleError.mockRestore();
       }
+      return ['requester'];
+    });
+    const otherUsers = jest.fn(async () => [] as string[]);
+    const sink = jest.fn(async () => undefined);
+    const document = fakeDocument({
+      documentPath: '/queued-authorization-conflict',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _encoder: new TextEncoder(),
+      _mutationQueue: mutationQueue,
+      swarm: { config: { enableSigning: true } },
+      _readers: {
+        users: conflictingACL === 'readers' ? conflictingUsers : otherUsers,
+      },
+      _writers: {
+        users: conflictingACL === 'writers' ? conflictingUsers : otherUsers,
+      },
+      _servedFrontier: jest.fn(() => []),
+      _signAsWriter: jest.fn(async () => 'response-signature'),
+      _syncMessageSerializer: {
+        serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
+      },
+      _keychainProvider: { keyIDLength: 1 },
+      _keychain: {
+        current: jest.fn(async () => [new Uint8Array([1]), {}]),
+      },
+      _authProvider: {
+        nonceBits: 1,
+        verify: jest.fn(async () => true),
+        encrypt: jest.fn(async () => ({
+          nonce: new Uint8Array([2]),
+          data: new Uint8Array([3]),
+        })),
+      },
+    });
+    return { mutationQueue, conflictingUsers, otherUsers, sink, document };
+  }
 
-      expect(conflictingUsers).toHaveBeenCalledTimes(2);
-      expect(otherUsers).toHaveBeenCalledTimes(2);
-      expect(sink).toHaveBeenCalledTimes(1);
-      expect(sink).toHaveBeenCalledWith([]);
+  test.each(['readers', 'writers'] as const)(
+    'retries a queued %s conflict after settlement without retaining the mutation FIFO',
+    async (conflictingACL) => {
+      const settled = deferred<void>();
+      const { mutationQueue, conflictingUsers, otherUsers, sink, document } =
+        queuedAuthorizationConflictHarness(conflictingACL, settled.promise);
+
+      const handling = document.handleTipAdvertiseRequestData(
+        {
+          documentId: '/queued-authorization-conflict',
+          signature: 'AAAA',
+        },
+        { sink },
+      );
+      await waitFor(() => conflictingUsers.mock.calls.length === 2);
       await expect(
         mutationQueue.run(async () => 'released'),
       ).resolves.toBe('released');
+      expect(sink).not.toHaveBeenCalled();
+
+      settled.resolve();
+      await expect(handling).resolves.toBeUndefined();
+
+      expect(conflictingUsers).toHaveBeenCalledTimes(3);
+      expect(otherUsers).toHaveBeenCalledTimes(3);
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(sink).not.toHaveBeenCalledWith([]);
     },
   );
+
+  test('does not respond after a queued authorization conflict outlives the handler', async () => {
+    const settled = deferred<void>();
+    const { mutationQueue, conflictingUsers, sink, document } =
+      queuedAuthorizationConflictHarness('readers', settled.promise);
+    let active = true;
+    const admission = {
+      isActive: () => active,
+      runMutation: jest.fn(),
+    };
+
+    const handling = document.handleTipAdvertiseRequestData(
+      {
+        documentId: '/queued-authorization-conflict',
+        signature: 'AAAA',
+      },
+      { sink },
+      admission,
+    );
+    await waitFor(() => conflictingUsers.mock.calls.length === 2);
+    active = false;
+    settled.resolve();
+    await expect(handling).resolves.toBeUndefined();
+
+    expect(conflictingUsers).toHaveBeenCalledTimes(2);
+    expect(sink).not.toHaveBeenCalled();
+    await expect(
+      mutationQueue.run(async () => 'released'),
+    ).resolves.toBe('released');
+  });
 
   test('poisons an accepted invitation when activation catch-up fails', async () => {
     const close = jest.fn(async () => undefined);
