@@ -60,6 +60,7 @@ function copyUCANEntry(entry: UCANACLEntry): UCANACLEntry {
 }
 
 const MAX_CACHED_LISTING_IDENTITIES = 128;
+const wrappedBackingAcls = new WeakSet<object>();
 const MAX_CACHED_IDENTITY_ENCODING_LENGTH = 8 * 1024;
 /** Hard limit that keeps one backing listing's identity-codec fanout bounded. */
 export const MAX_UCAN_ACL_LISTING_IDENTITIES = 4096;
@@ -99,7 +100,9 @@ interface CachedListingIdentity<PublicKey> {
  * The generic ACL contract exposes one opaque mutable state and does not
  * promise key-isolated commits, so overlapping calls could derive changes
  * from the same document-wide baseline. All asynchronous backing operations
- * are therefore single-flight. Checks, listings, entry lookups, mutations, and
+ * are therefore single-flight, and each backing ACL instance may be wrapped by
+ * at most one `UCANACL` so that admission state is never split across
+ * independent wrappers. Checks, listings, entry lookups, mutations, and
  * the synchronous `current()` snapshot reject with a retryable conflict while
  * another public operation is unresolved, rather than risk observing partially
  * changed backing state or deadlocking on deferred backing-to-wrapper
@@ -149,7 +152,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     private readonly _deserializePublicKey?: (
       serialized: string,
     ) => Promise<PublicKey>,
-  ) {}
+  ) {
+    if (wrappedBackingAcls.has(_backing)) {
+      throw new Error(
+        'Backing ACL is already wrapped by another UCAN ACL; each backing ACL instance requires exclusive admission state',
+      );
+    }
+    wrappedBackingAcls.add(_backing);
+  }
 
   /** Bind metadata and backing membership to one canonical identity. */
   private async _snapshotPublicKey(
