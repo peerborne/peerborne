@@ -335,6 +335,10 @@ function pathUpdateHarness(
       options.onProcess?.();
       return rootSecret;
     }),
+    processPathUpdateTransactionally: async (
+      update: unknown,
+      commit: (root: Uint8Array, disposition: 'applied') => unknown,
+    ) => commit(await stagedBeeKEM.processPathUpdate(update), 'applied'),
   };
   liveBeeKEM.clone = jest.fn(() => stagedBeeKEM);
   const claimAccessor = jest.fn(() => {

@@ -62,6 +62,16 @@ function validMessage(epochId: Uint8Array) {
   };
 }
 
+function stagedTree(processPathUpdate: (update: unknown) => unknown) {
+  return {
+    processPathUpdate,
+    processPathUpdateTransactionally: async (
+      update: unknown,
+      commit: (rootSecret: unknown, disposition: 'applied') => unknown,
+    ) => commit(await processPathUpdate(update), 'applied'),
+  };
+}
+
 const expectedPathUpdate = () =>
   deserializePathUpdateV2FromWire(
     serializePathUpdateV2ForWire(pathUpdateFixture()),
@@ -93,7 +103,7 @@ function pathHarness(
     },
     _verifyMembershipWriterSignature: verify,
     _beekemInitialized: true,
-    _beekem: { clone: () => ({ processPathUpdate }) },
+    _beekem: { clone: () => stagedTree(processPathUpdate) },
     _keychain: { prepareEpochKey },
     ...fields,
   });
@@ -191,9 +201,7 @@ describe('BeeKEM PathUpdate context confinement', () => {
     const expectedEpochId = new Uint8Array(epochId);
     const decoded = validMessage(epochId);
     const harness = pathHarness(decoded);
-    const stagedBeeKEM = {
-      processPathUpdate: harness.processPathUpdate,
-    };
+    const stagedBeeKEM = stagedTree(harness.processPathUpdate);
     harness.document._beekem = { clone: () => stagedBeeKEM };
     harness.processPathUpdate.mockResolvedValue(rootSecret);
     harness.verify.mockImplementation(async () => {

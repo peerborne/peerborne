@@ -10814,8 +10814,16 @@ export class PeerborneDocument<
       }
       const beekem = this._beekem.clone();
       let rootSecret: Uint8Array;
+      let disposition: 'applied' | 'duplicate';
       try {
-        rootSecret = await beekem.processPathUpdate(pathUpdate);
+        ({ rootSecret, disposition } =
+          await beekem.processPathUpdateTransactionally(
+            pathUpdate,
+            async (appliedRoot, appliedDisposition) => ({
+              rootSecret: appliedRoot,
+              disposition: appliedDisposition,
+            }),
+          ));
       } catch {
         console.warn(
           'Failed to apply BeeKEM PathUpdateV2; recovering the new epoch requires a recipient-bound re-invitation',
@@ -10836,6 +10844,12 @@ export class PeerborneDocument<
       const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
       if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
         console.warn('Dropping BeeKEM PathUpdateV2 with a mismatched epoch ID');
+        return;
+      }
+      // The committed tree already applied this exact update together with
+      // its epoch key, so a redelivery has nothing left to install.
+      if (disposition === 'duplicate') {
+        console.debug('Ignoring duplicate BeeKEM PathUpdateV2');
         return;
       }
 
