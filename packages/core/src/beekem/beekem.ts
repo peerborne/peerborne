@@ -488,6 +488,7 @@ export class BeeKEM {
       throw new Error('BeeKEM v2 update parent tree hash mismatch');
     }
     await this._validatePathUpdateLeafTransition(update);
+    await this._validatePathUpdateInternalTransition(update);
 
     const senderPath = TreeMath.directPath(
       update.senderLeafIndex,
@@ -1823,6 +1824,79 @@ export class BeeKEM {
       throw new Error(
         'BeeKEM v2 same-size update cannot remove more than one live leaf',
       );
+    }
+  }
+
+  /**
+   * Internal nodes off the sender's direct path carry no fresh key material,
+   * so the snapshot may only keep them unchanged, blank the direct path of a
+   * removed leaf, or blank the join path of an appended leaf. Accepting any
+   * other public key would let a member plant a key it controls in another
+   * subtree and read root secrets after its own removal.
+   */
+  private async _validatePathUpdateInternalTransition(
+    update: PathUpdateV2,
+  ): Promise<void> {
+    const nextPublicKeys = new Map(
+      update.treeNodePublicKeys.map((entry) => [
+        entry.nodeIndex,
+        entry.publicKey,
+      ]),
+    );
+    const senderPath = new Set(
+      TreeMath.directPath(update.senderLeafIndex, update.numLeaves),
+    );
+    const mustBlank = new Set<number>();
+    for (let leafPosition = 0; leafPosition < this._numLeaves; leafPosition++) {
+      const nodeIndex = TreeMath.leafToNodeIndex(leafPosition);
+      if (
+        this._nodes.get(nodeIndex)?.publicKey &&
+        (nextPublicKeys.get(nodeIndex) ?? null) === null
+      ) {
+        for (const pathIndex of TreeMath.directPath(
+          nodeIndex,
+          this._numLeaves,
+        )) {
+          mustBlank.add(pathIndex);
+        }
+      }
+    }
+    const mayBlank = new Set<number>(
+      update.numLeaves === this._numLeaves + 1
+        ? TreeMath.directPath(
+            TreeMath.leafToNodeIndex(this._numLeaves),
+            update.numLeaves,
+          )
+        : [],
+    );
+    const currentWidth = 2 * this._numLeaves - 1;
+    const nextWidth = 2 * update.numLeaves - 1;
+    for (let nodeIndex = 1; nodeIndex < nextWidth; nodeIndex += 2) {
+      if (senderPath.has(nodeIndex)) continue;
+      const nextPublicKey = nextPublicKeys.get(nodeIndex) ?? null;
+      if (mustBlank.has(nodeIndex)) {
+        if (nextPublicKey !== null) {
+          throw new Error(
+            `BeeKEM v2 update must blank removed-path node ${nodeIndex}`,
+          );
+        }
+        continue;
+      }
+      if (nextPublicKey === null && mayBlank.has(nodeIndex)) continue;
+      const currentPublicKey =
+        nodeIndex < currentWidth
+          ? (this._nodes.get(nodeIndex)?.publicKey ?? null)
+          : null;
+      if (currentPublicKey === null && nextPublicKey === null) continue;
+      if (
+        currentPublicKey === null ||
+        nextPublicKey === null ||
+        !(await this._publicKeyEqualsBytes(currentPublicKey, nextPublicKey))
+      ) {
+        throw new Error(
+          `BeeKEM v2 update cannot change internal node ${nodeIndex} outside the sender path`,
+        );
+      }
     }
   }
 
