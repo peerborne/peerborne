@@ -44,11 +44,11 @@ describe('deserializePathUpdateV2FromWire malformed inputs', () => {
   });
   test('rejects non-array nodes', () => {
     const bad = { ...buildValidPayload(), nodes: { 0: {} } };
-    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/'nodes' must be an array/);
+    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/nodes must be an array/);
   });
   test('rejects null nodes', () => {
     const bad = { ...buildValidPayload(), nodes: null };
-    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/'nodes' must be an array/);
+    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/nodes must be an array/);
   });
   test('rejects node element that is not an object', () => {
     const bad = { ...buildValidPayload(), nodes: ['not-a-node'] as any };
@@ -82,7 +82,7 @@ describe('deserializePathUpdateV2FromWire malformed inputs', () => {
       encryptedPathKeyBundles: buildValidPayload().nodes[0].encryptedPathKeyBundles,
     };
     const bad = { ...buildValidPayload(), nodes: [node] };
-    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/node\[0\].publicKey must be (a )?base64/);
+    expect(() => deserializePathUpdateV2FromWire(bad)).toThrow(/'node\[0\].publicKey' must be a base64 string/);
   });
   test('rejects node with non-array encryptedPathKeyBundles', () => {
     const node = {
