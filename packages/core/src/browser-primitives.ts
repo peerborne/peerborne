@@ -1,3 +1,4 @@
+export { ACLOperationInProgressError } from './acl.js';
 export {
   describeValue,
   serializeChangeNodeForJSON,

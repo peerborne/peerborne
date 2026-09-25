@@ -9,7 +9,9 @@ import {
   Map as YMap,
 } from 'yjs';
 import {
+  ACLOperationInProgressError,
   MAX_KEYCHAIN_EPOCHS,
+  retryACLConflict,
   snapshotDeepEnumerableData,
   type CRDTChangeNode,
   MAX_MERKLE_DAG_DEPTH,
@@ -356,7 +358,7 @@ describe('YjsACL', () => {
 
     expect(await acl.check(key2)).toBe(false);
     expect(() => acl.merge(remoteChanges)).toThrow(
-      'Cannot merge during a local ACL mutation',
+      ACLOperationInProgressError,
     );
     expect(() => externalRemoval.commit()).toThrow(
       'Prepared ACL removal cannot commit during a local ACL mutation',
@@ -799,7 +801,7 @@ describe('YjsACL', () => {
     await expect(acl.check(key2)).resolves.toBe(false);
   });
 
-  test('check() rejects when a merge changes the ACL during key serialization', async () => {
+  test('check() reads the merged ACL when a merge lands during key serialization', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
     const remote = new YjsACL();
@@ -823,21 +825,19 @@ describe('YjsACL', () => {
       });
 
     try {
-      const authorization = acl.check(key1);
+      const authorization = acl.check(key2);
       await started;
       acl.merge(remoteChanges);
       releaseExport();
 
-      await expect(authorization).rejects.toThrow(
-        'ACL changed while membership was being checked',
-      );
+      await expect(authorization).resolves.toBe(true);
     } finally {
       releaseExport();
       exportSpy.mockRestore();
     }
   });
 
-  test('users() rejects when a removal commits during key import', async () => {
+  test('users() reports a retryable conflict when a removal commits during key import', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
     let importStarted!: () => void;
@@ -871,9 +871,10 @@ describe('YjsACL', () => {
       await acl.remove(key1);
       releaseImport();
 
-      await expect(listing).rejects.toThrow(
-        'ACL changed while members were being listed',
+      await expect(listing).rejects.toBeInstanceOf(
+        ACLOperationInProgressError,
       );
+      await expect(retryACLConflict(() => acl.users())).resolves.toEqual([]);
       await expect(acl.check(key1)).resolves.toBe(false);
     } finally {
       releaseImport();
