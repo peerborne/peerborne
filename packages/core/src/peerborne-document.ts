@@ -2832,9 +2832,6 @@ export class PeerborneDocument<
   private async _captureLoadSession(
     issuer?: PublicKey,
   ): Promise<InitialLoadSession<PublicKey>> {
-    if (!this._isSigningEnabled()) {
-      throw new Error('Initial loads require signing');
-    }
     const writerVersion = this._writerKeysVersion ?? 0;
     this._assertLoadWriterVersion(writerVersion);
     const commitments = issuer === undefined
@@ -2872,7 +2869,6 @@ export class PeerborneDocument<
   }
 
   private async _serializeInitialLoadRequest(session: InitialLoadSession<PublicKey>): Promise<Uint8Array> {
-    if (!this._isSigningEnabled()) throw new Error('Initial loads require signing');
     const signature = this._serializeSignature(await this._authProvider.sign(
       initialLoadRequestSignaturePayload(this.documentPath, session.challenge), this._userKey,
     ));
@@ -2960,7 +2956,6 @@ export class PeerborneDocument<
     message: CRDTLoadRequest,
     retryConflicts = true,
   ): Promise<boolean> {
-    if (!this._isSigningEnabled()) return false;
     if (!message.signature) return false;
 
     let signature: Uint8Array;
@@ -3523,8 +3518,8 @@ export class PeerborneDocument<
 
   /**
    * Sign a sync message as a writer **regardless of the swarm-wide
-   * `enableSigning` config**. Used exclusively by membership-control paths
-   * that always require writer authentication.
+   * `enableSigning` config**. Used by initial loads, security advertisements,
+   * and membership-control paths, which always require writer authentication.
    *
    * SECURITY: callers that go through `_signAsWriter` should keep doing
    * so -- it preserves the existing `enableSigning` toggle for normal
@@ -4205,7 +4200,7 @@ export class PeerborneDocument<
       const loadMessage = await this._createLoadResponsePlan(message, context);
 
       // Sign new message.
-      loadMessage.signature = await this._signAsWriter(loadMessage);
+      loadMessage.signature = await this._signAsWriterUnconditional(loadMessage);
 
       const serializedLoad =
         this._syncMessageSerializer.serializeSyncMessage(loadMessage);
@@ -4295,7 +4290,8 @@ export class PeerborneDocument<
       }
 
       const snapshotMessage = await this._createLoadResponsePlan(message, 'load-response-v4');
-      snapshotMessage.signature = await this._signAsWriter(snapshotMessage);
+      snapshotMessage.signature =
+        await this._signAsWriterUnconditional(snapshotMessage);
 
       const serialized =
         this._syncMessageSerializer.serializeSyncMessage(snapshotMessage);
@@ -4413,7 +4409,8 @@ export class PeerborneDocument<
         loadSecurityState: responsePlan.loadSecurityState,
       };
 
-      advertisement.signature = await this._signAsWriter(advertisement);
+      advertisement.signature =
+        await this._signAsWriterUnconditional(advertisement);
 
       const serialized =
         this._syncMessageSerializer.serializeSyncMessage(advertisement);
@@ -4567,7 +4564,7 @@ export class PeerborneDocument<
       ? session.authorities[0]?.publicKey : undefined;
     try {
       this._assertLoadWriterVersion(session.writerVersion);
-      if (!this._isSigningEnabled() || session.authorities.length === 0) {
+      if (session.authorities.length === 0) {
         throw new Error('Initial loads require a trusted signing authority');
       }
       if (session.context === 'invitation-catch-up-v1' && expectedTipsHashHex !== null) {
@@ -5750,7 +5747,7 @@ export class PeerborneDocument<
       );
       if (unsigned === undefined) return null;
       const signer = await identifyInitialLoadSigner({
-        signingEnabled: this._isSigningEnabled(),
+        signingEnabled: true,
         payload: new Uint8Array(unsigned.raw),
         signature: this._deserializeSignature(message.signature),
         existingWriterKeys: session.authorities.map((entry) => entry.publicKey),

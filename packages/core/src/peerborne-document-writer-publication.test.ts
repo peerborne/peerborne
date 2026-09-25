@@ -201,6 +201,7 @@ function publicationHarness(
     _lastSyncMessage: initialLastSyncMessage,
     _putBlock: jest.fn(async () => hashes[nextHash++]!),
     _signAsWriter: jest.fn(async () => 'signature'),
+    _signAsWriterUnconditional: jest.fn(async () => 'signature'),
     _syncMessageSerializer: {
       serializeSyncMessage: jest.fn((message: unknown) => {
         serializedMessages.push(structuredClone(message));

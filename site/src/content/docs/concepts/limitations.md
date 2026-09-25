@@ -94,7 +94,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   The other visibility modes filter epoch keys but do not safely redact earlier
   CRDT operations, including operations for later-deleted values, so they are
   rejected by the invitation path.
-- **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync/load signature gates are disabled for peers holding the needed document key; BeeKEM membership-control messages remain writer-signed.
+- **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync and snapshot signature gates are disabled for peers holding the needed document key. Initial loads, security advertisements, and BeeKEM membership-control messages remain writer-signed, and invitation creation and acceptance are rejected.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
 - **The ACL chain is not wired into document synchronization.** The standalone
   `ACLChain` implementation has focused tests, but `PeerborneDocument` still

@@ -308,8 +308,14 @@ export interface PeerborneConfig {
 
   /**
    * Enable application-level signing for ordinary sync and snapshots.
-   * Initial network loads, invitation catch-up, and BeeKEM membership operations
-   * require signing regardless of this setting.
+   * Initial network loads, security advertisements, invitation catch-up, and
+   * BeeKEM membership operations are always signed and verified, regardless
+   * of this setting. Invitation creation and acceptance reject when it is
+   * false.
+   *
+   * **WARNING: With `false`, ordinary sync and snapshot signatures are not
+   * checked, so any peer that can decrypt document traffic can forge ordinary
+   * changes. Only use it in trusted development or testing environments.**
    *
    * @default true
    */
