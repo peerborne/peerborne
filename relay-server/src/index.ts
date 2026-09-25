@@ -164,7 +164,7 @@ async function main() {
     topicReconciliation.unref()
 
     console.log('Subscribed to configured relay topics', {
-      seedTopicCount: 2,
+      seedTopicCount: 1,
       extraTopicCount: extraTopics.length,
     })
 
