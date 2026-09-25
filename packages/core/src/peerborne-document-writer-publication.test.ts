@@ -931,7 +931,10 @@ describe('writer ACL publication boundary', () => {
       throw new Error('rotation must not start');
     });
     document._beekemInitialized = true;
-    document._beekem = { removeMember: rotate };
+    document._beekem = {
+      removeMember: rotate,
+      hasOnlyLocalLiveLeaf: () => true,
+    };
 
     await expect(document.removeReader('candidate')).rejects.toThrow(
       /still an authorized writer.*removeWriter/s,
@@ -977,16 +980,19 @@ describe('writer ACL publication boundary', () => {
     );
     document._addReaderUnlocked = jest.fn(async () => null);
     const identity = { id: 'candidate' };
-    const kemPublicKey = new Uint8Array([1, 2, 3]);
+    const kemPublicKey = new Uint8Array(65).fill(1);
+    kemPublicKey[0] = 4;
+    const expectedKemPublicKey = new Uint8Array(kemPublicKey);
 
     const addition = document.addReader(identity, kemPublicKey);
     identity.id = 'stranger';
-    kemPublicKey[0] = 9;
+    kemPublicKey[1] = 9;
 
     await expect(addition).resolves.toBeNull();
     expect(document._addReaderUnlocked).toHaveBeenCalledWith(
       'candidate',
-      new Uint8Array([1, 2, 3]),
+      'candidate',
+      expectedKemPublicKey,
     );
   });
 
