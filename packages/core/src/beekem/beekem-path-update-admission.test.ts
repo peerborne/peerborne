@@ -726,7 +726,7 @@ describe('BeeKEM legacy PathUpdate admission', () => {
 
     await expect(
       beekem.addMember((await generateKeyPair()).publicKey),
-    ).rejects.toThrow(/limited to 8192 leaves/);
+    ).rejects.toThrow(/at most 8192 leaves are supported/);
     expect(beekem.memberCount).toBe(MAX_BEEKEM_TREE_LEAVES);
     expect(internals._nodes).toBe(nodesBefore);
   });
