@@ -7433,6 +7433,12 @@ export class PeerborneDocument<
    * writer so a later `removeWriter()` can safely return them to read-only
    * access without misrepresenting retained document-key access as revocation.
    *
+   * Promotion also requires the target's identity-bound reader KEM public key
+   * and a matching live BeeKEM leaf. That binding is recorded in memory when
+   * this document instance adds the reader with a KEM public key; ACL-only
+   * readers, and readers added before this instance was opened, cannot be
+   * promoted. Requires `AuthProvider.serializePublicKey`.
+   *
    * The local ACL commits only after GossipSub publication resolves. A rejected
    * publish rolls back local DAG bookkeeping, but transport rejection is
    * delivery-ambiguous: a remote peer may already have received the delta.
@@ -9553,6 +9559,10 @@ export class PeerborneDocument<
    *   key would leave the removed reader with full ongoing access.
    * @throws If identity/KEM/tree state is missing or divergent, a required
    *   commit claim is unavailable, or ACL publication fails.
+   * @throws If the target is not an explicit reader and has no identity-bound
+   *   KEM or leaf record, unless the live BeeKEM tree holds only the local
+   *   leaf. Removing a non-member is not a no-op while any remote leaf
+   *   remains, because the absent records cannot prove it was revoked.
    */
   public async removeReader(reader: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
