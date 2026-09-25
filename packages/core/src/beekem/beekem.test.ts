@@ -1,5 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { BeeKEM } from './beekem.js';
+import { MAX_BEEKEM_TREE_LEAVES } from './types.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
 
@@ -33,6 +34,23 @@ describe('BeeKEM', () => {
   });
 
   describe('addMember', () => {
+    test('rejects growth past the shared leaf limit without mutating the tree', async () => {
+      const beekem = new BeeKEM();
+      const aliceKeyPair = await generateECDHKeyPair();
+      await beekem.initialize(aliceKeyPair.privateKey, aliceKeyPair.publicKey);
+      const rootBefore = await beekem.getRootSecret();
+      (beekem as unknown as { _numLeaves: number })._numLeaves =
+        MAX_BEEKEM_TREE_LEAVES;
+
+      const bobKeyPair = await generateECDHKeyPair();
+      await expect(beekem.addMember(bobKeyPair.publicKey)).rejects.toThrow(
+        /tree is full/,
+      );
+      expect(beekem.memberCount).toBe(MAX_BEEKEM_TREE_LEAVES);
+      (beekem as unknown as { _numLeaves: number })._numLeaves = 1;
+      expect(await beekem.getRootSecret()).toEqual(rootBefore);
+    });
+
     test('increases member count', async () => {
       const beekem = new BeeKEM();
       const aliceKeyPair = await generateECDHKeyPair();
