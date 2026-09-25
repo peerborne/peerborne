@@ -92,7 +92,7 @@ await document.setKemKeyPair(kemKeyPair);
 
 - **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold.
 - **Writers** sign ordinary sync messages that carry new changes. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
-- **Ordinary document sync/load signing is configurable.** BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
+- **Ordinary document sync/load signing is configurable.** BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2 membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 ### Current-writer authorization only
 
@@ -147,13 +147,19 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 | Setting | Effect |
 |---|---|
 | **`enableSigning: true`** (default) | Ordinary sync messages and load responses are signed with ECDSA P-384, then serialized and encrypted with the document key; load requests are signed separately. Post-load receivers verify outer message signatures against current writers. |
-| **`enableSigning: false`** | Stored payloads, sync envelopes, and load responses remain encrypted with the document key, but application-level signing and verification for ordinary sync messages, load requests and responses, snapshots, and document key-update messages are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. BeeKEM Welcome and PathUpdate messages are separate exceptions described below. |
+| **`enableSigning: false`** | Stored payloads, sync envelopes, and load responses remain encrypted with the document key, but application-level signing and verification for ordinary sync messages, load requests and responses, and snapshots are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2 messages are separate exceptions described below. |
 
-BeeKEM Welcome and PathUpdate membership-control protocols are a deliberate
-exception to that toggle: their outer messages remain writer-signed, but they
+BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2
+membership-control protocols are a deliberate exception to that toggle: their
+outer messages are always writer-signed, and receivers drop unsigned or
+invalidly signed copies regardless of `enableSigning`. Welcome and PathUpdate
 are not ordinary whole-message document-key envelopes. A Welcome ECIES-seals
 its onboarding payload to the recipient's KEM key. A PathUpdate instead carries
-path secrets individually encrypted to the surviving BeeKEM subtrees.
+path secrets individually encrypted to the surviving BeeKEM subtrees. A
+key-update V2 message remains encrypted with the previous document key. Peers
+from before this requirement sent unsigned key-updates when signing was
+disabled; current receivers drop those, so all peers in a swarm must run a
+version that signs membership-control messages.
 
 ## Initial-load quorum
 

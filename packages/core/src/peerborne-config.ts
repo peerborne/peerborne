@@ -302,15 +302,18 @@ export interface PeerborneConfig {
   /**
    * Enable Peerborne application-level signing and verification.
    * When false, application-level signing is bypassed: sync message signatures,
-   * load request signatures, snapshot signatures, topic validator signature
-   * checks, and key update verification. Topic validators are not registered
-   * at all when signing is disabled to avoid unnecessary per-message overhead.
+   * load request signatures, snapshot signatures, and topic validator signature
+   * checks. Topic validators are not registered at all when signing is
+   * disabled to avoid unnecessary per-message overhead. Membership-control
+   * messages (BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2)
+   * are always writer-signed and verified regardless of this flag; receivers
+   * drop unsigned copies of them.
    * Note: libp2p/GossipSub transport-level signing (e.g., `globalSignaturePolicy`)
    * is NOT affected by this flag.
    *
-   * **WARNING: Disabling signing removes all authentication and authorization
-   * checks. Any peer that can decrypt traffic (e.g., possesses a previous
-   * document key) can forge sync, key-update, and load messages. Peers with
+   * **WARNING: Disabling signing removes authentication and authorization
+   * checks from ordinary sync and load traffic. Any peer that can decrypt traffic (e.g., possesses a previous
+   * document key) can forge sync and load messages. Peers with
    * `enableSigning: false` will NOT interoperate with peers that have signing
    * enabled (they will reject empty/missing signatures). Only use in trusted
    * development/testing environments.**

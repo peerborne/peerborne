@@ -20,11 +20,15 @@
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
+import { constantTimeEqual } from './internal/constant-time-equal.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
+import {
+  snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
+} from './sync-message-context.js';
 import {
   copyUnsharedUint8Array,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  snapshotEnumerableOwnDataObject,
 } from './utils.js';
 
 /**
@@ -65,6 +69,7 @@ export type WelcomeValidationResult<ChangesType = unknown, PublicKey = unknown> 
 export type WelcomeMalformedReason =
   | 'wrong-document'
   | 'invalid-welcome-encoding'
+  | 'unexpected-cross-protocol-field'
   | 'missing-welcome-epoch-id'
   | 'missing-welcome-recipient'
   | 'missing-recipient-kem-public-key'
@@ -160,6 +165,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // Canonicalize and detach the complete message before the first async
   // provider call. This prevents a caller-owned view/object from changing
   // between signature verification and the caller's eventual state commit.
+  let decoded: CRDTSyncMessage<ChangesType, PublicKey>;
   try {
     const encoded = copyUnsharedUint8Array(
       deps.syncMessageSerializer.serializeSyncMessage(message),
@@ -167,14 +173,20 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
       MAX_SHARED_PROTOCOL_REQUEST_BYTES,
       'BeeKEM Welcome encoding',
     );
-    message = snapshotEnumerableOwnDataObject<
-      CRDTSyncMessage<ChangesType, PublicKey>
-    >(
-      deps.syncMessageSerializer.deserializeSyncMessage(encoded),
-      'BeeKEM Welcome message',
-    );
+    decoded = deps.syncMessageSerializer.deserializeSyncMessage(encoded);
   } catch {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  try {
+    message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      decoded,
+      'beekem-welcome-v1',
+    );
+  } catch {
+    return {
+      kind: 'drop-malformed',
+      reason: 'unexpected-cross-protocol-field',
+    };
   }
 
   // Defense in depth: the shared protocol handler routes by document
@@ -292,7 +304,27 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   if (!message.signature) {
     return { kind: 'drop-unauthorized', reason: 'missing-signature' };
   }
-  const { signature, ...messageWithoutSignature } = message;
+  const signature = message.signature;
+  let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
+  let expected: CRDTSyncMessage<ChangesType, PublicKey>;
+  try {
+    const verificationMessage = snapshotSyncMessageForContext<
+      ChangesType,
+      PublicKey
+    >(message, 'beekem-welcome-v1');
+    const { signature: _signature, ...unsigned } = verificationMessage;
+    messageWithoutSignature = unsigned;
+    expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      unsigned,
+      'beekem-welcome-v1',
+      { retainCryptoKeys: true },
+    );
+  } catch {
+    return {
+      kind: 'drop-malformed',
+      reason: 'unexpected-cross-protocol-field',
+    };
+  }
   let raw: Uint8Array;
   try {
     raw = copyUnsharedUint8Array(
@@ -306,8 +338,33 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   } catch {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
+  if (
+    !syncMessageMatchesSnapshot(
+      expected,
+      messageWithoutSignature,
+      'beekem-welcome-v1',
+    )
+  ) {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
   const signatureValid =
     (await deps.verifyWriterSignature(raw, signature)) === true;
+  let rawAfterVerification: Uint8Array;
+  try {
+    rawAfterVerification = copyUnsharedUint8Array(
+      deps.syncMessageSerializer.serializeSyncMessage(
+        messageWithoutSignature,
+      ),
+      1,
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+      'BeeKEM Welcome signature encoding',
+    );
+  } catch {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
+  if (!constantTimeEqual(raw, rawAfterVerification)) {
+    return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
+  }
 
   // The readers ACL is a mandatory prerequisite. A recipient that is not yet
   // a reader is still waiting for the ACL update that races this Welcome,
