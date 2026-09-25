@@ -824,41 +824,21 @@ export class BeeKEM {
   }
 
   private _assertPathUpdateState(): void {
-    if (
-      !Number.isSafeInteger(this._numLeaves) ||
-      this._numLeaves < 1 ||
-      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
-    ) {
-      throw new Error('Cannot process path update: BeeKEM tree state is invalid');
-    }
-    const treeWidth = 2 * this._numLeaves - 1;
-    if (
-      !Number.isSafeInteger(this._myLeafIndex) ||
-      this._myLeafIndex < 0 ||
-      this._myLeafIndex >= treeWidth ||
-      !TreeMath.isLeaf(this._myLeafIndex)
-    ) {
-      throw new Error('Cannot process path update: local leaf is invalid');
-    }
+    this._assertLocalMutationState('process path update', false);
   }
 
-  private _assertLocalMutationState(action: string): void {
-    if (
-      !Number.isSafeInteger(this._numLeaves) ||
-      this._numLeaves < 1 ||
-      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
-    ) {
+  private _assertLocalMutationState(
+    action: string,
+    requireActiveLocalLeaf = true,
+  ): void {
+    const fault = this._localTreeFault();
+    if (fault === 'tree') {
       throw new Error(`Cannot ${action}: BeeKEM tree state is invalid`);
     }
-    const treeWidth = 2 * this._numLeaves - 1;
-    if (
-      !Number.isSafeInteger(this._myLeafIndex) ||
-      this._myLeafIndex < 0 ||
-      this._myLeafIndex >= treeWidth ||
-      !TreeMath.isLeaf(this._myLeafIndex)
-    ) {
+    if (fault === 'leaf') {
       throw new Error(`Cannot ${action}: local leaf is invalid`);
     }
+    if (!requireActiveLocalLeaf) return;
     const localLeaf = this._nodes.get(this._myLeafIndex);
     if (
       localLeaf?.type !== 'leaf' ||
@@ -868,6 +848,23 @@ export class BeeKEM {
     ) {
       throw new Error(`Cannot ${action}: local leaf is not active`);
     }
+  }
+
+  private _localTreeFault(): 'tree' | 'leaf' | undefined {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES
+    ) {
+      return 'tree';
+    }
+    if (
+      !isLeafIndexCandidate(this._myLeafIndex) ||
+      this._myLeafIndex >= 2 * this._numLeaves - 1
+    ) {
+      return 'leaf';
+    }
+    return undefined;
   }
 
   /**
@@ -1201,13 +1198,7 @@ export class BeeKEM {
 
   private _assertInitializedForMutation(operation: string): void {
     if (
-      !Number.isSafeInteger(this._numLeaves) ||
-      this._numLeaves < 1 ||
-      this._numLeaves > MAX_BEEKEM_TREE_LEAVES ||
-      !Number.isSafeInteger(this._myLeafIndex) ||
-      this._myLeafIndex < 0 ||
-      this._myLeafIndex >= 2 * this._numLeaves - 1 ||
-      !TreeMath.isLeaf(this._myLeafIndex) ||
+      this._localTreeFault() !== undefined ||
       !this._nodes.has(this._myLeafIndex)
     ) {
       throw new Error(`Cannot ${operation}: BeeKEM tree is not initialized`);
