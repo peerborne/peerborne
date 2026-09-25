@@ -703,8 +703,8 @@ describe('pending Welcome byte view admission', () => {
     'rejects an invalid body without replacing a retained Welcome',
     (body) => {
       const buffer = new PendingWelcomeBuffer();
-      buffer.store('retained', new Uint8Array([1]), 0);
-      expect(() => buffer.store('retained', body, 1)).toThrow();
+      buffer.store('retained', new Uint8Array([1]), 0, true);
+      expect(() => buffer.store('retained', body, 1, true)).toThrow();
       expect(buffer.get('retained')?.body).toEqual(new Uint8Array([1]));
       expect(buffer.retainedBytes).toBe(1);
     },
