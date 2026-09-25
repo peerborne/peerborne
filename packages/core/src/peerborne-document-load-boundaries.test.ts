@@ -3843,6 +3843,55 @@ describe('document load response boundaries', () => {
     expect(document._pendingBootstrapRemoteUpdateHashes).toEqual(new Set());
   });
 
+  test('bounds invitation catch-up request signing with the stream deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const continuation = {};
+      const signingStarted = deferred<void>();
+      const rawStream = {
+        abort: jest.fn(),
+        close: jest.fn(async () => undefined),
+      };
+      const sendLoadRequest = jest.fn(async () => true);
+      const document = fakeDocument({
+        documentPath: '/hung-invitation-signing',
+        _bootstrapLoadApplicationState: 'pending',
+        _activeInvitationBootstrapContinuation: continuation,
+        _encoder: new TextEncoder(),
+        swarm: {
+          heliaNode: {
+            libp2p: { dialProtocol: jest.fn(async () => rawStream) },
+          },
+        },
+        _authProvider: {
+          sign: jest.fn(() => {
+            signingStarted.resolve();
+            return new Promise<never>(() => {});
+          }),
+        },
+        _sendLoadRequestAndSync: sendLoadRequest,
+      });
+
+      const catchUp = document._loadInvitationCatchUp(
+        '/founder',
+        'issuer',
+        'reader',
+        continuation,
+      );
+      const rejection = expect(catchUp).rejects.toThrow(
+        /Invitation stream deadline exceeded/,
+      );
+      await signingStarted.promise;
+      await jest.advanceTimersByTimeAsync(INVITATION_STREAM_TIMEOUT_MS);
+      await rejection;
+
+      expect(rawStream.abort).toHaveBeenCalled();
+      expect(sendLoadRequest).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('blocks invitation activation and acceptance on a poisoned instance', async () => {
     const computeTopic = jest.fn(() => '/topic');
     const load = jest.fn(async () => true);
