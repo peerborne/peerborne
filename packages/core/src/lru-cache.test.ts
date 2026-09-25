@@ -196,6 +196,37 @@ describe('LRUCache', () => {
     expect(cache.get('d')).toBe(4);
   });
 
+  test('write to a staged key before finalization supersedes the staged value', () => {
+    const cache = new LRUCache<string, number>(3);
+    cache.set('a', 1);
+    const finalize = cache.prepareSetMany(
+      new Map([
+        ['b', 2],
+        ['c', 3],
+      ]),
+    );
+
+    cache.set('c', 4);
+    finalize();
+
+    expect(cache.get('c')).toBe(4);
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('a')).toBe(1);
+    expect(cache.size).toBe(3);
+  });
+
+  test('write after finalization replaces the finalized value', () => {
+    const cache = new LRUCache<string, number>(2);
+    const finalize = cache.prepareSet('c', 3);
+    finalize();
+
+    cache.set('c', 4);
+    finalize();
+
+    expect(cache.get('c')).toBe(4);
+    expect(cache.size).toBe(1);
+  });
+
   test('later batch preparation never flushes an abandoned batch', () => {
     const cache = new LRUCache<string, number>(2);
     cache.set('a', 1);
