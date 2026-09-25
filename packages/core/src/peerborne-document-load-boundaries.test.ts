@@ -183,6 +183,8 @@ describe('document load response boundaries', () => {
         _isSigningEnabled: () => true,
         _deserializeSignature: () => new Uint8Array([1]),
         _getWriterKeys: async () => ['writer'],
+        _writerKeysVersion: 0,
+        _writerMutationsInFlight: 0,
       });
 
       await expect(
