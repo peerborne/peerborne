@@ -4913,15 +4913,8 @@ export class PeerborneDocument<
         `Invitation catch-up for ${this.documentPath} requires an active bootstrap transaction`,
       );
     }
-    const signatureBytes = await this._authProvider.sign(
-      this._encoder.encode(this.documentPath),
-      this._userKey,
-    );
-    const serializedRequest =
-      this._loadMessageSerializer.serializeLoadRequest({
-        documentId: this.documentPath,
-        signature: this._serializeSignature(signatureBytes),
-      });
+    // Sign inside the stream deadline so a provider that never settles
+    // cannot hold the invitation transaction's `_mutationQueue` slot.
     return withIssuerPinnedInvitationStream(
       founderAddress,
       (address, signal) =>
@@ -4929,8 +4922,21 @@ export class PeerborneDocument<
           runOnLimitedConnection: true,
           signal,
         }),
-      (rawStream, signal) =>
-        this._sendLoadRequestAndSync(
+      async (rawStream, signal) => {
+        const signatureBytes = await awaitLoadWork(
+          this._authProvider.sign(
+            this._encoder.encode(this.documentPath),
+            this._userKey,
+          ),
+          signal,
+        );
+        throwIfLoadAborted(signal);
+        const serializedRequest =
+          this._loadMessageSerializer.serializeLoadRequest({
+            documentId: this.documentPath,
+            signature: this._serializeSignature(signatureBytes),
+          });
+        return this._sendLoadRequestAndSync(
           wrapStream(rawStream),
           serializedRequest,
           null,
@@ -4946,7 +4952,8 @@ export class PeerborneDocument<
             ),
           signal,
           bootstrapContinuation,
-        ),
+        );
+      },
     );
   }
 
