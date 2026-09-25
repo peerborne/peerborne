@@ -7673,8 +7673,10 @@ export class PeerborneDocument<
       //    would also do unnecessary cryptographic work and (worse)
       //    leave a stranded fresh tree behind for the next
       //    PathUpdate to confuse. Drop the message explicitly and
-      //    log: the user will recover keychain state via a fresh
-      //    document load against an authorized peer.
+      //    log. A document load cannot recover the key because the
+      //    load response is encrypted under it; the peer needs a
+      //    recipient-bound Welcome or another explicit key-recovery
+      //    path.
       //
       //  - **Stale local state**: `processPathUpdate` throws (the
       //    sender's path doesn't intersect our blanked path, or
