@@ -7,6 +7,27 @@ import * as Y from 'yjs';
 import { PasswordEditor } from './PasswordEditor';
 import { useLocation } from 'react-router-dom';
 
+type VaultInitialization = 'open' | 'create';
+
+const vaultStorageKey = (userId: string) =>
+  `peerborne-password-manager:vault:${userId}`;
+
+function readRememberedVault(userId: string): string {
+  try {
+    return localStorage.getItem(vaultStorageKey(userId)) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberVault(userId: string, indexPath: string): void {
+  try {
+    localStorage.setItem(vaultStorageKey(userId), indexPath);
+  } catch {
+    // The vault path stays visible when browser storage is unavailable.
+  }
+}
+
 export function PasswordVault({
   userId,
   peerborne,
@@ -15,15 +36,59 @@ export function PasswordVault({
   peerborne: YjsPeerborne;
 }) {
   const { pathname } = useLocation();
-  const [indexPath, setIndexPath] = React.useState<string>();
+  const [vault, setVault] = React.useState<{
+    indexPath: string;
+    initialization: VaultInitialization;
+  }>();
+  const [existingVaultPath, setExistingVaultPath] = React.useState(() =>
+    readRememberedVault(userId),
+  );
+  const selectVault = (
+    indexPath: string,
+    initialization: VaultInitialization,
+  ) => {
+    rememberVault(userId, indexPath);
+    setVault({ indexPath, initialization });
+  };
+  const trimmedVaultPath = existingVaultPath.trim();
   return (
     <div hidden={pathname !== '/secrets'}>
-      {indexPath ? (
-        <PasswordList peerborne={peerborne} indexPath={indexPath} />
+      {vault ? (
+        <>
+          <p className="mt-3">
+            Vault: <code>{vault.indexPath}</code>
+          </p>
+          <PasswordList
+            peerborne={peerborne}
+            indexPath={vault.indexPath}
+            initialization={vault.initialization}
+          />
+        </>
       ) : (
-        <Button onClick={() => setIndexPath(`/${userId}/vaults/${uuid.v4()}`)}>
-          Create a vault
-        </Button>
+        <Form className="mt-3" onSubmit={(e) => e.preventDefault()}>
+          <Button
+            onClick={() =>
+              selectVault(`/${userId}/vaults/${uuid.v4()}`, 'create')
+            }
+          >
+            Create a vault
+          </Button>
+          <Form.Control
+            className="mt-3"
+            aria-label="Vault path"
+            placeholder="Enter an existing vault path"
+            value={existingVaultPath}
+            onChange={(e) => setExistingVaultPath(e.target.value)}
+          />
+          <Button
+            className="mt-2"
+            variant="success"
+            disabled={!trimmedVaultPath}
+            onClick={() => selectVault(trimmedVaultPath, 'open')}
+          >
+            Open vault
+          </Button>
+        </Form>
       )}
     </div>
   );
@@ -31,9 +96,11 @@ export function PasswordVault({
 
 export function PasswordList({
   indexPath,
+  initialization,
   peerborne,
 }: {
   indexPath: string;
+  initialization: VaultInitialization;
   peerborne: YjsPeerborne;
 }) {
   const [currentPasswordId, setCurrentPasswordId] = React.useState<string>();
@@ -47,7 +114,7 @@ export function PasswordList({
     peerborne,
     indexPath,
     'all',
-    'create',
+    initialization,
   );
   const [importingPassword, setImportingPassword] = React.useState(false);
   const [importPasswordId, setImportPasswordId] = React.useState('');

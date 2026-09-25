@@ -47,3 +47,28 @@ test('creates a vault and preserves a secret across selection and navigation', a
   await page.getByRole('link', { name: 'Secrets', exact: true }).click();
   await expect(name).toHaveValue('Smoke secret');
 });
+
+test('offers the remembered vault path after logging in again with the same key', async ({ page }) => {
+  await page.goto('/login');
+  const privateKey = page.getByPlaceholder('Enter private key');
+  const publicKey = page.getByPlaceholder('Enter public key');
+  await expect(privateKey).not.toHaveValue('');
+  await expect(publicKey).not.toHaveValue('');
+  const keys = {
+    privateKey: await privateKey.inputValue(),
+    publicKey: await publicKey.inputValue(),
+  };
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  const vaultPath = page.locator('code').filter({ hasText: '/vaults/' });
+  await expect(vaultPath).toBeVisible();
+  const createdPath = (await vaultPath.textContent()) ?? '';
+
+  await page.goto('/login');
+  await expect(privateKey).not.toHaveValue(keys.privateKey);
+  await privateKey.fill(keys.privateKey);
+  await publicKey.fill(keys.publicKey);
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await expect(page.getByLabel('Vault path')).toHaveValue(createdPath);
+  await expect(page.getByRole('button', { name: 'Open vault', exact: true })).toBeEnabled();
+});
