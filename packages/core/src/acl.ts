@@ -74,6 +74,25 @@ export interface ACL<ChangesType, PublicKey> {
   add(publicKey: PublicKey): Promise<ChangesType>;
 
   /**
+   * Stage a user addition without mutating the live ACL.
+   *
+   * Callers can finish fallible publication work before invoking the
+   * synchronous commit. Implementations MUST detach `changes` from both the
+   * caller and the private staged state and reject a repeated or stale commit
+   * before mutation. A successful commit MUST apply the staged state
+   * completely. Generic callers MUST treat any other commit exception as an
+   * indeterminate backing state and fail closed; they cannot assume a custom
+   * implementation rolled back a partially applied commit. The shipped CRDT
+   * adapters complete fallible work during preparation and atomically swap
+   * their private staged state only after all commit checks pass.
+   *
+   * Optional for backwards compatibility. Workflows that require
+   * publication-before-commit semantics must feature-detect this method and
+   * fail closed when it is absent.
+   */
+  prepareAdd?(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
+
+  /**
    * Remove a user from the ACL.
    *
    * @param publicKey User's public key.
@@ -86,9 +105,13 @@ export interface ACL<ChangesType, PublicKey> {
    *
    * Callers can finish fallible publication work before invoking the
    * synchronous commit. Implementations MUST detach `changes` from both the
-   * caller and the private staged state, reject a repeated or stale commit
-   * before mutation, and either apply the staged state completely or throw
-   * before changing live membership.
+   * caller and the private staged state and reject a repeated or stale commit
+   * before mutation. A successful commit MUST apply the staged state
+   * completely. Generic callers MUST treat any other commit exception as an
+   * indeterminate backing state and fail closed; they cannot assume a custom
+   * implementation rolled back a partially applied commit. The shipped CRDT
+   * adapters complete fallible work during preparation and atomically swap
+   * their private staged state only after all commit checks pass.
    *
    * Optional for backwards compatibility. Workflows that require
    * publication-before-commit semantics must feature-detect this method and
@@ -96,7 +119,7 @@ export interface ACL<ChangesType, PublicKey> {
    */
   prepareRemove?(
     publicKey: PublicKey,
-  ): Promise<PreparedACLRemoval<ChangesType>>;
+  ): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Gets a block of change(s) describing the current state of the ACL.
@@ -131,10 +154,18 @@ export interface ACL<ChangesType, PublicKey> {
   users(capability?: string): Promise<PublicKey[]>;
 }
 
-/** A detached ACL removal that has not yet changed live membership. */
-export interface PreparedACLRemoval<ChangesType> {
+/** A detached ACL mutation that has not yet changed live membership. */
+export interface PreparedACLChange<ChangesType> {
   /** Changes suitable for publication to an ACL with the same base state. */
   readonly changes: ChangesType;
-  /** Synchronous, single-use, stale-base-checked live-state commit. */
+  /**
+   * Synchronous, single-use, stale-base-checked live-state commit. A normal
+   * return proves complete application. Repeated and stale calls throw before
+   * mutation; any other exception leaves state indeterminate to generic
+   * callers and requires fail-closed handling.
+   */
   commit(): void;
 }
+
+/** Backwards-compatible name for a prepared ACL removal. */
+export type PreparedACLRemoval<ChangesType> = PreparedACLChange<ChangesType>;
