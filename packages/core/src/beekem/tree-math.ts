@@ -128,13 +128,8 @@ export function right(index: number, numLeaves?: number): number {
   if (index >= w) {
     throw new Error(`index ${index} is outside the ${w}-node tree`);
   }
-  const visited = new Set<number>();
   for (let step = 0; step < MAX_TREE_TRAVERSAL_STEPS; step++) {
     if (child < w) return child;
-    if (visited.has(child)) {
-      throw new Error('Right-child traversal made no progress');
-    }
-    visited.add(child);
     const next = left(child);
     if (next >= child) {
       throw new Error('Right-child traversal made no progress');
