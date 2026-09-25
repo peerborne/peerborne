@@ -1,6 +1,6 @@
 ---
 title: "ADR 0003: Zero-knowledge membership proofs"
-description: Decision not to add a zero-knowledge proof system to the MLS migration without a concrete privacy statement and threat model.
+description: Proposal not to add a zero-knowledge proof system to the MLS migration without a concrete privacy statement and threat model.
 ---
 
 - Status: Proposed
