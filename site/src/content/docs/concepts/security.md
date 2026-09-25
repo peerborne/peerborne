@@ -100,8 +100,7 @@ signature covers an exact `signatureContext` tag chosen by the operation. This
 prevents a captured, valid body from being reused by a different same-shaped
 authenticated handler after re-encryption. It does not prevent replay within
 the same context, and an authorized writer can still intentionally sign a new
-message for any operation its role permits. Document-publish notifications are
-not application-authenticated and are outside this guarantee.
+message for any operation its role permits.
 
 The reader-row and live-leaf promotion checks above are local API guards. An
 incoming raw ACL delta is not yet checked against replicated identity/KEM
