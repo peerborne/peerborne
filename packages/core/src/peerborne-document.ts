@@ -7154,13 +7154,12 @@ export class PeerborneDocument<
     try {
       const changes = await this._readers.remove(reader);
       await this._makeChange(changes, crdtReaderChangeNode);
-    } catch (err) {
+    } catch {
       console.warn(
-        `[${this.documentPath}] removeReader: ACL-removal broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new epoch key will be ` +
-          `installed in the local keychain. Surviving readers that miss ` +
-          `the ACL change need explicit recovery.`,
-        err,
+        'removeReader: ACL-removal broadcast failed; ' +
+          'BeeKEM state has advanced locally and the new epoch key will be ' +
+          'installed in the local keychain. Surviving readers that miss ' +
+          'the ACL change need explicit recovery.',
       );
       // Fall through: still distribute the PathUpdate and install
       // the new local key so outgoing writer traffic is on the
@@ -7205,12 +7204,11 @@ export class PeerborneDocument<
     //    explicit out-of-band recovery path.
     try {
       await this._distributeBeeKEMPathUpdate(pathUpdate, derivedEpochId32);
-    } catch (err) {
+    } catch {
       console.warn(
-        `[${this.documentPath}] removeReader: PathUpdate broadcast failed; ` +
-          `BeeKEM state has advanced locally and the new key will be installed. ` +
-          `Surviving readers that miss it need a new Welcome or explicit recovery.`,
-        err,
+        'removeReader: PathUpdate broadcast failed; ' +
+          'BeeKEM state has advanced locally and the new key will be installed. ' +
+          'Surviving readers that miss it need a new Welcome or explicit recovery.',
       );
       // Fall through to addEpochKey so the writer transitions to
       // the new key.
@@ -7552,8 +7550,7 @@ export class PeerborneDocument<
 
     if (failedPeers.length > 0) {
       console.warn(
-        `BeeKEM PathUpdate for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
+        `BeeKEM PathUpdate failed to reach ${failedPeers.length} peer(s).`,
         'Affected peers cannot decrypt subsequent messages until they receive a new Welcome or other explicit recovery; reloading the document does not deliver the key.',
       );
     }
@@ -7841,8 +7838,7 @@ export class PeerborneDocument<
 
     if (failedPeers.length > 0) {
       console.warn(
-        `Key update for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
-        failedPeers,
+        `Key update failed to reach ${failedPeers.length} peer(s).`,
         'These peers cannot decrypt future messages until they receive the key through explicit recovery; reloading the document does not deliver it.',
       );
     }
