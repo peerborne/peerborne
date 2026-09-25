@@ -156,7 +156,11 @@ welcomeDigests
 The document, group, old epoch, and parent must match local accepted state;
 sequence and epoch advance by one. The actor must be the authorized active
 controller. Membership/role deltas must exactly match the Commit and resulting
-member set. The application-specific payload identity is:
+member set. `nextControllerClientId` must name an active member of the
+resulting group with a valid credential binding and a resulting role that
+authorizes membership records; a transition naming a removed, reader-only, or
+otherwise unauthorized successor is rejected. The application-specific payload
+identity is:
 
 ```text
 SHA-256("peerborne/mls-control/v1\0" || deterministicDagCbor(payload))
@@ -501,7 +505,11 @@ at-least-once delivery end to end.
 A member with an authenticated checkpoint can fetch and replay missing records
 in order. A member that lost private group state cannot reconstruct it from the
 public log; recovery requires a fresh authenticated join or application backup
-policy.
+policy. A fresh join needs the current controller to author the Add, so it
+cannot recover the controller itself: if the current controller loses its
+private state, membership changes stay stopped until that controller's
+backed-up state is restored. An authenticated controller-rotation or emergency
+recovery mechanism, with its own trust root, requires a later design.
 
 ## Acceptance gates
 
