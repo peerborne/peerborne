@@ -193,6 +193,7 @@ export function projectInitialInvitationBootstrapCapacity<
 ): InitialInvitationCapacityProjection {
   const projected: CRDTSyncMessage<ChangesType, PublicKey> = {
     ...options.currentMessage,
+    signatureContext: 'invitation-bootstrap-v1',
     keychainChanges: options.keychainChanges,
     tips: Array.from(options.tips),
     signature: 'A'.repeat(

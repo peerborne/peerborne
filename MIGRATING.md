@@ -70,6 +70,32 @@ boundary. Signatures, wire decoding, and admission checks remain required.
 Stored document IDs and application routes such as `/document/:id` are separate
 from the pubsub namespace.
 
+## Context-bound sync-message signatures
+
+Every admitted `CRDTSyncMessage` now carries an exact `signatureContext` tag.
+For authenticated handlers, the tag remains in the signature-stripped
+serialization, so the writer signature binds otherwise identical bytes to one
+receiving operation, such as ordinary sync, a load response, an invitation
+bootstrap, or a BeeKEM control message. Receivers derive the expected tag from
+the handler and reject missing or different tags before signature
+verification; there is no legacy retry. Direct callers of
+`PeerborneDocument.sync()` must set `signatureContext: 'ordinary-sync-v1'`.
+Custom `SyncMessageSerializer` implementations must encode and decode
+`signatureContext` unchanged in its original field position; a serializer that
+drops it causes every inbound message to be rejected.
+
+This is an intentional alpha wire break. Stop writers, upgrade every peer that
+shares a document, and use an isolated versioned GossipSub prefix while
+upgrading. Do not treat mixed-version rejection as a migration boundary:
+legacy serializers can discard the unknown tag, and legacy receivers can
+accept some messages whenever application verification is bypassed. That
+includes signing-disabled traffic, first-load bootstrap paths that do not yet
+have trusted writer keys, and unauthenticated document-publish notifications.
+Mandatory membership-control paths and post-load verified paths reject mixed
+versions, but the exact behavior is route-dependent. Coordinate upgrades of
+direct peers instead of relying on protocol negotiation. Stored document IDs,
+CRDT state, and keychain entries are unchanged.
+
 ## Compatibility identifiers that did not change
 
 Branding must not change bytes that existing peers or stored data depend on.

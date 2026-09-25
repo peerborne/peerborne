@@ -89,7 +89,11 @@ describe('ordinary sync-message context confinement', () => {
     });
 
     await expect(
-      document.sync({ documentId: documentPath, ...extra }),
+      document.sync({
+        documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        ...extra,
+      }),
     ).resolves.toBe(false);
     expect(verify).not.toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
@@ -110,6 +114,7 @@ describe('ordinary sync-message context confinement', () => {
       await expect(
         document.sync({
           documentId,
+          signatureContext: 'ordinary-sync-v1',
           changes: { kind: 'document' },
           signature: 'AQ==',
         }),
@@ -118,6 +123,29 @@ describe('ordinary sync-message context confinement', () => {
       expect(collectACL).not.toHaveBeenCalled();
     },
   );
+
+  test('requires the ordinary context tag in the sync() type', async () => {
+    const document = fakeDocument({}) as PeerborneDocument<
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown
+    >;
+
+    await expect(
+      // @ts-expect-error sync() requires signatureContext 'ordinary-sync-v1'
+      document.sync({ documentId: documentPath }),
+    ).resolves.toBe(false);
+    await expect(
+      document.sync({
+        documentId: documentPath,
+        // @ts-expect-error sync() accepts only the ordinary context
+        signatureContext: 'load-response-v3',
+      }),
+    ).resolves.toBe(false);
+  });
 
   test('does not expose the internal signature-verification bypass', async () => {
     const verify = jest.fn(async () => false);
@@ -133,6 +161,7 @@ describe('ordinary sync-message context confinement', () => {
       (document.sync as (...args: any[]) => Promise<boolean>)(
         {
           documentId: documentPath,
+          signatureContext: 'ordinary-sync-v1',
           changes: { kind: 'document' },
           signature: 'AQ==',
         },
@@ -163,6 +192,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes,
         signature: 'AQ==',
@@ -196,6 +226,7 @@ describe('ordinary sync-message context confinement', () => {
     });
     const message: any = {
       documentId: documentPath,
+      signatureContext: 'ordinary-sync-v1',
       changeId: 'root',
       changes: { kind: 'document', change: { value: 1 } },
       signature: 'AQ==',
@@ -250,6 +281,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes: { kind: 'document', change: { value: 1 } },
         signature: 'AQ==',
@@ -281,6 +313,7 @@ describe('ordinary sync-message context confinement', () => {
     await expect(
       document.sync({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         changeId: 'root',
         changes: { kind: 'document', change: { value: 1 } },
         signature: 'AQ==',
@@ -357,6 +390,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         keychainChanges: { delta: 1 },
         signature: 'AQ==',
       }),
@@ -367,6 +401,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: '/another-document',
+        signatureContext: 'ordinary-sync-v1',
         changes: { kind: 'document' },
         signature: 'AQ==',
       }),
@@ -431,6 +466,7 @@ describe('ordinary sync-message context confinement', () => {
       decryptBlock.mockResolvedValueOnce(
         json.serializeSyncMessage({
           documentId: documentPath,
+          signatureContext: 'ordinary-sync-v1',
           changeId: 'root',
           changes: { kind: 'document', change: { value: 1 } },
           signature: 'AQ==',
@@ -481,6 +517,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: documentPath,
+        signatureContext: 'ordinary-sync-v1',
         keychainChanges: { delta: 1 },
       }),
     );
@@ -497,6 +534,7 @@ describe('ordinary sync-message context confinement', () => {
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: '/another-document',
+        signatureContext: 'ordinary-sync-v1',
         changes: { kind: 'document' },
       }),
     );
@@ -564,9 +602,10 @@ describe('ordinary sync-message context confinement', () => {
 });
 
 describe('snapshot-bearing invitation sync', () => {
-  function snapshotMessage() {
+  function snapshotMessage(context: string) {
     return {
       documentId: documentPath,
+      signatureContext: context,
       changeId: 'head-cid',
       changes: {
         kind: crdtDocumentChangeNode,
@@ -618,7 +657,7 @@ describe('snapshot-bearing invitation sync', () => {
     'recognizes the applied detached snapshot during %s',
     async (phase, context) => {
       const document = snapshotDocument();
-      const message = snapshotMessage();
+      const message = snapshotMessage(context);
 
       await expect(
         syncInvitationMessageCompletely(
@@ -640,7 +679,7 @@ describe('snapshot-bearing invitation sync', () => {
       lastChangeNodeCID: 'newer-cid',
       compactedCount: 20,
     });
-    const message = snapshotMessage();
+    const message = snapshotMessage('invitation-bootstrap-v1');
 
     await expect(
       syncInvitationMessageCompletely(
@@ -660,7 +699,7 @@ describe('snapshot-bearing invitation sync', () => {
 
   test('does not attribute a snapshot to an ordinary sync source', async () => {
     const document = snapshotDocument();
-    const message = snapshotMessage();
+    const message = snapshotMessage('ordinary-sync-v1');
     delete message.changeId;
     delete message.changes;
 

@@ -14,6 +14,7 @@ export {
   TIPS_HASH_LENGTH,
   SubtleCrypto,
   copyUnsharedUint8Array,
+  isSyncMessageSignatureContext,
   computeKeychainStateCommitment,
   MAX_KEYCHAIN_EPOCHS,
   INITIAL_INVITATION_CAPACITY_PROFILE,

@@ -48,6 +48,7 @@ function fakeDocument(fields: Record<string, unknown>): any {
 function validMessage(epochId: Uint8Array) {
   return {
     documentId: documentPath,
+    signatureContext: 'beekem-path-update-v1' as const,
     pathUpdate: {
       senderLeafIndex: 0,
       senderLeafPublicKey: 'AQ==',
@@ -321,6 +322,7 @@ async function welcomeHarness() {
   );
   const message = {
     documentId: documentPath,
+    signatureContext: 'beekem-welcome-v1',
     welcomeEpochId: new Uint8Array(32).fill(7),
     welcomeRecipient: 'local-user',
     welcomeRecipientKemPublicKey: kemPublicKeyRaw,

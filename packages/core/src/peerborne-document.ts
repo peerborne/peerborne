@@ -47,7 +47,10 @@ import {
   treeContainsCid,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
-import { CRDTSyncMessage } from './crdt-sync-message.js';
+import {
+  CRDTSyncMessage,
+  type OrdinarySyncMessage,
+} from './crdt-sync-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
@@ -1035,11 +1038,12 @@ export class PeerborneDocument<
     }
   }
 
-  private _createSyncMessage(): CRDTSyncMessage<ChangesType, PublicKey> {
+  private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType, PublicKey> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       ...(this._lastSyncMessage || {
         documentId: this.documentPath,
       }),
+      signatureContext: context,
     };
     return message;
   }
@@ -1902,7 +1906,7 @@ export class PeerborneDocument<
     this._hashes.add(hash);
 
     // Send new message.
-    let updateMessage = this._createSyncMessage();
+    let updateMessage = this._createSyncMessage('ordinary-sync-v1');
     const changeNode: CRDTChangeNode<ChangesType> = { kind, change: changes };
     const primaryParentId = updateMessage.changeId;
     if (primaryParentId && updateMessage.changes) {
@@ -2367,7 +2371,7 @@ export class PeerborneDocument<
       if (!isSharedProtocolHandlerActive(admission)) return;
 
       // Construct load response based on history visibility setting.
-      const loadMessage = this._createSyncMessage();
+      const loadMessage = this._createSyncMessage('load-response-v3');
 
       loadMessage.keychainChanges = await this._keychainChangesForVisibility();
 
@@ -2518,7 +2522,7 @@ export class PeerborneDocument<
 
       // Build a complete sync message with the snapshot, post-snapshot
       // changes, and keychain so the peer can fully catch up.
-      const snapshotMessage = this._createSyncMessage();
+      const snapshotMessage = this._createSyncMessage('load-response-v3');
       snapshotMessage.snapshot = this._latestSnapshot;
       snapshotMessage.keychainChanges = await this._keychainChangesForVisibility();
       // Tip-set advertisement for the pre-apply structural binding check
@@ -2686,6 +2690,7 @@ export class PeerborneDocument<
 
       const advertisement: CRDTSyncMessage<ChangesType, PublicKey> = {
         documentId: this.documentPath,
+        signatureContext: 'tip-advertisement-v1',
         tipsHash: hash,
       };
 
@@ -2922,7 +2927,10 @@ export class PeerborneDocument<
           return false;
         }
 
-        const message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        const message = snapshotSyncMessageForContext<
+          ChangesType,
+          PublicKey
+        >(
           this._syncMessageSerializer.deserializeSyncMessage(rawContent),
           'load-response-v3',
         );
@@ -4273,7 +4281,7 @@ export class PeerborneDocument<
           >(
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             'ordinary-sync-v1',
-          );
+          ) as OrdinarySyncMessage<ChangesType, PublicKey>;
           if (message.documentId !== this.documentPath) return false;
 
           return this.sync(message);
@@ -4473,7 +4481,7 @@ export class PeerborneDocument<
    * that already verified a specialized message use an internal boundary.
    */
   public async sync(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: OrdinarySyncMessage<ChangesType, PublicKey>,
   ): Promise<boolean> {
     let detached: CRDTSyncMessage<ChangesType, PublicKey>;
     try {
@@ -5716,7 +5724,7 @@ export class PeerborneDocument<
       this.documentPath,
     );
 
-    const bootstrapMessage = this._createSyncMessage();
+    const bootstrapMessage = this._createSyncMessage('invitation-bootstrap-v1');
     bootstrapMessage.keychainChanges = keychainChanges;
     if (capacityPlan.snapshot) {
       bootstrapMessage.snapshot = capacityPlan.snapshot;
@@ -5799,7 +5807,7 @@ export class PeerborneDocument<
     const frozenCurrentMessage =
       this._syncMessageSerializer.deserializeSyncMessage(
         this._syncMessageSerializer.serializeSyncMessage(
-          this._createSyncMessage(),
+          this._createSyncMessage('ordinary-sync-v1'),
         ),
       );
     this._lastSyncMessage = frozenCurrentMessage;
@@ -6031,13 +6039,20 @@ export class PeerborneDocument<
       throw new Error('Invitation encrypted bootstrap could not be decrypted');
     }
 
-    const bootstrapMessage = snapshotSyncMessageForContext<
-      ChangesType,
-      PublicKey
-    >(
-      this._syncMessageSerializer.deserializeSyncMessage(bootstrapPlaintext),
-      'invitation-bootstrap-v1',
-    );
+    let bootstrapMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+    try {
+      bootstrapMessage = snapshotSyncMessageForContext<
+        ChangesType,
+        PublicKey
+      >(
+        this._syncMessageSerializer.deserializeSyncMessage(
+          bootstrapPlaintext,
+        ),
+        'invitation-bootstrap-v1',
+      );
+    } catch {
+      throw new Error('Invitation bootstrap has an invalid wire context');
+    }
     if (bootstrapMessage.documentId !== this.documentPath) {
       throw new Error('Invitation bootstrap document binding does not match');
     }
@@ -6190,6 +6205,7 @@ export class PeerborneDocument<
     // Build the welcome message.
     const welcomeMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
+      signatureContext: 'beekem-welcome-v1',
     };
 
     // The invitation epoch is the *current* keychain key ID at the time
@@ -7476,6 +7492,7 @@ export class PeerborneDocument<
   ): Promise<void> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
+      signatureContext: 'beekem-path-update-v1',
       pathUpdate: serializePathUpdateForWire(pathUpdate),
       pathUpdateEpochId,
     };
@@ -7742,6 +7759,7 @@ export class PeerborneDocument<
   ) {
     const keyUpdateMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
+      signatureContext: 'key-update-v2',
       keychainChanges,
     };
 

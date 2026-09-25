@@ -4,7 +4,20 @@ import {
   MAX_CHANGE_TREE_EDGES,
   MAX_CHANGE_TREE_NODES,
 } from './change-tree-walk.js';
-import { snapshotSyncMessageForContext, syncMessageMatchesSnapshot } from './sync-message-context.js';
+import { SubtleCrypto } from './auth-subtlecrypto.js';
+import { JSONSerializer } from './json-serializer.js';
+import {
+  snapshotSyncMessageForContext,
+  syncMessageMatchesSnapshot,
+  type SyncMessageContext,
+} from './sync-message-context.js';
+
+function tagged<T extends Record<string, unknown>>(
+  context: SyncMessageContext,
+  message: T,
+): T & { signatureContext: SyncMessageContext } {
+  return { ...message, signatureContext: context };
+}
 
 describe('sync message wire-context separation', () => {
   test.each([
@@ -84,7 +97,65 @@ describe('sync message wire-context separation', () => {
       { documentId: '/doc', keychainChanges: {}, signature: 'sig' },
     ],
   ] as const)('accepts the %s allowlist', (context, message) => {
-    expect(snapshotSyncMessageForContext(message, context)).toEqual(message);
+    const contextual = tagged(context, message);
+    expect(snapshotSyncMessageForContext(contextual, context)).toEqual(
+      contextual,
+    );
+  });
+
+  test.each([
+    'ordinary-sync-v1',
+    'document-publish-v1',
+    'load-response-v3',
+    'load-response-v4',
+    'tip-advertisement-v1',
+    'security-advertisement-v1',
+    'invitation-bootstrap-v1',
+    'beekem-welcome-v1',
+    'beekem-path-update-v1',
+    'key-update-v2',
+  ] as const)('rejects a missing signature tag in %s', (context) => {
+    expect(() =>
+      snapshotSyncMessageForContext({ documentId: '/doc' }, context),
+    ).toThrow(/signatureContext/);
+  });
+
+  test('rejects a captured same-shaped load response in the invitation context', () => {
+    const captured = tagged('load-response-v3', {
+      documentId: '/doc',
+      changes: {},
+      keychainChanges: {},
+      tips: ['cid'],
+      signature: 'sig',
+    });
+
+    expect(() =>
+      snapshotSyncMessageForContext(captured, 'invitation-bootstrap-v1'),
+    ).toThrow(/signatureContext/);
+  });
+
+  test('cryptographically binds otherwise identical bodies to different contexts', async () => {
+    const serializer = new JSONSerializer<unknown, CryptoKey>();
+    const auth = new SubtleCrypto();
+    const keyPair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const loadBody = tagged('load-response-v3', { documentId: '/doc' });
+    const invitationBody = tagged('invitation-bootstrap-v1', {
+      documentId: '/doc',
+    });
+    const loadBytes = serializer.serializeSyncMessage(loadBody);
+    const invitationBytes = serializer.serializeSyncMessage(invitationBody);
+    const signature = await auth.sign(loadBytes, keyPair.privateKey);
+
+    await expect(
+      auth.verify(loadBytes, keyPair.publicKey, signature),
+    ).resolves.toBe(true);
+    await expect(
+      auth.verify(invitationBytes, keyPair.publicKey, signature),
+    ).resolves.toBe(false);
   });
 
   test.each([
@@ -109,7 +180,7 @@ describe('sync message wire-context separation', () => {
     (context, extra) => {
       expect(() =>
         snapshotSyncMessageForContext(
-          { documentId: '/doc', ...extra },
+          tagged(context, { documentId: '/doc', ...extra }),
           context,
         ),
       ).toThrow(/unexpected field|non-canonical fields/);
@@ -119,15 +190,17 @@ describe('sync message wire-context separation', () => {
   test('rejects unknown undefined and symbol fields from custom serializers', () => {
     expect(() =>
       snapshotSyncMessageForContext(
-        { documentId: '/doc', extension: undefined },
+        tagged('ordinary-sync-v1', {
+          documentId: '/doc',
+          extension: undefined,
+        }),
         'ordinary-sync-v1',
       ),
     ).toThrow(/unexpected field/);
 
-    const symbolMessage = { documentId: '/doc' } as Record<
-      PropertyKey,
-      unknown
-    >;
+    const symbolMessage = tagged('ordinary-sync-v1', {
+      documentId: '/doc',
+    }) as Record<PropertyKey, unknown>;
     symbolMessage[Symbol('extension')] = true;
     expect(() =>
       snapshotSyncMessageForContext(symbolMessage, 'ordinary-sync-v1'),
@@ -140,7 +213,10 @@ describe('sync message wire-context separation', () => {
     try {
       expect(() =>
         snapshotSyncMessageForContext(
-          { documentId: '/doc', keychainChanges: {} },
+          tagged('ordinary-sync-v1', {
+            documentId: '/doc',
+            keychainChanges: {},
+          }),
           'ordinary-sync-v1',
         ),
       ).toThrow(/unexpected field/);
@@ -151,7 +227,7 @@ describe('sync message wire-context separation', () => {
 
   test('rejects accessor-backed messages without invoking accessors', () => {
     let reads = 0;
-    const message = { documentId: '/doc' };
+    const message = tagged('ordinary-sync-v1', { documentId: '/doc' });
     Object.defineProperty(message, 'changes', {
       enumerable: true,
       get() {
@@ -172,7 +248,7 @@ describe('sync message wire-context separation', () => {
       bytes: new Uint8Array([2, 3]),
     };
     const snapshot = snapshotSyncMessageForContext(
-      { documentId: '/doc', changes },
+      tagged('ordinary-sync-v1', { documentId: '/doc', changes }),
       'ordinary-sync-v1',
     );
 
@@ -198,7 +274,7 @@ describe('sync message wire-context separation', () => {
 
     expect(() =>
       snapshotSyncMessageForContext(
-        { documentId: '/doc', changes },
+        tagged('ordinary-sync-v1', { documentId: '/doc', changes }),
         'ordinary-sync-v1',
       ),
     ).toThrow(/data properties/);
@@ -212,10 +288,10 @@ describe('sync message wire-context separation', () => {
     }
 
     const snapshot = snapshotSyncMessageForContext(
-      {
+      tagged('ordinary-sync-v1', {
         documentId: '/doc',
         changes: { kind: 'document' as const, children },
-      },
+      }),
       'ordinary-sync-v1',
     );
 
@@ -231,7 +307,7 @@ describe('sync message wire-context separation', () => {
     );
 
     const snapshot = snapshotSyncMessageForContext(
-      {
+      tagged('ordinary-sync-v1', {
         documentId: '/doc',
         snapshot: {
           state: changes,
@@ -240,7 +316,7 @@ describe('sync message wire-context separation', () => {
           signature: new Uint8Array([1]),
           timestamp: 1,
         },
-      },
+      }),
       'ordinary-sync-v1',
     );
 
@@ -253,10 +329,10 @@ describe('sync message wire-context separation', () => {
 
     expect(() =>
       snapshotSyncMessageForContext(
-        {
+        tagged('ordinary-sync-v1', {
           documentId: '/doc',
           snapshot: { state: values },
-        },
+        }),
         'ordinary-sync-v1',
       ),
     ).toThrow(/invalid array/);
@@ -268,10 +344,10 @@ describe('sync message wire-context separation', () => {
 
     expect(() =>
       snapshotSyncMessageForContext(
-        {
+        tagged('ordinary-sync-v1', {
           documentId: '/doc',
           snapshot: { state: values },
-        },
+        }),
         'ordinary-sync-v1',
       ),
     ).toThrow(/detached objects/);
@@ -288,10 +364,10 @@ describe('sync message wire-context separation', () => {
 
     expect(() =>
       snapshotSyncMessageForContext(
-        {
+        tagged('ordinary-sync-v1', {
           documentId: '/doc',
           snapshot: { state },
-        },
+        }),
         'ordinary-sync-v1',
       ),
     ).toThrow(/maximum depth/);
@@ -300,8 +376,8 @@ describe('sync message wire-context separation', () => {
 
 test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
   expect(syncMessageMatchesSnapshot(
-    { documentId: '/doc', changes: new Array(2) } as any,
-    { documentId: '/doc', changes: [] },
+    { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: new Array(2) } as any,
+    { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: [] },
     'ordinary-sync-v1',
   )).toBe(false);
 });
@@ -325,6 +401,7 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
   test('accepts the same CryptoKey object', async () => {
     const candidate = {
       documentId: '/doc',
+      signatureContext: 'ordinary-sync-v1',
       changes: { writer: await generateKey() },
     };
     expect(
@@ -342,8 +419,13 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
     ['an empty object', async () => ({})],
   ])('rejects a CryptoKey replaced with %s', async (_label, replace) => {
     const key = await generateKey();
-    const candidate: { documentId: string; changes: { writer: unknown } } = {
+    const candidate: {
+      documentId: string;
+      signatureContext: string;
+      changes: { writer: unknown };
+    } = {
       documentId: '/doc',
+      signatureContext: 'ordinary-sync-v1',
       changes: { writer: key },
     };
     const expected = expectedFor(candidate);

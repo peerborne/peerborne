@@ -6,6 +6,40 @@ import {
 import { CRDTSnapshotNode } from './snapshot-node.js';
 import type { LoadSecurityCommitments } from './load-security-state.js';
 
+const signatureContexts = [
+  'ordinary-sync-v1',
+  'document-publish-v1',
+  'load-response-v3',
+  'load-response-v4',
+  'tip-advertisement-v1',
+  'security-advertisement-v1',
+  'invitation-bootstrap-v1',
+  'beekem-welcome-v1',
+  'beekem-path-update-v1',
+  'key-update-v2',
+] as const;
+const signatureContextSet = new Set<string>(signatureContexts);
+
+/** Wire-purpose tag signed by authenticated sync-message operations. */
+export type SyncMessageSignatureContext = (typeof signatureContexts)[number];
+
+/** Return whether an untrusted value is one exact supported signature tag. */
+export function isSyncMessageSignatureContext(
+  value: unknown,
+): value is SyncMessageSignatureContext {
+  return typeof value === 'string' && signatureContextSet.has(value);
+}
+
+/**
+ * Sync message accepted by `PeerborneDocument.sync()`. The ordinary context
+ * tag is required so callers that omit it fail to compile instead of being
+ * rejected at runtime.
+ */
+export type OrdinarySyncMessage<ChangesType, PublicKey = unknown> =
+  CRDTSyncMessage<ChangesType, PublicKey> & {
+    signatureContext: 'ordinary-sync-v1';
+  };
+
 /**
  * CRDTSyncMessage is the message sent over both GossipSub pubsub topics and in response to
  * load document requests.
@@ -17,6 +51,19 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * ID of a peerborne document.
    */
   documentId: string;
+
+  /**
+   * Exact wire purpose of this message. Every network admission path requires
+   * this value to match its local context. For authenticated operations, the
+   * field is serialized with the unsigned body, so a writer signature binds
+   * the payload to one protocol purpose instead of authenticating reusable
+   * context-free bytes.
+   *
+   * Optional at the TypeScript boundary so serializers can decode legacy
+   * input and reject it deliberately at context admission. Newly emitted wire
+   * messages always populate it.
+   */
+  signatureContext?: SyncMessageSignatureContext;
 
   /**
    * CID of the root change node.
