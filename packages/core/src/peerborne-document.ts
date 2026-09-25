@@ -5044,15 +5044,9 @@ export class PeerborneDocument<
         `Invitation catch-up for ${this.documentPath} requires an active bootstrap transaction`,
       );
     }
-    const signatureBytes = await this._authProvider.sign(
-      this._encoder.encode(this.documentPath),
-      this._userKey,
-    );
-    const serializedRequest =
-      this._loadMessageSerializer.serializeLoadRequest({
-        documentId: this.documentPath,
-        signature: this._serializeSignature(signatureBytes),
-      });
+    // Sign inside the stream deadline so a provider that never settles
+    // cannot hold the invitation transaction's `_mutationQueue` slot.
+    let serializedRequest: Uint8Array | undefined;
     const deadline = Date.now() + INVITATION_STREAM_TIMEOUT_MS;
     for (let attempt = 0; attempt < 3; attempt++) {
       const remainingMs = deadline - Date.now();
@@ -5067,10 +5061,26 @@ export class PeerborneDocument<
               runOnLimitedConnection: true,
               signal,
             }),
-          (rawStream, signal) =>
-            this._sendLoadRequestAndSync(
+          async (rawStream, signal) => {
+            let request = serializedRequest;
+            if (request === undefined) {
+              const signatureBytes = await awaitLoadWork(
+                this._authProvider.sign(
+                  this._encoder.encode(this.documentPath),
+                  this._userKey,
+                ),
+                signal,
+              );
+              throwIfLoadAborted(signal);
+              request = this._loadMessageSerializer.serializeLoadRequest({
+                documentId: this.documentPath,
+                signature: this._serializeSignature(signatureBytes),
+              });
+              serializedRequest = request;
+            }
+            return this._sendLoadRequestAndSync(
               wrapStream(rawStream),
-              serializedRequest,
+              request,
               null,
               issuerPublicKey,
               MAX_INVITATION_MESSAGE_BYTES,
@@ -5084,7 +5094,8 @@ export class PeerborneDocument<
                 ),
               signal,
               bootstrapContinuation,
-            ),
+            );
+          },
           remainingMs,
         );
       } catch (error) {
