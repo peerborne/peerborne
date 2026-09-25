@@ -1879,8 +1879,22 @@ export class PeerborneDocument<
     //
     // Idempotent and inexpensive: the helper walks at most the size of the
     // delivered tree (bounded by the sender's compaction config); duplicates
-    // are no-ops in a Set.
-    collectReferencedAncestors(changeId, changes, this._referencedAncestors);
+    // are no-ops in a Set. A certified ACL rejection withdraws the entries
+    // this sync added so a retried delivery can record them again.
+    const newlyReferencedAncestors = [
+      ...collectReferencedAncestors(changeId, changes, new Set<string>()),
+    ].filter((cid) => !this._referencedAncestors.has(cid));
+    for (const cid of newlyReferencedAncestors) {
+      this._referencedAncestors.add(cid);
+    }
+    const rejectCertifiedACLMerge = (error: unknown): never => {
+      if (error instanceof ACLMergeRejectedError) {
+        for (const cid of newlyReferencedAncestors) {
+          this._referencedAncestors.delete(cid);
+        }
+      }
+      throw error;
+    };
 
     // Only process hashes that we haven't seen yet.
     const newChangeEntries = await awaitLoadWork(
@@ -1919,7 +1933,11 @@ export class PeerborneDocument<
             // Apply the changes that were sent directly. Use the
             // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
             // drained immediately after the ACL update lands.
-            await this._mergeReaders(sentChanges, assertStillActive, signal);
+            await this._mergeReaders(
+              sentChanges,
+              assertStillActive,
+              signal,
+            ).catch(rejectCertifiedACLMerge);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -1927,7 +1945,11 @@ export class PeerborneDocument<
           }
           case crdtWriterChangeNode: {
             // Apply the changes that were sent directly.
-            await this._mergeWriters(sentChanges, assertStillActive, signal);
+            await this._mergeWriters(
+              sentChanges,
+              assertStillActive,
+              signal,
+            ).catch(rejectCertifiedACLMerge);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -2140,7 +2162,7 @@ export class PeerborneDocument<
         signal?.removeEventListener('abort', forwardAbort);
       }
       assertStillActive();
-      if (certifiedACLRejection) throw certifiedACLRejection;
+      if (certifiedACLRejection) rejectCertifiedACLMerge(certifiedACLRejection);
       const workerFailure = workerResults.find(
         (result): result is PromiseRejectedResult =>
           result.status === 'rejected',
@@ -7237,9 +7259,23 @@ export class PeerborneDocument<
     reader: PublicKey,
     readerKemPublicKey?: Uint8Array,
   ): Promise<BeeKEMWelcome | null> {
-    return this._runStateMutation(() =>
-      this._addReaderUnlocked(reader, readerKemPublicKey),
+    const readerKemPublicKeySnapshot =
+      readerKemPublicKey === undefined
+        ? undefined
+        : new Uint8Array(readerKemPublicKey);
+    if (typeof this._authProvider?.serializePublicKey !== 'function') {
+      return this._runStateMutation(() =>
+        this._addReaderUnlocked(reader, readerKemPublicKeySnapshot),
+      );
+    }
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      reader,
+      'Reader addition',
     );
+    return this._runStateMutation(async () => {
+      const { publicKey: stableReader } = await snapshot;
+      return this._addReaderUnlocked(stableReader, readerKemPublicKeySnapshot);
+    });
   }
 
   private async _addReaderUnlocked(
@@ -9043,9 +9079,19 @@ export class PeerborneDocument<
    *   failures in steps 4-5 do NOT throw (they log warnings).
    */
   public async removeReader(reader: PublicKey) {
-    return this._runStateMutation(() =>
-      this._removeReaderUnlocked(reader),
+    if (typeof this._authProvider?.serializePublicKey !== 'function') {
+      return this._runStateMutation(() =>
+        this._removeReaderUnlocked(reader),
+      );
+    }
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      reader,
+      'Reader removal',
     );
+    return this._runStateMutation(async () => {
+      const { publicKey: stableReader } = await snapshot;
+      return this._removeReaderUnlocked(stableReader);
+    });
   }
 
   private async _removeReaderUnlocked(reader: PublicKey) {
