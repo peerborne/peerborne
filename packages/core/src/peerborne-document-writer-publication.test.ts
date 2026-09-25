@@ -740,6 +740,29 @@ describe('writer ACL publication boundary', () => {
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
+  test('rejects reader removal of a writer without explicit reader authorization', async () => {
+    const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document, readers } = publicationHarness(
+      writers, publish, ['must-not-publish'],
+    );
+    readers.delete('candidate');
+    const rotate = jest.fn(async () => {
+      throw new Error('rotation must not start');
+    });
+    document._beekemInitialized = true;
+    document._beekem = { removeMember: rotate };
+
+    await expect(document.removeReader('candidate')).rejects.toThrow(
+      /still an authorized writer.*removeWriter/s,
+    );
+    await expect(document.removeReader('stranger')).resolves.toBeUndefined();
+
+    expect(writers.members).toContain('candidate');
+    expect(rotate).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   test('rejects removal of a writer without explicit reader authorization', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);
