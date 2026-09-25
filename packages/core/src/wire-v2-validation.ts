@@ -230,7 +230,12 @@ export function requireNonNegativeInteger(
   field: string,
   typeName: string,
 ): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    Object.is(value, -0)
+  ) {
     throw new Error(
       `Invalid ${typeName}: '${field}' must be a non-negative safe integer (got ${describe(value)})`,
     );

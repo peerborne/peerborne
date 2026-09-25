@@ -26,6 +26,11 @@ import {
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import * as TreeMath from './beekem/tree-math.js';
 import {
+  MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+  MAX_V1_PATH_NODES,
+  MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES,
+} from './beekem/path-update-limits.js';
+import {
   createV2DecodeBudget,
   decodeV2Bytes,
   describe,
@@ -38,14 +43,7 @@ import {
   V2WireCodec,
 } from './wire-v2-validation.js';
 
-// A left-balanced tree with the shared 8,192-leaf ceiling has at most 13
-// internal nodes on a leaf-to-root direct path.
-const MAX_V1_PATH_NODES = Math.ceil(Math.log2(MAX_BEEKEM_TREE_LEAVES));
 const MAX_V1_TREE_WIDTH = 2 * MAX_BEEKEM_TREE_LEAVES - 1;
-// ECIES framing is salt (32) + ephemeral P-256 key (65) + nonce (12) +
-// AES-GCM tag (16). An empty value is separately valid for a blank copath.
-const MIN_V1_ENCRYPTED_PRIVATE_KEY_BYTES = 125;
-const MAX_V1_ENCRYPTED_PRIVATE_KEY_BYTES = 4096;
 const PATH_UPDATE_V1: V2WireCodec = {
   typeName: 'PathUpdate',
   maxAggregateDecodedBytes: 256 * 1024,

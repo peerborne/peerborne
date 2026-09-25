@@ -11,10 +11,16 @@ import { serializePathUpdateForWire } from './path-update-wire.js';
 const bytes = new Uint8Array([1]);
 
 const welcomeV1 = (): BeeKEMWelcome => ({
-  leafIndex: 1,
-  pathKeys: [],
-  treeNodePublicKeys: [],
-  treeHash: bytes,
+  leafIndex: 2,
+  pathKeys: [
+    {
+      nodeIndex: 1,
+      publicKey: new Uint8Array(65).fill(2),
+      encryptedPrivateKey: new Uint8Array(125).fill(3),
+    },
+  ],
+  treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+  treeHash: new Uint8Array(32).fill(4),
 });
 
 const pathUpdateV1 = (): PathUpdate => ({

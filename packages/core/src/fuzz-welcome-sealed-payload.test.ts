@@ -24,14 +24,22 @@ describe('welcome-sealed-payload fuzz', () => {
     fc.assert(
       fc.property(
         fc.uint8Array({ minLength: 1, maxLength: 256 }),
-        fc.option(fc.uint8Array({ minLength: 1, maxLength: 65 }), { nil: null }),
+        fc.option(fc.uint8Array({ minLength: 32, maxLength: 32 }), {
+          nil: null,
+        }),
         (keychainBytes, beekemWelcomeHint) => {
           const payload = {
             keychainChanges: keychainBytes,
             beekemWelcome: beekemWelcomeHint === null ? null : {
-              leafIndex: 0,
-              pathKeys: [],
-              treeNodePublicKeys: [],
+              leafIndex: 2,
+              pathKeys: [
+                {
+                  nodeIndex: 1,
+                  publicKey: new Uint8Array(65).fill(1),
+                  encryptedPrivateKey: new Uint8Array(125).fill(2),
+                },
+              ],
+              treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
               treeHash: beekemWelcomeHint,
             },
           };
