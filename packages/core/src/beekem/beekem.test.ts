@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import { runInNewContext } from 'node:vm';
 import { BeeKEM } from './beekem.js';
 
 const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
@@ -234,6 +235,43 @@ describe('BeeKEM', () => {
   });
 
   describe('findLeafByPublicKey', () => {
+    test('accepts genuine public-key bytes from another realm', async () => {
+      const alice = new BeeKEM();
+      const keys = await generateECDHKeyPair();
+      await alice.initialize(keys.privateKey, keys.publicKey);
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', keys.publicKey),
+      );
+      const foreign = runInNewContext('new Uint8Array(bytes)', {
+        bytes: Array.from(raw),
+      }) as Uint8Array;
+
+      expect(foreign).not.toBeInstanceOf(Uint8Array);
+      await expect(alice.findLeafByPublicKey(foreign)).resolves.toBe(0);
+      await expect(alice.hasLiveLeafWithPublicKey(foreign)).resolves.toBe(true);
+    });
+
+    test('rejects shared-backed public-key bytes without changing membership', async () => {
+      if (typeof SharedArrayBuffer === 'undefined') return;
+      const alice = new BeeKEM();
+      const keys = await generateECDHKeyPair();
+      await alice.initialize(keys.privateKey, keys.publicKey);
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', keys.publicKey),
+      );
+      const shared = new Uint8Array(new SharedArrayBuffer(raw.byteLength));
+      shared.set(raw);
+
+      await expect(alice.findLeafByPublicKey(shared)).rejects.toThrow(
+        /backing buffer/,
+      );
+      await expect(alice.hasLiveLeafWithPublicKey(shared)).rejects.toThrow(
+        /backing buffer/,
+      );
+      expect(alice.memberCount).toBe(1);
+      await expect(alice.findLeafByPublicKey(keys.publicKey)).resolves.toBe(0);
+    });
+
     test('finds the founder leaf by its own public key', async () => {
       const alice = new BeeKEM();
       const aliceKeys = await generateECDHKeyPair();
@@ -279,6 +317,42 @@ describe('BeeKEM', () => {
       ).toBeUndefined();
     });
 
+    test('returns undefined when a public key ambiguously occupies multiple live leaves', async () => {
+      const alice = new BeeKEM();
+      const aliceKeys = await generateECDHKeyPair();
+      await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+      const corruptedTree = alice as unknown as {
+        _nodes: Map<number, unknown>;
+        _numLeaves: number;
+      };
+      corruptedTree._nodes.set(2, {
+        type: 'leaf',
+        index: 2,
+        publicKey: aliceKeys.publicKey,
+      });
+      corruptedTree._numLeaves = 2;
+
+      expect(
+        await alice.findLeafByPublicKey(aliceKeys.publicKey),
+      ).toBeUndefined();
+      expect(
+        await alice.hasLiveLeafWithPublicKey(aliceKeys.publicKey),
+      ).toBe(true);
+    });
+
+    test('rejects duplicate member keys without mutating the tree', async () => {
+      const alice = new BeeKEM();
+      const aliceKeys = await generateECDHKeyPair();
+      await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+
+      await expect(alice.addMember(aliceKeys.publicKey)).rejects.toThrow(
+        /public key is already owned by a live leaf/,
+      );
+      expect(alice.memberCount).toBe(1);
+      expect(await alice.findLeafByPublicKey(aliceKeys.publicKey)).toBe(0);
+      expect(alice.hasOnlyLocalLiveLeaf()).toBe(true);
+    });
+
     test('returns undefined after the leaf is blanked via removeMember', async () => {
       const alice = new BeeKEM();
       const aliceKeys = await generateECDHKeyPair();
@@ -297,6 +371,39 @@ describe('BeeKEM', () => {
       expect(
         await alice.findLeafByPublicKey(bobKeys.publicKey),
       ).toBeUndefined();
+      expect(await alice.hasLiveLeafWithPublicKey(bobKeys.publicKey)).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('live leaf proofs', () => {
+    test('distinguishes a local-only tree from one with a live remote leaf', async () => {
+      const alice = new BeeKEM();
+      const aliceKeys = await generateECDHKeyPair();
+      await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+
+      expect(alice.hasOnlyLocalLiveLeaf()).toBe(true);
+      expect(await alice.hasLiveLeafWithPublicKey(aliceKeys.publicKey)).toBe(
+        true,
+      );
+
+      const bobKeys = await generateECDHKeyPair();
+      await alice.addMember(bobKeys.publicKey);
+      expect(alice.hasOnlyLocalLiveLeaf()).toBe(false);
+      expect(await alice.hasLiveLeafWithPublicKey(bobKeys.publicKey)).toBe(
+        true,
+      );
+
+      await alice.removeMember(2);
+      expect(alice.hasOnlyLocalLiveLeaf()).toBe(true);
+      expect(await alice.hasLiveLeafWithPublicKey(bobKeys.publicKey)).toBe(
+        false,
+      );
+    });
+
+    test('does not claim local-only membership before initialization', () => {
+      expect(new BeeKEM().hasOnlyLocalLiveLeaf()).toBe(false);
     });
   });
 

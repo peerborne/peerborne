@@ -167,7 +167,10 @@ export function usePeerborneDocumentState<
   (fn: ChangeFnType, message?: string) => void,
   {
     readers: PublicKey[];
-    addReader: (user: PublicKey) => Promise<void>;
+    addReader: (
+      user: PublicKey,
+      readerKemPublicKey?: Uint8Array,
+    ) => Promise<void>;
     removeReader: (user: PublicKey) => Promise<void>;
     writers: PublicKey[];
     addWriter: (user: PublicKey) => Promise<void>;
@@ -341,9 +344,11 @@ export function usePeerborneDocumentState<
     },
     {
       readers: docReadersCache[documentCacheKey],
-      addReader: async (user: PublicKey) => {
+      addReader: async (user: PublicKey, readerKemPublicKey?: Uint8Array) => {
         const docRef = docCache[documentCacheKey];
-        await docRef.addReader(user);
+        await (readerKemPublicKey === undefined
+          ? docRef.addReader(user)
+          : docRef.addReader(user, readerKemPublicKey));
       },
       removeReader: async (user: PublicKey) => {
         const docRef = docCache[documentCacheKey];

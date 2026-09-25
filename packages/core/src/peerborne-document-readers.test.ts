@@ -210,7 +210,9 @@ describe('PeerborneDocument writer removal', () => {
     };
     const writersACL = new UCANACL(backing, async (key: string) => key);
     const publish = jest.fn(
-      async (prepared: { commit(): void }) => prepared.commit(),
+      async (prepared: {
+        commit: { receiver: object; method: () => void };
+      }) => Reflect.apply(prepared.commit.method, prepared.commit.receiver, []),
     );
     const document = fakeDocument({
       _readers: { check: async () => true },

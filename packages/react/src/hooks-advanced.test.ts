@@ -141,6 +141,40 @@ describe('ACL helper functions delegate to docRef', () => {
     expect(mockDoc.addReader).toHaveBeenCalledWith('newUserPubKey');
   });
 
+  test('addReader forwards the reader KEM public key needed for promotion', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const captureRef = { current: null as any };
+
+    await act(async () => {
+      render(
+        React.createElement(TestProvider, null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/acl-add-reader-kem',
+            captureRef,
+          }),
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(captureRef.current.docData).toBeDefined();
+    });
+
+    const readerKemPublicKey = new Uint8Array(65).fill(4);
+    await act(async () => {
+      await captureRef.current.acl.addReader('newUserPubKey', readerKemPublicKey);
+      await captureRef.current.acl.addWriter('newUserPubKey');
+    });
+
+    expect(mockDoc.addReader).toHaveBeenCalledWith(
+      'newUserPubKey',
+      readerKemPublicKey,
+    );
+    expect(mockDoc.addWriter).toHaveBeenCalledWith('newUserPubKey');
+  });
+
   test('removeReader calls docRef.removeReader with the given key', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);

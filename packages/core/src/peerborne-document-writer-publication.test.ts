@@ -171,11 +171,20 @@ function publicationHarness(
   const document = fakeDocument({
     documentPath: '/writer-publication',
     _document: { stable: true },
+    _userPublicKey: 'owner',
     _writers: writers,
     _readers: {
       check: jest.fn(async (publicKey: string) => readers.has(publicKey)),
       users: jest.fn(async () => [...readers]),
     },
+    _beekemInitialized: true,
+    _beekem: {
+      findLeafByPublicKey: jest.fn(async () => 2),
+    },
+    _readerKemPublicKeys: new Map([
+      ['candidate', new Uint8Array(65).fill(7)],
+    ]),
+    _readerLeafIndices: new Map([['candidate', 2]]),
     _mutationQueue: new InvitationMembershipQueue(),
     _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
     _writerMutationsInFlight: 0,
@@ -245,10 +254,7 @@ describe('writer ACL publication boundary', () => {
     const rotate = jest.fn(async () => {
       throw new Error('rotation must not start');
     });
-    document._beekemInitialized = true;
-    document._beekem = { removeMember: rotate };
-    document._readerLeafIndices = new Map([['candidate', 0]]);
-    document._readerKemPublicKeys = new Map();
+    document._beekem.removeMember = rotate;
     const promotion = document.addWriter('candidate');
     await publicationStarted.promise;
     const removal = document.removeReader('candidate');
@@ -348,6 +354,134 @@ describe('writer ACL publication boundary', () => {
       consoleError.mockRestore();
     }
     expect(sink).toHaveBeenCalledWith([]);
+  });
+
+  test.each([
+    ['a non-undefined value', () => 'unexpected commit result'],
+    [
+      'a rejected native Promise',
+      () => Promise.reject(new Error('asynchronous writer commit')),
+    ],
+  ] as const)(
+    'poisons and rolls back when a staged writer commit returns %s',
+    async (_caseName, commitResult) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const originalPrepareAdd = writers.prepareAdd.bind(writers);
+      (writers as any).prepareAdd = jest.fn(async (publicKey: string) => {
+        const prepared = await originalPrepareAdd(publicKey);
+        return {
+          ...prepared,
+          commit: (() => commitResult()) as () => void,
+        };
+      });
+      const publish = jest.fn(async () => undefined);
+      const {
+        document,
+        initialLastSyncMessage,
+        initialRecentTips,
+        serializedMessages,
+      } = publicationHarness(
+        writers,
+        publish,
+        ['invalid-commit-result-cid'],
+      );
+
+      await expect(document.addWriter('candidate')).rejects.toThrow(
+        /Writer ACL staged commit finalizer must return undefined/,
+      );
+
+      expect(writers.members).toEqual(new Set(['owner']));
+      expect(document._hashes).not.toContain('invalid-commit-result-cid');
+      expect(document._referencedAncestors).toEqual(
+        new Set(['older-ancestor-cid']),
+      );
+      expect(document._recentTips).toEqual(initialRecentTips);
+      expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
+      expect(serializedMessages).toHaveLength(1);
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    },
+  );
+
+  test('observes a rejected native-Promise commit without invoking its own then accessor', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const originalPrepareAdd = writers.prepareAdd.bind(writers);
+    const thenGetter = jest.fn(() => {
+      writers.members.add('attacker');
+      throw new Error('native Promise then accessor was invoked');
+    });
+    let rejectionRan = false;
+    (writers as any).prepareAdd = jest.fn(async (publicKey: string) => {
+      const prepared = await originalPrepareAdd(publicKey);
+      return {
+        ...prepared,
+        commit: (() => {
+          const rejected = Promise.resolve().then(() => {
+            rejectionRan = true;
+            throw new Error('rejected asynchronous writer commit');
+          });
+          Object.defineProperty(rejected, 'then', { get: thenGetter });
+          return rejected;
+        }) as () => void,
+      };
+    });
+    const publish = jest.fn(async () => undefined);
+    const { document, initialLastSyncMessage } = publicationHarness(
+      writers,
+      publish,
+      ['rejected-native-promise-commit-cid'],
+    );
+
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      /Writer ACL staged commit finalizer must return undefined/,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejectionRan).toBe(true);
+    expect(thenGetter).not.toHaveBeenCalled();
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.members).not.toContain('attacker');
+    expect(document._hashes).not.toContain(
+      'rejected-native-promise-commit-cid',
+    );
+    expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+  });
+
+  test('rejects a custom-thenable writer commit result without assimilating it', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const originalPrepareAdd = writers.prepareAdd.bind(writers);
+    const then = jest.fn(() => {
+      throw new Error('custom writer commit thenable was assimilated');
+    });
+    const thenGetter = jest.fn(() => then);
+    const thenable = {};
+    Object.defineProperty(thenable, 'then', { get: thenGetter });
+    (writers as any).prepareAdd = jest.fn(async (publicKey: string) => {
+      const prepared = await originalPrepareAdd(publicKey);
+      return {
+        ...prepared,
+        commit: (() => thenable) as () => void,
+      };
+    });
+    const publish = jest.fn(async () => undefined);
+    const { document, initialLastSyncMessage } = publicationHarness(
+      writers,
+      publish,
+      ['thenable-commit-result-cid'],
+    );
+
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      /Writer ACL staged commit finalizer must return undefined/,
+    );
+
+    expect(thenGetter).not.toHaveBeenCalled();
+    expect(then).not.toHaveBeenCalled();
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(document._hashes).not.toContain('thenable-commit-result-cid');
+    expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
   test('invalidates a writer lookup at the synchronous commit boundary', async () => {
@@ -458,7 +592,7 @@ describe('writer ACL publication boundary', () => {
     readers.delete('candidate');
 
     await expect(document.addWriter('candidate')).rejects.toThrow(
-      /must already be explicitly authorized as a reader.*addReader first/i,
+      /must first be added to the explicit readers ACL.*BeeKEM leaf/i,
     );
 
     expect(writers.members).toEqual(new Set(['owner']));
@@ -541,6 +675,52 @@ describe('writer ACL publication boundary', () => {
       expect(publish).toHaveBeenCalledTimes(1);
     },
   );
+
+  test('captures the writer preparation method and receiver across conflict retries', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const conflictObserved = deferred<void>();
+    const settlement = deferred<void>();
+    const replacementPrepareAdd = jest.fn(() => {
+      throw new Error('replacement preparation must not run');
+    });
+    let attempts = 0;
+    const capturedPrepareAdd = jest.fn(function (
+      this: StagedWriterACL,
+      publicKey: string,
+    ) {
+      expect(this).toBe(writers);
+      if (attempts++ === 0) {
+        conflictObserved.resolve();
+        throw new ACLOperationInProgressError(
+          'captured prepareAdd conflict',
+          settlement.promise,
+        );
+      }
+      return StagedWriterACL.prototype.prepareAdd.call(this, publicKey);
+    });
+    Object.defineProperty(writers, 'prepareAdd', {
+      configurable: true,
+      writable: true,
+      value: capturedPrepareAdd,
+    });
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['captured-prepare-add-cid'],
+    );
+
+    const addition = document.addWriter('candidate');
+    await conflictObserved.promise;
+    (writers as any).prepareAdd = replacementPrepareAdd;
+    settlement.resolve();
+    await expect(addition).resolves.toBeUndefined();
+
+    expect(capturedPrepareAdd).toHaveBeenCalledTimes(2);
+    expect(replacementPrepareAdd).not.toHaveBeenCalled();
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
 
   test.each([
     {
@@ -751,7 +931,10 @@ describe('writer ACL publication boundary', () => {
       throw new Error('rotation must not start');
     });
     document._beekemInitialized = true;
-    document._beekem = { removeMember: rotate };
+    document._beekem = {
+      removeMember: rotate,
+      hasOnlyLocalLiveLeaf: () => true,
+    };
 
     await expect(document.removeReader('candidate')).rejects.toThrow(
       /still an authorized writer.*removeWriter/s,
@@ -797,16 +980,19 @@ describe('writer ACL publication boundary', () => {
     );
     document._addReaderUnlocked = jest.fn(async () => null);
     const identity = { id: 'candidate' };
-    const kemPublicKey = new Uint8Array([1, 2, 3]);
+    const kemPublicKey = new Uint8Array(65).fill(1);
+    kemPublicKey[0] = 4;
+    const expectedKemPublicKey = new Uint8Array(kemPublicKey);
 
     const addition = document.addReader(identity, kemPublicKey);
     identity.id = 'stranger';
-    kemPublicKey[0] = 9;
+    kemPublicKey[1] = 9;
 
     await expect(addition).resolves.toBeNull();
     expect(document._addReaderUnlocked).toHaveBeenCalledWith(
       'candidate',
-      new Uint8Array([1, 2, 3]),
+      'candidate',
+      expectedKemPublicKey,
     );
   });
 
@@ -891,6 +1077,46 @@ describe('writer ACL publication boundary', () => {
     },
   );
 
+  test('snapshots the local identity before queued writer removal', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document, readers } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+    const localIdentity = { id: 'owner' };
+    const capturedLocalEncodings: string[] = [];
+    document._userPublicKey = localIdentity;
+    document._authProvider.serializePublicKey = jest.fn((key: any) => {
+      const serialized = typeof key === 'string' ? key : key.id;
+      if (key === localIdentity) capturedLocalEncodings.push(serialized);
+      return Promise.resolve(serialized);
+    });
+    document._authProvider.deserializePublicKey = jest.fn(
+      async (serialized: string) => serialized,
+    );
+    readers.add('owner');
+    const queueEntered = deferred<void>();
+    const releaseQueue = deferred<void>();
+    const priorMutation = document._mutationQueue.run(async () => {
+      queueEntered.resolve();
+      await releaseQueue.promise;
+    });
+    await queueEntered.promise;
+
+    const removal = document.removeWriter('owner');
+    localIdentity.id = 'attacker';
+    releaseQueue.resolve();
+    await priorMutation;
+
+    await expect(removal).rejects.toThrow(/Cannot remove the local writer/);
+    expect(capturedLocalEncodings).toEqual(['owner']);
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.prepareRemoveCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   test('supports an immutable writer removal without identity codecs', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);
@@ -908,7 +1134,25 @@ describe('writer ACL publication boundary', () => {
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
-  test('preserves an existing-writer no-op without identity codecs', async () => {
+  test('does not let an existing-writer no-op bless malformed membership', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+
+    await expect(document.addWriter('owner')).rejects.toThrow(
+      /must first be added to the explicit readers ACL/,
+    );
+
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.prepareAddCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('names the missing identity codec before an immutable writer promotion', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const publish = jest.fn(async () => undefined);
     const { document } = publicationHarness(
@@ -919,29 +1163,13 @@ describe('writer ACL publication boundary', () => {
     delete document._authProvider.serializePublicKey;
     delete document._authProvider.deserializePublicKey;
 
-    await expect(document.addWriter('owner')).resolves.toBeUndefined();
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      /Writer addition requires AuthProvider.serializePublicKey/,
+    );
 
     expect(writers.members).toEqual(new Set(['owner']));
     expect(writers.prepareAddCalls).toBe(0);
     expect(publish).not.toHaveBeenCalled();
-  });
-
-  test('supports an immutable writer addition without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['owner']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['primitive-add-cid'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
-
-    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
-
-    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
-    expect(writers.prepareAddCalls).toBe(1);
-    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   test('rejects a mutable writer mutation without identity codecs', async () => {
@@ -1045,12 +1273,14 @@ describe('writer ACL publication boundary', () => {
       _addReaderUnlocked: jest.fn(
         async (
           reader: Identity,
+          serializedReader: string,
           kem: Uint8Array,
           _broadcast: boolean,
           beginMutation: () => void,
         ) => {
           beginMutation();
           readerAclAdd(reader);
+          expect(serializedReader).toBe('candidate');
           expect(kem).toEqual(expectedKem);
           return {
             leafIndex: 2,
@@ -1061,8 +1291,13 @@ describe('writer ACL publication boundary', () => {
         },
       ),
       _addWriterUnlocked: jest.fn(
-        async (writer: Identity, beginMutation: () => void) => {
+        async (
+          writer: Identity,
+          serializedWriter: string,
+          beginMutation: () => void,
+        ) => {
           beginMutation();
+          expect(serializedWriter).toBe('candidate');
           writerAclAdd(writer);
         },
       ),
@@ -1583,6 +1818,152 @@ describe('writer ACL publication boundary', () => {
     await handlerFinished.promise;
     expect(writers.members).toEqual(new Set(['owner']));
     expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ['addition', 'addWriter', ['owner'], 'prepareAdd'],
+    ['removal', 'removeWriter', ['owner', 'candidate'], 'prepareRemove'],
+  ] as const)(
+    'rejects an accessor-backed staged writer %s capability without invoking it',
+    async (_caseName, operation, initialMembers, prepareMethod) => {
+      const writers = new StagedWriterACL(new Set(initialMembers));
+      const accessor = jest.fn(() => {
+        throw new Error('writer preparation accessor was invoked');
+      });
+      Object.defineProperty(writers, prepareMethod, {
+        configurable: true,
+        get: accessor,
+      });
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+
+      await expect(document[operation]('candidate')).rejects.toThrow(
+        /Writer ACL prepare(?:Add|Remove) must be a data property/,
+      );
+
+      expect(accessor).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(writers.members).toEqual(new Set(initialMembers));
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    },
+  );
+
+  test.each([
+    ['addition', 'addWriter', ['owner'], 'prepareAdd', 'changes'],
+    [
+      'addition',
+      'addWriter',
+      ['owner'],
+      'prepareAdd',
+      'commit',
+    ],
+    [
+      'removal',
+      'removeWriter',
+      ['owner', 'candidate'],
+      'prepareRemove',
+      'changes',
+    ],
+    [
+      'removal',
+      'removeWriter',
+      ['owner', 'candidate'],
+      'prepareRemove',
+      'commit',
+    ],
+  ] as const)(
+    'rejects an accessor-backed prepared writer %s %s field without invoking it',
+    async (
+      _caseName,
+      operation,
+      initialMembers,
+      prepareMethod,
+      preparedField,
+    ) => {
+      const writers = new StagedWriterACL(new Set(initialMembers));
+      const originalPrepare = writers[prepareMethod].bind(writers);
+      const accessor = jest.fn(() => {
+        throw new Error('prepared writer field accessor was invoked');
+      });
+      (writers as any)[prepareMethod] = jest.fn(
+        async (publicKey: string) => {
+          const prepared = await originalPrepare(publicKey);
+          Object.defineProperty(prepared, preparedField, {
+            configurable: true,
+            get: accessor,
+          });
+          return prepared;
+        },
+      );
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+
+      await expect(document[operation]('candidate')).rejects.toThrow(
+        /Prepared writer ACL (?:addition|removal) (?:changes|commit) must be a data property/,
+      );
+
+      expect(accessor).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(writers.members).toEqual(new Set(initialMembers));
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    },
+  );
+
+  test('uses the captured staged writer commit method with its original receiver', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const originalPrepareAdd = writers.prepareAdd.bind(writers);
+    const publishStarted = deferred<void>();
+    const publication = deferred<void>();
+    let retainedPrepared: Record<string, unknown> | undefined;
+    const capturedCommit = jest.fn(function (this: object) {
+      expect(this).toBe(retainedPrepared);
+      writers.members.add('candidate');
+    });
+    (writers as any).prepareAdd = jest.fn(async (publicKey: string) => {
+      const prepared = await originalPrepareAdd(publicKey);
+      Object.defineProperty(prepared, 'commit', {
+        configurable: true,
+        writable: true,
+        value: capturedCommit,
+      });
+      retainedPrepared = prepared;
+      return prepared;
+    });
+    const publish = jest.fn(() => {
+      publishStarted.resolve();
+      return publication.promise;
+    });
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['captured-writer-commit-cid'],
+    );
+
+    const addition = document.addWriter('candidate');
+    await publishStarted.promise;
+    const replacementCommit = jest.fn(() => {
+      throw new Error('replacement commit must not run');
+    });
+    Object.defineProperty(retainedPrepared!, 'commit', {
+      configurable: true,
+      writable: true,
+      value: replacementCommit,
+    });
+    publication.resolve();
+    await expect(addition).resolves.toBeUndefined();
+
+    expect(capturedCommit).toHaveBeenCalledTimes(1);
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
   test.each([
