@@ -614,7 +614,7 @@ describe('document load response boundaries', () => {
       _bootstrapLoadApplicationState: 'complete',
       _document: {},
       _hashes: new Set<string>(),
-      _referencedAncestors: new Set<string>(),
+      _referencedAncestors: new Set<string>(['KNOWN']),
       _lastSyncMessage: undefined,
       _mergeSyncTree: jest.fn(async () => [
         ['ACL', crdtWriterChangeNode, undefined],
@@ -634,6 +634,10 @@ describe('document load response boundaries', () => {
       await expect(
         document._syncDocumentChanges('ACL', {
           kind: crdtWriterChangeNode,
+          children: {
+            PARENT: { kind: crdtDocumentChangeNode },
+            KNOWN: { kind: crdtDocumentChangeNode },
+          },
         }),
       ).rejects.toBe(rejection);
       expect(consoleError).not.toHaveBeenCalled();
@@ -643,8 +647,45 @@ describe('document load response boundaries', () => {
 
     expect(document._mergeWriters).toHaveBeenCalledTimes(1);
     expect(document._hashes).toEqual(new Set());
+    expect(document._referencedAncestors).toEqual(new Set(['KNOWN']));
     expect(trackTip).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
+  test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed sent reader update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/sent-acl-rejection',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(['KNOWN']),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ACL', crdtReaderChangeNode, { remote: true }],
+      ]),
+      _mergeReaders: jest.fn(async () => {
+        throw rejection;
+      }),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ACL', {
+        kind: crdtReaderChangeNode,
+        children: {
+          PARENT: { kind: crdtDocumentChangeNode },
+          KNOWN: { kind: crdtDocumentChangeNode },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._referencedAncestors).toEqual(new Set(['KNOWN']));
+    expect(document._hashes).toEqual(new Set());
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
     expect(document._bootstrapLoadApplicationState).toBe('complete');
   });
 

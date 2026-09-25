@@ -763,6 +763,53 @@ describe('writer ACL publication boundary', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  test('snapshots a mutable reader identity before queueing reader removal', async () => {
+    const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers, publish, ['must-not-publish'],
+    );
+    document._authProvider.serializePublicKey = jest.fn(
+      async (publicKey: { id: string } | string) =>
+        typeof publicKey === 'string' ? publicKey : publicKey.id,
+    );
+    const identity = { id: 'candidate' };
+
+    const removal = document.removeReader(identity);
+    identity.id = 'stranger';
+
+    await expect(removal).rejects.toThrow(
+      /still an authorized writer.*removeWriter/s,
+    );
+    expect(writers.members).toContain('candidate');
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('snapshots reader identity and KEM bytes before queueing reader addition', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers, publish, ['must-not-publish'],
+    );
+    document._authProvider.serializePublicKey = jest.fn(
+      async (publicKey: { id: string } | string) =>
+        typeof publicKey === 'string' ? publicKey : publicKey.id,
+    );
+    document._addReaderUnlocked = jest.fn(async () => null);
+    const identity = { id: 'candidate' };
+    const kemPublicKey = new Uint8Array([1, 2, 3]);
+
+    const addition = document.addReader(identity, kemPublicKey);
+    identity.id = 'stranger';
+    kemPublicKey[0] = 9;
+
+    await expect(addition).resolves.toBeNull();
+    expect(document._addReaderUnlocked).toHaveBeenCalledWith(
+      'candidate',
+      new Uint8Array([1, 2, 3]),
+    );
+  });
+
   test('rejects removal of a writer without explicit reader authorization', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);
