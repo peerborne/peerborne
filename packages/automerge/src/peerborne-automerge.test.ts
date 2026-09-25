@@ -550,6 +550,28 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('accepts concurrent additions of the same member', async () => {
+    const first = new AutomergeACL();
+    await first.add(key1);
+    const second = new AutomergeACL();
+    second.merge(first.current());
+
+    const firstAddition = await first.add(key2);
+    const secondAddition = await second.add(key2);
+
+    expect(() => first.merge(secondAddition)).not.toThrow();
+    expect(() => second.merge(firstAddition)).not.toThrow();
+    expect(await first.check(key2)).toBe(true);
+    expect(await second.check(key2)).toBe(true);
+
+    const revocation = await first.remove(key2);
+    expect(() => second.merge(revocation)).not.toThrow();
+    expect(await first.check(key2)).toBe(false);
+    expect(await second.check(key2)).toBe(false);
+    expect(await second.check(key1)).toBe(true);
+  });
+
+
   test('a rejected local addition leaves the live ACL usable', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);

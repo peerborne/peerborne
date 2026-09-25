@@ -397,7 +397,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
 
     for (const [key, frontier] of writesByKey) {
       if (
-        frontier.length > 1 &&
+        frontier.some(({ action }) => action === 'del') &&
         frontier.some(({ action }) => action !== 'del')
       ) {
         throw new Error(
