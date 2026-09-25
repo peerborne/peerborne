@@ -543,69 +543,105 @@ describe('tip-advertisement V1 confinement', () => {
 
 function installSetWriterAcl(document: any, initial: string[]) {
   const writers = new Set(initial);
-  const serializer = new JSONSerializer<any>();
   document._writers = {
     merge: jest.fn((changes: string[]) => {
       for (const writer of changes) writers.add(writer);
     }),
-    current: () => [...writers].sort(),
+    add: jest.fn(async (writer: string) => {
+      writers.add(writer);
+      return [`+${writer}`];
+    }),
+    remove: jest.fn(async (writer: string) => {
+      writers.delete(writer);
+      return [`-${writer}`];
+    }),
+    current: jest.fn(() => [...writers].sort()),
   };
-  document._changesSerializer = serializer;
+  document._changesSerializer = new JSONSerializer<any>();
+  document._mergedWriterBlocks = new Set<string>();
   document._cachedWriterKeys = [{}];
   return writers;
 }
 
+function writerDocument(initial: string[]) {
+  const document = fakeDocument({
+    _writerKeysVersion: 7,
+    _writerMutationsInFlight: 0,
+  });
+  const writers = installSetWriterAcl(document, initial);
+  return { document, writers };
+}
+
 describe('writer ACL re-merges', () => {
-  test('keeps writer authorization stable for an idempotent re-merge', () => {
-    const document = fakeDocument({
-      _writerKeysVersion: 7,
-      _writerMutationsInFlight: 0,
-    });
-    installSetWriterAcl(document, ['founder', 'invitee']);
+  test('keeps writer authorization stable when a merged block is re-merged', () => {
+    const { document } = writerDocument(['founder']);
+    document._mergeWriters(['founder']);
+    document._mergeWriters(['invitee', 'founder']);
+    expect(document._writerKeysVersion).toBe(9);
+    document._cachedWriterKeys = [{}];
 
     document._mergeWriters(['founder']);
     document._mergeWriters(['invitee', 'founder']);
 
-    expect(document._writerKeysVersion).toBe(7);
+    expect(document._writers.merge).toHaveBeenCalledTimes(4);
+    expect(document._writerKeysVersion).toBe(9);
     expect(document._writerMutationsInFlight).toBe(0);
     expect(document._cachedWriterKeys).not.toBeNull();
   });
 
-  test('invalidates writer authorization when a merge changes the ACL', () => {
-    const document = fakeDocument({
-      _writerKeysVersion: 7,
-      _writerMutationsInFlight: 0,
-    });
-    installSetWriterAcl(document, ['founder']);
+  test('never serializes the whole ACL to classify a merge', () => {
+    const { document } = writerDocument(['founder']);
+    const serialize = jest.spyOn(
+      document._changesSerializer,
+      'serializeChanges',
+    );
 
-    document._mergeWriters(['invitee']);
+    document._mergeWriters(['founder']);
+    document._mergeWriters(['founder']);
 
+    expect(document._writers.current).not.toHaveBeenCalled();
+    expect(serialize.mock.calls).toEqual([[['founder']], [['founder']]]);
+  });
+
+  test('invalidates writer authorization on the first merge of any block', () => {
+    const { document } = writerDocument(['founder']);
+
+    document._mergeWriters(['founder']);
     expect(document._writerKeysVersion).toBe(8);
+    expect(document._cachedWriterKeys).toBeNull();
+
+    document._cachedWriterKeys = [{}];
+    document._mergeWriters(['intruder']);
+    expect(document._writerKeysVersion).toBe(9);
     expect(document._cachedWriterKeys).toBeNull();
   });
 
-  test('invalidates writer authorization when ACL state cannot be compared', () => {
-    const document = fakeDocument({
-      _writerKeysVersion: 7,
-      _writerMutationsInFlight: 0,
-    });
-    installSetWriterAcl(document, ['founder']);
-    document._writers.current = () => {
-      throw new Error('incomplete ACL');
+  test('does not treat a differently ordered block as already merged', () => {
+    const { document } = writerDocument([]);
+    document._mergeWriters(['founder', 'invitee']);
+
+    document._mergeWriters(['invitee', 'founder']);
+
+    expect(document._writerKeysVersion).toBe(9);
+  });
+
+  test('invalidates writer authorization when a block cannot be serialized', () => {
+    const { document } = writerDocument(['founder']);
+    document._changesSerializer.serializeChanges = () => {
+      throw new Error('unserializable block');
     };
 
     document._mergeWriters(['founder']);
+    document._mergeWriters(['founder']);
 
-    expect(document._writerKeysVersion).toBe(8);
+    expect(document._writerKeysVersion).toBe(9);
+    expect(document._mergedWriterBlocks.size).toBe(0);
     expect(document._cachedWriterKeys).toBeNull();
   });
 
-  test('invalidates writer authorization when a merge throws after mutating', () => {
-    const document = fakeDocument({
-      _writerKeysVersion: 7,
-      _writerMutationsInFlight: 0,
-    });
-    const writers = installSetWriterAcl(document, ['founder']);
+  test('does not record a block whose merge throws', () => {
+    const { document, writers } = writerDocument(['founder']);
+    const merge = document._writers.merge;
     document._writers.merge = () => {
       writers.add('partial');
       throw new Error('merge failed');
@@ -616,11 +652,49 @@ describe('writer ACL re-merges', () => {
     );
     expect(document._writerKeysVersion).toBe(8);
     expect(document._writerMutationsInFlight).toBe(0);
+    expect(document._mergedWriterBlocks.size).toBe(0);
+
+    document._writers.merge = merge;
+    document._mergeWriters(['partial', 'bad']);
+    expect(document._writerKeysVersion).toBe(9);
+  });
+
+  test('still invalidates when a re-merge of a known block throws', () => {
+    const { document } = writerDocument(['founder']);
+    document._mergeWriters(['founder']);
+    document._writers.merge = () => {
+      throw new Error('merge failed');
+    };
+
+    expect(() => document._mergeWriters(['founder'])).toThrow('merge failed');
+    expect(document._writerKeysVersion).toBe(9);
+    expect(document._writerMutationsInFlight).toBe(0);
+  });
+
+  test('treats locally produced writer changes as already merged', async () => {
+    const { document } = writerDocument(['founder']);
+
+    await expect(document._addWriter('invitee')).resolves.toEqual([
+      '+invitee',
+    ]);
+    await expect(document._removeWriter('invitee')).resolves.toEqual([
+      '-invitee',
+    ]);
+    const version = document._writerKeysVersion;
+    document._cachedWriterKeys = [{}];
+
+    document._mergeWriters(['+invitee']);
+    document._mergeWriters(['-invitee']);
+
+    expect(document._writerKeysVersion).toBe(version);
+    expect(document._cachedWriterKeys).not.toBeNull();
   });
 
   test('applies a load response after a queued gossip re-merge of known writers', async () => {
     const harness = loadHarness();
-    installSetWriterAcl(harness.document, ['founder', 'invitee']);
+    installSetWriterAcl(harness.document, []);
+    harness.document._mergeWriters(['founder']);
+    harness.document._mergeWriters(['invitee']);
     harness.document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
         harness.document._applyCollectedACL([
@@ -643,7 +717,8 @@ describe('writer ACL re-merges', () => {
 
   test('rejects a load response after a queued merge adds a writer', async () => {
     const harness = loadHarness();
-    installSetWriterAcl(harness.document, ['founder']);
+    installSetWriterAcl(harness.document, []);
+    harness.document._mergeWriters(['founder']);
     harness.document._mutationQueue = {
       run: async (operation: () => Promise<unknown>) => {
         harness.document._applyCollectedACL([
@@ -663,9 +738,10 @@ describe('writer ACL re-merges', () => {
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
-  test('keeps a tip vote when verification races an idempotent re-merge', async () => {
+  test('keeps a tip vote when verification races a known-block re-merge', async () => {
     const harness = tipHarness();
-    installSetWriterAcl(harness.document, ['founder']);
+    installSetWriterAcl(harness.document, []);
+    harness.document._mergeWriters(['founder']);
     harness.verify.mockImplementation(async () => {
       harness.document._mergeWriters(['founder']);
       return true;

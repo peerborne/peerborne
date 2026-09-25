@@ -30,7 +30,8 @@ export interface ACL<ChangesType, PublicKey> {
   current(): ChangesType;
 
   /**
-   * Applies a block of change(s) to the ACL.
+   * Applies a block of change(s) to the ACL. Merging must be idempotent:
+   * applying a block that was already merged leaves the ACL unchanged.
    *
    * @param changes A block of change(s) to apply.
    */
