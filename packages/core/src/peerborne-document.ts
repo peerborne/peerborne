@@ -2048,6 +2048,7 @@ export class PeerborneDocument<
         assertStillActive();
         throwIfLoadAborted(fetchSignal);
       };
+      let certifiedACLRejection: ACLMergeRejectedError | undefined;
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded) {
           assertWorkerActive();
@@ -2130,6 +2131,13 @@ export class PeerborneDocument<
               this._assertDocumentStateNotPoisoned();
             }
             if (signal?.aborted) throwIfLoadAborted(signal);
+            if (error instanceof ACLMergeRejectedError) {
+              certifiedACLRejection ??= error;
+              if (!fetchController.signal.aborted) {
+                fetchController.abort(error);
+              }
+              throw error;
+            }
             if (fetchLimitExceeded && fetchController.signal.aborted) return;
             if (error instanceof _LoadFetchLimitExceededError) {
               fetchLimitExceeded = true;
@@ -2178,6 +2186,7 @@ export class PeerborneDocument<
         signal?.removeEventListener('abort', forwardAbort);
       }
       assertStillActive();
+      if (certifiedACLRejection) throw certifiedACLRejection;
       const workerFailure = workerResults.find(
         (result): result is PromiseRejectedResult =>
           result.status === 'rejected',
@@ -9428,19 +9437,18 @@ export class PeerborneDocument<
     // ---------------------------------------------------------------
     await this._ensureCurrentUserCanWrite();
 
-    // Check that the reader is already a reader.
-    if (
-      (await retryACLConflict(() => this._readers.check(reader))) !== true
-    ) {
-      return;
-    }
-
     if (await retryACLConflict(() => this._writers.check(reader))) {
       throw new Error(
         `Cannot remove reader from "${this.documentPath}": the identity is ` +
           'still an authorized writer. Call removeWriter first, then ' +
           'removeReader to revoke its remaining read access.',
       );
+    }
+
+    if (
+      (await retryACLConflict(() => this._readers.check(reader))) !== true
+    ) {
+      return;
     }
 
     const serializePublicKey = requireSerializePublicKey(
