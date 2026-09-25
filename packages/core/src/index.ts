@@ -38,6 +38,7 @@ import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
   ACL,
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   PreparedACLChange,
   PreparedACLRemoval,
@@ -200,6 +201,7 @@ export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   PreparedACLChange,
   PreparedACLRemoval,
