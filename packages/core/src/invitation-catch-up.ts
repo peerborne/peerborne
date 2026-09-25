@@ -176,12 +176,12 @@ export async function withIssuerPinnedInvitationStream<
 >(
   founderAddress: string,
   dial: (address: string, signal: AbortSignal) => Promise<Stream>,
-  loadAndVerify: (stream: Stream) => Promise<Result>,
+  loadAndVerify: (stream: Stream, signal: AbortSignal) => Promise<Result>,
   timeoutMs: number = INVITATION_STREAM_TIMEOUT_MS,
 ): Promise<Result> {
   return withInvitationProtocolStream(
     (signal) => dial(founderAddress, signal),
-    (stream) => loadAndVerify(stream),
+    loadAndVerify,
     timeoutMs,
   );
 }
