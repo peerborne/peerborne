@@ -115,7 +115,7 @@ See the [limitations page](../limitations/) for a complete list. Key architectur
 - **No durable outbox**: local blocks are stored in IndexedDB, but an unreachable peer may not receive the update; there is no delivery retry queue
 - **No durable reconnect-and-replay guarantee**: libp2p may redial and explicit loads or later sync history may catch a peer up, but connection restoration and replay of every missed update are not guaranteed
 - **No pass/fail performance budgets**: benchmarks exist but have no thresholds
-- **Pinning is incomplete**: the listener exists but the publisher does not
+- **Pinning is not implemented**: `PeerborneNode` has no document-announcement receiver and no authenticated publisher exists
 - **Browser restart recovery is unverified**: IndexedDB persistence works in tests but full close/reopen cycles are not proven in CI
 
 ## Next steps
