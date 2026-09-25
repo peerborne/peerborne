@@ -723,6 +723,52 @@ describe('YjsACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('merge() rejects malformed dependency-incomplete membership structs', async () => {
+    const source = new Doc({ gc: false });
+    const users = source.getMap('users');
+    users.set(await serializeKey(key1), true);
+    const founder = encodeStateAsUpdateV2(source);
+    const beforePredecessor = encodeStateVector(source);
+    users.set(await serializeKey(key2), true);
+    const beforeDependent = encodeStateVector(source);
+    const predecessor = encodeStateAsUpdateV2(source, beforePredecessor);
+
+    const invalidKeySource = new Doc({ gc: false });
+    applyUpdateV2(invalidKeySource, encodeStateAsUpdateV2(source));
+    invalidKeySource.clientID = source.clientID;
+    invalidKeySource.getMap('users').set('not-a-p384-key', true);
+    const invalidKey = encodeStateAsUpdateV2(invalidKeySource, beforeDependent);
+
+    const invalidValueSource = new Doc({ gc: false });
+    applyUpdateV2(invalidValueSource, encodeStateAsUpdateV2(source));
+    invalidValueSource.clientID = source.clientID;
+    invalidValueSource.getMap('users').set(await serializeKey(key1), 'member');
+    const invalidValue = encodeStateAsUpdateV2(
+      invalidValueSource,
+      beforeDependent,
+    );
+
+    const receiver = new YjsACL();
+    receiver.merge(founder);
+    const before = receiver.current();
+
+    expect(() => receiver.merge(invalidKey)).toThrow();
+    expect(() => receiver.merge(invalidValue)).toThrow(
+      'Yjs ACL membership values must be true',
+    );
+    expect(receiver.current()).toEqual(before);
+
+    users.set(await serializeKey(key1), true);
+    const dependent = encodeStateAsUpdateV2(source, beforeDependent);
+    receiver.merge(dependent);
+    await expect(receiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    receiver.merge(predecessor);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
   test('a new dependency-incomplete update still stales prepared removal', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -914,12 +960,13 @@ describe('YjsACL', () => {
     async (dependencyType) => {
       const source = new Doc();
       const users = source.getMap('users');
-      users.set('first', true);
+      const first = await serializeKey(key1);
+      users.set(first, true);
       const beforeDependentUpdate = encodeStateVector(source);
       if (dependencyType === 'missing structs') {
-        users.set('second', true);
+        users.set(await serializeKey(key2), true);
       } else {
-        users.delete('first');
+        users.delete(first);
       }
       const dependencyIncomplete = encodeStateAsUpdateV2(
         source,
