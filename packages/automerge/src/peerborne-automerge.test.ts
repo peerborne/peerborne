@@ -1,6 +1,10 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
-import { snapshotDeepEnumerableData } from '@peerborne/core';
+import {
+  ACLOperationInProgressError,
+  retryACLConflict,
+  snapshotDeepEnumerableData,
+} from '@peerborne/core';
 import {
   Change as BinaryChange,
   applyChanges as applyAutomergeChanges,
@@ -273,9 +277,13 @@ describe('AutomergeACL', () => {
     await Promise.resolve();
 
     expect(await acl.check(key2)).toBe(false);
-    expect(() => acl.merge(remoteChanges)).toThrow(
-      'Cannot merge during a local ACL mutation',
-    );
+    let mergeConflict: unknown;
+    try {
+      acl.merge(remoteChanges);
+    } catch (error) {
+      mergeConflict = error;
+    }
+    expect(mergeConflict).toBeInstanceOf(ACLOperationInProgressError);
     expect(() => externalRemoval.commit()).toThrow(
       'Prepared ACL removal cannot commit during a local ACL mutation',
     );
@@ -283,6 +291,9 @@ describe('AutomergeACL', () => {
     releasePreparation();
     await expect(removal).resolves.toBeDefined();
     await expect(addition).resolves.toBeDefined();
+    await expect(
+      (mergeConflict as ACLOperationInProgressError).waitForSettlement(),
+    ).resolves.toBeUndefined();
     expect(await acl.check(key1)).toBe(false);
     expect(await acl.check(key2)).toBe(true);
     expect(() => externalRemoval.commit()).toThrow(
@@ -571,7 +582,6 @@ describe('AutomergeACL', () => {
     expect(await second.check(key1)).toBe(true);
   });
 
-
   test('a rejected local addition leaves the live ACL usable', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -609,6 +619,90 @@ describe('AutomergeACL', () => {
     expect(await receiver.check(key2)).toBe(false);
   });
 
+  test('check() reads the merged ACL when a merge lands during key serialization', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = acl.check(key2);
+      await started;
+      acl.merge(remoteChanges);
+      releaseExport();
+
+      await expect(authorization).resolves.toBe(true);
+    } finally {
+      releaseExport();
+      exportSpy.mockRestore();
+    }
+  });
+
+  test('users() reports a retryable conflict when a merge lands during key import', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let importStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      importStarted = resolve;
+    });
+    let releaseImport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const originalImportKey = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementationOnce(
+        async (format, keyData, algorithm, extractable, keyUsages) => {
+          importStarted();
+          await release;
+          return originalImportKey(
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    try {
+      const listing = acl.users();
+      await started;
+      acl.merge(remoteChanges);
+      releaseImport();
+
+      await expect(listing).rejects.toBeInstanceOf(
+        ACLOperationInProgressError,
+      );
+      await expect(
+        retryACLConflict(() => acl.users()),
+      ).resolves.toHaveLength(2);
+    } finally {
+      releaseImport();
+      importSpy.mockRestore();
+    }
+  });
 
   test('rejects a users-root deletion racing a nested assignment', async () => {
     const acl = new AutomergeACL();
