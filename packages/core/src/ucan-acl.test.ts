@@ -5316,7 +5316,7 @@ describe('UCANACL', () => {
       ['addition', 'prepareAdd', false],
       ['removal', 'prepareRemove', true],
     ])(
-      'a claimed %s permanently fails without provider finalization after the wrapper is poisoned',
+      'a claimed %s still finalizes the provider after the wrapper is poisoned',
       async (_label, prepareMethod, initiallyPresent) => {
         const members = new Set<string>(
           initiallyPresent ? ['user1'] : [],
@@ -5341,11 +5341,11 @@ describe('UCANACL', () => {
         expect(() => acl.current()).toThrow(
           'Backing ACL current-state read must complete synchronously',
         );
-        expect(() => claim.finalize()).toThrow(poisonedState);
-        expect(() => claim.finalize()).toThrow(/cannot be finalized/);
+        expect(() => claim.finalize()).not.toThrow();
+        expect(() => claim.finalize()).not.toThrow();
 
-        expect(finalize).not.toHaveBeenCalled();
-        expect(members.has('user1')).toBe(initiallyPresent);
+        expect(finalize).toHaveBeenCalledTimes(1);
+        expect(members.has('user1')).toBe(!initiallyPresent);
         await expectClaimStatePoisoned();
       },
     );

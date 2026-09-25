@@ -1158,7 +1158,16 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): void {
     const reentryAttempts = this._backingReentryAttempts;
     try {
-      this._assertHealthy('Backing ACL commit claim finalizer');
+      // A successful claim already proved every fallible precondition, and a
+      // composed commit may have installed other providers' claims. Poisoning
+      // after the claim keeps later operations closed but must not skip this
+      // transition and leave the composed commit partially applied.
+      if (this._backingInvocationDepth !== 0) {
+        this._backingReentryAttempts++;
+        throw new Error(
+          'Backing ACL commit claim finalizer cannot reenter the UCAN ACL from a backing ACL operation',
+        );
+      }
       this._backingInvocationDepth++;
       let result: unknown;
       try {
