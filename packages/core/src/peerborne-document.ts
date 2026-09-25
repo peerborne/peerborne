@@ -47,7 +47,10 @@ import {
   treeContainsCid,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
-import { CRDTSyncMessage } from './crdt-sync-message.js';
+import {
+  CRDTSyncMessage,
+  type OrdinarySyncMessage,
+} from './crdt-sync-message.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
@@ -4278,7 +4281,7 @@ export class PeerborneDocument<
           >(
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             'ordinary-sync-v1',
-          );
+          ) as OrdinarySyncMessage<ChangesType, PublicKey>;
           if (message.documentId !== this.documentPath) return false;
 
           return this.sync(message);
@@ -4478,7 +4481,7 @@ export class PeerborneDocument<
    * that already verified a specialized message use an internal boundary.
    */
   public async sync(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: OrdinarySyncMessage<ChangesType, PublicKey>,
   ): Promise<boolean> {
     let detached: CRDTSyncMessage<ChangesType, PublicKey>;
     try {

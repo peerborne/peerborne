@@ -31,6 +31,16 @@ export function isSyncMessageSignatureContext(
 }
 
 /**
+ * Sync message accepted by `PeerborneDocument.sync()`. The ordinary context
+ * tag is required so callers that omit it fail to compile instead of being
+ * rejected at runtime.
+ */
+export type OrdinarySyncMessage<ChangesType, PublicKey = unknown> =
+  CRDTSyncMessage<ChangesType, PublicKey> & {
+    signatureContext: 'ordinary-sync-v1';
+  };
+
+/**
  * CRDTSyncMessage is the message sent over both GossipSub pubsub topics and in response to
  * load document requests.
  *

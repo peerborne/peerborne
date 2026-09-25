@@ -124,6 +124,29 @@ describe('ordinary sync-message context confinement', () => {
     },
   );
 
+  test('requires the ordinary context tag in the sync() type', async () => {
+    const document = fakeDocument({}) as PeerborneDocument<
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown
+    >;
+
+    await expect(
+      // @ts-expect-error sync() requires signatureContext 'ordinary-sync-v1'
+      document.sync({ documentId: documentPath }),
+    ).resolves.toBe(false);
+    await expect(
+      document.sync({
+        documentId: documentPath,
+        // @ts-expect-error sync() accepts only the ordinary context
+        signatureContext: 'load-response-v3',
+      }),
+    ).resolves.toBe(false);
+  });
+
   test('does not expose the internal signature-verification bypass', async () => {
     const verify = jest.fn(async () => false);
     const collectACL = jest.fn();

@@ -340,7 +340,10 @@ export type {
 } from './auth-provider.js';
 export type { SubtleCryptoEncryptionResult } from './auth-subtlecrypto.js';
 export type { CRDTLoadRequest } from './crdt-load-request.js';
-export type { SyncMessageSignatureContext } from './crdt-sync-message.js';
+export type {
+  OrdinarySyncMessage,
+  SyncMessageSignatureContext,
+} from './crdt-sync-message.js';
 export type {
   CRDTDocumentChangeNode,
   CRDTWriterChangeNode,
