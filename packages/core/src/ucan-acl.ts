@@ -842,7 +842,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             'Prepared ACL removal commit',
           );
         }
-            if (this._backingRevision !== backingRevision) {
+        if (this._backingRevision !== backingRevision) {
           throw new Error(
             'Prepared ACL removal became stale after backing ACL changed',
           );
