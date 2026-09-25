@@ -1655,19 +1655,39 @@ export class PeerborneDocument<
     }
   }
 
-  /** Apply a writer ACL change and invalidate the cached key list. */
+  /**
+   * Apply a writer ACL change and invalidate the cached key list when the
+   * merge changed the ACL state. Ordinary sync re-merges every inline writer
+   * node, so treating idempotent merges as writer changes would spuriously
+   * invalidate loads and tip votes verified against the same writer set.
+   */
   private _mergeWriters(changes: ChangesType): void {
-    // Synchronous mutation: increment-mutate-decrement around the
-    // `merge()` call so any concurrent `_getWriterKeys` running on
-    // another microtask sees the in-flight flag. Both invalidations
-    // (pre and post) match the async helper's behavior.
+    // `merge()` is synchronous, so no `_getWriterKeys` can observe the
+    // in-flight window. A fetch that started before the merge captured the
+    // old version and retries if the post-merge invalidation below runs.
+    const before = this._writerAclStateBytes();
+    let changed = true;
     this._writerMutationsInFlight++;
-    this._invalidateWriterKeyCache();
     try {
       this._writers.merge(changes);
+      const after = this._writerAclStateBytes();
+      changed =
+        before === undefined ||
+        after === undefined ||
+        !constantTimeEqual(before, after);
     } finally {
       this._writerMutationsInFlight--;
-      this._invalidateWriterKeyCache();
+      if (changed) this._invalidateWriterKeyCache();
+    }
+  }
+
+  private _writerAclStateBytes(): Uint8Array | undefined {
+    try {
+      return new Uint8Array(
+        this._changesSerializer.serializeChanges(this._writers.current()),
+      );
+    } catch {
+      return undefined;
     }
   }
 
