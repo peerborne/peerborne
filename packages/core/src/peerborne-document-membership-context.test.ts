@@ -439,3 +439,18 @@ describe('BeeKEM Welcome writer authorization races', () => {
     expect(harness.document._invitationEpoch).toBeUndefined();
   });
 });
+
+describe('pending Welcome buffering', () => {
+  test('preserves unexpected errors while buffering an authenticated Welcome', () => {
+    const failure = new Error('serializer failed');
+    const document = fakeDocument({
+      _pendingWelcomes: { storeMessage: () => { throw failure; } },
+      _syncMessageSerializer: new JSONSerializer<any>(),
+      _now: () => 1,
+    });
+    expect(() => document._bufferPendingWelcome({
+      documentId: documentPath,
+      welcomeEpochId: new Uint8Array(32).fill(1),
+    }, true)).toThrow(failure);
+  });
+});
