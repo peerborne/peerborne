@@ -5,7 +5,7 @@ import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
 } from './peerborne-document.js';
-import { ACLOperationInProgressError } from './acl.js';
+import { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
 import {
   crdtDocumentChangeNode,
   crdtReaderChangeNode,
@@ -601,6 +601,51 @@ describe('document load response boundaries', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(handler).not.toHaveBeenCalled();
     expect(document._remoteUpdateNotificationTail).toBeUndefined();
+  });
+
+  test('propagates a certified ACL rejection from a missing block without poisoning', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    const refresh = jest.fn();
+    const trackTip = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/deferred-acl-rejection',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ACL', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async () => ({ remote: true })),
+      _mergeWriters: jest.fn(async () => {
+        throw rejection;
+      }),
+      _trackTip: trackTip,
+      _refreshLastSyncMessageFromSync: refresh,
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncDocumentChanges('ACL', {
+          kind: crdtWriterChangeNode,
+        }),
+      ).rejects.toBe(rejection);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(document._mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set());
+    expect(trackTip).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
   });
 
   test('keeps bootstrap pending when its deferred audience conflicts', async () => {
