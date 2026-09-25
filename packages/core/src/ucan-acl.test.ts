@@ -237,7 +237,7 @@ describe('UCANACL', () => {
     expect(() => acl.current()).toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
-    await expect(acl.add('key1')).rejects.toThrow(
+    await expect(grantWithDirectBackingAdd('key1')).rejects.toThrow(
       /failed ACL backing mutation may have partially changed/,
     );
     expect(backing.add).toHaveBeenCalledTimes(1);
