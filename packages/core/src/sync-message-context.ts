@@ -12,6 +12,7 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
+  snapshotStringBytes,
 } from './utils.js';
 
 const reflectOwnKeys = Reflect.ownKeys;
@@ -124,15 +125,11 @@ const allowedFields: Readonly<
 const rootSnapshotLimits = Object.fromEntries(
   Object.entries(allowedFields).map(([context, allowed]) => {
     let maxRootKeyBytes = 0;
-    for (const field of allowed) {
-      maxRootKeyBytes += field.length * 2;
-      if (!Number.isSafeInteger(maxRootKeyBytes)) {
-        throw new RangeError(
-          'Sync message root key-byte limit exceeds the safe integer range',
-        );
-      }
-    }
-    return [context, { maxProperties: allowed.size, maxKeyBytes: maxRootKeyBytes }];
+    for (const field of allowed) maxRootKeyBytes += snapshotStringBytes(field);
+    return [
+      context,
+      { maxProperties: allowed.size, maxKeyBytes: maxRootKeyBytes },
+    ];
   }),
 ) as Record<SyncMessageContext, { maxProperties: number; maxKeyBytes: number }>;
 

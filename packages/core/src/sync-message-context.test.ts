@@ -374,6 +374,62 @@ describe('sync message wire-context separation', () => {
   });
 });
 
+describe('sync message root snapshot limits', () => {
+  function countingProxy(target: Record<string, unknown>) {
+    const counter = { descriptorCalls: 0 };
+    const proxy = new Proxy(target, {
+      getOwnPropertyDescriptor(inner, property) {
+        counter.descriptorCalls++;
+        return Reflect.getOwnPropertyDescriptor(inner, property);
+      },
+    });
+    return { proxy, counter };
+  }
+
+  test('rejects more root keys than the context allows before reading descriptors', () => {
+    const { proxy, counter } = countingProxy({
+      documentId: '/doc',
+      signatureContext: 'key-update-v2',
+      keychainChanges: {},
+      signature: 'sig',
+      extra: 1,
+    });
+
+    expect(() =>
+      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
+    ).toThrow(/key-update-v2 message exceeds 4 own properties/);
+    expect(counter.descriptorCalls).toBe(0);
+  });
+
+  test('rejects root key bytes beyond the context field names before reading descriptors', () => {
+    const { proxy, counter } = countingProxy({ ['x'.repeat(51)]: 1 });
+
+    expect(() =>
+      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
+    ).toThrow(/key-update-v2 message exceeds 100 own-property key bytes/);
+    expect(counter.descriptorCalls).toBe(0);
+  });
+
+  test('admits a root carrying every allowed field', () => {
+    expect(
+      snapshotSyncMessageForContext(
+        {
+          documentId: '/doc',
+          signatureContext: 'key-update-v2',
+          keychainChanges: {},
+          signature: 'sig',
+        },
+        'key-update-v2',
+      ),
+    ).toEqual({
+      documentId: '/doc',
+      signatureContext: 'key-update-v2',
+      keychainChanges: {},
+      signature: 'sig',
+    });
+  });
+});
+
 test('snapshot comparison rejects different array lengths even without enumerable entries', () => {
   expect(syncMessageMatchesSnapshot(
     { documentId: '/doc', signatureContext: 'ordinary-sync-v1', changes: new Array(2) } as any,
