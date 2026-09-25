@@ -1149,9 +1149,11 @@ export class PeerborneDocument<
   // Surviving readers feed the update into `processPathUpdate` and
   // re-derive the document encryption key from the fresh root secret
   // (see `derive-doc-key.ts`). The removed reader's leaf is blanked,
-  // so they cannot recompute the root secret -- this closes the
-  // revocation-latency gap of the previous "encrypt the new key under
-  // the old key" rotation scheme.
+  // so they cannot recompute the root secret from the PathUpdate. This
+  // is a primitive-level property: PathUpdate delivery is best-effort,
+  // BeeKEM state is memory-only, and a surviving reader that misses the
+  // update needs a recipient-bound re-invitation or explicit
+  // key-recovery flow, which Peerborne does not run automatically.
   //
   // The tree is initialized in one of two ways:
   //
