@@ -43,6 +43,7 @@ import {
   Doc,
   encodeStateAsUpdateV2,
   encodeStateVector,
+  ID,
   Item,
 } from 'yjs';
 import { Base64 } from 'js-base64';
@@ -599,6 +600,7 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
       structureCount += range.len;
     }
   }
+  assertValidEncodedYjsACLMembership(decoded.structs, operation);
   const users = existingYjsACLUsers(doc);
   let memberCount = 0;
   for (const item of users?._map.values() ?? []) {
@@ -613,28 +615,110 @@ function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
   return state;
 }
 
+function assertValidYjsACLMembershipItem(
+  item: Item,
+  key: string | null,
+  operation: string,
+): void {
+  assertCanonicalP384PublicKeyEncoding(key);
+  if (item.content instanceof ContentDeleted) {
+    throw new Error(
+      `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
+    );
+  }
+  if (
+    !(item.content instanceof ContentAny) ||
+    item.length !== item.content.arr.length ||
+    item.content.arr.length === 0 ||
+    item.content.arr.some((value) => value !== true)
+  ) {
+    throw new Error(
+      `Cannot ${operation}: Yjs ACL membership values must be true`,
+    );
+  }
+}
+
+// Encoded state also carries structs Yjs keeps pending until their causal
+// dependencies arrive. Their parent is implicit when they have an origin, so
+// resolve it through the encoded origins the way Item.getMissing() will.
+function assertValidEncodedYjsACLMembership(
+  structs: readonly unknown[],
+  operation: string,
+): void {
+  const itemsByClient = new Map<number, Item[]>();
+  for (const struct of structs) {
+    if (!(struct instanceof Item)) continue;
+    const items = itemsByClient.get(struct.id.client) ?? [];
+    items.push(struct);
+    itemsByClient.set(struct.id.client, items);
+  }
+  for (const items of itemsByClient.values()) {
+    items.sort((left, right) => left.id.clock - right.id.clock);
+  }
+  const findItem = (id: ID): Item | undefined => {
+    const items = itemsByClient.get(id.client);
+    if (items === undefined) return undefined;
+    let low = 0;
+    let high = items.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >>> 1;
+      const item = items[middle];
+      if (id.clock < item.id.clock) {
+        high = middle - 1;
+      } else if (id.clock >= item.id.clock + item.length) {
+        low = middle + 1;
+      } else {
+        return item;
+      }
+    }
+    return undefined;
+  };
+
+  type ResolvedParent = { parent: unknown; parentSub: string | null } | null;
+  const resolved = new Map<Item, ResolvedParent>();
+  const resolveParent = (item: Item): ResolvedParent => {
+    const chain: Item[] = [];
+    const visiting = new Set<Item>();
+    let current: Item | undefined = item;
+    let result: ResolvedParent = null;
+    while (current !== undefined) {
+      if (resolved.has(current)) {
+        result = resolved.get(current) ?? null;
+        break;
+      }
+      if (visiting.has(current)) break;
+      visiting.add(current);
+      chain.push(current);
+      if (current.parent !== null) {
+        result = { parent: current.parent, parentSub: current.parentSub };
+        break;
+      }
+      const neighbor: ID | null = current.origin ?? current.rightOrigin;
+      current = neighbor === null ? undefined : findItem(neighbor);
+    }
+    for (const visited of chain) resolved.set(visited, result);
+    return result;
+  };
+
+  for (const items of itemsByClient.values()) {
+    for (const item of items) {
+      const resolvedParent = resolveParent(item);
+      if (resolvedParent?.parent !== 'users') continue;
+      assertValidYjsACLMembershipItem(
+        item,
+        resolvedParent.parentSub,
+        operation,
+      );
+    }
+  }
+}
+
 function assertValidYjsACLHistory(doc: Doc, operation: string): void {
   const users = existingYjsACLUsers(doc);
   for (const structs of doc.store.clients.values()) {
     for (const struct of structs) {
       if (!(struct instanceof Item) || struct.parent !== users) continue;
-      const key = struct.parentSub;
-      assertCanonicalP384PublicKeyEncoding(key);
-      if (struct.content instanceof ContentDeleted) {
-        throw new Error(
-          `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
-        );
-      }
-      if (
-        !(struct.content instanceof ContentAny) ||
-        struct.length !== struct.content.arr.length ||
-        struct.content.arr.length === 0 ||
-        struct.content.arr.some((value) => value !== true)
-      ) {
-        throw new Error(
-          `Cannot ${operation}: Yjs ACL membership values must be true`,
-        );
-      }
+      assertValidYjsACLMembershipItem(struct, struct.parentSub, operation);
     }
   }
 }
