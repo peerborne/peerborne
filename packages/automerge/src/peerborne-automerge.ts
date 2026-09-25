@@ -482,7 +482,9 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       this._assertComplete('add an ACL member');
       const hash = await serializeKey(publicKey);
       assertCanonicalP384PublicKeyEncoding(hash);
-      const aclNew = change(this._acl, (doc) => {
+      // Automerge advances the handle passed to change(), so stage on a clone
+      // to keep the live ACL usable when a resource limit rejects the result.
+      const aclNew = change(clone(this._acl), (doc) => {
         if (!doc.users) {
           doc.users = {};
         }

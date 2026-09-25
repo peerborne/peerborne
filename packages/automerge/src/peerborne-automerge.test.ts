@@ -550,6 +550,44 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('a rejected local addition leaves the live ACL usable', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const retainedOperations = acl
+      .current()
+      .reduce(
+        (total, binaryChange) =>
+          total + decodeAutomergeChange(binaryChange).ops.length,
+        0,
+      );
+    const paddingBase = automergeInit<{ padding?: number[] }>();
+    const padding = automergeChange(paddingBase, (doc) => {
+      doc.padding = [];
+      for (
+        let index = 0;
+        index < MAX_AUTOMERGE_ACL_OPERATIONS - retainedOperations - 1;
+        index++
+      ) {
+        doc.padding.push(index);
+      }
+    });
+    acl.merge(getAutomergeChanges(paddingBase, padding));
+    const before = acl.current();
+
+    await expect(acl.add(key2)).rejects.toThrow(/operation limit/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key2)).toBe(false);
+    await expect(acl.add(key2)).rejects.toThrow(/operation limit/);
+    expect(acl.current()).toEqual(before);
+    expect(() => acl.merge(before)).not.toThrow();
+
+    const receiver = new AutomergeACL();
+    expect(() => receiver.merge(before)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(false);
+  });
+
+
   test('rejects a users-root deletion racing a nested assignment', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
