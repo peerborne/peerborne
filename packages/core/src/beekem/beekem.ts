@@ -618,9 +618,8 @@ export class BeeKEM {
       receiverGeneration !== this._receiverGeneration ||
       !this._isFreshWelcomeTarget()
     ) {
-      throw new Error(
-        WELCOME_SUPERSEDED_MESSAGE,
-      );
+      rootSecret.fill(0);
+      throw new Error(WELCOME_SUPERSEDED_MESSAGE);
     }
     return await this._registerWelcomeCandidate(
       attemptRevision,
