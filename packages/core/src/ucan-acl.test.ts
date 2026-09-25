@@ -2821,6 +2821,61 @@ describe('UCANACL', () => {
     expect(backing.remove).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['a boolean', true],
+    ['a number', 1],
+    ['a plain object', { applied: true }],
+    ['a null-prototype object', Object.create(null)],
+    ['a function', () => undefined],
+  ])(
+    'accepts a synchronous backing merge that returns %s',
+    async (_label, value) => {
+      backing.merge.mockReturnValue(value);
+      backing.check.mockResolvedValue(true);
+
+      expect(acl.merge('incoming-changes')).toBeUndefined();
+      acl.merge('incoming-changes');
+
+      expect(backing.merge).toHaveBeenCalledTimes(2);
+      await expect(acl.check('key1')).resolves.toBe(true);
+    },
+  );
+
+  test.each([
+    ['a native Promise', () => Promise.resolve(undefined)],
+    ['a custom thenable', () => ({ then: () => undefined })],
+  ])(
+    'still poisons a backing merge that returns %s',
+    async (_label, makeResult) => {
+      backing.merge.mockReturnValue(makeResult());
+
+      expect(() => acl.merge('incoming-changes')).toThrow(
+        'Backing ACL merge must complete synchronously',
+      );
+      await expect(acl.check('key1')).rejects.toThrow(
+        /backing ACL violated a synchronous operation contract/,
+      );
+    },
+  );
+
+  test.each(['prepareAdd', 'prepareRemove'] as const)(
+    '%s accepts a synchronous prepared commit that returns a value',
+    async (prepareMethod) => {
+      const commit = jest.fn(() => ({ applied: true }));
+      backing[prepareMethod] = jest.fn(async () => ({
+        changes: `${prepareMethod}-changes`,
+        commit,
+      }));
+      backing.check.mockResolvedValue(true);
+
+      const prepared = await acl[prepareMethod]('user1');
+      expect(prepared.commit()).toBeUndefined();
+
+      expect(commit).toHaveBeenCalledTimes(1);
+      await expect(acl.check('key1')).resolves.toBe(true);
+    },
+  );
+
   test('poisons a backing merge Promise with no visible then', async () => {
     let rejected = false;
     const hiddenPromise = Promise.resolve().then(() => {

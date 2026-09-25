@@ -452,21 +452,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   ): T {
     return this._invokeBacking(() => {
       const result = operation();
-      if (resultPolicy === 'void') {
-        if (result !== undefined) {
-          this._backingSyncContractViolated = true;
-          if (
-            (typeof result === 'object' && result !== null) ||
-            typeof result === 'function'
-          ) {
-            this._observeInvalidNativePromiseReturn(
-              result,
-              `${operationName} result`,
-            );
-          }
-          throw new TypeError(`${operationName} must complete synchronously`);
-        }
-        return result;
+      if (
+        resultPolicy === 'void' &&
+        typeof result !== 'object' &&
+        typeof result !== 'function'
+      ) {
+        // A `void` method may still return a synchronous value; only an
+        // asynchronous result violates the synchronous contract.
+        return undefined as T;
       }
 
       const requirePlainClaimResult = resultPolicy === 'plain-claim';
@@ -587,7 +580,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         }
         throw new TypeError(`${operationName} must complete synchronously`);
       }
-      return result;
+      return resultPolicy === 'void' ? (undefined as T) : result;
     });
   }
 
