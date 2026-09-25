@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { deriveEpochIdFromRootSecret } from './derive-doc-key.js';
+import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
 
 jest.mock(
   'it-pipe',
@@ -283,5 +285,118 @@ describe('BeeKEM PathUpdate context confinement', () => {
     );
 
     expect(harness.addEpochKey).not.toHaveBeenCalled();
+  });
+});
+
+const welcomeSerializer = {
+  serializeSyncMessage(message: unknown) {
+    return new TextEncoder().encode(
+      JSON.stringify(message, (_key, value) =>
+        value instanceof Uint8Array
+          ? { __testBytes: Array.from(value) }
+          : value,
+      ),
+    );
+  },
+  deserializeSyncMessage(data: Uint8Array) {
+    return JSON.parse(new TextDecoder().decode(data), (_key, value) =>
+      value && typeof value === 'object' && Array.isArray(value.__testBytes)
+        ? new Uint8Array(value.__testBytes)
+        : value,
+    );
+  },
+};
+
+async function welcomeHarness() {
+  const kemKeyPair = await generateEciesKeyPair();
+  const kemPublicKeyRaw = new Uint8Array(
+    await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
+  );
+  const eciesSealed = await eciesSeal(
+    encodeWelcomeSealedPayload({
+      keychainChanges: new Uint8Array([1]),
+      beekemWelcome: null,
+    }),
+    kemKeyPair.publicKey,
+  );
+  const message = {
+    documentId: documentPath,
+    welcomeEpochId: new Uint8Array(32).fill(7),
+    welcomeRecipient: 'local-user',
+    welcomeRecipientKemPublicKey: kemPublicKeyRaw,
+    eciesSealed,
+    signature: 'AQ==',
+  };
+  const verify = jest.fn(async () => true);
+  const merge = jest.fn();
+  const document = fakeDocument({
+    _writerKeysVersion: 1,
+    _authProvider: { serializePublicKey: async () => 'local-user' },
+    _userPublicKey: { id: 'local-user' },
+    _readers: { check: async () => true },
+    _verifyMembershipWriterSignature: verify,
+    _syncMessageSerializer: welcomeSerializer,
+    _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
+    _kemKeyPair: kemKeyPair,
+    _kemPublicKeyRaw: kemPublicKeyRaw,
+    _keychain: { merge },
+    _invitationEpoch: undefined,
+  });
+  return { document, merge, message, verify };
+}
+
+describe('BeeKEM Welcome writer authorization races', () => {
+  test('applies an authorized Welcome', async () => {
+    const harness = await welcomeHarness();
+
+    await expect(
+      harness.document._evaluateAndApplyBeeKEMWelcome(harness.message, {
+        fromBuffer: false,
+      }),
+    ).resolves.toBe(true);
+
+    expect(harness.merge).toHaveBeenCalledWith({ delta: 1 });
+    expect(harness.document._invitationEpoch).toEqual(
+      harness.message.welcomeEpochId,
+    );
+  });
+
+  test('rejects when writer authorization changes during verification', async () => {
+    const harness = await welcomeHarness();
+    harness.verify.mockImplementation(async () => {
+      harness.document._writerKeysVersion += 1;
+      return true;
+    });
+
+    await expect(
+      harness.document._evaluateAndApplyBeeKEMWelcome(harness.message, {
+        fromBuffer: false,
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.merge).not.toHaveBeenCalled();
+    expect(harness.document._invitationEpoch).toBeUndefined();
+  });
+
+  test('rechecks writer authorization inside admission', async () => {
+    const harness = await welcomeHarness();
+    const admission = {
+      isActive: () => true,
+      runMutation: async (operation: () => Promise<unknown>) => {
+        harness.document._writerKeysVersion += 1;
+        return { admitted: true, value: await operation() };
+      },
+    };
+
+    await expect(
+      harness.document._evaluateAndApplyBeeKEMWelcome(
+        harness.message,
+        { fromBuffer: false },
+        admission,
+      ),
+    ).resolves.toBe(false);
+
+    expect(harness.merge).not.toHaveBeenCalled();
+    expect(harness.document._invitationEpoch).toBeUndefined();
   });
 });
