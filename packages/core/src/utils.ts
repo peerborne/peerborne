@@ -217,6 +217,11 @@ export function firstTrue(promises: Promise<boolean>[]) {
 // JavaScript string lengths count UTF-16 code units, each occupying two bytes.
 const UTF16_BYTES_PER_CODE_UNIT = 2;
 
+/** Bytes charged by snapshot budgets for a detached JavaScript string. */
+export function snapshotStringBytes(value: string): number {
+  return value.length * UTF16_BYTES_PER_CODE_UNIT;
+}
+
 /**
  * Detach a serializer/provider-produced record without invoking accessors or
  * reading any property more than once. Routing checks, signature verification,
@@ -275,11 +280,8 @@ export function snapshotEnumerableOwnDataObject<T extends object>(
     if (typeof key !== 'string') {
       throw new TypeError(`${field} must not contain symbol properties`);
     }
-    keyBytes += key.length * UTF16_BYTES_PER_CODE_UNIT;
-    if (
-      !Number.isSafeInteger(keyBytes) ||
-      keyBytes > limits.maxKeyBytes
-    ) {
+    keyBytes += snapshotStringBytes(key);
+    if (!Number.isSafeInteger(keyBytes) || keyBytes > limits.maxKeyBytes) {
       throw new RangeError(
         `${field} exceeds ${limits.maxKeyBytes} own-property key bytes`,
       );
@@ -462,7 +464,7 @@ export function snapshotDeepEnumerableData<T>(
       continue;
     }
     if (typeof candidate === 'string') {
-      accountBytes(candidate.length * UTF16_BYTES_PER_CODE_UNIT);
+      accountBytes(snapshotStringBytes(candidate));
       assign(target, candidate);
       continue;
     }
@@ -518,9 +520,7 @@ export function snapshotDeepEnumerableData<T>(
       prototype = reflectApply(objectGetPrototypeOf, Object, [
         objectCandidate,
       ]) as object | null;
-      isArray = reflectApply(arrayIsArray, Array, [
-        objectCandidate,
-      ]) as boolean;
+      isArray = reflectApply(arrayIsArray, Array, [objectCandidate]) as boolean;
     } catch {
       throw new TypeError(`${field} contains an unstable object`);
     }
@@ -555,23 +555,18 @@ export function snapshotDeepEnumerableData<T>(
       if (keys.length !== length + 1) {
         throw new TypeError(`${field} arrays must be dense data arrays`);
       }
+      // Array index keys never appear in encoded input; accountProperties
+      // bounds their descriptor work without charging them as value bytes.
       accountProperties(length);
-      for (const key of keys) {
-        if (typeof key !== 'string') {
-          throw new TypeError(`${field} must not contain symbol properties`);
-        }
-        if (key !== 'length') accountBytes(key.length * UTF16_BYTES_PER_CODE_UNIT);
-      }
       const copy = new Array<unknown>(length);
       const children: SnapshotTask[] = [];
       for (let index = 0; index < length; index++) {
         let descriptor: PropertyDescriptor | undefined;
         try {
-          descriptor = reflectApply(
-            objectGetOwnPropertyDescriptor,
-            Object,
-            [objectCandidate, String(index)],
-          ) as PropertyDescriptor | undefined;
+          descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+            objectCandidate,
+            String(index),
+          ]) as PropertyDescriptor | undefined;
         } catch {
           throw new TypeError(`${field} contains an unstable array`);
         }
@@ -640,7 +635,7 @@ export function snapshotDeepEnumerableData<T>(
       if (typeof key !== 'string') {
         throw new TypeError(`${field} must not contain symbol properties`);
       }
-      accountBytes(key.length * UTF16_BYTES_PER_CODE_UNIT);
+      accountBytes(snapshotStringBytes(key));
     }
     const stringKeys = keys as string[];
     const copy: Record<string, unknown> = {};
@@ -648,11 +643,10 @@ export function snapshotDeepEnumerableData<T>(
     for (const key of stringKeys) {
       let descriptor: PropertyDescriptor | undefined;
       try {
-        descriptor = reflectApply(
-          objectGetOwnPropertyDescriptor,
-          Object,
-          [objectCandidate, key],
-        ) as PropertyDescriptor | undefined;
+        descriptor = reflectApply(objectGetOwnPropertyDescriptor, Object, [
+          objectCandidate,
+          key,
+        ]) as PropertyDescriptor | undefined;
       } catch {
         throw new TypeError(`${field} contains an unstable object`);
       }

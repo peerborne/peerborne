@@ -290,6 +290,20 @@ describe('snapshotDeepEnumerableData', () => {
     ).toThrow(/maximum depth 8/);
   });
 
+  test('does not charge array index keys as detached value bytes', () => {
+    const values = Array.from({ length: 12 }, (_, index) => index);
+
+    expect(
+      snapshotDeepEnumerableData(values, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 8,
+        maxProperties: 12,
+        maxArrayLength: 12,
+        maxValueBytes: 0,
+      }),
+    ).toEqual(values);
+  });
+
   test('checks the aggregate property budget before nested descriptors', () => {
     let descriptorCalls = 0;
     const nested = new Proxy(
