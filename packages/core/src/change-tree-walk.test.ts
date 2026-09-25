@@ -15,6 +15,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import { ACLOperationInProgressError } from './acl.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock(
@@ -271,8 +272,12 @@ describe('bounded iterative change-tree consumers', () => {
     expect(mergeWriters).not.toHaveBeenCalled();
   });
 
-  test('ACL pre-pass reaches a maximum-depth membership leaf exactly once', () => {
-    const mergeReaders = jest.fn();
+  test('ACL pre-pass reaches a maximum-depth membership leaf exactly once', async () => {
+    let settleMerge!: () => void;
+    const mergeSettlement = new Promise<void>((resolve) => {
+      settleMerge = resolve;
+    });
+    const mergeReaders = jest.fn(() => mergeSettlement);
     const mergeWriters = jest.fn();
     const root = chain(MAX_CHANGE_TREE_DEPTH, crdtReaderChangeNode);
     let leaf = root;
@@ -285,9 +290,90 @@ describe('bounded iterative change-tree consumers', () => {
       _mergeWriters: mergeWriters,
     });
 
-    expect(() => document._applyACLFromTree(root)).not.toThrow();
+    const applying = document._applyACLFromTree(root);
+    let applied = false;
+    void applying.then(() => {
+      applied = true;
+    });
+    await Promise.resolve();
     expect(mergeReaders).toHaveBeenCalledTimes(1);
     expect(mergeWriters).not.toHaveBeenCalled();
+    expect(applied).toBe(false);
+
+    settleMerge();
+    await expect(applying).resolves.toBeUndefined();
+    expect(applied).toBe(true);
+  });
+
+  test('ACL pre-pass waits to retry a conflicted merge before advancing', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeReaders = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ACLOperationInProgressError(
+          'Reader ACL merge',
+          settlement,
+        );
+      })
+      .mockImplementationOnce(() => undefined);
+    const mergeWriters = jest.fn();
+    const document = fakeDocument({
+      _readers: { merge: mergeReaders },
+      _writers: { merge: mergeWriters },
+      _pendingWelcomes: new Map(),
+      _writerMutationsInFlight: 0,
+      _cachedWriterKeys: null,
+      _writerKeysVersion: 0,
+    });
+    const entries = [
+      { kind: crdtReaderChangeNode, change: new Uint8Array([1]) },
+      { kind: crdtWriterChangeNode, change: new Uint8Array([2]) },
+    ];
+
+    const applying = document._applyCollectedACL(entries);
+    await Promise.resolve();
+    expect(mergeReaders).toHaveBeenCalledTimes(1);
+    expect(mergeWriters).not.toHaveBeenCalled();
+
+    settle();
+    await expect(applying).resolves.toBeUndefined();
+    expect(mergeReaders).toHaveBeenCalledTimes(2);
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+  });
+
+  test('writer merge keeps its mutation marker while awaiting retry', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeWriters = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ACLOperationInProgressError(
+          'Writer ACL merge',
+          settlement,
+        );
+      })
+      .mockImplementationOnce(() => undefined);
+    const document = fakeDocument({
+      _writers: { merge: mergeWriters },
+      _writerMutationsInFlight: 0,
+      _cachedWriterKeys: null,
+      _writerKeysVersion: 0,
+    });
+
+    const merging = document._mergeWriters(new Uint8Array([1]));
+    await Promise.resolve();
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._writerMutationsInFlight).toBe(1);
+
+    settle();
+    await expect(merging).resolves.toBeUndefined();
+    expect(mergeWriters).toHaveBeenCalledTimes(2);
+    expect(document._writerMutationsInFlight).toBe(0);
   });
 
   test('pruning leaves an over-budget cached tree untouched', () => {
@@ -449,6 +535,75 @@ describe('bounded iterative change-tree consumers', () => {
       expect(mergeWriters).not.toHaveBeenCalled();
     },
   );
+
+  function aclThenKeychainDocument(
+    mergeWriters: (changes: Change) => Promise<void>,
+    mergeKeychain: (changes: Change) => void,
+  ): any {
+    return fakeDocument({
+      documentPath: '/acl-before-keychain',
+      _isSigningEnabled: () => false,
+      _keychain: { merge: mergeKeychain },
+      _mergeReaders: jest.fn(),
+      _mergeWriters: mergeWriters,
+    });
+  }
+
+  function aclThenKeychainMessage(): unknown {
+    return {
+      documentId: '/acl-before-keychain',
+      signatureContext: 'load-response-v3',
+      changeId: 'root',
+      changes: { kind: crdtWriterChangeNode, change: new Uint8Array([1]) },
+      keychainChanges: new Uint8Array([9]),
+    };
+  }
+
+  test('a rejected ACL pre-pass leaves the keychain unchanged', async () => {
+    const failure = new Error('writer ACL merge failed');
+    const mergeWriters = jest.fn(async () => {
+      throw failure;
+    });
+    const mergeKeychain = jest.fn();
+    const document = aclThenKeychainDocument(mergeWriters, mergeKeychain);
+
+    await expect(
+      document._syncUnlocked(
+        aclThenKeychainMessage(),
+        false,
+        'load-response-v3',
+      ),
+    ).rejects.toBe(failure);
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(mergeKeychain).not.toHaveBeenCalled();
+  });
+
+  test('merges the keychain only after the ACL pre-pass settles', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const mergeWriters = jest.fn(() => settlement);
+    const stop = new Error('stop after keychain merge');
+    const mergeKeychain = jest.fn(() => {
+      throw stop;
+    });
+    const document = aclThenKeychainDocument(mergeWriters, mergeKeychain);
+
+    const outcome = document
+      ._syncUnlocked(aclThenKeychainMessage(), false, 'load-response-v3')
+      .then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+    await Promise.resolve();
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(mergeKeychain).not.toHaveBeenCalled();
+
+    settle();
+    await expect(outcome).resolves.toBe(stop);
+    expect(mergeKeychain).toHaveBeenCalledTimes(1);
+  });
 
   test('pruning uses one detached tree view and never partially mutates proxies', () => {
     let sourceMutationObserved = false;
