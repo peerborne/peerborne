@@ -349,12 +349,7 @@ describe('membership call-boundary snapshots', () => {
 
     await expect(addition).resolves.toBeUndefined();
     await held.blocker;
-    expect(addWriterUnlocked).toHaveBeenCalledWith(
-      { id: 'target' },
-      undefined,
-      true,
-      'target',
-    );
+    expect(addWriterUnlocked).toHaveBeenCalledWith({ id: 'target' }, 'target');
   });
 
   test('queues removals with detached canonical identities', async () => {

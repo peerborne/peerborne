@@ -1142,8 +1142,6 @@ describe('writer ACL publication boundary', () => {
       publish,
       ['must-not-publish'],
     );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
 
     await expect(document.addWriter('owner')).rejects.toThrow(
       /must first be added to the explicit readers ACL/,
@@ -1154,22 +1152,24 @@ describe('writer ACL publication boundary', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  test('supports an immutable writer addition without identity codecs', async () => {
+  test('names the missing identity codec before an immutable writer promotion', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const publish = jest.fn(async () => undefined);
     const { document } = publicationHarness(
       writers,
       publish,
-      ['primitive-add-cid'],
+      ['must-not-publish'],
     );
     delete document._authProvider.serializePublicKey;
     delete document._authProvider.deserializePublicKey;
 
-    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      /Writer addition requires AuthProvider.serializePublicKey/,
+    );
 
-    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
-    expect(writers.prepareAddCalls).toBe(1);
-    expect(publish).toHaveBeenCalledTimes(1);
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.prepareAddCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
   });
 
   test('rejects a mutable writer mutation without identity codecs', async () => {
@@ -1293,12 +1293,10 @@ describe('writer ACL publication boundary', () => {
       _addWriterUnlocked: jest.fn(
         async (
           writer: Identity,
-          beginMutation: () => void,
-          stableIdentity: boolean,
           serializedWriter: string,
+          beginMutation: () => void,
         ) => {
           beginMutation();
-          expect(stableIdentity).toBe(true);
           expect(serializedWriter).toBe('candidate');
           writerAclAdd(writer);
         },

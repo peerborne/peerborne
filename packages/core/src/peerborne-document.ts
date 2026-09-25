@@ -7442,21 +7442,8 @@ export class PeerborneDocument<
    */
   public async addWriter(writer: PublicKey) {
     this._assertNoIncompleteBootstrapLoad();
-    if (typeof this._authProvider.serializePublicKey !== 'function') {
-      const stableIdentity =
-        (typeof writer !== 'object' || writer === null) &&
-        typeof writer !== 'function';
-      return this._runStateMutation(() =>
-        this._addWriterUnlocked(
-          writer,
-          undefined,
-          stableIdentity,
-          typeof writer === 'string' && writer.length > 0
-            ? writer
-            : undefined,
-        ),
-      );
-    }
+    // Promotion requires the identity-bound reader KEM binding, which is only
+    // recorded through a canonical public-key encoding.
     const snapshot = this._startMembershipPublicKeySnapshot(
       writer,
       'Writer addition',
@@ -7466,46 +7453,17 @@ export class PeerborneDocument<
         publicKey: stableWriter,
         serialized: serializedWriter,
       } = await snapshot;
-      return this._addWriterUnlocked(
-        stableWriter,
-        undefined,
-        true,
-        serializedWriter,
-      );
+      return this._addWriterUnlocked(stableWriter, serializedWriter);
     });
   }
 
   private async _addWriterUnlocked(
     stableWriter: PublicKey,
+    serializedWriter: string,
     beginMutation?: () => void,
-    stableIdentity = false,
-    serializedWriter?: string,
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
-    if (!stableIdentity) {
-      requireSerializePublicKey(this._authProvider, 'Writer addition');
-      throw new Error(
-        'Writer addition requires a public-key snapshot before it is queued',
-      );
-    }
-
-    if (serializedWriter === undefined) {
-      const serializePublicKey = this._authProvider.serializePublicKey;
-      if (typeof serializePublicKey === 'function') {
-        serializedWriter = await serializePublicKey.call(
-          this._authProvider,
-          stableWriter,
-        );
-      } else if (
-        typeof stableWriter === 'string' &&
-        stableWriter.length > 0
-      ) {
-        serializedWriter = stableWriter;
-      } else {
-        requireSerializePublicKey(this._authProvider, 'Writer promotion');
-      }
-    }
     if (
       typeof serializedWriter !== 'string' ||
       serializedWriter.length === 0
@@ -8217,12 +8175,7 @@ export class PeerborneDocument<
         return welcome;
       },
       addWriter: () =>
-        this._addWriterUnlocked(
-          reader,
-          beginMutation,
-          true,
-          serializedReader,
-        ),
+        this._addWriterUnlocked(reader, serializedReader, beginMutation),
       repairReaders: async () => {
         beginMutation();
         return this._makeChange(
