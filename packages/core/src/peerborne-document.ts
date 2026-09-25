@@ -4308,39 +4308,25 @@ export class PeerborneDocument<
                   return TopicValidatorResult.Reject;
                 }
 
-                const { signature, ...messageWithoutSignature } = syncMessage;
-                let raw: Uint8Array;
-                try {
-                  raw = copyUnsharedUint8Array(
-                    this._syncMessageSerializer.serializeSyncMessage(
-                      messageWithoutSignature,
-                    ),
-                    1,
-                    MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                    'Unsigned sync message',
-                  );
-                } catch {
+                const unsigned = this._serializeUnsignedForVerification(
+                  syncMessage,
+                  'ordinary-sync-v1',
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+                );
+                if (unsigned === undefined) {
                   return TopicValidatorResult.Reject;
                 }
 
                 // Verify the message was signed by an authorized writer for this document
-                if ((await this._verifyWriterSignature(raw, signature)) !== true) {
+                if (
+                  (await this._verifyWriterSignature(
+                    unsigned.raw,
+                    syncMessage.signature,
+                  )) !== true
+                ) {
                   return TopicValidatorResult.Reject;
                 }
-                let rawAfterVerification: Uint8Array;
-                try {
-                  rawAfterVerification = copyUnsharedUint8Array(
-                    this._syncMessageSerializer.serializeSyncMessage(
-                      messageWithoutSignature,
-                    ),
-                    1,
-                    MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                    'Unsigned sync message',
-                  );
-                } catch {
-                  return TopicValidatorResult.Reject;
-                }
-                return constantTimeEqual(raw, rawAfterVerification)
+                return unsigned.unchanged()
                   ? TopicValidatorResult.Accept
                   : TopicValidatorResult.Reject;
               } catch {

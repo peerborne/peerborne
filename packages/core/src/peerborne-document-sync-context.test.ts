@@ -350,6 +350,71 @@ describe('ordinary sync-message context confinement', () => {
     await document.close();
   });
 
+  test.each([0, 1, 2])(
+    'GossipSub validator rejects a serializer that mutates on call %i',
+    async (mutationCall) => {
+      const json = new JSONSerializer<any>();
+      const validators = new Map<string, (...args: any[]) => Promise<unknown>>();
+      const pubsub = {
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+        subscribe: jest.fn(),
+        unsubscribe: jest.fn(),
+        topicValidators: {
+          set: (topic: string, validator: (...args: any[]) => Promise<unknown>) =>
+            validators.set(topic, validator),
+          get: (topic: string) => validators.get(topic),
+          delete: (topic: string) => validators.delete(topic),
+        },
+      };
+      let serializationCount = 0;
+      const decryptBlock = jest.fn();
+      const document = fakeDocument({
+        _invitationBootstrapReady: true,
+        _hashes: new Set(),
+        _computeTopic: () => '/topic',
+        _keychainProvider: { keyIDLength: 32 },
+        _authProvider: { nonceBits: 1 },
+        _decryptBlock: decryptBlock,
+        _syncMessageSerializer: {
+          deserializeSyncMessage: (raw: Uint8Array) =>
+            json.deserializeSyncMessage(raw),
+          serializeSyncMessage: (message: {
+            changes?: { change?: { value: number } };
+          }) => {
+            serializationCount += 1;
+            if (serializationCount === mutationCall) {
+              message.changes!.change!.value = 9;
+            }
+            return new Uint8Array([1]);
+          },
+        },
+        _verifyWriterSignature: async () => true,
+        _isSigningEnabled: () => true,
+        swarm: {
+          config: { enableSigning: true, enableTopicValidators: true },
+          registerDocument: jest.fn(),
+          unregisterDocument: jest.fn(),
+          heliaNode: { libp2p: { services: { pubsub } } },
+        },
+      });
+
+      await document.open();
+      decryptBlock.mockResolvedValueOnce(
+        json.serializeSyncMessage({
+          documentId: documentPath,
+          changeId: 'root',
+          changes: { kind: 'document', change: { value: 1 } },
+          signature: 'AQ==',
+        } as never),
+      );
+      await expect(
+        validators.get('/topic')!({}, { data: encryptedPayload() }),
+      ).resolves.toBe(mutationCall === 0 ? 'accept' : 'reject');
+      await document.close();
+    },
+  );
+
   test('pubsub handler rejects specialized bodies when validators are disabled', async () => {
     const serializer = new JSONSerializer<any>();
     let messageHandler: ((event: any) => void) | undefined;
