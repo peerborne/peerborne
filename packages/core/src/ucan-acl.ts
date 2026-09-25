@@ -73,6 +73,7 @@ const CACHED_IDENTITY_SNAPSHOT_LIMITS = {
 } as const;
 const arrayIsArray = Array.isArray;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const reflectApply = Reflect.apply;
 const reflectGet = Reflect.get;
 
@@ -123,7 +124,8 @@ interface CachedListingIdentity<PublicKey> {
  * is freshly detached. Primitive identities are immutable and remain
  * supported with the two-argument constructor. Backing listings above
  * {@link MAX_UCAN_ACL_LISTING_IDENTITIES} fail before identity codecs start,
- * so sparse or proxied arrays cannot schedule unbounded snapshot work.
+ * so sparse or proxied arrays cannot schedule unbounded snapshot work, and
+ * listings with holes are rejected instead of serializing a missing entry.
  */
 export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicKey> {
   private _entries: Map<string, UCANACLEntry> = new Map(); // publicKeyBase64 -> entry
@@ -683,7 +685,11 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         // Start each bounded codec before suspending so it captures every
         // caller-owned identity in this listing before the caller can mutate it.
         for (let index = 0; index < (length as number); index++) {
-          const user = reflectGet(allUsers, String(index)) as PublicKey;
+          const property = String(index);
+          if (!reflectApply(objectHasOwnProperty, allUsers, [property])) {
+            throw new TypeError('Backing ACL listing must not contain holes');
+          }
+          const user = reflectGet(allUsers, property) as PublicKey;
           snapshotTasks.push(
             this._snapshotListedPublicKey(user, 'ACL listing', backingRevision),
           );
