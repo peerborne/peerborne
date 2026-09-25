@@ -115,7 +115,7 @@
     "ipns": "^11.0.1",
     "it-pipe": "^3.0.1",
     "js-base64": "^3.7.8",
-    "libp2p": "^3.3.8",
+    "libp2p": "^3.3.11",
     "multiformats": "^14.0.5",
     "uint8arraylist": "^3.0.2"
   },
