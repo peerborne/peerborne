@@ -769,6 +769,35 @@ describe('YjsACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('merge() rejects malformed pending structs whose users root is still missing', async () => {
+    const serialized1 = await serializeKey(key1);
+    const founderSource = new Doc({ gc: false });
+    founderSource.getMap('users').set(serialized1, true);
+    const founder = encodeStateAsUpdateV2(founderSource);
+    const overwrite = (value: unknown): Uint8Array => {
+      const writer = new Doc({ gc: false });
+      applyUpdateV2(writer, founder);
+      const before = encodeStateVector(writer);
+      writer.getMap('users').set(serialized1, value);
+      return encodeStateAsUpdateV2(writer, before);
+    };
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(overwrite('member'))).toThrow(
+      'Yjs ACL membership values must be true',
+    );
+    expect(() => receiver.merge(overwrite(false))).toThrow(
+      'Yjs ACL membership values must be true',
+    );
+
+    receiver.merge(overwrite(true));
+    await expect(receiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    receiver.merge(founder);
+    expect(await receiver.check(key1)).toBe(true);
+  });
+
   test('a new dependency-incomplete update still stales prepared removal', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
