@@ -15,7 +15,8 @@ BeeKEM tree state, epoch document keys, encrypted Welcome messages, and an
 initial-load quorum. Those components have useful focused tests, but they are
 not one authenticated, durable membership state machine. BeeKEM state is
 memory-only, membership delivery is best-effort, the ACL chain is not the
-runtime authority, and the current quorum commits only to the content frontier.
+runtime authority, and the current quorum compares an application-supplied
+security tuple rather than a verified control log.
 Recent BeeKEM transaction helpers can restore in-memory tree/generation state
 after selected operation failures, but they do not persist the accepted
 generation/replay anchor or roll ACL, keychain, and network effects back as one
@@ -410,7 +411,7 @@ any mutation. Quorum is an availability/fork signal, not a substitute for
 cryptography. An identical frontier paired with a different control head,
 epoch, tree closure, snapshot, or keychain delta is not an agreeing vote.
 
-The target V4 loader pins one local tuple and writer-authority set before its
+The V4 loader pins one local tuple and writer-authority set before its
 first V4 probe. Every advertisement, full-document response, and snapshot candidate
 must match that tuple. Votes are deduplicated by the verified writer's canonical
 `AuthProvider.serializePublicKey` value, so one credential presented through
@@ -433,17 +434,17 @@ yet authenticate and replay a newer control suffix from an older checkpoint,
 so a stale local checkpoint fails closed instead of using quorum state as a
 new trust root.
 
-The repository includes versioned V4 load/advertisement codecs, a
-`security-advertise-v1` quorum-orchestrator mode, challenge binding, complete
-served-response-manifest recomputation, strict pinned-writer bootstrap checks,
-and a sentinel-policy helper. These are isolated primitives with unit tests;
-none is wired into the runtime. `PeerborneDocument.load()` still runs the
-`tip-advertise-v1` quorum without a challenge, security tuple, or control-head
-binding; no handlers are registered for the reserved V4 protocol IDs; and
-there is no strict-mode configuration. The runtime counts the unauthenticated
-`0xff` “unknown document” sentinel as a vote, so a Q-of-K set of peers that
-disclaim a document lets `open()` create a fresh one. The paragraphs above
-describe target behavior, not a runtime capability.
+Normal network loading in the current runtime uses only the V4 load, V4
+snapshot, and `security-advertise-v1` protocols. `PeerborneDocument.load()`
+captures application-supplied trusted writers
+(`resolveTrustedDocumentWriters`) or a locally resolved security tuple
+(`resolveLoadSecurityCommitments`) and a fresh challenge before probing. It
+counts each authenticated signing authority once, recomputes the complete
+response manifest, and binds the selected response to the agreed digest before
+mutation. `open()` never creates a document; only an explicit `create()` founds
+one. The runtime compares the captured tuple but does not verify an MLS
+genesis, replay a newer control suffix, or persist control state, so the
+MLS-specific paragraphs above remain target behavior, not a runtime capability.
 
 Empty or unauthenticated absence responses do not count as votes. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
