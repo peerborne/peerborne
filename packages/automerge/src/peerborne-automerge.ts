@@ -9,6 +9,7 @@ import {
   getObjectId,
   applyChanges,
   getMissingDeps,
+  hasHeads,
   Change as BinaryChange,
   getAllChanges,
   save,
@@ -256,6 +257,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   >();
   private _retainedChangeBytes = 0;
   private _retainedOperations = 0;
+  private _pendingMembershipKeys = new Map<string, readonly string[]>();
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
@@ -464,6 +466,49 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
+  // Pending changes are retained without materializing their writes in
+  // acl.users, so bound the members they could add once their dependencies
+  // arrive rather than admitting history that can never be completed.
+  private _preparePendingMembershipKeys(
+    acl: AutomergeACLDoc,
+    changes: readonly BinaryChange[],
+    operation: string,
+  ): Map<string, readonly string[]> {
+    const pending = new Map<string, readonly string[]>();
+    for (const [hash, keys] of this._pendingMembershipKeys) {
+      if (!hasHeads(acl, [hash])) pending.set(hash, keys);
+    }
+    for (const binaryChange of changes) {
+      const decoded = decodeChange(binaryChange);
+      if (pending.has(decoded.hash) || hasHeads(acl, [decoded.hash])) {
+        continue;
+      }
+      const keys: string[] = [];
+      for (const operationEntry of decoded.ops) {
+        if (
+          operationEntry.obj !== '_root' &&
+          operationEntry.action === 'set' &&
+          typeof operationEntry.key === 'string'
+        ) {
+          keys.push(operationEntry.key);
+        }
+      }
+      pending.set(decoded.hash, keys);
+    }
+    const members = new Set(Object.keys(acl.users ?? {}));
+    for (const keys of pending.values()) {
+      for (const key of keys) {
+        members.add(key);
+        if (members.size > MAX_AUTOMERGE_ACL_MEMBERS) {
+          throw new RangeError(
+            `Cannot ${operation}: Automerge ACL exceeds the ${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+          );
+        }
+      }
+    }
+    return pending;
+  }
+
   private _prepareChangeAccounting(
     changes: readonly BinaryChange[],
   ): AutomergeACLChangeRecord[] {
@@ -632,11 +677,17 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       'merge ACL changes',
     );
     assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
+    const pendingMembershipKeys = this._preparePendingMembershipKeys(
+      doc,
+      stableChanges,
+      'merge ACL changes',
+    );
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
     }
     if (accounting.length === 0) return;
     this._acl = doc;
+    this._pendingMembershipKeys = pendingMembershipKeys;
     this._commitChangeAccounting(accounting);
     this._revision++;
   }

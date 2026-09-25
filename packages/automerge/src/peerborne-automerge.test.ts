@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
+import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
   ACLOperationInProgressError,
@@ -28,6 +29,7 @@ import {
   MAX_AUTOMERGE_ACL_CHANGE_BYTES,
   MAX_AUTOMERGE_ACL_CHANGES,
   MAX_AUTOMERGE_ACL_HISTORY_BYTES,
+  MAX_AUTOMERGE_ACL_MEMBERS,
   MAX_AUTOMERGE_ACL_OPERATIONS,
   serializeKey,
   deserializeKey,
@@ -1015,6 +1017,49 @@ describe('AutomergeACL', () => {
     receiver.merge(getAllAutomergeChanges(predecessor));
     expect(await receiver.check(key1)).toBe(false);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('bounds members that dependency-incomplete changes could add', async () => {
+    const serialized1 = await serializeKey(key1);
+    const serialized2 = await serializeKey(key2);
+    const extraKeys = Array.from({ length: MAX_AUTOMERGE_ACL_MEMBERS }, () =>
+      createECDH('secp384r1').generateKeys('base64'),
+    );
+    const founder = automergeChange(
+      automergeInit<{ users: Record<string, unknown> }>(),
+      (doc) => {
+        doc.users = {};
+        doc.users[serialized1] = true;
+      },
+    );
+    const predecessor = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized2] = true;
+    });
+    const addKeys = (keys: string[]) =>
+      getAutomergeChanges(
+        predecessor,
+        automergeChange(automergeClone(predecessor), (doc) => {
+          for (const key of keys) doc.users[key] = true;
+        }),
+      );
+    const receiver = new AutomergeACL();
+    receiver.merge(getAllAutomergeChanges(founder));
+    const before = receiver.current();
+
+    expect(() => receiver.merge(addKeys(extraKeys))).toThrow(
+      `${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+    );
+    expect(receiver.current()).toEqual(before);
+
+    const half = MAX_AUTOMERGE_ACL_MEMBERS / 2;
+    receiver.merge(addKeys(extraKeys.slice(0, half)));
+    expect(() => receiver.merge(addKeys(extraKeys.slice(half)))).toThrow(
+      `${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+    );
+
+    receiver.merge(getAllAutomergeChanges(predecessor));
+    expect(await receiver.check(key2)).toBe(true);
+    expect(receiver.current()).toHaveLength(3);
   });
 
   test('rejects malformed membership changes whose users root is still missing', async () => {
