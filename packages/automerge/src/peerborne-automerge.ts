@@ -364,16 +364,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
           operationEntry.obj === usersObjectId
         ) {
           const key = operationEntry.key;
-          assertCanonicalP384PublicKeyEncoding(key);
-          if (
-            operationEntry.action !== 'del' &&
-            (operationEntry.action !== 'set' ||
-              operationEntry.value !== true)
-          ) {
-            throw new Error(
-              `Cannot ${operation}: Automerge ACL membership values must be true`,
-            );
-          }
+          this._assertValidMembershipOperation(operationEntry, operation);
           writesInChange.set(key, operationEntry.action);
         }
       }
@@ -412,6 +403,62 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         throw new Error(
           `Cannot ${operation}: Automerge ACL membership values must be true`,
         );
+      }
+    }
+  }
+
+  private _assertValidMembershipOperation(
+    operationEntry: { key?: unknown; action: string; value?: unknown },
+    operation: string,
+  ): void {
+    assertCanonicalP384PublicKeyEncoding(operationEntry.key);
+    if (
+      operationEntry.action !== 'del' &&
+      (operationEntry.action !== 'set' || operationEntry.value !== true)
+    ) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL membership values must be true`,
+      );
+    }
+  }
+
+  // Automerge retains changes with missing dependencies outside
+  // getAllChanges(), so validate their membership operations on admission.
+  private _assertValidIncomingUsersOperations(
+    acl: AutomergeACLDoc,
+    changes: readonly BinaryChange[],
+    operation: string,
+  ): void {
+    const users = acl.users as unknown;
+    const usersObjectIds = new Set<string>();
+    if (typeof users === 'object' && users !== null) {
+      const usersObjectId = getObjectId(users as Record<string, true>);
+      if (usersObjectId) usersObjectIds.add(usersObjectId);
+    }
+    const decodedChanges = changes.map((binaryChange) =>
+      decodeChange(binaryChange),
+    );
+    for (const decoded of decodedChanges) {
+      decoded.ops.forEach((operationEntry, index) => {
+        if (
+          operationEntry.obj !== '_root' ||
+          operationEntry.key !== 'users'
+        ) {
+          return;
+        }
+        if (operationEntry.action !== 'makeMap') {
+          throw new Error(
+            `Cannot ${operation}: Automerge ACL history mutates the users root`,
+          );
+        }
+        usersObjectIds.add(`${decoded.startOp + index}@${decoded.actor}`);
+      });
+    }
+    for (const decoded of decodedChanges) {
+      for (const operationEntry of decoded.ops) {
+        if (usersObjectIds.has(operationEntry.obj)) {
+          this._assertValidMembershipOperation(operationEntry, operation);
+        }
       }
     }
   }
@@ -578,6 +625,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const accounting = this._prepareChangeAccounting(stableChanges);
     const [doc] = applyChanges(clone(base), stableChanges);
     this._assertValidUsersHistory(doc, 'merge ACL changes');
+    this._assertValidIncomingUsersOperations(
+      doc,
+      stableChanges,
+      'merge ACL changes',
+    );
     assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
