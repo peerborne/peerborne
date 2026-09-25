@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
+import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
   applyUpdateV2,
@@ -24,6 +25,7 @@ import {
   YjsKeychain,
   YjsKeychainProvider,
   YjsJSONSerializer,
+  MAX_YJS_ACL_MEMBERS,
   MAX_YJS_ACL_STRUCTURES,
   MAX_YJS_ACL_UPDATE_BYTES,
   serializeKey,
@@ -764,6 +766,47 @@ describe('YjsACL', () => {
     await expect(receiver.check(key1)).rejects.toThrow(
       'Yjs ACL has unresolved update dependencies',
     );
+    receiver.merge(predecessor);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() bounds members that pending structs could add', async () => {
+    const serialized1 = await serializeKey(key1);
+    const serialized2 = await serializeKey(key2);
+    const extraKeys = Array.from({ length: MAX_YJS_ACL_MEMBERS }, () =>
+      createECDH('secp384r1').generateKeys('base64'),
+    );
+    const founderSource = new Doc({ gc: false });
+    founderSource.getMap('users').set(serialized1, true);
+    const founder = encodeStateAsUpdateV2(founderSource);
+    const writer = new Doc({ gc: false });
+    applyUpdateV2(writer, founder);
+    const addKeys = (keys: string[]): Uint8Array => {
+      const before = encodeStateVector(writer);
+      for (const key of keys) writer.getMap('users').set(key, true);
+      return encodeStateAsUpdateV2(writer, before);
+    };
+    const predecessor = addKeys([serialized2]);
+    const firstHalf = addKeys(extraKeys.slice(0, MAX_YJS_ACL_MEMBERS / 2));
+    const secondHalf = addKeys(extraKeys.slice(MAX_YJS_ACL_MEMBERS / 2));
+    const allExtra = new Doc({ gc: false });
+    applyUpdateV2(allExtra, firstHalf);
+    applyUpdateV2(allExtra, secondHalf);
+    const receiver = new YjsACL();
+    receiver.merge(founder);
+    const before = receiver.current();
+
+    expect(() =>
+      receiver.merge(encodeStateAsUpdateV2(allExtra)),
+    ).toThrow(`${MAX_YJS_ACL_MEMBERS}-member limit`);
+    expect(receiver.current()).toEqual(before);
+
+    receiver.merge(firstHalf);
+    expect(() => receiver.merge(secondHalf)).toThrow(
+      `${MAX_YJS_ACL_MEMBERS}-member limit`,
+    );
+
     receiver.merge(predecessor);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
