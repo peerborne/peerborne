@@ -235,6 +235,29 @@ describe('BeeKEM mutation atomicity', () => {
     ).resolves.toBeUndefined();
   });
 
+  test('validates queued removal targets against the tree at their turn', async () => {
+    const alice = new BeeKEM();
+    const aliceKeys = await generateKeyPair();
+    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+    const bobKeys = await generateKeyPair();
+
+    const added = alice.addMember(bobKeys.publicKey);
+    const removed = alice.removeMember(2);
+    const outOfRange = alice.removeMember(4);
+
+    await expect(added).resolves.toEqual(
+      expect.objectContaining({ rootSecret: expect.any(Uint8Array) }),
+    );
+    await expect(removed).resolves.toEqual(
+      expect.objectContaining({ rootSecret: expect.any(Uint8Array) }),
+    );
+    await expect(outOfRange).rejects.toThrow(/invalid leaf index/);
+    expect(alice.memberCount).toBe(2);
+    await expect(
+      alice.findLeafByPublicKey(bobKeys.publicKey),
+    ).resolves.toBeUndefined();
+  });
+
   test('rejects invalid, inactive, and local removal targets without mutation', async () => {
     const { alice, bobKeys } = await twoMemberGroup();
     const originalNodes = nodesOf(alice);
@@ -246,6 +269,7 @@ describe('BeeKEM mutation atomicity', () => {
       1,
       2.5,
       3,
+      4,
       Number.NaN,
       Number.POSITIVE_INFINITY,
       Number.MAX_SAFE_INTEGER + 1,

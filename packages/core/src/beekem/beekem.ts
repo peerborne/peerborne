@@ -221,6 +221,15 @@ function requireDetachedBytes(
   return value;
 }
 
+function isLeafIndexCandidate(index: number): boolean {
+  return (
+    Number.isSafeInteger(index) &&
+    index >= 0 &&
+    !Object.is(index, -0) &&
+    TreeMath.isLeaf(index)
+  );
+}
+
 function snapshotPathUpdate(update: PathUpdate): PathUpdate {
   let detached: unknown;
   try {
@@ -544,14 +553,7 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertInitializedForMutation('remove a member');
-    const treeWidth = 2 * this._numLeaves - 1;
-    if (
-      !Number.isSafeInteger(memberLeafIndex) ||
-      memberLeafIndex < 0 ||
-      Object.is(memberLeafIndex, -0) ||
-      memberLeafIndex >= treeWidth ||
-      !TreeMath.isLeaf(memberLeafIndex)
-    ) {
+    if (!isLeafIndexCandidate(memberLeafIndex)) {
       throw new Error('Cannot remove member: invalid leaf index');
     }
     return this._runMutation(() => this._removeMember(memberLeafIndex));
@@ -562,16 +564,11 @@ export class BeeKEM {
     rootSecret: Uint8Array;
   }> {
     this._assertLocalMutationState('remove member');
-    const treeWidth = 2 * this._numLeaves - 1;
     if (
-      !Number.isSafeInteger(memberLeafIndex) ||
-      memberLeafIndex < 0 ||
-      memberLeafIndex >= treeWidth ||
-      !TreeMath.isLeaf(memberLeafIndex)
+      !isLeafIndexCandidate(memberLeafIndex) ||
+      memberLeafIndex >= 2 * this._numLeaves - 1
     ) {
-      throw new Error(
-        'Cannot remove member: target must identify a leaf in the current tree',
-      );
+      throw new Error('Cannot remove member: invalid leaf index');
     }
     if (memberLeafIndex === this._myLeafIndex) {
       throw new Error('Cannot remove member: cannot remove the local member');
