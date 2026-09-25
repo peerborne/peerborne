@@ -49,8 +49,8 @@ Relays admit the current document namespace and the exact
 are rejected. A custom `pubsubDocumentPrefix` requires a matching
 slash-terminated namespace in every relay's `TOPIC_ALLOWLIST`. With an empty
 prefix, allow each concrete document topic or explicitly select unrestricted
-`*` mode. A custom `pubsubDocumentPublishPath` must match the relay's
-`DOCUMENT_PUBLISH_PATH`, `EXTRA_TOPICS`, or an exact allowlist entry. All peers
+`*` mode. `PeerborneNode` does not subscribe to the notification topic because
+no authenticated document-publish protocol exists. All peers
 must use the same current runtime; custom topics do not select an older format.
 
 Topic names are public routing labels, not authenticated version negotiation,

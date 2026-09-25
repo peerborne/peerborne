@@ -32,7 +32,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 ## Storage and persistence
 
 - **No replication factor guarantee.** Peerborne does not ensure encrypted payloads are stored on at least N origins. No peer can serve a local copy while every holder is offline, and data is lost if every copy is cleared or otherwise unrecoverable.
-- **Pinning is incomplete.** A `PeerborneNode` listener API exists but the normal core commit path does not publish to it. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
+- **Pinning is not implemented.** `PeerborneNode` does not subscribe to any document-publish topic because V1 cannot authenticate or authorize pin requests, and the normal core commit path has no publisher. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
 - **Automatic compaction is off by default.** When enabled, snapshots can prune the in-memory shadow tree; stored blocks are deleted only with opt-in `gcAfterPrune`.
 - **Snapshot-only first load can fail.** A quorum-bound first load has no prior writer set for snapshot authentication and rejects a response that contains only a snapshot.
 - **No size-based garbage collection policy.** Opt-in post-prune GC is destructive for the local copy. There is no TTL, quota, or size-limit-based automatic cleanup.
@@ -41,7 +41,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
-- **Custom document topics require coordinated upgrades.** The versioned defaults keep honest, default-configured runtime generations on separate document and publish-notification topics. A custom or empty topic can mix incompatible peers; every participant sharing it must be upgraded together, and the topic must be added to each relay's allowlist. Topic names are routing labels, not authenticated version negotiation or authorization, and relays do not bridge topic versions.
+- **Custom document topics require coordinated upgrades.** The versioned defaults keep honest, default-configured runtime generations on separate document and publish-notification topics. The publish-notification topic is a relay seed topic only; the current `PeerborneNode` runtime neither subscribes to nor consumes it. A custom or empty topic can mix incompatible peers; every participant sharing it must be upgraded together, and the topic must be added to each relay's allowlist. Topic names are routing labels, not authenticated version negotiation or authorization, and relays do not bridge topic versions.
 - **Many transports lack document-path evidence in CI.** The current cross-NAT
   proof verifies invitation acceptance, initial document-history load, and live
   post-join convergence through Circuit Relay. Transport-specific Peerborne
