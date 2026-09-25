@@ -1,6 +1,9 @@
 import { describe, expect, jest, test } from '@jest/globals';
 
-import { ACLOperationInProgressError } from './acl.js';
+import {
+  ACLMergeRejectedError,
+  ACLOperationInProgressError,
+} from './acl.js';
 import {
   crdtDocumentChangeNode,
   crdtWriterChangeNode,
@@ -1127,6 +1130,77 @@ describe('writer ACL publication boundary', () => {
           signatureContext: 'ordinary-sync-v1',
         }),
       ).rejects.toThrow(/discard this document instance/);
+    },
+  );
+
+  test.each(['readers', 'writers'] as const)(
+    'rejects a certified %s merge rejection without poisoning the document',
+    async (aclKind) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document, readers } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      const rejection = new ACLMergeRejectedError(
+        new Error(`malformed remote ${aclKind} update`),
+      );
+      const merge = jest.fn(() => {
+        throw rejection;
+      });
+      if (aclKind === 'readers') {
+        document._readers.merge = merge;
+      } else {
+        writers.merge = merge;
+      }
+
+      await expect(
+        aclKind === 'readers'
+          ? document._mergeReaders({ remote: true })
+          : document._mergeWriters({ remote: true }),
+      ).rejects.toBe(rejection);
+
+      expect(merge).toHaveBeenCalledTimes(1);
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      expect(readers).toEqual(new Set(['candidate']));
+      expect(writers.members).toEqual(new Set(['owner']));
+      await expect(document.getWriters()).resolves.toEqual(['owner']);
+    },
+  );
+
+  test.each(['readers', 'writers'] as const)(
+    'poisons the document when load abort abandons a pending %s merge',
+    async (aclKind) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const merge = jest.fn(() => pending);
+      if (aclKind === 'readers') {
+        document._readers.merge = merge;
+      } else {
+        writers.merge = merge;
+      }
+      const controller = new AbortController();
+
+      const merging =
+        aclKind === 'readers'
+          ? document._mergeReaders({ remote: true }, undefined, controller.signal)
+          : document._mergeWriters({ remote: true }, undefined, controller.signal);
+      await Promise.resolve();
+      controller.abort(new Error('load deadline'));
+
+      await expect(merging).rejects.toThrow('load deadline');
+      finish();
+      expect(document._bootstrapLoadApplicationState).toBe('poisoned');
     },
   );
 
