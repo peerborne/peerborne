@@ -6,7 +6,7 @@ description: Proposed architecture and acceptance gates for future MLS-secured P
 - Status: Proposed
 - Date: 2026-08-21
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
-- Follow-up evaluations: [ADR 0002](../0002-mls-implementation-dependency/) (dependency selection) and ADR 0003 (authorization proofs, [PR #456](https://github.com/Peerborne/peerborne/pull/456); proposed in a separate change).
+- Follow-up evaluations: [ADR 0002](../0002-mls-implementation-dependency/) (dependency selection) and [ADR 0003](../0003-zero-knowledge-membership-proofs/) (zero-knowledge membership proofs).
 
 ## Context
 
