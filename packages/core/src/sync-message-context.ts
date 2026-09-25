@@ -12,6 +12,7 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
+  snapshotStringBytes,
 } from './utils.js';
 
 const reflectOwnKeys = Reflect.ownKeys;
@@ -121,6 +122,17 @@ const allowedFields: Readonly<
   ]),
 };
 
+const rootSnapshotLimits = Object.fromEntries(
+  Object.entries(allowedFields).map(([context, allowed]) => {
+    let maxRootKeyBytes = 0;
+    for (const field of allowed) maxRootKeyBytes += snapshotStringBytes(field);
+    return [
+      context,
+      { maxProperties: allowed.size, maxKeyBytes: maxRootKeyBytes },
+    ];
+  }),
+) as Record<SyncMessageContext, { maxProperties: number; maxKeyBytes: number }>;
+
 /**
  * Deeply detach a deserialized sync message and reject fields owned by another
  * wire context. A writer signature authenticates bytes, not protocol intent,
@@ -132,12 +144,13 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
   context: SyncMessageContext,
   options: { retainCryptoKeys?: boolean } = {},
 ): CRDTSyncMessage<ChangesType, PublicKey> {
+  const allowed = allowedFields[context];
   const message = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
     value,
     `${context} message`,
+    rootSnapshotLimits[context],
   );
   const fields = reflectOwnKeys(message);
-  const allowed = allowedFields[context];
   for (const field of fields) {
     if (typeof field !== 'string') {
       throw new TypeError(`${context} message contains a symbol field`);
