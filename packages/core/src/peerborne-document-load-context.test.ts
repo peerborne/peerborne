@@ -180,6 +180,22 @@ test('request serialization cannot replace the captured freshness challenge', as
   expect(session.challenge).toEqual(fixtureLoadChallenge());
 });
 
+test('signs initial load requests when ordinary signing is disabled', async () => {
+  const { document } = loadHarness();
+  document._isSigningEnabled = () => false;
+  const session = fixedLoadSession(document);
+  const sign = jest.fn(async () => new Uint8Array([1]));
+  document._authProvider.sign = sign;
+  document._loadMessageSerializer = {
+    serializeLoadRequest: () => new Uint8Array([2]),
+  };
+
+  await expect(document._serializeInitialLoadRequest(session)).resolves.toEqual(
+    new Uint8Array([2]),
+  );
+  expect(sign).toHaveBeenCalledTimes(1);
+});
+
 describe('load-response V4 confinement', () => {
   test.each([
     ['a foreign field', { welcomeEpochId: new Uint8Array(32) }],
