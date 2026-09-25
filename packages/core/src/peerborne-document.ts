@@ -1228,28 +1228,33 @@ export class PeerborneDocument<
   /** Finalize a verified bootstrap while holding `_mutationQueue`. */
   private async _completeBootstrapStateApplicationUnlocked(
     beforeComplete?: () => Promise<void>,
-    assertStillActive?: () => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (this._bootstrapLoadApplicationState !== 'pending') {
       throw new Error(
         `Bootstrap finalization for ${this.documentPath} requires pending state`,
       );
     }
+    // Welcome drain, compaction, and notification preparation can await
+    // providers that never settle. Racing each against the caller's signal
+    // releases `_mutationQueue` on timeout while the instance stays pending.
+    throwIfLoadAborted(signal);
     if (this._pendingWelcomes.size > 0) {
-      await this._drainPendingWelcomesUnlocked(true);
+      await awaitLoadWork(this._drainPendingWelcomesUnlocked(true), signal);
     }
     if (this._bootstrapCompactionDeferred) {
       this._bootstrapCompactionDeferred = false;
-      await this._maybeCompact();
+      await awaitLoadWork(this._maybeCompact(), signal);
     }
-    await beforeComplete?.();
-    const deferredNotification =
-      await this._prepareDeferredBootstrapRemoteUpdateNotification();
-    // Preparing the notification can await ACL providers. Recheck the caller's
-    // deadline immediately before publishing completion; after this point the
-    // notification dispatch is deliberately synchronous and cannot escape as
-    // late background work after a timed-out invitation has been rejected.
-    assertStillActive?.();
+    await awaitLoadWork(beforeComplete?.(), signal);
+    const deferredNotification = await awaitLoadWork(
+      this._prepareDeferredBootstrapRemoteUpdateNotification(),
+      signal,
+    );
+    // Recheck the deadline immediately before publishing completion; after
+    // this point the notification dispatch is deliberately synchronous and
+    // cannot escape as late background work after a timed-out load rejected.
+    throwIfLoadAborted(signal);
     this._markBootstrapStateApplicationComplete();
     if (deferredNotification) {
       this._pendingBootstrapRemoteUpdateHashes.clear();
@@ -3850,10 +3855,22 @@ export class PeerborneDocument<
             }
           }
         }
+        const hasReplicatedState = (): boolean =>
+          this._hashes.size > 0 ||
+          this._lastSyncMessage !== undefined ||
+          this._latestSnapshot !== undefined;
+        // Signing-disabled loads carry no admission authority, so an
+        // established healthy document applies them as ordinary catch-up
+        // instead of risking a permanent pending bootstrap state.
+        const isEstablishedUnsignedLoad = (): boolean =>
+          loadWriterAdmission === 'unsigned' &&
+          !continuingInvitationBootstrap &&
+          this._bootstrapLoadApplicationState === 'complete' &&
+          hasReplicatedState();
         const trackedBootstrapLoad =
           loadWriterAdmission === 'bootstrap' ||
           loadWriterAdmission === 'pinned' ||
-          loadWriterAdmission === 'unsigned';
+          (loadWriterAdmission === 'unsigned' && !isEstablishedUnsignedLoad());
         if (trackedBootstrapLoad) {
           changeFetchOptions = {
             ...changeFetchOptions,
@@ -3893,7 +3910,7 @@ export class PeerborneDocument<
               throwIfLoadAborted(signal);
               return this._completeBootstrapStateApplicationUnlocked(
                 assertBootstrapCanComplete,
-                () => throwIfLoadAborted(signal),
+                signal,
               );
             });
           }
@@ -3903,19 +3920,18 @@ export class PeerborneDocument<
           this._markBootstrapStateApplicationPending();
           beganBootstrapStateApplication = true;
         };
-        const hasReplicatedState = (): boolean =>
-          this._hashes.size > 0 ||
-          this._lastSyncMessage !== undefined ||
-          this._latestSnapshot !== undefined;
         const syncTrackedLoadMessageUnlocked = async (): Promise<boolean> => {
-          // Signing-disabled loads carry no admission authority, so an
-          // established healthy document applies them as ordinary catch-up
-          // instead of risking a permanent pending bootstrap state.
-          const establishedUnsignedLoad =
+          const establishedUnsignedLoad = isEstablishedUnsignedLoad();
+          // An ordinary unsigned catch-up skipped the tracked prefetch and
+          // budgets. If the document stopped being established before this
+          // queued boundary, it cannot safely begin a tracked application.
+          if (
             loadWriterAdmission === 'unsigned' &&
-            !continuingInvitationBootstrap &&
-            this._bootstrapLoadApplicationState === 'complete' &&
-            hasReplicatedState();
+            !trackedBootstrapLoad &&
+            !establishedUnsignedLoad
+          ) {
+            return false;
+          }
           // Established pinned catch-up can temporarily return a complete
           // document to the pending bootstrap state. Do not begin that
           // transition while an older observer notification is waiting:

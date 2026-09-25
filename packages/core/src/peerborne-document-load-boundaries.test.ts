@@ -1999,6 +1999,89 @@ describe('document load response boundaries', () => {
     expect(() => document._assertNoIncompleteBootstrapLoad()).not.toThrow();
   });
 
+  test('applies an established unsigned catch-up without bootstrap fetch caps', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      changeId: 'unsigned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('unsigned admission must not read the writer ACL');
+      },
+      async () => {
+        throw new Error('unsigned admission must not verify signatures');
+      },
+      message,
+    );
+    document.swarm.config.enableSigning = false;
+    document._bootstrapLoadApplicationState = 'complete';
+    document._hashes.add('established-head');
+    document._readBlock = jest.fn(async () => {
+      throw new Error('ordinary catch-up must not pre-fetch blocks');
+    });
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        _context: string,
+        onStateApplicationStart: unknown,
+        _continuing: unknown,
+        _onKeychain: unknown,
+        fetchOptions: Record<string, unknown> | undefined,
+      ) => {
+        expect(onStateApplicationStart).toBeUndefined();
+        expect(fetchOptions?.maxBlockBytes).toBeUndefined();
+        expect(fetchOptions?.maxAggregateBlockBytes).toBeUndefined();
+        expect(fetchOptions?.aggregateBudget).toBeUndefined();
+        document._hashes.add('unsigned-head');
+        return true;
+      },
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+    expect(document._readBlock).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
+  test('skips an ordinary unsigned catch-up that is no longer established at the queue', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v3',
+      changeId: 'unsigned-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('unsigned admission must not read the writer ACL');
+      },
+      async () => {
+        throw new Error('unsigned admission must not verify signatures');
+      },
+      message,
+    );
+    document.swarm.config.enableSigning = false;
+    document._bootstrapLoadApplicationState = 'complete';
+    document._hashes.add('established-head');
+    document._mutationQueue = {
+      run: (operation: () => Promise<unknown>) => {
+        document._hashes.clear();
+        return operation();
+      },
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).resolves.toBe(false);
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
   test('tracks and defers an incomplete signer-pinned catch-up', async () => {
     const message = {
       documentId: '/load-race',
@@ -3024,6 +3107,50 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(() => document.document).toThrow(/discard this document instance/);
   });
+
+  test.each([
+    ['Welcome drain', 'drain'],
+    ['deferred compaction', 'compact'],
+    ['notification preparation', 'prepare'],
+  ] as const)(
+    'releases the load deadline when %s never settles during finalization',
+    async (_label, stage) => {
+      const started = deferred<void>();
+      const hung = (): Promise<never> => {
+        started.resolve();
+        return new Promise<never>(() => {});
+      };
+      const dispatch = jest.fn();
+      const document = fakeDocument({
+        documentPath: '/hung-finalization',
+        _bootstrapLoadApplicationState: 'pending',
+        _document: { value: 'bootstrap' },
+        _pendingWelcomes: new Map(stage === 'drain' ? [['buffered', {}]] : []),
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _bootstrapCompactionDeferred: stage === 'compact',
+        _remoteHandlers: {},
+        _drainPendingWelcomesUnlocked: jest.fn(hung),
+        _maybeCompact: jest.fn(hung),
+        _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
+          stage === 'prepare' ? hung : async () => undefined,
+        ),
+        _dispatchRemoteUpdateHandlers: dispatch,
+      });
+      const controller = new AbortController();
+
+      const completion = document._completeBootstrapStateApplicationUnlocked(
+        undefined,
+        controller.signal,
+      );
+      await started.promise;
+      controller.abort(new Error('Invitation stream deadline exceeded'));
+
+      await expect(completion).rejects.toThrow(/deadline exceeded/);
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(() => document.document).toThrow(/discard this document instance/);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
 
   test('open rechecks pending state after asynchronous path validation', async () => {
     const validationStarted = deferred<void>();
