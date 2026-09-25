@@ -3031,6 +3031,37 @@ describe('AutomergeKeychain', () => {
     expect(receiver.getKey(epochId)).toBe(first[0][1]);
   });
 
+  test('a failed merge hydration can be claimed without keys or retried', async () => {
+    const source = new AutomergeKeychain();
+    const [epochId] = await source.add();
+    const importSpy = jest
+      .spyOn(crypto.subtle, 'importKey')
+      .mockRejectedValueOnce(new Error('import failed'));
+
+    try {
+      const unhydratedReceiver = new AutomergeKeychain();
+      const unhydrated = unhydratedReceiver.prepareMerge(source.history());
+      await expect(unhydrated.hydrateKeys()).rejects.toThrow('import failed');
+      unhydrated.claimCommit!().finalize();
+      expect(unhydratedReceiver.getKey(epochId)).toBeUndefined();
+      expect((await unhydratedReceiver.current())[0]).toEqual(epochId);
+
+      importSpy.mockRejectedValueOnce(new Error('import failed again'));
+      const retriedReceiver = new AutomergeKeychain();
+      const retried = retriedReceiver.prepareMerge(source.history());
+      await expect(retried.hydrateKeys()).rejects.toThrow(
+        'import failed again',
+      );
+      const [[retriedId, retriedKey]] = await retried.hydrateKeys();
+      expect(retriedId).toEqual(epochId);
+      retried.claimCommit!().finalize();
+
+      expect(retriedReceiver.getKey(epochId)).toBe(retriedKey);
+    } finally {
+      importSpy.mockRestore();
+    }
+  });
+
   test('an abandoned merge claim permits replay without exposing its hydrated keys', async () => {
     const source = new AutomergeKeychain();
     const [epochId] = await source.add();
