@@ -1,7 +1,9 @@
 import {
   ACL,
+  ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
+  PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
@@ -28,15 +30,21 @@ import {
   serializeInitialLoadChallengeForWire,
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
+  assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
 import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
+  AbstractType,
+  Map as YMap,
   applyUpdateV2,
   ContentAny,
+  ContentDeleted,
   decodeUpdateV2,
   Doc,
   encodeStateAsUpdateV2,
   encodeStateVector,
+  getState,
+  ID,
   Item,
 } from 'yjs';
 import { Base64 } from 'js-base64';
@@ -539,42 +547,396 @@ export class YjsACLProvider implements ACLProvider<Uint8Array, CryptoKey> {
   }
 }
 
+// Yjs carries an ACL merge as one update, so this is both the per-change and
+// aggregate bound. It leaves headroom under the shared 10 MiB transport cap.
+export const MAX_YJS_ACL_UPDATE_BYTES = 4 * 1024 * 1024;
+export const MAX_YJS_ACL_STRUCTURES = 8192;
+export const MAX_YJS_ACL_MEMBERS = 4096;
+
+function existingYjsACLUsers(doc: Doc) {
+  const users = doc.share.get('users');
+  // Remote updates begin with an untyped AbstractType until an owner requests it.
+  if (users !== undefined && users.constructor !== AbstractType && !(users instanceof YMap)) {
+    throw new TypeError('Yjs ACL users must be a map');
+  }
+  return users;
+}
+
+function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
+  // Yjs folds pendingStructs and pendingDs into this update before returning
+  // it. Reapplying the bounded snapshot therefore preserves unresolved
+  // dependencies, while decodeUpdateV2 below counts their structs/delete
+  // ranges toward the same retained-state limits.
+  const state = encodeStateAsUpdateV2(doc);
+  if (state.byteLength > MAX_YJS_ACL_UPDATE_BYTES) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_UPDATE_BYTES}-byte limit`,
+    );
+  }
+  const decoded = decodeUpdateV2(state);
+  let structureCount = 0;
+  for (const struct of decoded.structs) {
+    if (
+      !Number.isSafeInteger(struct.length) ||
+      struct.length < 1 ||
+      struct.length > MAX_YJS_ACL_STRUCTURES - structureCount
+    ) {
+      throw new RangeError(
+        `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+      );
+    }
+    structureCount += struct.length;
+  }
+  for (const ranges of decoded.ds.clients.values()) {
+    for (const range of ranges) {
+      if (
+        !Number.isSafeInteger(range.len) ||
+        range.len < 1 ||
+        range.len > MAX_YJS_ACL_STRUCTURES - structureCount
+      ) {
+        throw new RangeError(
+          `Cannot ${operation}: Yjs ACL retained state exceeds the ${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+        );
+      }
+      structureCount += range.len;
+    }
+  }
+  assertValidEncodedYjsACLMembership(doc, decoded.structs, operation);
+  assertValidYjsACLHistory(doc, operation);
+  return state;
+}
+
+function assertValidYjsACLMembershipItem(
+  item: Item,
+  key: string | null,
+  operation: string,
+): void {
+  assertCanonicalP384PublicKeyEncoding(key);
+  assertValidYjsACLMembershipValue(item, operation);
+}
+
+function assertValidYjsACLMembershipValue(item: Item, operation: string): void {
+  if (item.content instanceof ContentDeleted) {
+    throw new Error(
+      `Cannot ${operation}: Yjs ACL history contains an erased membership value that cannot be authenticated`,
+    );
+  }
+  if (
+    !(item.content instanceof ContentAny) ||
+    item.length !== item.content.arr.length ||
+    item.content.arr.length === 0 ||
+    item.content.arr.some((value) => value !== true)
+  ) {
+    throw new Error(
+      `Cannot ${operation}: Yjs ACL membership values must be true`,
+    );
+  }
+}
+
+// Encoded state also carries structs Yjs keeps pending until their causal
+// dependencies arrive. Their parent is implicit when they have an origin, so
+// resolve it through the encoded origins the way Item.getMissing() will. An
+// origin that is still missing may lead to the users map, the only type an ACL
+// holds, so such an item must carry a membership value; its key is inherited
+// from that origin and is validated once the origin arrives. Pending items are
+// not yet in the users map, so each one that could add a member counts toward
+// the member limit.
+function assertValidEncodedYjsACLMembership(
+  doc: Doc,
+  structs: readonly unknown[],
+  operation: string,
+): void {
+  const itemsByClient = new Map<number, Item[]>();
+  for (const struct of structs) {
+    if (!(struct instanceof Item)) continue;
+    const items = itemsByClient.get(struct.id.client) ?? [];
+    items.push(struct);
+    itemsByClient.set(struct.id.client, items);
+  }
+  for (const items of itemsByClient.values()) {
+    items.sort((left, right) => left.id.clock - right.id.clock);
+  }
+  const findItem = (id: ID): Item | undefined => {
+    const items = itemsByClient.get(id.client);
+    if (items === undefined) return undefined;
+    let low = 0;
+    let high = items.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >>> 1;
+      const item = items[middle];
+      if (id.clock < item.id.clock) {
+        high = middle - 1;
+      } else if (id.clock >= item.id.clock + item.length) {
+        low = middle + 1;
+      } else {
+        return item;
+      }
+    }
+    return undefined;
+  };
+
+  type ResolvedParent = { parent: unknown; parentSub: string | null } | null;
+  const resolved = new Map<Item, ResolvedParent>();
+  const resolveParent = (item: Item): ResolvedParent => {
+    const chain: Item[] = [];
+    const visiting = new Set<Item>();
+    let current: Item | undefined = item;
+    let result: ResolvedParent = null;
+    while (current !== undefined) {
+      if (resolved.has(current)) {
+        result = resolved.get(current) ?? null;
+        break;
+      }
+      if (visiting.has(current)) break;
+      visiting.add(current);
+      chain.push(current);
+      if (current.parent !== null) {
+        result = { parent: current.parent, parentSub: current.parentSub };
+        break;
+      }
+      const neighbor: ID | null = current.origin ?? current.rightOrigin;
+      current = neighbor === null ? undefined : findItem(neighbor);
+    }
+    for (const visited of chain) resolved.set(visited, result);
+    return result;
+  };
+
+  const members = new Set<string>();
+  const users = existingYjsACLUsers(doc);
+  if (users !== undefined) {
+    for (const [key, item] of users._map) {
+      if (!item.deleted) members.add(key);
+    }
+  }
+  let unkeyedPendingItems = 0;
+  for (const [client, items] of itemsByClient) {
+    const integratedClock = getState(doc.store, client);
+    for (const item of items) {
+      const pending = item.id.clock >= integratedClock;
+      const resolvedParent = resolveParent(item);
+      if (resolvedParent === null) {
+        assertValidYjsACLMembershipValue(item, operation);
+        if (pending) unkeyedPendingItems++;
+      } else if (resolvedParent.parent === 'users') {
+        assertValidYjsACLMembershipItem(
+          item,
+          resolvedParent.parentSub,
+          operation,
+        );
+        if (pending) members.add(resolvedParent.parentSub as string);
+      }
+    }
+  }
+  if (members.size + unkeyedPendingItems > MAX_YJS_ACL_MEMBERS) {
+    throw new RangeError(
+      `Cannot ${operation}: Yjs ACL exceeds the ${MAX_YJS_ACL_MEMBERS}-member limit`,
+    );
+  }
+}
+
+function assertValidYjsACLHistory(doc: Doc, operation: string): void {
+  const users = existingYjsACLUsers(doc);
+  for (const structs of doc.store.clients.values()) {
+    for (const struct of structs) {
+      if (!(struct instanceof Item) || struct.parent !== users) continue;
+      assertValidYjsACLMembershipItem(struct, struct.parentSub, operation);
+    }
+  }
+}
+
 export class YjsACL implements ACL<Uint8Array, CryptoKey> {
-  private readonly _acl = new Doc();
+  private _acl = new Doc({ gc: false });
+  private _revision = 0;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
+  private _mutationTail: Promise<void> = Promise.resolve();
+  private _pendingMutations = 0;
+  private readonly _queuedRemovalCommits = new WeakSet<
+    PreparedACLRemoval<Uint8Array>
+  >();
+
+  private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this._mutationTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this._mutationTail = turn;
+    this._pendingMutations++;
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        this._pendingMutations--;
+        release();
+      }
+    })();
+  }
+
+  private _commitQueuedRemoval(
+    prepared: PreparedACLRemoval<Uint8Array>,
+  ): void {
+    this._queuedRemovalCommits.add(prepared);
+    try {
+      prepared.commit();
+    } finally {
+      this._queuedRemovalCommits.delete(prepared);
+    }
+  }
+
+  private _assertComplete(operation: string): void {
+    if (
+      this._acl.store.pendingStructs !== null ||
+      this._acl.store.pendingDs !== null
+    ) {
+      throw new Error(
+        `Cannot ${operation}: Yjs ACL has unresolved update dependencies`,
+      );
+    }
+  }
 
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
-    const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    this._acl.getMap('users').set(hash, true);
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    return this._runMutation(async () => {
+      this._assertComplete('add an ACL member');
+      const hash = await serializeKey(publicKey);
+      assertCanonicalP384PublicKeyEncoding(hash);
+      this._assertComplete('add an ACL member');
+      const base = this._acl;
+      const staged = new Doc({ gc: false });
+      applyUpdateV2(
+        staged,
+        snapshotBoundedYjsACLState(base, 'add an ACL member'),
+      );
+      staged.clientID = base.clientID;
+      const beforeSV = encodeStateVector(staged);
+      staged.getMap('users').set(hash, true);
+      const changes = encodeStateAsUpdateV2(staged, beforeSV);
+      snapshotBoundedYjsACLState(staged, 'add an ACL member');
+      this._acl = staged;
+      this._revision++;
+      return changes;
+    });
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
+    return this._runMutation(async () => {
+      const prepared = await this.prepareRemove(publicKey);
+      this._commitQueuedRemoval(prepared);
+      return prepared.changes;
+    });
+  }
+  async prepareRemove(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLRemoval<Uint8Array>> {
+    this._assertComplete('remove an ACL member');
     const hash = await serializeKey(publicKey);
-    const beforeSV = encodeStateVector(this._acl);
-    if (this._acl.getMap('users').has(hash)) {
-      this._acl.getMap('users').delete(hash);
+    assertCanonicalP384PublicKeyEncoding(hash);
+    this._assertComplete('remove an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc({ gc: false });
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'stage an ACL removal'),
+    );
+    staged.clientID = base.clientID;
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    const beforeSV = encodeStateVector(staged);
+    if (hadMember) {
+      stagedUsers.delete(hash);
     }
-    return encodeStateAsUpdateV2(this._acl, beforeSV);
+    const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+    snapshotBoundedYjsACLState(staged, 'stage an ACL removal');
+    const changes = new Uint8Array(privateChanges);
+    let committed = false;
+    const prepared: PreparedACLRemoval<Uint8Array> = {
+      changes,
+      commit: () => {
+        if (committed) {
+          throw new Error('Prepared ACL removal was already committed');
+        }
+        if (
+          this._pendingMutations !== 0 &&
+          !this._queuedRemovalCommits.has(prepared)
+        ) {
+          throw new Error(
+            'Prepared ACL removal cannot commit during a local ACL mutation',
+          );
+        }
+        if (this._revision !== baseRevision || this._acl !== base) {
+          throw new Error('ACL changed while removal was staged');
+        }
+        committed = true;
+        if (!hadMember) return;
+        this._acl = staged;
+        this._revision++;
+      },
+    };
+    return prepared;
   }
   current(): Uint8Array {
+    this._assertComplete('read the current ACL state');
     return encodeStateAsUpdateV2(this._acl);
   }
   merge(change: Uint8Array): void {
-    applyUpdateV2(this._acl, change);
+    if (this._pendingMutations !== 0) {
+      throw new ACLOperationInProgressError('ACL merge', this._mutationTail);
+    }
+    // Capture first and reject reentrant changes during detachment; no update
+    // may publish against a baseline different from the one this call admitted.
+    const baseRevision = this._revision;
+    const base = this._acl;
+    // A valid V2 no-op still carries its binary framing; zero bytes are malformed.
+    const detachedChange = copyUnsharedUint8Array(
+      change,
+      1,
+      MAX_YJS_ACL_UPDATE_BYTES,
+      'Yjs ACL update',
+    );
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being detached');
+    }
+    const staged = new Doc({ gc: false });
+    const baseState = snapshotBoundedYjsACLState(base, 'merge ACL changes');
+    applyUpdateV2(staged, baseState);
+    staged.clientID = base.clientID;
+    applyUpdateV2(staged, detachedChange);
+    const stagedState = snapshotBoundedYjsACLState(
+      staged,
+      'merge ACL changes',
+    );
+    if (
+      this._pendingMutations !== 0 ||
+      this._revision !== baseRevision ||
+      this._acl !== base
+    ) {
+      throw new Error('ACL changed while remote changes were being merged');
+    }
+    if (compareBytes(baseState, stagedState) === 0) return;
+    this._acl = staged;
+    this._revision++;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
+    this._assertComplete('check ACL membership');
     const hash = await serializeKey(publicKey);
+    this._assertComplete('check ACL membership');
     return this._acl.getMap('users').has(hash);
   }
   async users(): Promise<CryptoKey[]> {
+    this._assertComplete('list ACL members');
+    const baseRevision = this._revision;
+    const base = this._acl;
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey({ name: 'ECDSA', namedCurve: 'P-384' }, [
       'verify',
     ]);
-    const entries = [...this._acl.getMap('users').keys()];
-    return Promise.all(
+    const entries = [...base.getMap('users').keys()];
+    const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
         if (!key) {
@@ -584,6 +946,14 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
         return key;
       }),
     );
+    this._assertComplete('list ACL members');
+    if (this._revision !== baseRevision || this._acl !== base) {
+      throw new ACLOperationInProgressError(
+        'ACL membership listing',
+        Promise.resolve(),
+      );
+    }
+    return users;
   }
 }
 

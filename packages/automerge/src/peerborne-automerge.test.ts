@@ -1,11 +1,18 @@
 import { describe, expect, test, beforeAll, jest } from '@jest/globals';
+import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
-import { snapshotDeepEnumerableData } from '@peerborne/core';
+import {
+  ACLOperationInProgressError,
+  retryACLConflict,
+  snapshotDeepEnumerableData,
+} from '@peerborne/core';
 import {
   Change as BinaryChange,
+  applyChanges as applyAutomergeChanges,
   clone as automergeClone,
   change as automergeChange,
   decodeChange,
+  decodeChange as decodeAutomergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
@@ -19,6 +26,11 @@ import {
   AutomergeKeychain,
   AutomergeKeychainProvider,
   AutomergeJSONSerializer,
+  MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+  MAX_AUTOMERGE_ACL_CHANGES,
+  MAX_AUTOMERGE_ACL_HISTORY_BYTES,
+  MAX_AUTOMERGE_ACL_MEMBERS,
+  MAX_AUTOMERGE_ACL_OPERATIONS,
   serializeKey,
   deserializeKey,
 } from './peerborne-automerge.js';
@@ -65,6 +77,10 @@ async function importECDSAPublicKey(jwk: JsonWebKey): Promise<CryptoKey> {
     ['verify'],
   );
 }
+
+type AutomergeACLShape = {
+  users?: Record<string, true>;
+};
 
 // ─── AutomergeProvider ──────────────────────────────────────────────
 
@@ -187,6 +203,45 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('add() rejects a non-P-384 identity before emitting changes', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    await expect(acl.add(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(keyPair.publicKey)).toBe(false);
+  });
+
+  test('removal rejects a non-P-384 identity without changing state', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    await expect(acl.prepareRemove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+
+    await expect(acl.remove(keyPair.publicKey)).rejects.toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
   test('remove() removes a user and check() returns false', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -194,6 +249,595 @@ describe('AutomergeACL', () => {
 
     const removeChanges = await acl.remove(key1);
     expect(removeChanges.length).toBeGreaterThan(0);
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('ordinary mutations are FIFO and reject a racing merge', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const externalRemoval = await acl.prepareRemove(key1);
+    const remote = new AutomergeACL();
+    const remoteChanges = await remote.add(key2);
+    const originalPrepareRemove = acl.prepareRemove.bind(acl);
+    let releasePreparation!: () => void;
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      preparationStarted();
+      await preparationGate;
+      return originalPrepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+    const addition = acl.add(key2);
+    await Promise.resolve();
+
+    expect(await acl.check(key2)).toBe(false);
+    let mergeConflict: unknown;
+    try {
+      acl.merge(remoteChanges);
+    } catch (error) {
+      mergeConflict = error;
+    }
+    expect(mergeConflict).toBeInstanceOf(ACLOperationInProgressError);
+    expect(() => externalRemoval.commit()).toThrow(
+      'Prepared ACL removal cannot commit during a local ACL mutation',
+    );
+
+    releasePreparation();
+    await expect(removal).resolves.toBeDefined();
+    await expect(addition).resolves.toBeDefined();
+    await expect(
+      (mergeConflict as ACLOperationInProgressError).waitForSettlement(),
+    ).resolves.toBeUndefined();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => externalRemoval.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+  });
+
+  test('prepareRemove() stages detached changes without changing live membership', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    await acl.add(key2);
+    const before = acl.current();
+
+    const prepared = await acl.prepareRemove(key1);
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.users()).toHaveLength(2);
+
+    const receiver = new AutomergeACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('prepareRemove() commit is single-use', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    prepared.commit();
+
+    expect(() => prepared.commit()).toThrow(
+      'Prepared ACL removal was already committed',
+    );
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('no-op merge replays do not stale a prepared removal', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const replay = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+
+    acl.merge([]);
+    acl.merge(replay);
+
+    expect(() => prepared.commit()).not.toThrow();
+    expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('prepareRemove() rejects a stale commit before changing membership', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const prepared = await acl.prepareRemove(key1);
+    const concurrentChanges = await acl.add(key2);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+
+    const receiver = new AutomergeACL();
+    receiver.merge(before);
+    receiver.merge(prepared.changes);
+    receiver.merge(concurrentChanges);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge preserves a removal committed by a caller accessor', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const removal = await acl.prepareRemove(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let committed = false;
+    const reentrantChanges = new Proxy(remoteChanges, {
+      get(target, property, receiver) {
+        if (property === '0' && !committed) {
+          committed = true;
+          removal.commit();
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(() => acl.merge(reentrantChanges)).not.toThrow();
+
+    expect(committed).toBe(true);
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('merge accepts detached cross-realm changes and rejects byte lookalikes and shared backing', async () => {
+    const source = new AutomergeACL();
+    await source.add(key1);
+    const crossRealm = source
+      .current()
+      .map(
+        (binaryChange) =>
+          runInNewContext(
+            `new Uint8Array([${Array.from(binaryChange).join(',')}])`,
+          ) as Uint8Array,
+      );
+    expect(crossRealm[0]).not.toBeInstanceOf(Uint8Array);
+    const receiver = new AutomergeACL();
+
+    expect(() => receiver.merge(crossRealm)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    const before = receiver.current();
+    expect(() =>
+      receiver.merge([
+        { 0: 0, length: 1 } as unknown as BinaryChange,
+      ]),
+    ).toThrow('Automerge ACL change must be a genuine Uint8Array');
+    expect(receiver.current()).toEqual(before);
+
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const shared = new Uint8Array(new SharedArrayBuffer(1));
+      expect(() => receiver.merge([shared as BinaryChange])).toThrow(
+        'Automerge ACL change has an invalid length or backing buffer',
+      );
+      expect(receiver.current()).toEqual(before);
+    }
+  });
+
+  test('merge bounds change count and bytes before Automerge parsing', async () => {
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    expect(() =>
+      acl.merge(
+        new Array(MAX_AUTOMERGE_ACL_CHANGES + 1) as BinaryChange[],
+      ),
+    ).toThrow(/change limit/);
+    expect(() =>
+      acl.merge([
+        new Uint8Array(MAX_AUTOMERGE_ACL_CHANGE_BYTES + 1) as BinaryChange,
+      ]),
+    ).toThrow(/invalid length/);
+    expect(() =>
+      acl.merge([
+        ...Array.from(
+          {
+            length:
+              MAX_AUTOMERGE_ACL_HISTORY_BYTES /
+              MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+          },
+          () =>
+            new Uint8Array(
+              MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+            ) as BinaryChange,
+        ),
+        new Uint8Array(1) as BinaryChange,
+      ]),
+    ).toThrow(/aggregate limit/);
+    const operationBombBase = automergeInit<{ padding?: number[] }>();
+    const operationBomb = automergeChange(operationBombBase, (doc) => {
+      doc.padding = [];
+      for (let index = 0; index <= MAX_AUTOMERGE_ACL_OPERATIONS; index++) {
+        doc.padding.push(index);
+      }
+    });
+    const operationBombChanges = getAutomergeChanges(
+      operationBombBase,
+      operationBomb,
+    );
+    expect(operationBombChanges).toHaveLength(1);
+    expect(operationBombChanges[0]!.byteLength).toBeLessThan(
+      MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+    );
+    expect(
+      decodeAutomergeChange(operationBombChanges[0]!).ops.length,
+    ).toBeGreaterThan(MAX_AUTOMERGE_ACL_OPERATIONS);
+    expect(() => acl.merge(operationBombChanges)).toThrow(/operation limit/);
+
+    expect(acl.current()).toEqual(before);
+  });
+
+  test('merge rejects retained Automerge ACL history growth atomically', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    let padding = automergeInit<Record<string, Uint8Array>>();
+    const chunks: BinaryChange[][] = [];
+    for (let index = 0; index < 5; index++) {
+      const previous = padding;
+      padding = automergeChange(padding, (doc) => {
+        doc[`padding-${index}`] = new Uint8Array(900_000).fill(index + 1);
+      });
+      const chunk = getAutomergeChanges(previous, padding);
+      expect(chunk).toHaveLength(1);
+      expect(chunk[0]!.byteLength).toBeLessThanOrEqual(
+        MAX_AUTOMERGE_ACL_CHANGE_BYTES,
+      );
+      chunks.push(chunk);
+    }
+
+    for (const chunk of chunks.slice(0, 4)) {
+      expect(() => acl.merge(chunk)).not.toThrow();
+    }
+    const before = acl.current();
+    expect(
+      before.reduce((total, change) => total + change.byteLength, 0),
+    ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_HISTORY_BYTES);
+
+    expect(() => acl.merge(chunks[4]!)).toThrow(/history exceeds.*byte limit/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects conflicting independent ACL roots without changing membership', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const independent = new AutomergeACL();
+    await independent.add(key2);
+
+    expect(() => acl.merge(independent.current())).toThrow(
+      /conflicting users roots/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+
+    const fresh = new AutomergeACL();
+    expect(() => fresh.merge(independent.current())).not.toThrow();
+    expect(await fresh.check(key2)).toBe(true);
+  });
+
+  test('rejects a concurrent membership assignment and deletion atomically', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const serialized = await serializeKey(key1);
+    const deleteBase = automergeInit<AutomergeACLShape>({
+      actor: 'ffffffffffffffffffffffffffffffff',
+    });
+    const assignBase = automergeInit<AutomergeACLShape>({
+      actor: '11111111111111111111111111111111',
+    });
+    const [deleteDocument] = applyAutomergeChanges(deleteBase, before);
+    const [assignDocument] = applyAutomergeChanges(assignBase, before);
+    const deletion = automergeChange(deleteDocument, (doc) => {
+      delete doc.users![serialized];
+    });
+    const assignment = automergeChange(assignDocument, (doc) => {
+      delete doc.users![serialized];
+      doc.users![serialized] = true;
+    });
+    const conflicted = automergeMerge(deletion, assignment);
+
+    expect(() => acl.merge(getAllAutomergeChanges(conflicted))).toThrow(
+      /conflicting membership/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('accepts concurrent additions of the same member', async () => {
+    const first = new AutomergeACL();
+    await first.add(key1);
+    const second = new AutomergeACL();
+    second.merge(first.current());
+
+    const firstAddition = await first.add(key2);
+    const secondAddition = await second.add(key2);
+
+    expect(() => first.merge(secondAddition)).not.toThrow();
+    expect(() => second.merge(firstAddition)).not.toThrow();
+    expect(await first.check(key2)).toBe(true);
+    expect(await second.check(key2)).toBe(true);
+
+    const revocation = await first.remove(key2);
+    expect(() => second.merge(revocation)).not.toThrow();
+    expect(await first.check(key2)).toBe(false);
+    expect(await second.check(key2)).toBe(false);
+    expect(await second.check(key1)).toBe(true);
+  });
+
+  test('a rejected local addition leaves the live ACL usable', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const retainedOperations = acl
+      .current()
+      .reduce(
+        (total, binaryChange) =>
+          total + decodeAutomergeChange(binaryChange).ops.length,
+        0,
+      );
+    const paddingBase = automergeInit<{ padding?: number[] }>();
+    const padding = automergeChange(paddingBase, (doc) => {
+      doc.padding = [];
+      for (
+        let index = 0;
+        index < MAX_AUTOMERGE_ACL_OPERATIONS - retainedOperations - 1;
+        index++
+      ) {
+        doc.padding.push(index);
+      }
+    });
+    acl.merge(getAutomergeChanges(paddingBase, padding));
+    const before = acl.current();
+
+    await expect(acl.add(key2)).rejects.toThrow(/operation limit/);
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key2)).toBe(false);
+    await expect(acl.add(key2)).rejects.toThrow(/operation limit/);
+    expect(acl.current()).toEqual(before);
+    expect(() => acl.merge(before)).not.toThrow();
+
+    const receiver = new AutomergeACL();
+    expect(() => receiver.merge(before)).not.toThrow();
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(false);
+  });
+
+  test('check() reads the merged ACL when a merge lands during key serialization', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = acl.check(key2);
+      await started;
+      acl.merge(remoteChanges);
+      releaseExport();
+
+      await expect(authorization).resolves.toBe(true);
+    } finally {
+      releaseExport();
+      exportSpy.mockRestore();
+    }
+  });
+
+  test('users() reports a retryable conflict when a merge lands during key import', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+    let importStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      importStarted = resolve;
+    });
+    let releaseImport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const originalImportKey = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest
+      .spyOn(crypto.subtle, 'importKey')
+      .mockImplementationOnce(
+        async (format, keyData, algorithm, extractable, keyUsages) => {
+          importStarted();
+          await release;
+          return originalImportKey(
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          );
+        },
+      );
+
+    try {
+      const listing = acl.users();
+      await started;
+      acl.merge(remoteChanges);
+      releaseImport();
+
+      await expect(listing).rejects.toBeInstanceOf(
+        ACLOperationInProgressError,
+      );
+      await expect(
+        retryACLConflict(() => acl.users()),
+      ).resolves.toHaveLength(2);
+    } finally {
+      releaseImport();
+      importSpy.mockRestore();
+    }
+  });
+
+  test('rejects a users-root deletion racing a nested assignment', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const serialized = await serializeKey(key2);
+    const deleteBase = automergeInit<AutomergeACLShape>({
+      actor: 'ffffffffffffffffffffffffffffffff',
+    });
+    const assignBase = automergeInit<AutomergeACLShape>({
+      actor: '11111111111111111111111111111111',
+    });
+    const [deleteDocument] = applyAutomergeChanges(deleteBase, before);
+    const [assignDocument] = applyAutomergeChanges(assignBase, before);
+    const deletion = automergeChange(deleteDocument, (doc) => {
+      delete doc.users;
+    });
+    const assignment = automergeChange(assignDocument, (doc) => {
+      doc.users![serialized] = true;
+    });
+    const conflicted = automergeMerge(deletion, assignment);
+    expect(conflicted.users).toBeUndefined();
+
+    expect(() => acl.merge(getAllAutomergeChanges(conflicted))).toThrow(
+      /mutates the users root/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(false);
+  });
+
+  test('rejects a malformed serialized membership key atomically', async () => {
+    const invalidPoint = new Uint8Array(97);
+    invalidPoint[0] = 0x04;
+    const invalidSerializedPoint = Buffer.from(invalidPoint).toString('base64');
+    let source = automergeInit<AutomergeACLShape>();
+    source = automergeChange(source, (doc) => {
+      doc.users = { [invalidSerializedPoint]: true };
+    });
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    expect(() => acl.merge(getAllAutomergeChanges(source))).toThrow(
+      /valid P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    await expect(acl.users()).resolves.toEqual([]);
+  });
+
+  test('rejects a tombstoned non-P-384 membership key atomically', async () => {
+    const nonP384Point = new Uint8Array(65);
+    nonP384Point[0] = 0x04;
+    const nonP384Key = Buffer.from(nonP384Point).toString('base64');
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<AutomergeACLShape>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![nonP384Key] = true;
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![nonP384Key];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[nonP384Key]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /97-byte uncompressed P-384 point/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects a tombstoned invalid membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<{
+      users?: Record<string, unknown>;
+    }>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![serialized] = false;
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![serialized];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[serialized]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('rejects a tombstoned structured membership value atomically', async () => {
+    const serialized = await serializeKey(key2);
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+    const sourceSeed = automergeInit<{
+      users?: Record<string, unknown>;
+    }>();
+    const [sourceBase] = applyAutomergeChanges(sourceSeed, before);
+    let source = automergeChange(sourceBase, (doc) => {
+      doc.users![serialized] = {};
+    });
+    source = automergeChange(source, (doc) => {
+      delete doc.users![serialized];
+    });
+    const remoteHistory = getAutomergeChanges(sourceBase, source);
+    expect(source.users?.[serialized]).toBeUndefined();
+
+    expect(() => acl.merge(remoteHistory)).toThrow(
+      /membership values must be true/,
+    );
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareRemove() commits private state after returned changes are mutated', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+
+    for (const change of prepared.changes) change.fill(0);
+    prepared.changes.length = 0;
+    prepared.commit();
+
     expect(await acl.check(key1)).toBe(false);
   });
 
@@ -329,6 +973,186 @@ describe('AutomergeACL', () => {
     receiver.merge(founderChanges);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('rejects malformed dependency-incomplete membership changes on admission', async () => {
+    const serialized1 = await serializeKey(key1);
+    const serialized2 = await serializeKey(key2);
+    const founder = automergeChange(
+      automergeInit<{ users: Record<string, unknown> }>(),
+      (doc) => {
+        doc.users = {};
+        doc.users[serialized1] = true;
+      },
+    );
+    const founderChanges = getAllAutomergeChanges(founder);
+    const predecessor = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized2] = true;
+    });
+    const invalidKey = automergeChange(automergeClone(predecessor), (doc) => {
+      doc.users['not-a-p384-key'] = true;
+    });
+    const invalidValue = automergeChange(automergeClone(predecessor), (doc) => {
+      doc.users[serialized1] = 'member';
+    });
+    const receiver = new AutomergeACL();
+    receiver.merge(founderChanges);
+    const before = receiver.current();
+
+    expect(() =>
+      receiver.merge(getAutomergeChanges(predecessor, invalidKey)),
+    ).toThrow();
+    expect(() =>
+      receiver.merge(getAutomergeChanges(predecessor, invalidValue)),
+    ).toThrow(/membership values must be true/);
+    expect(receiver.current()).toEqual(before);
+
+    const valid = automergeChange(automergeClone(predecessor), (doc) => {
+      delete doc.users[serialized1];
+    });
+    receiver.merge(getAutomergeChanges(predecessor, valid));
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/,
+    );
+    receiver.merge(getAllAutomergeChanges(predecessor));
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('bounds members that dependency-incomplete changes could add', async () => {
+    const serialized1 = await serializeKey(key1);
+    const serialized2 = await serializeKey(key2);
+    const extraKeys = Array.from({ length: MAX_AUTOMERGE_ACL_MEMBERS }, () =>
+      createECDH('secp384r1').generateKeys('base64'),
+    );
+    const founder = automergeChange(
+      automergeInit<{ users: Record<string, unknown> }>(),
+      (doc) => {
+        doc.users = {};
+        doc.users[serialized1] = true;
+      },
+    );
+    const predecessor = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized2] = true;
+    });
+    const addKeys = (keys: string[]) =>
+      getAutomergeChanges(
+        predecessor,
+        automergeChange(automergeClone(predecessor), (doc) => {
+          for (const key of keys) doc.users[key] = true;
+        }),
+      );
+    const receiver = new AutomergeACL();
+    receiver.merge(getAllAutomergeChanges(founder));
+    const before = receiver.current();
+
+    expect(() => receiver.merge(addKeys(extraKeys))).toThrow(
+      `${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+    );
+    expect(receiver.current()).toEqual(before);
+
+    const half = MAX_AUTOMERGE_ACL_MEMBERS / 2;
+    receiver.merge(addKeys(extraKeys.slice(0, half)));
+    expect(() => receiver.merge(addKeys(extraKeys.slice(half)))).toThrow(
+      `${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
+    );
+
+    receiver.merge(getAllAutomergeChanges(predecessor));
+    expect(await receiver.check(key2)).toBe(true);
+    expect(receiver.current()).toHaveLength(3);
+  });
+
+  test('rejects malformed membership changes whose users root is still missing', async () => {
+    const serialized1 = await serializeKey(key1);
+    const founder = automergeChange(
+      automergeInit<{ users: Record<string, unknown> }>(),
+      (doc) => {
+        doc.users = {};
+        doc.users[serialized1] = true;
+      },
+    );
+    const founderChanges = getAllAutomergeChanges(founder);
+    const invalidKey = automergeChange(automergeClone(founder), (doc) => {
+      doc.users['not-a-p384-key'] = true;
+    });
+    const invalidValue = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized1] = 'member';
+    });
+    const serialized2 = await serializeKey(key2);
+    const valid = automergeChange(automergeClone(founder), (doc) => {
+      doc.users[serialized2] = true;
+    });
+    const receiver = new AutomergeACL();
+
+    expect(() =>
+      receiver.merge(getAutomergeChanges(founder, invalidKey)),
+    ).toThrow();
+    expect(() =>
+      receiver.merge(getAutomergeChanges(founder, invalidValue)),
+    ).toThrow(/membership values must be true/);
+
+    receiver.merge(getAutomergeChanges(founder, valid));
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/,
+    );
+    receiver.merge(founderChanges);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('a new dependency-incomplete change still stales prepared removal', async () => {
+    const receiver = new AutomergeACL();
+    await receiver.add(key1);
+    const prepared = await receiver.prepareRemove(key1);
+    const sender = new AutomergeACL();
+    await sender.add(key2);
+    const dependent = await sender.add(key1);
+
+    receiver.merge(dependent);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(() => receiver.current()).toThrow(
+      /unresolved change dependencies/,
+    );
+  });
+
+  test('does not authorize across a merge that introduces missing dependencies', async () => {
+    const receiver = new AutomergeACL();
+    await receiver.add(key1);
+    const sender = new AutomergeACL();
+    await sender.add(key2);
+    const dependentChanges = await sender.add(key1);
+    let exportStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    let releaseExport!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const originalExportKey = crypto.subtle.exportKey.bind(crypto.subtle);
+    const exportSpy = jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementationOnce(async (format, key) => {
+        exportStarted();
+        await release;
+        return originalExportKey(format, key);
+      });
+
+    try {
+      const authorization = receiver.check(key1);
+      await started;
+      receiver.merge(dependentChanges);
+      releaseExport();
+
+      await expect(authorization).rejects.toThrow(
+        /unresolved change dependencies/,
+      );
+    } finally {
+      exportSpy.mockRestore();
+    }
   });
 });
 
