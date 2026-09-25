@@ -1,4 +1,5 @@
 import { describe, expect, jest, test } from '@jest/globals';
+import { CID } from 'multiformats';
 
 import {
   collectBoundedChangeTree,
@@ -6,7 +7,6 @@ import {
   MAX_CHANGE_TREE_NODES,
   snapshotBoundedChangeTree,
 } from './change-tree-walk.js';
-import { collectChangeTreeCidsForPinning } from './change-tree-pinning.js';
 import {
   type CRDTChangeNode,
   crdtChangeNodeDeferred,
@@ -145,7 +145,7 @@ describe('bounded iterative change-tree consumers', () => {
     ).toThrow(/exceeds/);
   });
 
-  test('pinning preflight validates every CID before returning work', () => {
+  test('canonical CID validation rejects a non-CID child before returning', () => {
     const rootCid =
       'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
     const tree: Node = {
@@ -154,23 +154,25 @@ describe('bounded iterative change-tree consumers', () => {
         'not-a-cid': { kind: crdtDocumentChangeNode },
       },
     };
-    expect(() => collectChangeTreeCidsForPinning(rootCid, tree)).toThrow(
-      /canonical CID/,
-    );
+    expect(() =>
+      snapshotBoundedChangeTree(rootCid, tree, {
+        canonicalizeNodeId: (nodeId) => CID.parse(nodeId).toString(),
+      }),
+    ).toThrow(/canonical CID/);
   });
 
-  test('pinning preflight is stack-safe and rejects deferred trees', () => {
+  test('deferred rejection is stack-safe and rejects deferred trees', () => {
     expect(
-      collectChangeTreeCidsForPinning(
-        'root',
-        chain(MAX_CHANGE_TREE_DEPTH),
-      ),
+      snapshotBoundedChangeTree('root', chain(MAX_CHANGE_TREE_DEPTH), {
+        rejectDeferred: true,
+      }).entries.filter(({ nodeId }) => nodeId !== undefined),
     ).toHaveLength(MAX_CHANGE_TREE_DEPTH);
     expect(() =>
-      collectChangeTreeCidsForPinning('root', {
-        kind: crdtDocumentChangeNode,
-        children: crdtChangeNodeDeferred,
-      }),
+      snapshotBoundedChangeTree(
+        'root',
+        { kind: crdtDocumentChangeNode, children: crdtChangeNodeDeferred },
+        { rejectDeferred: true },
+      ),
     ).toThrow(/deferred/);
   });
 
