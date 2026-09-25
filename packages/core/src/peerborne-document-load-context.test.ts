@@ -540,3 +540,142 @@ describe('tip-advertisement V1 confinement', () => {
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
   });
 });
+
+function installSetWriterAcl(document: any, initial: string[]) {
+  const writers = new Set(initial);
+  const serializer = new JSONSerializer<any>();
+  document._writers = {
+    merge: jest.fn((changes: string[]) => {
+      for (const writer of changes) writers.add(writer);
+    }),
+    current: () => [...writers].sort(),
+  };
+  document._changesSerializer = serializer;
+  document._cachedWriterKeys = [{}];
+  return writers;
+}
+
+describe('writer ACL re-merges', () => {
+  test('keeps writer authorization stable for an idempotent re-merge', () => {
+    const document = fakeDocument({
+      _writerKeysVersion: 7,
+      _writerMutationsInFlight: 0,
+    });
+    installSetWriterAcl(document, ['founder', 'invitee']);
+
+    document._mergeWriters(['founder']);
+    document._mergeWriters(['invitee', 'founder']);
+
+    expect(document._writerKeysVersion).toBe(7);
+    expect(document._writerMutationsInFlight).toBe(0);
+    expect(document._cachedWriterKeys).not.toBeNull();
+  });
+
+  test('invalidates writer authorization when a merge changes the ACL', () => {
+    const document = fakeDocument({
+      _writerKeysVersion: 7,
+      _writerMutationsInFlight: 0,
+    });
+    installSetWriterAcl(document, ['founder']);
+
+    document._mergeWriters(['invitee']);
+
+    expect(document._writerKeysVersion).toBe(8);
+    expect(document._cachedWriterKeys).toBeNull();
+  });
+
+  test('invalidates writer authorization when ACL state cannot be compared', () => {
+    const document = fakeDocument({
+      _writerKeysVersion: 7,
+      _writerMutationsInFlight: 0,
+    });
+    installSetWriterAcl(document, ['founder']);
+    document._writers.current = () => {
+      throw new Error('incomplete ACL');
+    };
+
+    document._mergeWriters(['founder']);
+
+    expect(document._writerKeysVersion).toBe(8);
+    expect(document._cachedWriterKeys).toBeNull();
+  });
+
+  test('invalidates writer authorization when a merge throws after mutating', () => {
+    const document = fakeDocument({
+      _writerKeysVersion: 7,
+      _writerMutationsInFlight: 0,
+    });
+    const writers = installSetWriterAcl(document, ['founder']);
+    document._writers.merge = () => {
+      writers.add('partial');
+      throw new Error('merge failed');
+    };
+
+    expect(() => document._mergeWriters(['partial', 'bad'])).toThrow(
+      'merge failed',
+    );
+    expect(document._writerKeysVersion).toBe(8);
+    expect(document._writerMutationsInFlight).toBe(0);
+  });
+
+  test('applies a load response after a queued gossip re-merge of known writers', async () => {
+    const harness = loadHarness();
+    installSetWriterAcl(harness.document, ['founder', 'invitee']);
+    harness.document._mutationQueue = {
+      run: async (operation: () => Promise<unknown>) => {
+        harness.document._applyCollectedACL([
+          { kind: 'writer', change: ['founder'] },
+          { kind: 'writer', change: ['invitee'] },
+        ]);
+        return operation();
+      },
+    };
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(
+        loadStream(),
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(true);
+
+    expect(harness.syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects a load response after a queued merge adds a writer', async () => {
+    const harness = loadHarness();
+    installSetWriterAcl(harness.document, ['founder']);
+    harness.document._mutationQueue = {
+      run: async (operation: () => Promise<unknown>) => {
+        harness.document._applyCollectedACL([
+          { kind: 'writer', change: ['intruder'] },
+        ]);
+        return operation();
+      },
+    };
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(
+        loadStream(),
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('keeps a tip vote when verification races an idempotent re-merge', async () => {
+    const harness = tipHarness();
+    installSetWriterAcl(harness.document, ['founder']);
+    harness.verify.mockImplementation(async () => {
+      harness.document._mergeWriters(['founder']);
+      return true;
+    });
+
+    await expect(
+      harness.document._probeTipAdvertise(
+        { toString: () => '/peer/one' },
+        new Uint8Array([1]),
+      ),
+    ).resolves.toEqual(new Uint8Array(32).fill(5));
+  });
+});
