@@ -702,8 +702,11 @@ function assertValidEncodedYjsACLMembership(
   };
 
   const members = new Set<string>();
-  for (const [key, item] of existingYjsACLUsers(doc)?._map ?? []) {
-    if (!item.deleted) members.add(key);
+  const users = existingYjsACLUsers(doc);
+  if (users !== undefined) {
+    for (const [key, item] of users._map) {
+      if (!item.deleted) members.add(key);
+    }
   }
   let unkeyedPendingItems = 0;
   for (const [client, items] of itemsByClient) {
