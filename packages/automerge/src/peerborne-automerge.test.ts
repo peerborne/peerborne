@@ -2,6 +2,7 @@ import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   retryACLConflict,
   snapshotDeepEnumerableData,
@@ -211,6 +212,23 @@ describe('AutomergeACL', () => {
     const changes = await acl.add(key1);
     expect(changes.length).toBeGreaterThan(0);
     expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('merge() certifies that a malformed remote change left the ACL unchanged', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const before = acl.current();
+
+    expect(() => acl.merge([new Uint8Array([0xff, 0xff, 0xff])])).toThrow(
+      ACLMergeRejectedError,
+    );
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(true);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    acl.merge(await remote.add(key2));
+    expect(await acl.check(key2)).toBe(true);
   });
 
   test('add() rejects a non-P-384 identity before emitting changes', async () => {
@@ -467,6 +485,9 @@ describe('AutomergeACL', () => {
         const hostileReceiver = new AutomergeACL();
         expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
           `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+        );
+        expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
+          ACLMergeRejectedError,
         );
         expect(hostileReceiver.current()).toEqual([]);
       }

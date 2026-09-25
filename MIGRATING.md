@@ -130,6 +130,11 @@ Custom codecs and providers must also meet these requirements:
   has already wrapped.
 - Backing ACLs and codecs must propagate `ACLOperationInProgressError` instead
   of waiting on it.
+- A document poisons its instance when a remote ACL merge fails, unless the
+  ACL throws `ACLOperationInProgressError` or `ACLMergeRejectedError`. Custom
+  ACLs that stage merges and swap them in atomically should throw
+  `ACLMergeRejectedError` for rejected remote changes so malformed input
+  rejects only that sync message.
 
 ## Compatibility identifiers that did not change
 
