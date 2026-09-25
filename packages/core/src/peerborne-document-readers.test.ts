@@ -228,4 +228,3 @@ describe('PeerborneDocument writer removal', () => {
     expect(members.has('writer')).toBe(false);
   });
 });
-});
