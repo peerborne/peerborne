@@ -7283,7 +7283,7 @@ export class PeerborneDocument<
       console.warn(
         `BeeKEM PathUpdate for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
         failedPeers,
-        'Affected peers may be unable to decrypt subsequent messages until they reload the document.',
+        'Affected peers cannot decrypt subsequent messages until they receive a recipient-bound re-invitation or other explicit recovery; reloading the document does not deliver the key.',
       );
     }
   }
@@ -7538,7 +7538,7 @@ export class PeerborneDocument<
       console.warn(
         `Key update for ${this.documentPath} failed to reach ${failedPeers.length} peer(s):`,
         failedPeers,
-        'These peers may be unable to decrypt future messages until they reload the document.',
+        'These peers cannot decrypt future messages until they receive the key through explicit recovery; reloading the document does not deliver it.',
       );
     }
   }
