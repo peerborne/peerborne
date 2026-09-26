@@ -8,7 +8,10 @@ import { Keychain } from './keychain.js';
  */
 export interface KeychainProvider<KeychainChange, DocumentKey> {
   /**
-   * Construct a new Keychain object.
+   * Construct a new Keychain object. Each call must return an independent
+   * keychain that shares no mutable state with any other keychain; invitation
+   * bootstrap stages untrusted key material in a fresh instance and relies on
+   * discarding it when the bootstrap fails.
    *
    * @return A new Keychain object.
    */

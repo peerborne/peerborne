@@ -317,8 +317,10 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * that hashes to anything other than the served-payload frontier is
    * caught by the defense-in-depth check.
    *
-   * `tips` is REQUIRED on v3 load responses (responder always populates,
-   * loader rejects absence when the quorum gate is enabled). The field
+   * `tips` is REQUIRED on v3 load responses: responders always populate it,
+   * and the loader skips a response without well-formed tips on every load,
+   * including the quorum-disabled path, recording a per-peer bind failure
+   * when the load is quorum-bound. The field
    * remains optional in the TypeScript type because the same
    * `CRDTSyncMessage` shape is also used for pubsub-broadcast change
    * messages, which do not carry a frontier advertisement.

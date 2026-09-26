@@ -80,6 +80,10 @@ async function signedWire(
     signatureContext: signedAs,
     changeId: 'root',
     changes: { kind: 'document', change: { value: 1 } },
+    ...(deliveredAs === 'load-response-v3' ||
+    deliveredAs === 'invitation-bootstrap-v1'
+      ? { tips: ['root'] }
+      : {}),
   };
   const signer = fakeDocument({ _userKey: writer.privateKey });
   const signature: string = await signer._signAsWriterUnconditional(body);
@@ -103,6 +107,8 @@ function loadHarness(plaintext: Uint8Array) {
     },
     _isSigningEnabled: () => true,
     _getWriterKeys: async () => [writer.publicKey],
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
     _syncValidatedProtocolMessage: sync,
   });
   const stream = {
@@ -138,8 +144,21 @@ async function invitationHarness(plaintext: Uint8Array) {
   );
   const epoch = new Uint8Array([1]);
   const sync = jest.fn(async () => true);
+  const invitationKeychain = {
+    prepareMerge: () => ({
+      keyIds: [epoch],
+      currentKeyId: epoch,
+      hydrateKeys: async () => undefined,
+      getKey: () => ({}),
+      commit: () => undefined,
+    }),
+  };
   const document = fakeDocument({
-    _keychainProvider: { keyIDLength: 1 },
+    swarm: { isPendingInvitationDocument: () => true },
+    _keychainProvider: {
+      keyIDLength: 1,
+      initialize: () => invitationKeychain,
+    },
     _authProvider: {
       nonceBits: 1,
       decrypt: async () => plaintext,
@@ -152,12 +171,10 @@ async function invitationHarness(plaintext: Uint8Array) {
       await crypto.subtle.exportKey('raw', recipient.publicKey),
     ),
     _changesSerializer: { deserializeChanges: () => ({}) },
-    _keychain: {
-      merge: () => undefined,
-      keys: async () => [[epoch, {}]],
-      getKey: () => ({}),
-    },
-    _syncValidatedProtocolMessage: sync,
+    _keychain: {},
+    _compactionInProgress: false,
+    _syncUnlocked: sync,
+    close: async () => undefined,
   });
   return {
     document,
@@ -219,6 +236,7 @@ describe('context-relabeled signed sync messages', () => {
       expect(sync).toHaveBeenCalledWith(
         expect.objectContaining({ signatureContext: 'load-response-v3' }),
         'load-response-v3',
+        0,
       );
     });
 
@@ -255,6 +273,7 @@ describe('context-relabeled signed sync messages', () => {
       ).rejects.toThrow(/advertised CIDs were not installed/);
       expect(sync).toHaveBeenCalledWith(
         expect.objectContaining({ signatureContext: 'invitation-bootstrap-v1' }),
+        false,
         'invitation-bootstrap-v1',
       );
     });

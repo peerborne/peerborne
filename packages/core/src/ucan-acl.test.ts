@@ -79,6 +79,14 @@ describe('UCANACL', () => {
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
   });
 
+  test.each([true, false, undefined])(
+    'merge forwards the backing change report %s',
+    (report) => {
+      backing.merge.mockReturnValue(report);
+      expect(acl.merge('incoming-changes')).toBe(report);
+    },
+  );
+
   test('check without capability delegates to backing ACL', async () => {
     backing.check.mockResolvedValue(true);
     const result = await acl.check('key1');
