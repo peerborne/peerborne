@@ -3893,7 +3893,9 @@ export class PeerborneDocument<
    * `winningHashHex` BEFORE applying the response. The
    * responder-supplied `message.tips` array must not be trusted as the
    * source of truth: doing so lets a Byzantine peer vote hash X, put X's
-   * tips in `message.tips`, and serve a divergent payload. When present,
+   * tips in `message.tips`, and serve a divergent payload. Every load
+   * response must still carry well-formed `message.tips` (a response
+   * without them is skipped even when the quorum gate is disabled), and
    * `message.tips` is additionally checked to
    * hash to the same value as the structurally-derived served
    * frontier; this catches the responder-internal-equivocation case
