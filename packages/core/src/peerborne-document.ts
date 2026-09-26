@@ -6662,10 +6662,13 @@ export class PeerborneDocument<
    *   4. Commit the ACL removal and broadcast it via `_makeChange`,
    *      still encrypted under the **previous** keychain key (so
    *      surviving readers can decrypt regardless of PathUpdate
-   *      arrival order). On failure: log a warning and fall through;
-   *      a surviving reader that receives the step-5 PathUpdate can
-   *      observe the ACL removal through a later load, which is
-   *      encrypted under the new key.
+   *      arrival order). On failure: log a warning and fall through.
+   *      If `_makeChange` recorded the ACL removal locally and only
+   *      its broadcast failed, a surviving reader that receives the
+   *      step-5 PathUpdate can observe it through a later load, which
+   *      is encrypted under the new key. If `_readers.remove` or
+   *      `_makeChange` failed before recording the change, no ACL
+   *      removal is committed for a later load to return.
    *   5. Broadcast the signed `PathUpdate` over `beekemPathUpdateV1`
    *      to every connected peer. Surviving readers feed it into
    *      `BeeKEM.processPathUpdate` and re-derive the same document
@@ -6865,9 +6868,13 @@ export class PeerborneDocument<
     //    or the underlying `_readers.remove(reader)` throws (signing,
     //    serialization, pubsub publish failure, IPFS write error,
     //    etc.) we log + fall through. The BeeKEM tree has already
-    //    advanced; unwinding it is not possible. Surviving readers
-    //    that receive the step-5 PathUpdate can observe the ACL
-    //    removal through a later load. We deliberately
+    //    advanced; unwinding it is not possible. If `_makeChange`
+    //    recorded the ACL removal locally and only the publish
+    //    failed, surviving readers that receive the step-5 PathUpdate
+    //    can observe the removal through a later load. If
+    //    `_readers.remove(reader)` or `_makeChange` failed before
+    //    recording the change, no ACL removal is committed for a later
+    //    load to return. We deliberately
     //    do not retry: a failed pubsub publish typically indicates a
     //    transport-level issue that the caller is better placed to
     //    diagnose than this routine.
@@ -6876,11 +6883,12 @@ export class PeerborneDocument<
       await this._makeChange(changes, crdtReaderChangeNode);
     } catch (err) {
       console.warn(
-        `[${this.documentPath}] removeReader: ACL-removal broadcast failed; ` +
+        `[${this.documentPath}] removeReader: ACL removal or broadcast failed; ` +
           `BeeKEM state has advanced locally and the new epoch key will be ` +
-          `installed in the local keychain. Surviving readers that receive ` +
-          `the PathUpdate may need to re-load the document to observe the ` +
-          `ACL change.`,
+          `installed in the local keychain. If the ACL change was recorded ` +
+          `locally, surviving readers that receive the PathUpdate may need ` +
+          `to re-load the document to observe it; otherwise no ACL removal ` +
+          `was committed.`,
         err,
       );
       // Fall through: still distribute the PathUpdate and install
