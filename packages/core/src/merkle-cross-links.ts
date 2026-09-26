@@ -500,12 +500,17 @@ export function mergeRemoteSyncTree<ChangesType>(
  *     traverse forever. A sparse occurrence does not mark a CID walked: a
  *     later canonical full occurrence may reveal its children.
  *
+ * `includeParent` limits which nodes' references are recorded. Nodes it
+ * rejects are still walked, so references made by their descendants remain
+ * visible.
+ *
  * Mutates `out` in place and returns it for convenience.
  */
 export function collectReferencedAncestors<ChangesType>(
   rootId: string | undefined,
   root: CRDTChangeNode<ChangesType>,
   out: Set<string>,
+  includeParent: (parentId: string | undefined) => boolean = () => true,
 ): Set<string> {
   const walked = new Set<string>();
   const pending: Array<{
@@ -527,13 +532,14 @@ export function collectReferencedAncestors<ChangesType>(
       if (walked.has(nodeId)) continue;
       walked.add(nodeId);
     }
+    const referencesChildren = includeParent(nodeId);
     const entries = Object.entries(node.children);
     for (let index = entries.length - 1; index >= 0; index--) {
       const [childId, childNode] = entries[index]!;
       pending.push({
         nodeId: childId,
         node: childNode,
-        referencedByParent: true,
+        referencedByParent: referencesChildren,
       });
     }
   }
