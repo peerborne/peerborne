@@ -121,8 +121,8 @@ UCAN (User Controlled Authorization Networks) helpers exist in `@peerborne/core`
 But the document change path does not check UCAN tokens. UCAN integration is a future capability.
 The optional [`UCANACL`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/ucan-acl.ts)
 wrapper in `@peerborne/core` keeps capability metadata in process-local memory.
-That metadata is not replicated. The wrapper does not provide distributed
-strong-removal semantics.
+That metadata is neither replicated nor enforced as shared revocation state, so
+a revocation recorded on one replica does not apply on another.
 
 ## Encryption and history visibility
 
