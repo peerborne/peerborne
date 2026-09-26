@@ -50,6 +50,7 @@ import {
   MAX_RECENT_TIPS,
   mergeRemoteSyncTree,
   RecentTip,
+  selectAncestryClosedNodes,
   selectCrossLinks,
   trackTipInList,
   treeContainsCid,
@@ -1921,14 +1922,30 @@ export class PeerborneDocument<
     // are no-ops in a Set. A certified ACL rejection withdraws the entries
     // this sync added unless a node that did apply still references them, so
     // a retried delivery can record them again without hiding applied heads.
+    // Direct ACL entries that merged before the rejection are live, so they
+    // are recorded when their delivered ancestry is already known; otherwise
+    // they stay unrecorded so a retry still walks their discarded ancestors.
     const newlyReferencedAncestors = [
       ...collectReferencedAncestors(changeId, changes, new Set<string>()),
     ].filter((cid) => !this._referencedAncestors.has(cid));
     for (const cid of newlyReferencedAncestors) {
       this._referencedAncestors.add(cid);
     }
+    const appliedDirectACLNodes = new Map<string, CRDTChangeNodeKind>();
     const rejectCertifiedACLMerge = (error: unknown): never => {
       if (error instanceof ACLMergeRejectedError) {
+        const recordable = selectAncestryClosedNodes(
+          changeId,
+          changes,
+          new Set(appliedDirectACLNodes.keys()),
+          (cid) => this._hashes.has(cid),
+        );
+        for (const [cid, kind] of [...appliedDirectACLNodes].reverse()) {
+          if (!recordable.has(cid)) continue;
+          this._hashes.add(cid);
+          this._trackTip(cid, kind);
+        }
+        appliedDirectACLNodes.clear();
         const appliedReferences = collectReferencedAncestors(
           changeId,
           changes,
@@ -1986,6 +2003,7 @@ export class PeerborneDocument<
               assertStillActive,
               signal,
             ).catch(rejectCertifiedACLMerge);
+            appliedDirectACLNodes.set(sentHash, sentChangeKind);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -1998,6 +2016,7 @@ export class PeerborneDocument<
               assertStillActive,
               signal,
             ).catch(rejectCertifiedACLMerge);
+            appliedDirectACLNodes.set(sentHash, sentChangeKind);
             assertStillActive();
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -2014,6 +2033,7 @@ export class PeerborneDocument<
       for (const newHash of newDocumentHashes) {
         this._hashes.add(newHash);
       }
+      appliedDirectACLNodes.clear();
       // Track applied tips for Merkle-CRDT cross-linking (paper §VI.B.e)
       // *before* firing remote update handlers. Recording remote-applied
       // CIDs lets this peer cross-link to them on its next outgoing change,

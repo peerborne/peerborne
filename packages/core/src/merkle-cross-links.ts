@@ -547,6 +547,71 @@ export function collectReferencedAncestors<ChangesType>(
 }
 
 /**
+ * Pure helper: select the `candidates` whose delivered ancestry is closed.
+ * A candidate is selected iff every CID its occurrences in the sync tree
+ * reference as children is either known or another selected candidate.
+ * Walks with the same occurrence semantics as `collectReferencedAncestors`,
+ * so a candidate seen only sparsely references nothing.
+ *
+ * Returns a new Set; does not mutate the inputs.
+ */
+export function selectAncestryClosedNodes<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType>,
+  candidates: ReadonlySet<string>,
+  isKnown: (cid: string) => boolean,
+): Set<string> {
+  const selected = new Set(candidates);
+  const referencingCandidates = new Map<string, string[]>();
+  const open: string[] = [];
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
+    if (nodeId !== undefined) {
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    const entries = Object.entries(node.children);
+    if (nodeId !== undefined && candidates.has(nodeId)) {
+      for (const [childId] of entries) {
+        if (candidates.has(childId)) {
+          const referencing = referencingCandidates.get(childId);
+          if (referencing === undefined) {
+            referencingCandidates.set(childId, [nodeId]);
+          } else {
+            referencing.push(nodeId);
+          }
+        } else if (!isKnown(childId)) {
+          open.push(nodeId);
+        }
+      }
+    }
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
+    }
+  }
+
+  while (open.length > 0) {
+    const nodeId = open.pop()!;
+    if (!selected.delete(nodeId)) continue;
+    for (const referencing of referencingCandidates.get(nodeId) ?? []) {
+      open.push(referencing);
+    }
+  }
+  return selected;
+}
+
+/**
  * Pure helper: derive the served frontier of a load-response payload
  * STRUCTURALLY, without applying any of it to local state.
  *

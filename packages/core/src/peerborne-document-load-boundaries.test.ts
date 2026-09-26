@@ -772,6 +772,82 @@ describe('document load response boundaries', () => {
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
   });
 
+  test('records direct ACL entries applied before a rejection when their ancestry is known', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed direct writer update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/direct-acl-rejection-bookkeeping',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(['KNOWN', 'OTHER']),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['TOP', crdtWriterChangeNode, { id: 'TOP' }],
+        ['GOOD', crdtWriterChangeNode, { id: 'GOOD' }],
+        ['STALE', crdtWriterChangeNode, { id: 'STALE' }],
+        ['DOC', crdtDocumentChangeNode, { id: 'DOC' }],
+        ['BAD', crdtWriterChangeNode, { id: 'BAD' }],
+      ]),
+      _crdtProvider: { remoteChange: jest.fn((state: unknown) => state) },
+      _mergeWriters: jest.fn(async (changes: { id: string }) => {
+        if (changes.id === 'BAD') throw rejection;
+      }),
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ROOT', {
+        kind: crdtDocumentChangeNode,
+        change: { id: 'ROOT' },
+        children: {
+          TOP: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'TOP' },
+            children: {
+              GOOD: {
+                kind: crdtWriterChangeNode,
+                change: { id: 'GOOD' },
+                children: { KNOWN: { kind: crdtDocumentChangeNode } },
+              },
+            },
+          },
+          STALE: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'STALE' },
+            children: {
+              DOC: { kind: crdtDocumentChangeNode, change: { id: 'DOC' } },
+            },
+          },
+          BAD: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'BAD' },
+            children: { OTHER: { kind: crdtDocumentChangeNode } },
+          },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._mergeWriters).toHaveBeenCalledTimes(4);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'OTHER', 'TOP', 'GOOD']),
+    );
+    expect(document._referencedAncestors).toEqual(new Set(['GOOD', 'KNOWN']));
+    expect(document._currentFrontier().sort()).toEqual(['OTHER', 'TOP']);
+    expect(document._trackTip.mock.calls).toEqual([
+      ['GOOD', crdtWriterChangeNode],
+      ['TOP', crdtWriterChangeNode],
+    ]);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),
