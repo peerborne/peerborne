@@ -30,12 +30,14 @@ export interface ACL<ChangesType, PublicKey> {
   current(): ChangesType;
 
   /**
-   * Applies a block of change(s) to the ACL. Merging must be idempotent:
-   * applying a block that was already merged leaves the ACL unchanged.
+   * Applies a block of change(s) to the ACL.
    *
    * @param changes A block of change(s) to apply.
+   * @return `false` when the merge left the ACL state unchanged, for example
+   * because the block was already merged. An implementation that cannot tell
+   * may return nothing, and callers then treat the merge as a change.
    */
-  merge(changes: ChangesType): void;
+  merge(changes: ChangesType): boolean | void;
 
   /**
    * Checks to see if the specified user has a specific capability.

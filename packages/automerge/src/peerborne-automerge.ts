@@ -8,6 +8,7 @@ import {
   getConflicts,
   applyChanges,
   getMissingDeps,
+  getHeads,
   Change as BinaryChange,
   getAllChanges,
   save,
@@ -144,6 +145,15 @@ export type AutomergeACLDoc = Doc<{
   users?: { [hash: string]: true };
 }>;
 
+// Applied history is identified by its heads; queued changes only surface as
+// missing dependencies, which also decide whether the ACL can be read.
+function automergeACLMergeState(doc: AutomergeACLDoc): string {
+  return JSON.stringify([
+    [...getHeads(doc)].sort(),
+    [...getMissingDeps(doc, [])].sort(),
+  ]);
+}
+
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // Start without a local `users` root. The first add creates the map and its
   // membership in one self-contained Automerge change, while complete ACL
@@ -194,9 +204,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('read the current ACL history');
     return getAllChanges(this._acl);
   }
-  merge(change: BinaryChange[]): void {
+  merge(change: BinaryChange[]): boolean {
+    const before = automergeACLMergeState(this._acl);
     const [doc] = applyChanges(this._acl, change);
     this._acl = doc;
+    return automergeACLMergeState(doc) !== before;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
   // The capability parameter is accepted for interface compatibility but ignored here;

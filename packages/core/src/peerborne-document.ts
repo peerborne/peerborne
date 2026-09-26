@@ -407,11 +407,6 @@ export class PeerborneDocument<
   // cache entirely and always re-fetches, so a signature check that races
   // a mutation cannot observe the stale pre-mutation list.
   private _writerMutationsInFlight = 0;
-  // Serialized writer change blocks already applied to `_writers`. ACL merges
-  // are CRDT merges, so re-merging one of these cannot change the ACL. Sync
-  // re-merges every inline writer node; recognizing those blocks keeps the
-  // writer-keys version stable without serializing the whole ACL per merge.
-  private readonly _mergedWriterBlocks = new Set<string>();
 
   // List of document encryption keys. Lower index numbers mean more recent.
   // Since the document is created from change history, all keys are needed.
@@ -1663,56 +1658,33 @@ export class PeerborneDocument<
 
   /**
    * Apply a writer ACL change and invalidate the cached key list unless the
-   * block was already merged. Ordinary sync re-merges every inline writer
-   * node, so treating those re-merges as writer changes would spuriously
-   * invalidate loads and tip votes verified against the same writer set.
+   * ACL reports that the merge left its state unchanged. Ordinary sync
+   * re-merges every inline writer node, so treating those re-merges as writer
+   * changes would spuriously invalidate loads and tip votes verified against
+   * the same writer set.
    */
   private _mergeWriters(changes: ChangesType): void {
     // `merge()` is synchronous, so no `_getWriterKeys` can observe the
     // in-flight window. A fetch that started before the merge captured the
     // old version and retries if the post-merge invalidation below runs.
-    const block = this._writerBlockKey(changes);
-    const known = block !== undefined && this._mergedWriterBlocks.has(block);
-    let merged = false;
+    let changed: boolean | void = true;
     this._writerMutationsInFlight++;
     try {
-      this._writers.merge(changes);
-      merged = true;
+      changed = this._writers.merge(changes);
     } finally {
       this._writerMutationsInFlight--;
-      if (!known || !merged) this._invalidateWriterKeyCache();
+      if (changed !== false) this._invalidateWriterKeyCache();
     }
-    if (block !== undefined) this._mergedWriterBlocks.add(block);
-  }
-
-  private _writerBlockKey(changes: ChangesType): string | undefined {
-    try {
-      return Base64.fromUint8Array(
-        this._changesSerializer.serializeChanges(changes),
-      );
-    } catch {
-      return undefined;
-    }
-  }
-
-  private _recordMergedWriterBlock(changes: ChangesType): ChangesType {
-    const block = this._writerBlockKey(changes);
-    if (block !== undefined) this._mergedWriterBlocks.add(block);
-    return changes;
   }
 
   /** Add a writer and invalidate the cached key list. */
   private async _addWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._recordMergedWriterBlock(
-      await this._runWriterMutation(() => this._writers.add(publicKey)),
-    );
+    return this._runWriterMutation(() => this._writers.add(publicKey));
   }
 
   /** Remove a writer and invalidate the cached key list. */
   private async _removeWriter(publicKey: PublicKey): Promise<ChangesType> {
-    return this._recordMergedWriterBlock(
-      await this._runWriterMutation(() => this._writers.remove(publicKey)),
-    );
+    return this._runWriterMutation(() => this._writers.remove(publicKey));
   }
 
   private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
