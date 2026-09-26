@@ -3697,14 +3697,21 @@ export class PeerborneDocument<
           } catch {
             return null;
           }
-          const verifyTasks = preLoadWriters.map((writerKey) =>
-            this._authProvider.verify(
-              new Uint8Array(unsigned.raw),
-              writerKey,
-              new Uint8Array(signatureBytes),
-            ),
-          );
-          if ((await firstTrue(verifyTasks)) !== true || !unsigned.unchanged()) {
+          let verified = false;
+          // Serial attempts stop at the first match and bound active copies.
+          for (const writerKey of preLoadWriters) {
+            if (
+              (await this._authProvider.verify(
+                new Uint8Array(unsigned.raw),
+                writerKey,
+                new Uint8Array(signatureBytes),
+              )) === true
+            ) {
+              verified = true;
+              break;
+            }
+          }
+          if (!verified || !unsigned.unchanged()) {
             return null;
           }
         }

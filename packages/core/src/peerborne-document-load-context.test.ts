@@ -565,6 +565,45 @@ function writerDocument(initial: string[]) {
   return { document, writers };
 }
 
+describe('tip-advertisement writer verification', () => {
+  test('stops verifying at the first writer that signed the vote', async () => {
+    const harness = tipHarness();
+    const writers = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    harness.document._getWriterKeys = async () => writers;
+    harness.verify
+      .mockImplementationOnce(async () => false)
+      .mockImplementationOnce(async () => true);
+
+    await expect(
+      harness.document._probeTipAdvertise(
+        { toString: () => '/peer/one' },
+        new Uint8Array([1]),
+      ),
+    ).resolves.toEqual(new Uint8Array(32).fill(5));
+
+    expect(harness.verify.mock.calls.map((call: any[]) => call[1])).toEqual(
+      writers.slice(0, 2),
+    );
+    const [first, second] = harness.verify.mock.calls as any[];
+    expect(first[0]).not.toBe(second[0]);
+    expect(first[2]).not.toBe(second[2]);
+  });
+
+  test('rejects the vote when no writer signed it', async () => {
+    const harness = tipHarness();
+    harness.document._getWriterKeys = async () => [{}, {}];
+    harness.verify.mockImplementation(async () => false);
+
+    await expect(
+      harness.document._probeTipAdvertise(
+        { toString: () => '/peer/one' },
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBeNull();
+    expect(harness.verify).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('writer ACL re-merges', () => {
   test('keeps writer authorization stable when a merge changes nothing', () => {
     const { document } = writerDocument(['founder', 'invitee']);
