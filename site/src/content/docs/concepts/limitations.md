@@ -100,8 +100,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   `ACLChain` implementation has focused tests, but `PeerborneDocument` still
   authorizes an outer envelope against its current local writer set before
   merging any enclosed ACL nodes. A stale or partitioned writer can therefore
-  race a removal with a signed re-grant. Do not treat writer removal as a
-  Byzantine or globally causal cutover.
+  race a removal with a signed re-grant. Writer removal is not a globally
+  causal cutover and does not protect against a malicious writer equivocating
+  across partitions.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
 - **PathUpdate is best-effort and has no automatic catch-up.** There is no
