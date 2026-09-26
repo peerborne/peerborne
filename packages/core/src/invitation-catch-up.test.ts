@@ -416,10 +416,13 @@ describe('invitation catch-up', () => {
     const ordinaryLoad = jest.fn(async () => {
       throw new Error('default quorum would reject the founder-only cohort');
     });
-    const loadAndVerify = jest.fn(async (_stream: unknown) => {
-      expect(issuerPublicKey).toEqual({ id: 'founder' });
-      return true;
-    });
+    const loadAndVerify = jest.fn(
+      async (_stream: unknown, signal: AbortSignal) => {
+        expect(issuerPublicKey).toEqual({ id: 'founder' });
+        expect(signal.aborted).toBe(false);
+        return true;
+      },
+    );
 
     await expect(
       withIssuerPinnedInvitationStream(
@@ -434,7 +437,7 @@ describe('invitation catch-up', () => {
     ).resolves.toBe(true);
     expect(ordinaryLoad).not.toHaveBeenCalled();
     expect(dialProtocol).toHaveBeenCalledTimes(1);
-    expect(loadAndVerify).toHaveBeenCalledWith(rawStream);
+    expect(loadAndVerify).toHaveBeenCalledWith(rawStream, expect.anything());
     expect(rawStream.close).toHaveBeenCalledTimes(1);
     expect(rawStream.closeRead).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).not.toHaveBeenCalled();
