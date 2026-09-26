@@ -1,4 +1,4 @@
-export { ACLOperationInProgressError } from './acl.js';
+export { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
 export {
   describeValue,
   serializeChangeNodeForJSON,

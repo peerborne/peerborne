@@ -500,12 +500,17 @@ export function mergeRemoteSyncTree<ChangesType>(
  *     traverse forever. A sparse occurrence does not mark a CID walked: a
  *     later canonical full occurrence may reveal its children.
  *
+ * `includeParent` limits which nodes' references are recorded. Nodes it
+ * rejects are still walked, so references made by their descendants remain
+ * visible.
+ *
  * Mutates `out` in place and returns it for convenience.
  */
 export function collectReferencedAncestors<ChangesType>(
   rootId: string | undefined,
   root: CRDTChangeNode<ChangesType>,
   out: Set<string>,
+  includeParent: (parentId: string | undefined) => boolean = () => true,
 ): Set<string> {
   const walked = new Set<string>();
   const pending: Array<{
@@ -527,17 +532,83 @@ export function collectReferencedAncestors<ChangesType>(
       if (walked.has(nodeId)) continue;
       walked.add(nodeId);
     }
+    const referencesChildren = includeParent(nodeId);
     const entries = Object.entries(node.children);
     for (let index = entries.length - 1; index >= 0; index--) {
       const [childId, childNode] = entries[index]!;
       pending.push({
         nodeId: childId,
         node: childNode,
-        referencedByParent: true,
+        referencedByParent: referencesChildren,
       });
     }
   }
   return out;
+}
+
+/**
+ * Pure helper: select the `candidates` whose delivered ancestry is closed.
+ * A candidate is selected iff every CID its occurrences in the sync tree
+ * reference as children is either known or another selected candidate.
+ * Walks with the same occurrence semantics as `collectReferencedAncestors`,
+ * so a candidate seen only sparsely references nothing.
+ *
+ * Returns a new Set; does not mutate the inputs.
+ */
+export function selectAncestryClosedNodes<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType>,
+  candidates: ReadonlySet<string>,
+  isKnown: (cid: string) => boolean,
+): Set<string> {
+  const selected = new Set(candidates);
+  const referencingCandidates = new Map<string, string[]>();
+  const open: string[] = [];
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    ) {
+      continue;
+    }
+    if (nodeId !== undefined) {
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    const entries = Object.entries(node.children);
+    if (nodeId !== undefined && candidates.has(nodeId)) {
+      for (const [childId] of entries) {
+        if (candidates.has(childId)) {
+          const referencing = referencingCandidates.get(childId);
+          if (referencing === undefined) {
+            referencingCandidates.set(childId, [nodeId]);
+          } else {
+            referencing.push(nodeId);
+          }
+        } else if (!isKnown(childId)) {
+          open.push(nodeId);
+        }
+      }
+    }
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
+    }
+  }
+
+  while (open.length > 0) {
+    const nodeId = open.pop()!;
+    if (!selected.delete(nodeId)) continue;
+    for (const referencing of referencingCandidates.get(nodeId) ?? []) {
+      open.push(referencing);
+    }
+  }
+  return selected;
 }
 
 /**

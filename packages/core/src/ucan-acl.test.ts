@@ -5,6 +5,7 @@ const { MAX_UCAN_ACL_LISTING_IDENTITIES } = ucanAcl;
 const UCANACLImpl = ucanAcl.UCANACL;
 const UCANACLProviderImpl = ucanAcl.UCANACLProvider;
 const {
+  ACLMergeRejectedError,
   ACLOperationInProgressError,
   retryACLConflict,
 } = require('./acl');
@@ -2684,6 +2685,18 @@ describe('UCANACL', () => {
   test('merge delegates to backing ACL', () => {
     acl.merge('incoming-changes');
     expect(backing.merge).toHaveBeenCalledWith('incoming-changes');
+  });
+
+  test('propagates a certified backing merge rejection unchanged', async () => {
+    const rejection = new ACLMergeRejectedError(new Error('malformed update'));
+    backing.merge.mockImplementation(() => {
+      throw rejection;
+    });
+
+    expect(() => acl.merge('malformed-changes')).toThrow(rejection);
+
+    backing.check.mockResolvedValue(true);
+    await expect(acl.check('key1')).resolves.toBe(true);
   });
 
   test('poisons an asynchronous backing current-state contract violation', async () => {
