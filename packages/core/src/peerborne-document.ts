@@ -7061,8 +7061,9 @@ export class PeerborneDocument<
    * Welcome from `_beekemWelcomeByLeaf`, so `addReader` can re-send
    * the same Welcome bytes. If the cache is empty for the existing
    * leaf (writer restarted), `null` is returned and the caller falls
-   * back to the existing "no BeeKEM bootstrap available, recipient
-   * must recover via a fresh document load" path.
+   * back to the existing "no BeeKEM bootstrap available" path, where
+   * the recipient needs another recipient-bound Welcome or explicit
+   * out-of-band recovery; an ordinary load cannot deliver the key.
    *
    * The path update produced by `BeeKEM.addMember` is not broadcast here.
    * Existing members therefore cannot safely track a second active joiner.
