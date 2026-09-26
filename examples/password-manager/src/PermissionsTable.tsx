@@ -10,6 +10,20 @@ type DisplayPermission = {
   permissions: 'r' | 'rw';
 };
 
+const lastEditorMessage =
+  'The last editor cannot be demoted or removed. Add another editor first.';
+
+async function isLastWriter(
+  target: CryptoKey,
+  writers: readonly CryptoKey[] | undefined,
+): Promise<boolean> {
+  const [serializedTarget, ...serializedWriters] = await Promise.all(
+    [target, ...(writers ?? [])].map((key) => serializeKey(key)),
+  );
+  const writerKeys = new Set(serializedWriters);
+  return writerKeys.size === 1 && writerKeys.has(serializedTarget);
+}
+
 export function PermissionsTable({
   passwordId,
   peerborne,
@@ -100,6 +114,10 @@ export function PermissionsTable({
                               break;
                             }
                             case 'rw': {
+                              if (await isLastWriter(permission.key, writers)) {
+                                alert(lastEditorMessage);
+                                return;
+                              }
                               // Writers keep an explicit reader row, so demote
                               // before revoking read access.
                               await removeWriter(permission.key);
@@ -170,6 +188,10 @@ export function PermissionsTable({
 
                       switch (draftPermission) {
                         case 'r': {
+                          if (await isLastWriter(key, writers)) {
+                            alert(lastEditorMessage);
+                            return;
+                          }
                           await addReader(key);
                           await removeWriter(key);
                           console.log('Added reader');
