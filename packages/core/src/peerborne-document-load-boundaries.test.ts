@@ -2876,6 +2876,61 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pending');
   });
 
+  test('bounds an invitation application that ignores its deadline signal', async () => {
+    jest.useFakeTimers();
+    try {
+      const applyStarted = deferred<void>();
+      const activate = jest.fn(async () => undefined);
+      const mutationQueue = new InvitationMembershipQueue();
+      let lateBegin!: () => void;
+      let applySignal: AbortSignal | undefined;
+      const document = fakeDocument({
+        documentPath: '/invitation-hung-apply',
+        _bootstrapLoadApplicationState: 'pristine',
+        _hashes: new Set<string>(),
+        _lastSyncMessage: undefined,
+        _latestSnapshot: undefined,
+        _subscribed: false,
+        _mutationQueue: mutationQueue,
+      });
+
+      const bootstrap = document._runInvitationBootstrapStateApplication(
+        (begin: () => void, signal: AbortSignal) => {
+          lateBegin = begin;
+          applySignal = signal;
+          applyStarted.resolve();
+          return new Promise<never>(() => {});
+        },
+        undefined,
+        activate,
+      );
+      const rejection = expect(bootstrap).rejects.toThrow(
+        /^Invitation bootstrap deadline exceeded$/,
+      );
+      await applyStarted.promise;
+      let queuedMutationRan = false;
+      const queuedMutation = mutationQueue.run(async () => {
+        queuedMutationRan = true;
+      });
+
+      await jest.advanceTimersByTimeAsync(INVITATION_STREAM_TIMEOUT_MS);
+      await rejection;
+      await expect(queuedMutation).resolves.toBeUndefined();
+
+      expect(queuedMutationRan).toBe(true);
+      expect(applySignal?.aborted).toBe(true);
+      expect(activate).not.toHaveBeenCalled();
+      expect(
+        document._activeInvitationBootstrapContinuation,
+      ).toBeUndefined();
+      expect(() => lateBegin()).toThrow(/deadline exceeded/);
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('rechecks the invitation KEM key at the queued application boundary', async () => {
     const queued = deferred<void>();
     const release = deferred<void>();

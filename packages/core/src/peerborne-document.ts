@@ -1170,13 +1170,14 @@ export class PeerborneDocument<
     });
   }
 
-  private _runInvitationBootstrapStateApplication<T>(
-    operation: (
+  private _runInvitationBootstrapStateApplication(
+    apply: (
       beginStateApplication: () => void,
-      continuation: InvitationBootstrapContinuation,
-    ) => Promise<T>,
+      signal: AbortSignal,
+    ) => Promise<void>,
     assertCanApply?: () => void,
-  ): Promise<T> {
+    activate?: (continuation: InvitationBootstrapContinuation) => Promise<void>,
+  ): Promise<void> {
     return this._mutationQueue.run(async () => {
       if (
         this._bootstrapLoadApplicationState !== 'pristine' ||
@@ -1190,35 +1191,62 @@ export class PeerborneDocument<
           `Invitation bootstrap for ${this.documentPath} requires a pristine document instance`,
         );
       }
-      assertCanApply?.();
-      const invitationKeychain = this._keychain;
-      const existingKeys = await invitationKeychain.keys();
-      assertCanApply?.();
-      if (
-        this._keychain !== invitationKeychain ||
-        !Array.isArray(existingKeys) ||
-        existingKeys.length !== 0
-      ) {
-        throw new Error(
-          'Invitation bootstrap requires a pristine, empty keychain',
-        );
-      }
-      let stateApplicationStarted = false;
-      const beginStateApplication = (): void => {
-        if (stateApplicationStarted) return;
-        stateApplicationStarted = true;
-        // Reserve the instance immediately before the first live write. Any
-        // later failure may have partially changed state and therefore
-        // remains fail-closed, while purely detached validation can reject a
-        // malformed invitation without poisoning this fresh instance.
-        this._markBootstrapStateApplicationPending();
-      };
-      const continuation = createInvitationBootstrapContinuation();
-      this._activeInvitationBootstrapContinuation = continuation;
+      // This queue slot blocks every public mutation. Bound the provider
+      // awaits that validate and apply the initial bootstrap so one that never
+      // settles releases the slot, leaving the instance pristine before its
+      // first live write and pending afterwards. Activation bounds its
+      // catch-up stream and finalization with deadlines of its own.
+      const initialDeadline = new AbortController();
+      const initialDeadlineTimer = setTimeout(
+        () =>
+          initialDeadline.abort(
+            new Error('Invitation bootstrap deadline exceeded'),
+          ),
+        INVITATION_STREAM_TIMEOUT_MS,
+      );
+      let continuation: InvitationBootstrapContinuation | undefined;
       try {
-        return await operation(beginStateApplication, continuation);
+        assertCanApply?.();
+        const invitationKeychain = this._keychain;
+        const existingKeys = await awaitLoadWork(
+          invitationKeychain.keys(),
+          initialDeadline.signal,
+        );
+        assertCanApply?.();
+        if (
+          this._keychain !== invitationKeychain ||
+          !Array.isArray(existingKeys) ||
+          existingKeys.length !== 0
+        ) {
+          throw new Error(
+            'Invitation bootstrap requires a pristine, empty keychain',
+          );
+        }
+        let stateApplicationStarted = false;
+        const beginStateApplication = (): void => {
+          throwIfLoadAborted(initialDeadline.signal);
+          if (stateApplicationStarted) return;
+          stateApplicationStarted = true;
+          // Reserve the instance immediately before the first live write. Any
+          // later failure may have partially changed state and therefore
+          // remains fail-closed, while purely detached validation can reject
+          // a malformed invitation without poisoning this fresh instance.
+          this._markBootstrapStateApplicationPending();
+        };
+        continuation = createInvitationBootstrapContinuation();
+        this._activeInvitationBootstrapContinuation = continuation;
+        await awaitLoadWork(
+          apply(beginStateApplication, initialDeadline.signal),
+          initialDeadline.signal,
+        );
+        clearTimeout(initialDeadlineTimer);
+        await activate?.(continuation);
       } finally {
-        if (this._activeInvitationBootstrapContinuation === continuation) {
+        clearTimeout(initialDeadlineTimer);
+        if (
+          continuation !== undefined &&
+          this._activeInvitationBootstrapContinuation === continuation
+        ) {
           this._activeInvitationBootstrapContinuation = undefined;
         }
       }
@@ -7562,7 +7590,7 @@ export class PeerborneDocument<
       );
     }
     await this._runInvitationBootstrapStateApplication(
-      async (beginStateApplication, bootstrapContinuation) => {
+      async (beginStateApplication, signal) => {
         const preparedKeychainMerge = prepareKeychainMerge.call(
           this._keychain,
           keychainChanges,
@@ -7578,7 +7606,10 @@ export class PeerborneDocument<
             'Invitation Welcome epoch is not the staged keychain current epoch',
           );
         }
-        const hydratedKeys = await preparedKeychainMerge.hydrateKeys();
+        const hydratedKeys = await awaitLoadWork(
+          preparedKeychainMerge.hydrateKeys(),
+          signal,
+        );
         const epochPresent = hydratedKeys.some(([keyId]) =>
           constantTimeEqual(keyId, invitationBundle.welcomeEpochId),
         );
@@ -7613,12 +7644,12 @@ export class PeerborneDocument<
           invitationBundle.encryptedBootstrap.subarray(headerLength);
         let bootstrapPlaintext: Uint8Array;
         try {
-          bootstrapPlaintext = await this._authProvider.decrypt(
-            ciphertext,
-            bootstrapKey,
-            nonce,
+          bootstrapPlaintext = await awaitLoadWork(
+            this._authProvider.decrypt(ciphertext, bootstrapKey, nonce),
+            signal,
           );
         } catch {
+          throwIfLoadAborted(signal);
           throw new Error(
             'Invitation encrypted bootstrap could not be decrypted',
           );
@@ -7661,10 +7692,13 @@ export class PeerborneDocument<
           throw new Error('Invitation bootstrap serialization is unstable');
         }
         if (
-          (await this._authProvider.verify(
-            unsignedBootstrap.raw,
-            issuerPublicKey,
-            signatureBytes,
+          (await awaitLoadWork(
+            this._authProvider.verify(
+              unsignedBootstrap.raw,
+              issuerPublicKey,
+              signatureBytes,
+            ),
+            signal,
           )) !== true
         ) {
           throw new Error(
@@ -7700,18 +7734,22 @@ export class PeerborneDocument<
             bootstrapMessageForSync,
             this._hashes,
             () =>
-              this._syncUnlocked(
-                bootstrapMessageForSync,
-                false,
-                'invitation-bootstrap-v1',
-                undefined,
-                true,
-                undefined,
-                {
-                  maxBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
-                  maxAggregateBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
-                  getKey: (keyID) => preparedKeychainMerge.getKey(keyID),
-                },
+              awaitLoadWork(
+                this._syncUnlocked(
+                  bootstrapMessageForSync,
+                  false,
+                  'invitation-bootstrap-v1',
+                  undefined,
+                  true,
+                  undefined,
+                  {
+                    signal,
+                    maxBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                    maxAggregateBlockBytes: MAX_INVITATION_MESSAGE_BYTES,
+                    getKey: (keyID) => preparedKeychainMerge.getKey(keyID),
+                  },
+                ),
+                signal,
               ),
             'bootstrap',
             {
@@ -7722,7 +7760,15 @@ export class PeerborneDocument<
         ) {
           throw new Error('Invitation bootstrap state was rejected');
         }
-        await this._assertAcceptedInvitationMembership(issuerPublicKey, role);
+        await awaitLoadWork(
+          this._assertAcceptedInvitationMembership(
+            issuerPublicKey,
+            role,
+            signal,
+          ),
+          signal,
+        );
+        throwIfLoadAborted(signal);
 
         // The pinned catch-up response is encrypted under the installed live
         // current key, so this staged merge must commit before activation can
@@ -7734,12 +7780,6 @@ export class PeerborneDocument<
         this._beekemInitialized = true;
         this._invitationEpoch = invitationEpoch;
         this._invitationBootstrapReady = true;
-        await this._activateAcceptedInvitationBootstrap(
-          founderAddress,
-          issuerPublicKey,
-          role,
-          bootstrapContinuation,
-        );
       },
       () => {
         const currentKemKeyPair = this._kemKeyPair;
@@ -7759,6 +7799,13 @@ export class PeerborneDocument<
           );
         }
       },
+      (bootstrapContinuation) =>
+        this._activateAcceptedInvitationBootstrap(
+          founderAddress,
+          issuerPublicKey,
+          role,
+          bootstrapContinuation,
+        ),
     );
   }
 

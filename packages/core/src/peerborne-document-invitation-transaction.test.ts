@@ -4,6 +4,7 @@ import { PeerborneDocument } from './peerborne-document.js';
 import { eciesOpen } from './ecies.js';
 import { decodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
+import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 
 jest.mock(
   'it-pipe',
@@ -82,7 +83,16 @@ const welcome = {
   treeHash: new Uint8Array(32),
 };
 
+type InvitationStage =
+  | 'keys'
+  | 'hydrate'
+  | 'decrypt'
+  | 'verify'
+  | 'sync'
+  | 'membership';
+
 function invitationHarness(options: {
+  stall?: InvitationStage;
   verify?: boolean;
   sync?: boolean;
   membershipError?: Error;
@@ -94,6 +104,12 @@ function invitationHarness(options: {
   hydrateWait?: Promise<void>;
 } = {}) {
   const order: string[] = [];
+  const stalled = deferred<void>();
+  const stallAt = async (stage: InvitationStage): Promise<void> => {
+    if (options.stall !== stage) return;
+    stalled.resolve();
+    await new Promise<never>(() => {});
+  };
   const welcomeKeychainChanges = { source: 'sealed-welcome' };
   const bootstrapKeychainChanges = { source: 'signed-bootstrap' };
   const welcomeKeychainBytes = new Uint8Array([4, 5, 6]);
@@ -127,6 +143,7 @@ function invitationHarness(options: {
         order.push('hydrate');
         options.onHydrate?.();
         await options.hydrateWait;
+        await stallAt('hydrate');
         return stagedKeys;
       }),
       getKey: jest.fn((keyId: Uint8Array) => {
@@ -145,19 +162,27 @@ function invitationHarness(options: {
       _onStateApplicationStart: (() => void) | undefined,
       continuePending: boolean,
       _onLogicalKeychainChange: (() => void) | undefined,
-      fetchOptions: { getKey?: (keyId: Uint8Array) => unknown },
+      fetchOptions: {
+        signal?: AbortSignal;
+        getKey?: (keyId: Uint8Array) => unknown;
+      },
     ) => {
       order.push('sync');
       expect(message.keychainChanges).toBeUndefined();
       expect(continuePending).toBe(true);
       expect(fetchOptions.getKey?.(epochId)).toBe(stagedKey);
+      expect(fetchOptions.signal).toBeInstanceOf(AbortSignal);
+      await stallAt('sync');
       return options.sync ?? true;
     },
   );
-  const assertMembership = jest.fn(async () => {
-    order.push('membership');
-    if (options.membershipError) throw options.membershipError;
-  });
+  const assertMembership = jest.fn(
+    async (_issuer: unknown, _role: string, _signal?: AbortSignal) => {
+      order.push('membership');
+      await stallAt('membership');
+      if (options.membershipError) throw options.membershipError;
+    },
+  );
   const activate = jest.fn(async () => {
     order.push('activate');
   });
@@ -178,7 +203,10 @@ function invitationHarness(options: {
     _keychainProvider: { keyIDLength: 1 },
     _keychain: {
       getKey: jest.fn(),
-      keys: jest.fn(async () => []),
+      keys: jest.fn(async () => {
+        await stallAt('keys');
+        return [];
+      }),
       merge,
       ...(options.transactional === false ? {} : { prepareMerge }),
     },
@@ -187,10 +215,12 @@ function invitationHarness(options: {
       decrypt: jest.fn(async (_ciphertext, key) => {
         order.push('decrypt');
         expect(key).toBe(stagedKey);
+        await stallAt('decrypt');
         return new Uint8Array([9]);
       }),
       verify: jest.fn(async () => {
         order.push('verify');
+        await stallAt('verify');
         return options.verify ?? true;
       }),
     },
@@ -222,6 +252,7 @@ function invitationHarness(options: {
   return {
     document,
     order,
+    stalled,
     commit,
     merge,
     prepareMerge,
@@ -536,5 +567,136 @@ describe('invitation bootstrap keychain transaction', () => {
     await expect(acceptance).resolves.toBeUndefined();
     await expect(queuedMutation).resolves.toBeUndefined();
     expect(queuedMutationRan).toBe(true);
+  });
+
+  test.each([
+    ['keys', 'pristine', []],
+    ['hydrate', 'pristine', ['prepare', 'hydrate']],
+    ['decrypt', 'pristine', ['prepare', 'hydrate', 'decrypt']],
+    ['verify', 'pristine', ['prepare', 'hydrate', 'decrypt', 'verify']],
+    ['sync', 'pending', ['prepare', 'hydrate', 'decrypt', 'verify', 'sync']],
+    [
+      'membership',
+      'pending',
+      ['prepare', 'hydrate', 'decrypt', 'verify', 'sync', 'membership'],
+    ],
+  ] as const)(
+    'releases the mutation FIFO when initial bootstrap %s never settles',
+    async (stage, expectedState, expectedOrder) => {
+      jest.useFakeTimers();
+      try {
+        const harness = invitationHarness({ stall: stage });
+        const mutationQueue = new InvitationMembershipQueue();
+        harness.document._mutationQueue = mutationQueue;
+        let queuedMutationRan = false;
+
+        const acceptance = harness.document.acceptInvitationBootstrap(
+          {
+            welcomeEpochId: harness.epochId,
+            sealedWelcome: new Uint8Array([1]),
+            encryptedBootstrap: new Uint8Array([7, 2, 3]),
+          },
+          'issuer',
+          'reader',
+          '/founder',
+        );
+        const rejection = expect(acceptance).rejects.toThrow(
+          /^Invitation bootstrap deadline exceeded$/,
+        );
+        await harness.stalled.promise;
+        const queuedMutation = mutationQueue.run(async () => {
+          queuedMutationRan = true;
+        });
+        await jest.advanceTimersByTimeAsync(INVITATION_STREAM_TIMEOUT_MS - 1);
+        expect(queuedMutationRan).toBe(false);
+
+        await jest.advanceTimersByTimeAsync(1);
+        await rejection;
+        await expect(queuedMutation).resolves.toBeUndefined();
+
+        expect(queuedMutationRan).toBe(true);
+        expect(harness.order).toEqual(expectedOrder);
+        expect(harness.commit).not.toHaveBeenCalled();
+        expect(harness.merge).not.toHaveBeenCalled();
+        expect(harness.activate).not.toHaveBeenCalled();
+        expect(harness.document._bootstrapLoadApplicationState).toBe(
+          expectedState,
+        );
+        expect(
+          harness.document._activeInvitationBootstrapContinuation,
+        ).toBeUndefined();
+        expect(harness.document._invitationBootstrapReady).not.toBe(true);
+        if (stage === 'sync') {
+          const fetchOptions = harness.syncUnlocked.mock.calls[0][6];
+          expect(fetchOptions.signal?.aborted).toBe(true);
+        }
+        if (stage === 'membership') {
+          expect(harness.assertMembership.mock.calls[0][2]?.aborted).toBe(
+            true,
+          );
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  test('threads one live initial deadline signal through sync and membership', async () => {
+    const harness = invitationHarness();
+
+    await expect(
+      harness.document.acceptInvitationBootstrap(
+        {
+          welcomeEpochId: harness.epochId,
+          sealedWelcome: new Uint8Array([1]),
+          encryptedBootstrap: new Uint8Array([7, 2, 3]),
+        },
+        'issuer',
+        'editor',
+        '/founder',
+      ),
+    ).resolves.toBeUndefined();
+
+    const signal = harness.syncUnlocked.mock.calls[0][6].signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(harness.assertMembership).toHaveBeenCalledWith(
+      'issuer',
+      'editor',
+      signal,
+    );
+    expect(signal?.aborted).toBe(false);
+  });
+
+  test('clears the initial bootstrap deadline before activation', async () => {
+    jest.useFakeTimers();
+    try {
+      const harness = invitationHarness();
+      const activationStarted = deferred<void>();
+      const releaseActivation = deferred<void>();
+      harness.activate.mockImplementation(async () => {
+        activationStarted.resolve();
+        await releaseActivation.promise;
+      });
+
+      const acceptance = harness.document.acceptInvitationBootstrap(
+        {
+          welcomeEpochId: harness.epochId,
+          sealedWelcome: new Uint8Array([1]),
+          encryptedBootstrap: new Uint8Array([7, 2, 3]),
+        },
+        'issuer',
+        'reader',
+        '/founder',
+      );
+      await activationStarted.promise;
+      expect(jest.getTimerCount()).toBe(0);
+
+      await jest.advanceTimersByTimeAsync(INVITATION_STREAM_TIMEOUT_MS * 2);
+      releaseActivation.resolve();
+      await expect(acceptance).resolves.toBeUndefined();
+      expect(harness.commit).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
