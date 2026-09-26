@@ -4,6 +4,7 @@
 // only exercises the CRDT serialization and crypto providers. The site's Vite
 // config aliases bare `@peerborne/core` imports to this module.
 export {
+  ACLOperationInProgressError,
   canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,
@@ -15,6 +16,7 @@ export {
   SubtleCrypto,
   copyUnsharedUint8Array,
   isSyncMessageSignatureContext,
+  assertCanonicalP384PublicKeyEncoding,
   computeKeychainStateCommitment,
   MAX_KEYCHAIN_EPOCHS,
   INITIAL_INVITATION_CAPACITY_PROFILE,

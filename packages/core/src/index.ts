@@ -33,11 +33,13 @@ import {
   validateChangeBlockMetadata,
 } from './json-serializer.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
+import { assertCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
   ACL,
   ACLOperationInProgressError,
+  PreparedACLRemoval,
   retryACLConflict,
 } from './acl.js';
 import {
@@ -198,6 +200,7 @@ export * from './webcrypto-group-state-protector.js';
 export {
   ACL,
   ACLOperationInProgressError,
+  PreparedACLRemoval,
   retryACLConflict,
   ACLProvider,
   SubtleCrypto,
@@ -330,6 +333,7 @@ export {
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   LRUCache,
+  assertCanonicalP384PublicKeyEncoding,
 };
 
 export type { NetworkStatsSnapshot } from './network-stats.js';
