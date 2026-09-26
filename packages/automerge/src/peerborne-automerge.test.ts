@@ -82,6 +82,16 @@ type AutomergeACLShape = {
   users?: Record<string, true>;
 };
 
+function deterministicSerializedP384Keys(count: number): string[] {
+  const ecdh = createECDH('secp384r1');
+  return Array.from({ length: count }, (_, index) => {
+    const scalar = Buffer.alloc(48);
+    scalar.writeUInt32BE(index + 1, 44);
+    ecdh.setPrivateKey(scalar);
+    return ecdh.getPublicKey().toString('base64');
+  });
+}
+
 // ─── AutomergeProvider ──────────────────────────────────────────────
 
 interface TestDoc {
@@ -240,6 +250,372 @@ describe('AutomergeACL', () => {
     );
     expect(acl.current()).toEqual(before);
     expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareAdd() stages detached changes without changing live membership', async () => {
+    const acl = new AutomergeACL();
+    const before = acl.current();
+
+    const prepared = await acl.prepareAdd(key1);
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(false);
+
+    const receiver = new AutomergeACL();
+    receiver.merge(prepared.changes);
+    expect(await receiver.check(key1)).toBe(true);
+
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareAdd() releases actors after post-reservation validation failures', async () => {
+    const acl = new AutomergeACL();
+    const internals = acl as unknown as {
+      _retainedChanges: Map<string, unknown>;
+      _stagedAdditionActors: Set<string>;
+    };
+    for (let index = 0; index < MAX_AUTOMERGE_ACL_CHANGES; index++) {
+      internals._retainedChanges.set(`retained-${index}`, {});
+      if (index < MAX_AUTOMERGE_ACL_CHANGES - 1) {
+        internals._stagedAdditionActors.add(`reserved-${index}`);
+      }
+    }
+    const retainedActors = new Set(internals._stagedAdditionActors);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(acl.prepareAdd(key1)).rejects.toThrow(
+        `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      );
+      expect(internals._stagedAdditionActors).toEqual(retainedActors);
+    }
+
+    internals._retainedChanges.clear();
+    const prepared = await acl.prepareAdd(key1);
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(internals._stagedAdditionActors.size).toBe(
+      MAX_AUTOMERGE_ACL_CHANGES,
+    );
+  });
+
+  test('prepareAdd() commit is single-use', async () => {
+    const acl = new AutomergeACL();
+    const prepared = await acl.prepareAdd(key1);
+
+    prepared.commit();
+
+    expect(() => prepared.commit()).toThrow(
+      'Prepared ACL addition was already committed',
+    );
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareAdd() rejects competing and merge-staled commits before mutation', async () => {
+    const acl = new AutomergeACL();
+    const first = await acl.prepareAdd(key1);
+    const competing = await acl.prepareAdd(key2);
+
+    first.commit();
+    expect(() => competing.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+    expect(await acl.check(key2)).toBe(false);
+
+    const mergeStaled = await acl.prepareAdd(key2);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.remove(key1);
+    acl.merge(remoteChanges);
+
+    expect(() => mergeStaled.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+    expect(await acl.check(key2)).toBe(false);
+  });
+
+  test('blank-base prepared additions remain mergeable in either order', async () => {
+    const first = await new AutomergeACL().prepareAdd(key1);
+    const second = await new AutomergeACL().prepareAdd(key2);
+
+    expect(first.changes[0]).toEqual(second.changes[0]);
+    for (const changes of [
+      [first.changes, second.changes],
+      [second.changes, first.changes],
+    ]) {
+      const receiver = new AutomergeACL();
+      receiver.merge(changes[0]);
+      receiver.merge(changes[1]);
+      expect(await receiver.check(key1)).toBe(true);
+      expect(await receiver.check(key2)).toBe(true);
+    }
+  });
+
+  test(
+    'canonical root seed preserves the 4,096-member change capacity',
+    async () => {
+      const serializedMembers = deterministicSerializedP384Keys(
+        MAX_AUTOMERGE_ACL_MEMBERS - 1,
+      );
+      const [lastMember, rejectedMember] = await Promise.all([
+        serializeKey(key1),
+        serializeKey(key2),
+      ]);
+      expect(
+        new Set([...serializedMembers, lastMember, rejectedMember]).size,
+      ).toBe(MAX_AUTOMERGE_ACL_MEMBERS + 1);
+
+      const bootstrapKey = await deserializeKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        ['verify'],
+      )(serializedMembers[0]!);
+      const bootstrap = new AutomergeACL();
+      await bootstrap.add(bootstrapKey);
+      const [bootstrapDocument] = applyAutomergeChanges(
+        automergeInit<AutomergeACLShape>(),
+        bootstrap.current(),
+      );
+      let source = automergeClone(bootstrapDocument);
+      for (const serialized of serializedMembers.slice(1)) {
+        source = automergeChange(source, (doc) => {
+          doc.users![serialized] = true;
+        });
+      }
+      const beforeLastMember = getAllAutomergeChanges(source);
+      expect(beforeLastMember).toHaveLength(MAX_AUTOMERGE_ACL_CHANGES);
+
+      const acl = new AutomergeACL();
+      expect(() => acl.merge(beforeLastMember)).not.toThrow();
+      const prepared = await acl.prepareAdd(key1);
+      expect(prepared.changes).toHaveLength(1);
+      prepared.commit();
+
+      const atMemberLimit = acl.current();
+      expect(atMemberLimit).toHaveLength(MAX_AUTOMERGE_ACL_CHANGES + 1);
+      expect(
+        atMemberLimit.reduce(
+          (total, binaryChange) => total + binaryChange.byteLength,
+          0,
+        ),
+      ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_HISTORY_BYTES);
+      expect(
+        atMemberLimit.reduce(
+          (total, binaryChange) =>
+            total + decodeAutomergeChange(binaryChange).ops.length,
+          0,
+        ),
+      ).toBeLessThanOrEqual(MAX_AUTOMERGE_ACL_OPERATIONS);
+      expect(await acl.check(key1)).toBe(true);
+
+      const receiver = new AutomergeACL();
+      expect(() => receiver.merge(atMemberLimit)).not.toThrow();
+      expect(await receiver.check(key1)).toBe(true);
+
+      const beforeRejectedMember = acl.current();
+      await expect(acl.prepareAdd(key2)).rejects.toThrow(
+        `Automerge ACL retained history exceeds the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+      );
+      expect(acl.current()).toEqual(beforeRejectedMember);
+
+      const seedIndex = atMemberLimit.findIndex((binaryChange) => {
+        const decoded = decodeAutomergeChange(binaryChange);
+        return decoded.ops.some(
+          (operation) =>
+            operation.obj === '_root' && operation.key === 'users',
+        );
+      });
+      expect(seedIndex).toBeGreaterThanOrEqual(0);
+      const seed = decodeAutomergeChange(atMemberLimit[seedIndex]!);
+      const malformedSeed = automergeChange(
+        automergeInit<AutomergeACLShape & { padding?: boolean }>({
+          actor: seed.actor,
+        }),
+        { time: seed.time },
+        (doc) => {
+          doc.users = {};
+          doc.padding = true;
+        },
+      );
+      const dependency = automergeChange(
+        automergeInit<{ padding?: boolean }>(),
+        (doc) => {
+          doc.padding = true;
+        },
+      );
+      const dependentSeed = automergeChange(
+        automergeClone(dependency, { actor: seed.actor }),
+        { time: seed.time },
+        (doc: AutomergeACLShape & { padding?: boolean }) => {
+          doc.users = {};
+        },
+      );
+      const dependentSeedChange = getAllAutomergeChanges(dependentSeed).find(
+        (binaryChange) =>
+          decodeAutomergeChange(binaryChange).actor === seed.actor,
+      )!;
+
+      for (const nearSeed of [
+        getAllAutomergeChanges(malformedSeed)[0]!,
+        dependentSeedChange,
+      ]) {
+        const oversizedNearSeedHistory = [
+          nearSeed,
+          ...atMemberLimit.filter((_, index) => index !== seedIndex),
+        ];
+        expect(oversizedNearSeedHistory).toHaveLength(
+          MAX_AUTOMERGE_ACL_CHANGES + 1,
+        );
+        const hostileReceiver = new AutomergeACL();
+        expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
+          `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
+        );
+        expect(hostileReceiver.current()).toEqual([]);
+      }
+    },
+    120_000,
+  );
+
+  test('blank-base prepared additions share a seed across creation times', async () => {
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000);
+      const first = await new AutomergeACL().prepareAdd(key1);
+
+      now.mockReturnValue(3_000);
+      const second = await new AutomergeACL().prepareAdd(key2);
+
+      expect(first.changes[0]).toEqual(second.changes[0]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test('same-member prepared additions remain mergeable in either order', async () => {
+    const founder = new AutomergeACL();
+    await founder.add(key1);
+    const base = founder.current();
+    const firstSource = new AutomergeACL();
+    const secondSource = new AutomergeACL();
+    firstSource.merge(base);
+    secondSource.merge(base);
+    const first = await firstSource.prepareAdd(key2);
+    const second = await secondSource.prepareAdd(key2);
+
+    for (const changes of [
+      [first.changes, second.changes],
+      [second.changes, first.changes],
+    ]) {
+      const receiver = new AutomergeACL();
+      receiver.merge(base);
+      receiver.merge(changes[0]);
+      receiver.merge(changes[1]);
+      expect(await receiver.check(key1)).toBe(true);
+      expect(await receiver.check(key2)).toBe(true);
+    }
+  });
+
+  test('prepareAdd() no-op commit preserves other staged work', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const noOp = await acl.prepareAdd(key1);
+    const addition = await acl.prepareAdd(key2);
+
+    expect(noOp.changes).toEqual([]);
+    noOp.commit();
+    addition.commit();
+
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => noOp.commit()).toThrow(
+      'Prepared ACL addition was already committed',
+    );
+  });
+
+  test('prepareAdd() commits private state after returned changes are mutated', async () => {
+    const acl = new AutomergeACL();
+    const prepared = await acl.prepareAdd(key1);
+
+    for (const change of prepared.changes) change.fill(0);
+    prepared.changes.length = 0;
+    prepared.commit();
+
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('ordinary additions stage and commit in invocation order', async () => {
+    const acl = new AutomergeACL();
+    const external = await acl.prepareAdd(key2);
+    const prepareAdd = acl.prepareAdd.bind(acl);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let preparation = 0;
+    acl.prepareAdd = jest.fn(async (publicKey: CryptoKey) => {
+      preparation++;
+      if (preparation === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      return prepareAdd(publicKey);
+    });
+
+    const first = acl.add(key1);
+    await started;
+    const second = acl.add(key2);
+    await Promise.resolve();
+
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
+    releaseFirst();
+    await expect(first).resolves.toBeDefined();
+    await expect(second).resolves.toBeDefined();
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(2);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+  });
+
+  test('prepareAdd() commit cannot overtake an admitted removal', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const external = await acl.prepareAdd(key2);
+    const prepareRemove = acl.prepareRemove.bind(acl);
+    let releaseRemoval!: () => void;
+    const removalGate = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let removalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      removalStarted();
+      await removalGate;
+      return prepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
+    expect(await acl.check(key2)).toBe(false);
+
+    releaseRemoval();
+    await expect(removal).resolves.toBeDefined();
+    expect(await acl.check(key1)).toBe(false);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
   });
 
   test('remove() removes a user and check() returns false', async () => {
@@ -437,7 +813,7 @@ describe('AutomergeACL', () => {
 
     expect(() =>
       acl.merge(
-        new Array(MAX_AUTOMERGE_ACL_CHANGES + 1) as BinaryChange[],
+        new Array(MAX_AUTOMERGE_ACL_CHANGES + 2) as BinaryChange[],
       ),
     ).toThrow(/change limit/);
     expect(() =>
@@ -519,10 +895,18 @@ describe('AutomergeACL', () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
     const before = acl.current();
-    const independent = new AutomergeACL();
-    await independent.add(key2);
+    const serialized = await serializeKey(key2);
+    const independent = automergeChange(
+      automergeInit<AutomergeACLShape>({
+        actor: 'ffffffffffffffffffffffffffffffff',
+      }),
+      (doc) => {
+        doc.users = { [serialized]: true };
+      },
+    );
+    const independentChanges = getAllAutomergeChanges(independent);
 
-    expect(() => acl.merge(independent.current())).toThrow(
+    expect(() => acl.merge(independentChanges)).toThrow(
       /conflicting users roots/,
     );
     expect(acl.current()).toEqual(before);
@@ -530,7 +914,7 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
 
     const fresh = new AutomergeACL();
-    expect(() => fresh.merge(independent.current())).not.toThrow();
+    expect(() => fresh.merge(independentChanges)).not.toThrow();
     expect(await fresh.check(key2)).toBe(true);
   });
 
@@ -829,6 +1213,23 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareRemove() rejects a commit staled by a remote merge', async () => {
+    const acl = new AutomergeACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+    const remote = new AutomergeACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+
+    acl.merge(remoteChanges);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
     const acl = new AutomergeACL();
     await acl.add(key1);
@@ -846,6 +1247,33 @@ describe('AutomergeACL', () => {
 
     await expect(acl.remove(key1)).resolves.toEqual([]);
     expect(acl.current()).toEqual([]);
+  });
+
+  test('staged additions and removals converge after child-before-parent delivery', async () => {
+    const additionSender = new AutomergeACL();
+    const additionParent = await additionSender.add(key1);
+    const additionChild = await additionSender.prepareAdd(key2);
+    const additionReceiver = new AutomergeACL();
+
+    additionReceiver.merge(additionChild.changes);
+    await expect(additionReceiver.check(key2)).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+    additionReceiver.merge(additionParent);
+    expect(await additionReceiver.check(key1)).toBe(true);
+    expect(await additionReceiver.check(key2)).toBe(true);
+
+    const removalSender = new AutomergeACL();
+    const removalParent = await removalSender.add(key1);
+    const removalChild = await removalSender.prepareRemove(key1);
+    const removalReceiver = new AutomergeACL();
+
+    removalReceiver.merge(removalChild.changes);
+    await expect(removalReceiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+    removalReceiver.merge(removalParent);
+    expect(await removalReceiver.check(key1)).toBe(false);
   });
 
   test('check() returns false for an unknown key', async () => {

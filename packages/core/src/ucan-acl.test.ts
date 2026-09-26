@@ -688,6 +688,803 @@ describe('UCANACL', () => {
     await expect(acl.add('key2')).resolves.toBe('add-changes');
   });
 
+  test('add commits a staged backing addition when available', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    await expect(acl.add('key1')).resolves.toBe('staged-changes');
+
+    expect(backing.prepareAdd).toHaveBeenCalledWith('key1');
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
+  test('prepareAdd delegates without committing backing membership', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(prepared.changes).toBe('staged-changes');
+    expect(commit).not.toHaveBeenCalled();
+    prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a preparation preflight rejection leaves the ACL available', async () => {
+    backing.current.mockReturnValue('current-state');
+    backing.check.mockResolvedValue(true);
+    backing.prepareAdd = jest.fn();
+    const internals = acl as { _backingOperationsInFlight: number };
+
+    internals._backingOperationsInFlight = 1;
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      ACLOperationInProgressError,
+    );
+    expect(backing.prepareAdd).not.toHaveBeenCalled();
+    internals._backingOperationsInFlight = 0;
+
+    await expect(acl.check('key1')).resolves.toBe(true);
+    expect(acl.current()).toBe('current-state');
+  });
+
+  test('a rejected staged reauthorization preserves a proven prior entry', async () => {
+    const members = new Set<string>();
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:key1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+      }),
+    );
+    backing.add.mockImplementation(async (key: string) => {
+      members.add(key);
+      return 'initial-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+    backing.current.mockReturnValue('current-state');
+    await acl.grant(
+      'key1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+    backing.prepareAdd = jest.fn(async () => {
+      throw new Error('could not stage reauthorization');
+    });
+
+    await expect(acl.add('key1')).rejects.toThrow(
+      'could not stage reauthorization',
+    );
+
+    await expect(acl.check('key1', '/doc/read')).resolves.toBe(true);
+    await expect(acl.users('/doc/read')).resolves.toEqual(['key1']);
+    await expect(acl.getEntry('key1')).resolves.toBeDefined();
+    expect(acl.current()).toBe('current-state');
+  });
+
+  test('prepareAdd blocks a reentrant merge during backing preparation', async () => {
+    const commit = jest.fn();
+    let mergeError: unknown;
+    backing.prepareAdd = jest.fn(async () => {
+      try {
+        acl.merge('reentrant-changes');
+      } catch (error) {
+        mergeError = error;
+      }
+      return { changes: 'staged-changes', commit };
+    });
+
+    const prepared = await acl.prepareAdd('key1');
+
+    expect(mergeError).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /cannot reenter|backing (?:mutation|operation) is in progress/,
+        ),
+      }),
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+    expect(() => prepared.commit()).not.toThrow();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a backing-commit preflight rejection leaves membership unchanged', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+    backing.check.mockResolvedValue(true);
+    const prepared = await acl.prepareAdd('key1');
+    const internals = acl as { _backingOperationsInFlight: number };
+
+    internals._backingOperationsInFlight = 1;
+    expect(() => prepared.commit()).toThrow(ACLOperationInProgressError);
+    expect(commit).not.toHaveBeenCalled();
+    internals._backingOperationsInFlight = 0;
+
+    await expect(acl.check('key1')).resolves.toBe(true);
+  });
+
+  test('prepareAdd rejects after a remote backing merge', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    acl.merge('remote-changes');
+
+    expect(() => prepared.commit()).toThrow(/backing ACL changed/);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  test('prepareAdd holds merge admission through prepared-result capture', async () => {
+    let resolvePreparation!: (prepared: {
+      changes: string;
+      commit(): void;
+    }) => void;
+    const pendingPreparation = new Promise<{
+      changes: string;
+      commit(): void;
+    }>((resolve) => {
+      resolvePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const preparationWasStarted = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(() => {
+      preparationStarted();
+      return pendingPreparation;
+    });
+
+    const preparation = acl.prepareAdd('key1');
+    await preparationWasStarted;
+    const mergeAfterPreparation = retryACLConflict(() =>
+      acl.merge('remote-changes'),
+    );
+    await Promise.resolve();
+    expect(backing.merge).not.toHaveBeenCalled();
+    resolvePreparation({ changes: 'add-changes', commit });
+
+    const prepared = await preparation;
+    await expect(mergeAfterPreparation).resolves.toBeUndefined();
+    expect(backing.merge).toHaveBeenCalledWith('remote-changes');
+    expect(() => prepared.commit()).toThrow(/backing ACL changed/);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  test('staged reauthorization clears a tombstone only after commit', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit,
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+
+    prepared.commit();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(await acl.check('key1', '/doc/read')).toBe(true);
+  });
+
+  test('a removal queued behind prepareAdd makes its returned stage stale', async () => {
+    let resolvePreparation!: (prepared: {
+      changes: string;
+      commit(): void;
+    }) => void;
+    const pendingPreparation = new Promise<{
+      changes: string;
+      commit(): void;
+    }>((resolve) => {
+      resolvePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const preparationWasStarted = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(() => {
+      preparationStarted();
+      return pendingPreparation;
+    });
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+
+    const addition = acl.prepareAdd('key1');
+    await preparationWasStarted;
+    const removal = retryACLConflict(() => acl.remove('key1'));
+    await Promise.resolve();
+    expect(backing.remove).not.toHaveBeenCalled();
+    resolvePreparation({ changes: 'add-changes', commit });
+
+    const prepared = await addition;
+    await expect(removal).resolves.toBe('remove-changes');
+    expect(() => prepared.commit()).toThrow(
+      /Prepared ACL addition became stale/,
+    );
+    expect(commit).not.toHaveBeenCalled();
+    expect(await acl.check('key1', '/doc/read')).toBe(false);
+  });
+
+  test('prepareAdd cannot commit during another member mutation', async () => {
+    const members = new Set(['user-b']);
+    const addCommit = jest.fn(() => {
+      members.add('user-a');
+    });
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: addCommit,
+    }));
+    let removalStarted!: () => void;
+    const removalWasStarted = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let resolveRemoval!: (prepared: {
+      changes: string;
+      commit(): void;
+    }) => void;
+    const pendingRemoval = new Promise<{
+      changes: string;
+      commit(): void;
+    }>((resolve) => {
+      resolveRemoval = resolve;
+    });
+    backing.prepareRemove = jest.fn(() => {
+      removalStarted();
+      return pendingRemoval;
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const prepared = await acl.prepareAdd('user-a');
+    const removal = acl.remove('user-b');
+    await removalWasStarted;
+
+    expect(() => prepared.commit()).toThrow(
+      ACLOperationInProgressError,
+    );
+    expect(addCommit).not.toHaveBeenCalled();
+
+    resolveRemoval({
+      changes: 'remove-changes',
+      commit: () => {
+        members.delete('user-b');
+      },
+    });
+    await expect(removal).resolves.toBe('remove-changes');
+
+    const replacement = await acl.prepareAdd('user-a');
+    replacement.commit();
+    expect(addCommit).toHaveBeenCalledTimes(1);
+    expect(await acl.check('user-a')).toBe(true);
+    expect(await acl.check('user-a', '/doc/write')).toBe(true);
+    expect(await acl.check('user-b')).toBe(false);
+    expect(await acl.users()).toEqual(['user-a']);
+  });
+
+  test('prepareAdd cannot commit while another identity codec is pending', async () => {
+    let resolveSerialization!: (serialized: string) => void;
+    const pendingSerialization = new Promise<string>((resolve) => {
+      resolveSerialization = resolve;
+    });
+    const serialize = jest.fn((key: string) =>
+      key === 'user-b'
+        ? pendingSerialization
+        : Promise.resolve(`serialized:${key}`),
+    );
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const members = new Set(['user-b']);
+    const addCommit = jest.fn(() => {
+      members.add('user-a');
+    });
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: addCommit,
+    }));
+    backing.remove.mockImplementation(async (key: string) => {
+      members.delete(key);
+      return 'remove-changes';
+    });
+    backing.check.mockImplementation(async (key: string) => members.has(key));
+    backing.users.mockImplementation(async () => [...members]);
+
+    const prepared = await orderedAcl.prepareAdd('user-a');
+    const removal = orderedAcl.remove('user-b');
+
+    expect(() => prepared.commit()).toThrow(
+      ACLOperationInProgressError,
+    );
+    expect(addCommit).not.toHaveBeenCalled();
+    expect(backing.remove).not.toHaveBeenCalled();
+
+    resolveSerialization('serialized:user-b');
+    await expect(removal).resolves.toBe('remove-changes');
+
+    const replacement = await orderedAcl.prepareAdd('user-a');
+    replacement.commit();
+    expect(addCommit).toHaveBeenCalledTimes(1);
+    expect(await orderedAcl.check('user-a')).toBe(true);
+    expect(await orderedAcl.check('user-a', '/doc/write')).toBe(true);
+    expect(await orderedAcl.check('user-b')).toBe(false);
+    expect(await orderedAcl.users()).toEqual(['user-a']);
+  });
+
+  test('prepareAdd passes a detached identity to the backing ACL', async () => {
+    const callerIdentity = { id: 'user-a' };
+    const serialize = jest.fn((key: { id: string }) => {
+      const capturedId = key.id;
+      return Promise.resolve(`serialized:${capturedId}`);
+    });
+    const deserialize = jest.fn(async (serialized: string) => ({
+      id: serialized.slice('serialized:'.length),
+    }));
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit,
+    }));
+    const objectAcl = new UCANACLImpl(rewrapBacking(), serialize, deserialize);
+
+    const preparation = objectAcl.prepareAdd(callerIdentity);
+    callerIdentity.id = 'user-b';
+    const prepared = await preparation;
+    prepared.commit();
+
+    expect(backing.prepareAdd).toHaveBeenCalledWith({ id: 'user-a' });
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a rejected staged reauthorization poisons subsequent reads', async () => {
+    backing.remove.mockResolvedValue('remove-changes');
+    backing.check.mockResolvedValue(true);
+    await acl.remove('key1');
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'staged-changes',
+      commit: () => {
+        throw new Error('stale backing ACL');
+      },
+    }));
+
+    const prepared = await acl.prepareAdd('key1');
+    expect(() => prepared.commit()).toThrow('stale backing ACL');
+    await expect(acl.check('key1', '/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('poisons a partially applied failed prepared addition', async () => {
+    let isMember = false;
+    backing.prepareAdd = jest.fn();
+    backing.prepareAdd.mockResolvedValueOnce({
+      changes: 'failed-changes',
+      commit: () => {
+        isMember = true;
+        throw new Error('prepared add failed after mutation');
+      },
+    });
+    backing.check.mockImplementation(async () => isMember);
+    backing.users.mockImplementation(async () =>
+      isMember ? ['key1'] : [],
+    );
+    backing.current.mockReturnValue('current-state');
+
+    const failed = await acl.prepareAdd('key1');
+    expect(() => failed.commit()).toThrow(
+      'prepared add failed after mutation',
+    );
+    await expect(acl.check('key1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.users()).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    expect(() => acl.current()).toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+    expect(backing.prepareAdd).toHaveBeenCalledTimes(1);
+  });
+
+  test('blocks reentrant merges during a failing prepared addition', async () => {
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/read' }],
+      }),
+    );
+    let isMember = true;
+    backing.add.mockResolvedValue('initial-changes');
+    backing.check.mockImplementation(async () => isMember);
+    backing.merge.mockImplementation(() => {
+      isMember = false;
+    });
+    let mergeError: unknown;
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'replacement-changes',
+      commit: () => {
+        try {
+          acl.merge('reentrant-removal');
+        } catch (error) {
+          mergeError = error;
+        }
+        isMember = true;
+        throw new Error('prepared add failed after reentrant merge');
+      },
+    }));
+    await acl.grant(
+      'user1',
+      '/doc/read',
+      'doc-1',
+      {} as CryptoKey,
+      'issuer',
+    );
+
+    const prepared = await acl.prepareAdd('user1');
+    expect(() => prepared.commit()).toThrow(
+      'prepared add failed after reentrant merge',
+    );
+
+    expect(mergeError).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/cannot reenter the UCAN ACL/),
+      }),
+    );
+    expect(backing.merge).not.toHaveBeenCalled();
+    await expect(acl.check('user1', '/doc/read')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('prepareAdd reserves admission before identity serialization', async () => {
+    let serializationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      serializationStarted = resolve;
+    });
+    let resolveSerialization!: (serialized: string) => void;
+    const pendingSerialization = new Promise<string>((resolve) => {
+      resolveSerialization = resolve;
+    });
+    const serialize = jest.fn(() => {
+      serializationStarted();
+      return pendingSerialization;
+    });
+    const commit = jest.fn();
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit,
+    }));
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+
+    const preparation = orderedAcl.prepareAdd('user-a');
+    await started;
+
+    expect(() => orderedAcl.merge('remote-changes')).toThrow(
+      ACLOperationInProgressError,
+    );
+    expect(backing.prepareAdd).not.toHaveBeenCalled();
+    expect(backing.merge).not.toHaveBeenCalled();
+
+    resolveSerialization('serialized:user-a');
+    const prepared = await preparation;
+    prepared.commit();
+    expect(backing.prepareAdd).toHaveBeenCalledWith('user-a');
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('discovers missing addition staging without Proxy get or has traps', async () => {
+    const target = makeMockAcl();
+    const touched: PropertyKey[] = [];
+    target.add.mockResolvedValue('legacy-addition');
+    const proxied = new Proxy(target, {
+      get(proxyTarget, property, receiver) {
+        if (property === 'prepareAdd') touched.push(property);
+        return Reflect.get(proxyTarget, property, receiver);
+      },
+      has(proxyTarget, property) {
+        if (property === 'prepareAdd') touched.push(property);
+        return Reflect.has(proxyTarget, property);
+      },
+    });
+    const proxiedAcl = new UCANACLImpl(
+      proxied,
+      jest.fn(async (key: string) => key),
+    );
+
+    await expect(proxiedAcl.add('user1')).resolves.toBe(
+      'legacy-addition',
+    );
+
+    expect(touched).toEqual([]);
+    expect(target.add).toHaveBeenCalledWith('user1');
+  });
+
+  test('rejects accessor-backed addition staging without falling back', async () => {
+    let getterCalled = false;
+    Object.defineProperty(backing, 'prepareAdd', {
+      configurable: true,
+      get() {
+        getterCalled = true;
+        return undefined;
+      },
+    });
+    backing.add.mockResolvedValue('legacy-addition');
+
+    await expect(acl.add('user1')).rejects.toThrow(
+      'Backing ACL prepareAdd must be a data property',
+    );
+
+    expect(getterCalled).toBe(false);
+    expect(backing.add).not.toHaveBeenCalled();
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects a non-function addition staging property', async () => {
+    Object.defineProperty(backing, 'prepareAdd', {
+      configurable: true,
+      value: 'not-a-function',
+    });
+    backing.add.mockResolvedValue('legacy-addition');
+
+    await expect(acl.add('user1')).rejects.toThrow(
+      'Backing ACL prepareAdd property must be a function when present',
+    );
+
+    expect(backing.add).not.toHaveBeenCalled();
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects addition staging-lookup reentry and poisons later operations', async () => {
+    let guardedAcl: any;
+    const proxied = new Proxy(backing, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'prepareAdd') guardedAcl.current();
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    guardedAcl = new UCANACLImpl(
+      proxied,
+      jest.fn(async (key: string) => key),
+    );
+
+    await expect(guardedAcl.prepareAdd('user1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+
+    expect(backing.current).not.toHaveBeenCalled();
+    await expect(guardedAcl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('poisons an addition prepared-result descriptor trap', async () => {
+    const returned = new Proxy(
+      {
+        changes: 'add-changes',
+        commit: jest.fn(),
+      },
+      {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === 'changes') {
+            throw new Error('addition capture failed');
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      },
+    );
+    backing.prepareAdd = jest.fn(async () => returned);
+
+    await expect(acl.prepareAdd('user1')).rejects.toThrow(
+      'addition capture failed',
+    );
+
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects prepared-addition capture reentry and poisons later operations', async () => {
+    const target = {
+      changes: 'add-changes',
+      commit: jest.fn(),
+    };
+    const returned = new Proxy(target, {
+      getOwnPropertyDescriptor(proxyTarget, property) {
+        if (property === 'commit') acl.current();
+        return Reflect.getOwnPropertyDescriptor(proxyTarget, property);
+      },
+    });
+    backing.prepareAdd = jest.fn(async () => returned);
+
+    await expect(acl.prepareAdd('user1')).rejects.toThrow(
+      /cannot reenter the UCAN ACL from a backing ACL operation/,
+    );
+
+    expect(backing.current).not.toHaveBeenCalled();
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('rejects accessor-backed prepared-addition fields without invoking them', async () => {
+    let changesGetterCalled = false;
+    backing.prepareAdd = jest.fn(async () => ({
+      get changes() {
+        changesGetterCalled = true;
+        return 'add-changes';
+      },
+      commit: jest.fn(),
+    }));
+
+    await expect(acl.prepareAdd('user1')).rejects.toThrow(
+      'Backing ACL prepared-addition changes must be a data property',
+    );
+
+    expect(changesGetterCalled).toBe(false);
+    await expect(acl.check('user1')).rejects.toThrow(
+      /failed ACL backing mutation may have partially changed/,
+    );
+  });
+
+  test('captures stable prepared-addition fields and commit receiver', async () => {
+    let commitReceiver: unknown;
+    const originalCommit = jest.fn(function (this: unknown) {
+      commitReceiver = this;
+    });
+    const replacementCommit = jest.fn();
+    const target = {
+      changes: 'add-changes',
+      commit: originalCommit,
+    };
+    const touched: PropertyKey[] = [];
+    const returned = new Proxy(target, {
+      get(proxyTarget, property, receiver) {
+        if (property === 'changes' || property === 'commit') {
+          touched.push(property);
+        }
+        return Reflect.get(proxyTarget, property, receiver);
+      },
+      has(proxyTarget, property) {
+        if (property === 'changes' || property === 'commit') {
+          touched.push(property);
+        }
+        return Reflect.has(proxyTarget, property);
+      },
+    });
+    backing.prepareAdd = jest.fn(async () => returned);
+
+    const prepared = await acl.prepareAdd('user1');
+    target.changes = 'replaced-changes';
+    target.commit = replacementCommit;
+
+    expect(prepared.changes).toBe('add-changes');
+    prepared.commit();
+
+    expect(touched).toEqual([]);
+    expect(originalCommit).toHaveBeenCalledTimes(1);
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(commitReceiver).toBe(returned);
+  });
+
+  test('rejects delayed addition preparation recursion without hanging', async () => {
+    const commit = jest.fn();
+    backing.prepareAdd = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        await Promise.resolve();
+        return acl.prepareAdd('user2');
+      })
+      .mockResolvedValueOnce({
+        changes: 'add-changes',
+        commit,
+      });
+
+    await expect(
+      settleWithinMicrotasks(acl.prepareAdd('user1')),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /Backing ACL preparation cannot reenter this UCAN ACL/,
+          ),
+        }),
+      }),
+    );
+    expect(backing.prepareAdd).toHaveBeenCalledTimes(1);
+
+    const prepared = await acl.prepareAdd('user1');
+    prepared.commit();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries a foreign addition-preparation conflict', async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const commit = jest.fn();
+    backing.prepareAdd = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new ACLOperationInProgressError(
+          'Nested ACL preparation',
+          settlement,
+        ),
+      )
+      .mockResolvedValueOnce({
+        changes: 'add-changes',
+        commit,
+      });
+    backing.current.mockReturnValue('current-state');
+
+    const preparation = retryACLConflict(() => acl.prepareAdd('user1'));
+    expect(await settleWithinMicrotasks(preparation)).toBeUndefined();
+    expect(backing.prepareAdd).toHaveBeenCalledTimes(1);
+    expect(acl.current()).toBe('current-state');
+
+    settle();
+    const prepared = await preparation;
+    prepared.commit();
+    expect(backing.prepareAdd).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  test('poisons an asynchronous prepared-addition commit', async () => {
+    let asynchronousCommit!: Promise<unknown>;
+    backing.prepareAdd = jest.fn(async () => ({
+      changes: 'add-changes',
+      commit: () => {
+        asynchronousCommit = (async () => {
+          await Promise.resolve();
+          return acl.check('user1');
+        })();
+        return asynchronousCommit;
+      },
+    }));
+
+    const prepared = await acl.prepareAdd('user1');
+    expect(() => prepared.commit()).toThrow(
+      'Backing ACL commit must complete synchronously',
+    );
+    await expect(asynchronousCommit).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    await expect(acl.check('user1')).rejects.toThrow(
+      /backing ACL violated a synchronous operation contract/,
+    );
+    expect(backing.check).not.toHaveBeenCalled();
+  });
+
+  test('prepareAdd fails closed when the backing ACL lacks staging', async () => {
+    await expect(acl.prepareAdd('key1')).rejects.toThrow(
+      'Backing ACL does not support staged addition',
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
   test('remove revokes access', async () => {
     backing.remove.mockResolvedValue('changes');
     await acl.remove('key1');
