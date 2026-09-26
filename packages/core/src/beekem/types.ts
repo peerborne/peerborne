@@ -145,11 +145,12 @@ export interface BeeKEMWelcomeV2 extends BeeKEMWelcomeFields {
 }
 
 /**
- * Shared BeeKEM leaf bound for the runtime tree and the PathUpdate/Welcome
- * wire codecs.
+ * BeeKEM tree leaf bound.
  *
  * The conservative limit bounds tree traversal and per-update structural
- * work. `BeeKEM.addMember()` rejects growth past it before mutating state. Transport senders separately enforce the document protocol's frame
- * limit on the complete signed and framed request.
+ * work. `BeeKEM.addMember()` rejects growth past it before mutating state,
+ * and the PathUpdate and Welcome v2 wire codecs reject trees that exceed it.
+ * Transport senders separately enforce the document protocol's frame limit
+ * on the complete signed and framed request.
  */
 export const MAX_BEEKEM_TREE_LEAVES = 1 << 13;
