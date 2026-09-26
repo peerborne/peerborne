@@ -1021,6 +1021,46 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
     expect(out.has('A')).toBe(true); // new entry added
   });
 
+  test('records only references made by included parents', () => {
+    const tree: Node = {
+      kind: docKind,
+      change: 'payload-D',
+      children: {
+        APPLIED: {
+          kind: docKind,
+          change: 'payload-applied',
+          children: { A: { kind: docKind } },
+        },
+        REJECTED: {
+          kind: docKind,
+          change: 'payload-rejected',
+          children: {
+            B: {
+              kind: docKind,
+              change: 'payload-B',
+              children: { C: { kind: docKind } },
+            },
+            A: { kind: docKind },
+          },
+        },
+      },
+    };
+    const included = new Set(['D', 'APPLIED', 'B']);
+    const includeParent = (parentId: string | undefined): boolean =>
+      parentId !== undefined && included.has(parentId);
+    expect(
+      collectReferencedAncestors('D', tree, new Set<string>(), includeParent),
+    ).toEqual(new Set(['APPLIED', 'REJECTED', 'A', 'C']));
+    expect(
+      collectReferencedAncestors(
+        undefined,
+        tree,
+        new Set<string>(),
+        includeParent,
+      ),
+    ).toEqual(new Set(['A', 'C']));
+  });
+
   test('cycle defence: revisiting a previously-walked CID does not recurse', () => {
     // Construct a pathological tree where two distinct subtree references
     // reach the same intermediate CID. The helper should not infinitely

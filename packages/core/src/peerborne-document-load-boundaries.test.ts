@@ -715,6 +715,63 @@ describe('document load response boundaries', () => {
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
   });
 
+  test('keeps ancestors referenced by applied nodes after a deferred ACL rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/deferred-acl-ancestors',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(['KNOWN', 'OTHER']),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['GOOD', crdtWriterChangeNode, undefined],
+        ['BAD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => ({
+        id: cid.toString(),
+      })),
+      _crdtProvider: { remoteChange: jest.fn((state: unknown) => state) },
+      _mergeWriters: jest.fn(async (changes: { id: string }) => {
+        if (changes.id === 'BAD') throw rejection;
+      }),
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ROOT', {
+        kind: crdtDocumentChangeNode,
+        change: { id: 'ROOT' },
+        children: {
+          GOOD: {
+            kind: crdtWriterChangeNode,
+            children: { KNOWN: { kind: crdtDocumentChangeNode } },
+          },
+          BAD: {
+            kind: crdtWriterChangeNode,
+            children: { OTHER: { kind: crdtDocumentChangeNode } },
+          },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'OTHER', 'ROOT', 'GOOD']),
+    );
+    expect(document._referencedAncestors).toEqual(
+      new Set(['GOOD', 'BAD', 'KNOWN']),
+    );
+    expect(document._currentFrontier().sort()).toEqual(['OTHER', 'ROOT']);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),
