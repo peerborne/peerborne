@@ -268,7 +268,7 @@ describe('load-response V3 confinement', () => {
         loadStream(),
         new Uint8Array([1]),
       ),
-    ).resolves.toBe(false);
+    ).rejects.toThrow('Writer authorization changed before load application');
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
@@ -287,7 +287,7 @@ describe('load-response V3 confinement', () => {
         loadStream(),
         new Uint8Array([1]),
       ),
-    ).resolves.toBe(false);
+    ).rejects.toThrow('Writer authorization changed before load application');
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
@@ -306,7 +306,7 @@ describe('load-response V3 confinement', () => {
         loadStream(),
         new Uint8Array([1]),
       ),
-    ).resolves.toBe(false);
+    ).rejects.toThrow('Writer authorization changed before load application');
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
@@ -694,7 +694,7 @@ describe('writer ACL re-merges', () => {
     expect(harness.syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
-  test('rejects a load response after a queued merge adds a writer', async () => {
+  test('reports a writer conflict when a queued merge adds a writer', async () => {
     const harness = loadHarness();
     installSetWriterAcl(harness.document, ['founder']);
     harness.document._mutationQueue = {
@@ -711,7 +711,7 @@ describe('writer ACL re-merges', () => {
         loadStream(),
         new Uint8Array([1]),
       ),
-    ).resolves.toBe(false);
+    ).rejects.toThrow('Writer authorization changed before load application');
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
@@ -730,5 +730,75 @@ describe('writer ACL re-merges', () => {
         new Uint8Array([1]),
       ),
     ).resolves.toEqual(new Uint8Array(32).fill(5));
+  });
+});
+
+describe('legacy load writer conflicts', () => {
+  type Outcome = boolean | 'conflict';
+
+  function legacyLoadHarness(outcomes: Outcome[], peers = ['/p2p/one']) {
+    const document = fakeDocument({
+      swarm: {
+        config: { loadQuorumEnabled: false },
+        heliaNode: {
+          libp2p: {
+            getConnections: () =>
+              peers.map((peer) => ({ remoteAddr: { toString: () => peer } })),
+            dialProtocol: jest.fn(async () => ({})),
+          },
+        },
+      },
+      _writerKeysVersion: 2,
+      _writerMutationsInFlight: 0,
+      _compactionConfig: { enabled: true },
+      _isSigningEnabled: () => false,
+      _loadMessageSerializer: {
+        serializeLoadRequest: () => new Uint8Array([1]),
+      },
+    });
+    const attempts: string[] = [];
+    document._sendLoadRequestAndSync = jest.fn(async () => {
+      const outcome = outcomes.shift() ?? false;
+      attempts.push(String(outcome));
+      if (outcome !== 'conflict') return outcome;
+      return document._syncValidatedProtocolMessage(
+        {},
+        'load-response-v3',
+        document._writerKeysVersion - 1,
+      );
+    });
+    return { attempts, document };
+  }
+
+  test('surfaces a conflict instead of reporting that no peer served', async () => {
+    const { attempts, document } = legacyLoadHarness(['conflict', 'conflict']);
+
+    await expect(document.load()).rejects.toThrow(
+      'Writer authorization changed before load application',
+    );
+    expect(attempts).toEqual(['conflict', 'conflict']);
+  });
+
+  test('falls back to doc-load after a snapshot-load conflict', async () => {
+    const { attempts, document } = legacyLoadHarness(['conflict', true]);
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(attempts).toEqual(['conflict', 'true']);
+  });
+
+  test('loads from a later peer after a conflict', async () => {
+    const { document } = legacyLoadHarness(
+      ['conflict', 'conflict', false, true],
+      ['/p2p/one', '/p2p/two'],
+    );
+
+    await expect(document.load()).resolves.toBe(true);
+  });
+
+  test('still reports a genuine miss as a new document', async () => {
+    const { attempts, document } = legacyLoadHarness([false, false]);
+
+    await expect(document.load()).resolves.toBe(false);
+    expect(attempts).toEqual(['false', 'false']);
   });
 });

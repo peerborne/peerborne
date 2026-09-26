@@ -3445,7 +3445,6 @@ export class PeerborneDocument<
                   message,
                   'load-response-v3',
                   loadWriterKeysVersion,
-                  requiredResponseSigner !== undefined,
                 ),
               'catch-up',
               {
@@ -3928,6 +3927,9 @@ export class PeerborneDocument<
    *   raised inside `load()`. The original single-peer
    *   "return false on no peers" behaviour is preserved when the quorum
    *   gate is disabled (`loadQuorumEnabled: false`).
+   * @throws {Error} When no peer served the document and a response was
+   *   discarded because writer authorization changed while it was being
+   *   applied. The load can be retried.
    */
   // Key exchange happens during:
   // - Load messages.
@@ -4164,6 +4166,7 @@ export class PeerborneDocument<
     // which peers in the agreeing cohort equivocated between the
     // probe round and the load round and what they served instead.
     const agreeingPeerBindFailures = new Map<string, string>();
+    let writerConflict: _LoadWriterVersionConflictError | undefined;
     for (const peer of orderedPeers) {
       let peerBindFailed = false;
       // An explicitly disabled compaction policy cannot produce snapshots in
@@ -4203,6 +4206,8 @@ export class PeerborneDocument<
             );
             agreeingPeerBindFailures.set(this._peerIdOf(peer), err.advertisedHex);
             peerBindFailed = true;
+          } else if (err instanceof _LoadWriterVersionConflictError) {
+            writerConflict = err;
           }
           // Else: peer doesn't support snapshot-load protocol, or some
           // other transient error -- fall through to doc-load below.
@@ -4238,6 +4243,9 @@ export class PeerborneDocument<
           );
           agreeingPeerBindFailures.set(this._peerIdOf(peer), err.advertisedHex);
           continue;
+        }
+        if (err instanceof _LoadWriterVersionConflictError) {
+          writerConflict = err;
         }
         console.warn(
           `Failed to load document via ${documentLoadV3}:`,
@@ -4304,6 +4312,12 @@ export class PeerborneDocument<
         agreement: new Map([[winningHashHex, 0]]),
         agreeingPeerBindFailures,
       });
+    }
+
+    // A response discarded because writer authorization changed mid-apply
+    // is not a peer miss; returning false would let `open()` fork it.
+    if (writerConflict !== undefined) {
+      throw writerConflict;
     }
 
     // No peer could provide the document -- assume new document.
@@ -4646,7 +4660,6 @@ export class PeerborneDocument<
       'load-response-v3' | 'invitation-bootstrap-v1'
     >,
     expectedWriterKeysVersion?: number,
-    reportWriterConflict = false,
   ): Promise<boolean> {
     return this._mutationQueue.run(async () => {
       if (
@@ -4654,8 +4667,7 @@ export class PeerborneDocument<
         (this._writerKeysVersion !== expectedWriterKeysVersion ||
           this._writerMutationsInFlight !== 0)
       ) {
-        if (reportWriterConflict) throw new _LoadWriterVersionConflictError();
-        return false;
+        throw new _LoadWriterVersionConflictError();
       }
       return await this._syncUnlocked(message, false, context);
     });
