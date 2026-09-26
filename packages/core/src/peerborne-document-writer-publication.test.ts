@@ -810,6 +810,31 @@ describe('writer ACL publication boundary', () => {
     );
   });
 
+  test('rejects SharedArrayBuffer-backed reader KEM bytes before queueing', async () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers, publish, ['must-not-publish'],
+    );
+    document._addReaderUnlocked = jest.fn(async () => null);
+    document._buildInvitationBootstrapUnlocked = jest.fn();
+    const sharedKem = new Uint8Array(new SharedArrayBuffer(65));
+    sharedKem[0] = 4;
+
+    await expect(document.addReader('candidate', sharedKem)).rejects.toThrow(
+      'readerKemPublicKey has an invalid length or backing buffer',
+    );
+    await expect(
+      document.buildInvitationBootstrap('candidate', sharedKem, 'reader'),
+    ).rejects.toThrow(
+      'readerKemPublicKey has an invalid length or backing buffer',
+    );
+    expect(document._addReaderUnlocked).not.toHaveBeenCalled();
+    expect(document._buildInvitationBootstrapUnlocked).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   test('rejects removal of a writer without explicit reader authorization', async () => {
     const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
     const publish = jest.fn(async () => undefined);

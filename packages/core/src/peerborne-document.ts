@@ -414,6 +414,16 @@ function assertCanonicalACLIdentity(
   }
 }
 
+/** Detach caller KEM bytes; `_addReaderUnlocked` validates the P-256 point. */
+function snapshotReaderKemPublicKey(value: Uint8Array): Uint8Array {
+  return copyUnsharedUint8Array(
+    value,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'readerKemPublicKey',
+  );
+}
+
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_DOCUMENT_LOAD_RESPONSE_TIMEOUT_MS = 5000;
 
@@ -7293,7 +7303,7 @@ export class PeerborneDocument<
     const readerKemPublicKeySnapshot =
       readerKemPublicKey === undefined
         ? undefined
-        : new Uint8Array(readerKemPublicKey);
+        : snapshotReaderKemPublicKey(readerKemPublicKey);
     if (typeof this._authProvider?.serializePublicKey !== 'function') {
       return this._runStateMutation(() =>
         this._addReaderUnlocked(reader, readerKemPublicKeySnapshot),
@@ -7564,7 +7574,8 @@ export class PeerborneDocument<
     assertCanMutate?: () => void,
   ): Promise<InvitationBootstrapBundle> {
     this._assertNoIncompleteBootstrapLoad();
-    const stableReaderKemPublicKey = new Uint8Array(readerKemPublicKey);
+    const stableReaderKemPublicKey =
+      snapshotReaderKemPublicKey(readerKemPublicKey);
     const snapshot = this._startMembershipPublicKeySnapshot(
       reader,
       'Public invitations',
