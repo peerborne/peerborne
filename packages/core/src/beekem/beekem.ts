@@ -6,6 +6,7 @@ import {
   PathNodeUpdate,
   BeeKEMWelcome,
   WelcomeNodePublicKey,
+  MAX_BEEKEM_TREE_LEAVES,
 } from './types.js';
 import * as TreeMath from './tree-math.js';
 import { eciesSeal, eciesOpen } from '../ecies.js';
@@ -76,6 +77,11 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
+    if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
+      throw new Error(
+        `BeeKEM tree is full: at most ${MAX_BEEKEM_TREE_LEAVES} leaves are supported`,
+      );
+    }
     const previousNodes = this._nodes;
     const previousNumLeaves = this._numLeaves;
     // All mutation happens on a shallow map copy. Tree nodes are immutable
