@@ -7981,7 +7981,7 @@ export class PeerborneDocument<
     if (failedPeers.length > 0) {
       console.warn(
         `BeeKEM PathUpdate failed to reach ${failedPeers.length} peer(s).`,
-        'Affected peers cannot decrypt subsequent messages until they receive a new Welcome or other explicit recovery; reloading the document does not deliver the key.',
+        'Affected peers cannot decrypt subsequent messages until they receive a recipient-bound re-invitation or other explicit recovery; reloading the document does not deliver the key.',
       );
     }
   }
