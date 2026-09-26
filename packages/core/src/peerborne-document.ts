@@ -1926,7 +1926,8 @@ export class PeerborneDocument<
     // Idempotent and inexpensive: the helper walks at most the size of the
     // delivered tree (bounded by the sender's compaction config); duplicates
     // are no-ops in a Set. A certified ACL rejection withdraws the entries
-    // this sync added so a retried delivery can record them again.
+    // this sync added unless a node that did apply still references them, so
+    // a retried delivery can record them again without hiding applied heads.
     const newlyReferencedAncestors = [
       ...collectReferencedAncestors(changeId, changes, new Set<string>()),
     ].filter((cid) => !this._referencedAncestors.has(cid));
@@ -1935,8 +1936,16 @@ export class PeerborneDocument<
     }
     const rejectCertifiedACLMerge = (error: unknown): never => {
       if (error instanceof ACLMergeRejectedError) {
+        const appliedReferences = collectReferencedAncestors(
+          changeId,
+          changes,
+          new Set<string>(),
+          (parentId) => parentId !== undefined && this._hashes.has(parentId),
+        );
         for (const cid of newlyReferencedAncestors) {
-          this._referencedAncestors.delete(cid);
+          if (!appliedReferences.has(cid)) {
+            this._referencedAncestors.delete(cid);
+          }
         }
       }
       throw error;
