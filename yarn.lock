@@ -3264,7 +3264,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/noise@npm:^17.0.2":
+"@libp2p/noise@npm:^17.0.3":
   version: 17.0.3
   resolution: "@libp2p/noise@npm:17.0.3"
   dependencies:
@@ -3623,16 +3623,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/webrtc@npm:^6.0.32":
-  version: 6.0.32
-  resolution: "@libp2p/webrtc@npm:6.0.32"
+"@libp2p/webrtc@npm:^6.0.33":
+  version: 6.0.33
+  resolution: "@libp2p/webrtc@npm:6.0.33"
   dependencies:
     "@chainsafe/is-ip": "npm:^2.1.0"
     "@libp2p/crypto": "npm:^5.1.23"
     "@libp2p/interface": "npm:^3.3.0"
     "@libp2p/interface-internal": "npm:^3.1.13"
     "@libp2p/keychain": "npm:^6.1.7"
-    "@libp2p/noise": "npm:^17.0.2"
+    "@libp2p/noise": "npm:^17.0.3"
     "@libp2p/peer-id": "npm:^6.0.15"
     "@libp2p/utils": "npm:^7.4.1"
     "@multiformats/multiaddr": "npm:^13.0.3"
@@ -3660,7 +3660,7 @@ __metadata:
     uint8-varint: "npm:^3.0.0"
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/f1ff91998caaf26c51e6173e1a3bd8dd6c5f6c7b453f6f9944d6cb1b1c96ea7ea546494838f7c8c24ae0ab1a6f1fc59aedd6effe7de932c288dbd5f6494ede84
+  checksum: 10/44a096e29d9342e907f9d22fdadf7f7c6363eef4e7d1121ae5653574d4ce7525257d35d691a0ed23c13243efd797b658c723a133e1e508a4ee3c9ad9008be4dd
   languageName: node
   linkType: hard
 
@@ -4495,7 +4495,7 @@ __metadata:
     "@libp2p/peer-id": "npm:^6.0.14"
     "@libp2p/ping": "npm:^3.1.13"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
-    "@libp2p/webrtc": "npm:^6.0.32"
+    "@libp2p/webrtc": "npm:^6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@libp2p/webtransport": "npm:^6.0.37"
     "@multiformats/multiaddr": "npm:^13.0.3"
