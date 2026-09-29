@@ -697,6 +697,36 @@ describe('snapshot-bearing invitation sync', () => {
     expect(document._isLatestSnapshotFrom(message)).toBe(false);
   });
 
+  test('installs a snapshot-bearing bootstrap on the reserved invitation candidate', async () => {
+    const document = snapshotDocument();
+    const previousKeychain = { previous: true };
+    const invitationKeychain = { invitation: true };
+    const beekem = { beekem: true };
+    Object.assign(document, {
+      swarm: {
+        config: {},
+        isPendingInvitationDocument: (path: string, candidate: unknown) =>
+          path === documentPath && candidate === document,
+      },
+      _subscribed: false,
+      _keychain: previousKeychain,
+    });
+    const message = snapshotMessage('invitation-bootstrap-v1');
+
+    await expect(
+      document._syncInvitationBootstrapWithKeychain(
+        message,
+        invitationKeychain,
+        beekem,
+      ),
+    ).resolves.toBe(true);
+    expect(document._latestSnapshot).not.toBe(message.snapshot);
+    expect(document._hashes.has('old-cid')).toBe(false);
+    expect(document._keychain).toBe(invitationKeychain);
+    expect(document._beekem).toBe(beekem);
+    expect(document._beekemInitialized).toBe(true);
+  });
+
   test('does not attribute a snapshot to an ordinary sync source', async () => {
     const document = snapshotDocument();
     const message = snapshotMessage('ordinary-sync-v1');

@@ -780,6 +780,14 @@ export class Peerborne<
     }
   }
 
+  /** @internal Restrict bootstrap mutation to an unexposed reserved candidate. */
+  isPendingInvitationDocument(
+    documentPath: string,
+    document: unknown,
+  ): boolean {
+    return this._pendingInvitationDocuments.get(documentPath) === document;
+  }
+
   private _pruneExpiredInvitationState(now = Date.now()): void {
     for (const [offerKey, registration] of this._invitationRegistry) {
       if (

@@ -261,6 +261,56 @@ describe('YjsACL', () => {
     expect(await acl2.check(key1)).toBe(true);
   });
 
+  test('merge() reports whether the ACL changed', async () => {
+    const sender = new YjsACL();
+    const added = await sender.add(key1);
+    const collaborator = await sender.add(key2);
+    const removed = await sender.remove(key1);
+    const receiver = new YjsACL();
+
+    expect(receiver.merge(added)).toBe(true);
+    expect(receiver.merge(added)).toBe(false);
+    expect(receiver.merge(collaborator)).toBe(true);
+    expect(receiver.merge(removed)).toBe(true);
+    expect(receiver.merge(removed)).toBe(false);
+    expect(receiver.merge(sender.current())).toBe(false);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() reports no change for updates the ACL produced', async () => {
+    const acl = new YjsACL();
+    const added = await acl.add(key1);
+    const removed = await acl.remove(key1);
+
+    expect(acl.merge(added)).toBe(false);
+    expect(acl.merge(removed)).toBe(false);
+    expect(acl.merge(acl.current())).toBe(false);
+  });
+
+  test('merge() reports a parked update once it integrates', async () => {
+    const sender = new YjsACL();
+    const first = await sender.add(key1);
+    const second = await sender.add(key2);
+    const receiver = new YjsACL();
+
+    expect(receiver.merge(second)).toBe(false);
+    expect(await receiver.check(key2)).toBe(false);
+    expect(receiver.merge(first)).toBe(true);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() rejects a malformed update without hiding later updates', async () => {
+    const sender = new YjsACL();
+    const added = await sender.add(key1);
+    const receiver = new YjsACL();
+
+    expect(() => receiver.merge(new Uint8Array([255, 255, 255]))).toThrow();
+    expect(receiver.merge(added)).toBe(true);
+    expect(await receiver.check(key1)).toBe(true);
+  });
+
   test('YjsACLProvider.initialize() returns a new YjsACL', () => {
     const provider = new YjsACLProvider();
     const acl = provider.initialize();

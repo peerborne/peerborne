@@ -58,8 +58,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._backing.current();
   }
 
-  merge(changes: ChangesType): void {
-    this._backing.merge(changes);
+  merge(changes: ChangesType): boolean | void {
+    return this._backing.merge(changes);
   }
 
   async check(publicKey: PublicKey, capability?: string): Promise<boolean> {

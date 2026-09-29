@@ -560,8 +560,20 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   current(): Uint8Array {
     return encodeStateAsUpdateV2(this._acl);
   }
-  merge(change: Uint8Array): void {
-    applyUpdateV2(this._acl, change);
+  merge(change: Uint8Array): boolean {
+    // Yjs emits an update only for transactions that integrated new structs
+    // or deletions; parked pending updates and replays stay silent.
+    let changed = false;
+    const markChanged = () => {
+      changed = true;
+    };
+    this._acl.on('updateV2', markChanged);
+    try {
+      applyUpdateV2(this._acl, change);
+    } finally {
+      this._acl.off('updateV2', markChanged);
+    }
+    return changed;
   }
   async check(publicKey: CryptoKey): Promise<boolean> {
     const hash = await serializeKey(publicKey);

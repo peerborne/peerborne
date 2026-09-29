@@ -330,6 +330,62 @@ describe('AutomergeACL', () => {
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
+
+  test('merge() reports whether applied history changed', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const collaboratorChanges = await sender.add(key2);
+    const removalChanges = await sender.remove(key1);
+    const receiver = new AutomergeACL();
+
+    expect(receiver.merge(founderChanges)).toBe(true);
+    expect(receiver.merge(founderChanges)).toBe(false);
+    expect(receiver.merge(collaboratorChanges)).toBe(true);
+    expect(receiver.merge(removalChanges)).toBe(true);
+    expect(receiver.merge(removalChanges)).toBe(false);
+    expect(receiver.merge(sender.current())).toBe(false);
+    expect(receiver.merge([])).toBe(false);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() reports no change for changes the ACL produced', async () => {
+    const acl = new AutomergeACL();
+    const added = await acl.add(key1);
+    const removed = await acl.remove(key1);
+
+    expect(acl.merge(added)).toBe(false);
+    expect(acl.merge(removed)).toBe(false);
+    expect(acl.merge(acl.current())).toBe(false);
+  });
+
+  test('merge() reports queued changes that leave the ACL incomplete', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const collaboratorChanges = await sender.add(key2);
+    const receiver = new AutomergeACL();
+
+    expect(receiver.merge(collaboratorChanges)).toBe(true);
+    expect(receiver.merge(collaboratorChanges)).toBe(false);
+    await expect(receiver.users()).rejects.toThrow(
+      /unresolved change dependencies/i,
+    );
+
+    expect(receiver.merge(founderChanges)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('merge() rejects a malformed change without hiding later changes', async () => {
+    const sender = new AutomergeACL();
+    const founderChanges = await sender.add(key1);
+    const receiver = new AutomergeACL();
+
+    expect(() =>
+      receiver.merge([new Uint8Array([1, 2, 3]) as BinaryChange]),
+    ).toThrow();
+    expect(receiver.merge(founderChanges)).toBe(true);
+    expect(await receiver.check(key1)).toBe(true);
+  });
 });
 
 describe('AutomergeACLProvider', () => {
