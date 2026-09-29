@@ -4512,7 +4512,7 @@ __metadata:
     ipns: "npm:^11.0.1"
     it-pipe: "npm:^3.0.1"
     jest: "npm:^30.5.2"
-    js-base64: "npm:^3.7.8"
+    js-base64: "npm:^3.9.4"
     libp2p: "npm:^3.3.11"
     multiformats: "npm:^14.0.5"
     ts-jest: "npm:^29.4.12"
@@ -10343,10 +10343,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"js-base64@npm:^3.7.8":
-  version: 3.7.8
-  resolution: "js-base64@npm:3.7.8"
-  checksum: 10/4baa9a222bc094b072933e4894735653b59992477c731879784e3112f21862b08dd5c56b8b23b0b8e43bc5bb514d957621d1892a6c58950f29e12b731fe087b6
+"js-base64@npm:^3.9.4":
+  version: 3.9.4
+  resolution: "js-base64@npm:3.9.4"
+  checksum: 10/7ae007f4536a4738024f09f34cbc146090fb5e231a48e71a94268a29ba290ff93c56b591c308556dc7dabaf5c04d38483a26adbc2a833cfad17ae618b8557b8b
   languageName: node
   linkType: hard
 

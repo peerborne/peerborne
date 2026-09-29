@@ -114,7 +114,7 @@
     "helia": "^7.1.10",
     "ipns": "^11.0.1",
     "it-pipe": "^3.0.1",
-    "js-base64": "^3.7.8",
+    "js-base64": "^3.9.4",
     "libp2p": "^3.3.11",
     "multiformats": "^14.0.5",
     "uint8arraylist": "^3.0.2"
