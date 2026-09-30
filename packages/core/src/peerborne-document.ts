@@ -302,6 +302,30 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   hashes: string[],
 ) => void;
 
+/** Options for {@link PeerborneDocument.removeWriter}. */
+export interface RemoveWriterOptions {
+  /**
+   * Reject with {@link LastWriterRemovalError} when no other writer would
+   * remain. The check runs inside the serialized membership operation that
+   * publishes the removal, so local role changes and remote ACL changes that
+   * this instance applies cannot interleave with it. It cannot stop
+   * concurrent removals issued by other peers from converging to an empty
+   * writer set.
+   */
+  readonly requireRemainingWriter?: boolean;
+}
+
+/** Thrown when an opted-in writer removal would leave no writer. */
+export class LastWriterRemovalError extends Error {
+  constructor(documentPath: string) {
+    super(
+      `Cannot remove the last writer from "${documentPath}". ` +
+        'Add another writer first.',
+    );
+    this.name = 'LastWriterRemovalError';
+  }
+}
+
 interface RemoteUpdateNotification<DocType, PublicKey> {
   readonly handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[];
   readonly document: DocType;
@@ -7393,15 +7417,30 @@ export class PeerborneDocument<
    * This is a local publication boundary, not a distributed transaction.
    *
    * @param writer User's public key
+   * @param options Set `requireRemainingWriter` to reject removal of the last
+   * writer with {@link LastWriterRemovalError}.
    */
-  public async removeWriter(writer: PublicKey) {
+  public async removeWriter(writer: PublicKey, options?: RemoveWriterOptions) {
     this._assertNoIncompleteBootstrapLoad();
+    const requireRemainingWriter = options?.requireRemainingWriter;
+    if (
+      requireRemainingWriter !== undefined &&
+      typeof requireRemainingWriter !== 'boolean'
+    ) {
+      throw new TypeError(
+        'removeWriter option requireRemainingWriter must be a boolean',
+      );
+    }
     if (typeof this._authProvider.serializePublicKey !== 'function') {
       const stableIdentity =
         (typeof writer !== 'object' || writer === null) &&
         typeof writer !== 'function';
       return this._runStateMutation(() =>
-        this._removeWriterUnlocked(writer, stableIdentity),
+        this._removeWriterUnlocked(
+          writer,
+          stableIdentity,
+          requireRemainingWriter === true,
+        ),
       );
     }
     const snapshot = this._startMembershipPublicKeySnapshot(
@@ -7409,14 +7448,21 @@ export class PeerborneDocument<
       'Writer removal',
     );
     return this._runStateMutation(async () => {
-      const { publicKey: stableWriter } = await snapshot;
-      return this._removeWriterUnlocked(stableWriter, true);
+      const { publicKey: stableWriter, serialized } = await snapshot;
+      return this._removeWriterUnlocked(
+        stableWriter,
+        true,
+        requireRemainingWriter === true,
+        serialized,
+      );
     });
   }
 
   private async _removeWriterUnlocked(
     stableWriter: PublicKey,
     stableIdentity = false,
+    requireRemainingWriter = false,
+    serializedWriter?: string,
   ): Promise<void> {
     await this._ensureCurrentUserCanWrite();
 
@@ -7437,6 +7483,12 @@ export class PeerborneDocument<
       );
     }
     if (
+      requireRemainingWriter &&
+      !(await this._hasOtherWriter(stableWriter, serializedWriter))
+    ) {
+      throw new LastWriterRemovalError(this.documentPath);
+    }
+    if (
       (await retryACLConflict(() =>
         this._readers.check(stableWriter),
       )) !== true
@@ -7451,6 +7503,26 @@ export class PeerborneDocument<
     // Keep live authorization unchanged until the ACL delta is published.
     const prepared = await this._prepareWriterRemove(stableWriter);
     await this._publishPreparedWriterChange(prepared, 'removeWriter');
+  }
+
+  private async _hasOtherWriter(
+    writer: PublicKey,
+    serializedWriter: string | undefined,
+  ): Promise<boolean> {
+    const writers = await retryACLConflict(() => this._writers.users());
+    if (serializedWriter === undefined) {
+      return writers.some((candidate) => candidate !== writer);
+    }
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'Writer removal',
+    );
+    for (const candidate of writers) {
+      const identity = await serializePublicKey(candidate);
+      assertCanonicalACLIdentity(identity);
+      if (identity !== serializedWriter) return true;
+    }
+    return false;
   }
 
   /**
