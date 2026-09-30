@@ -753,8 +753,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         return changes;
       },
       () => {
-        stableProofs = [...proofs];
         stableEpochId = copyOptionalEpochId(epochId);
+        stableProofs = [...proofs];
       },
     );
   }
