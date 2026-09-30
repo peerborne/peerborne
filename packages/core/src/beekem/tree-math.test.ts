@@ -36,6 +36,13 @@ describe('isLeaf / isInternal', () => {
     expect(isInternal(index)).toBe(expected);
     expect(isLeaf(index)).toBe(!expected);
   });
+
+  test('returns false outside the supported node domain', () => {
+    for (const index of [-1, 1.5, Number.MAX_SAFE_INTEGER, Number.NaN]) {
+      expect(isLeaf(index)).toBe(false);
+      expect(isInternal(index)).toBe(false);
+    }
+  });
 });
 
 describe('level', () => {
@@ -49,8 +56,15 @@ describe('level', () => {
     [3, 2],
     [7, 3],
     [15, 4],
+    [2 ** 30 - 1, 30],
   ])('level(%i) = %i', (index, expected) => {
     expect(level(index)).toBe(expected);
+  });
+
+  test('rejects nodes outside the supported arithmetic domain', () => {
+    expect(() => level(Number.MAX_SAFE_INTEGER)).toThrow(
+      /supported tree-math node range/,
+    );
   });
 });
 
@@ -71,6 +85,21 @@ describe('left / right', () => {
     expect(() => left(2)).toThrow('Leaves have no children');
     expect(() => right(4)).toThrow('Leaves have no children');
   });
+
+  test('uses safe arithmetic at the largest supported tree level', () => {
+    const largestRoot = 2 ** 30 - 1;
+    expect(left(largestRoot)).toBe(2 ** 29 - 1);
+    expect(right(largestRoot)).toBe(3 * 2 ** 29 - 1);
+  });
+
+  test('rejects nodes whose child arithmetic is outside the supported domain', () => {
+    expect(() => left(Number.MAX_SAFE_INTEGER)).toThrow(
+      /supported tree-math node range/,
+    );
+    expect(() => right(Number.MAX_SAFE_INTEGER)).toThrow(
+      /supported tree-math node range/,
+    );
+  });
 });
 
 describe('root', () => {
@@ -85,6 +114,10 @@ describe('root', () => {
 
   test('throws for 0 leaves', () => {
     expect(() => root(0)).toThrow('Tree must have at least one leaf');
+  });
+
+  test('calculates the largest supported root without 32-bit truncation', () => {
+    expect(root(2 ** 30)).toBe(2 ** 30 - 1);
   });
 });
 
@@ -103,6 +136,17 @@ describe('parent', () => {
   test('throws for root node', () => {
     expect(() => parent(3, 4)).toThrow('Root has no parent');
     expect(() => parent(7, 8)).toThrow('Root has no parent');
+  });
+
+  test('clamps the rightmost leaf of a five-leaf tree to root', () => {
+    expect(parent(8, 5)).toBe(7);
+  });
+
+  test('rejects out-of-range inputs before parent traversal', () => {
+    expect(() => parent(Number.MAX_SAFE_INTEGER, 5)).toThrow(
+      /supported tree-math node range/,
+    );
+    expect(() => parent(0, Number.MAX_SAFE_INTEGER)).toThrow(/numLeaves/);
   });
 });
 
@@ -134,6 +178,32 @@ describe('directPath', () => {
 
   test('1 leaf returns empty path', () => {
     expect(directPath(0, 1)).toEqual([]);
+  });
+
+  test('5 leaves, rightmost leaf reaches root without exposing clamped nodes', () => {
+    expect(directPath(8, 5)).toEqual([7]);
+  });
+
+  test('all protocol-sized representative paths terminate within 13 steps', () => {
+    for (let numLeaves = 2; numLeaves <= 8192; numLeaves++) {
+      const leafPositions = new Set([
+        0,
+        Math.floor(numLeaves / 2),
+        numLeaves - 1,
+      ]);
+      for (const leafPosition of leafPositions) {
+        const path = directPath(leafToNodeIndex(leafPosition), numLeaves);
+        expect(path.length).toBeLessThanOrEqual(13);
+        expect(path.at(-1)).toBe(root(numLeaves));
+      }
+    }
+  });
+
+  test('rejects invalid leaves before direct-path traversal', () => {
+    expect(() => directPath(9, 5)).toThrow(/not a leaf/);
+    expect(() => directPath(Number.MAX_SAFE_INTEGER - 1, 5)).toThrow(
+      /supported tree-math node range/,
+    );
   });
 });
 
@@ -174,5 +244,21 @@ describe('leafToNodeIndex / nodeToLeafIndex', () => {
     expect(() => nodeToLeafIndex(1)).toThrow('Not a leaf node');
     expect(() => nodeToLeafIndex(3)).toThrow('Not a leaf node');
     expect(() => nodeToLeafIndex(7)).toThrow('Not a leaf node');
+  });
+
+  test('converts the largest supported leaf without 32-bit truncation', () => {
+    const leafPosition = 2 ** 30 - 1;
+    const nodeIndex = 2 ** 31 - 2;
+    expect(leafToNodeIndex(leafPosition)).toBe(nodeIndex);
+    expect(nodeToLeafIndex(nodeIndex)).toBe(leafPosition);
+  });
+
+  test('rejects conversions outside the supported arithmetic domain', () => {
+    expect(() => leafToNodeIndex(Number.MAX_SAFE_INTEGER)).toThrow(
+      /supported tree-math leaf range/,
+    );
+    expect(() => nodeToLeafIndex(Number.MAX_SAFE_INTEGER - 1)).toThrow(
+      /supported tree-math node range/,
+    );
   });
 });

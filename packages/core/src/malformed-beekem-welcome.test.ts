@@ -6,17 +6,18 @@ import {
 
 function buildValidWelcome() {
   return {
-    leafIndex: 3,
-    pathKeys: [{
-      nodeIndex: 4,
-      publicKey: new Uint8Array(65).fill(2),
-      encryptedPrivateKey: new Uint8Array([40, 50, 60]),
-    }],
+    leafIndex: 2,
+    pathKeys: [
+      {
+        nodeIndex: 1,
+        publicKey: new Uint8Array(65).fill(2),
+        encryptedPrivateKey: new Uint8Array(125).fill(40),
+      },
+    ],
     treeNodePublicKeys: [
       { nodeIndex: 0, publicKey: new Uint8Array(65).fill(70) },
-      { nodeIndex: 1, publicKey: null },
     ],
-    treeHash: new Uint8Array([99, 100, 101]),
+    treeHash: new Uint8Array(32).fill(99),
   };
 }
 
@@ -67,7 +68,9 @@ describe('deserializeBeeKEMWelcomeFromWire malformed inputs', () => {
   });
   test('rejects pathKey element that is not an object', () => {
     const bad = { ...buildValidWire(), pathKeys: ['not-an-object'] as any };
-    expect(() => deserializeBeeKEMWelcomeFromWire(bad)).toThrow(/pathKeys\[0\] must be a plain object/);
+    expect(() => deserializeBeeKEMWelcomeFromWire(bad)).toThrow(
+      /pathKeys\[0\].*plain object/,
+    );
   });
   test('rejects pathKey with non-integer nodeIndex', () => {
     const wire = buildValidWire();
@@ -77,11 +80,13 @@ describe('deserializeBeeKEMWelcomeFromWire malformed inputs', () => {
   test('rejects pathKey with non-string publicKey', () => {
     const wire = buildValidWire();
     (wire.pathKeys[0] as any).publicKey = 123;
-    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(/pathKeys\[0\].publicKey must be a base64/);
+    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(/pathKeys\[0\]\.publicKey' must be a base64/);
   });
   test('rejects treeNodePublicKey element that is not an object', () => {
     const bad = { ...buildValidWire(), treeNodePublicKeys: ['bad'] };
-    expect(() => deserializeBeeKEMWelcomeFromWire(bad)).toThrow(/treeNodePublicKeys\[0\] must be a plain object/);
+    expect(() => deserializeBeeKEMWelcomeFromWire(bad)).toThrow(
+      /treeNodePublicKeys\[0\].*plain object/,
+    );
   });
   test('rejects treeNodePublicKey with non-integer nodeIndex', () => {
     const wire = buildValidWire();
@@ -91,7 +96,7 @@ describe('deserializeBeeKEMWelcomeFromWire malformed inputs', () => {
   test('rejects treeNodePublicKey with invalid publicKey type', () => {
     const wire = buildValidWire();
     (wire.treeNodePublicKeys[0] as any).publicKey = 123;
-    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(/treeNodePublicKeys\[0\].publicKey must be a base64/);
+    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(/treeNodePublicKeys\[0\]\.publicKey' must be a base64/);
   });
 });
 
@@ -99,15 +104,14 @@ describe('deserializeBeeKEMWelcomeFromWire valid inputs', () => {
   test('round-trips a valid welcome', () => {
     const wire = buildValidWire();
     const result = deserializeBeeKEMWelcomeFromWire(wire);
-    expect(result.leafIndex).toBe(3);
+    expect(result.leafIndex).toBe(2);
     expect(result.pathKeys).toHaveLength(1);
-    expect(result.treeNodePublicKeys).toHaveLength(2);
-    expect(result.treeNodePublicKeys[1].publicKey).toBeNull();
+    expect(result.treeNodePublicKeys).toHaveLength(1);
   });
-  test('handles empty pathKeys and treeNodePublicKeys', () => {
+  test('rejects empty pathKeys and treeNodePublicKeys', () => {
     const wire = { ...buildValidWire(), pathKeys: [], treeNodePublicKeys: [] };
-    const result = deserializeBeeKEMWelcomeFromWire(wire);
-    expect(result.pathKeys).toHaveLength(0);
-    expect(result.treeNodePublicKeys).toHaveLength(0);
+    expect(() => deserializeBeeKEMWelcomeFromWire(wire)).toThrow(
+      /pathKeys has invalid length/,
+    );
   });
 });
