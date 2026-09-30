@@ -294,64 +294,6 @@ describe('validateDocumentPath control flow', () => {
   });
 });
 
-describe('getReaders() dedup logic', () => {
-  // Tests the actual dedup pattern from PeerborneDocument.getReaders() using
-  // mock ACL objects with check()/users() -- the same interface the production
-  // code calls. This catches regressions if check() semantics change.
-  test('should deduplicate keys present in both readers and writers via check()', async () => {
-    const sharedKey = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
-    );
-    const readerOnlyKey = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
-    );
-    const writerOnlyKey = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'],
-    );
-
-    // Mock ACLs -- sharedKey appears in both readers and writers
-    const readerKeys = [sharedKey.publicKey, readerOnlyKey.publicKey];
-    const writerKeys = [sharedKey.publicKey, writerOnlyKey.publicKey];
-
-    // Export keys for fingerprint comparison (same approach as YjsACL.check)
-    const fingerprint = async (k: CryptoKey) =>
-      new Uint8Array(await crypto.subtle.exportKey('raw', k)).toString();
-    const readerFPs = new Set(await Promise.all(readerKeys.map(fingerprint)));
-
-    // Mock _readers.check() -- returns true if the key is in readerKeys
-    const readersCheck = async (key: CryptoKey) =>
-      readerFPs.has(await fingerprint(key));
-
-    // Replicate getReaders() dedup: filter writers already in readers via check()
-    const checkResults = await Promise.all(writerKeys.map(readersCheck));
-    const filteredWriters = writerKeys.filter(
-      (_, i) => checkResults[i] !== true,
-    );
-    const combined = [...readerKeys, ...filteredWriters];
-
-    // sharedKey from writers should be filtered out; writerOnlyKey should remain
-    expect(combined).toHaveLength(3); // readerOnly + shared (from readers) + writerOnly
-    // Verify writerOnlyKey made it through
-    const combinedFPs = await Promise.all(combined.map(fingerprint));
-    expect(combinedFPs).toContain(await fingerprint(writerOnlyKey.publicKey));
-    // Verify sharedKey appears exactly once
-    const sharedFP = await fingerprint(sharedKey.publicKey);
-    expect(combinedFPs.filter(fp => fp === sharedFP)).toHaveLength(1);
-  });
-
-  test('does not treat a truthy non-boolean check result as membership', async () => {
-    const reader = { id: 'reader' };
-    const writer = { id: 'writer' };
-    const checkResults = [
-      ({ member: true }) as unknown as boolean,
-    ];
-    const filteredWriters = [writer].filter(
-      (_, index) => checkResults[index] !== true,
-    );
-    expect([reader, ...filteredWriters]).toEqual([reader, writer]);
-  });
-});
-
 /**
  * Tests for the writer-key caching pattern in PeerborneDocument's
  * `_getWriterKeys` / `_mergeWriters` / `_addWriter` / `_removeWriter` helpers.

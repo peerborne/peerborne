@@ -35,7 +35,11 @@ import {
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
-import { ACL } from './acl.js';
+import {
+  ACL,
+  ACLOperationInProgressError,
+  retryACLConflict,
+} from './acl.js';
 import {
   Keychain,
   TransactionalKeychain,
@@ -108,7 +112,11 @@ import {
   serializeUCAN,
   deserializeUCAN,
 } from './ucan.js';
-import { UCANACL, UCANACLProvider } from './ucan-acl.js';
+import {
+  MAX_UCAN_ACL_LISTING_IDENTITIES,
+  UCANACL,
+  UCANACLProvider,
+} from './ucan-acl.js';
 import {
   ACLChain,
   canonicalEntryPayload,
@@ -189,6 +197,8 @@ export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
+  ACLOperationInProgressError,
+  retryACLConflict,
   ACLProvider,
   SubtleCrypto,
   Peerborne,
@@ -268,6 +278,7 @@ export {
   serializeUCAN,
   deserializeUCAN,
   // UCAN ACL
+  MAX_UCAN_ACL_LISTING_IDENTITIES,
   UCANACL,
   UCANACLProvider,
   // ACL chain-of-trust

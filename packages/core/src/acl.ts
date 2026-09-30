@@ -1,6 +1,65 @@
+/** A retryable conflict with an unresolved ACL operation. */
+export class ACLOperationInProgressError extends Error {
+  private readonly _settled: Promise<void>;
+
+  constructor(
+    operation: string,
+    settled: Promise<void>,
+  ) {
+    super(
+      `${operation} is unavailable while another ACL operation is in progress`,
+    );
+    this.name = 'ACLOperationInProgressError';
+    this._settled = settled.then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+
+  /** Wait until the conflicting operation has settled before retrying. */
+  waitForSettlement(): Promise<void> {
+    return this._settled;
+  }
+}
+
+/**
+ * Retry an external ACL operation across explicitly reported conflicts.
+ * ACL implementations must emit this conflict only from a pre-invocation
+ * admission boundary, certifying that the rejected operation made no state
+ * change. Backing ACL implementations and identity codecs must propagate a
+ * conflict rather than waiting because they may own the operation that must
+ * settle. Security wrappers may convert a conflict received after invoking an
+ * opaque mutating provider into a terminal failure because they cannot prove
+ * that provider remained unchanged before propagating it.
+ */
+export async function retryACLConflict<T>(
+  operation: () => T | PromiseLike<T>,
+): Promise<T> {
+  for (;;) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof ACLOperationInProgressError)) {
+        throw error;
+      }
+      await error.waitForSettlement();
+    }
+  }
+}
+
 /**
  * An ACL keeps track of a list of user's public keys and produces changes that
  * can be sent to other swarm peers.
+ *
+ * Implementations must compare public keys by their provider-defined canonical
+ * key material, not JavaScript object reference. Security wrappers may pass a
+ * fresh detached object that represents the same canonical identity to each
+ * operation.
+ *
+ * Implementations that serialize access may reject overlapping calls with
+ * {@link ACLOperationInProgressError}. External orchestration can use
+ * {@link retryACLConflict}; backing implementations must propagate the
+ * conflict without waiting on it.
  *
  * @typeParam ChangesType A block of CRDT change(s).
  * @typeParam PublicKey Type of a user's public key.
