@@ -160,6 +160,13 @@ export default defineConfig({
           items: [
             'reference',
             'reference/comparisons',
+            {
+              label: 'Security ADRs',
+              collapsed: true,
+              items: [
+                'reference/security-design/0001-mls-document-security-architecture',
+              ],
+            },
             typeDocSidebarGroup,
           ],
         },

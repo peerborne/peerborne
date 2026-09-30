@@ -110,8 +110,8 @@ export interface GroupSecurityTransitionDeliveryCodec {
 /**
  * Strict deterministic framing suitable for an append-only transition archive.
  * All integers are big-endian:
- * `[magic][version:u16][codec-id:bytes16][codec-version:u16]`
- * `[control:bytes32][delivery:bytes32]`.
+ * `[magic][version:u16][codec-id-length:u16][codec-id][codec-version:u16]`
+ * `[control-length:u32][control][delivery-length:u32][delivery]`.
  */
 export function serializeGroupSecurityTransitionRecord(
   value: GroupSecurityTransitionRecord,
