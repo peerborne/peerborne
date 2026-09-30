@@ -21,7 +21,7 @@
     "@astrojs/starlight": "^0.41.9",
     "@peerborne/core": "workspace:*",
     "@peerborne/yjs": "workspace:*",
-    "astro": "^7.3.3",
+    "astro": "^7.3.5",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
