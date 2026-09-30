@@ -1128,14 +1128,17 @@ describe('YjsACL', () => {
     expect(acl.merge(acl.current())).toBe(false);
   });
 
-  test('merge() reports a parked update once it integrates', async () => {
+  test('merge() reports parked updates that leave the ACL incomplete', async () => {
     const sender = new YjsACL();
     const first = await sender.add(key1);
     const second = await sender.add(key2);
     const receiver = new YjsACL();
 
+    expect(receiver.merge(second)).toBe(true);
     expect(receiver.merge(second)).toBe(false);
-    expect(await receiver.check(key2)).toBe(false);
+    await expect(receiver.check(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
     expect(receiver.merge(first)).toBe(true);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
