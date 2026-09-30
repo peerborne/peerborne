@@ -15,6 +15,8 @@ import {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   HistoryVisibility,
+  LastWriterRemovalError,
+  RemoveWriterOptions,
 } from './peerborne-document.js';
 import {
   CRDTSyncMessage,
@@ -215,6 +217,8 @@ export {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   HistoryVisibility,
+  LastWriterRemovalError,
+  RemoveWriterOptions,
   CRDTChangeBlock,
   CRDTChangeNodeKind,
   CRDTChangeNodeDeferred,

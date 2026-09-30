@@ -10,7 +10,10 @@ import {
   type CRDTChangeNodeKind,
 } from './crdt-change-node.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
-import { PeerborneDocument } from './peerborne-document.js';
+import {
+  LastWriterRemovalError,
+  PeerborneDocument,
+} from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
@@ -1660,4 +1663,169 @@ describe('writer ACL publication boundary', () => {
       ),
     ).rejects.toThrow('ordinary observer failed');
   });
+});
+
+describe('writer removal with a required remaining writer', () => {
+  test('rejects removing the last writer without staging or publishing', async () => {
+    const writers = new StagedWriterACL(new Set(['candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document, keychain } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+
+    await expect(
+      document.removeWriter('candidate', { requireRemainingWriter: true }),
+    ).rejects.toBeInstanceOf(LastWriterRemovalError);
+
+    expect(writers.members).toEqual(new Set(['candidate']));
+    expect(writers.prepareRemoveCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+    expect(keychain.current).not.toHaveBeenCalled();
+  });
+
+  test('keeps last-writer removal available without the option', async () => {
+    const writers = new StagedWriterACL(new Set(['candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['last-writer-cid'],
+    );
+
+    await expect(document.removeWriter('candidate')).resolves.toBeUndefined();
+
+    expect(writers.members).toEqual(new Set());
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not count duplicate rows for the same identity as another writer', async () => {
+    const writers = new StagedWriterACL(new Set(['candidate']));
+    writers.users = async () => ['candidate', 'candidate'];
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+
+    await expect(
+      document.removeWriter('candidate', { requireRemainingWriter: true }),
+    ).rejects.toBeInstanceOf(LastWriterRemovalError);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('rechecks the writer set after an earlier queued removal commits', async () => {
+    const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
+    const publicationStarted = deferred<void>();
+    const releasePublication = deferred<void>();
+    const publish = jest.fn(async () => {
+      publicationStarted.resolve();
+      await releasePublication.promise;
+    });
+    const { document, readers } = publicationHarness(
+      writers,
+      publish,
+      ['first-removal-cid', 'must-not-publish'],
+    );
+    readers.add('owner');
+
+    const first = document.removeWriter('candidate', {
+      requireRemainingWriter: true,
+    });
+    await publicationStarted.promise;
+    const second = document.removeWriter('owner', {
+      requireRemainingWriter: true,
+    });
+    const rejected = expect(second).rejects.toBeInstanceOf(
+      LastWriterRemovalError,
+    );
+    releasePublication.resolve();
+
+    await expect(first).resolves.toBeUndefined();
+    await rejected;
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(writers.prepareRemoveCalls).toBe(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  test('observes a remote writer removal applied earlier in the queue', async () => {
+    const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['must-not-publish'],
+    );
+    const remoteMergeStarted = deferred<void>();
+    const releaseRemoteMerge = deferred<void>();
+    const remoteMerge = document._mutationQueue.run(async () => {
+      remoteMergeStarted.resolve();
+      await releaseRemoteMerge.promise;
+      writers.merge({ operation: 'remove', publicKey: 'owner', sequence: 1 });
+    });
+    await remoteMergeStarted.promise;
+
+    const removal = document.removeWriter('candidate', {
+      requireRemainingWriter: true,
+    });
+    const rejected = expect(removal).rejects.toBeInstanceOf(
+      LastWriterRemovalError,
+    );
+    releaseRemoteMerge.resolve();
+
+    await remoteMerge;
+    await rejected;
+    expect(writers.members).toEqual(new Set(['candidate']));
+    expect(writers.prepareRemoveCalls).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('compares immutable identities without identity codecs', async () => {
+    const writers = new StagedWriterACL(new Set(['candidate']));
+    const publish = jest.fn(async () => undefined);
+    const { document } = publicationHarness(
+      writers,
+      publish,
+      ['primitive-removal-cid'],
+    );
+    delete document._authProvider.serializePublicKey;
+    delete document._authProvider.deserializePublicKey;
+
+    await expect(
+      document.removeWriter('candidate', { requireRemainingWriter: true }),
+    ).rejects.toBeInstanceOf(LastWriterRemovalError);
+    writers.members.add('owner');
+    await expect(
+      document.removeWriter('candidate', { requireRemainingWriter: true }),
+    ).resolves.toBeUndefined();
+
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([['yes'], [1], [null]])(
+    'rejects a non-boolean requireRemainingWriter value %p before queueing',
+    async (value) => {
+      const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
+      const publish = jest.fn(async () => undefined);
+      const { document } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      const run = jest.spyOn(document._mutationQueue, 'run');
+
+      await expect(
+        document.removeWriter('candidate', {
+          requireRemainingWriter: value as unknown as boolean,
+        }),
+      ).rejects.toThrow(TypeError);
+
+      expect(run).not.toHaveBeenCalled();
+      expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
 });
