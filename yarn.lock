@@ -2875,15 +2875,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/gossipsub@npm:^17.0.0":
-  version: 17.0.0
-  resolution: "@libp2p/gossipsub@npm:17.0.0"
+"@libp2p/gossipsub@npm:^17.1.2":
+  version: 17.1.2
+  resolution: "@libp2p/gossipsub@npm:17.1.2"
   dependencies:
-    "@libp2p/crypto": "npm:^5.1.22"
-    "@libp2p/interface": "npm:^3.2.5"
-    "@libp2p/interface-internal": "npm:^3.1.11"
-    "@libp2p/peer-id": "npm:^6.0.14"
-    "@libp2p/utils": "npm:^7.3.2"
+    "@libp2p/crypto": "npm:^5.1.23"
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.13"
+    "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/utils": "npm:^7.4.1"
     "@multiformats/multiaddr": "npm:^13.0.3"
     denque: "npm:^2.1.0"
     it-length-prefixed: "npm:^11.0.1"
@@ -2893,7 +2893,7 @@ __metadata:
     protons-runtime: "npm:^7.0.0"
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/df49cfa2b52389a60a9a90a70060e88c0ad6e9214f0148e900c481122fa7a6aed691ff66a1c1bd1531539109e729688b3bd8870b2fb5782a5713b5447e63dafd
+  checksum: 10/bf71427c1cfe284382ead9fa1ae8a5af5ea357114318e3291720378f7070d2c7074670ea751b8b719123bcc71fccc868d4a649af568faab70ec14add4044bb68
   languageName: node
   linkType: hard
 
@@ -4430,7 +4430,7 @@ __metadata:
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
     "@libp2p/autonat": "npm:^3.0.27"
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
-    "@libp2p/gossipsub": "npm:^17.0.0"
+    "@libp2p/gossipsub": "npm:^17.1.2"
     "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/tcp": "npm:^11.0.27"
@@ -4475,7 +4475,7 @@ __metadata:
     "@libp2p/bootstrap": "npm:^12.0.30"
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/dcutr": "npm:^3.0.26"
-    "@libp2p/gossipsub": "npm:^17.0.0"
+    "@libp2p/gossipsub": "npm:^17.1.2"
     "@libp2p/identify": "npm:^4.1.14"
     "@libp2p/interface": "npm:^3.2.5"
     "@libp2p/kad-dht": "npm:^16.4.5"
