@@ -76,7 +76,7 @@
     "ts-jest": "^29.4.12",
     "ts-node": "^10.1.0",
     "tsx": "4.23.12",
-    "typedoc": "^0.28.19",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3"
   },
   "resolutions": {
