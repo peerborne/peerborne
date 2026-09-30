@@ -2785,18 +2785,23 @@ describe('UCANACL', () => {
   });
 
   test.each([
-    ['a boolean', true],
-    ['a number', 1],
-    ['a plain object', { applied: true }],
-    ['a null-prototype object', Object.create(null)],
-    ['a function', () => undefined],
+    ['a boolean', true, true],
+    ['a false report', false, false],
+    ['a number', 1, undefined],
+    ['zero', 0, undefined],
+    ['an empty string', '', undefined],
+    ['null', null, undefined],
+    ['a boxed false', new Boolean(false), undefined],
+    ['a plain object', { applied: true }, undefined],
+    ['a null-prototype object', Object.create(null), undefined],
+    ['a function', () => undefined, undefined],
   ])(
     'accepts a synchronous backing merge that returns %s',
-    async (_label, value) => {
+    async (_label, value, report) => {
       backing.merge.mockReturnValue(value);
       backing.check.mockResolvedValue(true);
 
-      expect(acl.merge('incoming-changes')).toBeUndefined();
+      expect(acl.merge('incoming-changes')).toBe(report);
       acl.merge('incoming-changes');
 
       expect(backing.merge).toHaveBeenCalledTimes(2);

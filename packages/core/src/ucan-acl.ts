@@ -449,18 +449,29 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   private _invokeSynchronousBacking<T>(
     operation: () => T,
     operationName: string,
-    resultPolicy: 'opaque' | 'plain-claim' | 'void' = 'opaque',
+    resultPolicy:
+      | 'opaque'
+      | 'plain-claim'
+      | 'void'
+      | 'change-report' = 'opaque',
   ): T {
     return this._invokeBacking(() => {
       const result = operation();
+      const discardsResult =
+        resultPolicy === 'void' || resultPolicy === 'change-report';
       if (
-        resultPolicy === 'void' &&
+        discardsResult &&
         typeof result !== 'object' &&
         typeof result !== 'function'
       ) {
         // A `void` method may still return a synchronous value; only an
-        // asynchronous result violates the synchronous contract.
-        return undefined as T;
+        // asynchronous result violates the synchronous contract. A change
+        // report keeps only a boolean, so any other value reads as a change.
+        return (
+          resultPolicy === 'change-report' && typeof result === 'boolean'
+            ? result
+            : undefined
+        ) as T;
       }
 
       const requirePlainClaimResult = resultPolicy === 'plain-claim';
@@ -581,7 +592,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         }
         throw new TypeError(`${operationName} must complete synchronously`);
       }
-      return resultPolicy === 'void' ? (undefined as T) : result;
+      return discardsResult ? (undefined as T) : result;
     });
   }
 
@@ -1520,7 +1531,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       return this._invokeSynchronousBacking(
         () => this._backing.merge(changes),
         'Backing ACL merge',
-        'void',
+        'change-report',
       );
     } catch (error) {
       if (error instanceof ACLOperationInProgressError) {
