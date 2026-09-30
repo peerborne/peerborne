@@ -189,8 +189,19 @@ function invitationHarness(options: {
   const mutationQueue = {
     run: jest.fn((operation: () => Promise<unknown>) => operation()),
   };
+  const liveKeychain = {
+    getKey: jest.fn(),
+    keys: jest.fn(async () => {
+      await stallAt('keys');
+      return [];
+    }),
+    merge,
+  };
+  const stagingKeychain =
+    options.transactional === false ? {} : { prepareMerge };
   const document = fakeDocument({
     documentPath: '/transactional-invitation',
+    swarm: { isPendingInvitationDocument: () => true },
     _bootstrapLoadApplicationState: 'pristine',
     _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set<string>(),
@@ -200,16 +211,11 @@ function invitationHarness(options: {
     _createdLocally: false,
     _kemKeyPair: { privateKey: {}, publicKey: {} },
     _kemPublicKeyRaw: new Uint8Array([8]),
-    _keychainProvider: { keyIDLength: 1 },
-    _keychain: {
-      getKey: jest.fn(),
-      keys: jest.fn(async () => {
-        await stallAt('keys');
-        return [];
-      }),
-      merge,
-      ...(options.transactional === false ? {} : { prepareMerge }),
+    _keychainProvider: {
+      keyIDLength: 1,
+      initialize: jest.fn(() => stagingKeychain),
     },
+    _keychain: liveKeychain,
     _authProvider: {
       nonceBits: 1,
       decrypt: jest.fn(async (_ciphertext, key) => {
@@ -238,6 +244,7 @@ function invitationHarness(options: {
         documentId: '/transactional-invitation',
         signatureContext: 'invitation-bootstrap-v1',
         signature: 'AAAA',
+        tips: [],
         keychainChanges: bootstrapKeychainChanges,
       })),
       serializeSyncMessage: jest.fn(() => new Uint8Array([10])),
@@ -261,7 +268,9 @@ function invitationHarness(options: {
     activate,
     mutationQueue,
     epochId,
+    liveKeychain,
     liveKeychainState,
+    stagingKeychain,
   };
 }
 
@@ -361,14 +370,16 @@ describe('invitation bootstrap keychain transaction', () => {
       'hydrate',
       'decrypt',
       'verify',
+      'commit',
       'sync',
     ]);
-    expect(harness.commit).not.toHaveBeenCalled();
+    expect(harness.commit).toHaveBeenCalledTimes(1);
     expect(harness.merge).not.toHaveBeenCalled();
+    expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._bootstrapLoadApplicationState).toBe('pending');
   });
 
-  test('does not commit when initial membership validation rejects', async () => {
+  test('does not activate when initial membership validation rejects', async () => {
     const harness = invitationHarness({
       membershipError: new Error('membership topology is invalid'),
     });
@@ -386,9 +397,11 @@ describe('invitation bootstrap keychain transaction', () => {
       ),
     ).rejects.toThrow(/membership topology is invalid/);
 
-    expect(harness.commit).not.toHaveBeenCalled();
+    expect(harness.commit).toHaveBeenCalledTimes(1);
     expect(harness.merge).not.toHaveBeenCalled();
     expect(harness.activate).not.toHaveBeenCalled();
+    expect(harness.document._invitationBootstrapReady).not.toBe(true);
+    expect(harness.document._bootstrapLoadApplicationState).toBe('pending');
   });
 
   test('fails closed when the provider cannot stage a merge', async () => {
@@ -452,7 +465,7 @@ describe('invitation bootstrap keychain transaction', () => {
         'reader',
         '/founder',
       ),
-    ).rejects.toThrow(/staged keychain current epoch/);
+    ).rejects.toThrow(/advertised epoch as the current key/);
 
     expect(harness.order).toEqual(['prepare']);
     expect(harness.commit).not.toHaveBeenCalled();
@@ -460,7 +473,7 @@ describe('invitation bootstrap keychain transaction', () => {
     expect(harness.document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
-  test('commits exactly once after bootstrap checks and before activation', async () => {
+  test('commits the isolated keychain exactly once after bootstrap checks and before activation', async () => {
     const harness = invitationHarness();
 
     await expect(
@@ -481,13 +494,14 @@ describe('invitation bootstrap keychain transaction', () => {
       'hydrate',
       'decrypt',
       'verify',
+      'commit',
       'sync',
       'membership',
-      'commit',
       'activate',
     ]);
     expect(harness.commit).toHaveBeenCalledTimes(1);
     expect(harness.merge).not.toHaveBeenCalled();
+    expect(harness.document._keychain).toBe(harness.stagingKeychain);
     expect(harness.document._bootstrapLoadApplicationState).toBe('pending');
     expect(
       harness.document._activeInvitationBootstrapContinuation,
@@ -574,11 +588,23 @@ describe('invitation bootstrap keychain transaction', () => {
     ['hydrate', 'pristine', ['prepare', 'hydrate']],
     ['decrypt', 'pristine', ['prepare', 'hydrate', 'decrypt']],
     ['verify', 'pristine', ['prepare', 'hydrate', 'decrypt', 'verify']],
-    ['sync', 'pending', ['prepare', 'hydrate', 'decrypt', 'verify', 'sync']],
+    [
+      'sync',
+      'pending',
+      ['prepare', 'hydrate', 'decrypt', 'verify', 'commit', 'sync'],
+    ],
     [
       'membership',
       'pending',
-      ['prepare', 'hydrate', 'decrypt', 'verify', 'sync', 'membership'],
+      [
+        'prepare',
+        'hydrate',
+        'decrypt',
+        'verify',
+        'commit',
+        'sync',
+        'membership',
+      ],
     ],
   ] as const)(
     'releases the mutation FIFO when initial bootstrap %s never settles',
@@ -616,7 +642,9 @@ describe('invitation bootstrap keychain transaction', () => {
 
         expect(queuedMutationRan).toBe(true);
         expect(harness.order).toEqual(expectedOrder);
-        expect(harness.commit).not.toHaveBeenCalled();
+        expect(harness.commit).toHaveBeenCalledTimes(
+          (expectedOrder as readonly string[]).includes('commit') ? 1 : 0,
+        );
         expect(harness.merge).not.toHaveBeenCalled();
         expect(harness.activate).not.toHaveBeenCalled();
         expect(harness.document._bootstrapLoadApplicationState).toBe(

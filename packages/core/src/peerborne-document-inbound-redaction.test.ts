@@ -387,7 +387,7 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'signature' },
+          { documentId: privatePath, signature: 'AQ==' },
           { sink },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);

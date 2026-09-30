@@ -807,6 +807,28 @@ describe('document load response boundaries', () => {
     expect(document._syncUnlocked).not.toHaveBeenCalled();
   });
 
+  test('reports a writer conflict before a queued bootstrap load applies state', async () => {
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => {
+        throw new Error('bootstrap must not invoke signature verification');
+      },
+    );
+    document._syncUnlocked = jest.fn(async () => true);
+    document._mutationQueue = {
+      run: async (operation: () => Promise<unknown>) => {
+        document._writerKeysVersion += 1;
+        return operation();
+      },
+    };
+
+    await expect(
+      document._sendLoadRequestAndSync(stream, new Uint8Array([1])),
+    ).rejects.toThrow(/Writer authorization changed/);
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
   test('ends bootstrap trust if a writer exists at queued application', async () => {
     let writerRead = 0;
     const { document, stream } = signedLoadHarness(
@@ -1336,6 +1358,7 @@ describe('document load response boundaries', () => {
     const firstMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1352,6 +1375,7 @@ describe('document load response boundaries', () => {
     const secondMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1409,6 +1433,7 @@ describe('document load response boundaries', () => {
     const firstMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'document-head',
       changes: {
@@ -1425,6 +1450,7 @@ describe('document load response boundaries', () => {
     const secondMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'attacker-head',
       changes: {
@@ -1474,6 +1500,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'hash-only-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1535,6 +1562,7 @@ describe('document load response boundaries', () => {
     const validMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1582,6 +1610,7 @@ describe('document load response boundaries', () => {
     const unsignedMessage = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1606,6 +1635,7 @@ describe('document load response boundaries', () => {
     document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue({
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changes: { kind: crdtDocumentChangeNode },
     });
@@ -1654,6 +1684,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'valid-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1767,6 +1798,7 @@ describe('document load response boundaries', () => {
       {
         documentId: '/load-race',
         signatureContext: 'load-response-v3',
+        tips: [],
         signature: 'AAAA',
         keychainChanges: [],
       },
@@ -1835,6 +1867,7 @@ describe('document load response boundaries', () => {
       {
         documentId: '/load-race',
         signatureContext: 'load-response-v3',
+        tips: [],
         signature: 'AAAA',
         changeId: 'new-head',
         changes: {
@@ -1895,6 +1928,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'legacy-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -1932,6 +1966,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -1969,6 +2004,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2009,6 +2045,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2058,6 +2095,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       changeId: 'unsigned-head',
       changes: { kind: crdtDocumentChangeNode },
     };
@@ -2092,6 +2130,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       changeId: 'pinned-head',
       changes: { kind: crdtDocumentChangeNode },
@@ -2312,6 +2351,7 @@ describe('document load response boundaries', () => {
       const message = {
         documentId: '/load-race',
         signatureContext: 'load-response-v3',
+        tips: [],
         signature: 'AAAA',
         keychainChanges: changes,
       };
@@ -2340,6 +2380,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'empty' },
     };
@@ -2418,6 +2459,7 @@ describe('document load response boundaries', () => {
           {
             documentId: '/keychain-hydration-failure',
             signatureContext: 'load-response-v3',
+            tips: [],
             keychainChanges: { providerEncoding: 'one-key' },
           },
           false,
@@ -2467,6 +2509,7 @@ describe('document load response boundaries', () => {
       {
         documentId: '/acl-prepass-reservation',
         signatureContext: 'load-response-v3',
+        tips: [],
         changeId: 'READER',
         changes: {
           kind: crdtReaderChangeNode,
@@ -2511,6 +2554,7 @@ describe('document load response boundaries', () => {
           {
             documentId: '/snapshot-redaction',
             signatureContext: 'load-response-v3',
+            tips: [],
             signature: 'AAAA',
             snapshot: {
               state: {},
@@ -2577,6 +2621,7 @@ describe('document load response boundaries', () => {
       const message = {
         documentId: '/load-race',
         signatureContext: 'load-response-v3',
+        tips: [],
         signature: 'AAAA',
         keychainChanges: { providerEncoding: 'one-key' },
       };
@@ -2626,6 +2671,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4056,6 +4102,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: {},
     };
@@ -4113,6 +4160,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'one-key' },
     };
@@ -4200,6 +4248,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };
@@ -4278,6 +4327,7 @@ describe('document load response boundaries', () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v3',
+      tips: [],
       signature: 'AAAA',
       keychainChanges: { providerEncoding: 'legacy-change' },
     };

@@ -710,6 +710,7 @@ describe('snapshot-bearing invitation sync', () => {
       },
       _subscribed: false,
       _keychain: previousKeychain,
+      _bootstrapLoadApplicationState: 'pending',
     });
     const message = snapshotMessage('invitation-bootstrap-v1');
 
