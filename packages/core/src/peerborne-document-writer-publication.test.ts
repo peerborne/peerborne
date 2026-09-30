@@ -1079,9 +1079,15 @@ describe('writer ACL publication boundary', () => {
           expect(kem).toEqual(expectedKem);
           return {
             leafIndex: 2,
-            pathKeys: [],
-            treeNodePublicKeys: [],
-            treeHash: new Uint8Array([6]),
+            pathKeys: [
+              {
+                nodeIndex: 1,
+                publicKey: new Uint8Array(65).fill(2),
+                encryptedPrivateKey: new Uint8Array(125).fill(3),
+              },
+            ],
+            treeNodePublicKeys: [{ nodeIndex: 0, publicKey: null }],
+            treeHash: new Uint8Array(32).fill(6),
           };
         },
       ),
