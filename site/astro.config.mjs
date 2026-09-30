@@ -165,6 +165,7 @@ export default defineConfig({
               collapsed: true,
               items: [
                 'reference/security-design/0001-mls-document-security-architecture',
+                'reference/security-design/0002-mls-implementation-dependency',
               ],
             },
             typeDocSidebarGroup,
