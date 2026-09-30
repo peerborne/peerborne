@@ -1156,6 +1156,56 @@ describe('AutomergeACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('rejects users roots that dependency-incomplete changes could create', async () => {
+    const serialized1 = await serializeKey(key1);
+    const serialized2 = await serializeKey(key2);
+    const pendingRoot = (actor: string, member: string) => {
+      const predecessor = automergeChange(
+        automergeInit<{ seed?: number; users?: Record<string, unknown> }>({
+          actor,
+        }),
+        (doc) => {
+          doc.seed = 1;
+        },
+      );
+      const creation = automergeChange(automergeClone(predecessor), (doc) => {
+        doc.users = {};
+        doc.users[member] = true;
+      });
+      return {
+        predecessor: getAllAutomergeChanges(predecessor),
+        creation: getAutomergeChanges(predecessor, creation),
+      };
+    };
+    const first = pendingRoot('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', serialized1);
+    const second = pendingRoot('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', serialized2);
+
+    const rooted = new AutomergeACL();
+    await rooted.add(key1);
+    const rootedBefore = rooted.current();
+    expect(() => rooted.merge(second.creation)).toThrow(
+      /conflicting users roots/,
+    );
+    expect(rooted.current()).toEqual(rootedBefore);
+    expect(await rooted.check(key1)).toBe(true);
+
+    const batched = new AutomergeACL();
+    expect(() =>
+      batched.merge([...first.creation, ...second.creation]),
+    ).toThrow(/conflicting users roots/);
+    expect(batched.current()).toEqual([]);
+
+    const receiver = new AutomergeACL();
+    expect(receiver.merge(first.creation)).toBe(true);
+    expect(receiver.merge(first.creation)).toBe(false);
+    expect(() => receiver.merge(second.creation)).toThrow(
+      /conflicting users roots/,
+    );
+    receiver.merge(first.predecessor);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.check(key2)).toBe(false);
+  });
+
   test('a new dependency-incomplete change still stales prepared removal', async () => {
     const receiver = new AutomergeACL();
     await receiver.add(key1);

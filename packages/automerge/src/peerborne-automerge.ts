@@ -178,6 +178,11 @@ type AutomergeACLKeyWrite = {
   readonly action: string;
 };
 
+type AutomergeACLPendingChange = {
+  readonly memberKeys: readonly string[];
+  readonly usersRootCreations: number;
+};
+
 function copyAutomergeACLChanges(changes: unknown): BinaryChange[] {
   if (!Array.isArray(changes)) {
     throw new TypeError('Automerge ACL changes must be an array');
@@ -267,7 +272,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   >();
   private _retainedChangeBytes = 0;
   private _retainedOperations = 0;
-  private _pendingMembershipKeys = new Map<string, readonly string[]>();
+  private _pendingChanges = new Map<string, AutomergeACLPendingChange>();
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
   private _pendingMutations = 0;
@@ -477,37 +482,49 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   }
 
   // Pending changes are retained without materializing their writes in
-  // acl.users, so bound the members they could add once their dependencies
-  // arrive rather than admitting history that can never be completed.
-  private _preparePendingMembershipKeys(
+  // acl.users, so bound the members and users roots they could add once their
+  // dependencies arrive rather than admitting history that can never be
+  // completed.
+  private _preparePendingChanges(
     acl: AutomergeACLDoc,
     changes: readonly BinaryChange[],
     operation: string,
-  ): Map<string, readonly string[]> {
-    const pending = new Map<string, readonly string[]>();
-    for (const [hash, keys] of this._pendingMembershipKeys) {
-      if (!hasHeads(acl, [hash])) pending.set(hash, keys);
+  ): Map<string, AutomergeACLPendingChange> {
+    const pending = new Map<string, AutomergeACLPendingChange>();
+    for (const [hash, pendingChange] of this._pendingChanges) {
+      if (!hasHeads(acl, [hash])) pending.set(hash, pendingChange);
     }
     for (const binaryChange of changes) {
       const decoded = decodeChange(binaryChange);
       if (pending.has(decoded.hash) || hasHeads(acl, [decoded.hash])) {
         continue;
       }
-      const keys: string[] = [];
+      const memberKeys: string[] = [];
+      let usersRootCreations = 0;
       for (const operationEntry of decoded.ops) {
-        if (
-          operationEntry.obj !== '_root' &&
+        if (operationEntry.obj === '_root') {
+          if (operationEntry.key === 'users') usersRootCreations++;
+        } else if (
           operationEntry.action === 'set' &&
           typeof operationEntry.key === 'string'
         ) {
-          keys.push(operationEntry.key);
+          memberKeys.push(operationEntry.key);
         }
       }
-      pending.set(decoded.hash, keys);
+      pending.set(decoded.hash, { memberKeys, usersRootCreations });
+    }
+    let usersRootCreations = acl.users === undefined ? 0 : 1;
+    for (const pendingChange of pending.values()) {
+      usersRootCreations += pendingChange.usersRootCreations;
+    }
+    if (usersRootCreations > 1) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history contains conflicting users roots`,
+      );
     }
     const members = new Set(Object.keys(acl.users ?? {}));
-    for (const keys of pending.values()) {
-      for (const key of keys) {
+    for (const { memberKeys } of pending.values()) {
+      for (const key of memberKeys) {
         members.add(key);
         if (members.size > MAX_AUTOMERGE_ACL_MEMBERS) {
           throw new RangeError(
@@ -688,7 +705,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       'merge ACL changes',
     );
     assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
-    const pendingMembershipKeys = this._preparePendingMembershipKeys(
+    const pendingChanges = this._preparePendingChanges(
       doc,
       stableChanges,
       'merge ACL changes',
@@ -698,7 +715,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
     if (accounting.length === 0) return false;
     this._acl = doc;
-    this._pendingMembershipKeys = pendingMembershipKeys;
+    this._pendingChanges = pendingChanges;
     this._commitChangeAccounting(accounting);
     this._revision++;
     return automergeACLMergeState(doc) !== before;
