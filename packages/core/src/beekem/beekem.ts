@@ -10,6 +10,7 @@ import {
 } from './types.js';
 import * as TreeMath from './tree-math.js';
 import { eciesSeal, eciesOpen } from '../ecies.js';
+import { snapshotBeeKEMWelcomeForProcessing } from '../beekem-welcome-wire.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
@@ -21,6 +22,102 @@ function toBuffer(data: Uint8Array): ArrayBuffer {
     data.byteOffset,
     data.byteOffset + data.byteLength,
   );
+}
+
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  let difference = a.byteLength ^ b.byteLength;
+  const length = Math.max(a.byteLength, b.byteLength);
+  for (let index = 0; index < length; index++) {
+    difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+async function assertEcdhKeyPairCompatible(
+  publicKey: CryptoKey,
+  privateKey: CryptoKey,
+  probe: CryptoKeyPair,
+  label: string,
+): Promise<void> {
+  let privateSide: Uint8Array | undefined;
+  let publicSide: Uint8Array | undefined;
+  let coherent = false;
+  try {
+    privateSide = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: probe.publicKey }, privateKey, 256,
+    ));
+    publicSide = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: publicKey }, probe.privateKey, 256,
+    ));
+    coherent = constantTimeEqual(privateSide, publicSide);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Cannot process Welcome: ${label} ECDH compatibility check failed${detail}`,
+      { cause: error },
+    );
+  } finally {
+    privateSide?.fill(0);
+    publicSide?.fill(0);
+  }
+
+  if (!coherent) {
+    throw new Error(
+      `Cannot process Welcome: ${label} public and private keys are not ECDH-compatible`,
+    );
+  }
+}
+
+async function assertExactWelcomePathKeyPair(
+  publicKey: CryptoKey,
+  privateKey: CryptoKey,
+  nodeIndex: number,
+): Promise<void> {
+  // WebCrypto has no public-only projection for an imported private EC key.
+  // Exact x/y comparison also rejects the negated point that ECDH alone accepts.
+  // JWK export creates a GC-managed private-scalar string that cannot be wiped;
+  // this primitive assumes a trusted process and never retains or logs the JWK.
+  let publicJwk: JsonWebKey;
+  let privateJwk: JsonWebKey;
+  try {
+    [publicJwk, privateJwk] = await Promise.all([
+      crypto.subtle.exportKey('jwk', publicKey),
+      crypto.subtle.exportKey('jwk', privateKey),
+    ]);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Cannot process Welcome: could not validate the key pair at path node ${nodeIndex}${detail}`,
+      { cause: error },
+    );
+  }
+  if (
+    publicJwk.kty !== 'EC' ||
+    privateJwk.kty !== 'EC' ||
+    publicJwk.crv !== ECDH_CURVE ||
+    privateJwk.crv !== ECDH_CURVE ||
+    typeof publicJwk.x !== 'string' ||
+    typeof publicJwk.y !== 'string' ||
+    publicJwk.x !== privateJwk.x ||
+    publicJwk.y !== privateJwk.y
+  ) {
+    throw new Error(
+      `Cannot process Welcome: path node ${nodeIndex} public and private keys do not match`,
+    );
+  }
+}
+
+const WELCOME_SUPERSEDED_MESSAGE =
+  'Cannot process Welcome: the attempt was superseded or receiver state changed';
+
+interface StagedWelcomeCandidate {
+  receiverGeneration: bigint;
+  nodes: Map<number, TreeNode>;
+  numLeaves: number;
+  leafIndex: number;
+  rootSecret: Uint8Array;
+  resolve: (rootSecret: Uint8Array) => void;
+  reject: (error: Error) => void;
 }
 
 /**
@@ -39,6 +136,10 @@ export class BeeKEM {
   private _nodes: Map<number, TreeNode> = new Map();
   private _numLeaves: number = 0;
   private _myLeafIndex: number = -1;
+  private _receiverGeneration = 0n;
+  private _welcomeAttemptRevision = 0n;
+  private _pendingWelcomeAttempts = new Set<bigint>();
+  private _stagedWelcomeCandidates = new Map<bigint, StagedWelcomeCandidate>();
 
   /** @internal Create a detached copy for validating before commit. */
   clone(): BeeKEM {
@@ -54,6 +155,7 @@ export class BeeKEM {
    * Creates a single-leaf tree with the creator's key pair.
    */
   async initialize(privateKey: CryptoKey, publicKey: CryptoKey): Promise<void> {
+    this._receiverGeneration++;
     this._nodes.clear();
     this._numLeaves = 1;
     this._myLeafIndex = 0;
@@ -65,6 +167,7 @@ export class BeeKEM {
       privateKey,
     };
     this._nodes.set(0, leaf);
+    this._settleWelcomeCandidates();
   }
 
   /**
@@ -77,6 +180,7 @@ export class BeeKEM {
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('add a member');
     if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
       throw new Error(
         `BeeKEM tree is full: at most ${MAX_BEEKEM_TREE_LEAVES} leaves are supported`,
@@ -124,6 +228,17 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('remove a member');
+    const treeWidth = 2 * this._numLeaves - 1;
+    if (
+      !Number.isSafeInteger(memberLeafIndex) ||
+      memberLeafIndex < 0 ||
+      Object.is(memberLeafIndex, -0) ||
+      memberLeafIndex >= treeWidth ||
+      !TreeMath.isLeaf(memberLeafIndex)
+    ) {
+      throw new Error('Cannot remove member: invalid leaf index');
+    }
     // Blank the removed member's leaf
     const blankedLeaf: LeafNode = {
       type: 'leaf',
@@ -167,6 +282,7 @@ export class BeeKEM {
     pathUpdate: PathUpdate;
     rootSecret: Uint8Array;
   }> {
+    this._assertInitializedForMutation('update');
     // Generate new ECDH key pair for our leaf
     const newKeyPair = await crypto.subtle.generateKey(ECDH_ALGO, true, [
       'deriveBits',
@@ -188,6 +304,7 @@ export class BeeKEM {
    * Decrypts the relevant encrypted key and derives the new root.
    */
   async processPathUpdate(update: PathUpdate): Promise<Uint8Array> {
+    this._assertInitializedForMutation('process a PathUpdate');
     // Update the sender's leaf with their new public key
     const senderLeafPublicKey = await crypto.subtle.importKey(
       'raw',
@@ -336,44 +453,97 @@ export class BeeKEM {
 
   /**
    * Process a welcome message to join an existing group.
+   * Requires a fresh BeeKEM instance; replacement and re-invitation must use a
+   * new instance so a replayed legacy Welcome cannot roll back live tree state.
    */
   async processWelcome(
     welcome: BeeKEMWelcome,
     privateKey: CryptoKey,
     publicKey: CryptoKey,
   ): Promise<Uint8Array> {
-    this._myLeafIndex = welcome.leafIndex;
-
-    // Derive numLeaves conservatively from the leaf index and the max
-    // path key node indices. The leaf index gives us a lower bound;
-    // internal node indices on the path may imply a larger tree.
-    const leafBasedCount =
-      TreeMath.nodeToLeafIndex(welcome.leafIndex) + 1;
-    let maxFromPath = leafBasedCount;
-    for (const pk of welcome.pathKeys) {
-      // Each internal node index implies a minimum tree width
-      const implied =
-        TreeMath.nodeToLeafIndex(
-          pk.nodeIndex % 2 === 0 ? pk.nodeIndex : pk.nodeIndex + 1,
-        ) + 1;
-      if (implied > maxFromPath) maxFromPath = implied;
+    if (!this._isFreshWelcomeTarget()) {
+      throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
     }
-    this._numLeaves = Math.max(this._numLeaves, maxFromPath);
+
+    // Reserve this attempt before inspecting caller-controlled input. A Proxy
+    // descriptor trap can invoke processWelcome reentrantly; in that case the
+    // nested, later invocation must retain the higher revision and win.
+    const attemptRevision = ++this._welcomeAttemptRevision;
+    const receiverGeneration = this._receiverGeneration;
+    this._pendingWelcomeAttempts.add(attemptRevision);
+
+    try {
+      return await this._processWelcomeAttempt(
+        attemptRevision,
+        welcome,
+        privateKey,
+        publicKey,
+        receiverGeneration,
+      );
+    } catch (error) {
+      if (this._pendingWelcomeAttempts.delete(attemptRevision)) {
+        this._settleWelcomeCandidates();
+      }
+      throw error;
+    }
+  }
+
+  private async _processWelcomeAttempt(
+    attemptRevision: bigint,
+    welcome: BeeKEMWelcome,
+    privateKey: CryptoKey,
+    publicKey: CryptoKey,
+    receiverGeneration: bigint,
+  ): Promise<Uint8Array> {
+    // This public method can be called without passing through the strict wire
+    // decoder. Snapshot and bound the complete legacy tree synchronously
+    // before the first WebCrypto await so caller mutation cannot change what
+    // is authenticated or installed while processing is in flight.
+    const validated = snapshotBeeKEMWelcomeForProcessing(welcome);
+    const staged = new BeeKEM();
+    staged._myLeafIndex = validated.welcome.leafIndex;
+    staged._numLeaves = validated.numLeaves;
+
+    // Cross-derive through one ephemeral key pair to prove that the caller's
+    // private key is compatible with its advertised ECDH public key. The
+    // private key can remain non-extractable because validation only uses its
+    // deriveBits capability. Decrypted path keys are extractable and are
+    // compared exactly below.
+    let coherenceProbe: CryptoKeyPair;
+    try {
+      coherenceProbe = (await crypto.subtle.generateKey(
+        ECDH_ALGO,
+        false,
+        ['deriveBits'],
+      )) as CryptoKeyPair;
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      throw new Error(
+        `Cannot process Welcome: key-pair coherence probe generation failed${detail}`,
+        { cause: error },
+      );
+    }
+    await assertEcdhKeyPairCompatible(
+      publicKey,
+      privateKey,
+      coherenceProbe,
+      `recipient leaf ${validated.welcome.leafIndex}`,
+    );
 
     // Set up our leaf node
     const myLeaf: LeafNode = {
       type: 'leaf',
-      index: welcome.leafIndex,
+      index: validated.welcome.leafIndex,
       publicKey,
       privateKey,
     };
-    this._nodes.set(welcome.leafIndex, myLeaf);
+    staged._nodes.set(validated.welcome.leafIndex, myLeaf);
 
     // Decrypt path keys using our private key for the first one,
     // then derive the rest up the tree
     let currentPrivateKey = privateKey;
 
-    for (const pathKey of welcome.pathKeys) {
+    for (const pathKey of validated.welcome.pathKeys) {
       const nodePublicKey = await crypto.subtle.importKey(
         'raw',
         toBuffer(pathKey.publicKey),
@@ -383,9 +553,14 @@ export class BeeKEM {
       );
 
       // Decrypt the private key for this node
-      const nodePrivateKey = await this._decryptNodeKey(
+      const nodePrivateKey = await staged._decryptNodeKey(
         pathKey.encryptedPrivateKey,
         currentPrivateKey,
+      );
+      await assertExactWelcomePathKeyPair(
+        nodePublicKey,
+        nodePrivateKey,
+        pathKey.nodeIndex,
       );
 
       const node: InternalNode = {
@@ -394,14 +569,14 @@ export class BeeKEM {
         publicKey: nodePublicKey,
         privateKey: nodePrivateKey,
       };
-      this._nodes.set(pathKey.nodeIndex, node);
+      staged._nodes.set(pathKey.nodeIndex, node);
 
       // Use this node's private key to decrypt the next level
       currentPrivateKey = nodePrivateKey;
     }
 
     // Install all tree node public keys so we have the full tree state
-    for (const nodeEntry of welcome.treeNodePublicKeys) {
+    for (const nodeEntry of validated.welcome.treeNodePublicKeys) {
       if (nodeEntry.publicKey) {
         const pubKey = await crypto.subtle.importKey(
           'raw',
@@ -414,28 +589,44 @@ export class BeeKEM {
         const node: TreeNode = isLeaf
           ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: pubKey }
           : { type: 'internal', index: nodeEntry.nodeIndex, publicKey: pubKey };
-        this._nodes.set(nodeEntry.nodeIndex, node);
+        staged._nodes.set(nodeEntry.nodeIndex, node);
       } else {
         const isLeaf = TreeMath.isLeaf(nodeEntry.nodeIndex);
         const node: TreeNode = isLeaf
           ? { type: 'leaf', index: nodeEntry.nodeIndex, publicKey: null }
           : { type: 'internal', index: nodeEntry.nodeIndex, publicKey: null };
-        this._nodes.set(nodeEntry.nodeIndex, node);
+        staged._nodes.set(nodeEntry.nodeIndex, node);
       }
     }
 
     // Verify tree hash matches the sender's snapshot
-    const computedHash = await this._computeTreeHash();
+    const computedHash = await staged._computeTreeHash();
     if (
-      computedHash.byteLength !== welcome.treeHash.byteLength ||
-      !computedHash.every((b, i) => b === welcome.treeHash[i])
+      computedHash.byteLength !== validated.welcome.treeHash.byteLength ||
+      !constantTimeEqual(computedHash, validated.welcome.treeHash)
     ) {
       throw new Error(
         'Welcome tree hash mismatch: reconstructed tree does not match sender state',
       );
     }
 
-    return this.getRootSecret();
+    // Root-key export and hashing are part of validation. Commit only after
+    // they succeed so every malformed-input or WebCrypto failure leaves the
+    // receiver's prior tree intact and a retry starts from that exact state.
+    const rootSecret = await staged.getRootSecret();
+    if (
+      receiverGeneration !== this._receiverGeneration ||
+      !this._isFreshWelcomeTarget()
+    ) {
+      rootSecret.fill(0);
+      throw new Error(WELCOME_SUPERSEDED_MESSAGE);
+    }
+    return await this._registerWelcomeCandidate(
+      attemptRevision,
+      staged,
+      rootSecret,
+      receiverGeneration,
+    );
   }
 
   /**
@@ -577,6 +768,137 @@ export class BeeKEM {
   }
 
   // ---- Private helpers ----
+
+  private _isFreshWelcomeTarget(): boolean {
+    return (
+      this._nodes.size === 0 &&
+      this._numLeaves === 0 &&
+      this._myLeafIndex === -1
+    );
+  }
+
+  private _assertInitializedForMutation(operation: string): void {
+    if (
+      !Number.isSafeInteger(this._numLeaves) ||
+      this._numLeaves < 1 ||
+      this._numLeaves > MAX_BEEKEM_TREE_LEAVES ||
+      !Number.isSafeInteger(this._myLeafIndex) ||
+      this._myLeafIndex < 0 ||
+      this._myLeafIndex >= 2 * this._numLeaves - 1 ||
+      !TreeMath.isLeaf(this._myLeafIndex) ||
+      !this._nodes.has(this._myLeafIndex)
+    ) {
+      throw new Error(`Cannot ${operation}: BeeKEM tree is not initialized`);
+    }
+  }
+
+  private _registerWelcomeCandidate(
+    revision: bigint,
+    staged: BeeKEM,
+    rootSecret: Uint8Array,
+    receiverGeneration: bigint,
+  ): Promise<Uint8Array> {
+    return new Promise<Uint8Array>((resolve, reject) => {
+      this._pendingWelcomeAttempts.delete(revision);
+      if (
+        receiverGeneration !== this._receiverGeneration ||
+        !this._isFreshWelcomeTarget()
+      ) {
+        rootSecret.fill(0);
+        reject(
+          new Error(
+            WELCOME_SUPERSEDED_MESSAGE,
+          ),
+        );
+        this._settleWelcomeCandidates();
+        return;
+      }
+      for (const [previousRevision, candidate] of this._stagedWelcomeCandidates) {
+        if (previousRevision > revision) {
+          rootSecret.fill(0);
+          reject(new Error(WELCOME_SUPERSEDED_MESSAGE));
+          return;
+        }
+        this._stagedWelcomeCandidates.delete(previousRevision);
+        candidate.rootSecret.fill(0);
+        candidate.reject(new Error(WELCOME_SUPERSEDED_MESSAGE));
+      }
+      this._stagedWelcomeCandidates.set(revision, {
+        receiverGeneration,
+        nodes: staged._nodes,
+        numLeaves: staged._numLeaves,
+        leafIndex: staged._myLeafIndex,
+        rootSecret,
+        resolve,
+        reject,
+      });
+      this._settleWelcomeCandidates();
+    });
+  }
+
+  private _settleWelcomeCandidates(): void {
+    if (this._stagedWelcomeCandidates.size === 0) return;
+
+    for (const [revision, candidate] of this._stagedWelcomeCandidates) {
+      if (candidate.receiverGeneration !== this._receiverGeneration) {
+        this._stagedWelcomeCandidates.delete(revision);
+        candidate.rootSecret.fill(0);
+        candidate.reject(
+          new Error(
+            WELCOME_SUPERSEDED_MESSAGE,
+          ),
+        );
+      }
+    }
+    if (this._stagedWelcomeCandidates.size === 0) return;
+
+    if (!this._isFreshWelcomeTarget()) {
+      const candidates = [...this._stagedWelcomeCandidates.values()];
+      this._stagedWelcomeCandidates.clear();
+      for (const candidate of candidates) {
+        candidate.rootSecret.fill(0);
+        candidate.reject(
+          new Error(
+            WELCOME_SUPERSEDED_MESSAGE,
+          ),
+        );
+      }
+      return;
+    }
+
+    let winnerRevision = -1n;
+    let winner: StagedWelcomeCandidate | undefined;
+    for (const [revision, candidate] of this._stagedWelcomeCandidates) {
+      if (revision > winnerRevision) {
+        winnerRevision = revision;
+        winner = candidate;
+      }
+    }
+    if (
+      winner === undefined ||
+      [...this._pendingWelcomeAttempts].some(
+        (revision) => revision > winnerRevision,
+      )
+    ) {
+      return;
+    }
+
+    const candidates = [...this._stagedWelcomeCandidates.entries()];
+    this._stagedWelcomeCandidates.clear();
+    this._receiverGeneration++;
+    this._nodes = winner.nodes;
+    this._numLeaves = winner.numLeaves;
+    this._myLeafIndex = winner.leafIndex;
+    winner.resolve(winner.rootSecret);
+    for (const [revision, candidate] of candidates) {
+      if (revision !== winnerRevision) {
+        candidate.rootSecret.fill(0);
+        candidate.reject(
+          new Error(WELCOME_SUPERSEDED_MESSAGE),
+        );
+      }
+    }
+  }
 
   /**
    * Generate fresh key pairs along our direct path and encrypt each
