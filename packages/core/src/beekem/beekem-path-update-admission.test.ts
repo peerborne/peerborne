@@ -165,6 +165,32 @@ describe('BeeKEM legacy PathUpdate admission', () => {
     });
   });
 
+  test('rejects an update claiming the local leaf without replacing its key pair', async () => {
+    const { alice, bob } = await twoMemberGroup();
+    const internals = alice as unknown as {
+      _nodes: Map<number, { privateKey?: CryptoKey }>;
+    };
+    const nodesBefore = internals._nodes;
+    const localPrivateKey = internals._nodes.get(0)?.privateKey;
+    const rootBefore = await alice.getRootSecret();
+    const { pathUpdate, rootSecret: bobRoot } = await bob.update();
+
+    await expect(
+      alice.processPathUpdate({ ...pathUpdate, senderLeafIndex: 0 }),
+    ).rejects.toThrow(/sender must not be the local leaf/);
+
+    expect(internals._nodes).toBe(nodesBefore);
+    expect(internals._nodes.get(0)?.privateKey).toBe(localPrivateKey);
+    await expect(alice.getRootSecret()).resolves.toEqual(rootBefore);
+    await expect(alice.processPathUpdate(pathUpdate)).resolves.toEqual(
+      bobRoot,
+    );
+    const aliceUpdate = await alice.update();
+    await expect(
+      bob.processPathUpdate(aliceUpdate.pathUpdate),
+    ).resolves.toEqual(aliceUpdate.rootSecret);
+  });
+
   test('rolls back staged tree changes when cryptographic validation fails', async () => {
     const { alice, bob, bobKeys } = await twoMemberGroup();
     const originalRoot = await alice.getRootSecret();

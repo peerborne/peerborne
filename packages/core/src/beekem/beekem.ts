@@ -699,6 +699,11 @@ export class BeeKEM {
   private async _processPathUpdate(detachedUpdate: PathUpdate): Promise<Uint8Array> {
     this._assertPathUpdateState();
     validatePathUpdateForTree(detachedUpdate, this._numLeaves);
+    if (detachedUpdate.senderLeafIndex === this._myLeafIndex) {
+      throw new Error(
+        'Cannot process path update: sender must not be the local leaf',
+      );
+    }
     const currentSenderLeaf = this._nodes.get(detachedUpdate.senderLeafIndex);
     if (
       currentSenderLeaf?.type !== 'leaf' ||
