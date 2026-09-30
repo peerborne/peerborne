@@ -1,3 +1,4 @@
+import { LastWriterRemovalError } from '@peerborne/core';
 import { usePeerborneDocumentState } from '@peerborne/react';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
 import { useEffect, useState } from 'react';
@@ -12,6 +13,7 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
+const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
   target: CryptoKey,
@@ -114,13 +116,12 @@ export function PermissionsTable({
                               break;
                             }
                             case 'rw': {
-                              if (await isLastWriter(permission.key, writers)) {
-                                alert(lastEditorMessage);
-                                return;
-                              }
                               // Writers keep an explicit reader row, so demote
                               // before revoking read access.
-                              await removeWriter(permission.key);
+                              await removeWriter(
+                                permission.key,
+                                keepAnotherEditor,
+                              );
                               await removeReader(permission.key);
                               console.log('Removed editor: ', permission);
                               break;
@@ -132,11 +133,14 @@ export function PermissionsTable({
                               );
                             }
                           }
-                        } catch {
+                        } catch (error) {
                           alert(
-                            'Unable to remove this member. The document ' +
-                              'founder cannot be removed, and an editor must ' +
-                              'also hold reader access before demotion.',
+                            error instanceof LastWriterRemovalError
+                              ? lastEditorMessage
+                              : 'Unable to remove this member. The document ' +
+                                  'founder cannot be removed, and an editor ' +
+                                  'must also hold reader access before ' +
+                                  'demotion.',
                           );
                         }
                       })();
@@ -193,7 +197,7 @@ export function PermissionsTable({
                             return;
                           }
                           await addReader(key);
-                          await removeWriter(key);
+                          await removeWriter(key, keepAnotherEditor);
                           console.log('Added reader');
                           break;
                         }
@@ -210,10 +214,12 @@ export function PermissionsTable({
                           );
                         }
                       }
-                    } catch {
+                    } catch (error) {
                       alert(
-                        'Unable to update document permissions. Verify the ' +
-                          'public key and membership configuration.',
+                        error instanceof LastWriterRemovalError
+                          ? lastEditorMessage
+                          : 'Unable to update document permissions. Verify ' +
+                              'the public key and membership configuration.',
                       );
                       return;
                     }
