@@ -1520,6 +1520,70 @@ describe('UCANACL', () => {
     );
   });
 
+  test('captures the epoch ID before iterating caller-owned proofs', async () => {
+    const epochId = new Uint8Array(EPOCH_ID_LENGTH).fill(7);
+    const originalEpochId = new Uint8Array(epochId);
+    const proofs = ['proof-1'];
+    Object.defineProperty(proofs, Symbol.iterator, {
+      configurable: true,
+      value: function* () {
+        epochId.fill(255);
+        yield 'proof-1';
+      },
+    });
+    mockCreateUCAN.mockResolvedValue(
+      makeFakeUcan({
+        audience: 'serialized:user1',
+        capabilities: [{ resource: 'doc-1', ability: '/doc/write' }],
+        proofs: ['proof-1'],
+      }),
+    );
+    backing.add.mockResolvedValue('changes');
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+        proofs,
+        epochId,
+      ),
+    ).resolves.toBe('changes');
+
+    expect(epochId).toEqual(new Uint8Array(EPOCH_ID_LENGTH).fill(255));
+    const entry = await acl.getEntry('user1');
+    expect(entry!.epochId).toEqual(originalEpochId);
+  });
+
+  test('rejects an invalid epoch ID before iterating caller-owned proofs', async () => {
+    const iterateProofs = jest.fn(function* () {
+      yield 'proof-1';
+    });
+    const proofs: string[] = [];
+    Object.defineProperty(proofs, Symbol.iterator, {
+      configurable: true,
+      value: iterateProofs,
+    });
+
+    await expect(
+      acl.grant(
+        'user1',
+        '/doc/write',
+        'doc-1',
+        {} as CryptoKey,
+        'issuer',
+        proofs,
+        new Uint8Array(EPOCH_ID_LENGTH - 1),
+      ),
+    ).rejects.toThrow(/UCAN ACL epoch ID/);
+
+    expect(iterateProofs).not.toHaveBeenCalled();
+    expect(mockCreateUCAN).not.toHaveBeenCalled();
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
   test('releases grant admission after abrupt proof iteration', async () => {
     let reentrantRemoval!: Promise<string>;
     const proofs: string[] = [];
