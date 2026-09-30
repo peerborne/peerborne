@@ -9219,17 +9219,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"ipfs-unixfs@npm:^13.0.0":
-  version: 13.0.0
-  resolution: "ipfs-unixfs@npm:13.0.0"
-  dependencies:
-    protons-runtime: "npm:^7.0.0"
-    uint8arraylist: "npm:^3.0.2"
-  checksum: 10/192e3e85d2efe60f6ccf8dbdb4fa7dd631b12f3d2ccf0872ba1b6765a1487f950f79a5ed7c77c1bcd6e49e37a0776ae3fe2109c169f25ac97c361949c5697f34
-  languageName: node
-  linkType: hard
-
-"ipfs-unixfs@npm:^13.1.1":
+"ipfs-unixfs@npm:^13.0.0, ipfs-unixfs@npm:^13.1.1":
   version: 13.1.2
   resolution: "ipfs-unixfs@npm:13.1.2"
   dependencies:
