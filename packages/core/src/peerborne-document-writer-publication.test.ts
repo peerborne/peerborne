@@ -919,78 +919,47 @@ describe('writer ACL publication boundary', () => {
     },
   );
 
-  test('supports an immutable writer removal without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['owner', 'candidate']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['primitive-writer-cid'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
+  test.each([
+    ['addWriter', 'Writer addition', 'serializePublicKey'],
+    ['addWriter', 'Writer addition', 'deserializePublicKey'],
+    ['removeWriter', 'Writer removal', 'serializePublicKey'],
+    ['removeWriter', 'Writer removal', 'deserializePublicKey'],
+    ['addReader', 'Reader addition', 'serializePublicKey'],
+    ['addReader', 'Reader addition', 'deserializePublicKey'],
+    ['removeReader', 'Reader removal', 'serializePublicKey'],
+    ['removeReader', 'Reader removal', 'deserializePublicKey'],
+  ] as const)(
+    '%s rejects a primitive identity before queueing without %s',
+    async (operation, featureName, codec) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document, readers } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      const otherCodec =
+        codec === 'serializePublicKey'
+          ? document._authProvider.deserializePublicKey
+          : document._authProvider.serializePublicKey;
+      delete document._authProvider[codec];
+      const run = jest.spyOn(document._mutationQueue, 'run');
 
-    await expect(document.removeWriter('candidate')).resolves.toBeUndefined();
+      await expect(document[operation]('candidate')).rejects.toThrow(
+        new TypeError(
+          `${featureName} requires AuthProvider.${codec} to be a function`,
+        ),
+      );
 
-    expect(writers.members).toEqual(new Set(['owner']));
-    expect(publish).toHaveBeenCalledTimes(1);
-  });
-
-  test('preserves an existing-writer no-op without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['owner']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['must-not-publish'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
-
-    await expect(document.addWriter('owner')).resolves.toBeUndefined();
-
-    expect(writers.members).toEqual(new Set(['owner']));
-    expect(writers.prepareAddCalls).toBe(0);
-    expect(publish).not.toHaveBeenCalled();
-  });
-
-  test('supports an immutable writer addition without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['owner']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['primitive-add-cid'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
-
-    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
-
-    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
-    expect(writers.prepareAddCalls).toBe(1);
-    expect(publish).toHaveBeenCalledTimes(1);
-  });
-
-  test('rejects a mutable writer mutation without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['owner']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['must-not-publish'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
-
-    await expect(
-      document.addWriter({ id: 'candidate' }),
-    ).rejects.toThrow(/requires AuthProvider.serializePublicKey/);
-
-    expect(writers.members).toEqual(new Set(['owner']));
-    expect(writers.prepareAddCalls).toBe(0);
-    expect(publish).not.toHaveBeenCalled();
-  });
+      expect(run).not.toHaveBeenCalled();
+      expect(otherCodec).not.toHaveBeenCalled();
+      expect(writers.members).toEqual(new Set(['owner']));
+      expect(readers).toEqual(new Set(['candidate']));
+      expect(writers.prepareAddCalls).toBe(0);
+      expect(writers.prepareRemoveCalls).toBe(0);
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
 
   test('rejects an aliasing deserializer for a mutable writer identity', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
@@ -1780,29 +1749,6 @@ describe('writer removal with a required remaining writer', () => {
     expect(writers.members).toEqual(new Set(['candidate']));
     expect(writers.prepareRemoveCalls).toBe(0);
     expect(publish).not.toHaveBeenCalled();
-  });
-
-  test('compares immutable identities without identity codecs', async () => {
-    const writers = new StagedWriterACL(new Set(['candidate']));
-    const publish = jest.fn(async () => undefined);
-    const { document } = publicationHarness(
-      writers,
-      publish,
-      ['primitive-removal-cid'],
-    );
-    delete document._authProvider.serializePublicKey;
-    delete document._authProvider.deserializePublicKey;
-
-    await expect(
-      document.removeWriter('candidate', { requireRemainingWriter: true }),
-    ).rejects.toBeInstanceOf(LastWriterRemovalError);
-    writers.members.add('owner');
-    await expect(
-      document.removeWriter('candidate', { requireRemainingWriter: true }),
-    ).resolves.toBeUndefined();
-
-    expect(writers.members).toEqual(new Set(['owner']));
-    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   test.each([['yes'], [1], [null]])(
