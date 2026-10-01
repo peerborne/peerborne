@@ -2558,6 +2558,10 @@ describe('document load response boundaries', () => {
     const otherMutation = jest.fn(async () => undefined);
     const document = fakeDocument({
       documentPath: '/poisoned',
+      _authProvider: {
+        serializePublicKey: async (key: string) => key,
+        deserializePublicKey: async (serialized: string) => serialized,
+      },
       _bootstrapLoadApplicationState: 'pending',
       _document: { value: 'partial' },
       _hashes: new Set(['partial']),

@@ -46,19 +46,10 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    * This is used by the BeeKEM Welcome flow (recipient binding) and is
    * intentionally generic so non-CryptoKey providers (e.g.
    * opaque/hash-based identities) can supply their own canonical
-   * encoding.
-   *
-   * Optional for backwards compatibility with `AuthProvider`
-   * implementations written before the Welcome flow landed. When a
-   * provider does not implement this method, features that require a
-   * canonical public-key string (e.g. BeeKEM Welcome's recipient
-   * binding gate) are unavailable and the caller will throw; see
-   * `requireSerializePublicKey` in `auth-provider.ts` for the shared
-   * helper that raises a clear error in that case. Custom providers
-   * that want to participate in Welcome onboarding SHOULD implement
-   * this method; the next major version will make it required.
+   * encoding. Membership changes use it to snapshot the target identity
+   * before they wait for the document mutation queue.
    */
-  serializePublicKey?(publicKey: PublicKey): Promise<string>;
+  serializePublicKey(publicKey: PublicKey): Promise<string>;
 
   /**
    * Restore a public identity from the canonical representation produced by
@@ -67,45 +58,42 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    * caller of `serializePublicKey` (including nested aliases). Network
    * invitation flows require this operation so the inviter can verify proof
    * of possession from a previously unknown recipient and the recipient can
-   * pin the inviter named in the offer. Writer role transitions require it
-   * for mutable identities so their queued target is caller-immutable.
+   * pin the inviter named in the offer. Reader and writer membership changes
+   * round-trip every target identity through this codec before queueing so the
+   * queued target is detached from the caller.
    */
-  deserializePublicKey?(serialized: string): Promise<PublicKey>;
+  deserializePublicKey(serialized: string): Promise<PublicKey>;
 }
 
 /**
- * Resolve the `serializePublicKey` method of an `AuthProvider`,
- * throwing a clear error if the provider has not implemented this
- * optional method. Callers that depend on the recipient-binding
- * semantics of the Welcome flow should invoke this once at the call
- * site so the failure mode is obvious to operators.
+ * Resolve the `serializePublicKey` method of an `AuthProvider`, rejecting a
+ * missing or non-function member at the JavaScript runtime boundary.
  */
 export function requireSerializePublicKey<PrivateKey, PublicKey, DocumentKey>(
   authProvider: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
   featureName: string,
 ): (publicKey: PublicKey) => Promise<string> {
   const impl = authProvider.serializePublicKey;
-  if (!impl) {
-    throw new Error(
-      `${featureName} requires AuthProvider.serializePublicKey, but the ` +
-        `current AuthProvider does not implement it. Upgrade or provide a ` +
-        `serializePublicKey method on your AuthProvider implementation.`,
+  if (typeof impl !== 'function') {
+    throw new TypeError(
+      `${featureName} requires AuthProvider.serializePublicKey to be a function`,
     );
   }
   return impl.bind(authProvider);
 }
 
-/** Resolve `deserializePublicKey` or fail before starting an invitation. */
+/**
+ * Resolve the `deserializePublicKey` method of an `AuthProvider`, rejecting a
+ * missing or non-function member at the JavaScript runtime boundary.
+ */
 export function requireDeserializePublicKey<PrivateKey, PublicKey, DocumentKey>(
   authProvider: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
   featureName: string,
 ): (serialized: string) => Promise<PublicKey> {
   const impl = authProvider.deserializePublicKey;
-  if (!impl) {
-    throw new Error(
-      `${featureName} requires AuthProvider.deserializePublicKey, but the ` +
-        `current AuthProvider does not implement it. Upgrade or provide a ` +
-        `deserializePublicKey method on your AuthProvider implementation.`,
+  if (typeof impl !== 'function') {
+    throw new TypeError(
+      `${featureName} requires AuthProvider.deserializePublicKey to be a function`,
     );
   }
   return impl.bind(authProvider);
