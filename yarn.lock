@@ -1793,9 +1793,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/unixfs@npm:^8.0.5":
-  version: 8.0.5
-  resolution: "@helia/unixfs@npm:8.0.5"
+"@helia/unixfs@npm:^8.0.7":
+  version: 8.0.7
+  resolution: "@helia/unixfs@npm:8.0.7"
   dependencies:
     "@helia/interface": "npm:^7.1.1"
     "@ipld/dag-pb": "npm:^4.1.7"
@@ -1804,9 +1804,9 @@ __metadata:
     "@libp2p/utils": "npm:^7.2.2"
     "@multiformats/murmur3": "npm:^2.2.5"
     interface-blockstore: "npm:^7.0.1"
-    ipfs-unixfs: "npm:^13.0.0"
-    ipfs-unixfs-exporter: "npm:^16.0.2"
-    ipfs-unixfs-importer: "npm:^17.0.1"
+    ipfs-unixfs: "npm:^13.1.1"
+    ipfs-unixfs-exporter: "npm:^16.2.2"
+    ipfs-unixfs-importer: "npm:^17.1.1"
     it-all: "npm:^3.0.11"
     it-first: "npm:^3.0.11"
     it-glob: "npm:^3.0.6"
@@ -1817,7 +1817,7 @@ __metadata:
     progress-events: "npm:^1.1.0"
     sparse-array: "npm:^1.3.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/898792b5ee9d7b87f731bc7548ba70740cb714085e42106f8f9409f5fc9cb7d5e7ae3e1cf97485d028e2120d980cff04280570be01c1774668d79e3746904917
+  checksum: 10/00e002afd3621e6d4c6f6b25918c496644fe69830e91d55dc8deaea894c45f6cfe807e82014b27ee4aff9608e20e06b35e4c01ded535bb1d39a7d80c044ff616
   languageName: node
   linkType: hard
 
@@ -2151,6 +2151,15 @@ __metadata:
   dependencies:
     multiformats: "npm:^14.0.0"
   checksum: 10/cea6b178e42be06d7108cbf2d0cd093e359b89ff974a7282a19c574f2f6482dfc9882e4f108e8f871376e35a88764b8c0d22c08f95a31c111d49692184be9ded
+  languageName: node
+  linkType: hard
+
+"@ipld/dag-pb@npm:^4.2.0":
+  version: 4.2.0
+  resolution: "@ipld/dag-pb@npm:4.2.0"
+  dependencies:
+    multiformats: "npm:^14.0.0"
+  checksum: 10/b09fb0af969a5306847d6e90b4877d56a5adf097a2484ceb9966122860764a702a9029dadba8d427a6cb03260e501f9e1abf9de9fd24010e158da9b023ebf330
   languageName: node
   linkType: hard
 
@@ -4480,7 +4489,7 @@ __metadata:
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
     "@helia/bitswap": "npm:^4.0.17"
     "@helia/libp2p": "npm:^2.1.3"
-    "@helia/unixfs": "npm:^8.0.5"
+    "@helia/unixfs": "npm:^8.0.7"
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
     "@libp2p/autonat": "npm:^3.0.27"
@@ -9163,13 +9172,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"ipfs-unixfs-exporter@npm:^16.0.2":
-  version: 16.0.2
-  resolution: "ipfs-unixfs-exporter@npm:16.0.2"
+"ipfs-unixfs-exporter@npm:^16.2.2":
+  version: 16.2.3
+  resolution: "ipfs-unixfs-exporter@npm:16.2.3"
   dependencies:
     "@ipld/dag-cbor": "npm:^10.0.0"
     "@ipld/dag-json": "npm:^11.0.0"
-    "@ipld/dag-pb": "npm:^4.1.7"
+    "@ipld/dag-pb": "npm:^4.2.0"
     "@multiformats/murmur3": "npm:^2.2.5"
     hamt-sharding: "npm:^3.0.8"
     interface-blockstore: "npm:^7.0.1"
@@ -9183,15 +9192,15 @@ __metadata:
     multiformats: "npm:^14.0.0"
     p-queue: "npm:^9.2.0"
     progress-events: "npm:^1.1.0"
-  checksum: 10/e2ff3a89b28ee17ab9970ee5c12314d6f92793bf74692ace04c69264fec3e7222819f7403cfd171ab4cc732d7bd168f45c0d7dd89498827c395d9addc486162a
+  checksum: 10/d64a367a8ba027c03d17977527579710842b49fd131fdb3bc85d331120eb77a2539b8c223e52fc5150e2b917ef86964ff07ec44a9c5ff4ff5eda74a33bd856d2
   languageName: node
   linkType: hard
 
-"ipfs-unixfs-importer@npm:^17.0.1":
-  version: 17.0.1
-  resolution: "ipfs-unixfs-importer@npm:17.0.1"
+"ipfs-unixfs-importer@npm:^17.1.1":
+  version: 17.1.1
+  resolution: "ipfs-unixfs-importer@npm:17.1.1"
   dependencies:
-    "@ipld/dag-pb": "npm:^4.1.7"
+    "@ipld/dag-pb": "npm:^4.2.0"
     "@multiformats/murmur3": "npm:^2.2.5"
     blockstore-core: "npm:^7.0.1"
     hamt-sharding: "npm:^3.0.8"
@@ -9206,17 +9215,18 @@ __metadata:
     rabin-wasm: "npm:^0.1.5"
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/dbd0cdc7a5d1d8f0984fea1089c96353287877cdfb1193ae08a2ac08ca826ba5026a89ef564a33396dbde57c5f303bf21e4deab0f529abaa8134726bbd10fa0a
+  checksum: 10/672bdea88086b1245eb60c4ce57bf474733fce15c5b2c3e5b2662089f5ece77483f38f26254034984d9b157c832e25f82ef2da68b2ba45631e362106bbf952cc
   languageName: node
   linkType: hard
 
-"ipfs-unixfs@npm:^13.0.0":
-  version: 13.0.0
-  resolution: "ipfs-unixfs@npm:13.0.0"
+"ipfs-unixfs@npm:^13.0.0, ipfs-unixfs@npm:^13.1.1":
+  version: 13.1.2
+  resolution: "ipfs-unixfs@npm:13.1.2"
   dependencies:
-    protons-runtime: "npm:^7.0.0"
+    protons-runtime: "npm:^8.0.1"
     uint8arraylist: "npm:^3.0.2"
-  checksum: 10/192e3e85d2efe60f6ccf8dbdb4fa7dd631b12f3d2ccf0872ba1b6765a1487f950f79a5ed7c77c1bcd6e49e37a0776ae3fe2109c169f25ac97c361949c5697f34
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/5407cab4223d3c7745c6ebe8b929872870d3119b2517a26a51188234def58a9e58e9733e3fcd62fe4e137ad139bae5ced2c14bad8c28068e12a0ba24d5178aa5
   languageName: node
   linkType: hard
 
@@ -12851,6 +12861,17 @@ __metadata:
     uint8arraylist: "npm:^3.0.0"
     uint8arrays: "npm:^6.0.0"
   checksum: 10/d4e0b83f69688bedf8c9fe17f9eedb42e509fe956cc64989d50e7f8442c08de676a4eb666181f3ebdffd2197d7fab53cea09d9f6037fba03f8e9612e317af151
+  languageName: node
+  linkType: hard
+
+"protons-runtime@npm:^8.0.1":
+  version: 8.0.1
+  resolution: "protons-runtime@npm:8.0.1"
+  dependencies:
+    uint8-varint: "npm:^3.0.0"
+    uint8arraylist: "npm:^3.0.0"
+    uint8arrays: "npm:^6.0.0"
+  checksum: 10/7c37ac0df3b5cff1d037dbe968b226b848ca08069c75cdc8a58dad2a495d94727c6f93557dafce530c9666616421aa3af0b8e885155f299c8636642bb0585586
   languageName: node
   linkType: hard
 
