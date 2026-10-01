@@ -2752,30 +2752,14 @@ export class PeerborneDocument<
   private async _prepareWriterAdd(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>> {
-    const prepareAdd = this._writers.prepareAdd;
-    if (typeof prepareAdd !== 'function') {
-      throw new Error(
-        'Writer ACL does not support the staged additions required for safe publication',
-      );
-    }
-    return retryACLConflict(() =>
-      prepareAdd.call(this._writers, publicKey),
-    );
+    return retryACLConflict(() => this._writers.prepareAdd(publicKey));
   }
 
   /** Stage a writer removal without changing live authorization. */
   private async _prepareWriterRemove(
     publicKey: PublicKey,
   ): Promise<PreparedACLChange<ChangesType>> {
-    const prepareRemove = this._writers.prepareRemove;
-    if (typeof prepareRemove !== 'function') {
-      throw new Error(
-        'Writer ACL does not support the staged removals required for safe publication',
-      );
-    }
-    return retryACLConflict(() =>
-      prepareRemove.call(this._writers, publicKey),
-    );
+    return retryACLConflict(() => this._writers.prepareRemove(publicKey));
   }
 
   /** Publish a staged writer change, then commit it before local handlers run. */
