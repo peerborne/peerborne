@@ -99,12 +99,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareAdd?(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
+  prepareAdd(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Remove a user from the ACL.
@@ -126,14 +122,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareRemove?(
-    publicKey: PublicKey,
-  ): Promise<PreparedACLChange<ChangesType>>;
+  prepareRemove(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Gets a block of change(s) describing the current state of the ACL.
@@ -191,6 +181,3 @@ export interface PreparedACLChange<ChangesType> {
    */
   commit(): void;
 }
-
-/** Backwards-compatible name for a prepared ACL removal. */
-export type PreparedACLRemoval<ChangesType> = PreparedACLChange<ChangesType>;

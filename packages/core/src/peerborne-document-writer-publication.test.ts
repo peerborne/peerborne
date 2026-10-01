@@ -1592,7 +1592,7 @@ describe('writer ACL publication boundary', () => {
     ['addition', 'addWriter', ['owner'], 'prepareAdd'],
     ['removal', 'removeWriter', ['owner', 'candidate'], 'prepareRemove'],
   ] as const)(
-    'fails closed when the writer ACL lacks staged %s support',
+    'fails closed when a runtime writer ACL omits staged %s',
     async (_caseName, operation, initialMembers, prepareMethod) => {
       const writers = new StagedWriterACL(new Set(initialMembers));
       Object.defineProperty(writers, prepareMethod, { value: undefined });
@@ -1604,7 +1604,7 @@ describe('writer ACL publication boundary', () => {
       );
 
       await expect(document[operation]('candidate')).rejects.toThrow(
-        /does not support the staged .+ required for safe publication/,
+        TypeError,
       );
       expect(publish).not.toHaveBeenCalled();
       expect(writers.members).toEqual(new Set(initialMembers));

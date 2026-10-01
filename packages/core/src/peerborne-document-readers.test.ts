@@ -152,6 +152,12 @@ describe('PeerborneDocument writer removal', () => {
         members.delete(key);
         return new Uint8Array([2]);
       },
+      prepareAdd: async (key: string) => ({
+        changes: new Uint8Array([1]),
+        commit: () => {
+          members.add(key);
+        },
+      }),
       prepareRemove: jest.fn(async (key: string) => ({
         changes: new Uint8Array([2]),
         commit: () => {
