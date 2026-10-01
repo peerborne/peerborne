@@ -323,6 +323,293 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('prepareAdd() stages detached changes without changing live membership', async () => {
+    const acl = new YjsACL();
+    const before = acl.current();
+
+    const prepared = await acl.prepareAdd(key1);
+
+    expect(acl.current()).toEqual(before);
+    expect(await acl.check(key1)).toBe(false);
+
+    const receiver = new YjsACL();
+    receiver.merge(prepared.changes);
+    expect(await receiver.check(key1)).toBe(true);
+
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareAdd() releases identifiers after post-reservation validation failures', async () => {
+    const acl = new YjsACL();
+    await acl.add(key2);
+    const internals = acl as unknown as {
+      _acl: Doc;
+      _stagedAdditionOperations: Set<string>;
+      _stagedAdditionClientIDs: Set<number>;
+    };
+    internals._acl
+      .getArray('padding')
+      .insert(0, new Array(MAX_YJS_ACL_STRUCTURES - 1).fill(true));
+    const exposedOperations = new Set(
+      internals._stagedAdditionOperations,
+    );
+    const exposedClientIDs = new Set(internals._stagedAdditionClientIDs);
+
+    await expect(acl.prepareAdd(key1)).rejects.toThrow(
+      `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+    );
+    expect(internals._stagedAdditionOperations).toEqual(exposedOperations);
+    expect(internals._stagedAdditionClientIDs).toEqual(exposedClientIDs);
+
+    internals._stagedAdditionOperations.add(
+      `${internals._acl.clientID}:${MAX_YJS_ACL_STRUCTURES}`,
+    );
+    for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 3; index++) {
+      internals._stagedAdditionOperations.add(`reserved:${index}`);
+    }
+    for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 2; index++) {
+      internals._stagedAdditionClientIDs.add(-(index + 1));
+    }
+    const retainedOperations = new Set(internals._stagedAdditionOperations);
+    const retainedClientIDs = new Set(internals._stagedAdditionClientIDs);
+    expect(retainedOperations.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
+    expect(retainedClientIDs.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(acl.prepareAdd(key1)).rejects.toThrow(
+        `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
+      );
+      expect(internals._stagedAdditionOperations).toEqual(
+        retainedOperations,
+      );
+      expect(internals._stagedAdditionClientIDs).toEqual(
+        retainedClientIDs,
+      );
+    }
+
+    const freshACL = new Doc({ gc: false });
+    let availableClientID = 1;
+    while (retainedClientIDs.has(availableClientID)) {
+      availableClientID++;
+    }
+    freshACL.clientID = availableClientID;
+    internals._acl = freshACL;
+    const prepared = await acl.prepareAdd(key1);
+    expect(prepared.changes.length).toBeGreaterThan(0);
+    expect(internals._stagedAdditionOperations.size).toBe(
+      MAX_YJS_ACL_STRUCTURES,
+    );
+    expect(internals._stagedAdditionClientIDs.size).toBe(
+      MAX_YJS_ACL_STRUCTURES,
+    );
+  });
+
+  test('prepareAdd() preserves one Yjs client across staged additions', async () => {
+    const acl = new YjsACL();
+    const first = await acl.prepareAdd(key1);
+    const firstClients = new Set(
+      decodeUpdateV2(first.changes).structs.map((struct) => struct.id.client),
+    );
+    first.commit();
+
+    const second = await acl.prepareAdd(key2);
+    const secondClients = new Set(
+      decodeUpdateV2(second.changes).structs.map((struct) => struct.id.client),
+    );
+    second.commit();
+
+    expect(firstClients.size).toBe(1);
+    expect(secondClients).toEqual(firstClients);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
+  test('prepareAdd() commit is single-use', async () => {
+    const acl = new YjsACL();
+    const prepared = await acl.prepareAdd(key1);
+
+    prepared.commit();
+
+    expect(() => prepared.commit()).toThrow(
+      'Prepared ACL addition was already committed',
+    );
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('prepareAdd() reserves distinct IDs and rejects stale local commits', async () => {
+    const acl = new YjsACL();
+    const first = await acl.prepareAdd(key1);
+    const competing = await acl.prepareAdd(key2);
+    const firstClient = decodeUpdateV2(first.changes).structs[0]!.id.client;
+    const competingClient =
+      decodeUpdateV2(competing.changes).structs[0]!.id.client;
+
+    expect(competingClient).not.toBe(firstClient);
+    const peer = new YjsACL();
+    peer.merge(first.changes);
+    peer.merge(competing.changes);
+    expect(await peer.check(key1)).toBe(true);
+    expect(await peer.check(key2)).toBe(true);
+    const reversePeer = new YjsACL();
+    reversePeer.merge(competing.changes);
+    reversePeer.merge(first.changes);
+    expect(await reversePeer.check(key1)).toBe(true);
+    expect(await reversePeer.check(key2)).toBe(true);
+
+    first.commit();
+    expect(() => competing.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+    expect(await acl.check(key2)).toBe(false);
+
+    const mergeStaled = await acl.prepareAdd(key2);
+    const remote = new YjsACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.remove(key1);
+    acl.merge(remoteChanges);
+
+    expect(() => mergeStaled.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+    expect(await acl.check(key2)).toBe(false);
+  });
+
+  test('prepareAdd() no-op commit preserves other staged work', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const noOp = await acl.prepareAdd(key1);
+    const addition = await acl.prepareAdd(key2);
+
+    const receiver = new YjsACL();
+    receiver.merge(acl.current());
+    receiver.merge(noOp.changes);
+    expect(await receiver.check(key1)).toBe(true);
+    expect(await receiver.users()).toHaveLength(1);
+
+    noOp.commit();
+    addition.commit();
+
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => noOp.commit()).toThrow(
+      'Prepared ACL addition was already committed',
+    );
+  });
+
+  test('prepareAdd() commits private state after returned changes are mutated', async () => {
+    const acl = new YjsACL();
+    const prepared = await acl.prepareAdd(key1);
+
+    prepared.changes.fill(0);
+    prepared.commit();
+
+    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test.each(['missing structs', 'pending deletes'] as const)(
+    'prepareAdd() rejects ACL history with %s',
+    async (dependencyType) => {
+      const source = new Doc();
+      const users = source.getMap('users');
+      const first = await serializeKey(key1);
+      users.set(first, true);
+      const beforeDependentUpdate = encodeStateVector(source);
+      if (dependencyType === 'missing structs') {
+        users.set(await serializeKey(key2), true);
+      } else {
+        users.delete(first);
+      }
+      const dependencyIncomplete = encodeStateAsUpdateV2(
+        source,
+        beforeDependentUpdate,
+      );
+      const acl = new YjsACL();
+      acl.merge(dependencyIncomplete);
+
+      await expect(acl.prepareAdd(key1)).rejects.toThrow(
+        'Yjs ACL has unresolved update dependencies',
+      );
+    },
+  );
+
+  test('ordinary additions stage and commit in invocation order', async () => {
+    const acl = new YjsACL();
+    const external = await acl.prepareAdd(key2);
+    const prepareAdd = acl.prepareAdd.bind(acl);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let preparation = 0;
+    acl.prepareAdd = jest.fn(async (publicKey: CryptoKey) => {
+      preparation++;
+      if (preparation === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      return prepareAdd(publicKey);
+    });
+
+    const first = acl.add(key1);
+    await started;
+    const second = acl.add(key2);
+    await Promise.resolve();
+
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
+    releaseFirst();
+    await expect(first).resolves.toBeInstanceOf(Uint8Array);
+    await expect(second).resolves.toBeInstanceOf(Uint8Array);
+    expect(acl.prepareAdd).toHaveBeenCalledTimes(2);
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+  });
+
+  test('prepareAdd() commit cannot overtake an admitted removal', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const external = await acl.prepareAdd(key2);
+    const prepareRemove = acl.prepareRemove.bind(acl);
+    let releaseRemoval!: () => void;
+    const removalGate = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let removalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    acl.prepareRemove = jest.fn(async (publicKey: CryptoKey) => {
+      removalStarted();
+      await removalGate;
+      return prepareRemove(publicKey);
+    });
+
+    const removal = acl.remove(key1);
+    await started;
+
+    expect(() => external.commit()).toThrow(
+      'Prepared ACL addition cannot commit during a local ACL mutation',
+    );
+    expect(await acl.check(key2)).toBe(false);
+
+    releaseRemoval();
+    await expect(removal).resolves.toBeInstanceOf(Uint8Array);
+    expect(await acl.check(key1)).toBe(false);
+    expect(() => external.commit()).toThrow(
+      'ACL changed while addition was staged',
+    );
+  });
+
   test('remove() removes user and check() returns false', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -1016,6 +1303,23 @@ describe('YjsACL', () => {
     await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
   });
 
+  test('prepareRemove() rejects a commit staled by a remote merge', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    const prepared = await acl.prepareRemove(key1);
+    const remote = new YjsACL();
+    remote.merge(acl.current());
+    const remoteChanges = await remote.add(key2);
+
+    acl.merge(remoteChanges);
+
+    expect(() => prepared.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(true);
+    expect(await acl.check(key2)).toBe(true);
+  });
+
   test('prepareRemove() commits private state after returned changes are mutated', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
@@ -1056,6 +1360,33 @@ describe('YjsACL', () => {
   test('check() returns false for unknown key', async () => {
     const acl = new YjsACL();
     expect(await acl.check(key1)).toBe(false);
+  });
+
+  test('staged additions and removals converge after child-before-parent delivery', async () => {
+    const additionSender = new YjsACL();
+    const additionParent = await additionSender.add(key1);
+    const additionChild = await additionSender.prepareAdd(key2);
+    const additionReceiver = new YjsACL();
+
+    additionReceiver.merge(additionChild.changes);
+    await expect(additionReceiver.check(key2)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    await expect(additionReceiver.check(key1)).rejects.toThrow(
+      'Yjs ACL has unresolved update dependencies',
+    );
+    additionReceiver.merge(additionParent);
+    expect(await additionReceiver.check(key1)).toBe(true);
+    expect(await additionReceiver.check(key2)).toBe(true);
+
+    const removalSender = new YjsACL();
+    const removalParent = await removalSender.add(key1);
+    const removalChild = await removalSender.prepareRemove(key1);
+    const removalReceiver = new YjsACL();
+
+    removalReceiver.merge(removalChild.changes);
+    removalReceiver.merge(removalParent);
+    expect(await removalReceiver.check(key1)).toBe(false);
   });
 
   test('users() returns all added keys', async () => {

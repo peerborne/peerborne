@@ -3,6 +3,7 @@ import {
   ACLOperationInProgressError,
   ACLProvider,
   PeerborneDocumentChangeHandler,
+  PreparedACLChange,
   PreparedACLRemoval,
   CRDTChangeBlock,
   CRDTChangeNodeWire,
@@ -562,6 +563,11 @@ function existingYjsACLUsers(doc: Doc) {
   return users;
 }
 
+type YjsACLAdditionIdentifierReservation = {
+  readonly clientID: number;
+  release(): void;
+};
+
 function snapshotBoundedYjsACLState(doc: Doc, operation: string): Uint8Array {
   // Yjs folds pendingStructs and pendingDs into this update before returning
   // it. Reapplying the bounded snapshot therefore preserves unresolved
@@ -753,6 +759,17 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   private readonly _queuedRemovalCommits = new WeakSet<
     PreparedACLRemoval<Uint8Array>
   >();
+  private readonly _queuedAdditionCommits = new WeakSet<
+    PreparedACLChange<Uint8Array>
+  >();
+  // A stale preparation may already have been published. Retain its exact
+  // client/clock tuple for this ACL's bounded lifetime so a later live-base
+  // replacement cannot expose a different struct under the same identifier.
+  // Exposed prepared updates may already exist on another replica, so their
+  // operation/client identifiers remain burned even when abandoned locally.
+  // The bounded reservation budget is per ACL instance.
+  private readonly _stagedAdditionOperations = new Set<string>();
+  private readonly _stagedAdditionClientIDs = new Set<number>();
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -784,6 +801,17 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
+  private _commitQueuedAddition(
+    prepared: PreparedACLChange<Uint8Array>,
+  ): void {
+    this._queuedAdditionCommits.add(prepared);
+    try {
+      prepared.commit();
+    } finally {
+      this._queuedAdditionCommits.delete(prepared);
+    }
+  }
+
   private _assertComplete(operation: string): void {
     if (
       this._acl.store.pendingStructs !== null ||
@@ -795,27 +823,128 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
+  private _reserveStagedAdditionClientID(
+    base: Doc,
+    fallbackClientID: number,
+  ): YjsACLAdditionIdentifierReservation {
+    if (this._stagedAdditionOperations.size >= MAX_YJS_ACL_STRUCTURES) {
+      throw new RangeError(
+        `Cannot stage an ACL addition: Yjs ACL exceeds the ${MAX_YJS_ACL_STRUCTURES}-identifier reservation limit`,
+      );
+    }
+
+    let clientID = base.clientID;
+    let clock = getState(base.store, clientID);
+    let operationID = `${clientID}:${clock}`;
+    if (this._stagedAdditionOperations.has(operationID)) {
+      clientID = fallbackClientID;
+      let attempts = 0;
+      while (
+        this._stagedAdditionClientIDs.has(clientID) ||
+        base.store.clients.has(clientID)
+      ) {
+        if (attempts++ >= 32) {
+          throw new Error(
+            'Could not reserve a distinct Yjs ACL addition client ID',
+          );
+        }
+        clientID = new Doc().clientID;
+      }
+      clock = 0;
+      operationID = `${clientID}:${clock}`;
+    }
+    const clientIDWasReserved = this._stagedAdditionClientIDs.has(clientID);
+    this._stagedAdditionOperations.add(operationID);
+    this._stagedAdditionClientIDs.add(clientID);
+    let active = true;
+    return {
+      clientID,
+      release: () => {
+        if (!active) return;
+        active = false;
+        this._stagedAdditionOperations.delete(operationID);
+        if (!clientIDWasReserved) {
+          this._stagedAdditionClientIDs.delete(clientID);
+        }
+      },
+    };
+  }
+
   async add(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
-      this._assertComplete('add an ACL member');
-      const hash = await serializeKey(publicKey);
-      assertCanonicalP384PublicKeyEncoding(hash);
-      this._assertComplete('add an ACL member');
-      const base = this._acl;
-      const staged = new Doc({ gc: false });
-      applyUpdateV2(
-        staged,
-        snapshotBoundedYjsACLState(base, 'add an ACL member'),
-      );
-      staged.clientID = base.clientID;
-      const beforeSV = encodeStateVector(staged);
-      staged.getMap('users').set(hash, true);
-      const changes = encodeStateAsUpdateV2(staged, beforeSV);
-      snapshotBoundedYjsACLState(staged, 'add an ACL member');
-      this._acl = staged;
-      this._revision++;
-      return changes;
+      const prepared = await this.prepareAdd(publicKey);
+      this._commitQueuedAddition(prepared);
+      return prepared.changes;
     });
+  }
+  async prepareAdd(
+    publicKey: CryptoKey,
+  ): Promise<PreparedACLChange<Uint8Array>> {
+    this._assertComplete('add an ACL member');
+    const hash = await serializeKey(publicKey);
+    assertCanonicalP384PublicKeyEncoding(hash);
+    this._assertComplete('add an ACL member');
+    const baseRevision = this._revision;
+    const base = this._acl;
+    const staged = new Doc({ gc: false });
+    applyUpdateV2(
+      staged,
+      snapshotBoundedYjsACLState(base, 'stage an ACL addition'),
+    );
+    const stagedUsers = staged.getMap('users');
+    const hadMember = stagedUsers.has(hash);
+    let identifierReservation:
+      | YjsACLAdditionIdentifierReservation
+      | undefined;
+    try {
+      if (!hadMember) {
+        // Continue the live client's clock for the first staged write. Further
+        // writes exposed from the same base receive reserved actors so two
+        // publication candidates can never reuse one client/clock tuple.
+        identifierReservation = this._reserveStagedAdditionClientID(
+          base,
+          staged.clientID,
+        );
+        staged.clientID = identifierReservation.clientID;
+      } else {
+        staged.clientID = base.clientID;
+      }
+      const beforeSV = encodeStateVector(staged);
+      if (!hadMember) {
+        stagedUsers.set(hash, true);
+      }
+      const privateChanges = encodeStateAsUpdateV2(staged, beforeSV);
+      snapshotBoundedYjsACLState(staged, 'stage an ACL addition');
+      const changes = new Uint8Array(privateChanges);
+      let committed = false;
+      const prepared: PreparedACLChange<Uint8Array> = {
+        changes,
+        commit: () => {
+          if (committed) {
+            throw new Error('Prepared ACL addition was already committed');
+          }
+          if (
+            this._pendingMutations !== 0 &&
+            !this._queuedAdditionCommits.has(prepared)
+          ) {
+            throw new Error(
+              'Prepared ACL addition cannot commit during a local ACL mutation',
+            );
+          }
+          if (this._revision !== baseRevision || this._acl !== base) {
+            throw new Error('ACL changed while addition was staged');
+          }
+          committed = true;
+          if (hadMember) return;
+          this._acl = staged;
+          this._revision++;
+        },
+      };
+      return prepared;
+    } catch (error) {
+      identifierReservation?.release();
+      throw error;
+    }
   }
   async remove(publicKey: CryptoKey): Promise<Uint8Array> {
     return this._runMutation(async () => {
