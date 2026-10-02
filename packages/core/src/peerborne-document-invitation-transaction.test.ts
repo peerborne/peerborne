@@ -58,7 +58,7 @@ jest.mock('./beekem/beekem.js', () => ({
   BeeKEM: class {
     readonly memberCount = 2;
     readonly myLeafIndex = 2;
-    readonly processWelcome = jest.fn(async () => undefined);
+    readonly processWelcome = jest.fn(async () => new Uint8Array(32));
   },
 }));
 

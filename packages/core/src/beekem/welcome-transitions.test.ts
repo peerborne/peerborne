@@ -242,4 +242,76 @@ describe('BeeKEM V2 Welcome transitions', () => {
     expect(pathUpdate.generation).toBe(welcome.generation + 1);
     expect(target.generation).toBe(welcome.generation + 1);
   });
+
+  test('wipes exported root key material and stays fresh when root hashing fails', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const target = new BeeKEM();
+    const exportedRoots: ArrayBuffer[] = [];
+    const originalExport = crypto.subtle.exportKey.bind(crypto.subtle);
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    jest
+      .spyOn(crypto.subtle, 'exportKey')
+      .mockImplementation((async (format: KeyFormat, key: CryptoKey) => {
+        const exported = await originalExport(format as 'pkcs8', key);
+        if (format === 'pkcs8') exportedRoots.push(exported);
+        return exported;
+      }) as never);
+    jest
+      .spyOn(crypto.subtle, 'digest')
+      .mockImplementation(async (algorithm, data) => {
+        if (exportedRoots.includes(data as ArrayBuffer)) {
+          throw new Error('injected root-secret hash failure');
+        }
+        return originalDigest(algorithm, data);
+      });
+
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow('injected root-secret hash failure');
+    expect(exportedRoots).toHaveLength(1);
+    expect(new Uint8Array(exportedRoots[0]).every((byte) => byte === 0)).toBe(
+      true,
+    );
+    expect(target.memberCount).toBe(0);
+    expect(target.generation).toBeNull();
+
+    jest.mocked(crypto.subtle.digest).mockRestore();
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+    expect(exportedRoots).toHaveLength(2);
+    expect(new Uint8Array(exportedRoots[1]).every((byte) => byte === 0)).toBe(
+      true,
+    );
+  });
+
+  test('wipes the first ECDH probe result when the second derivation rejects', async () => {
+    const { welcome, recipientKeys } = await createTwoMemberWelcome();
+    const target = new BeeKEM();
+    const derived = new Uint8Array(32).fill(0xa5);
+    jest
+      .spyOn(crypto.subtle, 'deriveBits')
+      .mockResolvedValueOnce(derived.buffer)
+      .mockRejectedValueOnce(new Error('derivation unavailable'));
+
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow('derivation unavailable');
+    expect(derived).toEqual(new Uint8Array(32));
+    expect(target.memberCount).toBe(0);
+    expect(target.generation).toBeNull();
+  });
 });

@@ -886,9 +886,12 @@ export class BeeKEM {
       'pkcs8',
       rootNode.privateKey,
     );
-    // Hash to get a uniform 32-byte secret
-    const hash = await crypto.subtle.digest('SHA-256', exported);
-    return new Uint8Array(hash);
+    try {
+      // Hash to get a uniform 32-byte secret
+      return new Uint8Array(await crypto.subtle.digest('SHA-256', exported));
+    } finally {
+      new Uint8Array(exported).fill(0);
+    }
   }
 
   /** Number of leaves in the tree (including blanked positions). */
