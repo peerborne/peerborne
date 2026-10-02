@@ -256,7 +256,7 @@ export class SubtleCrypto
    *
    * @param data encrypted data to be signed
    * @param privateKey - part of key pair used to sign and verify
-   * @returns signature for use in a CRDTChangeBlock
+   * @returns signature over the encrypted data
    */
   public async sign(
     data: Uint8Array,
@@ -272,7 +272,7 @@ export class SubtleCrypto
   }
 
   /**
-   * Given a signature and data (from a CRDTChangeBlock), a Promise that fulfills with true if the signature is valid, false otherwise
+   * Given a signature and the signed data, a Promise that fulfills with true if the signature is valid, false otherwise
    *
    * @param data data that was signed
    * @param publicKey part of key pair used to sign and verify

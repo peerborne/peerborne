@@ -26,7 +26,6 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
@@ -55,7 +54,6 @@ import {
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
-import { validateChangeBlockMetadata } from '@peerborne/core';
 import { Base64 } from 'js-base64';
 
 const {
@@ -1848,46 +1846,6 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       throw new Error('Invalid serialized changes: expected string[]');
     }
     return deserializeBinaryChanges(raw as string[]);
-  }
-
-  serializeChangeBlock(changes: CRDTChangeBlock<BinaryChange[]>): string {
-    const obj: Record<string, unknown> = {
-      changes: serializeBinaryChanges(changes.changes),
-      nonce: Base64.fromUint8Array(changes.nonce),
-    };
-    if (changes.keyID !== undefined) obj.keyID = changes.keyID;
-    if (
-      changes.blindIndexTokens !== undefined &&
-      changes.blindIndexTokens !== null
-    )
-      obj.blindIndexTokens = changes.blindIndexTokens;
-    return this.serialize(obj);
-  }
-
-  deserializeChangeBlock(changes: string): CRDTChangeBlock<BinaryChange[]> {
-    const raw = this.deserialize(changes);
-    if (
-      typeof raw !== 'object' ||
-      raw === null ||
-      !Array.isArray((raw as Record<string, unknown>).changes) ||
-      typeof (raw as Record<string, unknown>).nonce !== 'string'
-    ) {
-      throw new Error(
-        'Invalid change block: expected {changes: string[], nonce: string}',
-      );
-    }
-    const deserialized = raw as {
-      changes: string[];
-      nonce: string;
-      keyID?: string;
-      blindIndexTokens?: Record<string, string>;
-    };
-    const result: CRDTChangeBlock<BinaryChange[]> = {
-      changes: deserializeBinaryChanges(deserialized.changes),
-      nonce: Base64.toUint8Array(deserialized.nonce),
-    };
-    validateChangeBlockMetadata(deserialized, result);
-    return result;
   }
 
   serializeSyncMessage(

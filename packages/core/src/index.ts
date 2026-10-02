@@ -30,10 +30,7 @@ import {
 import { CRDTProvider } from './crdt-provider.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
-import {
-  JSONSerializer,
-  validateChangeBlockMetadata,
-} from './json-serializer.js';
+import { JSONSerializer } from './json-serializer.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import { assertCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
 import { ACLProvider } from './acl-provider.js';
@@ -63,7 +60,6 @@ import {
   LoadMessageSerializer,
   LoadRequestCompletionDetector,
 } from './load-request-serializer.js';
-import { CRDTChangeBlock } from './crdt-change-block.js';
 import {
   CRDTChangeNodeKind,
   CRDTChangeNodeDeferred,
@@ -188,7 +184,6 @@ export {
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
-  CRDTChangeBlock,
   CRDTChangeNodeKind,
   CRDTChangeNodeDeferred,
   CRDTChangeNode,
@@ -218,7 +213,6 @@ export {
   LoadMessageSerializer,
   LoadRequestCompletionDetector,
   JSONSerializer,
-  validateChangeBlockMetadata,
   defaultConfig,
   defaultBootstrapConfig,
   getDefaultConfig,
