@@ -70,9 +70,9 @@ Normal network load responses are always writer-signed, regardless of
 applies authenticated ACL entries. With `enableSigning` enabled (the default),
 it also verifies the snapshot's own signature against authorized writer keys;
 with `enableSigning: false`, that per-snapshot check is skipped and the snapshot
-bytes are authenticated only by the signed complete response manifest. The
-optional embedded `publicKey` is not trusted as an authorization source. The
-signature covers the versioned binary payload documented in
+bytes are authenticated only by the signed complete response manifest. Snapshots
+carry no signer identity. The signature covers the versioned binary payload
+documented in
 [`snapshot-node.ts`](../packages/core/src/snapshot-node.ts), including the state,
 boundary CID, timestamp, and compacted count.
 

@@ -1865,9 +1865,6 @@ export class AutomergeJSONSerializer extends JSONSerializer<
           snapshotForWire.signature,
         );
       }
-      // Drop publicKey -- CryptoKey is not JSON-serializable and
-      // snapshot verification uses writer ACL keys, not the embedded key.
-      delete snapshotForWire.publicKey;
     }
     return this.encode(
       this.serializeNormalizedSyncWireValue({

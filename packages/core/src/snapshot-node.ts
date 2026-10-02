@@ -11,9 +11,8 @@
  *   back to `remoteChange()`.
  *   For Yjs this is `Uint8Array` (from `encodeStateAsUpdateV2`); for Automerge
  *   this is `BinaryChange[]` (wrapping `Automerge.save()` output).
- * @typeParam PublicKey The type of key used to identify a user publicly.
  */
-export interface CRDTSnapshotNode<ChangesType, PublicKey> {
+export interface CRDTSnapshotNode<ChangesType> {
   /**
    * Full serialized CRDT state at this point.
    * Produced by `CRDTProvider.getSnapshot(doc)`.
@@ -37,17 +36,9 @@ export interface CRDTSnapshotNode<ChangesType, PublicKey> {
    * Signs a versioned binary payload: [version(1B), timestamp(8B uint64),
    * compactedCount(4B uint32), cidLen(4B uint32), lastChangeNodeCID(cidLen B),
    * stateLen(4B uint32), stateBytes(stateLen B)]. All integers are big-endian.
-   * Verified by trying all writer keys rather than relying on the `publicKey` field.
+   * Verified by trying every authorized writer key.
    */
   signature: Uint8Array;
-
-  /**
-   * Public key of the snapshot creator (optional on the wire).
-   * Not relied upon for verification -- snapshot signatures are verified
-   * by trying all writer keys in the ACL. May be absent or degraded
-   * after serialization for non-JSON-safe key types (e.g. CryptoKey).
-   */
-  publicKey?: PublicKey;
 
   /**
    * Timestamp of snapshot creation (milliseconds since epoch).

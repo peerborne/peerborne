@@ -175,7 +175,7 @@ export interface ProjectInitialInvitationCapacityOptions<
 > {
   readonly currentMessage: CRDTSyncMessage<ChangesType, PublicKey>;
   readonly keychainChanges: ChangesType;
-  readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  readonly snapshot?: CRDTSnapshotNode<ChangesType>;
   readonly tips: readonly string[];
   readonly serializer: SyncMessageSerializer<ChangesType, PublicKey>;
 }
