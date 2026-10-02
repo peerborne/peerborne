@@ -456,7 +456,7 @@ existing swarm needs an application-authorized create decision or a future
 authenticated nonexistence protocol; this is an intentional availability
 cost of failing closed.
 
-### Versioning and migration
+### Protocol versions
 
 The proposed MLS family uses distinct bounded protocols:
 
@@ -539,7 +539,7 @@ choosing an unauthenticated replacement controller or control head.
 
 The work cannot be completed by swapping BeeKEM for one package call.
 Dependency selection, provider isolation, authenticated identity, durable
-control state/outbox, versioning, quorum binding, migration, recovery, and
+control state/outbox, versioning, quorum binding, recovery, and
 adversarial tests are all part of the security boundary.
 
 ## References
