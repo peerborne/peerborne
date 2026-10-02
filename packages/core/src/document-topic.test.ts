@@ -6,7 +6,7 @@ import {
 } from './document-topic.js';
 
 describe('documentTopic', () => {
-  test('uses the v3 document prefix by default', () => {
+  test('uses the default document prefix', () => {
     expect(documentTopic('my-doc')).toBe('/peerborne/document/v3/my-doc');
   });
 

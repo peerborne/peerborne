@@ -1,4 +1,4 @@
-/** Default topic prefix for version-isolated document pubsub messages. */
+/** Default namespace prefix for document pubsub topics. */
 export const DEFAULT_DOCUMENT_TOPIC_PREFIX = '/peerborne/document/v3/';
 
 /** Shared GossipSub peer-discovery topic for browser, Node, and relay peers. */
@@ -31,9 +31,9 @@ export function defaultDocumentPubsubConfig(): DocumentPubsubConfig {
  * from other topics on the same network.
  *
  * The default prefix is `'/peerborne/document/v3/'`. Topic names are routing
- * labels, not authenticated version negotiation. Every peer on a custom
- * namespace must use the current protocol. Pass an empty string to use the
- * bare document path.
+ * labels, not authentication; wire decoding and admission checks remain
+ * mandatory. Every peer sharing a document must use the same prefix. Pass an
+ * empty string to use the bare document path.
  *
  * @param documentPath - The path identifying the document.
  * @param topicPrefix - Prefix to prepend (defaults to
