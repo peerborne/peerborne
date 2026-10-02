@@ -359,6 +359,32 @@ describe('snapshotDeepEnumerableData', () => {
       expect(descriptorCalls).toBe(1);
     },
   );
+
+  test('rejects an array Proxy whose reported length changes during detachment', () => {
+    let lengthDescriptorCalls = 0;
+    const values = new Proxy([1, 2], {
+      getOwnPropertyDescriptor(target, property) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        if (property !== 'length') return descriptor;
+        lengthDescriptorCalls++;
+        return {
+          ...descriptor!,
+          value: lengthDescriptorCalls === 1 ? 2 : 1,
+        };
+      },
+    });
+
+    expect(() =>
+      snapshotDeepEnumerableData({ values }, 'bounded', {
+        maxDepth: 8,
+        maxObjects: 16,
+        maxProperties: 16,
+        maxArrayLength: 8,
+        maxValueBytes: 64,
+      }),
+    ).toThrow(/invalid array/);
+    expect(lengthDescriptorCalls).toBe(2);
+  });
 });
 
 describe('concatUint8Arrays', () => {
