@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem.js';
-import { BeeKEMWelcomeV2 } from './types.js';
+import { BeeKEMWelcomeV2, MAX_BEEKEM_TREE_LEAVES } from './types.js';
 
 afterEach(() => jest.restoreAllMocks());
 
@@ -68,6 +68,16 @@ async function expectTargetUnchanged(
   expect(target.generation).toBe(0);
   expect(await target.findLeafByPublicKey(keys.publicKey)).toBe(0);
   expect(await target.getRootSecret()).toEqual(rootSecret);
+}
+
+async function expectTargetPristine(target: BeeKEM): Promise<void> {
+  expect(target.memberCount).toBe(0);
+  expect(target.myLeafIndex).toBe(-1);
+  expect(target.generation).toBeNull();
+  expect(
+    (target as unknown as { _nodes: Map<number, unknown> })._nodes.size,
+  ).toBe(0);
+  await expect(target.getRootSecret()).rejects.toThrow('Tree is empty');
 }
 
 function pauseNextDigest(): {
@@ -314,4 +324,145 @@ describe('BeeKEM V2 Welcome transitions', () => {
     expect(target.memberCount).toBe(0);
     expect(target.generation).toBeNull();
   });
+
+  test('rejects out-of-bound trees without reading entries or changing state', async () => {
+    const { welcome, recipientKeys } = await createTwoMemberWelcome();
+    const target = new BeeKEM();
+    let getterCalls = 0;
+    const withGetter = (length: number): unknown[] => {
+      const entries = new Array(length).fill(null);
+      Object.defineProperty(entries, '0', {
+        enumerable: true,
+        get() {
+          getterCalls++;
+          return null;
+        },
+      });
+      return entries;
+    };
+
+    for (const [patch, expected] of [
+      [{ leafIndex: Number.MAX_SAFE_INTEGER }, /leaf index/],
+      [{ numLeaves: MAX_BEEKEM_TREE_LEAVES + 1 }, /numLeaves/],
+      [
+        { treeNodePublicKeys: withGetter(2 * MAX_BEEKEM_TREE_LEAVES) },
+        /invalid array/,
+      ],
+      [{ pathKeys: withGetter(65) }, /own data elements/],
+    ] as const) {
+      await expect(
+        target.processWelcome(
+          { ...copyWelcome(welcome), ...patch } as BeeKEMWelcomeV2,
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow(expected);
+      await expectTargetPristine(target);
+    }
+    expect(getterCalls).toBe(0);
+  });
+
+  test('snapshots Proxy-backed records without property reads', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const detached = copyWelcome(welcome);
+    let propertyReads = 0;
+    const guardReads = <T extends object>(value: T): T =>
+      new Proxy(value, {
+        get() {
+          propertyReads++;
+          throw new Error('Welcome property was read through a Proxy');
+        },
+      });
+    const proxied = guardReads({
+      ...detached,
+      pathKeys: guardReads(detached.pathKeys.map((node) => guardReads(node))),
+      treeNodePublicKeys: guardReads(
+        detached.treeNodePublicKeys.map((node) => guardReads(node)),
+      ),
+    });
+
+    await expect(
+      new BeeKEM().processWelcome(
+        proxied,
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).resolves.toEqual(rootSecret);
+    expect(propertyReads).toBe(0);
+  });
+
+  test('leaves a fresh receiver retryable after malformed key, ciphertext, and hash input', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const invalidPublicKey = copyWelcome(welcome);
+    invalidPublicKey.pathKeys[0].publicKey.fill(0);
+    const invalidCiphertext = copyWelcome(welcome);
+    invalidCiphertext.pathKeys[0].encryptedPrivateKey[
+      invalidCiphertext.pathKeys[0].encryptedPrivateKey.length - 1
+    ] ^= 0xff;
+    const invalidHash = copyWelcome(welcome);
+    invalidHash.treeHash[0] ^= 0xff;
+
+    for (const failingWelcome of [
+      invalidPublicKey,
+      invalidCiphertext,
+      invalidHash,
+    ]) {
+      const target = new BeeKEM();
+      await expect(
+        target.processWelcome(
+          failingWelcome,
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow();
+      await expectTargetPristine(target);
+      await expect(
+        target.processWelcome(
+          copyWelcome(welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).resolves.toEqual(rootSecret);
+    }
+  });
+
+  test.each([
+    'generateKey',
+    'importKey',
+    'deriveBits',
+    'deriveKey',
+    'decrypt',
+    'exportKey',
+    'digest',
+  ] as const)(
+    'leaves a fresh receiver retryable when subtle.%s rejects',
+    async (methodName) => {
+      const { welcome, recipientKeys, rootSecret } =
+        await createTwoMemberWelcome();
+      const target = new BeeKEM();
+      const spy = jest.spyOn(crypto.subtle, methodName);
+      spy.mockImplementationOnce(async () => {
+        throw new Error(`injected ${methodName} failure`);
+      });
+
+      await expect(
+        target.processWelcome(
+          copyWelcome(welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).rejects.toThrow(`injected ${methodName} failure`);
+      spy.mockRestore();
+      await expectTargetPristine(target);
+      await expect(
+        target.processWelcome(
+          copyWelcome(welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        ),
+      ).resolves.toEqual(rootSecret);
+    },
+  );
 });
