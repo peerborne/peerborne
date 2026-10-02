@@ -166,7 +166,7 @@ interface CapturedBackingFinalizer {
  * Promises with unsafe constructor/species hooks cannot be safely observed and
  * may still produce an unhandled rejection; backing providers must not return
  * asynchronous values from synchronous operations.
- * Backing `current()` remains an opaque generic value for compatibility. Its
+ * Backing `current()` returns an opaque generic `ChangesType` value. Its
  * synchronous contract is mandatory: runtime checks detect ordinary native
  * Promises and visible thenables, but JavaScript exposes no hook-free Promise
  * brand predicate for an object with deliberately forged prototype and
@@ -547,8 +547,8 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           // assimilating a custom thenable. Attempt it for every object whose
           // species path is known to be hook-free. Plain claim results fail
           // closed when that proof is unavailable; opaque current-state reads
-          // retain arbitrary synchronous ChangesType compatibility and rely
-          // on the provider contract for deliberately ambiguous object shapes.
+          // accept any synchronous ChangesType value and rely on the provider
+          // contract for deliberately ambiguous object shapes.
           isNativePromise = observeNativePromiseSettlement(result);
         }
         if (

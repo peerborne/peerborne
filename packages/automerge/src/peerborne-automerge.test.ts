@@ -2600,7 +2600,7 @@ describe('AutomergeKeychain', () => {
     expect(keychain.getKey(expectedEpochId)).toBe(key);
   });
 
-  test('legacy keychain commit uses its captured claim method', async () => {
+  test('standalone keychain commit uses its captured claim method', async () => {
     const keychain = new AutomergeKeychain();
     const epochId = crypto.getRandomValues(new Uint8Array(32));
     const key = await crypto.subtle.generateKey(
