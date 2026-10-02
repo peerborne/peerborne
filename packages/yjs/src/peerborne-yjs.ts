@@ -94,9 +94,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
           snapshotForWire.signature,
         );
       }
-      // Drop publicKey from wire -- CryptoKey is not JSON-serializable and
-      // snapshot verification uses writer ACL keys, not the embedded key.
-      delete snapshotForWire.publicKey;
     }
     return this.encode(
       this.serializeNormalizedSyncWireValue({

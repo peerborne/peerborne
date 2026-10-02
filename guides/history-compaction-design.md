@@ -67,9 +67,8 @@ group commitments required by normal V4 loading. See
 
 Normal network loads require signing. After authenticating the complete load
 response, the receiver applies authenticated ACL entries and verifies the
-snapshot signature against authorized writer keys. The optional embedded
-`publicKey` is not trusted as an authorization source. The signature covers the
-versioned binary payload documented in
+snapshot signature against authorized writer keys. Snapshots carry no signer
+identity; the signature covers the versioned binary payload documented in
 [`snapshot-node.ts`](../packages/core/src/snapshot-node.ts), including the state,
 boundary CID, timestamp, and compacted count.
 

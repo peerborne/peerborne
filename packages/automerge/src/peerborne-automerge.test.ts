@@ -4161,6 +4161,24 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
+  test('reserializes snapshot fields verbatim so the signature covers an injected publicKey', () => {
+    const wire = buildWire({
+      signatureContext: 'ordinary-sync-v1' as const,
+      documentId: 'doc',
+      snapshot: {
+        state: ['AQ=='],
+        lastChangeNodeCID: 'cid',
+        compactedCount: 1,
+        signature: 'Ag==',
+        publicKey: 'injected',
+        timestamp: 1,
+      },
+    });
+    expect(
+      serializer.serializeSyncMessage(serializer.deserializeSyncMessage(wire)),
+    ).toEqual(wire);
+  });
+
   test('deserializeSyncMessage rejects array snapshot', () => {
     const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: [1, 2, 3] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(

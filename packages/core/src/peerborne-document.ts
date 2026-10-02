@@ -636,9 +636,9 @@ function finalizePreparedCommitClaim(
 }
 
 
-interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
+interface InvitationBootstrapCapacityPlan<ChangesType> {
   readonly keychainChanges: ChangesType;
-  readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  readonly snapshot?: CRDTSnapshotNode<ChangesType>;
   readonly serializedBootstrapBaselineBytes: number;
   readonly welcomeWithoutBeeKEMBytes: number;
 }
@@ -1358,7 +1358,7 @@ export class PeerborneDocument<
 
   // Compaction state.
   private _compactionConfig: CompactionConfig;
-  private _latestSnapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  private _latestSnapshot?: CRDTSnapshotNode<ChangesType>;
   private _latestSnapshotSource?: object;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
@@ -3553,11 +3553,7 @@ export class PeerborneDocument<
   }
 
   /**
-   * Verify a snapshot signature by trying all authorized writers.
-   * Unlike sync message signatures (which are string-encoded), snapshot
-   * signatures are raw Uint8Array. This avoids depending on the snapshot's
-   * embedded publicKey field which may not survive serialization for all
-   * key types (e.g. CryptoKey).
+   * Verify a snapshot signature by trying every authorized writer key.
    */
   private async _verifySnapshotSignature(payload: Uint8Array, signature: Uint8Array) {
     if (!this._isSigningEnabled()) {
@@ -6899,8 +6895,7 @@ export class PeerborneDocument<
             String(this._latestSnapshot.lastChangeNodeCID ?? ''))
       ) {
         // Verify the snapshot signature against the deterministic payload
-        // by trying all authorized writers (publicKey may not survive
-        // serialization for all key types, e.g. CryptoKey).
+        // by trying all authorized writers.
         // When signing is disabled, skip serialization and signature
         // verification -- accept the snapshot unconditionally.
         // WARNING: This means any peer can inject arbitrary snapshot state when
@@ -7283,7 +7278,7 @@ export class PeerborneDocument<
   /**
    * Returns the current snapshot, if one exists.
    */
-  public get latestSnapshot(): CRDTSnapshotNode<ChangesType, PublicKey> | undefined {
+  public get latestSnapshot(): CRDTSnapshotNode<ChangesType> | undefined {
     this._assertNoIncompleteBootstrapLoad();
     return this._latestSnapshot;
   }
@@ -7354,11 +7349,11 @@ export class PeerborneDocument<
    * @throws {Error} If the current user does not have write access to this document.
    *   Only writers are authorized to create snapshots.
    */
-  public async snapshot(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  public async snapshot(): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     return this._runStateMutation(() => this._snapshotUnlocked());
   }
 
-  private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     await this._ensureCurrentUserCanWrite();
 
     if (!this._crdtProvider.getSnapshot) {
@@ -7388,12 +7383,11 @@ export class PeerborneDocument<
       signature = new Uint8Array(0);
     }
 
-    const snapshotNode: CRDTSnapshotNode<ChangesType, PublicKey> = {
+    const snapshotNode: CRDTSnapshotNode<ChangesType> = {
       state,
       lastChangeNodeCID,
       compactedCount,
       signature,
-      publicKey: this._userPublicKey,
       timestamp,
     };
 
@@ -8239,7 +8233,7 @@ export class PeerborneDocument<
   private async _prepareInvitationBootstrapCapacity(
     reader: PublicKey,
   ): Promise<
-    InvitationBootstrapCapacityPlan<ChangesType, PublicKey>
+    InvitationBootstrapCapacityPlan<ChangesType>
   > {
     this._assertInitialInvitationCapacityProfile();
 
