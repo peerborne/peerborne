@@ -319,10 +319,10 @@ export interface PreparedKeychainEpoch<KeychainChange> {
    *
    * The method and returned finalizer have the same composed-commit contract
    * as `PreparedACLChange.claimCommit()`. Workflows spanning providers must
-   * require this optional capability instead of sequencing independently
-   * fallible `commit()` calls.
+   * compose claims instead of sequencing independently fallible `commit()`
+   * calls.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /** Synchronous, single-use, atomic live-state commit. */
   commit(): void;
 }

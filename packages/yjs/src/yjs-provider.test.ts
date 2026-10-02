@@ -358,14 +358,14 @@ describe('YjsACL', () => {
     const operations = new Set(internals._stagedAdditionOperations);
     const clientIDs = new Set(internals._stagedAdditionClientIDs);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(0);
     expect(internals._stagedAdditionOperations).toEqual(operations);
     expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
     expect(await acl.check(key1)).toBe(false);
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       /already committed or claimed/,
     );
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
@@ -389,7 +389,7 @@ describe('YjsACL', () => {
     await acl.remove(key1);
     const prepared = await acl.prepareAdd(key1);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(await backing.check(key1)).toBe(false);
     expect(await acl.check(key1)).toBe(false);
@@ -411,7 +411,7 @@ describe('YjsACL', () => {
     const firstOperations = new Set(internals._stagedAdditionOperations);
     const firstClientIDs = new Set(internals._stagedAdditionClientIDs);
 
-    abandoned.claimCommit!();
+    abandoned.claimCommit();
     expect(internals._revision).toBe(0);
     expect(await acl.check(key1)).toBe(false);
 
@@ -435,7 +435,7 @@ describe('YjsACL', () => {
     const clientIDsBeforeFinalize = new Set(
       internals._stagedAdditionClientIDs,
     );
-    retry.claimCommit!().finalize();
+    retry.claimCommit().finalize();
     expect(internals._stagedAdditionOperations).toEqual(
       operationsBeforeFinalize,
     );
@@ -609,7 +609,7 @@ describe('YjsACL', () => {
     await acl.add(key1);
     const afterLocalMutation = acl.current();
 
-    expect(() => staleAddition.claimCommit!()).toThrow(
+    expect(() => staleAddition.claimCommit()).toThrow(
       'ACL changed while addition was staged',
     );
     expect(acl.current()).toEqual(afterLocalMutation);
@@ -622,7 +622,7 @@ describe('YjsACL', () => {
     acl.merge(remoteChanges);
     const afterRemoteMutation = acl.current();
 
-    expect(() => staleRemoval.claimCommit!()).toThrow(
+    expect(() => staleRemoval.claimCommit()).toThrow(
       'ACL changed while removal was staged',
     );
     expect(acl.current()).toEqual(afterRemoteMutation);
@@ -669,15 +669,15 @@ describe('YjsACL', () => {
     const operations = new Set(internals._stagedAdditionOperations);
     const clientIDs = new Set(internals._stagedAdditionClientIDs);
 
-    noOpAddition.claimCommit!().finalize();
-    noOpRemoval.claimCommit!().finalize();
+    noOpAddition.claimCommit().finalize();
+    noOpRemoval.claimCommit().finalize();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(revision);
     expect(internals._stagedAdditionOperations).toEqual(operations);
     expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
 
-    addition.claimCommit!().finalize();
+    addition.claimCommit().finalize();
     expect(await acl.check(key1)).toBe(true);
     expect(await acl.check(key2)).toBe(true);
   });
@@ -746,7 +746,7 @@ describe('YjsACL', () => {
     await Promise.resolve();
 
     expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
-    expect(() => external.claimCommit!()).toThrow(
+    expect(() => external.claimCommit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
     expect(() => external.commit()).toThrow(
@@ -785,7 +785,7 @@ describe('YjsACL', () => {
     const removal = acl.remove(key1);
     await started;
 
-    expect(() => external.claimCommit!()).toThrow(
+    expect(() => external.claimCommit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
     expect(() => external.commit()).toThrow(
@@ -840,7 +840,7 @@ describe('YjsACL', () => {
     expect(() => acl.merge(remoteChanges)).toThrow(
       ACLOperationInProgressError,
     );
-    expect(() => externalRemoval.claimCommit!()).toThrow(
+    expect(() => externalRemoval.claimCommit()).toThrow(
       'Prepared ACL removal cannot commit during a local ACL mutation',
     );
     expect(() => externalRemoval.commit()).toThrow(
@@ -891,12 +891,12 @@ describe('YjsACL', () => {
     const liveACL = internals._acl;
     const revision = internals._revision;
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(revision);
     expect(await acl.check(key1)).toBe(true);
-    expect(() => prepared.claimCommit!()).toThrow(/already committed or claimed/);
+    expect(() => prepared.claimCommit()).toThrow(/already committed or claimed/);
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
 
     claim.finalize();
@@ -2297,10 +2297,10 @@ describe('YjsKeychain', () => {
     const historyBefore = new Uint8Array(keychain.history());
     const prepared = await keychain.prepareEpochKey(epochId, key);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
     expect(keychain.history()).toEqual(historyBefore);
     expect(keychain.getKey(epochId)).toBeUndefined();
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       /already committed or claimed/,
     );
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
@@ -2363,10 +2363,10 @@ describe('YjsKeychain', () => {
     );
     const abandoned = await keychain.prepareEpochKey(epochId, abandonedKey);
 
-    abandoned.claimCommit!();
+    abandoned.claimCommit();
     expect(keychain.getKey(epochId)).toBeUndefined();
     const retry = await keychain.prepareEpochKey(epochId, committedKey);
-    retry.claimCommit!().finalize();
+    retry.claimCommit().finalize();
 
     expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
     expect(keychain.getKey(epochId)).toBe(committedKey);
@@ -2392,7 +2392,7 @@ describe('YjsKeychain', () => {
       ['encrypt', 'decrypt'],
     );
     const claimed = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
-    const claim = claimed.claimCommit!();
+    const claim = claimed.claimCommit();
     const [, hydratedBaseKey] = await receiver.current();
 
     claim.finalize();
@@ -2411,7 +2411,7 @@ describe('YjsKeychain', () => {
     await remote.add();
     receiver.prepareMerge(remote.history()).commit();
 
-    expect(() => stale.claimCommit!()).toThrow(
+    expect(() => stale.claimCommit()).toThrow(
       'Keychain changed while epoch key was staged',
     );
     expect(receiver.getKey(staleEpochId)).toBeUndefined();
@@ -2433,7 +2433,7 @@ describe('YjsKeychain', () => {
 
     receiver.merge(remote.history());
 
-    expect(() => staged.claimCommit!()).toThrow(
+    expect(() => staged.claimCommit()).toThrow(
       'Keychain changed while epoch key was staged',
     );
     expect(receiver.getKey(stagedEpochId)).toBeUndefined();
@@ -2452,7 +2452,7 @@ describe('YjsKeychain', () => {
     );
     const staged = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
 
-    staged.claimCommit!().finalize();
+    staged.claimCommit().finalize();
 
     expect(receiver.getKey(historicalEpochId)).toBeUndefined();
     expect(receiver.getKey(stagedEpochId)).toBe(stagedKey);
