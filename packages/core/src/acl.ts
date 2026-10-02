@@ -184,12 +184,8 @@ export interface PreparedACLChange<ChangesType> {
    * claims and then install them synchronously without a fail-partial state.
    * If a later claim fails, discarding this claim MUST leave live state
    * unchanged; a fresh staging operation must remain possible.
-   *
-   * Optional for compatibility. Workflows that need to compose this ACL
-   * change atomically with another provider transition must fail closed when
-   * the capability is absent.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, stale-base-checked live-state commit. A normal
    * return proves complete application. Repeated and stale calls throw before

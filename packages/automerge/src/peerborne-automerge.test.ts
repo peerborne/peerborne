@@ -305,7 +305,7 @@ describe('AutomergeACL', () => {
     const prepared = await acl.prepareAdd(key1);
     const reservations = new Set(internals._stagedAdditionActors);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(0);
@@ -315,7 +315,7 @@ describe('AutomergeACL', () => {
     expect(internals._retainedCanonicalUsersRootSeed).toBe(false);
     expect(internals._stagedAdditionActors).toEqual(reservations);
     expect(await acl.check(key1)).toBe(false);
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       /already committed or claimed/,
     );
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
@@ -370,7 +370,7 @@ describe('AutomergeACL', () => {
     const abandoned = await acl.prepareAdd(key1);
     const firstReservations = new Set(internals._stagedAdditionActors);
 
-    abandoned.claimCommit!();
+    abandoned.claimCommit();
     expect(internals._revision).toBe(0);
     expect(internals._retainedChanges.size).toBe(0);
     expect(await acl.check(key1)).toBe(false);
@@ -386,7 +386,7 @@ describe('AutomergeACL', () => {
     const reservationsBeforeFinalize = new Set(
       internals._stagedAdditionActors,
     );
-    retry.claimCommit!().finalize();
+    retry.claimCommit().finalize();
     expect(internals._stagedAdditionActors).toEqual(
       reservationsBeforeFinalize,
     );
@@ -430,7 +430,7 @@ describe('AutomergeACL', () => {
     await acl.remove(key1);
     const prepared = await acl.prepareAdd(key1);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(await backing.check(key1)).toBe(false);
     expect(await acl.check(key1)).toBe(false);
@@ -515,7 +515,7 @@ describe('AutomergeACL', () => {
     await acl.add(key1);
     const afterLocalMutation = acl.current();
 
-    expect(() => staleAddition.claimCommit!()).toThrow(
+    expect(() => staleAddition.claimCommit()).toThrow(
       'ACL changed while addition was staged',
     );
     expect(acl.current()).toEqual(afterLocalMutation);
@@ -528,7 +528,7 @@ describe('AutomergeACL', () => {
     acl.merge(remoteChanges);
     const afterRemoteMutation = acl.current();
 
-    expect(() => staleRemoval.claimCommit!()).toThrow(
+    expect(() => staleRemoval.claimCommit()).toThrow(
       'ACL changed while removal was staged',
     );
     expect(acl.current()).toEqual(afterRemoteMutation);
@@ -764,8 +764,8 @@ describe('AutomergeACL', () => {
       internals._retainedCanonicalUsersRootSeed;
     const reservations = new Set(internals._stagedAdditionActors);
 
-    noOpAddition.claimCommit!().finalize();
-    noOpRemoval.claimCommit!().finalize();
+    noOpAddition.claimCommit().finalize();
+    noOpRemoval.claimCommit().finalize();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(revision);
@@ -777,7 +777,7 @@ describe('AutomergeACL', () => {
     );
     expect(internals._stagedAdditionActors).toEqual(reservations);
 
-    addition.claimCommit!().finalize();
+    addition.claimCommit().finalize();
     expect(await acl.check(key1)).toBe(true);
     expect(await acl.check(key2)).toBe(true);
   });
@@ -821,7 +821,7 @@ describe('AutomergeACL', () => {
     await Promise.resolve();
 
     expect(acl.prepareAdd).toHaveBeenCalledTimes(1);
-    expect(() => external.claimCommit!()).toThrow(
+    expect(() => external.claimCommit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
     expect(() => external.commit()).toThrow(
@@ -860,7 +860,7 @@ describe('AutomergeACL', () => {
     const removal = acl.remove(key1);
     await started;
 
-    expect(() => external.claimCommit!()).toThrow(
+    expect(() => external.claimCommit()).toThrow(
       'Prepared ACL addition cannot commit during a local ACL mutation',
     );
     expect(() => external.commit()).toThrow(
@@ -920,7 +920,7 @@ describe('AutomergeACL', () => {
       mergeConflict = error;
     }
     expect(mergeConflict).toBeInstanceOf(ACLOperationInProgressError);
-    expect(() => externalRemoval.claimCommit!()).toThrow(
+    expect(() => externalRemoval.claimCommit()).toThrow(
       'Prepared ACL removal cannot commit during a local ACL mutation',
     );
     expect(() => externalRemoval.commit()).toThrow(
@@ -976,13 +976,13 @@ describe('AutomergeACL', () => {
     const revision = internals._revision;
     const retainedChanges = internals._retainedChanges;
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(revision);
     expect(internals._retainedChanges).toBe(retainedChanges);
     expect(await acl.check(key1)).toBe(true);
-    expect(() => prepared.claimCommit!()).toThrow(/already committed or claimed/);
+    expect(() => prepared.claimCommit()).toThrow(/already committed or claimed/);
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
 
     claim.finalize();
@@ -2635,10 +2635,10 @@ describe('AutomergeKeychain', () => {
     const historyBefore = keychain.history();
     const prepared = await keychain.prepareEpochKey(epochId, key);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
     expect(keychain.history()).toEqual(historyBefore);
     expect(keychain.getKey(epochId)).toBeUndefined();
-    expect(() => prepared.claimCommit!()).toThrow(/already committed or claimed/);
+    expect(() => prepared.claimCommit()).toThrow(/already committed or claimed/);
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
 
     const cache = (
@@ -2676,10 +2676,10 @@ describe('AutomergeKeychain', () => {
     );
     const abandoned = await keychain.prepareEpochKey(epochId, abandonedKey);
 
-    abandoned.claimCommit!();
+    abandoned.claimCommit();
     expect(keychain.getKey(epochId)).toBeUndefined();
     const retry = await keychain.prepareEpochKey(epochId, committedKey);
-    retry.claimCommit!().finalize();
+    retry.claimCommit().finalize();
 
     expect((await keychain.keys()).map(([id]) => id)).toEqual([epochId]);
     expect(keychain.getKey(epochId)).toBe(committedKey);
@@ -2705,7 +2705,7 @@ describe('AutomergeKeychain', () => {
       ['encrypt', 'decrypt'],
     );
     const claimed = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
-    const claim = claimed.claimCommit!();
+    const claim = claimed.claimCommit();
     const [, hydratedBaseKey] = await receiver.current();
 
     claim.finalize();
@@ -2724,7 +2724,7 @@ describe('AutomergeKeychain', () => {
     await remote.add();
     receiver.prepareMerge(remote.history()).commit();
 
-    expect(() => stale.claimCommit!()).toThrow(
+    expect(() => stale.claimCommit()).toThrow(
       'Keychain changed while epoch key was staged',
     );
     expect(receiver.getKey(staleEpochId)).toBeUndefined();
@@ -2746,7 +2746,7 @@ describe('AutomergeKeychain', () => {
 
     receiver.merge(remote.history());
 
-    expect(() => staged.claimCommit!()).toThrow(
+    expect(() => staged.claimCommit()).toThrow(
       'Keychain changed while epoch key was staged',
     );
     expect(receiver.getKey(stagedEpochId)).toBeUndefined();
@@ -2765,7 +2765,7 @@ describe('AutomergeKeychain', () => {
     );
     const staged = await receiver.prepareEpochKey(stagedEpochId, stagedKey);
 
-    staged.claimCommit!().finalize();
+    staged.claimCommit().finalize();
 
     expect(receiver.getKey(historicalEpochId)).toBeUndefined();
     expect(receiver.getKey(stagedEpochId)).toBe(stagedKey);
