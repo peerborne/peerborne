@@ -113,16 +113,7 @@ describe('path-update-wire', () => {
     const reparsed = JSON.parse(JSON.stringify(wire));
     const restored = deserializePathUpdateV2FromWire(reparsed);
 
-    expect(restored.senderLeafIndex).toBe(pathUpdate.senderLeafIndex);
-    expect(restored.senderLeafPublicKey).toEqual(pathUpdate.senderLeafPublicKey);
-    expect(restored.nodes.length).toBe(pathUpdate.nodes.length);
-    for (let i = 0; i < pathUpdate.nodes.length; i++) {
-      expect(restored.nodes[i].nodeIndex).toBe(pathUpdate.nodes[i].nodeIndex);
-      expect(restored.nodes[i].publicKey).toEqual(pathUpdate.nodes[i].publicKey);
-      expect(restored.nodes[i].encryptedPrivateKey).toEqual(
-        pathUpdate.nodes[i].encryptedPrivateKey,
-      );
-    }
+    expect(restored).toEqual(pathUpdate);
   });
 
   test('round-tripped PathUpdateV2 is still applicable to a peer', async () => {
@@ -164,6 +155,72 @@ describe('path-update-wire', () => {
     expect(() => deserializePathUpdateV2FromWire(wire)).toThrow(/nodeIndex/);
   });
 
+});
+
+describe('path-update-wire V2 inbound boundary', () => {
+  test('rejects negative-zero tree indices on both boundaries', () => {
+    const treeUpdate = validPathUpdateV2();
+    treeUpdate.treeNodePublicKeys[0].nodeIndex = -0;
+    expect(() =>
+      serializePathUpdateV2ForWire({ ...validPathUpdateV2(), senderLeafIndex: -0 }),
+    ).toThrow(/senderLeafIndex.*non-negative safe integer/);
+    expect(() => serializePathUpdateV2ForWire(treeUpdate)).toThrow(
+      /nodeIndex.*non-negative safe integer/,
+    );
+
+    const encoded = JSON.stringify(serializePathUpdateV2ForWire(validPathUpdateV2()));
+    const negativeSender = JSON.parse(
+      encoded.replace('"senderLeafIndex":0', '"senderLeafIndex":-0'),
+    );
+    const negativeTreeNode = JSON.parse(
+      encoded.replace('{"nodeIndex":0,', '{"nodeIndex":-0,'),
+    );
+    expect(Object.is(negativeSender.senderLeafIndex, -0)).toBe(true);
+    expect(Object.is(negativeTreeNode.treeNodePublicKeys[0].nodeIndex, -0)).toBe(
+      true,
+    );
+    expect(() => deserializePathUpdateV2FromWire(negativeSender)).toThrow(
+      /senderLeafIndex.*non-negative safe integer/,
+    );
+    expect(() => deserializePathUpdateV2FromWire(negativeTreeNode)).toThrow(
+      /nodeIndex.*non-negative safe integer/,
+    );
+  });
+
+  test.each([
+    ['an unsafe sender leaf', { senderLeafIndex: Number.MAX_SAFE_INTEGER + 1 }],
+    ['an internal sender node', { senderLeafIndex: 1 }],
+    ['an out-of-range sender leaf', { senderLeafIndex: 4 }],
+    ['a short sender key', { senderLeafPublicKey: Buffer.alloc(64).toString('base64') }],
+    ['an unexpected field', { extra: true }],
+  ])('rejects %s', (_label, patch) => {
+    const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
+    expect(() =>
+      deserializePathUpdateV2FromWire({ ...wire, ...patch }),
+    ).toThrow(/Invalid PathUpdateV2/);
+  });
+
+  test('rejects duplicate path nodes, unexpected node fields, and non-canonical base64', () => {
+    const wire = serializePathUpdateV2ForWire(validPathUpdateV2());
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        nodes: [wire.nodes[0], { ...wire.nodes[0] }],
+      }),
+    ).toThrow(/Invalid PathUpdateV2/);
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        nodes: [{ ...wire.nodes[0], unexpected: true }],
+      }),
+    ).toThrow(/unexpected field 'unexpected'/);
+    expect(() =>
+      deserializePathUpdateV2FromWire({
+        ...wire,
+        senderLeafPublicKey: wire.senderLeafPublicKey.replace(/=+$/, ''),
+      }),
+    ).toThrow(/senderLeafPublicKey/);
+  });
 });
 
 describe('path-update-wire V2 outbound boundary', () => {

@@ -2,6 +2,7 @@ import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import * as TreeMath from './beekem/tree-math.js';
+import { MAX_BEEKEM_TREE_LEAVES } from './beekem/types.js';
 import {
   deserializeBeeKEMWelcomeV2FromWire,
   serializeBeeKEMWelcomeV2ForWire,
@@ -223,6 +224,60 @@ describe('beekem-welcome-wire', () => {
     expect(() => deserializeBeeKEMWelcomeV2FromWire(wire)).toThrow(/nodeIndex/);
   });
 
+});
+
+describe('beekem-welcome-wire V2 inbound boundary', () => {
+  type WelcomeWire = ReturnType<typeof serializeBeeKEMWelcomeV2ForWire>;
+  test.each([
+    [
+      'duplicate path keys',
+      (wire: WelcomeWire) => ({
+        ...wire,
+        pathKeys: [wire.pathKeys[0], { ...wire.pathKeys[0] }],
+      }),
+    ],
+    ['an unexpected field', (wire: WelcomeWire) => ({ ...wire, extra: true })],
+    [
+      'an unexpected path-key field',
+      (wire: WelcomeWire) => ({
+        ...wire,
+        pathKeys: [{ ...wire.pathKeys[0], unexpected: true }],
+      }),
+    ],
+    [
+      'non-canonical base64',
+      (wire: WelcomeWire) => ({
+        ...wire,
+        treeHash: wire.treeHash.replace(/=+$/, ''),
+      }),
+    ],
+  ])('rejects %s', (_label, mutate) => {
+    const wire = serializeBeeKEMWelcomeV2ForWire(welcomeFixture());
+    expect(() => deserializeBeeKEMWelcomeV2FromWire(mutate(wire))).toThrow(
+      /Invalid BeeKEMWelcomeV2/,
+    );
+  });
+
+  test('rejects a tree array beyond the supported width before reading entries', () => {
+    let reads = 0;
+    const oversized = new Array(2 * MAX_BEEKEM_TREE_LEAVES).fill(null);
+    Object.defineProperty(oversized, '0', {
+      enumerable: true,
+      get() {
+        reads++;
+        return null;
+      },
+    });
+    const wire = serializeBeeKEMWelcomeV2ForWire(welcomeFixture());
+
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...wire,
+        treeNodePublicKeys: oversized,
+      }),
+    ).toThrow(/Invalid BeeKEMWelcomeV2/);
+    expect(reads).toBe(0);
+  });
 });
 
 describe('welcome-sealed-payload', () => {
