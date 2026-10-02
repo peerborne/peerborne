@@ -516,6 +516,36 @@ describe('shared protocol request boundaries', () => {
     },
   );
 
+  test.each(jsonProtocols)(
+    'aborts a %s stream when the serializer omits its completion detector',
+    async (handlerName, protocol) => {
+      const serializer = {
+        deserializeLoadRequest: jest.fn(() => ({ documentId: '/doc' })),
+      };
+      const { handlers } = await registerHandlers(serializer);
+      const { stream } = streamFromChunks([new TextEncoder().encode('{}')]);
+      const warn = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      try {
+        await handlers.get(protocol)!(stream);
+        expect(serializer.deserializeLoadRequest).not.toHaveBeenCalled();
+        expect(stream.abort).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: 'Shared protocol request rejected',
+          }),
+        );
+        expect(stream.send).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(
+          `Shared ${handlerName} handler: failed to read request, dropping`,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   test.each(rawProtocols)(
     'aborts a malformed %s stream instead of substituting a half-close',
     async (_handlerName, protocol) => {

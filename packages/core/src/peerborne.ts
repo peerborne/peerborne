@@ -971,7 +971,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
@@ -1029,7 +1029,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
@@ -1210,7 +1210,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
