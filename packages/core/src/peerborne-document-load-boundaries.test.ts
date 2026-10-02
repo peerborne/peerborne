@@ -5245,7 +5245,7 @@ describe('document load response boundaries', () => {
     expect(rawStream.closeRead).not.toHaveBeenCalled();
   });
 
-  test('treats a cross-context tip advertisement as a non-vote', async () => {
+  test('treats a security advertisement signed for another context as a non-vote', async () => {
     const verify = jest.fn();
     const rawStream = {
       send: jest.fn(() => true),
