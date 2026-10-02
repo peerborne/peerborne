@@ -2325,7 +2325,7 @@ describe('YjsKeychain', () => {
     expect(keychain.getKey(epochId)).toBe(key);
   });
 
-  test('legacy epoch commit ignores an accessor replacing the returned claim method', async () => {
+  test('standalone epoch commit ignores an accessor replacing the returned claim method', async () => {
     const keychain = new YjsKeychain();
     const epochId = crypto.getRandomValues(new Uint8Array(32));
     const key = await crypto.subtle.generateKey(
