@@ -102,9 +102,6 @@ class App extends React.Component<
       // Serialize each CryptoKey to { fullHex, displayHex }.
       // fullHex is the complete SHA-256 hash used for de-duplication;
       // displayHex is the truncated 8-byte prefix shown in the UI.
-      // Promise.allSettled is ES2020. The tsconfig targets ES5 but includes
-      // "esnext" in `lib`, and CRA's default browserslist polyfills it for
-      // older browsers, so this is safe at runtime.
       const serializeKeys = async (keys: CryptoKey[], fallbackPrefix: string) => {
         const results = await Promise.allSettled(
           keys.map(async (k) => {

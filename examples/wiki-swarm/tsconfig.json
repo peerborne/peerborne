@@ -24,7 +24,6 @@
   "include": [
     "src"
   ],
-  "exclude": ["src/serviceWorker.ts"],
   "references": [
     {
       "path": "../../packages/core"
