@@ -151,7 +151,7 @@ import {
   decodeWelcomeSealedPayloadV2,
   encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
-import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   decideLoadQuorum,
   effectiveK,
@@ -296,7 +296,6 @@ export {
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
-  tipsHash,
   tipsHashToHex,
   TIPS_HASH_LENGTH,
   decideLoadQuorum,

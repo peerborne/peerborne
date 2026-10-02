@@ -124,7 +124,7 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
-import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
   DEFAULT_LOAD_QUORUM_K,
@@ -2164,8 +2164,8 @@ export class PeerborneDocument<
    *     they were already in `_referencedAncestors`, so they remain
    *     marked as non-heads.
    *
-   * Returns a fresh array so callers can't mutate internal state;
-   * `tipsHash` sorts independently, so we don't sort here.
+   * Returns a fresh array so callers can't mutate internal state. Digest
+   * helpers sort independently, so we don't sort here.
    *
    * @internal
    */
@@ -2663,8 +2663,8 @@ export class PeerborneDocument<
     // hold. Without this, a relay peer that joined via `load()` (or that has
     // only ever applied remote changes via GossipSub) would keep
     // `_lastSyncMessage` undefined and `_servedFrontier()` would return `[]`,
-    // making the peer advertise `tipsHash([])` in the initial-load quorum
-    // probe AND ship an empty load response. Two such relay peers would
+    // making the peer advertise an empty-frontier digest in the initial-load
+    // quorum probe AND ship an empty load response. Two such relay peers would
     // agree on the empty-set hash, satisfying quorum, and an honest newcomer
     // would accept an empty document while the mesh actually had data.
     //

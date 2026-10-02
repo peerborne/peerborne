@@ -15,7 +15,6 @@ import {
 import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
 import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
-import { tipsHash, tipsHashToHex } from './tips-hash.js';
 
 jest.mock(
   'it-pipe',

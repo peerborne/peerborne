@@ -630,9 +630,9 @@ export function selectAncestryClosedNodes<ChangesType>(
  * `message.snapshot.lastChangeNodeCID`, it computes the frontier as a
  * function of the payload's structure -- the set of CIDs that appear in
  * the served tree but are NOT referenced as a parent (child-key) of any
- * node in the same tree. Hashing this set with `tipsHash` and comparing
- * to `winningHashHex` produces a binding decision that does not depend
- * on the responder's own attestation.
+ * node in the same tree. Binding this set into `loadAdvertisementHash` and
+ * comparing the digest to `winningHashHex` produces a decision that does not
+ * depend on the responder's own attestation.
  *
  * Algorithm:
  *   - Initialise `cids = {}` and `referenced = {}`.
@@ -653,9 +653,9 @@ export function selectAncestryClosedNodes<ChangesType>(
  *
  * Edge cases:
  *   - Both `changes` undefined AND `snapshotBoundaryCid` empty: the
- *     responder is brand new / has no state. Returns `[]`. The loader
- *     can compare against the canonical hash of `[]` to detect a
- *     responder that voted for a non-empty state but serves nothing.
+ *     responder is brand new / has no state. Returns `[]`, so a responder
+ *     that voted for a non-empty state but serves nothing fails the digest
+ *     comparison.
  *   - `changeId === undefined` with `changes` defined: the served tree
  *     is anonymous (no root CID). Pure helpers in this module already
  *     tolerate `nodeId === undefined`; we record nothing for the
@@ -674,7 +674,7 @@ export function selectAncestryClosedNodes<ChangesType>(
  * then computing `_hashes \ _referencedAncestors` on an EMPTY pre-sync
  * loader, except it works in pure form (no I/O, no Helia blockstore
  * fetch, no document state mutation). The returned array is unsorted;
- * `tipsHash` performs its own canonical sort.
+ * `loadAdvertisementHash` performs its own canonical sort.
  */
 export function computeServedFrontier<ChangesType>(
   changeId: string | undefined,
