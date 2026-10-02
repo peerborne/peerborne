@@ -81,7 +81,7 @@ const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
  *   [4-byte BE path length] [UTF-8 document path] [protocol body]
  *
  * Used by every shared protocol handler that routes by document path
- * (currently `documentKeyUpdateV2` and BeeKEM Welcome v1/v2). Centralizing
+ * (`documentKeyUpdateV2` and BeeKEM Welcome and PathUpdate V2). Centralizing
  * the parse here keeps the validation limits (`maxRequestSize`,
  * `maxPathLength`), the unsigned-32-bit length decode, and the
  * registry-lookup behavior consistent across protocols so the two
@@ -108,8 +108,8 @@ export type PathPrefixedHeaderDropReason =
 
 /**
  * Read and parse the path-prefixed header used by shared protocol
- * handlers (BeeKEM Welcome v1, document key-update v2), then look up
- * the document in the supplied registry.
+ * handlers (BeeKEM Welcome and PathUpdate V2, document key-update V2), then
+ * look up the document in the supplied registry.
  *
  * On any malformed input -- oversized request, short read, invalid
  * length header, unknown document path -- this logs a warning prefixed

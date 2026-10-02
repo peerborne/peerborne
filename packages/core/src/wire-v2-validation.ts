@@ -242,7 +242,7 @@ function reserveV2DecodedBytes(
 /**
  * Detach runtime bytes, charging their encoded size to the budget.
  */
-export function copyRuntimeBytes(
+function copyRuntimeBytes(
   value: unknown,
   minimumLength: number,
   maximumLength: number,
