@@ -175,9 +175,9 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
         pathUpdateEpochId:
           message.pathUpdateEpochId &&
           Base64.fromUint8Array(message.pathUpdateEpochId),
-        // Initial-load quorum tip-set hash (#189 §5.4.2). Base64-encoded for
+        // Initial-load quorum state digest (#189 §5.4.2). Base64-encoded for
         // JSON-safe transport, same pattern as `welcomeEpochId`. Only
-        // populated on tip-advertise responses; absent on regular sync
+        // populated on security advertisements; absent on regular sync
         // traffic. The deserializer below mirrors this encoding.
         tipsHash: message.tipsHash && Base64.fromUint8Array(message.tipsHash),
         // Explicit tip-set advertisement populated on load responses to
@@ -387,12 +387,12 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       }
       pathUpdateEpochId = Base64.toUint8Array(raw.pathUpdateEpochId);
     }
-    // Initial-load quorum tip-set hash (#189 §5.4.2). Decoded base64 on the
+    // Initial-load quorum state digest (#189 §5.4.2). Decoded base64 on the
     // way back to Uint8Array; mirrors the encoding in `serializeSyncMessage`
     // above. Untrusted input -- reject anything that isn't a string AND
     // enforce the fixed-width SHA-256 digest length (32 bytes) at the
     // wire boundary so malformed values never reach the quorum decision
-    // logic. `tipsHash` is defined as `SHA-256(sorted CID list)` and is
+    // logic. `tipsHash` carries the V4 load-advertisement digest and is
     // used as a Map key in `decideLoadQuorum`; a wrong-length value could
     // either silently mis-bucket against legitimate votes or produce a
     // partial-hash collision under a hostile peer. Reject on the way in.

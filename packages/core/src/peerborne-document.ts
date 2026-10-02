@@ -2208,8 +2208,8 @@ export class PeerborneDocument<
    * change H1 plus remotely-applied changes H2, H3 that aren't yet
    * cross-linked from any local change), `_currentFrontier()` returns
    * `{H1, H2, H3}` but the load response only contains H1's subtree.
-   * That creates an inconsistency: the tip-advertise probe would hash
-   * `{H1, H2, H3}` and win the quorum vote, but the served payload's
+   * That creates an inconsistency: the security-advertisement probe would
+   * bind `{H1, H2, H3}` and win the quorum vote, but the served payload's
    * structural frontier (`computeServedFrontier(...)` on the loader side)
    * hashes only `{H1}`, causing the loader's bind check to reject the
    * honest peer.
@@ -2712,7 +2712,7 @@ export class PeerborneDocument<
    * The cached message's `documentId` / `keychainChanges` fields are
    * preserved across the swap. Response-specific fields
    * (`signature`, `tips`, `tipsHash`) are dropped because they are
-   * regenerated per-response by the load / tip-advertise handlers; leaving
+   * regenerated per-response by the load / security-advertise handlers; leaving
    * a stale value would be misleading at best, a wire-protocol violation
    * at worst.
    *
@@ -3971,8 +3971,8 @@ export class PeerborneDocument<
    * - `since_invited`: request only the current key. From the recipient's
    *   perspective, "since I was invited" is the current epoch
    *   (`welcomeEpochId`) onward, so the Welcome itself should carry
-   *   exactly the current key (subsequent rotations arrive via the
-   *   key-update protocol). Using `_keychainChangesForVisibility()` here
+   *   exactly the current key (subsequent rotations arrive via BeeKEM
+   *   PathUpdates). Using `_keychainChangesForVisibility()` here
    *   would instead leak the *inviter's* post-invite slice (or, for
    *   founders, the full history), violating the recipient's intended join
    *   boundary. Providers reject when they cannot make this isolated export
@@ -4439,7 +4439,7 @@ export class PeerborneDocument<
     try {
       const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
-      // Tip-advertise runs on every `open()` from every peer that opens
+      // Security advertisement runs on every `open()` from every peer that opens
       // this document, so a per-request log line scales with mesh size.
       // Drop the unconditional log entirely; the only field the handler
       // would have logged is attacker-controlled (`message`), and the
@@ -5329,15 +5329,15 @@ export class PeerborneDocument<
         // of what was actually served. We then hash that frontier and
         // compare to `winningHashHex`.
         //
-        // We additionally REQUIRE `message.tips` on every v3 load response.
-        // The v3 load-response contract mandates the responder commit
+        // We additionally REQUIRE `message.tips` on every load response.
+        // The load-response contract mandates the responder commit
         // to an explicit frontier attestation; a responder that omits
         // `tips` is recorded as a per-peer bind failure so the loader
-        // retries the next agreeing peer. The structural check above
-        // is the primary defense; the explicit `tips` requirement
-        // ensures protocol compliance AND that the defense-in-depth
-        // check below (verifying `tips` matches the structurally-
-        // derived served frontier) actually runs. Catches the
+        // retries the next agreeing peer. The structural check is the
+        // primary defense; the explicit `tips` requirement ensures
+        // protocol compliance AND that the defense-in-depth check above
+        // (verifying `tips` matches the structurally-derived served
+        // frontier inside the response digest) actually runs. Catches the
         // responder-equivocation mode where `tips` and `changes` were
         // assembled inconsistently — e.g. a peer that claims extra
         // heads in `tips` that are not present in the served tree.
@@ -5355,14 +5355,8 @@ export class PeerborneDocument<
         // `bind-check-failed-all-agreeing-peers`
         // when EVERY narrowed peer fails the bind step.
         if (expectedTipsHashHex !== null) {
-          // Derive the served frontier STRUCTURALLY from the payload
-          // the responder is asking us to apply -- not from the
-          // responder's own `tips` attestation.
-          const servedFrontier = computeServedFrontier(
-            message.changeId,
-            message.changes,
-            message.snapshot?.lastChangeNodeCID,
-          );
+          // The response digest above binds the STRUCTURALLY derived
+          // served frontier, not the responder's own `tips` attestation.
           const servedHex = responseDigest!;
           if (!constantTimeHexEquals(expectedTipsHashHex, servedHex)) {
             console.warn(
@@ -5784,7 +5778,7 @@ export class PeerborneDocument<
           decrypted,
           1,
           MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
-          'Tip advertisement plaintext',
+          'Security advertisement plaintext',
         );
       } catch {
         return null;
@@ -5807,7 +5801,7 @@ export class PeerborneDocument<
           message.tipsHash,
           TIPS_HASH_LENGTH,
           TIPS_HASH_LENGTH,
-          'Tip advertisement hash',
+          'Security advertisement digest',
         );
       } catch {
         return null;

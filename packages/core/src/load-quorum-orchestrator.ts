@@ -419,7 +419,7 @@ export async function runLoadQuorum<T>(opts: {
   if (equivocatingAuthority) {
     console.warn(
       `[${documentPath}] Initial-load quorum FAILED: a signing authority ` +
-        `voted for conflicting tip-set hashes. Aborting load.`,
+        `voted for conflicting state digests. Aborting load.`,
     );
     throw new LoadQuorumFailedError({
       documentPath,
@@ -447,7 +447,7 @@ export async function runLoadQuorum<T>(opts: {
   console.log(
     `[${documentPath}] Initial-load quorum passed: ` +
       `${decision.agreeingPeerIds.length}/${decision.respondingCount} ` +
-      `peers agreed on tipsHash=${decision.winningHashHex.slice(0, 12)}...`,
+      `peers agreed on digest=${decision.winningHashHex.slice(0, 12)}...`,
   );
   // Narrow `peers` to only the agreeing cohort. The caller then asks one of
   // these peers for the full state; with quorum agreement, any single

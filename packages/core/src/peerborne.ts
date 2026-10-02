@@ -114,7 +114,7 @@ import type {
   SharedProtocolMutationResult,
 } from './shared-protocol-admission.js';
 
-/** Maximum allowed document path length in key-update V2 wire format. */
+/** Maximum document path length in path-prefixed shared protocol headers. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
 /** Match the default per-peer load-quorum probe budget. */
@@ -1127,7 +1127,7 @@ export class Peerborne<
     };
 
     // Handler for BeeKEM PathUpdate V2 (reader-revocation rotations).
-    // Wire format mirrors key-update v2 / BeeKEM Welcome V2: 4-byte
+    // Wire format mirrors BeeKEM Welcome V2: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
     // `pathUpdateEpochId` / `signature` fields. After routing by path
@@ -1137,7 +1137,7 @@ export class Peerborne<
     // See note on `docLoadHandler` above re: the v3 StreamHandler
     // signature.
     //
-    // Header parse shared with the key-update + Welcome handlers via
+    // Header parse shared with the Welcome handler via
     // `readPathPrefixedProtocolHeader`.
     const beekemPathUpdateHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;

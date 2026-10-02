@@ -617,13 +617,11 @@ export function selectAncestryClosedNodes<ChangesType>(
  *
  * The initial-load quorum binding (#186 / #189 §5.4.2) needs to verify that
  * the full-load response a peer serves actually corresponds to the
- * tip-set hash that peer voted for in the probe round. Previously the
- * loader hashed the responder-supplied `message.tips` array and compared
- * to the quorum-agreed hash -- which trusted the responder's own
- * attestation as the source of truth. A malicious peer could vote hash
- * X, put X's tip CIDs in `message.tips`, and then serve a `changes`
- * payload describing a completely different state; the binding would
- * still pass.
+ * state digest that peer voted for in the probe round. Hashing the
+ * responder-supplied `message.tips` array would trust the responder's own
+ * attestation: a malicious peer could vote for digest X, put X's tip CIDs
+ * in `message.tips`, and then serve a `changes` payload describing a
+ * completely different state.
  *
  * This helper closes that gap: given the served `changes` tree (rooted
  * at `changeId`) plus an optional `snapshotBoundaryCid` from
