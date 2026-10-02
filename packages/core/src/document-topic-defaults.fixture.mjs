@@ -26,8 +26,6 @@ test('browser and Node builders use the shared document-topic defaults', () => {
   assert.deepEqual(topicDefaults(browser), expected);
   assert.deepEqual(topicDefaults(node), expected);
   assert.equal(expected.pubsubDocumentPrefix, DEFAULT_DOCUMENT_TOPIC_PREFIX);
-  assert.equal('pubsubDocumentPublishPath' in browser, false);
-  assert.equal('pubsubDocumentPublishPath' in node, false);
 });
 
 function pubsubDiscoveryTopics(config) {

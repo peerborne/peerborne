@@ -124,11 +124,11 @@ describe('YjsJSONSerializer load security state', () => {
 
   test('rejects depth beyond the shared change-tree bound', () => {
     const serializer = new YjsJSONSerializer();
-    const legacy = changeChain<Uint8Array>(MAX_MERKLE_DAG_DEPTH + 1);
+    const deep = changeChain<Uint8Array>(MAX_MERKLE_DAG_DEPTH + 1);
     expect(() =>
       serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: '/doc',
-        changes: legacy,
+        changes: deep,
       }),
     ).toThrow(/maximum depth/);
   });

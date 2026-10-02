@@ -305,6 +305,41 @@ describe('load-response V4 confinement', () => {
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
+  test('skips a response without a signature before verification', async () => {
+    const harness = loadHarness({
+      documentId: documentPath,
+      signatureContext: 'load-response-v4',
+      tips: [],
+    });
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
+        loadStream(),
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+    expect(harness.verify).not.toHaveBeenCalled();
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('skips a response whose signature cannot be decoded', async () => {
+    const harness = loadHarness();
+    harness.document._deserializeSignature = () => {
+      throw new TypeError('malformed signature encoding');
+    };
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
+        loadStream(),
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+    expect(harness.verify).not.toHaveBeenCalled();
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+  });
+
   test('rejects a response when writer authorization changes during verification', async () => {
     const harness = loadHarness();
     harness.verify.mockImplementation(async () => {
@@ -832,5 +867,75 @@ describe('load writer conflicts', () => {
 
     await expect(document.load()).resolves.toBe(false);
     expect(attempts).toEqual(['false', 'false']);
+  });
+});
+
+describe('load connection handling', () => {
+  const aliceDirect = '/ip4/10.0.0.1/tcp/1/p2p/alice';
+  const aliceRelayed = '/ip4/10.0.0.2/tcp/1/p2p/relay/p2p-circuit/p2p/alice';
+  const bob = '/ip4/10.0.0.3/tcp/1/p2p/bob';
+
+  function connectionHarness(
+    peers: string[],
+    config: Record<string, unknown>,
+  ) {
+    const document = fakeDocument({
+      swarm: {
+        config,
+        heliaNode: {
+          libp2p: {
+            getConnections: () =>
+              peers.map((peer) => ({ remoteAddr: { toString: () => peer } })),
+            dialProtocol: jest.fn(async (peer: { toString(): string }) => ({
+              peer: peer.toString(),
+            })),
+          },
+        },
+      },
+      _writerKeysVersion: 2,
+      _writerMutationsInFlight: 0,
+      _compactionConfig: { enabled: false },
+    });
+    document._captureLoadSession = async () => fixedLoadSession(document);
+    document._serializeInitialLoadRequest = async () => new Uint8Array([1]);
+    return document;
+  }
+
+  test('tries every connection to one peer when quorum is disabled', async () => {
+    const document = connectionHarness([aliceDirect, aliceRelayed], {
+      loadQuorumEnabled: false,
+    });
+    const attempts: string[] = [];
+    document._sendLoadRequestAndSync = jest.fn(
+      async (_session: unknown, stream: { peer: string }) => {
+        attempts.push(stream.peer);
+        return attempts.length > 1;
+      },
+    );
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(new Set(attempts)).toEqual(new Set([aliceDirect, aliceRelayed]));
+  });
+
+  test('probes each peer id once when quorum is enabled', async () => {
+    const document = connectionHarness([aliceDirect, aliceRelayed, bob], {
+      loadQuorumK: 2,
+      loadQuorumQ: 2,
+    });
+    const probed: string[] = [];
+    document._raceSecurityAdvertiseProbe = jest.fn(
+      async (_session: unknown, peer: { toString(): string }) => {
+        const peerId = document._peerIdOf(peer);
+        probed.push(peerId);
+        return {
+          hash: new Uint8Array(32).fill(5),
+          signerAuthority: `writer:${peerId}`,
+        };
+      },
+    );
+    document._sendLoadRequestAndSync = jest.fn(async () => true);
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(probed.sort()).toEqual(['alice', 'bob']);
   });
 });

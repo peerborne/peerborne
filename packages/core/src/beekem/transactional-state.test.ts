@@ -407,11 +407,11 @@ describe('BeeKEM transactional state changes', () => {
       version: _version,
       generation: _generation,
       numLeaves: _numLeaves,
-      ...legacyWelcome
+      ...unversionedWelcome
     } = welcome;
     await expect(
       new BeeKEM().processWelcome(
-        legacyWelcome,
+        unversionedWelcome,
         bobKeys.privateKey,
         bobKeys.publicKey,
       ),
@@ -750,7 +750,7 @@ describe('BeeKEM transactional state changes', () => {
     }
   });
 
-  test('transactional PathUpdateV2 rejects a legacy downgrade before mutation', async () => {
+  test('transactional PathUpdateV2 rejects an unversioned downgrade before mutation', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await keyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
@@ -765,7 +765,7 @@ describe('BeeKEM transactional state changes', () => {
       numLeaves: _numLeaves,
       treeNodePublicKeys: _treeNodePublicKeys,
       treeHash: _treeHash,
-      ...legacyPathUpdate
+      ...unversionedPathUpdate
     } = pathUpdate;
     const before = {
       generation: bob.generation,
@@ -776,7 +776,7 @@ describe('BeeKEM transactional state changes', () => {
     let commitCalled = false;
 
     await expect(
-      bob.processPathUpdateTransactionally(legacyPathUpdate, async () => {
+      bob.processPathUpdateTransactionally(unversionedPathUpdate, async () => {
         commitCalled = true;
       }),
     ).rejects.toThrow(/v2 update version/);

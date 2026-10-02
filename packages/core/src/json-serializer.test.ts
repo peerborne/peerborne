@@ -659,10 +659,10 @@ describe('stack-safe JSON serialization', () => {
   });
 
   test('round-trips and re-encodes the maximum supported history byte-identically', () => {
-    const legacyDepth = MAX_CHANGE_TREE_DEPTH;
+    const maxDepth = MAX_CHANGE_TREE_DEPTH;
     const first = jsonSerializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/doc',
-      changes: chain(legacyDepth),
+      changes: chain(maxDepth),
     });
     const decoded = jsonSerializer.deserializeSyncMessage(first);
     const second = jsonSerializer.serializeSyncMessage(decoded);
@@ -675,7 +675,7 @@ describe('stack-safe JSON serialization', () => {
       if (current.children === undefined || current.children === false) break;
       current = Object.values(current.children)[0];
     }
-    expect(actualDepth).toBe(legacyDepth);
+    expect(actualDepth).toBe(maxDepth);
   });
 });
 

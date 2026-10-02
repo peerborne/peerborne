@@ -2262,12 +2262,12 @@ describe('document load response boundaries', () => {
     ).resolves.toBe('queue released');
   });
 
-  test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
+  test('leaves an incomplete bootstrap pending without notifying subscribers', async () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
-      changeId: 'legacy-head',
+      changeId: 'bootstrap-head',
       changes: { kind: crdtDocumentChangeNode },
     };
     const { document, stream } = signedLoadHarness(
@@ -2285,7 +2285,7 @@ describe('document load response boundaries', () => {
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
-        await document._fireOrDeferRemoteUpdateHandlers(['legacy-head']);
+        await document._fireOrDeferRemoteUpdateHandlers(['bootstrap-head']);
         return true;
       },
     );
