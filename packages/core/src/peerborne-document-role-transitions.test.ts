@@ -1809,7 +1809,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
-  test('fails closed before publication when transactional epoch staging is unavailable', async () => {
+  test('rejects a keychain without prepareEpochKey before publication', async () => {
     const document = fakeDocument({
       readers: ['target'],
       liveLeafIndex: 2,
@@ -1819,7 +1819,7 @@ describe('writer and reader removal ordering', () => {
     delete document._keychain.prepareEpochKey;
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
-      /does not support transactional epoch-key staging/,
+      /Keychain\.prepareEpochKey must be a function/,
     );
 
     expect(document._testState.readerIds.has('target')).toBe(true);

@@ -3380,9 +3380,9 @@ export class PeerborneDocument<
       'Reader revocation keychain prepareEpochKey',
     );
     if (!prepareProperty.found || typeof prepareProperty.value !== 'function') {
-      throw new Error(
-        `Cannot remove reader from "${this.documentPath}": the keychain ` +
-          'does not support transactional epoch-key staging.',
+      throw new TypeError(
+        `Cannot remove reader from "${this.documentPath}": ` +
+          'Keychain.prepareEpochKey must be a function',
       );
     }
     const prepared = await documentReflectApply(
