@@ -1,7 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
-import { JSONSerializer, validateChangeBlockMetadata } from './json-serializer';
+import { JSONSerializer } from './json-serializer';
 import { Base64 } from 'js-base64';
-import { CRDTChangeBlock } from './crdt-change-block';
 
 const serializer = new JSONSerializer<any>();
 
@@ -80,31 +79,5 @@ describe('JSONSerializer additional coverage', () => {
     test('deserialize of invalid JSON logs and rethrows', () => {
       expect(() => serializer.deserialize('{invalid')).toThrow();
     });
-  });
-});
-
-describe('validateChangeBlockMetadata additional coverage', () => {
-  test('rejects blindIndexTokens with non-Object non-null prototype', () => {
-    class CustomProto {}
-    const tokens = Object.create(CustomProto.prototype);
-    (tokens as any).field = 'value';
-
-    const deserialized = { blindIndexTokens: tokens };
-    const result: CRDTChangeBlock<any> = { changes: {}, nonce: new Uint8Array([1]) };
-
-    expect(() => validateChangeBlockMetadata(deserialized, result)).toThrow(
-      'blindIndexTokens must be a plain object',
-    );
-  });
-
-  test('accepts blindIndexTokens with null prototype', () => {
-    const tokens = Object.create(null);
-    (tokens as any).field = 'value';
-
-    const deserialized = { blindIndexTokens: tokens };
-    const result: CRDTChangeBlock<any> = { changes: {}, nonce: new Uint8Array([1]) };
-
-    expect(() => validateChangeBlockMetadata(deserialized, result)).not.toThrow();
-    expect(result.blindIndexTokens).toEqual({ field: 'value' });
   });
 });

@@ -1498,7 +1498,7 @@ export class PeerborneDocument<
     >,
 
     /**
-     * ChangesSerializer is responsible for serializing/deserializing CRDTChangeBlocks.
+     * ChangesSerializer is responsible for serializing/deserializing CRDT changes.
      */
     private readonly _changesSerializer: ChangesSerializer<ChangesType>,
 
