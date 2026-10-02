@@ -1,6 +1,3 @@
-# Docs are generated after push to main (anchored: site/src/content/docs must stay tracked)
-/docs
-
 # Logs
 logs
 *.log
