@@ -234,13 +234,11 @@ export interface Keychain<KeychainChange, DocumentKey> {
   ): Promise<PreparedKeychainEpoch<KeychainChange>>;
 
   /**
-   * Stage a remote keychain merge for an atomic Welcome state commit. Exact
-   * unchanged replay MUST succeed and expose the unchanged staged projection;
-   * the receive path uses that replay to repair a missing BeeKEM tree for an
-   * epoch whose keychain state was already installed. Core transaction
-   * wrappers inspect this capability and the prepared `hydrateKeys`, `getKey`,
-   * and `claimCommit` capabilities without invoking accessors. Implement them
-   * as ordinary prototype methods or own data-property functions.
+   * Stage a remote keychain merge for an atomic Welcome state commit. Core
+   * transaction wrappers inspect this capability and the prepared
+   * `hydrateKeys`, `getKey`, and `claimCommit` capabilities without invoking
+   * accessors. Implement them as ordinary prototype methods or own
+   * data-property functions.
    */
   prepareMerge?(
     change: KeychainChange,

@@ -15,6 +15,7 @@ import {
 } from './derive-doc-key.js';
 import { deserializePathUpdateV2FromWire } from './path-update-wire.js';
 import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
+import { BeeKEM } from './beekem/beekem.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
@@ -58,11 +59,15 @@ const mockWelcomeRootSecrets: Uint8Array[] = [];
 
 jest.mock('./beekem/beekem.js', () => {
   class MockBeeKEM {
-    readonly processWelcome = jest.fn(async () => {
-      const rootSecret = new Uint8Array(32).fill(0x5a);
-      mockWelcomeRootSecrets.push(rootSecret);
-      return rootSecret;
-    });
+    generation: number | null = null;
+    readonly processWelcome = jest.fn(
+      async (welcome: { generation?: number }) => {
+        this.generation = welcome.generation ?? null;
+        const rootSecret = new Uint8Array(32).fill(0x5a);
+        mockWelcomeRootSecrets.push(rootSecret);
+        return rootSecret;
+      },
+    );
   }
   return { BeeKEM: MockBeeKEM };
 });
@@ -600,6 +605,22 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
 
     expect(mockWelcomeRootSecrets).toHaveLength(3);
     expect(mockWelcomeRootSecrets.every(isWiped)).toBe(true);
+  });
+
+  test('treats a Welcome for the recorded invitation epoch as terminal without a tree', async () => {
+    const harness = welcomeHarness({ invitationEpoch: currentEpoch });
+    harness.register(33, { ids: [currentEpoch], currentId: currentEpoch });
+
+    await expect(
+      harness.document._evaluateAndApplyBeeKEMWelcome(
+        welcomeMessage(currentEpoch, 33),
+        { fromBuffer: true },
+      ),
+    ).resolves.toBe('terminal');
+    expect(harness.prepareMerge).not.toHaveBeenCalled();
+    expect(harness.liveIds()).toEqual([]);
+    expect(harness.document._beekem).toBeNull();
+    expect(harness.document._beekemInitialized).toBe(false);
   });
 
   test('rejects a key-only Welcome before staging or committing state', async () => {
