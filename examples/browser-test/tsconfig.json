@@ -23,7 +23,7 @@
   "include": [
     "src"
   ],
-  "exclude": ["src/relay.ts", "src/serviceWorker.ts"],
+  "exclude": ["src/relay.ts"],
   "references": [
     {
       "path": "../../packages/core"
