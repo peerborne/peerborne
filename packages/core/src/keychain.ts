@@ -277,8 +277,6 @@ export interface Keychain<KeychainChange, DocumentKey> {
  *
  * `isTransactionalKeychain` checks for both BeeKEM staging methods. A plain
  * `Keychain` remains source-compatible with implementations that omit them.
- * Workflows composing staged transitions across providers must additionally
- * require `claimCommit()` on each prepared result and fail closed when absent.
  */
 export interface TransactionalKeychain<KeychainChange, DocumentKey>
   extends Keychain<KeychainChange, DocumentKey> {
@@ -370,11 +368,11 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
    * replacement with the same numeric revision, before publishing any state.
    *
    * The method and returned finalizer have the same composed-commit contract
-   * as `PreparedACLChange.claimCommit()`. Optional for source compatibility;
-   * workflows that compose this merge with another provider transition must
-   * require it and fail closed when absent.
+   * as `PreparedACLChange.claimCommit()`. Workflows that compose this merge
+   * with another provider transition must compose claims instead of sequencing
+   * independently fallible `commit()` calls.
    */
-  claimCommit?(): PreparedCommitClaim;
+  claimCommit(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, atomic live-state commit. Keys already hydrated
    * through this staged view MUST become immediately available from the live

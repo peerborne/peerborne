@@ -2797,11 +2797,11 @@ describe('YjsKeychain', () => {
     expect(receiver.getKey(currentId)).toBeUndefined();
 
     const historyBefore = receiver.history();
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
     expect(receiver.history()).toEqual(historyBefore);
     expect(receiver.getKey(firstId)).toBeUndefined();
     expect(receiver.getKey(currentId)).toBeUndefined();
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       /already committed or claimed/,
     );
     expect(() => prepared.commit()).toThrow(/already committed or claimed/);
@@ -2860,7 +2860,7 @@ describe('YjsKeychain', () => {
     const firstHydration = prepared.hydrateKeys();
     const concurrentHydration = prepared.hydrateKeys();
 
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       'key hydration is in progress',
     );
     const [first, concurrent] = await Promise.all([
@@ -2869,7 +2869,7 @@ describe('YjsKeychain', () => {
     ]);
     expect(concurrent[0][1]).toBe(first[0][1]);
 
-    const claim = prepared.claimCommit!();
+    const claim = prepared.claimCommit();
     await expect(prepared.hydrateKeys()).rejects.toThrow(
       /already committed or claimed/,
     );
@@ -2889,7 +2889,7 @@ describe('YjsKeychain', () => {
       const unhydratedReceiver = new YjsKeychain();
       const unhydrated = unhydratedReceiver.prepareMerge(source.history());
       await expect(unhydrated.hydrateKeys()).rejects.toThrow('import failed');
-      unhydrated.claimCommit!().finalize();
+      unhydrated.claimCommit().finalize();
       expect(unhydratedReceiver.getKey(epochId)).toBeUndefined();
       expect((await unhydratedReceiver.current())[0]).toEqual(epochId);
 
@@ -2901,7 +2901,7 @@ describe('YjsKeychain', () => {
       );
       const [[retriedId, retriedKey]] = await retried.hydrateKeys();
       expect(retriedId).toEqual(epochId);
-      retried.claimCommit!().finalize();
+      retried.claimCommit().finalize();
 
       expect(retriedReceiver.getKey(epochId)).toBe(retriedKey);
     } finally {
@@ -2916,13 +2916,13 @@ describe('YjsKeychain', () => {
     const abandoned = receiver.prepareMerge(source.history());
     const abandonedKey = (await abandoned.hydrateKeys())[0][1];
 
-    abandoned.claimCommit!();
+    abandoned.claimCommit();
     expect(receiver.getKey(epochId)).toBeUndefined();
     expect(await receiver.keys()).toHaveLength(0);
 
     const replay = receiver.prepareMerge(source.history());
     const replayKey = (await replay.hydrateKeys())[0][1];
-    replay.claimCommit!().finalize();
+    replay.claimCommit().finalize();
 
     expect(replayKey).not.toBe(abandonedKey);
     expect(receiver.getKey(epochId)).toBe(replayKey);
@@ -2949,14 +2949,14 @@ describe('YjsKeychain', () => {
         throw new Error('cache batch preparation failed');
       });
 
-    expect(() => prepared.claimCommit!()).toThrow(
+    expect(() => prepared.claimCommit()).toThrow(
       'cache batch preparation failed',
     );
     expect(receiver.history()).toEqual(historyBefore);
     expect(receiver.getKey(epochId)).toBeUndefined();
 
     prepareSetMany.mockRestore();
-    prepared.claimCommit!().finalize();
+    prepared.claimCommit().finalize();
     expect(receiver.getKey(epochId)).toBe(hydratedKey);
   });
 
@@ -2966,9 +2966,9 @@ describe('YjsKeychain', () => {
     const receiver = new YjsKeychain();
     const staleRevision = receiver.prepareMerge(source.history());
 
-    receiver.prepareMerge(receiver.history()).claimCommit!().finalize();
+    receiver.prepareMerge(receiver.history()).claimCommit().finalize();
 
-    expect(() => staleRevision.claimCommit!()).toThrow(
+    expect(() => staleRevision.claimCommit()).toThrow(
       'Keychain changed while merge was staged',
     );
 
@@ -2982,7 +2982,7 @@ describe('YjsKeychain', () => {
       writable: true,
     });
 
-    expect(() => staleIdentity.claimCommit!()).toThrow(
+    expect(() => staleIdentity.claimCommit()).toThrow(
       'Keychain changed while merge was staged',
     );
     expect(replaced.getKey(epochId)).toBeUndefined();
@@ -3164,7 +3164,7 @@ describe('YjsKeychain', () => {
     const appendCommitment = await valid.stateCommitment!();
     previousIntent.fill(0);
     newIntent.fill(0);
-    valid.claimCommit!().finalize();
+    valid.claimCommit().finalize();
     expect((await receiver.keys()).map(([id]) => id)).toEqual([idA, idB]);
     expect(await receiver.stateCommitment()).toEqual(appendCommitment);
 
