@@ -3083,23 +3083,13 @@ export class PeerborneDocument<
     if (!changes.found) {
       throw new TypeError('Prepared reader ACL change must provide changes');
     }
-    const claimCommit = preparedDataProperty(
-      prepared,
-      'claimCommit',
-      'Prepared reader ACL claimCommit',
-    );
-    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
-      throw new Error(
-        `Cannot add reader to "${this.documentPath}": the reader ACL ` +
-          'must support commit claims for atomic onboarding.',
-      );
-    }
     return {
       changes: changes.value as ChangesType,
-      claimCommit: {
-        receiver: prepared as object,
-        method: claimCommit.value as (...args: unknown[]) => unknown,
-      },
+      claimCommit: capturePreparedDataMethod(
+        prepared,
+        'claimCommit',
+        'Prepared reader ACL claimCommit',
+      ),
     };
   }
 
@@ -3125,23 +3115,13 @@ export class PeerborneDocument<
     if (!changes.found) {
       throw new TypeError('Prepared reader ACL change must provide changes');
     }
-    const claimCommit = preparedDataProperty(
-      prepared,
-      'claimCommit',
-      'Prepared reader ACL claimCommit',
-    );
-    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
-      throw new Error(
-        `Cannot remove reader from "${this.documentPath}": the ACL and ` +
-          'keychain must support composed commit claims.',
-      );
-    }
     return {
       changes: changes.value as ChangesType,
-      claimCommit: {
-        receiver: prepared as object,
-        method: claimCommit.value as (...args: unknown[]) => unknown,
-      },
+      claimCommit: capturePreparedDataMethod(
+        prepared,
+        'claimCommit',
+        'Prepared reader ACL claimCommit',
+      ),
     };
   }
 
@@ -3166,21 +3146,11 @@ export class PeerborneDocument<
       this._keychain,
       [epochId, documentKey],
     );
-    const claimCommit = preparedDataProperty(
+    return capturePreparedDataMethod(
       prepared,
       'claimCommit',
       'Prepared reader-revocation epoch claimCommit',
     );
-    if (!claimCommit.found || typeof claimCommit.value !== 'function') {
-      throw new Error(
-        `Cannot remove reader from "${this.documentPath}": the ACL and ` +
-          'keychain must support composed commit claims.',
-      );
-    }
-    return {
-      receiver: prepared as object,
-      method: claimCommit.value as (...args: unknown[]) => unknown,
-    };
   }
 
   /** Invoke a captured provider claim and fail closed if its state is uncertain. */

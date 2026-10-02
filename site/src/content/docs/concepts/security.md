@@ -256,9 +256,9 @@ prevalidated commit claims. A publication failure after valid claims leaves
 those live states on the old epoch for an explicit retry. This is not a
 distributed transaction: GossipSub publication may already have reached
 another replica before a local publication failure is observed, so retries and
-later synchronization can still be required. Custom ACL and keychain providers
-that omit the commit-claim capability are rejected before claim invocation. A
-claim method and its callable finalizer are trusted provider boundaries: if an
+later synchronization can still be required. A prepared ACL change or keychain
+epoch without a `claimCommit()` method violates the provider contract and is
+rejected before any claim is invoked. A claim method and its callable finalizer are trusted provider boundaries: if an
 invoked claim throws, returns an asynchronous or malformed record, or its
 finalizer violates the synchronous nonthrowing contract, core poisons the
 document instance because it cannot prove that custom provider state remained

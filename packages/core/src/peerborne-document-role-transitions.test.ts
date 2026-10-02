@@ -720,7 +720,7 @@ describe('reader addition staging', () => {
     expect(document._testState.publishPreparedReaderChange).not.toHaveBeenCalled();
   });
 
-  test('fails closed when the staged reader ACL does not expose a commit claim', async () => {
+  test('fails closed when a prepared reader addition omits claimCommit', async () => {
     const document = fakeDocument();
     const readerKemPublicKey = await validKemPublicKey();
     const install = jest.fn();
@@ -740,7 +740,9 @@ describe('reader addition staging', () => {
         readerKemPublicKey,
         false,
       ),
-    ).rejects.toThrow(/must support commit claims for atomic onboarding/);
+    ).rejects.toThrow(
+      new TypeError('Prepared reader ACL claimCommit must be a function'),
+    );
 
     expect(install).not.toHaveBeenCalled();
     expect(document._testState.makeChange).not.toHaveBeenCalled();
@@ -1812,7 +1814,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._readerLeafIndices.get('target')).toBe(2);
   });
 
-  test('fails closed before publication when a custom reader ACL cannot claim a composed commit', async () => {
+  test('fails closed before publication when a prepared reader removal omits claimCommit', async () => {
     const document = fakeDocument({
       readers: ['target'],
       liveLeafIndex: 2,
@@ -1825,7 +1827,7 @@ describe('writer and reader removal ordering', () => {
     }));
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
-      /ACL and keychain must support composed commit claims/,
+      new TypeError('Prepared reader ACL claimCommit must be a function'),
     );
 
     expect(document._testState.readerIds.has('target')).toBe(true);
@@ -1834,7 +1836,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._beekem).toBe(document._testState.liveBeeKEM);
   });
 
-  test('fails closed before publication when a custom keychain cannot claim a composed commit', async () => {
+  test('fails closed before publication when a prepared epoch key omits claimCommit', async () => {
     const document = fakeDocument({
       readers: ['target'],
       liveLeafIndex: 2,
@@ -1848,7 +1850,9 @@ describe('writer and reader removal ordering', () => {
     });
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
-      /ACL and keychain must support composed commit claims/,
+      new TypeError(
+        'Prepared reader-revocation epoch claimCommit must be a function',
+      ),
     );
 
     expect(document._testState.readerIds.has('target')).toBe(true);
