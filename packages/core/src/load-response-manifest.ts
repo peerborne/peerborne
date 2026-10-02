@@ -68,7 +68,6 @@ export interface LoadResponseManifestInput<ChangesType> {
 
 interface NodeDescriptor {
   readonly kind: CRDTChangeNodeKind;
-  readonly keyID?: string;
   readonly hasInlineChange: boolean;
   readonly inlineChangeBytes?: Uint8Array;
   readonly childrenMode: 0 | 1 | 2;
@@ -78,7 +77,6 @@ interface NodeDescriptor {
 interface NodeRecord {
   readonly kind: CRDTChangeNodeKind;
   full?: NodeDescriptor;
-  sparseKeyID?: string;
 }
 
 function uint8(value: number): Uint8Array {
@@ -140,9 +138,6 @@ function requirePlainNode<ChangesType>(
     throw new TypeError('load response manifest node must be an object');
   }
   kindByte(node.kind);
-  if (node.keyID !== undefined) {
-    requireString('change-node keyID', node.keyID);
-  }
   if (
     node.children !== undefined &&
     node.children !== crdtChangeNodeDeferred
@@ -193,7 +188,6 @@ function describeNode<ChangesType>(
   }
   return {
     kind: node.kind,
-    keyID: node.keyID,
     hasInlineChange: node.change !== undefined,
     inlineChangeBytes,
     childrenMode,
@@ -215,7 +209,6 @@ function sameBytes(
 function sameDescriptor(a: NodeDescriptor, b: NodeDescriptor): boolean {
   if (
     a.kind !== b.kind ||
-    a.keyID !== b.keyID ||
     a.hasInlineChange !== b.hasInlineChange ||
     !sameBytes(a.inlineChangeBytes, b.inlineChangeBytes) ||
     a.childrenMode !== b.childrenMode ||
@@ -231,7 +224,7 @@ function isSparseDescriptor(descriptor: NodeDescriptor): boolean {
 }
 
 function canonicalDescriptor(record: NodeRecord): NodeDescriptor {
-  const descriptor =
+  return (
     record.full ??
     ({
       kind: record.kind,
@@ -239,27 +232,15 @@ function canonicalDescriptor(record: NodeRecord): NodeDescriptor {
       inlineChangeBytes: undefined,
       childrenMode: 0,
       childIds: [],
-    } satisfies NodeDescriptor);
-  const keyID = descriptor.keyID ?? record.sparseKeyID;
-  return keyID === descriptor.keyID
-    ? descriptor
-    : {
-        ...descriptor,
-        keyID,
-      };
+    } satisfies NodeDescriptor)
+  );
 }
 
 function descriptorParts(descriptor: NodeDescriptor): Uint8Array[] {
   const parts: Uint8Array[] = [
     uint8(kindByte(descriptor.kind)),
-    uint8(descriptor.keyID === undefined ? 0 : 1),
-  ];
-  if (descriptor.keyID !== undefined) {
-    parts.push(...stringParts(descriptor.keyID));
-  }
-  parts.push(
     uint8(descriptor.hasInlineChange ? 1 : 0),
-  );
+  ];
   if (descriptor.inlineChangeBytes !== undefined) {
     parts.push(
       uint32(descriptor.inlineChangeBytes.byteLength),
@@ -533,40 +514,18 @@ export async function loadResponseManifestHash<ChangesType>(
         );
       }
 
-      if (isSparseDescriptor(descriptor)) {
-        if (
-          descriptor.keyID !== undefined &&
-          ((record.sparseKeyID !== undefined &&
-            record.sparseKeyID !== descriptor.keyID) ||
-            (record.full?.keyID !== undefined &&
-              record.full.keyID !== descriptor.keyID))
-        ) {
+      if (!isSparseDescriptor(descriptor)) {
+        if (record.full === undefined) {
+          record.full = descriptor;
+          edgeCount += descriptor.childIds.length;
+          if (edgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
+            throw new RangeError(
+              `load response manifest exceeds ${MAX_LOAD_RESPONSE_MANIFEST_EDGES} edges`,
+            );
+          }
+        } else if (!sameDescriptor(record.full, descriptor)) {
           throw new TypeError(
             `load response manifest contains conflicting descriptions for CID ${cid}`,
-          );
-        }
-        record.sparseKeyID ??= descriptor.keyID;
-      } else if (record.full !== undefined) {
-        if (!sameDescriptor(record.full, descriptor)) {
-          throw new TypeError(
-            `load response manifest contains conflicting descriptions for CID ${cid}`,
-          );
-        }
-      } else {
-        if (
-          record.sparseKeyID !== undefined &&
-          descriptor.keyID !== undefined &&
-          record.sparseKeyID !== descriptor.keyID
-        ) {
-          throw new TypeError(
-            `load response manifest contains conflicting descriptions for CID ${cid}`,
-          );
-        }
-        record.full = descriptor;
-        edgeCount += descriptor.childIds.length;
-        if (edgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
-          throw new RangeError(
-            `load response manifest exceeds ${MAX_LOAD_RESPONSE_MANIFEST_EDGES} edges`,
           );
         }
       }

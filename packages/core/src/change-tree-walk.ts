@@ -147,9 +147,6 @@ function collectBoundedChangeTreeInternal<ChangesType>(
     if (!isValidKind(kind)) {
       throw new TypeError('change tree node has an invalid kind');
     }
-    if (snapshot.keyID !== undefined && typeof snapshot.keyID !== 'string') {
-      throw new TypeError('change tree node has an invalid keyID');
-    }
     const change = snapshot.change as ChangesType | undefined;
     const children = snapshot.children;
     const childrenDeferred = children === crdtChangeNodeDeferred;

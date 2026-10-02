@@ -3732,6 +3732,22 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
+  test('deserializeSyncMessage rejects a change-node "keyID"', () => {
+    const wire = buildWire({
+      signatureContext: 'ordinary-sync-v1' as const,
+      documentId: 'doc',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document',
+        change: ['AQ=='],
+        children: { PARENT: { kind: 'writer', keyID: 'epoch-7' } },
+      },
+    });
+    expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+      /"keyID" is not a change-node field/,
+    );
+  });
+
   test('deserializeSyncMessage accepts omitted "changes" field', () => {
     const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
@@ -3747,7 +3763,6 @@ describe('AutomergeJSONSerializer', () => {
       changeId: 'ROOT',
       changes: {
         kind: 'document' as const,
-        keyID: 'epoch-7',
         change: [new Uint8Array([1])],
         children: {
           PARENT: {

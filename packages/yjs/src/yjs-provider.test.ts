@@ -3521,7 +3521,6 @@ describe('YjsJSONSerializer', () => {
       changeId: 'ROOT',
       changes: {
         kind: 'document' as const,
-        keyID: 'epoch-7',
         change: new Uint8Array([1]),
         children: {
           PARENT: { kind: 'writer' as const, change: new Uint8Array([2]) },
@@ -3707,6 +3706,21 @@ describe('YjsJSONSerializer', () => {
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /pathUpdateEpochId/,
+    );
+  });
+
+  test('deserializeSyncMessage rejects a change-node "keyID"', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = new TextEncoder().encode(
+      JSON.stringify({
+        signatureContext: 'ordinary-sync-v1' as const,
+        documentId: 'doc',
+        changeId: 'ROOT',
+        changes: { kind: 'document', keyID: 'epoch-7', change: 'AQ==' },
+      }),
+    );
+    expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+      /"keyID" is not a change-node field/,
     );
   });
 

@@ -45,7 +45,6 @@ describe('merkle-dag-serialization fuzz', () => {
     fc.assert(
       fc.property(
         fc.oneof(fc.constant(crdtDocumentChangeNode), fc.constant(crdtWriterChangeNode)),
-        fc.option(fc.string({ minLength: 1, maxLength: 64 }), { nil: undefined }),
         fc.option(fc.string(), { nil: undefined }),
         fc.option(
           fc.oneof(
@@ -54,16 +53,30 @@ describe('merkle-dag-serialization fuzz', () => {
           ),
           { nil: undefined },
         ),
-        (kind, keyID, change, children) => {
+        (kind, change, children) => {
           const node: any = { kind };
-          if (keyID !== undefined) node.keyID = keyID;
           if (change !== undefined) node.change = change;
           if (children !== undefined) node.children = children;
 
           const result = deserializeChangeNodeFromJSON(node, id);
           expect(result.kind).toBe(kind);
-          if (keyID) expect(result.keyID).toBe(keyID);
+          expect(Object.prototype.hasOwnProperty.call(result, 'keyID')).toBe(false);
           if (change) expect(result.change).toBe(change);
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  test('rejects a keyID field of any value', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constant(crdtDocumentChangeNode), fc.constant(crdtWriterChangeNode)),
+        fc.anything(),
+        (kind, keyID) => {
+          expect(() =>
+            deserializeChangeNodeFromJSON({ kind, keyID, change: 'leaf' } as any, id),
+          ).toThrow(/"keyID" is not a change-node field/);
         },
       ),
       { numRuns: 500 },
