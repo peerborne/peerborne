@@ -354,31 +354,35 @@ describe('BeeKEM transactional state changes', () => {
     expect(await alice.findLeafByPublicKey(bobKeys.publicKey)).toBeUndefined();
   });
 
-  test('processWelcome preserves existing state after validation failure', async () => {
+  test('processWelcome leaves a fresh receiver retryable after validation failure', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await keyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
     const bobKeys = await keyPair();
     const { welcome } = await alice.addMember(bobKeys.publicKey);
     const bob = new BeeKEM();
-    await bob.processWelcome(welcome, bobKeys.privateKey, bobKeys.publicKey);
-    const beforeRoot = await bob.getRootSecret();
-    const before = [bob.memberCount, bob.myLeafIndex, bob.generation];
     const badHash = new Uint8Array(welcome.treeHash);
     badHash[0] ^= 0xff;
 
     await expect(
       bob.processWelcome(
-        { ...welcome, generation: welcome.generation + 1, treeHash: badHash },
+        { ...cloneWelcome(welcome), treeHash: badHash },
         bobKeys.privateKey,
         bobKeys.publicKey,
       ),
     ).rejects.toThrow(/tree hash mismatch/);
-    expect([bob.memberCount, bob.myLeafIndex, bob.generation]).toEqual(before);
-    expect(await bob.getRootSecret()).toEqual(beforeRoot);
+    expect(stateMetadata(bob)).toEqual({
+      numLeaves: 0,
+      myLeafIndex: -1,
+      generation: null,
+      lastAppliedV2UpdateDigest: null,
+    });
+    await expect(
+      bob.processWelcome(welcome, bobKeys.privateKey, bobKeys.publicKey),
+    ).resolves.toEqual(await alice.getRootSecret());
   });
 
-  test('processWelcome rejects replay and v1 downgrade without mutating state', async () => {
+  test('processWelcome rejects replay, replacement, and v1 downgrade without mutating state', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await keyPair();
     await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
@@ -391,7 +395,14 @@ describe('BeeKEM transactional state changes', () => {
 
     await expect(
       bob.processWelcome(welcome, bobKeys.privateKey, bobKeys.publicKey),
-    ).rejects.toThrow(/non-increasing/);
+    ).rejects.toThrow(/non-fresh BeeKEM tree/);
+    await expect(
+      bob.processWelcome(
+        { ...cloneWelcome(welcome), generation: welcome.generation + 1 },
+        bobKeys.privateKey,
+        bobKeys.publicKey,
+      ),
+    ).rejects.toThrow(/non-fresh BeeKEM tree/);
     const {
       version: _version,
       generation: _generation,
@@ -399,7 +410,11 @@ describe('BeeKEM transactional state changes', () => {
       ...legacyWelcome
     } = welcome;
     await expect(
-      bob.processWelcome(legacyWelcome, bobKeys.privateKey, bobKeys.publicKey),
+      new BeeKEM().processWelcome(
+        legacyWelcome,
+        bobKeys.privateKey,
+        bobKeys.publicKey,
+      ),
     ).rejects.toThrow(/Welcome v2 version or generation/);
     expect(bob.generation).toBe(welcome.generation);
     expect(await bob.getRootSecret()).toEqual(beforeRoot);

@@ -685,7 +685,8 @@ export class BeeKEM {
   }
 
   /**
-   * Process a welcome message to join an existing group.
+   * Process a welcome message to join an existing group. Requires a fresh
+   * instance: callers replace a live tree by swapping in a newly joined one.
    */
   async processWelcome(
     welcome: BeeKEMWelcomeV2,
@@ -695,15 +696,10 @@ export class BeeKEM {
     let stableWelcome: BeeKEMWelcomeV2;
     return this._runTransition(
       async (staged) => {
-        staged._validateWelcomeV2(stableWelcome);
-        if (
-          staged._generation !== null &&
-          stableWelcome.generation <= staged._generation
-        ) {
-          throw new Error(
-            'Cannot process non-increasing BeeKEM Welcome generation',
-          );
+        if (!staged._isFresh()) {
+          throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
         }
+        staged._validateWelcomeV2(stableWelcome);
         if (
           !(await staged._privateKeyMatchesPublicKey(privateKey, publicKey))
         ) {
@@ -1061,6 +1057,15 @@ export class BeeKEM {
   }
 
   // ---- Private helpers ----
+
+  private _isFresh(): boolean {
+    return (
+      this._generation === null &&
+      this._nodes.size === 0 &&
+      this._numLeaves === 0 &&
+      this._myLeafIndex === -1
+    );
+  }
 
   private _assertInitializedForMutation(operation: string): void {
     if (

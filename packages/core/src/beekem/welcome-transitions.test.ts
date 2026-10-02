@@ -1,0 +1,245 @@
+import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { BeeKEM } from './beekem.js';
+import { BeeKEMWelcomeV2 } from './types.js';
+
+afterEach(() => jest.restoreAllMocks());
+
+const ECDH_ALGO = { name: 'ECDH', namedCurve: 'P-256' };
+
+async function generateKeyPair(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey(ECDH_ALGO, true, ['deriveBits']);
+}
+
+function copyWelcome(welcome: BeeKEMWelcomeV2): BeeKEMWelcomeV2 {
+  return {
+    version: 2,
+    generation: welcome.generation,
+    numLeaves: welcome.numLeaves,
+    leafIndex: welcome.leafIndex,
+    pathKeys: welcome.pathKeys.map((node) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey: new Uint8Array(node.publicKey),
+      encryptedPrivateKey: new Uint8Array(node.encryptedPrivateKey),
+    })),
+    treeNodePublicKeys: welcome.treeNodePublicKeys.map((node) => ({
+      nodeIndex: node.nodeIndex,
+      publicKey:
+        node.publicKey === null ? null : new Uint8Array(node.publicKey),
+    })),
+    treeHash: new Uint8Array(welcome.treeHash),
+  };
+}
+
+async function createTwoMemberWelcome(
+  recipientKeyPair?: CryptoKeyPair,
+): Promise<{
+  welcome: BeeKEMWelcomeV2;
+  recipientKeys: CryptoKeyPair;
+  rootSecret: Uint8Array;
+}> {
+  const founder = new BeeKEM();
+  const founderKeys = await generateKeyPair();
+  await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
+  const recipientKeys = recipientKeyPair ?? (await generateKeyPair());
+  const { welcome, rootSecret } = await founder.addMember(
+    recipientKeys.publicKey,
+  );
+  return { welcome, recipientKeys, rootSecret };
+}
+
+async function createInitializedTarget(): Promise<{
+  target: BeeKEM;
+  keys: CryptoKeyPair;
+  rootSecret: Uint8Array;
+}> {
+  const target = new BeeKEM();
+  const keys = await generateKeyPair();
+  await target.initialize(keys.privateKey, keys.publicKey);
+  return { target, keys, rootSecret: await target.getRootSecret() };
+}
+
+async function expectTargetUnchanged(
+  target: BeeKEM,
+  keys: CryptoKeyPair,
+  rootSecret: Uint8Array,
+): Promise<void> {
+  expect(target.memberCount).toBe(1);
+  expect(target.myLeafIndex).toBe(0);
+  expect(target.generation).toBe(0);
+  expect(await target.findLeafByPublicKey(keys.publicKey)).toBe(0);
+  expect(await target.getRootSecret()).toEqual(rootSecret);
+}
+
+function pauseNextDigest(): {
+  entered: Promise<void>;
+  release: () => void;
+} {
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let paused = false;
+  jest
+    .spyOn(crypto.subtle, 'digest')
+    .mockImplementation(async (algorithm, data) => {
+      if (!paused) {
+        paused = true;
+        enter();
+        await gate;
+      }
+      return originalDigest(algorithm, data);
+    });
+  return { entered, release };
+}
+
+describe('BeeKEM V2 Welcome transitions', () => {
+  test('rejects a Welcome on an initialized receiver without running crypto', async () => {
+    const { welcome, recipientKeys } = await createTwoMemberWelcome();
+    const { target, keys, rootSecret } = await createInitializedTarget();
+    const importSpy = jest.spyOn(crypto.subtle, 'importKey');
+    const generateSpy = jest.spyOn(crypto.subtle, 'generateKey');
+
+    await expect(
+      target.processWelcome(
+        copyWelcome(welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      ),
+    ).rejects.toThrow(/non-fresh BeeKEM tree/);
+    expect(importSpy).not.toHaveBeenCalled();
+    expect(generateSpy).not.toHaveBeenCalled();
+    await expectTargetUnchanged(target, keys, rootSecret);
+  });
+
+  test('applies concurrent Welcomes in call order and rejects the later one', async () => {
+    const recipientKeys = await generateKeyPair();
+    const first = await createTwoMemberWelcome(recipientKeys);
+    const second = await createTwoMemberWelcome(recipientKeys);
+    const target = new BeeKEM();
+    const digest = pauseNextDigest();
+    const firstProcessing = target.processWelcome(
+      copyWelcome(first.welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    try {
+      await digest.entered;
+      const secondProcessing = target.processWelcome(
+        copyWelcome(second.welcome),
+        recipientKeys.privateKey,
+        recipientKeys.publicKey,
+      );
+      digest.release();
+      await expect(firstProcessing).resolves.toEqual(first.rootSecret);
+      await expect(secondProcessing).rejects.toThrow(/non-fresh BeeKEM tree/);
+    } finally {
+      digest.release();
+    }
+
+    expect(await target.getRootSecret()).toEqual(first.rootSecret);
+    expect(await target.getRootSecret()).not.toEqual(second.rootSecret);
+  });
+
+  test('reserves a reentrant Welcome behind the outer call before inspecting Proxy descriptors', async () => {
+    const recipientKeys = await generateKeyPair();
+    const outer = await createTwoMemberWelcome(recipientKeys);
+    const nested = await createTwoMemberWelcome(recipientKeys);
+    const target = new BeeKEM();
+    let nestedProcessing: Promise<Uint8Array> | undefined;
+    const reentrantWelcome = new Proxy(copyWelcome(outer.welcome), {
+      getOwnPropertyDescriptor(source, property) {
+        nestedProcessing ??= target.processWelcome(
+          copyWelcome(nested.welcome),
+          recipientKeys.privateKey,
+          recipientKeys.publicKey,
+        );
+        return Reflect.getOwnPropertyDescriptor(source, property);
+      },
+    });
+
+    const outerProcessing = target.processWelcome(
+      reentrantWelcome,
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    expect(nestedProcessing).toBeDefined();
+    await expect(outerProcessing).resolves.toEqual(outer.rootSecret);
+    await expect(nestedProcessing).rejects.toThrow(/non-fresh BeeKEM tree/);
+    expect(await target.getRootSecret()).toEqual(outer.rootSecret);
+  });
+
+  test('orders an initialization requested during an in-flight Welcome after it', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const initializedKeys = await generateKeyPair();
+    const target = new BeeKEM();
+    const digest = pauseNextDigest();
+    const processing = target.processWelcome(
+      copyWelcome(welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    let initializing!: Promise<void>;
+    try {
+      await digest.entered;
+      initializing = target.initialize(
+        initializedKeys.privateKey,
+        initializedKeys.publicKey,
+      );
+      expect(target.memberCount).toBe(0);
+      digest.release();
+      await expect(processing).resolves.toEqual(rootSecret);
+      await initializing;
+    } finally {
+      digest.release();
+    }
+
+    const reference = new BeeKEM();
+    await reference.initialize(
+      initializedKeys.privateKey,
+      initializedKeys.publicKey,
+    );
+    await expectTargetUnchanged(
+      target,
+      initializedKeys,
+      await reference.getRootSecret(),
+    );
+  });
+
+  test('queues local mutations behind an in-flight Welcome', async () => {
+    const { welcome, recipientKeys, rootSecret } =
+      await createTwoMemberWelcome();
+    const target = new BeeKEM();
+    const digest = pauseNextDigest();
+    const processing = target.processWelcome(
+      copyWelcome(welcome),
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+    );
+
+    let updating!: ReturnType<BeeKEM['update']>;
+    try {
+      await digest.entered;
+      updating = target.update();
+      expect(target.memberCount).toBe(0);
+      expect(target.generation).toBeNull();
+      digest.release();
+      await expect(processing).resolves.toEqual(rootSecret);
+    } finally {
+      digest.release();
+    }
+
+    const { pathUpdate } = await updating;
+    expect(pathUpdate.senderLeafIndex).toBe(welcome.leafIndex);
+    expect(pathUpdate.generation).toBe(welcome.generation + 1);
+    expect(target.generation).toBe(welcome.generation + 1);
+  });
+});
