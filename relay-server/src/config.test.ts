@@ -96,7 +96,6 @@ describe('loadConfig', () => {
     })
 
     it('treats ENABLE_IPV6 values other than "1" as disabled', () => {
-      // Historical behaviour: only the literal string "1" enables IPv6.
       expect(loadConfig({ ENABLE_IPV6: 'true' }).ipv6Enabled).toBe(false)
       expect(loadConfig({ ENABLE_IPV6: 'yes' }).ipv6Enabled).toBe(false)
       expect(loadConfig({ ENABLE_IPV6: '0' }).ipv6Enabled).toBe(false)

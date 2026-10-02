@@ -130,10 +130,9 @@ export interface RelayConfig {
  * string. Callers decide what an omitted value means for their setting.
  *
  * Returns `[]` when the env var is set to a non-empty value that
- * nonetheless parses to zero usable entries (e.g. "," or "   "). This
- * matches the historical inline behaviour where any non-empty string
- * produced an array (possibly empty), and crucially keeps a misconfigured
- * allowlist in "closed mode" rather than silently flipping it open.
+ * nonetheless parses to zero usable entries (e.g. "," or "   "). A set but
+ * unusable value therefore keeps a misconfigured allowlist in "closed mode"
+ * rather than silently flipping it open.
  */
 function parseCsv(value: string | undefined): string[] | null {
   if (value === undefined || value === '') {
