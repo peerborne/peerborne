@@ -9730,12 +9730,10 @@ export class PeerborneDocument<
       this._invitationEpoch === undefined
         ? undefined
         : new Uint8Array(this._invitationEpoch);
-    const sameInvitationEpoch =
+    if (
       existingInvitationEpoch !== undefined &&
-      constantTimeEqual(existingInvitationEpoch, newEpochId);
-    const hasInstalledBeeKEM =
-      this._beekemInitialized === true && this._beekem != null;
-    if (sameInvitationEpoch && hasInstalledBeeKEM) {
+      constantTimeEqual(existingInvitationEpoch, newEpochId)
+    ) {
       return 'terminal';
     }
 
@@ -9794,11 +9792,8 @@ export class PeerborneDocument<
           );
           return 'terminal';
         }
-        if (incomingIndex < existingIndex) {
+        if (incomingIndex <= existingIndex) {
           console.warn('Ignoring out-of-order BeeKEM Welcome');
-          return 'terminal';
-        }
-        if (incomingIndex === existingIndex && !sameInvitationEpoch) {
           return 'terminal';
         }
       }
