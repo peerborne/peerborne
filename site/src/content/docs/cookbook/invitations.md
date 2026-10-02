@@ -142,8 +142,8 @@ follow updates but cannot publish document changes.
   begins mutation, a later ACL publication, Welcome sealing, signing,
   encryption, stream, or expiry failure can leave partial or complete founder-
   side membership without returning a usable acceptance. Isolated coordinator
-  and membership-repair suites cover the intended exact-retry repair path, but
-  it is not yet proven as one end-to-end dropped-response scenario. A different
+  and exact-retry membership suites cover the intended retry path, but it is
+  not yet proven as one end-to-end dropped-response scenario. A different
   request or process restart cannot use that path. Offer expiry remains strict,
   so work that completes after expiry cannot produce a usable acceptance.
 - Peerborne does not persist signing or KEM key pairs. The application must
