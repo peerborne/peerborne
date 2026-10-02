@@ -14,6 +14,7 @@ import {
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
 import { deserializePathUpdateV2FromWire } from './path-update-wire.js';
+import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
@@ -99,14 +100,40 @@ function fakeDocument(fields: Record<string, unknown>): any {
 }
 
 function syncMessageSerializer() {
-  let snapshot: Record<string, unknown> | undefined;
   return {
-    serializeSyncMessage: jest.fn((message: Record<string, unknown>) => {
-      snapshot = { ...message };
-      return new Uint8Array([1]);
-    }),
-    deserializeSyncMessage: jest.fn(() => ({ ...snapshot })),
+    serializeSyncMessage: jest.fn((message: Record<string, unknown>) =>
+      new TextEncoder().encode(
+        JSON.stringify(message, (_key, value: unknown) =>
+          value instanceof Uint8Array ? { bytes: [...value] } : value,
+        ),
+      ),
+    ),
+    deserializeSyncMessage: jest.fn((bytes: Uint8Array) =>
+      JSON.parse(new TextDecoder().decode(bytes), (_key, value: unknown) =>
+        value !== null &&
+        typeof value === 'object' &&
+        Array.isArray((value as { bytes?: unknown }).bytes)
+          ? new Uint8Array((value as { bytes: number[] }).bytes)
+          : value,
+      ),
+    ),
   };
+}
+
+function bufferWelcome(
+  document: {
+    _pendingWelcomes: PendingWelcomeBuffer;
+    _syncMessageSerializer: ReturnType<typeof syncMessageSerializer>;
+  },
+  key: string,
+  message: Record<string, unknown>,
+): void {
+  document._pendingWelcomes.store(
+    key,
+    document._syncMessageSerializer.serializeSyncMessage(message),
+    Date.now(),
+    true,
+  );
 }
 
 function welcomeMessage(epochId: Uint8Array, token: number) {
@@ -261,7 +288,7 @@ function welcomeHarness(
         : new Uint8Array(options.invitationEpoch),
     _beekem: null,
     _beekemInitialized: false,
-    _pendingWelcomes: new Map(),
+    _pendingWelcomes: new PendingWelcomeBuffer(),
     _changesSerializer: {
       deserializeChanges: jest.fn((bytes: Uint8Array) => bytes[0]),
     },
@@ -909,22 +936,10 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ],
       currentId: new Uint8Array(32).fill(4),
     });
-    harness.document._pendingWelcomes.set('duplicate', {
-      message: welcomeMessage(currentEpoch, 11),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('older', {
-      message: welcomeMessage(oldEpoch, 12),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('divergent', {
-      message: welcomeMessage(nextEpoch, 15),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('mismatched-current', {
-      message: welcomeMessage(nextEpoch, 16),
-      bufferedAtMs: Date.now(),
-    });
+    bufferWelcome(harness.document, 'duplicate', welcomeMessage(currentEpoch, 11));
+    bufferWelcome(harness.document, 'older', welcomeMessage(oldEpoch, 12));
+    bufferWelcome(harness.document, 'divergent', welcomeMessage(nextEpoch, 15));
+    bufferWelcome(harness.document, 'mismatched-current', welcomeMessage(nextEpoch, 16));
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -954,14 +969,8 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 13),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 14),
-      bufferedAtMs: Date.now(),
-    });
+    bufferWelcome(harness.document, 'first', welcomeMessage(currentEpoch, 13));
+    bufferWelcome(harness.document, 'second', welcomeMessage(nextEpoch, 14));
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(true),
@@ -987,14 +996,8 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ids: [nextEpoch],
       currentId: nextEpoch,
     });
-    harness.document._pendingWelcomes.set('first', {
-      message: welcomeMessage(currentEpoch, 18),
-      bufferedAtMs: Date.now(),
-    });
-    harness.document._pendingWelcomes.set('second', {
-      message: welcomeMessage(nextEpoch, 19),
-      bufferedAtMs: Date.now(),
-    });
+    bufferWelcome(harness.document, 'first', welcomeMessage(currentEpoch, 18));
+    bufferWelcome(harness.document, 'second', welcomeMessage(nextEpoch, 19));
 
     await expect(
       harness.document._drainPendingWelcomesUnlocked(),
