@@ -20,7 +20,7 @@ Useful work includes deterministic acceptance tests, state migration design, adv
 
 ### Persistence and restart recovery
 
-Content-addressed blocks and IndexedDB-backed components exist, but document and identity recovery across browser/process restart needs executable coverage. Test key persistence separately from document blocks, include schema/version migrations, and verify explicit failure behavior when required state is absent.
+Content-addressed blocks and IndexedDB-backed components exist, but document and identity recovery across browser/process restart needs executable coverage. Test key persistence separately from document blocks, reject persisted state in an unsupported format instead of upgrading it, and verify explicit failure behavior when required state is absent.
 
 ### Partition and live convergence
 
