@@ -117,6 +117,10 @@ describe('UCANACL', () => {
     return backing;
   };
 
+  // Primitive test identities round-trip through their `serialized:` form.
+  const deserializeSerialized = async (serialized: string) =>
+    serialized.replace(/^serialized:/, '');
+
   // Capability grants still invoke the backing ACL's direct add operation.
   const grantWithDirectBackingAdd = (key: string) => {
     mockCreateUCAN.mockResolvedValue(
@@ -131,7 +135,11 @@ describe('UCANACL', () => {
 
   beforeEach(() => {
     backing = makeMockAcl();
-    acl = new UCANACLImpl(backing, jest.fn(async (key: string) => `serialized:${key}`));
+    acl = new UCANACLImpl(
+      backing,
+      jest.fn(async (key: string) => `serialized:${key}`),
+      deserializeSerialized,
+    );
     mockCreateUCAN.mockReset();
   });
 
@@ -145,7 +153,7 @@ describe('UCANACL', () => {
   test.each(['\ud800', '\udc00', 'key\ud800suffix'])(
     'rejects ill-formed canonical identity %p before backing work',
     async (encoding) => {
-      const guarded = new UCANACLImpl(rewrapBacking(), async () => encoding);
+      const guarded = new UCANACLImpl(rewrapBacking(), async () => encoding, deserializeSerialized);
       await expect(guarded.check('key1')).rejects.toThrow(/well-formed UTF-16/);
       expect(backing.check).not.toHaveBeenCalled();
     },
@@ -294,7 +302,7 @@ describe('UCANACL', () => {
         ? firstSerialization
         : Promise.resolve(`serialized:${key}`);
     });
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const events: string[] = [];
     const members = new Set<string>();
     backing.add.mockImplementation(async (key: string) => {
@@ -341,7 +349,7 @@ describe('UCANACL', () => {
       }
       return Promise.resolve(`serialized:${key}`);
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.add.mockImplementation(async (key: string) => {
       events.push(`add:${key}`);
       return 'add-changes';
@@ -372,7 +380,7 @@ describe('UCANACL', () => {
       }
       return `serialized:${key}`;
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.add.mockResolvedValue('add-changes');
 
     await expect(
@@ -432,7 +440,7 @@ describe('UCANACL', () => {
       }
       return `serialized:${key}`;
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.check.mockResolvedValue(true);
 
     await expect(
@@ -458,7 +466,7 @@ describe('UCANACL', () => {
       }
       return `serialized:${key}`;
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.users.mockResolvedValue(['key1']);
 
     await expect(
@@ -496,7 +504,7 @@ describe('UCANACL', () => {
       }
       return `serialized:${key}`;
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.users.mockResolvedValue(['bad', 'slow']);
 
     const listing = orderedAcl.users();
@@ -524,7 +532,7 @@ describe('UCANACL', () => {
 
   test('rejects oversized sparse and proxied listings before starting codecs', async () => {
     const serialize = jest.fn(async (key: string) => `serialized:${key}`);
-    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.users.mockResolvedValueOnce(
       new Array(MAX_UCAN_ACL_LISTING_IDENTITIES + 1),
     );
@@ -556,7 +564,7 @@ describe('UCANACL', () => {
 
   test('rejects listings with holes before reading inherited entries', async () => {
     const serialize = jest.fn(async (key: string) => `serialized:${key}`);
-    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const sparse: string[] = new Array(2);
     sparse[1] = 'key1';
     const inherited = Object.getOwnPropertyDescriptor(Array.prototype, '0');
@@ -581,7 +589,7 @@ describe('UCANACL', () => {
 
   test('preserves a throwing listing length and releases admission', async () => {
     const serialize = jest.fn(async (key: string) => `serialized:${key}`);
-    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const boundedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const hostileLength = new Proxy([], {
       get: (target, property, receiver) => {
         if (property === 'length') {
@@ -623,7 +631,7 @@ describe('UCANACL', () => {
       }
       return `serialized:${key}`;
     });
-    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const listedUsers = ['slow', 'unread'];
     Object.defineProperty(listedUsers, '1', {
       enumerable: true,
@@ -650,8 +658,9 @@ describe('UCANACL', () => {
     const serialize = jest
       .fn()
       .mockRejectedValueOnce(new Error('invalid identity'))
+      .mockResolvedValueOnce('serialized:key2')
       .mockResolvedValueOnce('serialized:key2');
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.add.mockResolvedValue('add-changes');
 
     const rejected = orderedAcl.add('key1');
@@ -1054,7 +1063,7 @@ describe('UCANACL', () => {
         ? pendingSerialization
         : Promise.resolve(`serialized:${key}`),
     );
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const members = new Set(['user-b']);
     const addCommit = jest.fn(() => {
       members.add('user-a');
@@ -1249,7 +1258,7 @@ describe('UCANACL', () => {
         commit,
       }),
     );
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
 
     const preparation = orderedAcl.prepareAdd('user-a');
     await started;
@@ -1283,7 +1292,7 @@ describe('UCANACL', () => {
     });
     const proxiedAcl = new UCANACLImpl(
       proxied,
-      jest.fn(async (key: string) => key),
+      jest.fn(async (key: string) => key), async (key: string) => key,
     );
 
     await expect(proxiedAcl.add('user1')).resolves.toBe(
@@ -1343,7 +1352,7 @@ describe('UCANACL', () => {
     });
     guardedAcl = new UCANACLImpl(
       proxied,
-      jest.fn(async (key: string) => key),
+      jest.fn(async (key: string) => key), async (key: string) => key,
     );
 
     await expect(guardedAcl.prepareAdd('user1')).rejects.toThrow(
@@ -2164,7 +2173,7 @@ describe('UCANACL', () => {
     });
     const proxiedAcl = new UCANACLImpl(
       proxied,
-      jest.fn(async (key: string) => key),
+      jest.fn(async (key: string) => key), async (key: string) => key,
     );
 
     await expect(proxiedAcl.remove('user1')).resolves.toBe('staged-removal');
@@ -2222,7 +2231,7 @@ describe('UCANACL', () => {
     });
     guardedAcl = new UCANACLImpl(
       proxied,
-      jest.fn(async (key: string) => key),
+      jest.fn(async (key: string) => key), async (key: string) => key,
     );
 
     await expect(guardedAcl.prepareRemove('user1')).rejects.toThrow(
@@ -2597,7 +2606,7 @@ describe('UCANACL', () => {
         ? pendingSerialization
         : Promise.resolve(`serialized:${key}`),
     );
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const members = new Set(['user-a']);
     const removeCommit = jest.fn(() => {
       members.delete('user-a');
@@ -3086,7 +3095,7 @@ describe('UCANACL', () => {
       await release;
       return `serialized:${key}`;
     });
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     backing.add.mockResolvedValue('add-changes');
 
     const addition = orderedAcl.add('key1');
@@ -3883,7 +3892,7 @@ describe('UCANACL', () => {
         ? firstSerialization
         : Promise.resolve(`serialized:${key}`);
     });
-    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const orderedAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
     const events: string[] = [];
     const members = new Set<string>();
     mockCreateUCAN.mockResolvedValue(
@@ -4205,7 +4214,7 @@ describe('UCANACL', () => {
       serializationStarted();
       return pendingSerialization;
     });
-    const racingAcl = new UCANACLImpl(rewrapBacking(), serialize);
+    const racingAcl = new UCANACLImpl(rewrapBacking(), serialize, deserializeSerialized);
 
     const listing = racingAcl.users();
     await started;
@@ -4416,16 +4425,56 @@ describe('UCANACL', () => {
     ).toBe(false);
   });
 
+  test.each([undefined, null, 'deserialize', {}])(
+    'rejects a missing or malformed identity deserializer %p',
+    (deserialize) => {
+      const serialize = jest.fn(async (key: string) => key);
+      expect(
+        () => new UCANACLImpl(rewrapBacking(), serialize, deserialize as never),
+      ).toThrow(new TypeError('UCAN ACL requires a public-key deserializer'));
+      expect(
+        () =>
+          new UCANACLProviderImpl(
+            { initialize: jest.fn(() => makeMockAcl()) },
+            serialize,
+            deserialize as never,
+          ),
+      ).toThrow(
+        new TypeError('UCAN ACL provider requires a public-key deserializer'),
+      );
+      expect(serialize).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects a missing identity serializer', () => {
+    expect(
+      () =>
+        new UCANACLImpl(
+          rewrapBacking(),
+          undefined as never,
+          deserializeSerialized,
+        ),
+    ).toThrow(new TypeError('UCAN ACL requires a public-key serializer'));
+  });
+
+  test('round-trips primitive identities through the deserializer', async () => {
+    const primitiveAcl = new UCANACLImpl(
+      rewrapBacking(),
+      jest.fn(async (key: string) => `serialized:${key}`),
+      jest.fn(async () => 'other-user'),
+    );
+    backing.add.mockResolvedValue('changes');
+
+    await expect(primitiveAcl.add('user-a')).rejects.toThrow(
+      /non-canonical public-key round trip/,
+    );
+    expect(backing.add).not.toHaveBeenCalled();
+  });
+
   test('fails closed when a mutable identity cannot be detached', async () => {
     const identity = { id: 'user-a' };
     const serialize = jest.fn(async (key: { id: string }) => key.id);
-    const withoutDeserializer = new UCANACLImpl(rewrapBacking(), serialize);
     backing.add.mockResolvedValue('changes');
-
-    await expect(withoutDeserializer.add(identity)).rejects.toThrow(
-      /requires a public-key deserializer for mutable identities/,
-    );
-    expect(backing.add).not.toHaveBeenCalled();
 
     const aliasingDeserializer = new UCANACLImpl(
       rewrapBacking(),
@@ -4463,13 +4512,15 @@ describe('UCANACL', () => {
   });
 
   test('getEntry requires detached snapshots for mutable identities', async () => {
+    const identity = { id: 'user-a' };
     const objectAcl = new UCANACLImpl(
       rewrapBacking(),
       jest.fn(async (key: { id: string }) => `serialized:${key.id}`),
+      jest.fn(async () => identity),
     );
 
-    await expect(objectAcl.getEntry({ id: 'user-a' })).rejects.toThrow(
-      /requires a public-key deserializer for mutable identities/,
+    await expect(objectAcl.getEntry(identity)).rejects.toThrow(
+      /return a detached identity/,
     );
   });
 
@@ -5813,14 +5864,15 @@ describe('UCANACLProvider', () => {
   test('rejects a second UCAN ACL over the same backing instance', () => {
     const sharedBacking = makeMockAcl();
     const serialize = jest.fn(async (key: string) => key);
+    const deserialize = async (key: string) => key;
 
-    expect(new UCANACLImpl(sharedBacking, serialize)).toBeInstanceOf(
+    expect(new UCANACLImpl(sharedBacking, serialize, deserialize)).toBeInstanceOf(
       UCANACLImpl,
     );
-    expect(() => new UCANACLImpl(sharedBacking, serialize)).toThrow(
+    expect(() => new UCANACLImpl(sharedBacking, serialize, deserialize)).toThrow(
       /already wrapped by another UCAN ACL/,
     );
-    expect(new UCANACLImpl({ ...sharedBacking }, serialize)).toBeInstanceOf(
+    expect(new UCANACLImpl({ ...sharedBacking }, serialize, deserialize)).toBeInstanceOf(
       UCANACLImpl,
     );
   });
@@ -5833,6 +5885,7 @@ describe('UCANACLProvider', () => {
     const provider = new UCANACLProviderImpl(
       backingProvider,
       jest.fn(async (key: string) => key),
+      async (key: string) => key,
     );
 
     expect(provider.initialize()).toBeInstanceOf(UCANACLImpl);
