@@ -45,16 +45,19 @@ jest.mock('./ecies.js', () => ({
   importEciesPublicKey: async () => ({}),
 }));
 jest.mock('./welcome-sealed-payload.js', () => ({
-  decodeWelcomeSealedPayload: () => ({
+  decodeWelcomeSealedPayloadV2: () => ({
     keychainChanges: new Uint8Array([1]),
     beekemWelcome: {
+      version: 2,
+      generation: 1,
+      numLeaves: 2,
       leafIndex: 2,
       pathKeys: [{ nodeIndex: 1 }],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: {} }],
       treeHash: new Uint8Array(32),
     },
   }),
-  encodeWelcomeSealedPayload: () => new Uint8Array([1]),
+  encodeWelcomeSealedPayloadV2: () => new Uint8Array([1]),
 }));
 jest.mock('./beekem/beekem.js', () => ({
   BeeKEM: class {
