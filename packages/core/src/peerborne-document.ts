@@ -7866,8 +7866,8 @@ export class PeerborneDocument<
           'divergent membership state.',
       );
     }
-    // Run every onboarding check above even for a legacy ACL that already
-    // lists the target as a writer. A no-op must not bless malformed state.
+    // Run every onboarding check above even when the ACL already lists the
+    // target as a writer. A no-op must not bless malformed state.
     if (
       (await retryACLConflict(() =>
         this._writers.check(stableWriter),

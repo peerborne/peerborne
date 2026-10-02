@@ -168,12 +168,12 @@ function fakeDocument(options: {
   );
   const epochKeyCommit = jest.fn();
   const epochKeyClaim = jest.fn(() => ({ finalize: epochKeyCommit }));
-  const epochLegacyCommit = jest.fn(() => epochKeyClaim().finalize());
+  const epochDirectCommit = jest.fn(() => epochKeyClaim().finalize());
   const prepareEpochKey = jest.fn(async () => ({
     changes: {},
     history: {},
     claimCommit: epochKeyClaim,
-    commit: epochLegacyCommit,
+    commit: epochDirectCommit,
   }));
   const readerKemPublicKeys = new Map<string, Uint8Array>();
   if (options.recordedKemPublicKey) {
@@ -267,7 +267,7 @@ function fakeDocument(options: {
       prepareEpochKey,
       epochKeyClaim,
       epochKeyCommit,
-      epochLegacyCommit,
+      epochDirectCommit,
       serializePublicKey,
       deserializePublicKey,
     },
@@ -1143,7 +1143,7 @@ describe('writer promotion preconditions', () => {
     expect(document._testState.prepareWriterAdd).not.toHaveBeenCalled();
   });
 
-  test('does not let an already-writer no-op bless malformed legacy state', async () => {
+  test('does not let an already-writer no-op bless malformed state', async () => {
     const document = fakeDocument({
       readers: ['target'],
       writers: ['target'],
@@ -1355,7 +1355,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._testState.prepareWriterRemove).not.toHaveBeenCalled();
   });
 
-  test('rejects downgrade of a legacy writer-only target', async () => {
+  test('rejects downgrade of a writer-only target', async () => {
     const document = fakeDocument({ writers: ['target'] });
 
     await expect(document.removeWriter(targetUser)).rejects.toThrow(
@@ -1366,7 +1366,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._makeChange).not.toHaveBeenCalled();
   });
 
-  test('requires a writer-only legacy target to be downgraded before reader removal', async () => {
+  test('requires a writer-only target to be downgraded before reader removal', async () => {
     const document = fakeDocument({ writers: ['target'] });
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
@@ -1398,7 +1398,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._distributeBeeKEMPathUpdate).toHaveBeenCalledTimes(1);
     expect(document._testState.prepareEpochKey).toHaveBeenCalledTimes(1);
     expect(document._testState.epochKeyCommit).toHaveBeenCalledTimes(1);
-    expect(document._testState.epochLegacyCommit).not.toHaveBeenCalled();
+    expect(document._testState.epochDirectCommit).not.toHaveBeenCalled();
     expect(document._makeChange).toHaveBeenCalledTimes(2);
   });
 
@@ -1415,7 +1415,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._testState.removeMember).toHaveBeenCalledWith(2);
     expect(document._testState.prepareEpochKey).toHaveBeenCalledTimes(1);
     expect(document._testState.epochKeyCommit).toHaveBeenCalledTimes(1);
-    expect(document._testState.epochLegacyCommit).not.toHaveBeenCalled();
+    expect(document._testState.epochDirectCommit).not.toHaveBeenCalled();
     expect(document._distributeBeeKEMPathUpdate).toHaveBeenCalledTimes(1);
     expect(document._readerKemPublicKeys.has('target')).toBe(false);
     expect(document._readerLeafIndices.has('target')).toBe(false);
@@ -1705,7 +1705,7 @@ describe('writer and reader removal ordering', () => {
     );
 
     expect(document._bootstrapLoadApplicationState).toBe('poisoned');
-    expect(document._testState.epochLegacyCommit).not.toHaveBeenCalled();
+    expect(document._testState.epochDirectCommit).not.toHaveBeenCalled();
     expect(document._beekem).toBe(originalBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
     expect(document._readerLeafIndices.get('target')).toBe(2);
@@ -1731,7 +1731,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._beekem).toBe(originalBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
     expect(document._readerLeafIndices.get('target')).toBe(2);
-    expect(document._testState.epochLegacyCommit).not.toHaveBeenCalled();
+    expect(document._testState.epochDirectCommit).not.toHaveBeenCalled();
     expect(document._distributeBeeKEMPathUpdate).not.toHaveBeenCalled();
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
@@ -1763,7 +1763,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._bootstrapLoadApplicationState).toBe('complete');
     expect(document._beekem).toBe(originalBeeKEM);
     expect(document._readerKemPublicKeys.has('target')).toBe(true);
-    expect(document._testState.epochLegacyCommit).not.toHaveBeenCalled();
+    expect(document._testState.epochDirectCommit).not.toHaveBeenCalled();
   });
 
   test('rejects malformed claims before either provider finalizes', async () => {
