@@ -9736,6 +9736,8 @@ export class PeerborneDocument<
     ) {
       return 'terminal';
     }
+    const liveBeeKEM = this._beekem;
+    const liveGeneration = liveBeeKEM?.generation;
 
     let keychainPlaintext: ChangesType;
     let bootstrapWelcome: BeeKEMWelcomeV2;
@@ -9859,6 +9861,19 @@ export class PeerborneDocument<
           if (this._writerKeysVersion !== writerKeysVersion) {
             throw new Error('Writer ACL changed before Welcome commit');
           }
+          const invitationEpoch = this._invitationEpoch;
+          const invitationEpochChanged =
+            invitationEpoch === undefined ||
+            existingInvitationEpoch === undefined
+              ? invitationEpoch !== existingInvitationEpoch
+              : !constantTimeEqual(invitationEpoch, existingInvitationEpoch);
+          if (
+            this._beekem !== liveBeeKEM ||
+            this._beekem?.generation !== liveGeneration ||
+            invitationEpochChanged
+          ) {
+            return false;
+          }
           const keychainCommit = this._claimPreparedCommit(
             preparedKeychainMerge.claimCommit,
             'Welcome keychain commit claim',
@@ -9875,9 +9890,14 @@ export class PeerborneDocument<
             this._markDocumentStatePoisoned();
             throw error;
           }
+          return true;
         },
       );
       if (!committed.admitted) return 'retry';
+      if (!committed.value) {
+        console.warn('Deferring BeeKEM Welcome after receiver state changed');
+        return 'retry';
+      }
     } catch (error) {
       console.error('Failed to commit BeeKEM Welcome state');
       if (opts.failClosedOnCommitError) {
