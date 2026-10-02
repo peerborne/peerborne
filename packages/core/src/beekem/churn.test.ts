@@ -519,9 +519,6 @@ describe('BeeKEM multi-member churn', () => {
     await member.initialize(keys.privateKey, keys.publicKey);
     const internals = member as unknown as {
       _nodes: Map<number, TreeNode>;
-      _computeLegacyTreeHash(
-        nodes?: Map<number, TreeNode>,
-      ): Promise<Uint8Array>;
       _computeTreeHashV2(
         nodes: Map<number, TreeNode>,
         numLeaves: number,

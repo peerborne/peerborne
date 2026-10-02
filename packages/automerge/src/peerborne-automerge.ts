@@ -1940,7 +1940,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
         eciesSealed:
           message.eciesSealed && Base64.fromUint8Array(message.eciesSealed),
         // BeeKEM PathUpdate V2 fields. `pathUpdate` is already the
-        // negotiated version's JSON-safe serialized shape; pass through
+        // JSON-safe `SerializedPathUpdateV2` shape; pass it through
         // verbatim.
         // `pathUpdateEpochId` is a `Uint8Array`; base64-encode it.
         pathUpdate: message.pathUpdate,

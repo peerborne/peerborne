@@ -10029,38 +10029,6 @@ export class PeerborneDocument<
   }
 
   /**
-   * Compatibility helper for comparing two invitation epochs against the live
-   * keychain order. The inbound Welcome transaction now performs its security
-   * decision against the detached staged projection before commit.
-   *
-   * @deprecated Internal callers should use the staged Welcome transaction.
-   * @internal
-   */
-  public async _shouldAdvanceInvitationEpoch(
-    existing: Uint8Array,
-    incoming: Uint8Array,
-  ): Promise<boolean> {
-    const stableExisting = new Uint8Array(existing);
-    const stableIncoming = new Uint8Array(incoming);
-    if (constantTimeEqual(stableExisting, stableIncoming)) return false;
-
-    let allKeys: [Uint8Array, unknown][];
-    try {
-      allKeys = await this._keychain.keys();
-    } catch {
-      return false;
-    }
-    let existingIndex = -1;
-    let incomingIndex = -1;
-    for (let index = 0; index < allKeys.length; index++) {
-      const keyId = allKeys[index][0];
-      if (constantTimeEqual(keyId, stableExisting)) existingIndex = index;
-      if (constantTimeEqual(keyId, stableIncoming)) incomingIndex = index;
-    }
-    return existingIndex !== -1 && incomingIndex > existingIndex;
-  }
-
-  /**
    * Remove a user as a valid reader. Users are identified by their public keys.
    *
    * The target must first be downgraded from writer. Revocation resolves the
@@ -10573,7 +10541,7 @@ export class PeerborneDocument<
     // seeded with a placeholder key the joiner could never bootstrap.
     //
     // Imported as `extractable=true`: BeeKEM's tree-hash computation
-    // (`_computeTreeHash`) calls `exportKey('raw', publicKey)` over
+    // (`_computeTreeHashV2`) calls `exportKey('raw', publicKey)` over
     // every non-blanked tree node, so a non-extractable leaf public
     // key would crash subsequent `addMember` / `removeMember` calls.
     // `importEciesPublicKey` defaults to non-extractable for ECIES
