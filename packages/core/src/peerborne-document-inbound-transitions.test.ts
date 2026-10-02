@@ -54,9 +54,15 @@ jest.mock('./path-update-wire.js', () => ({
   serializePathUpdateV2ForWire: jest.fn(),
 }));
 
+const mockWelcomeRootSecrets: Uint8Array[] = [];
+
 jest.mock('./beekem/beekem.js', () => {
   class MockBeeKEM {
-    readonly processWelcome = jest.fn(async () => undefined);
+    readonly processWelcome = jest.fn(async () => {
+      const rootSecret = new Uint8Array(32).fill(0x5a);
+      mockWelcomeRootSecrets.push(rootSecret);
+      return rootSecret;
+    });
   }
   return { BeeKEM: MockBeeKEM };
 });
@@ -549,6 +555,51 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     expect(harness.prepareMerge).toHaveBeenCalledTimes(2);
     expect(harness.claims).toHaveLength(2);
     expect(harness.claims[1]).not.toHaveBeenCalled();
+  });
+
+  test('wipes the staged root secret when a Welcome applies, is stale, or fails to commit', async () => {
+    const isWiped = (secret: Uint8Array) => secret.every((byte) => byte === 0);
+    mockWelcomeRootSecrets.length = 0;
+    const applied = welcomeHarness();
+    applied.register(30, { ids: [currentEpoch], currentId: currentEpoch });
+    await expect(
+      applied.document._evaluateAndApplyBeeKEMWelcome(
+        welcomeMessage(currentEpoch, 30),
+        { fromBuffer: false },
+      ),
+    ).resolves.toBe('applied');
+
+    const stale = welcomeHarness();
+    stale.document._beekem = { generation: 5 };
+    stale.document._beekemInitialized = true;
+    stale.register(
+      31,
+      { ids: [currentEpoch], currentId: currentEpoch },
+      { token: 31, generation: 5 },
+    );
+    await expect(
+      stale.document._evaluateAndApplyBeeKEMWelcome(
+        welcomeMessage(currentEpoch, 31),
+        { fromBuffer: false },
+      ),
+    ).resolves.toBe('terminal');
+    expect(stale.claims[0]).not.toHaveBeenCalled();
+
+    const failed = welcomeHarness({
+      claimFactory: () => {
+        throw new Error('indeterminate merge claim');
+      },
+    });
+    failed.register(32, { ids: [currentEpoch], currentId: currentEpoch });
+    await expect(
+      failed.document._evaluateAndApplyBeeKEMWelcome(
+        welcomeMessage(currentEpoch, 32),
+        { fromBuffer: false },
+      ),
+    ).resolves.toBe('retry');
+
+    expect(mockWelcomeRootSecrets).toHaveLength(3);
+    expect(mockWelcomeRootSecrets.every(isWiped)).toBe(true);
   });
 
   test('rejects a key-only Welcome before staging or committing state', async () => {

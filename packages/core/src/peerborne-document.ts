@@ -9084,11 +9084,14 @@ export class PeerborneDocument<
 
     const beekem = new BeeKEM();
     try {
-      await beekem.processWelcome(
-        welcomeEnvelope.beekemWelcome,
-        kemKeyPair.privateKey,
-        kemKeyPair.publicKey,
-      );
+      // The bootstrap keychain carries the document key; discard the root.
+      (
+        await beekem.processWelcome(
+          welcomeEnvelope.beekemWelcome,
+          kemKeyPair.privateKey,
+          kemKeyPair.publicKey,
+        )
+      ).fill(0);
     } catch {
       throw new Error('Invitation BeeKEM bootstrap could not be processed');
     }
@@ -9835,11 +9838,14 @@ export class PeerborneDocument<
     let stagedBeeKEM: BeeKEM;
     try {
       stagedBeeKEM = new BeeKEM();
-      await stagedBeeKEM.processWelcome(
-        bootstrapWelcome,
-        this._kemKeyPair.privateKey,
-        this._kemKeyPair.publicKey,
-      );
+      // The sealed keychain carries the document key; discard the root.
+      (
+        await stagedBeeKEM.processWelcome(
+          bootstrapWelcome,
+          this._kemKeyPair.privateKey,
+          this._kemKeyPair.publicKey,
+        )
+      ).fill(0);
       const currentGeneration = this._beekem?.generation;
       if (currentGeneration != null && bootstrapWelcome.generation <= currentGeneration) {
         console.warn('Dropping non-increasing BeeKEM Welcome generation');
