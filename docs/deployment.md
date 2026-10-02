@@ -136,11 +136,11 @@ on disconnect, and periodically reconciles its bounded dynamic-topic set with
 GossipSub as a backstop for missed unsubscribe events.
 
 The default admits only the `/peerborne/document/v3/` document namespace.
-Earlier default topics are rejected. Allowlist entries ending in `/` match a
-namespace prefix; entries without a trailing slash match one exact topic.
-A custom client namespace must be added to every relay's `TOPIC_ALLOWLIST`.
-All peers must use the same current runtime and topic configuration. Topic
-names are routing labels, not authentication or wire validation.
+Allowlist entries ending in `/` match a namespace prefix; entries without a
+trailing slash match one exact topic. A custom client namespace must be added
+to every relay's `TOPIC_ALLOWLIST`. All peers must use the same runtime and
+topic configuration. Topic names are routing labels, not authentication or
+wire validation.
 Keep both `MAX_AUTO_TOPICS` and `MAX_AUTO_TOPICS_PER_PEER` at reasonable limits
 for your deployment. The global cap bounds total dynamic state; the per-peer cap
 prevents one connected peer from consuming that allowance. The GossipSub byte

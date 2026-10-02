@@ -42,7 +42,7 @@ What needs to happen:
 
 ### 4. Pinning publisher and restore
 
-**Status: Not implemented.** The unauthenticated document-publish protocol has been removed, and the core commit path has no authenticated pinning publisher. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
+**Status: Not implemented.** The core commit path has no authenticated pinning publisher. No generic IPFS pinning client exists. Blocks can be stored but cannot be recovered into a working document without the full key and graph state.
 
 What needs to happen:
 - A versioned, domain-separated, writer-authorized, replay-protected publish protocol with explicit local pin policy

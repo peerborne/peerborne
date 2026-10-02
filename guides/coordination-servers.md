@@ -739,7 +739,7 @@ See individual Dockerfile documentation in `guides/docker/` for build instructio
 
 **Causes and solutions:**
 1. **Relay not forwarding:** Ensure the relay has `floodPublish: true` and `canRelayMessage: true` in GossipSub config
-2. **Topic mismatch:** Verify both peers use the same versioned topic (for example, `/peerborne/document/v3/<id>`). Earlier default document topics are rejected.
+2. **Topic mismatch:** Verify both peers use the same document topic (for example, `/peerborne/document/v3/<id>`).
 3. **Mesh not formed:** GossipSub mesh takes 5-10 seconds to form. Wait or send warmup messages
 4. **libp2p version mismatch:** Use `@libp2p/gossipsub` v17.x with libp2p v3.x. Verify that both packages resolve to compatible `@libp2p/interface` v3.x versions.
 

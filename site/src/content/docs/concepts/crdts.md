@@ -89,7 +89,7 @@ const ytext = state.getText('content');
 ytext.insert(0, 'Hello');
 ```
 
-See the [Yjs schema design cookbook](../../cookbook/yjs-schema-design/) for merge behavior tables, ID patterns, and migration strategies.
+See the [Yjs schema design cookbook](../../cookbook/yjs-schema-design/) for merge behavior tables, ID patterns, and current-schema validation.
 
 ### Automerge semantics
 

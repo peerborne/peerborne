@@ -1246,7 +1246,9 @@ Split a single Y.Doc into multiple documents when:
 const index = doc.getMap<Y.Map<any>>('documents');
 index.set('doc-abc', { title: 'Meeting Notes', createdAt: Date.now() });
 
-// Each child is a separate Peerborne document opened on demand
+// Each child is a separate Peerborne document opened on demand. The child
+// must already exist: its founder created it with create(), and open()
+// never creates a missing document.
 const meetingNotes = swarm.doc('/docs/doc-abc');
 await meetingNotes.open();
 ```
@@ -1391,17 +1393,17 @@ Peerborne enforces access control at the document level. Schema design should al
 // /projects/proj-123/admin    — readable/writable by admins only
 // /projects/proj-123/secrets  — readable by authorized users only
 
-// Public document: project overview
+// Public document: project overview, founded by this peer
 const publicDoc = swarm.doc('/projects/proj-123/public');
-await publicDoc.open();
-publicDoc.change((doc: Y.Doc) => {
+await publicDoc.create();
+await publicDoc.change((doc: Y.Doc) => {
   doc.getMap('meta').set('title', 'Project Alpha');
   doc.getMap('meta').set('description', 'A public project overview');
 });
 
 // Admin document: settings and permissions
 const adminDoc = swarm.doc('/projects/proj-123/admin');
-await adminDoc.open();
+await adminDoc.create();
 // Only admin keys are in this document's ACL
 ```
 
@@ -1444,11 +1446,15 @@ Peerborne encrypts the entire Y.Doc state with AES-GCM using a document key mana
 - **Large binary data** (images, files) should be stored as separate encrypted documents or external content-addressed blobs, not inline in Y.Text or Y.Map values. This prevents document size bloat and allows independent access control.
 
 ```typescript
-// Pattern: separate document per sensitivity level
+// Pattern: separate document per sensitivity level, founded by this peer
 const projectPublic = swarm.doc('/proj/public'); // all members
 const projectInternal = swarm.doc('/proj/internal'); // team only
 const projectSecret = swarm.doc('/proj/secret'); // leads only
-await Promise.all([projectPublic.open(), projectInternal.open(), projectSecret.open()]);
+await Promise.all([
+  projectPublic.create(),
+  projectInternal.create(),
+  projectSecret.create(),
+]);
 ```
 
 ---

@@ -11,7 +11,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Packages are unpublished.** The `@peerborne/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
 - **No deployment automation.** There is no CI/CD pipeline for deploying relays, bootstrap nodes, or pinning services.
-- **No general upgrade or migration path.** API changes between commits may break your application without warning. The narrow document-topic namespace migration is documented, but there is no general state migration framework, changelog, semver, or deprecation period.
+- **Current formats only.** API, wire, and storage changes between commits may break your application without warning. Peerborne supports only its current formats; there is no state migration framework, changelog, semver, or deprecation period. See the [alpha compatibility policy](https://github.com/Peerborne/peerborne/blob/main/MIGRATING.md).
 
 ## Offline and durability
 
@@ -41,7 +41,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
-- **Custom document topics require coordinated upgrades.** The versioned default document topic prefix keeps honest, default-configured runtime generations on separate document topics. A custom or empty topic can mix incompatible peers; every participant sharing it must be upgraded together, and the topic must be added to each relay's allowlist. Topic names are routing labels, not authenticated version negotiation or authorization, and relays do not bridge topic versions.
+- **Custom document topics require coordination.** Every participant sharing a document must use the same runtime and document topic prefix, and a custom prefix must be added to each relay's allowlist. Topic names are routing labels, not authentication or authorization.
 - **Many transports lack document-path evidence in CI.** The current cross-NAT
   proof verifies invitation acceptance, initial document-history load, and live
   post-join convergence through Circuit Relay. Transport-specific Peerborne
@@ -141,7 +141,6 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   UX, or a delivery guarantee. Its source smoke test is not proof that the
   public relay or deployment will remain available.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
-- **No general migration guide.** `MIGRATING.md` covers the source rename, the document-topic boundary, and the UCAN ACL identity-codec requirement, not arbitrary upgrades between Peerborne commits.
 - **No changelog.** Release notes and version history are not published.
 
 ## What is verified

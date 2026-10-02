@@ -1,9 +1,9 @@
 ---
 title: Designing Yjs schemas
-description: Choose Yjs shared types and migration patterns for Peerborne documents.
+description: Choose Yjs shared types and current-schema validation for Peerborne documents.
 ---
 
-**Status: Illustrative schema patterns, not a complete application.** Yjs adapter behavior has focused tests, but these patterns do not prove multi-peer application convergence, persistence, or migration safety. See [CRDTs](../../concepts/crdts/) and [Limitations](../../concepts/limitations/).
+**Status: Illustrative schema patterns, not a complete application.** Yjs adapter behavior has focused tests, but these patterns do not prove multi-peer application convergence, persistence, or schema safety. See [CRDTs](../../concepts/crdts/) and [Limitations](../../concepts/limitations/).
 
 ## Choose merge behavior explicitly
 
@@ -20,7 +20,7 @@ Do not treat plain objects stored inside shared types as recursively collaborati
 
 ## Mutate through Peerborne
 
-All mutations, initialization, and migrations must run inside and await `swarmDoc.change`. A bare `Y.Doc` mutation is not automatically authorized, encrypted, stored, or published by Peerborne.
+All mutations and initialization must run inside and await `swarmDoc.change`. A bare `Y.Doc` mutation is not automatically authorized, encrypted, stored, or published by Peerborne.
 
 ```ts
 await swarmDoc.change((doc: Y.Doc) => {
@@ -61,25 +61,19 @@ await swarmDoc.change((doc: Y.Doc) => {
 
 This avoids same-key increment races between distinct replicas, but concurrent sessions incorrectly sharing one replica ID can still overwrite one another.
 
-## Migrations
+## Validate the current schema
 
-Run migrations through the same awaited change boundary:
+Each application supports one current schema. Initialize it only after founding a new document with `create()`:
 
 ```ts
+await swarmDoc.create();
 await swarmDoc.change((doc: Y.Doc) => {
-  const meta = doc.getMap<unknown>('meta');
-  const version = (meta.get('schemaVersion') as number | undefined) ?? 1;
-
-  if (version < 2) {
-    for (const task of doc.getArray<Y.Map<unknown>>('tasks').toArray()) {
-      if (!task.has('priority')) task.set('priority', 'medium');
-    }
-    meta.set('schemaVersion', 2);
-  }
+  doc.getMap<unknown>('meta').set('schemaVersion', 1);
+  doc.getArray<Y.Map<unknown>>('tasks');
 });
 ```
 
-Guards such as `has()` make repeated execution locally idempotent for that operation. They do not prove that arbitrary concurrent migrations commute: two versions can write incompatible values or observe different intermediate states. Prefer additive fields, tolerate unknown/newer fields, never reuse a field name with a different type, and test old/new peers concurrently.
+Validate loaded state and remote updates against that exact schema before interpreting fields, and reject an unsupported `schemaVersion` instead of upgrading it in place. A schema tag alone does not validate nested values. During alpha, change producers, readers, validators, and tests together, and use fresh local state for incompatible changes. Do not add fallback decoders, dual field names, or automatic upgrades. See the [alpha compatibility policy](https://github.com/Peerborne/peerborne/blob/main/MIGRATING.md).
 
 ## Heuristics, not limits
 

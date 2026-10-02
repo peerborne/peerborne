@@ -48,10 +48,10 @@ Relays admit the current document namespace by default. A custom
 `pubsubDocumentPrefix` requires a matching slash-terminated namespace in every
 relay's `TOPIC_ALLOWLIST`. With an empty prefix, allow each concrete document
 topic or explicitly select unrestricted `*` mode. All peers must use the same
-current runtime; custom topics do not select an older format.
+runtime and topic prefix.
 
-Topic names are public routing labels, not authenticated version negotiation,
-authorization, or wire validation. Application URLs such as `/document/:id`
+Topic names are public routing labels, not authentication, authorization, or
+wire validation. Application URLs such as `/document/:id`
 are unrelated and do not change.
 
 GossipSub is **best-effort**:
