@@ -2,7 +2,7 @@ import { tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 /** One vote after the caller has authenticated and deduplicated its authority. */
-export interface PeerTipAdvertisement {
+export interface PeerLoadQuorumVote {
   peerId: string;
   hash: Uint8Array | null;
 }
@@ -10,7 +10,6 @@ export interface PeerTipAdvertisement {
 export type LoadQuorumDecision =
   | {
       ok: true;
-      kind: 'tip-hash';
       winningHashHex: string;
       agreeingPeerIds: string[];
       respondingCount: number;
@@ -35,7 +34,7 @@ export type LoadQuorumDecision =
  * order pick a winner.
  */
 export function decideLoadQuorum(
-  advertisements: readonly PeerTipAdvertisement[],
+  advertisements: readonly PeerLoadQuorumVote[],
   q: number,
 ): LoadQuorumDecision {
   if (!Number.isSafeInteger(q) || q < 1) {
@@ -79,7 +78,6 @@ export function decideLoadQuorum(
   if (agreeingPeerIds.length >= q && bucketsMeetingQ === 1) {
     return {
       ok: true,
-      kind: 'tip-hash',
       winningHashHex,
       agreeingPeerIds,
       respondingCount,

@@ -6050,7 +6050,6 @@ export class PeerborneDocument<
 
     const timeoutMs = this.swarm.config?.loadQuorumTimeoutMs ?? 5000;
     const quorumResult = await runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers: quorumPeers,
       peerIdOf: (p) => this._peerIdOf(p),
       probeFn: (peer) =>

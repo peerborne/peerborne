@@ -320,7 +320,7 @@ export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { CreateInvitationOptions } from './peerborne.js';
 export type { InvitationBootstrapBundle } from './peerborne-document.js';
 export type {
-  PeerTipAdvertisement,
+  PeerLoadQuorumVote,
   LoadQuorumDecision,
   LoadQuorumFailedReason,
 } from './load-quorum.js';

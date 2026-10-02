@@ -57,7 +57,6 @@ function runFixtureQuorum<T>(options: {
 }) {
   return runLoadQuorum({
     ...options,
-    protocol: 'security-advertise-v1',
     probeFn: async (peer) => {
       const hash = await options.probeFn(peer);
       return hash === null ? null : {
@@ -648,7 +647,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const singlePeer = path === 'single-peer';
       const peers = singlePeer ? ['p1'] : ['p1', 'p2', 'p3'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) =>
@@ -689,7 +687,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const quorum = await runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers: ['p1', 'p2', 'p3'],
       peerIdOf,
       probeFn: async (peer) => ({
@@ -713,7 +710,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     '%s rejects an empty signer authority as a non-vote',
     async (_path, peers, config) => {
       const error = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({ hash: HASH_X, signerAuthority: '' }),
@@ -1866,7 +1862,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('one signer across multiple libp2p PeerIds contributes only one vote', async () => {
       const peers: TestPeer[] = ['sybil-1', 'sybil-2', 'sybil-3'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({
@@ -1887,7 +1882,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('distinct caller-authenticated signer authorities can satisfy V4 quorum', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
       const result = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) => ({
@@ -1906,7 +1900,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('one signer voting for two different hashes fails the round', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) => ({
@@ -1927,7 +1920,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         await runLoadQuorum({
-          protocol: 'security-advertise-v1',
           peers: ['p1', 'p2', 'p3'],
           peerIdOf,
           probeFn: async (peer) => {
@@ -1964,12 +1956,11 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 });
 
 
-describe('quorum protocol separation', () => {
+describe('quorum vote normalization', () => {
   test.each([new Uint8Array(32).fill(0xaa), 'unknown-doc'] as const)(
-    'never counts a response from another protocol alongside a V4 authority',
+    'never counts a bare digest or absence marker alongside a signer-attributed vote',
     async (wrongFamily) => {
       await expect(runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers: ['signed', 'unsigned-a', 'unsigned-b'],
         peerIdOf,
         probeFn: async (peer) => peer === 'signed'
@@ -1983,23 +1974,15 @@ describe('quorum protocol separation', () => {
 
   test('rejects an unattributed single-peer V4 response', async () => {
     await expect(runLoadQuorum({
-      protocol: 'security-advertise-v1', peers: ['a'], peerIdOf,
+      peers: ['a'], peerIdOf,
       probeFn: async () => 'unknown-doc', documentPath: '/unsigned-single',
       config: { allowSinglePeer: true },
     })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 0 });
   });
 
-  test('requires explicit protocol selection even with no peers', async () => {
-    await expect(runLoadQuorum({
-      protocol: undefined as never, peers: [], peerIdOf,
-      probeFn: async () => null, documentPath: '/missing-family',
-    })).rejects.toMatchObject({ reason: 'invalid-config' });
-  });
-
   test('accepts a detached signer-attributed record from another realm', async () => {
     const vote = runInNewContext('({ hash: new Uint8Array(32).fill(0xaa), signerAuthority: "writer-a" })');
     await expect(runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers: ['a'], peerIdOf, probeFn: async () => vote,
       documentPath: '/cross-realm-vote', config: { allowSinglePeer: true },
     })).resolves.toMatchObject({ ok: true });

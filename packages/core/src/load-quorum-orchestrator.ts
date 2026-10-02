@@ -10,7 +10,7 @@ import {
   defaultQuorumQ,
   effectiveK,
   LoadQuorumFailedError,
-  PeerTipAdvertisement,
+  PeerLoadQuorumVote,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
 import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
@@ -32,8 +32,6 @@ export interface SignerAttributedLoadQuorumVote {
   readonly signerAuthority: string;
 }
 
-export type LoadQuorumProtocol = 'security-advertise-v1';
-
 export type LoadQuorumProbeResult = SignerAttributedLoadQuorumVote | null;
 
 type NormalizedLoadQuorumProbeResult =
@@ -46,7 +44,6 @@ type NormalizedLoadQuorumProbeResult =
 
 function normalizeLoadQuorumProbeResult(
   result: unknown,
-  protocol: LoadQuorumProtocol,
 ): NormalizedLoadQuorumProbeResult {
   if (result === null || typeof result !== 'object') {
     return { kind: 'non-vote' };
@@ -172,25 +169,13 @@ export type LoadQuorumOrchestratorResult<T> =
  *   insufficient single-peer probe).
  */
 export async function runLoadQuorum<T>(opts: {
-  /** Select once for the entire round; results from another family are non-votes. */
-  protocol: LoadQuorumProtocol;
   peers: readonly T[];
   peerIdOf: (peer: T) => string;
   probeFn: (peer: T) => Promise<LoadQuorumProbeResult>;
   documentPath: string;
   config?: LoadQuorumOrchestratorConfig;
 }): Promise<LoadQuorumOrchestratorResult<T>> {
-  const { peers, peerIdOf, probeFn, documentPath, config, protocol } = opts;
-  if (protocol !== 'security-advertise-v1') {
-    throw new LoadQuorumFailedError({
-      documentPath,
-      reason: 'invalid-config',
-      respondingCount: 0,
-      requiredQ: 0,
-      agreement: new Map(),
-      detail: 'A load-quorum protocol family must be selected before probing',
-    });
-  }
+  const { peers, peerIdOf, probeFn, documentPath, config } = opts;
   const enabled = config?.enabled ?? true;
 
   // Re-validate booleans/K/Q/timeoutMs on every `runLoadQuorum` call as
@@ -357,7 +342,7 @@ export async function runLoadQuorum<T>(opts: {
       );
       probe = null;
     }
-    const normalizedProbe = normalizeLoadQuorumProbeResult(probe, protocol);
+    const normalizedProbe = normalizeLoadQuorumProbeResult(probe);
     if (normalizedProbe.kind === 'non-vote') {
       throw new LoadQuorumFailedError({
         documentPath,
@@ -402,7 +387,7 @@ export async function runLoadQuorum<T>(opts: {
         );
         result = null;
       }
-      return { peer, result: normalizeLoadQuorumProbeResult(result, protocol) };
+      return { peer, result: normalizeLoadQuorumProbeResult(result) };
     }),
   );
   // V4 votes are attributed to the signing authority that `probeFn` already
@@ -410,11 +395,12 @@ export async function runLoadQuorum<T>(opts: {
   // does not perform that verification. Keep only the first vote from each
   // authority so one credential reused across many Sybil PeerIds cannot
   // satisfy Q by itself, and fail the round if an authority signed two
-  // different hashes. Normalization rejects responses from the other
-  // protocol family before either tally, including unauthenticated sentinels.
+  // different hashes. Normalization rejects anything other than a
+  // signer-attributed vote before either tally, including bare digests and
+  // unauthenticated sentinels.
   const signerAuthorityHashes = new Map<string, string>();
   let equivocatingAuthority = false;
-  const advertisements: PeerTipAdvertisement[] = probeResults.map(
+  const advertisements: PeerLoadQuorumVote[] = probeResults.map(
     ({ peer, result }) => {
       let hash: Uint8Array | null = null;
       if (result.kind === 'vote') {
