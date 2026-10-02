@@ -2832,7 +2832,7 @@ describe('YjsKeychain', () => {
     );
   });
 
-  test('legacy merge commit ignores an accessor replacing the returned claim method', async () => {
+  test('merge commit ignores an accessor replacing the returned claim method', async () => {
     const source = new YjsKeychain();
     const [epochId] = await source.add();
     const receiver = new YjsKeychain();
