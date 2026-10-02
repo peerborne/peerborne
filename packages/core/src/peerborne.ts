@@ -945,9 +945,10 @@ export class Peerborne<
    * document path, and routes to the matching PeerborneDocument instance in
    * the registry.
    *
-   * For doc-load, snapshot-load, and security-advertise, the path is extracted by
-   * deserializing the CRDTLoadRequest. The three update protocols use a
-   * 4-byte length-prefixed document path before their payload.
+   * For doc-load, invitation catch-up, snapshot-load, and security-advertise,
+   * the path is extracted by deserializing the CRDTLoadRequest. The BeeKEM
+   * Welcome and PathUpdate protocols use a 4-byte length-prefixed document
+   * path before their payload.
    */
   private async _registerSharedProtocolHandlers(): Promise<void> {
     if (this._sharedHandlersRegistration) {
@@ -1014,7 +1015,6 @@ export class Peerborne<
     };
 
     // Handler implementation for snapshot-load requests.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const snapshotLoadHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
@@ -1076,8 +1076,6 @@ export class Peerborne<
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
     // and records the invitation epoch.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    //
     const beekemWelcomeHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
@@ -1134,8 +1132,6 @@ export class Peerborne<
     // the per-document handler verifies the writer signature, applies
     // the PathUpdateV2 via `BeeKEM.processPathUpdate`, and installs the
     // freshly-derived document key in the keychain.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler
-    // signature.
     //
     // Header parse shared with the Welcome handler via
     // `readPathPrefixedProtocolHeader`.
@@ -1195,7 +1191,6 @@ export class Peerborne<
     // a single (small) encrypted/serialized CRDTSyncMessage out (whose
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const securityAdvertiseHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
