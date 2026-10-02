@@ -1914,9 +1914,12 @@ describe('AutomergeACL', () => {
     expect(() => receiver.merge(second.creation)).toThrow(
       /conflicting users roots/,
     );
-    receiver.merge(first.predecessor);
-    expect(await receiver.check(key1)).toBe(true);
-    expect(await receiver.check(key2)).toBe(false);
+    expect(() => receiver.merge(first.predecessor)).toThrow(
+      /requires the canonical users root/,
+    );
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/,
+    );
   });
 
   test('a new dependency-incomplete change still stales prepared removal', async () => {
