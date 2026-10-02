@@ -23,7 +23,7 @@ describe('AutoTopicRegistry', () => {
         action: 'subscribe', topic,
       })
     }
-    for (const topic of ['/document/shared', '/documents', '/peerborne/documents/v30']) {
+    for (const topic of ['/announcements', '/peerborne/document/v3', '/peerborne/document/v30/shared']) {
       expect(topics.subscriptionChanged('peer-b', topic, true)).toEqual({
         action: 'skip', topic, reason: 'NotInAllowlist',
       })
