@@ -78,19 +78,63 @@ describe('loadResponseManifestHash', () => {
       'inline change marker',
       { changeId: 'ROOT', changes: node({ change: { value: 1 } }) },
     ],
-    [
-      'encryption key identity',
-      { changeId: 'ROOT', changes: node({ keyID: 'epoch-b' }) },
-    ],
   ])('binds %s', async (_name, changed) => {
     const baseline = {
       changeId: 'ROOT',
       changes: node({
-        keyID: 'epoch-a',
         children: { A: node(), B: node() },
       }),
     };
     await expect(hash(changed)).resolves.not.toEqual(await hash(baseline));
+  });
+
+  test('encodes node descriptors as kind, inline change, and child edges', async () => {
+    const u32 = (value: number): number[] => [
+      (value >>> 24) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 8) & 0xff,
+      value & 0xff,
+    ];
+    const encodeString = (value: string): number[] => {
+      const bytes = [...textEncoder.encode(value)];
+      return [...u32(bytes.length), ...bytes];
+    };
+    const inline = [...serializeChange({ value: 1 })];
+    const expected = new Uint8Array([
+      ...textEncoder.encode('peerborne/load-response-manifest/v1\0'),
+      2,
+      ...encodeString('ROOT'),
+      ...u32(2),
+      ...u32(1),
+      ...encodeString('A'),
+      2,
+      0,
+      0,
+      ...u32(0),
+      ...encodeString('ROOT'),
+      0,
+      1,
+      ...u32(inline.length),
+      ...inline,
+      2,
+      ...u32(1),
+      ...encodeString('A'),
+      0,
+      0,
+    ]);
+    const digest = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', expected),
+    );
+
+    await expect(
+      hash({
+        changeId: 'ROOT',
+        changes: node({
+          change: { value: 1 },
+          children: { A: node({ kind: 'writer' }) },
+        }),
+      }),
+    ).resolves.toEqual(digest);
   });
 
   test('binds canonical inline change bytes, not only their presence', async () => {
@@ -157,7 +201,7 @@ describe('loadResponseManifestHash', () => {
   });
 
   test('snapshots the complete tree before a serializer can mutate it', async () => {
-    const originalChild = node({ kind: 'reader', keyID: 'epoch-a' });
+    const originalChild = node({ kind: 'reader' });
     const originalRoot = node({
       change: { trigger: true },
       children: { CHILD: originalChild },
@@ -167,7 +211,6 @@ describe('loadResponseManifestHash', () => {
       changes: originalRoot,
       serializeChange: () => {
         originalChild.kind = 'writer';
-        originalChild.keyID = 'attacker';
         originalRoot.children = { ATTACKER: node() };
         return new Uint8Array([7]);
       },
@@ -178,7 +221,7 @@ describe('loadResponseManifestHash', () => {
         changeId: 'ROOT',
         changes: node({
           change: { trigger: true },
-          children: { CHILD: node({ kind: 'reader', keyID: 'epoch-a' }) },
+          children: { CHILD: node({ kind: 'reader' }) },
         }),
         serializeChange: () => new Uint8Array([7]),
       }),
@@ -517,7 +560,6 @@ describe('loadResponseManifestHash', () => {
       const fullBranch = node({
         children: {
           SHARED: node({
-            keyID: 'epoch-a',
             change: { value: 'shared' },
             children: { PARENT: node({ change: { value: 'parent' } }) },
           }),
@@ -550,12 +592,11 @@ describe('loadResponseManifestHash', () => {
   );
 
   test.each(['sparse-first', 'full-first'] as const)(
-    'rejects incompatible sparse/full metadata in %s order',
+    'rejects a sparse cross-link whose kind conflicts with the full description in %s order',
     async (order) => {
-      const sparse = node({ kind: 'reader', keyID: 'epoch-a' });
+      const sparse = node({ kind: 'reader' });
       const full = node({
-        kind: 'reader',
-        keyID: 'epoch-b',
+        kind: 'writer',
         change: { value: 'shared' },
       });
       const first = node({ children: { SHARED: sparse } });
@@ -673,13 +714,16 @@ describe('loadResponseManifestHash', () => {
     ).rejects.toThrow(/exceeds .* (node occurrences|traversed edges)/);
   });
 
-  test('bounds every serialized CID/key identifier', async () => {
+  test('bounds every serialized CID', async () => {
     const oversized = 'x'.repeat(MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES + 1);
     await expect(
       hash({ changeId: oversized, changes: node() }),
     ).rejects.toThrow(/UTF-8 bytes/);
     await expect(
-      hash({ changeId: 'ROOT', changes: node({ keyID: oversized }) }),
+      hash({
+        changeId: 'ROOT',
+        changes: node({ children: { [oversized]: node() } }),
+      }),
     ).rejects.toThrow(/UTF-8 bytes/);
   });
 

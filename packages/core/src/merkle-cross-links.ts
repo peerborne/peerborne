@@ -115,7 +115,6 @@ function snapshotComparableByteView(value: object): ComparableByteView {
 type RemoteNodeDescription<ChangesType> = {
   readonly node: CRDTChangeNode<ChangesType>;
   readonly kind: CRDTChangeNodeKind;
-  readonly keyID: string | undefined;
   readonly hasChange: boolean;
   readonly childrenMode: 0 | 1 | 2;
   readonly childIds: readonly string[];
@@ -148,7 +147,6 @@ function describeRemoteNode<ChangesType>(
   return {
     node,
     kind: node.kind,
-    keyID: node.keyID,
     hasChange: node.change !== undefined,
     childrenMode,
     childIds,
@@ -319,16 +317,8 @@ export function validateRemoteSyncTreeAliases<ChangesType>(
         canonical.set(cid, description);
       } else {
         if (existing.kind !== description.kind) conflict(cid);
-        if (
-          existing.keyID !== undefined &&
-          description.keyID !== undefined &&
-          existing.keyID !== description.keyID
-        ) {
-          conflict(cid);
-        }
         if (!existing.sparseReference && !description.sparseReference) {
           if (
-            existing.keyID !== description.keyID ||
             existing.hasChange !== description.hasChange ||
             existing.childrenMode !== description.childrenMode ||
             !sameChildIds(existing.childIds, description.childIds) ||
