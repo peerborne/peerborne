@@ -623,6 +623,94 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     expect(harness.document._beekemInitialized).toBe(false);
   });
 
+  test.each([
+    [
+      'the live tree generation',
+      (document: Record<string, unknown>) => {
+        (document._beekem as { generation: number }).generation = 4;
+      },
+    ],
+    [
+      'the live tree',
+      (document: Record<string, unknown>) => {
+        document._beekem = { generation: 3 };
+      },
+    ],
+    [
+      'the invitation epoch',
+      (document: Record<string, unknown>) => {
+        document._invitationEpoch = new Uint8Array(nextEpoch);
+      },
+    ],
+  ])(
+    'defers a Welcome when %s changes before its commit',
+    async (_label, change) => {
+      const harness = welcomeHarness({
+        invitationEpoch: oldEpoch,
+        onHydrate: () => change(harness.document),
+      });
+      const liveTree = { generation: 3 };
+      harness.document._beekem = liveTree;
+      harness.document._beekemInitialized = true;
+      harness.register(
+        34,
+        { ids: [oldEpoch, currentEpoch], currentId: currentEpoch },
+        { token: 34, generation: 5 },
+      );
+
+      await expect(
+        harness.document._evaluateAndApplyBeeKEMWelcome(
+          welcomeMessage(currentEpoch, 34),
+          { fromBuffer: true },
+        ),
+      ).resolves.toBe('retry');
+      expect(harness.claims[0]).not.toHaveBeenCalled();
+      expect(harness.liveIds()).toEqual([]);
+      expect(harness.liveRevision()).toBe(0);
+      expect(harness.document._beekem).not.toBeInstanceOf(BeeKEM);
+      expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
+    },
+  );
+
+  test.each([
+    ['older then newer', [2, 3], 'applied', 3, nextEpoch],
+    ['newer then older', [3, 2], 'terminal', 3, currentEpoch],
+  ] as const)(
+    'keeps the newest Welcome generation when Welcomes arrive %s',
+    async (_label, generations, secondOutcome, finalGeneration, finalEpoch) => {
+      const harness = welcomeHarness();
+      harness.register(
+        35,
+        { ids: [currentEpoch], currentId: currentEpoch },
+        { token: 35, generation: generations[0] },
+      );
+      harness.register(
+        36,
+        { ids: [currentEpoch, nextEpoch], currentId: nextEpoch },
+        { token: 36, generation: generations[1] },
+      );
+
+      await expect(
+        harness.document._evaluateAndApplyBeeKEMWelcome(
+          welcomeMessage(currentEpoch, 35),
+          { fromBuffer: false },
+        ),
+      ).resolves.toBe('applied');
+      await expect(
+        harness.document._evaluateAndApplyBeeKEMWelcome(
+          welcomeMessage(nextEpoch, 36),
+          { fromBuffer: false },
+        ),
+      ).resolves.toBe(secondOutcome);
+
+      expect(harness.document._beekem.generation).toBe(finalGeneration);
+      expect(harness.document._invitationEpoch).toEqual(finalEpoch);
+      expect(harness.liveIds()).toEqual(
+        secondOutcome === 'applied' ? [currentEpoch, nextEpoch] : [currentEpoch],
+      );
+    },
+  );
+
   test('rejects a key-only Welcome before staging or committing state', async () => {
     const harness = welcomeHarness();
     harness.register(15, { ids: [currentEpoch], currentId: currentEpoch }, null);
