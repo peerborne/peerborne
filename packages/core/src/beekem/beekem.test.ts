@@ -45,7 +45,7 @@ describe('BeeKEM', () => {
 
       const bobKeyPair = await generateECDHKeyPair();
       await expect(beekem.addMember(bobKeyPair.publicKey)).rejects.toThrow(
-        /tree is full/,
+        /lifetime leaf limit/,
       );
       expect(beekem.memberCount).toBe(MAX_BEEKEM_TREE_LEAVES);
       (beekem as unknown as { _numLeaves: number })._numLeaves = 1;

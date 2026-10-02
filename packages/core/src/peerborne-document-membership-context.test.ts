@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
-import { Base64 } from 'js-base64';
 import { deriveEpochIdFromRootSecret } from './derive-doc-key.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { JSONSerializer } from './json-serializer.js';
