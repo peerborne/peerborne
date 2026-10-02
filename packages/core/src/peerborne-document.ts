@@ -5824,7 +5824,6 @@ export class PeerborneDocument<
       );
       if (unsigned === undefined) return null;
       const signer = await identifyInitialLoadSigner({
-        signingEnabled: true,
         payload: new Uint8Array(unsigned.raw),
         signature: this._deserializeSignature(message.signature),
         existingWriterKeys: session.authorities.map((entry) => entry.publicKey),
