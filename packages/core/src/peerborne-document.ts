@@ -8064,8 +8064,9 @@ export class PeerborneDocument<
    * signing the outer acceptance and enforcing single-use offer semantics.
    * Membership work is not transactional: an error after mutation begins can
    * leave partial or complete recipient membership without a returned bundle.
-   * Only an exact, same-process retry is eligible to repair and attest that
-   * state.
+   * Only an exact, same-process retry is eligible to complete and attest that
+   * state. It publishes only the membership deltas that are still missing;
+   * committed ACL nodes reach the recipient through the signed bootstrap tree.
    *
    * @internal
    */
@@ -8161,20 +8162,6 @@ export class PeerborneDocument<
       },
       addWriter: () =>
         this._addWriterUnlocked(reader, serializedReader, beginMutation),
-      repairReaders: async () => {
-        beginMutation();
-        return this._makeChange(
-          await retryACLConflict(() => this._readers.current()),
-          crdtReaderChangeNode,
-        );
-      },
-      repairWriters: async () => {
-        beginMutation();
-        return this._makeChange(
-          await retryACLConflict(() => this._writers.current()),
-          crdtWriterChangeNode,
-        );
-      },
     });
 
     const [welcomeEpochId, documentKey] = await this._keychain.current();

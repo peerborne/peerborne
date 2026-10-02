@@ -160,6 +160,7 @@ async function founderDocument(publish: ReturnType<typeof jest.fn>) {
 function membershipFromBootstrap(message: any): {
   readers: string[];
   writers: string[];
+  nodes: number;
   snapshots: number;
 } {
   const inline = new Map<string, CRDTChangeNode<MembershipChange>>();
@@ -194,7 +195,12 @@ function membershipFromBootstrap(message: any): {
     if (node.kind === crdtReaderChangeNode) readers.add(change.add);
     if (node.kind === crdtWriterChangeNode) writers.add(change.add);
   }
-  return { readers: [...readers], writers: [...writers], snapshots };
+  return {
+    readers: [...readers],
+    writers: [...writers],
+    nodes: inline.size,
+    snapshots,
+  };
 }
 
 const cases: readonly [FailurePoint, Role][] = [
@@ -257,7 +263,16 @@ describe('exact invitation retry after a partial failure', () => {
         role === 'editor' ? ['founder', 'recipient'] : ['founder'],
       );
 
+      const membershipDeltas = role === 'editor' ? 2 : 1;
+      expect(publish).toHaveBeenCalledTimes(
+        membershipDeltas + (failingPublication > 0 ? 1 : 0),
+      );
+      expect(readers.current).not.toHaveBeenCalled();
+      expect(writers.current).not.toHaveBeenCalled();
+
       const bootstrap = membershipFromBootstrap(bootstrapMessages.at(-1));
+      expect(bootstrap.snapshots).toBe(0);
+      expect(bootstrap.nodes).toBe(1 + membershipDeltas);
       expect(() =>
         assertAcceptedInvitationMembershipTopology(
           {

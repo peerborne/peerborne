@@ -1328,11 +1328,9 @@ describe('writer ACL publication boundary', () => {
       },
       _readers: {
         users: jest.fn(async () => [...readers]),
-        current: jest.fn(() => ({ readers: true })),
       },
       _writers: {
         users: jest.fn(async () => [...writers]),
-        current: jest.fn(() => ({ writers: true })),
       },
       _prepareInvitationBootstrapCapacity: jest.fn(async () => ({
         keychainChanges: new Uint8Array([5]),
@@ -1365,7 +1363,6 @@ describe('writer ACL publication boundary', () => {
           writerAclAdd(writer);
         },
       ),
-      _makeChange: jest.fn(async () => undefined),
       _keychain: {
         current: jest.fn(async () => [new Uint8Array(32), { key: true }]),
       },
