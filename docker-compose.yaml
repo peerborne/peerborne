@@ -1,4 +1,3 @@
-version: '3.7'
 services:
   relay:
     build: ./relay-server
@@ -76,27 +75,6 @@ services:
         export VITE_RELAY_MULTIADDR
         echo "Relay multiaddr: $$VITE_RELAY_MULTIADDR"
         exec yarn workspace @peerborne/wiki-swarm start --host 0.0.0.0 --port 3000
-
-  node:
-    build:
-      context: ./
-      dockerfile: ./Dockerfile
-    image: peerborne-automerge:latest
-    environment:
-      - 'CLIENT_CONFIG_FILE=/app/client-config.env'
-      # If rebuild-on-save is not working, try uncommenting the following (may increase CPU usage of system and prevent sleeping):
-      # - "CHOKIDAR_USEPOLLING=true"
-    ports:
-      - 4001:4001
-      - 4002:4002
-      - 4003:4003
-    volumes:
-      - ./packages/core/src:/app/packages/core/src
-      - ./packages/automerge/bin:/app/packages/automerge/bin
-      - ./packages/automerge/src:/app/packages/automerge/src
-    depends_on:
-      relay:
-        condition: service_healthy
 
 volumes:
   shared-data:
