@@ -57,9 +57,9 @@ await ownerDocumentRef.addReader(recipientIdentityPublicKey, recipientKemRaw);
 await ownerDocumentRef.addWriter(recipientIdentityPublicKey);
 ```
 
-Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status. Calling `addReader(identity)` without KEM bytes changes the reader ACL but sends no encrypted Welcome.
+Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status; `addReader` requires the KEM bytes.
 
-The current React wrapper exposes only `addReader(user)` and `addWriter(user)`. It cannot pass `kemRaw`, cannot call `setKemKeyPair`, and therefore cannot implement this onboarding sequence by itself. The password-manager UI currently pastes only an ECDSA public key, so its sharing controls are not evidence that a second identity can decrypt the document.
+The React wrapper's controls forward `addReader(user, kemRaw)` and `setKemKeyPair(keyPair)`. The password-manager example generates a KEM key pair for each login session, shows its public half on the Settings page, and requires that key when adding a new member, so the owner sends a recipient-sealed Welcome. It has no recipient flow that opens the shared secret afterwards, and its KEM key pair does not survive a reload, so its sharing controls are not evidence that a second identity can decrypt the document.
 
 ## Safer implementation checklist
 

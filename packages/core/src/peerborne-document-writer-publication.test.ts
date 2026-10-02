@@ -1196,7 +1196,11 @@ describe('writer ACL publication boundary', () => {
       delete document._authProvider[codec];
       const run = jest.spyOn(document._mutationQueue, 'run');
 
-      await expect(document[operation]('candidate')).rejects.toThrow(
+      const target =
+        operation === 'addReader'
+          ? document.addReader('candidate', new Uint8Array(65).fill(1))
+          : document[operation]('candidate');
+      await expect(target).rejects.toThrow(
         new TypeError(
           `${featureName} requires AuthProvider.${codec} to be a function`,
         ),

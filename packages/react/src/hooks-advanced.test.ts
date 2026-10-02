@@ -111,37 +111,7 @@ describe('ACL helper functions delegate to docRef', () => {
     resetCaches();
   });
 
-  test('addReader calls docRef.addReader with the given key', async () => {
-    const mockDoc = createMockDocument();
-    const mockSwarm = createMockPeerborne(mockDoc);
-    const captureRef = { current: null as any };
-
-    await act(async () => {
-      render(
-        React.createElement(TestProvider, null,
-          React.createElement(TestConsumer, {
-            peerborne: mockSwarm,
-            documentPath: '/acl-add-reader',
-            captureRef,
-          }),
-        ),
-      );
-    });
-
-    // Wait for the full open→subscribe→getReaders→getWriters→setDocDataCache
-    // cycle to complete so docRef is in docCache and ACL helpers have a live ref.
-    await waitFor(() => {
-      expect(captureRef.current.docData).toBeDefined();
-    });
-
-    await act(async () => {
-      await captureRef.current.acl.addReader('newUserPubKey');
-    });
-
-    expect(mockDoc.addReader).toHaveBeenCalledWith('newUserPubKey');
-  });
-
-  test('addReader forwards the reader KEM public key needed for promotion', async () => {
+  test('addReader forwards the reader KEM public key', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
     const captureRef = { current: null as any };
@@ -173,6 +143,35 @@ describe('ACL helper functions delegate to docRef', () => {
       readerKemPublicKey,
     );
     expect(mockDoc.addWriter).toHaveBeenCalledWith('newUserPubKey');
+  });
+
+  test('setKemKeyPair installs the KEM key pair on the open document', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const captureRef = { current: null as any };
+
+    await act(async () => {
+      render(
+        React.createElement(TestProvider, null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/acl-set-kem-key-pair',
+            captureRef,
+          }),
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(captureRef.current.docData).toBeDefined();
+    });
+
+    const keyPair = { publicKey: {}, privateKey: {} } as CryptoKeyPair;
+    await act(async () => {
+      await captureRef.current.acl.setKemKeyPair(keyPair);
+    });
+
+    expect(mockDoc.setKemKeyPair).toHaveBeenCalledWith(keyPair);
   });
 
   test('removeReader calls docRef.removeReader with the given key', async () => {

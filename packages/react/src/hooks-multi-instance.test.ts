@@ -77,14 +77,21 @@ describe('multiple Peerborne instances at the same document path', () => {
     const secondChange = jest.fn();
     firstCapture.current.changeFn(firstChange, 'first change');
     secondCapture.current.changeFn(secondChange, 'second change');
-    await firstCapture.current.acl.addReader('first-new-reader');
+    const readerKemPublicKey = new Uint8Array(65).fill(4);
+    await firstCapture.current.acl.addReader(
+      'first-new-reader',
+      readerKemPublicKey,
+    );
     await secondCapture.current.acl.addWriter('second-new-writer');
 
     expect(firstDoc.change).toHaveBeenCalledWith(firstChange, 'first change');
     expect(firstDoc.change).not.toHaveBeenCalledWith(secondChange, 'second change');
     expect(secondDoc.change).toHaveBeenCalledWith(secondChange, 'second change');
     expect(secondDoc.change).not.toHaveBeenCalledWith(firstChange, 'first change');
-    expect(firstDoc.addReader).toHaveBeenCalledWith('first-new-reader');
+    expect(firstDoc.addReader).toHaveBeenCalledWith(
+      'first-new-reader',
+      readerKemPublicKey,
+    );
     expect(secondDoc.addWriter).toHaveBeenCalledWith('second-new-writer');
   });
 

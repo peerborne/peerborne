@@ -2509,7 +2509,7 @@ describe('document load response boundaries', () => {
     );
     const otherMutations = [
       () => document.removeWriter('writer'),
-      () => document.addReader('reader'),
+      () => document.addReader('reader', new Uint8Array(65).fill(4)),
       () => document.removeReader('reader'),
       () => document.endChange(),
       () => document.snapshot(),

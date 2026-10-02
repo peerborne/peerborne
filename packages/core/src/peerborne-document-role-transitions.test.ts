@@ -468,16 +468,30 @@ describe('membership call-boundary snapshots', () => {
     expect(addReaderUnlocked).not.toHaveBeenCalled();
   });
 
-  test('requires identity codecs even for ACL-only reader onboarding', async () => {
+  test('requires identity codecs for reader onboarding', async () => {
     const document = fakeDocument();
     delete document._authProvider.serializePublicKey;
     delete document._authProvider.deserializePublicKey;
 
-    await expect(document.addReader('target')).rejects.toThrow(
+    await expect(document.addReader('target', kemPublicKey())).rejects.toThrow(
       /requires AuthProvider\.serializePublicKey/,
     );
     expect(document._testState.readerCheck).not.toHaveBeenCalled();
   });
+
+  test.each([undefined, null, 'kem', [4]])(
+    'rejects reader onboarding without KEM key bytes (%p)',
+    async (readerKemPublicKey) => {
+      const document = fakeDocument();
+      const serialize = jest.spyOn(document._authProvider, 'serializePublicKey');
+
+      await expect(
+        document.addReader('target', readerKemPublicKey as never),
+      ).rejects.toThrow(/readerKemPublicKey/);
+      expect(serialize).not.toHaveBeenCalled();
+      expect(document._testState.readerCheck).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('reader addition staging', () => {

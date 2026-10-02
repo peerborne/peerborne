@@ -383,5 +383,6 @@ describe('usePeerborneDocumentState return value', () => {
     expect(typeof acl.removeReader).toBe('function');
     expect(typeof acl.addWriter).toBe('function');
     expect(typeof acl.removeWriter).toBe('function');
+    expect(typeof acl.setKemKeyPair).toBe('function');
   });
 });

@@ -7469,9 +7469,9 @@ export class PeerborneDocument<
    *
    * Promotion also requires the target's identity-bound reader KEM public key
    * and a matching live BeeKEM leaf. That binding is recorded in memory when
-   * this document instance adds the reader with a KEM public key; ACL-only
-   * readers, and readers added before this instance was opened, cannot be
-   * promoted. Requires `AuthProvider.serializePublicKey`.
+   * this document instance adds the reader; readers added before this
+   * instance was opened cannot be promoted. Requires
+   * `AuthProvider.serializePublicKey`.
    *
    * The local ACL commits only after GossipSub publication resolves. A rejected
    * publish rolls back local DAG bookkeeping, but transport rejection is
@@ -7761,10 +7761,10 @@ export class PeerborneDocument<
    * currently-connected peer; the receiving document ignores Welcomes
    * addressed to a different reader.
    *
-   * When a recipient KEM key is supplied, the BeeKEM registration is prepared
-   * on a detached tree and the reader ACL is claimed before publication. Live
-   * authorization is granted only after publication resolves, in the same
-   * synchronous turn that installs the prepared tree and identity caches.
+   * The BeeKEM registration is prepared on a detached tree and the reader ACL
+   * is claimed before publication. Live authorization is granted only after
+   * publication resolves, in the same synchronous turn that installs the
+   * prepared tree and identity caches.
    *
    * The initial release supports the first reader plus exact retries for that
    * identity. After `removeReader` advances the BeeKEM tree, adding a
@@ -7778,27 +7778,19 @@ export class PeerborneDocument<
    * for the full construction.
    *
    * @param reader User's identity (signing) public key.
-   * @param readerKemPublicKey Optional raw SEC1-uncompressed P-256
-   *   ECDH public key (65 bytes) of the reader's KEM key pair. The
-   *   reader must hold the matching private key (see
-   *   `setKemKeyPair`). When this is `undefined`, the readers-ACL
-   *   update is still broadcast but **no Welcome is sent**. The caller must
-   *   later re-invoke `addReader` with the recipient KEM key or arrange an
-   *   explicit key-recovery path; an ordinary load cannot bootstrap a peer
-   *   that lacks the current document key. (The library refuses to broadcast
-   *   an un-sealed Welcome because that would leak key material.)
-   * @returns The BeeKEM Welcome used for this reader, or `null` when no
-   *   recipient KEM key was supplied or recoverable.
+   * @param readerKemPublicKey Raw SEC1-uncompressed P-256 ECDH public key
+   *   (65 bytes) of the reader's KEM key pair. The reader must hold the
+   *   matching private key (see `setKemKeyPair`). The Welcome is sealed to
+   *   this key; the library never broadcasts an un-sealed Welcome.
+   * @returns The BeeKEM Welcome used for this reader.
    */
   public async addReader(
     reader: PublicKey,
-    readerKemPublicKey?: Uint8Array,
-  ): Promise<BeeKEMWelcomeV2 | null> {
+    readerKemPublicKey: Uint8Array,
+  ): Promise<BeeKEMWelcomeV2> {
     this._assertNoIncompleteBootstrapLoad();
     const stableReaderKemPublicKey =
-      readerKemPublicKey === undefined
-        ? undefined
-        : snapshotReaderKemPublicKey(readerKemPublicKey);
+      snapshotReaderKemPublicKey(readerKemPublicKey);
     const snapshot = this._startMembershipPublicKeySnapshot(
       reader,
       'BeeKEM reader onboarding',
@@ -7819,10 +7811,10 @@ export class PeerborneDocument<
   private async _addReaderUnlocked(
     stableReader: PublicKey,
     serializedReader: string,
-    readerKemPublicKey?: Uint8Array,
+    readerKemPublicKey: Uint8Array,
     broadcastWelcome = true,
     beginMutation?: () => void,
-  ): Promise<BeeKEMWelcomeV2 | null> {
+  ): Promise<BeeKEMWelcomeV2> {
     await this._ensureCurrentUserCanWrite();
 
     if (this._beekemInitialized !== (this._beekem !== null)) {
@@ -7854,11 +7846,8 @@ export class PeerborneDocument<
     // row. Length alone is insufficient: WebCrypto also rejects off-curve
     // points, and discovering that after `_makeChange` would permanently
     // occupy the founder-plus-one slot without a usable BeeKEM leaf.
-    const validatedReaderKemPublicKey = readerKemPublicKey === undefined
-      ? undefined
-      : new Uint8Array(readerKemPublicKey);
+    const validatedReaderKemPublicKey = new Uint8Array(readerKemPublicKey);
     if (
-      validatedReaderKemPublicKey !== undefined &&
       validatedReaderKemPublicKey.byteLength !== ECIES_P256_PUBLIC_KEY_LENGTH
     ) {
       throw new Error(
@@ -7867,9 +7856,7 @@ export class PeerborneDocument<
           `got ${validatedReaderKemPublicKey.byteLength}`,
       );
     }
-    if (validatedReaderKemPublicKey) {
-      await importEciesPublicKey(validatedReaderKemPublicKey);
-    }
+    await importEciesPublicKey(validatedReaderKemPublicKey);
 
     // Founder-vs-joined-writer gate. The BeeKEM tree is rooted in
     // exactly one of two ways (see the long comment on `_beekem`):
@@ -7900,12 +7887,8 @@ export class PeerborneDocument<
       );
     }
 
-    // Idempotent on the ACL side, but if the caller has only now obtained
-    // the recipient's KEM public key (e.g. a previous `addReader` call
-    // skipped the Welcome because the key was unknown), still emit the
-    // Welcome so the existing ACL row can be paired with keychain
-    // material. Without this branch the warning emitted below on the
-    // first call would point at a recovery path that is itself a no-op.
+    // Idempotent on the ACL side: an exact retry for an existing reader still
+    // prepares and emits the recipient-bound Welcome.
     const alreadyReader =
       (await retryACLConflict(() => this._readers.check(stableReader))) === true;
     if (
@@ -7926,7 +7909,7 @@ export class PeerborneDocument<
           `document instead of reusing the revoked membership tree.`,
       );
     }
-    if (!alreadyReader && validatedReaderKemPublicKey) {
+    if (!alreadyReader) {
       await this._assertKemPublicKeyAvailableForNewLeaf(
         validatedReaderKemPublicKey,
       );
@@ -7939,7 +7922,7 @@ export class PeerborneDocument<
     // material. Invitation bootstrap performs its own complete capacity
     // preflight and supplies the Welcome in its signed response.
     let preparedWelcomeKeychain: Uint8Array | undefined;
-    if (broadcastWelcome && validatedReaderKemPublicKey) {
+    if (broadcastWelcome) {
       const keychainChanges = await this._keychainChangesForWelcome();
       const serializedKeychain =
         this._changesSerializer.serializeChanges(keychainChanges);
@@ -7960,13 +7943,10 @@ export class PeerborneDocument<
     // ACL change. A crypto/import/tree failure therefore cannot leave live
     // authorization ahead of the key-distribution state needed to revoke the
     // reader later.
-    let preparedRegistration: PreparedBeeKEMReaderRegistration | undefined;
-    if (validatedReaderKemPublicKey) {
-      preparedRegistration = await this._prepareBeeKEMReaderRegistration(
-        serializedReader,
-        validatedReaderKemPublicKey,
-      );
-    }
+    const preparedRegistration = await this._prepareBeeKEMReaderRegistration(
+      serializedReader,
+      validatedReaderKemPublicKey,
+    );
 
     // Record the new reader in the BeeKEM ratchet tree so:
     //   a) a future `removeReader` call can cryptographically revoke
@@ -7982,14 +7962,6 @@ export class PeerborneDocument<
     // payload. The reader holds the matching private key, so they can
     // decrypt the path-key chain in the Welcome (see
     // `BeeKEM.processWelcome`).
-    //
-    // When `readerKemPublicKey` is absent the leaf is left
-    // UNALLOCATED: an unrelated placeholder key would let
-    // `removeReader` find a leaf to blank, but the joiner could
-    // never bootstrap their own BeeKEM state without the private
-    // material that matches the placeholder. The library refuses
-    // that ambiguous half-onboarded state and surfaces the warning
-    // below directing the caller to re-invoke with the KEM key.
     //
     // The ACL provider and BeeKEM tree now share one synchronous local commit
     // boundary. Obtain the ACL claim before publication, install the already
@@ -8007,40 +7979,21 @@ export class PeerborneDocument<
         preparedReader,
         'add reader',
         () => {
-          preparedRegistration?.install?.();
+          preparedRegistration.install?.();
           finalizePreparedCommitClaim(
             readerClaim,
             'Reader ACL commit claim',
           );
         },
       );
-    } else if (preparedRegistration?.install) {
+    } else if (preparedRegistration.install) {
       // Exact retries can repair a missing local cache/tree installation for
       // an ACL member. No provider claim is needed because authorization is
       // already live and this branch only swaps document-owned staged state.
       beginMutation?.();
       preparedRegistration.install();
     }
-    const beekemWelcomeForJoiner = preparedRegistration?.welcome ?? null;
-
-    // Without the recipient's KEM public key we cannot seal the
-    // Welcome payload, and we will NEVER send an un-sealed Welcome --
-    // that would broadcast `keychainChanges` to every connected peer.
-    if (!validatedReaderKemPublicKey) {
-      if (!alreadyReader) {
-        console.warn(
-          `[${this.documentPath}] addReader: BeeKEM Welcome skipped because ` +
-            `the caller did not provide \`readerKemPublicKey\`. The reader ` +
-            `has been added to the readers ACL, but to deliver the document ` +
-            `key the caller must either (a) re-invoke \`addReader(reader, ` +
-            `readerKemPublicKey)\` once the recipient's raw SEC1 P-256 ECDH ` +
-            `public key is available, or arrange another explicit ` +
-            `key-recovery path. An ordinary document load cannot bootstrap ` +
-            `a recipient that lacks the current document key.`,
-          );
-      }
-      return null;
-    }
+    const beekemWelcomeForJoiner = preparedRegistration.welcome;
 
     // The signed invitation acceptance carries this same recipient-bound
     // Welcome directly. Skip fan-out in that path: awaiting every
@@ -8050,7 +8003,7 @@ export class PeerborneDocument<
       return beekemWelcomeForJoiner;
     }
 
-    if (!preparedWelcomeKeychain || !beekemWelcomeForJoiner) {
+    if (!preparedWelcomeKeychain) {
       throw new Error('BeeKEM Welcome preflight was not completed');
     }
 
@@ -8169,20 +8122,13 @@ export class PeerborneDocument<
         // one-shot guard passed below checks again immediately before the
         // first ACL or BeeKEM state writer, then admits the rest of that commit.
         assertCanMutate?.();
-        const welcome = await this._addReaderUnlocked(
+        return this._addReaderUnlocked(
           reader,
           serializedReader,
           kemPublicKey,
           false,
           beginMutation,
         );
-        if (!welcome) {
-          throw new Error(
-            `Cannot build invitation bootstrap for ${this.documentPath}: ` +
-              'no BeeKEM Welcome is available for the recipient',
-          );
-        }
-        return welcome;
       },
       addWriter: () =>
         this._addWriterUnlocked(reader, serializedReader, beginMutation),

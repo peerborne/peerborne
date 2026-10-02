@@ -171,7 +171,7 @@ export function usePeerborneDocumentState<
     readers: PublicKey[];
     addReader: (
       user: PublicKey,
-      readerKemPublicKey?: Uint8Array,
+      readerKemPublicKey: Uint8Array,
     ) => Promise<void>;
     removeReader: (user: PublicKey) => Promise<void>;
     writers: PublicKey[];
@@ -180,6 +180,7 @@ export function usePeerborneDocumentState<
       user: PublicKey,
       options?: RemoveWriterOptions,
     ) => Promise<void>;
+    setKemKeyPair: (keyPair: CryptoKeyPair | undefined) => Promise<void>;
   },
 ] {
   const {
@@ -349,11 +350,9 @@ export function usePeerborneDocumentState<
     },
     {
       readers: docReadersCache[documentCacheKey],
-      addReader: async (user: PublicKey, readerKemPublicKey?: Uint8Array) => {
+      addReader: async (user: PublicKey, readerKemPublicKey: Uint8Array) => {
         const docRef = docCache[documentCacheKey];
-        await (readerKemPublicKey === undefined
-          ? docRef.addReader(user)
-          : docRef.addReader(user, readerKemPublicKey));
+        await docRef.addReader(user, readerKemPublicKey);
       },
       removeReader: async (user: PublicKey) => {
         const docRef = docCache[documentCacheKey];
@@ -367,6 +366,10 @@ export function usePeerborneDocumentState<
       removeWriter: async (user: PublicKey, options?: RemoveWriterOptions) => {
         const docRef = docCache[documentCacheKey];
         await docRef.removeWriter(user, options);
+      },
+      setKemKeyPair: async (keyPair: CryptoKeyPair | undefined) => {
+        const docRef = docCache[documentCacheKey];
+        await docRef.setKemKeyPair(keyPair);
       },
     },
   ];

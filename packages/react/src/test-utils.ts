@@ -36,6 +36,7 @@ export function createMockDocument(data: any = { test: 'data' }): any {
     removeReader: jest.fn(() => Promise.resolve()),
     addWriter: jest.fn(() => Promise.resolve()),
     removeWriter: jest.fn(() => Promise.resolve()),
+    setKemKeyPair: jest.fn(() => Promise.resolve()),
     subscribe: jest.fn((id: string, handler: Function, filter: string) => {
       subscriptions.set(id, { handler, filter });
     }),

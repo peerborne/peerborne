@@ -13,6 +13,7 @@ import {
   PeerborneDocument,
   defaultConfig,
   defaultBootstrapConfig,
+  generateEciesKeyPair,
   SubtleCrypto,
 } from '@peerborne/core';
 import { PeerborneContext, usePeerborne } from '@peerborne/react';
@@ -25,6 +26,7 @@ import {
 import { Login } from './Login';
 import { PasswordVault } from './PasswordList';
 import { Settings } from './Settings';
+import { KemKeyPairContext } from './utils';
 
 const crdt = new YjsProvider();
 const serializer = new YjsJSONSerializer();
@@ -36,6 +38,9 @@ function App() {
   const [privateKey, setPrivateKey] = React.useState<CryptoKey | undefined>();
   const [publicKey, setPublicKey] = React.useState<CryptoKey | undefined>();
   const [userId, setUserId] = React.useState<string | undefined>();
+  const [kemKeyPair, setKemKeyPair] = React.useState<
+    CryptoKeyPair | undefined
+  >();
   const [bootstrapPeers, setBootstrapPeers] = React.useState<
     string[] | undefined
   >();
@@ -79,6 +84,19 @@ function App() {
     }
   }, [bootstrapPeers, peerborne]);
 
+  // Each login session gets its own KEM key pair for BeeKEM Welcomes.
+  useEffect(() => {
+    if (!userId) return;
+    let active = true;
+    setKemKeyPair(undefined);
+    void generateEciesKeyPair().then((keyPair) => {
+      if (active) setKemKeyPair(keyPair);
+    });
+    return () => {
+      active = false;
+    };
+  }, [userId]);
+
   const loggedIn = (privateKey && publicKey) !== undefined;
 
   return (
@@ -94,80 +112,82 @@ function App() {
         setDocWritersCache,
       }}
     >
-      <Router>
-        <Container>
-          <Nav variant="tabs" defaultActiveKey="/login">
-            <Nav.Item>
-              <Nav.Link as={Link} to="/login">
-                Login
-              </Nav.Link>
-            </Nav.Item>
-            <Nav.Item>
-              <Nav.Link as={Link} to="/secrets">
-                Secrets
-              </Nav.Link>
-            </Nav.Item>
-            <Nav.Item>
-              <Nav.Link as={Link} to="/settings">
-                Settings
-              </Nav.Link>
-            </Nav.Item>
-          </Nav>
+      <KemKeyPairContext.Provider value={kemKeyPair}>
+        <Router>
+          <Container>
+            <Nav variant="tabs" defaultActiveKey="/login">
+              <Nav.Item>
+                <Nav.Link as={Link} to="/login">
+                  Login
+                </Nav.Link>
+              </Nav.Item>
+              <Nav.Item>
+                <Nav.Link as={Link} to="/secrets">
+                  Secrets
+                </Nav.Link>
+              </Nav.Item>
+              <Nav.Item>
+                <Nav.Link as={Link} to="/settings">
+                  Settings
+                </Nav.Link>
+              </Nav.Item>
+            </Nav>
 
-          {loggedIn && peerborne && userId && (
-            <PasswordVault key={userId} userId={userId} peerborne={peerborne} />
-          )}
-          <Routes>
-            <Route
-              path="/login"
-              element={
-                <Login
-                  privateKey={privateKey}
-                  setPrivateKey={setPrivateKey}
-                  publicKey={publicKey}
-                  setPublicKey={setPublicKey}
-                  userId={userId}
-                  setUserId={setUserId}
-                  bootstrapPeers={bootstrapPeers}
-                  setBootstrapPeers={setBootstrapPeers}
-                />
-              }
-            />
-            <Route
-              path="/secrets"
-              element={
-                loggedIn ? (
-                  peerborne && userId ? null : (
-                    <i>Loading peerborne...</i>
-                  )
-                ) : (
-                  <Navigate to="/login" replace />
-                )
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                loggedIn ? (
-                  peerborne ? (
-                    <Settings peerborne={peerborne} publicKey={publicKey} />
+            {loggedIn && peerborne && userId && (
+              <PasswordVault key={userId} userId={userId} peerborne={peerborne} />
+            )}
+            <Routes>
+              <Route
+                path="/login"
+                element={
+                  <Login
+                    privateKey={privateKey}
+                    setPrivateKey={setPrivateKey}
+                    publicKey={publicKey}
+                    setPublicKey={setPublicKey}
+                    userId={userId}
+                    setUserId={setUserId}
+                    bootstrapPeers={bootstrapPeers}
+                    setBootstrapPeers={setBootstrapPeers}
+                  />
+                }
+              />
+              <Route
+                path="/secrets"
+                element={
+                  loggedIn ? (
+                    peerborne && userId ? null : (
+                      <i>Loading peerborne...</i>
+                    )
                   ) : (
-                    <i>Loading peerborne...</i>
+                    <Navigate to="/login" replace />
                   )
-                ) : (
-                  <Navigate to="/login" replace />
-                )
-              }
-            />
-            <Route
-              path="/"
-              element={
-                <Navigate to={loggedIn ? '/secrets' : '/login'} replace />
-              }
-            />
-          </Routes>
-        </Container>
-      </Router>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  loggedIn ? (
+                    peerborne ? (
+                      <Settings peerborne={peerborne} publicKey={publicKey} />
+                    ) : (
+                      <i>Loading peerborne...</i>
+                    )
+                  ) : (
+                    <Navigate to="/login" replace />
+                  )
+                }
+              />
+              <Route
+                path="/"
+                element={
+                  <Navigate to={loggedIn ? '/secrets' : '/login'} replace />
+                }
+              />
+            </Routes>
+          </Container>
+        </Router>
+      </KemKeyPairContext.Provider>
     </PeerborneContext.Provider>
   );
 }

@@ -1,9 +1,9 @@
 import { LastWriterRemovalError } from '@peerborne/core';
 import { usePeerborneDocumentState } from '@peerborne/react';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
-import { YjsPeerborne } from './utils';
+import { decodeKemPublicKey, KemKeyPairContext, YjsPeerborne } from './utils';
 
 type DisplayPermission = {
   key: CryptoKey;
@@ -13,6 +13,8 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
+const missingKemMessage =
+  "Enter the new member's KEM public key from their Settings page.";
 const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
@@ -36,10 +38,20 @@ export function PermissionsTable({
   const [
     ,
     ,
-    { readers, addReader, removeReader, writers, addWriter, removeWriter },
+    {
+      readers,
+      addReader,
+      removeReader,
+      writers,
+      addWriter,
+      removeWriter,
+      setKemKeyPair,
+    },
   ] = usePeerborneDocumentState(peerborne, `/passwords/${passwordId}`);
+  const kemKeyPair = useContext(KemKeyPairContext);
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
+  const [draftKemKey, setDraftKemKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
 
   // Update `permissions` whenever document `readers` and/or `writers` changes.
@@ -79,8 +91,9 @@ export function PermissionsTable({
   return (
     <>
       <p>
-        These controls change authorization roles only. This example does not
-        deliver the encryption keys a new member needs to open the document.
+        Adding a member sends a BeeKEM Welcome sealed to their KEM public key.
+        This example has no flow for the new member to open a shared secret;
+        use the invitation API for that.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -163,6 +176,12 @@ export function PermissionsTable({
                 value={draftUserKey}
                 onChange={(e) => setDraftUserKey(e.target.value)}
               />
+              <Form.Control
+                className="mt-2"
+                placeholder="KEM Public Key of a new member"
+                value={draftKemKey}
+                onChange={(e) => setDraftKemKey(e.target.value)}
+              />
             </td>
             <td>
               <Form.Control
@@ -190,20 +209,42 @@ export function PermissionsTable({
                         ['verify'],
                       )(draftUserKey);
 
+                      const serializedKey = await serializeKey(key);
+                      const current = permissions.find(
+                        (permission) => permission.publicKey === serializedKey,
+                      );
+                      // Writers keep their reader row, so only a new member
+                      // needs reader onboarding with a KEM public key.
+                      const onboardReader = async () => {
+                        if (current) return true;
+                        if (!draftKemKey.trim() || !kemKeyPair) {
+                          alert(missingKemMessage);
+                          return false;
+                        }
+                        await setKemKeyPair(kemKeyPair);
+                        await addReader(key, decodeKemPublicKey(draftKemKey));
+                        return true;
+                      };
+
                       switch (draftPermission) {
                         case 'r': {
-                          if (await isLastWriter(key, writers)) {
-                            alert(lastEditorMessage);
+                          if (current?.permissions === 'rw') {
+                            if (await isLastWriter(key, writers)) {
+                              alert(lastEditorMessage);
+                              return;
+                            }
+                            await removeWriter(key, keepAnotherEditor);
+                          } else if (!(await onboardReader())) {
                             return;
                           }
-                          await addReader(key);
-                          await removeWriter(key, keepAnotherEditor);
                           console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          await addReader(key);
-                          await addWriter(key);
+                          if (!(await onboardReader())) return;
+                          if (current?.permissions !== 'rw') {
+                            await addWriter(key);
+                          }
                           console.log('Added writer');
                           break;
                         }
