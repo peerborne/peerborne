@@ -11,7 +11,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Packages are unpublished.** The `@peerborne/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
 - **No deployment automation.** There is no CI/CD pipeline for deploying relays, bootstrap nodes, or pinning services.
-- **Current formats only.** API, wire, and storage changes between commits may break your application without warning. Peerborne supports only its current formats; there is no state migration framework, changelog, semver, or deprecation period. See the [alpha compatibility policy](https://github.com/Peerborne/peerborne/blob/main/MIGRATING.md).
+- **Current formats only.** API, wire, and storage changes between commits may break your application without warning. Peerborne supports only its current formats; there is no state migration framework, changelog, semver, or deprecation period.
 
 ## Offline and durability
 

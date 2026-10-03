@@ -70,9 +70,8 @@ for an interactive run and the exact evidence boundaries.
 
 All public packages and APIs use Peerborne names. The packages are source
 workspaces and have not been published to npm; release tooling validates packed
-tarballs in a clean external consumer. See the
-[alpha compatibility policy](MIGRATING.md) for the current API and wire/storage
-boundaries. Only current formats are supported.
+tarballs in a clean external consumer. Peerborne has no users yet, so it
+supports only its current API, wire, and storage formats.
 
 ## Architecture and evidence
 

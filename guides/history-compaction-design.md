@@ -61,8 +61,7 @@ no snapshot; there is no fallback to an earlier protocol or unsigned load.
 An accepted invitation uses the separate issuer-pinned
 `/peerborne/invitation-catch-up/1.0.0` protocol. It does not fabricate the trusted
 group commitments required by normal V4 loading. See
-[the initial-load security model](../site/src/content/docs/concepts/security.md)
-and [the alpha format policy](../MIGRATING.md).
+[the initial-load security model](../site/src/content/docs/concepts/security.md).
 
 ## Snapshot verification
 

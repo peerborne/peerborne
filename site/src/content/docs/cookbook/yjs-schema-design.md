@@ -73,7 +73,7 @@ await swarmDoc.change((doc: Y.Doc) => {
 });
 ```
 
-Validate loaded state and remote updates against that exact schema before interpreting fields, and reject an unsupported `schemaVersion` instead of upgrading it in place. A schema tag alone does not validate nested values. During alpha, change producers, readers, validators, and tests together, and use fresh local state for incompatible changes. Do not add fallback decoders, dual field names, or automatic upgrades. See the [alpha compatibility policy](https://github.com/Peerborne/peerborne/blob/main/MIGRATING.md).
+Validate loaded state and remote updates against that exact schema before interpreting fields, and reject an unsupported `schemaVersion` instead of upgrading it in place. A schema tag alone does not validate nested values. During alpha, change producers, readers, validators, and tests together, and use fresh local state for incompatible changes. Do not add fallback decoders, dual field names, or automatic upgrades.
 
 ## Heuristics, not limits
 

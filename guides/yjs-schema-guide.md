@@ -1341,7 +1341,7 @@ valid application data.
 Update producers, readers, validators, and tests together. Remove obsolete
 fields and code paths, advance the application schema version, and use fresh
 local state for incompatible changes. Test malformed and unsupported schemas
-explicitly. See [the alpha compatibility policy](../MIGRATING.md).
+explicitly.
 
 ---
 

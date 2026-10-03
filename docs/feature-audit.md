@@ -93,7 +93,7 @@ Status meanings:
 
 1. Runtime protocol identifiers, key-derivation domains, Redux actions, and
    default local-storage names use **Peerborne** identifiers. Only current
-   formats are supported; see `MIGRATING.md`.
+   formats are supported.
 2. The core barrel eagerly imports the complete networking/storage stack. This
    makes simple adapter and serializer consumers pay a large bundle cost and
    increases the chance that environment-specific dependencies leak across the
