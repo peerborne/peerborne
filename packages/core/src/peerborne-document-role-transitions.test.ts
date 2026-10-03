@@ -285,7 +285,11 @@ describe('membership call-boundary snapshots', () => {
       document._buildInvitationBootstrapUnlocked = jest.fn(async () => ({}));
       const queued = jest.spyOn(document._mutationQueue, 'run');
       const key = new Uint8Array(new SharedArrayBuffer(65));
-      await expect(document[operation](targetUser, key, 'reader')).rejects.toThrow(
+      const args =
+        operation === 'addReader'
+          ? [targetUser, key]
+          : [targetUser, key, 'reader'];
+      await expect(document[operation](...args)).rejects.toThrow(
         /backing buffer/i,
       );
       expect(queued).not.toHaveBeenCalled();
