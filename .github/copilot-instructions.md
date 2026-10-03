@@ -35,8 +35,9 @@ Generated API Markdown under `site/src/content/docs/reference/api/` is ignored. 
 - Preserve existing TypeScript, Jest, Playwright, formatting, and workspace patterns.
 - Do not add unnecessary comments.
 - Never expose or log credentials, signing keys, KEM keys, document keys, private payloads, or other secrets.
-- Treat serializers, wire protocols, ACL/key formats, and persisted state as compatibility boundaries.
-- Add focused malformed-input, replay, migration, and adversarial tests for security-sensitive changes.
+- Peerborne has no users, so do not add backward compatibility, migrations, deprecation shims, or migration/compatibility tests.
+- When changing serializers, wire protocols, ACL/key formats, or persisted state, update producers and consumers together.
+- Add focused malformed-input, replay, and adversarial tests for the current format with those and other security-sensitive changes.
 - Keep changes focused and leave unrelated or untracked files untouched.
 - Do not commit or push unless the task explicitly requests it.
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless explicitly requested.

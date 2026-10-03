@@ -59,7 +59,7 @@ The Site build generates API Markdown with Starlight TypeDoc under `site/src/con
 - Preserve established TypeScript, Jest, Playwright, Prettier, and workspace patterns.
 - Do not add unnecessary comments.
 - Never expose or log credentials, signing keys, KEM keys, document keys, private payloads, or other secrets.
-- Treat serializers, wire protocols, ACL/key formats, and persisted state as compatibility boundaries. Add focused migration, malformed-input, replay, and adversarial tests when changing them.
+- Peerborne has no users, so do not add backward compatibility, migrations, deprecation shims, or migration/compatibility tests. When changing serializers, wire protocols, ACL/key formats, or persisted state, update producers and consumers together and add focused malformed-input, replay, and adversarial tests for the current format.
 - Keep changes and commits focused. Do not add automatic co-author or AI-attribution trailers unless explicitly requested by the contributor.
 - Do not commit or push unless the task explicitly requests it.
 

@@ -114,7 +114,7 @@ The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight Typ
 
 - Keep commits and pull requests focused. Add regression tests for fixes and focused adversarial tests for security-sensitive behavior.
 - Never expose or log credentials, signing keys, KEM keys, document keys, private payloads, or other secrets.
-- Preserve wire compatibility deliberately: serializer, protocol, key, ACL, and persistence changes need migration/compatibility analysis.
+- Peerborne has no users, so do not add backward compatibility, migrations, deprecation shims, or migration/compatibility tests. Serializer, protocol, key, ACL, and persistence changes update producers and consumers together and need malformed-input, replay, and adversarial tests for the current format.
 - Run the relevant commands locally and report evidence without overstating what it proves.
 - Address review findings. Repository policy expects Copilot review to return no comments on the latest head and all applicable CI checks to pass.
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless the contributor explicitly requests them.

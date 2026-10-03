@@ -16,7 +16,7 @@ test. What remains is persisted KEM/BeeKEM and replay state, offline/delayed
 acceptance, larger-group add-side updates, and multi-peer proof that a revoked
 member cannot read or write subsequent content.
 
-Useful work includes deterministic acceptance tests, state migration design, adversarial cases, and safe UX that never logs keys or private payloads.
+Useful work includes deterministic acceptance tests, durable state design for the current format, adversarial cases, and safe UX that never logs keys or private payloads.
 
 ### Persistence and restart recovery
 
