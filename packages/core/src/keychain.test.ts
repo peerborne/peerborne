@@ -153,6 +153,7 @@ describe('isTransactionalKeychain', () => {
       changes: 'change',
       history: 'history',
       currentKeyChange: 'current',
+      claimCommit: () => ({ finalize: () => {} }),
       commit: () => {},
     });
     keychain.prepareMerge = () => ({
