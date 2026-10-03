@@ -1277,14 +1277,19 @@ export class PeerborneDocument<
     }
     // Welcome drain, compaction, and notification preparation can await
     // providers that never settle. Racing each against the caller's signal
-    // releases `_mutationQueue` on timeout while the instance stays pending.
+    // releases `_mutationQueue` on timeout while the instance stays pending;
+    // the drain and compaction also recheck it before mutating state, so a
+    // provider that settles after the deadline cannot apply late work.
     throwIfLoadAborted(signal);
     if (this._pendingWelcomes.size > 0) {
-      await awaitLoadWork(this._drainPendingWelcomesUnlocked(true), signal);
+      await awaitLoadWork(
+        this._drainPendingWelcomesUnlocked(true, signal),
+        signal,
+      );
     }
     if (this._bootstrapCompactionDeferred) {
       this._bootstrapCompactionDeferred = false;
-      await awaitLoadWork(this._maybeCompact(), signal);
+      await awaitLoadWork(this._maybeCompact(signal), signal);
     }
     await awaitLoadWork(beforeComplete?.(), signal);
     const deferredNotification = await awaitLoadWork(
@@ -2913,7 +2918,7 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact() {
+  private async _maybeCompact(signal?: AbortSignal) {
     if (!this._compactionConfig.enabled || this._snapshotUnsupported) {
       return;
     }
@@ -2934,15 +2939,17 @@ export class PeerborneDocument<
 
     // Only writers can create snapshots; read-only peers must not attempt compaction.
     if (
-      (await retryACLConflict(() =>
-        this._writers.check(this._userPublicKey),
+      (await retryLoadACLConflict(
+        () => this._writers.check(this._userPublicKey),
+        signal,
       )) !== true
     ) {
       return;
     }
+    throwIfLoadAborted(signal);
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked();
+      await this._snapshotUnlocked(signal);
     } finally {
       this._compactionInProgress = false;
     }
@@ -6817,8 +6824,11 @@ export class PeerborneDocument<
     return this._runStateMutation(() => this._snapshotUnlocked());
   }
 
-  private async _snapshotUnlocked(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  private async _snapshotUnlocked(
+    signal?: AbortSignal,
+  ): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
     await this._ensureCurrentUserCanWrite();
+    throwIfLoadAborted(signal);
 
     if (!this._crdtProvider.getSnapshot) {
       console.warn('CRDTProvider does not implement getSnapshot(); compaction disabled.');
@@ -6843,6 +6853,7 @@ export class PeerborneDocument<
         stateBytes, lastChangeNodeCID, timestamp, compactedCount,
       );
       signature = await this._authProvider.sign(signPayload, this._userKey);
+      throwIfLoadAborted(signal);
     } else {
       signature = new Uint8Array(0);
     }
@@ -8358,7 +8369,11 @@ export class PeerborneDocument<
    */
   private async _evaluateAndApplyBeeKEMWelcome(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
-    opts: { fromBuffer: boolean; failClosedOnCommitError?: boolean },
+    opts: {
+      fromBuffer: boolean;
+      failClosedOnCommitError?: boolean;
+      signal?: AbortSignal;
+    },
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<boolean> {
     // Run the pure validation gates (extracted to
@@ -8576,6 +8591,7 @@ export class PeerborneDocument<
     // first-Welcome-ever case (no existing anchor) which is handled
     // by the simple assignment branch.
     const newEpochId = message.welcomeEpochId as Uint8Array;
+    throwIfLoadAborted(opts.signal);
     try {
       const committed = await runSharedProtocolMutation(
         admission,
@@ -8702,6 +8718,7 @@ export class PeerborneDocument<
    */
   private async _drainPendingWelcomesUnlocked(
     failClosedOnCommitError = false,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (this._pendingWelcomes.size === 0) return;
     const now = this._now();
@@ -8710,6 +8727,7 @@ export class PeerborneDocument<
     // storage immutable without duplicating the whole aggregate budget.
     const keys = this._pendingWelcomes.keysSnapshot();
     for (const key of keys) {
+      throwIfLoadAborted(signal);
       const entry = this._pendingWelcomes.get(key);
       if (entry === undefined) continue;
       if (now - entry.bufferedAtMs > PENDING_WELCOMES_TTL_MS) {
@@ -8734,6 +8752,7 @@ export class PeerborneDocument<
       const accepted = await this._evaluateAndApplyBeeKEMWelcome(message, {
         fromBuffer: true,
         failClosedOnCommitError,
+        signal,
       });
       if (accepted) {
         this._pendingWelcomes.delete(key);

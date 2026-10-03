@@ -14,7 +14,10 @@ import {
 import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
 import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
+import { eciesSeal, generateEciesKeyPair } from './ecies.js';
+import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
+import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
 
 jest.mock(
   'it-pipe',
@@ -83,6 +86,25 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+const welcomeSerializer = {
+  serializeSyncMessage(message: unknown) {
+    return new TextEncoder().encode(
+      JSON.stringify(message, (_key, value) =>
+        value instanceof Uint8Array
+          ? { __testBytes: Array.from(value) }
+          : value,
+      ),
+    );
+  },
+  deserializeSyncMessage(data: Uint8Array) {
+    return JSON.parse(new TextDecoder().decode(data), (_key, value) =>
+      value && typeof value === 'object' && Array.isArray(value.__testBytes)
+        ? new Uint8Array(value.__testBytes)
+        : value,
+    );
+  },
+};
 
 function signedLoadHarness(
   getWriterKeys: () => Promise<string[]>,
@@ -3209,7 +3231,7 @@ describe('document load response boundaries', () => {
       document._completeBootstrapStateApplicationUnlocked(),
     ).rejects.toThrow(/Welcome commit failed after merge/);
 
-    expect(drainPendingWelcomes).toHaveBeenCalledWith(true);
+    expect(drainPendingWelcomes).toHaveBeenCalledWith(true, undefined);
     expect(liveKeychain.partiallyMerged).toBe(true);
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(() => document.document).toThrow(/discard this document instance/);
@@ -3253,6 +3275,209 @@ describe('document load response boundaries', () => {
       controller.abort(new Error('Invitation stream deadline exceeded'));
 
       await expect(completion).rejects.toThrow(/deadline exceeded/);
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(() => document.document).toThrow(/discard this document instance/);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['compaction writer check', 0],
+    ['snapshot writer check', 1],
+    ['snapshot signature', 2],
+  ] as const)(
+    'drops deferred compaction when the %s settles after the deadline',
+    async (_label, lateCall) => {
+      const started = deferred<void>();
+      const release = deferred<void>();
+      let providerCalls = 0;
+      const provider =
+        <T>(value: T) =>
+        async (): Promise<T> => {
+          if (providerCalls++ === lateCall) {
+            started.resolve();
+            await release.promise;
+          }
+          return value;
+        };
+      const check = jest.fn(provider(true));
+      const sign = jest.fn(provider(new Uint8Array([7])));
+      const pruneChanges = jest.fn(() => new Set(['pruned']));
+      const gcPrunedBlocks = jest.fn(async () => undefined);
+      const dispatch = jest.fn();
+      const previousSnapshot = { state: 'previous' };
+      const lastSyncMessage = {
+        changeId: 'HEAD',
+        changes: { kind: crdtDocumentChangeNode },
+      };
+      const document = fakeDocument({
+        documentPath: '/late-compaction',
+        swarm: { config: { enableSigning: true } },
+        _bootstrapLoadApplicationState: 'pending',
+        _document: { value: 'bootstrap' },
+        _pendingWelcomes: new Map(),
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _bootstrapCompactionDeferred: true,
+        _remoteHandlers: {},
+        _compactionConfig: {
+          enabled: true,
+          minChangesBeforeSnapshot: 1,
+          snapshotInterval: 1,
+          pruneAfterSnapshot: true,
+          keepRecentNodes: 1,
+          gcAfterPrune: true,
+        },
+        _snapshotUnsupported: false,
+        _compactionInProgress: false,
+        _documentChangeCount: 3,
+        _changesSinceSnapshot: 3,
+        _userPublicKey: 'writer',
+        _userKey: 'writer-key',
+        _writers: { check },
+        _authProvider: { sign },
+        _crdtProvider: { getSnapshot: () => ({ value: 'compacted' }) },
+        _changesSerializer: { serializeChanges: () => new Uint8Array([1]) },
+        _encoder: new TextEncoder(),
+        _latestSnapshot: previousSnapshot,
+        _latestSnapshotSource: 'peer',
+        _lastSyncMessage: lastSyncMessage,
+        _pruneChanges: pruneChanges,
+        _gcPrunedBlocks: gcPrunedBlocks,
+        _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
+          async () => undefined,
+        ),
+        _dispatchRemoteUpdateHandlers: dispatch,
+      });
+      const maybeCompact = jest.spyOn(document, '_maybeCompact');
+      const controller = new AbortController();
+
+      const completion = document._completeBootstrapStateApplicationUnlocked(
+        undefined,
+        controller.signal,
+      );
+      await started.promise;
+      controller.abort(new Error('Invitation stream deadline exceeded'));
+      await expect(completion).rejects.toThrow(/deadline exceeded/);
+
+      release.resolve();
+      await expect(maybeCompact.mock.results[0]!.value).rejects.toThrow(
+        /deadline exceeded/,
+      );
+
+      expect(maybeCompact).toHaveBeenCalledWith(controller.signal);
+      expect(check).toHaveBeenCalledTimes(lateCall === 0 ? 1 : 2);
+      expect(sign).toHaveBeenCalledTimes(lateCall === 2 ? 1 : 0);
+      expect(document._latestSnapshot).toBe(previousSnapshot);
+      expect(document._latestSnapshotSource).toBe('peer');
+      expect(document._changesSinceSnapshot).toBe(3);
+      expect(document._lastSyncMessage).toBe(lastSyncMessage);
+      expect(document._compactionInProgress).toBe(false);
+      expect(pruneChanges).not.toHaveBeenCalled();
+      expect(gcPrunedBlocks).not.toHaveBeenCalled();
+      expect(document._bootstrapLoadApplicationState).toBe('pending');
+      expect(() => document.document).toThrow(/discard this document instance/);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['accepts', true],
+    ['rejects', false],
+  ] as const)(
+    'drops the finalization Welcome drain when buffered verification %s after the deadline',
+    async (_label, verified) => {
+      const kemKeyPair = await generateEciesKeyPair();
+      const kemPublicKeyRaw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
+      );
+      const eciesSealed = await eciesSeal(
+        encodeWelcomeSealedPayload({
+          keychainChanges: new Uint8Array([1]),
+          beekemWelcome: null,
+        }),
+        kemKeyPair.publicKey,
+      );
+      const pendingWelcomes = new PendingWelcomeBuffer();
+      for (const [key, fill] of [
+        ['first', 1],
+        ['second', 2],
+      ] as const) {
+        pendingWelcomes.store(
+          key,
+          welcomeSerializer.serializeSyncMessage({
+            documentId: '/late-welcome',
+            signatureContext: 'beekem-welcome-v1',
+            welcomeEpochId: new Uint8Array(32).fill(fill),
+            welcomeRecipient: 'local-user',
+            welcomeRecipientKemPublicKey: kemPublicKeyRaw,
+            eciesSealed,
+            signature: 'AQ==',
+          }),
+          0,
+          true,
+        );
+      }
+      const started = deferred<void>();
+      const release = deferred<void>();
+      const verify = jest.fn(async () => {
+        started.resolve();
+        await release.promise;
+        return verified;
+      });
+      const merge = jest.fn();
+      const dispatch = jest.fn();
+      const document = fakeDocument({
+        documentPath: '/late-welcome',
+        _bootstrapLoadApplicationState: 'pending',
+        _document: { value: 'bootstrap' },
+        _pendingWelcomes: pendingWelcomes,
+        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+        _bootstrapCompactionDeferred: false,
+        _remoteHandlers: {},
+        _now: () => 0,
+        _authProvider: { serializePublicKey: async () => 'local-user' },
+        _userPublicKey: { id: 'local-user' },
+        _readers: { check: async () => true },
+        _verifyMembershipWriterSignature: verify,
+        _syncMessageSerializer: welcomeSerializer,
+        _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
+        _kemKeyPair: kemKeyPair,
+        _kemPublicKeyRaw: kemPublicKeyRaw,
+        _keychain: { merge, keys: async () => [] },
+        _invitationEpoch: undefined,
+        _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
+          async () => undefined,
+        ),
+        _dispatchRemoteUpdateHandlers: dispatch,
+      });
+      const drain = jest.spyOn(document, '_drainPendingWelcomesUnlocked');
+      const consoleWarn = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+      const controller = new AbortController();
+
+      try {
+        const completion = document._completeBootstrapStateApplicationUnlocked(
+          undefined,
+          controller.signal,
+        );
+        await started.promise;
+        controller.abort(new Error('Invitation stream deadline exceeded'));
+        await expect(completion).rejects.toThrow(/deadline exceeded/);
+
+        release.resolve();
+        await expect(drain.mock.results[0]!.value).rejects.toThrow(
+          /deadline exceeded/,
+        );
+      } finally {
+        consoleWarn.mockRestore();
+      }
+
+      expect(drain).toHaveBeenCalledWith(true, controller.signal);
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(merge).not.toHaveBeenCalled();
+      expect(document._invitationEpoch).toBeUndefined();
+      expect(pendingWelcomes.keysSnapshot()).toEqual(['first', 'second']);
       expect(document._bootstrapLoadApplicationState).toBe('pending');
       expect(() => document.document).toThrow(/discard this document instance/);
       expect(dispatch).not.toHaveBeenCalled();
