@@ -275,8 +275,7 @@ export interface Keychain<KeychainChange, DocumentKey> {
 /**
  * Keychain capability for staging BeeKEM membership transitions.
  *
- * Callers that require an atomic ratchet/keychain transition can use
- * `isTransactionalKeychain` to require both staging methods. A plain
+ * `isTransactionalKeychain` checks for both BeeKEM staging methods. A plain
  * `Keychain` remains source-compatible with implementations that omit them.
  */
 export interface TransactionalKeychain<KeychainChange, DocumentKey>
@@ -350,7 +349,11 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
   readonly keyIds: readonly Uint8Array[];
   /** Detached ID of the staged current/final key, or undefined when empty. */
   readonly currentKeyId: Uint8Array | undefined;
-  /** Validate, import, and hydrate the detached staged keychain. */
+  /**
+   * Validate, import, and hydrate the detached staged keychain. If hydration
+   * is started, it must complete before claiming. Hydration started after a
+   * successful claim must reject.
+   */
   hydrateKeys(): Promise<[Uint8Array, DocumentKey][]>;
   /** Look up a key hydrated by `hydrateKeys()` without mutating live state. */
   getKey(keyID: Uint8Array): DocumentKey | undefined;
@@ -359,6 +362,17 @@ export interface PreparedKeychainMerge<KeychainChange, DocumentKey> {
    * `computeKeychainStateCommitment`, when supported.
    */
   stateCommitment?(): Promise<Uint8Array>;
+  /**
+   * Claim the staged base identity and revision without changing the live keychain.
+   * Both claimCommit() and commit() must reject a replaced base, including a
+   * replacement with the same numeric revision, before publishing any state.
+   *
+   * The method and returned finalizer have the same composed-commit contract
+   * as `PreparedACLChange.claimCommit()`. Workflows that compose this merge
+   * with another provider transition must compose claims instead of sequencing
+   * independently fallible `commit()` calls.
+   */
+  claimCommit(): PreparedCommitClaim;
   /**
    * Synchronous, single-use, atomic live-state commit. Keys already hydrated
    * through this staged view MUST become immediately available from the live
