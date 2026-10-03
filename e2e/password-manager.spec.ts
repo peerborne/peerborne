@@ -105,14 +105,27 @@ test('sets a new member as a reader and then promotes them to editor', async ({
       .filter({ has: page.getByRole('cell', { name: 'Editor', exact: true }) }),
   ).toHaveCount(1, { timeout: 30_000 });
 
-  const memberKey = await page.evaluate(async () => {
-    const { publicKey } = await crypto.subtle.generateKey(
+  const { memberKey, memberKemKey } = await page.evaluate(async () => {
+    const exportRaw = async (publicKey: CryptoKey) => {
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', publicKey),
+      );
+      return btoa(String.fromCharCode(...raw));
+    };
+    const signing = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
       true,
       ['sign', 'verify'],
     );
-    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', publicKey));
-    return btoa(String.fromCharCode(...raw));
+    const kem = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    );
+    return {
+      memberKey: await exportRaw(signing.publicKey),
+      memberKemKey: await exportRaw(kem.publicKey),
+    };
   });
   const memberRows = page
     .getByRole('row')
@@ -122,6 +135,7 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   });
 
   await page.getByPlaceholder('Public Key to add').fill(memberKey);
+  await page.getByPlaceholder('Member KEM public key').fill(memberKemKey);
   await page.getByRole('combobox').selectOption('r');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(

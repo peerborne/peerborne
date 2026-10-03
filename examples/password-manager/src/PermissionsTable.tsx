@@ -26,6 +26,12 @@ async function isLastWriter(
   return writerKeys.size === 1 && writerKeys.has(serializedTarget);
 }
 
+function decodeKemPublicKey(value: string): Uint8Array | undefined {
+  const encoded = value.trim();
+  if (!encoded) return undefined;
+  return Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+}
+
 export function PermissionsTable({
   passwordId,
   peerborne,
@@ -49,6 +55,7 @@ export function PermissionsTable({
   const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
+  const [draftKemKey, setDraftKemKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
 
   // addReader seeds BeeKEM leaf 0 from the founder's KEM key pair, so install
@@ -106,8 +113,12 @@ export function PermissionsTable({
   return (
     <>
       <p>
-        These controls change authorization roles only. This example does not
-        deliver the encryption keys a new member needs to open the document.
+        Enter the member's signing public key and raw P-256 ECDH KEM public key,
+        both base64. The KEM key gives the member a BeeKEM leaf and seals the
+        document key in a Welcome sent to connected peers. A member added
+        without one gets an authorization role only: they cannot open the
+        document or be promoted to editor until you set their role again with
+        their KEM key.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -190,6 +201,12 @@ export function PermissionsTable({
                 value={draftUserKey}
                 onChange={(e) => setDraftUserKey(e.target.value)}
               />
+              <Form.Control
+                className="mt-2"
+                placeholder="Member KEM public key"
+                value={draftKemKey}
+                onChange={(e) => setDraftKemKey(e.target.value)}
+              />
             </td>
             <td>
               <Form.Control
@@ -217,6 +234,7 @@ export function PermissionsTable({
                         },
                         ['verify'],
                       )(draftUserKey);
+                      const kemPublicKey = decodeKemPublicKey(draftKemKey);
 
                       switch (draftPermission) {
                         case 'r': {
@@ -224,13 +242,13 @@ export function PermissionsTable({
                             alert(lastEditorMessage);
                             return;
                           }
-                          await addReader(key);
+                          await addReader(key, kemPublicKey);
                           await removeWriter(key, keepAnotherEditor);
                           console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          await addReader(key);
+                          await addReader(key, kemPublicKey);
                           await addWriter(key);
                           console.log('Added writer');
                           break;
@@ -247,7 +265,9 @@ export function PermissionsTable({
                         error instanceof LastWriterRemovalError
                           ? lastEditorMessage
                           : 'Unable to update document permissions. Verify ' +
-                              'the public key and membership configuration.',
+                              'both public keys and the membership ' +
+                              'configuration. Promotion to editor requires ' +
+                              "the member's KEM public key.",
                       );
                       return;
                     }
