@@ -45,22 +45,31 @@ jest.mock('./ecies.js', () => ({
   importEciesPublicKey: async () => ({}),
 }));
 jest.mock('./welcome-sealed-payload.js', () => ({
-  decodeWelcomeSealedPayload: () => ({
+  decodeWelcomeSealedPayloadV2: () => ({
     keychainChanges: new Uint8Array([1]),
     beekemWelcome: {
+      version: 2,
+      generation: 1,
+      numLeaves: 2,
       leafIndex: 2,
       pathKeys: [{ nodeIndex: 1 }],
       treeNodePublicKeys: [{ nodeIndex: 0, publicKey: {} }],
       treeHash: new Uint8Array(32),
     },
   }),
-  encodeWelcomeSealedPayload: () => new Uint8Array([1]),
+  encodeWelcomeSealedPayloadV2: () => new Uint8Array([1]),
 }));
+const mockWelcomeRootSecrets: Uint8Array[] = [];
+
 jest.mock('./beekem/beekem.js', () => ({
   BeeKEM: class {
     memberCount = 2;
     myLeafIndex = 2;
-    async processWelcome() {}
+    async processWelcome() {
+      const rootSecret = new Uint8Array(32).fill(0x5a);
+      mockWelcomeRootSecrets.push(rootSecret);
+      return rootSecret;
+    }
   },
 }));
 
@@ -282,6 +291,35 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.commit).not.toHaveBeenCalled();
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._beekem).toBeUndefined();
+  });
+
+  test('wipes the joined tree root secret whether bootstrap succeeds or fails', async () => {
+    mockWelcomeRootSecrets.length = 0;
+    const rejected = invitationHarness();
+    rejected.verify.mockResolvedValue(false);
+    await expect(
+      rejected.document.acceptInvitationBootstrap(
+        bundle(),
+        {},
+        'reader',
+        '/ip4/127.0.0.1/tcp/1',
+      ),
+    ).rejects.toThrow('signature does not match');
+
+    const accepted = invitationHarness();
+    await expect(
+      accepted.document.acceptInvitationBootstrap(
+        bundle(),
+        {},
+        'reader',
+        '/ip4/127.0.0.1/tcp/1',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(mockWelcomeRootSecrets).toHaveLength(2);
+    for (const rootSecret of mockWelcomeRootSecrets) {
+      expect(rootSecret).toEqual(new Uint8Array(32));
+    }
   });
 
   test('rejects a wrong-context bootstrap with zero live mutation and permits a corrected retry', async () => {
