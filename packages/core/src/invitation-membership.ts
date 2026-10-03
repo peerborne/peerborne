@@ -158,11 +158,9 @@ interface PrepareInitialInvitationMembershipOptions<Welcome> {
   readonly getState: () => Promise<InitialInvitationMembershipState>;
   readonly addReader: () => Promise<Welcome>;
   readonly addWriter: () => Promise<void>;
-  readonly repairReaders: () => Promise<void>;
-  readonly repairWriters: () => Promise<void>;
 }
 
-/** @internal Onboard or repair one exact recipient before bootstrap attestation. */
+/** @internal Onboard one exact recipient before bootstrap attestation. */
 export async function prepareInitialInvitationMembership<Welcome>(
   options: PrepareInitialInvitationMembershipOptions<Welcome>,
 ): Promise<Welcome> {
@@ -180,11 +178,5 @@ export async function prepareInitialInvitationMembership<Welcome>(
     options.role,
     'ready-to-attest',
   );
-
-  // Re-publish both full ACL snapshots on every attempt so an exact retry
-  // re-announces membership that an earlier, partially failed attempt
-  // committed after a delivery-ambiguous publication.
-  await options.repairReaders();
-  await options.repairWriters();
   return welcome;
 }
