@@ -6,11 +6,6 @@
     "@peerborne/automerge": "workspace:packages/automerge",
     "@peerborne/core": "workspace:packages/core",
     "@peerborne/redux": "workspace:packages/redux",
-    "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.5",
-    "@types/jest": "^30.0.0",
     "@types/jsoneditor": "^9.9.6",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
@@ -30,21 +25,6 @@
     "start": "vite",
     "start:relay": "node --experimental-strip-types src/relay.ts",
     "build": "tsc --noEmit && vite build"
-  },
-  "eslintConfig": {
-    "extends": "react-app"
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
   },
   "type": "module",
   "devDependencies": {

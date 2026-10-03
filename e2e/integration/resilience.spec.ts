@@ -42,7 +42,8 @@ function trackConsole(page: Page) {
 // - Direct WebRTC connections between browsers (not just relay-mediated)
 // - GossipSub floodPublish mode (trades bandwidth for reliability)
 //
-// Run with: yarn playwright test --grep "@resilience" to include these tests.
+// To run them, change `test.skip` to `test` and run `yarn test:integration`
+// against the integration Docker topology.
 test.describe('Resilience', () => {
   test.skip('browser reconnects after page reload', async ({ browser }) => {
     test.setTimeout(180_000);

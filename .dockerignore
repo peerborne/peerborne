@@ -1,5 +1,3 @@
-Dockerfile.browser-test
-Dockerfile.node
 Dockerfile
 node_modules/
 packages/automerge/node_modules
