@@ -52,7 +52,7 @@ Do not describe `yarn benchmark:all` as working until its runner module mismatch
 
 ## Documentation
 
-The Site build generates API Markdown with Starlight TypeDoc under `site/src/content/docs/reference/api/`. That directory is ignored. Never edit generated API Markdown; change source comments or `site/astro.config.mjs` and rebuild the site. There is no legacy TypeDoc workflow.
+The Site build generates API Markdown with Starlight TypeDoc under `site/src/content/docs/reference/api/`. That directory is ignored. Never edit generated API Markdown; change source comments or `site/astro.config.mjs` and rebuild the site. Starlight TypeDoc is the only API reference workflow.
 
 ## Engineering rules
 

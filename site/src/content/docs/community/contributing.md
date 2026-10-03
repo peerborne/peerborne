@@ -108,7 +108,7 @@ revocation, partition/rejoin, or relay failover.
 
 ## Generated API reference
 
-The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight TypeDoc generates package API Markdown during that build into `site/src/content/docs/reference/api/`; the directory is ignored. Do not edit generated Markdown. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. There is no legacy TypeDoc workflow.
+The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight TypeDoc generates package API Markdown during that build into `site/src/content/docs/reference/api/`; the directory is ignored. Do not edit generated Markdown. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. Starlight TypeDoc is the only API reference workflow.
 
 ## Pull request expectations
 

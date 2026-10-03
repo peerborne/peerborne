@@ -48,7 +48,7 @@ The six `@peerborne/*` workspaces build, but they are unpublished. Prepare publi
 
 ### Documentation and snippet tests
 
-The Site workflow generates TypeDoc Markdown from source during `yarn workspace @peerborne/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. There is no legacy TypeDoc workflow.
+The Site workflow generates TypeDoc Markdown from source during `yarn workspace @peerborne/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. Starlight TypeDoc is the only API reference workflow.
 
 ### Benchmark runner and budgets
 
