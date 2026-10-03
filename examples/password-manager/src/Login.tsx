@@ -1,3 +1,4 @@
+import { generateEciesKeyPair } from '@peerborne/core';
 import React from 'react';
 import { Button, Container, Row, Form } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
@@ -9,6 +10,7 @@ export function Login({
   setUserId,
   setPublicKey,
   setPrivateKey,
+  setKemKeyPair,
   setBootstrapPeers,
 }: {
   userId?: string;
@@ -17,6 +19,7 @@ export function Login({
   setPublicKey?: (publicKey: CryptoKey) => void;
   privateKey?: CryptoKey;
   setPrivateKey?: (privateKey: CryptoKey) => void;
+  setKemKeyPair: (kemKeyPair: CryptoKeyPair) => void;
   bootstrapPeers?: string[];
   setBootstrapPeers?: (peers: string[]) => void;
 }) {
@@ -26,6 +29,9 @@ export function Login({
   >();
   const [generatedPublicKey, setGeneratedPublicKey] = React.useState<
     string | undefined
+  >();
+  const [generatedKemKeyPair, setGeneratedKemKeyPair] = React.useState<
+    CryptoKeyPair | undefined
   >();
   const [draftBootstrapPeers, setDraftBootstrapPeers] = React.useState('');
   // Generate a keypair.
@@ -40,6 +46,9 @@ export function Login({
         true,
         ['sign', 'verify'],
       );
+      // Secret documents seed BeeKEM leaf 0 with this P-256 ECDH key pair
+      // before their first membership change.
+      setGeneratedKemKeyPair(await generateEciesKeyPair());
 
       // Save these new generated keypairs.
       const exportedPrivateKey = await exportKey(keypair.privateKey);
@@ -101,6 +110,7 @@ export function Login({
           <Button
             variant="primary"
             onClick={async () => {
+              generatedKemKeyPair && setKemKeyPair(generatedKemKeyPair);
               setPublicKey &&
                 generatedPublicKey &&
                 setPublicKey(await importKey(generatedPublicKey, ['verify']));

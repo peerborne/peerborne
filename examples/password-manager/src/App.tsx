@@ -38,6 +38,9 @@ const keychain = new YjsKeychainProvider();
 function App() {
   const [privateKey, setPrivateKey] = React.useState<CryptoKey | undefined>();
   const [publicKey, setPublicKey] = React.useState<CryptoKey | undefined>();
+  const [kemKeyPair, setKemKeyPair] = React.useState<
+    CryptoKeyPair | undefined
+  >();
   const [userId, setUserId] = React.useState<string | undefined>();
   const [bootstrapPeers, setBootstrapPeers] = React.useState<
     string[] | undefined
@@ -82,7 +85,7 @@ function App() {
     }
   }, [bootstrapPeers, peerborne]);
 
-  const loggedIn = (privateKey && publicKey) !== undefined;
+  const loggedIn = (privateKey && publicKey && kemKeyPair) !== undefined;
 
   return (
     <PeerborneContext.Provider
@@ -126,6 +129,7 @@ function App() {
                   setPrivateKey={setPrivateKey}
                   publicKey={publicKey}
                   setPublicKey={setPublicKey}
+                  setKemKeyPair={setKemKeyPair}
                   userId={userId}
                   setUserId={setUserId}
                   bootstrapPeers={bootstrapPeers}
@@ -136,8 +140,12 @@ function App() {
             <Route
               path="/secrets"
               element={loggedIn ? (
-                peerborne && userId ? (
-                  <PasswordList userId={userId} peerborne={peerborne} />
+                peerborne && userId && kemKeyPair ? (
+                  <PasswordList
+                    userId={userId}
+                    peerborne={peerborne}
+                    kemKeyPair={kemKeyPair}
+                  />
                 ) : (
                   <i>Loading peerborne...</i>
                 )

@@ -1,7 +1,7 @@
 import { LastWriterRemovalError } from '@peerborne/core';
-import { usePeerborneDocumentState } from '@peerborne/react';
+import { PeerborneContext, usePeerborneDocumentState } from '@peerborne/react';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
 import { YjsPeerborne } from './utils';
 
@@ -29,18 +29,45 @@ async function isLastWriter(
 export function PermissionsTable({
   passwordId,
   peerborne,
+  kemKeyPair,
 }: {
   passwordId?: string;
   peerborne: YjsPeerborne;
+  kemKeyPair: CryptoKeyPair;
 }) {
+  const documentPath = `/passwords/${passwordId}`;
   const [
     ,
     ,
     { readers, addReader, removeReader, writers, addWriter, removeWriter },
-  ] = usePeerborneDocumentState(peerborne, `/passwords/${passwordId}`);
+  ] = usePeerborneDocumentState(peerborne, documentPath);
+  const { docCache } = useContext(PeerborneContext);
+  const docRef = Object.values(docCache).find(
+    (candidate) =>
+      candidate.swarm === peerborne && candidate.documentPath === documentPath,
+  );
+  const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
+
+  // addReader seeds BeeKEM leaf 0 from the founder's KEM key pair, so install
+  // it once per document before any membership change.
+  useEffect(() => {
+    if (!docRef) return;
+    let active = true;
+    (async () => {
+      if (!docRef.getKemPublicKeyRaw()) {
+        await docRef.setKemKeyPair(kemKeyPair);
+      }
+      if (active) setKemReadyDocRef(docRef);
+    })().catch(() => {
+      console.error(`Failed to install a KEM key pair for ${documentPath}`);
+    });
+    return () => {
+      active = false;
+    };
+  }, [docRef, documentPath, kemKeyPair]);
 
   // Update `permissions` whenever document `readers` and/or `writers` changes.
   useEffect(() => {
@@ -179,6 +206,7 @@ export function PermissionsTable({
             <td>
               <Button
                 variant="success"
+                disabled={!docRef || kemReadyDocRef !== docRef}
                 onClick={() => {
                   (async () => {
                     try {

@@ -9,10 +9,12 @@ export function PasswordEditor({
   userId,
   passwordId,
   peerborne,
+  kemKeyPair,
 }: {
   userId: string;
   passwordId?: string;
   peerborne: YjsPeerborne;
+  kemKeyPair: CryptoKeyPair;
 }) {
   const [, changePasswords] = usePeerborneDocumentState(
     peerborne,
@@ -99,7 +101,11 @@ export function PasswordEditor({
       </Form.Group>
       {/* Sharing Controls */}
       <Form.Label column="sm">Permissions</Form.Label>
-      <PermissionsTable passwordId={passwordId} peerborne={peerborne} />
+      <PermissionsTable
+        passwordId={passwordId}
+        peerborne={peerborne}
+        kemKeyPair={kemKeyPair}
+      />
     </Form>
   );
 }

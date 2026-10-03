@@ -78,3 +78,65 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
   ).toHaveCount(1);
   expect(errors, 'permission update errors').toEqual([]);
 });
+
+test('sets a new member as a reader and then promotes them to editor', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  const dialogs: string[] = [];
+  page.on('dialog', (dialog) => {
+    dialogs.push(dialog.message());
+    void dialog.accept();
+  });
+
+  await page.goto('/login');
+  await expect(page.getByLabel('Public Key', { exact: true })).not.toHaveValue(
+    '',
+  );
+  await page.getByRole('button', { name: 'Login' }).click();
+  await expect(page).toHaveURL(/\/secrets$/);
+
+  await page.getByRole('button', { name: 'New Secret' }).click();
+  await page.getByText(/^Unnamed Secret/).click();
+  await expect(
+    page
+      .getByRole('row')
+      .filter({ has: page.getByRole('cell', { name: 'Editor', exact: true }) }),
+  ).toHaveCount(1, { timeout: 30_000 });
+
+  const memberKey = await page.evaluate(async () => {
+    const { publicKey } = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    );
+    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', publicKey));
+    return btoa(String.fromCharCode(...raw));
+  });
+  const memberRows = page
+    .getByRole('row')
+    .filter({ has: page.getByRole('button', { name: 'Remove' }) });
+  const memberRow = memberRows.filter({
+    has: page.getByRole('cell', { name: memberKey, exact: true }),
+  });
+
+  await page.getByPlaceholder('Public Key to add').fill(memberKey);
+  await page.getByRole('combobox').selectOption('r');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect(
+    memberRow.getByRole('cell', { name: 'Reader', exact: true }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(memberRows).toHaveCount(2);
+
+  await page.getByRole('combobox').selectOption('rw');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect(
+    memberRow.getByRole('cell', { name: 'Editor', exact: true }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(memberRow).toHaveCount(1);
+  await expect(memberRows).toHaveCount(2);
+
+  expect(dialogs, 'permission update dialogs').toEqual([]);
+  expect(errors, 'permission update errors').toEqual([]);
+});
