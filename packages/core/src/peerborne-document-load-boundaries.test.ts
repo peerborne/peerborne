@@ -3380,43 +3380,107 @@ describe('document load response boundaries', () => {
     },
   );
 
+  async function lateBufferedWelcomeFinalization(options: {
+    verify: (...args: unknown[]) => Promise<boolean>;
+    keys: () => Promise<unknown[]>;
+    invitationEpoch?: Uint8Array;
+    started: Promise<void>;
+    release: () => void;
+  }) {
+    const kemKeyPair = await generateEciesKeyPair();
+    const kemPublicKeyRaw = new Uint8Array(
+      await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
+    );
+    const eciesSealed = await eciesSeal(
+      encodeWelcomeSealedPayload({
+        keychainChanges: new Uint8Array([1]),
+        beekemWelcome: null,
+      }),
+      kemKeyPair.publicKey,
+    );
+    const pendingWelcomes = new PendingWelcomeBuffer();
+    for (const [key, fill] of [
+      ['first', 1],
+      ['second', 2],
+    ] as const) {
+      pendingWelcomes.store(
+        key,
+        welcomeSerializer.serializeSyncMessage({
+          documentId: '/late-welcome',
+          signatureContext: 'beekem-welcome-v1',
+          welcomeEpochId: new Uint8Array(32).fill(fill),
+          welcomeRecipient: 'local-user',
+          welcomeRecipientKemPublicKey: kemPublicKeyRaw,
+          eciesSealed,
+          signature: 'AQ==',
+        }),
+        0,
+        true,
+      );
+    }
+    const merge = jest.fn();
+    const dispatch = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/late-welcome',
+      _bootstrapLoadApplicationState: 'pending',
+      _document: { value: 'bootstrap' },
+      _pendingWelcomes: pendingWelcomes,
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _bootstrapCompactionDeferred: false,
+      _remoteHandlers: {},
+      _now: () => 0,
+      _authProvider: { serializePublicKey: async () => 'local-user' },
+      _userPublicKey: { id: 'local-user' },
+      _readers: { check: async () => true },
+      _verifyMembershipWriterSignature: options.verify,
+      _syncMessageSerializer: welcomeSerializer,
+      _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
+      _kemKeyPair: kemKeyPair,
+      _kemPublicKeyRaw: kemPublicKeyRaw,
+      _keychain: { merge, keys: options.keys },
+      _invitationEpoch: options.invitationEpoch,
+      _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
+        async () => undefined,
+      ),
+      _dispatchRemoteUpdateHandlers: dispatch,
+    });
+    const drain = jest.spyOn(document, '_drainPendingWelcomesUnlocked');
+    const consoleSpies = (['log', 'warn', 'error'] as const).map((method) =>
+      jest.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    const controller = new AbortController();
+
+    try {
+      const completion = document._completeBootstrapStateApplicationUnlocked(
+        undefined,
+        controller.signal,
+      );
+      await options.started;
+      controller.abort(new Error('Invitation stream deadline exceeded'));
+      await expect(completion).rejects.toThrow(/deadline exceeded/);
+
+      options.release();
+      await expect(drain.mock.results[0]!.value).rejects.toThrow(
+        /deadline exceeded/,
+      );
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+    }
+
+    expect(drain).toHaveBeenCalledWith(true, controller.signal);
+    expect(pendingWelcomes.keysSnapshot()).toEqual(['first', 'second']);
+    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(() => document.document).toThrow(/discard this document instance/);
+    expect(dispatch).not.toHaveBeenCalled();
+    return { document, merge };
+  }
+
   test.each([
     ['accepts', true],
     ['rejects', false],
   ] as const)(
     'drops the finalization Welcome drain when buffered verification %s after the deadline',
     async (_label, verified) => {
-      const kemKeyPair = await generateEciesKeyPair();
-      const kemPublicKeyRaw = new Uint8Array(
-        await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
-      );
-      const eciesSealed = await eciesSeal(
-        encodeWelcomeSealedPayload({
-          keychainChanges: new Uint8Array([1]),
-          beekemWelcome: null,
-        }),
-        kemKeyPair.publicKey,
-      );
-      const pendingWelcomes = new PendingWelcomeBuffer();
-      for (const [key, fill] of [
-        ['first', 1],
-        ['second', 2],
-      ] as const) {
-        pendingWelcomes.store(
-          key,
-          welcomeSerializer.serializeSyncMessage({
-            documentId: '/late-welcome',
-            signatureContext: 'beekem-welcome-v1',
-            welcomeEpochId: new Uint8Array(32).fill(fill),
-            welcomeRecipient: 'local-user',
-            welcomeRecipientKemPublicKey: kemPublicKeyRaw,
-            eciesSealed,
-            signature: 'AQ==',
-          }),
-          0,
-          true,
-        );
-      }
       const started = deferred<void>();
       const release = deferred<void>();
       const verify = jest.fn(async () => {
@@ -3424,65 +3488,45 @@ describe('document load response boundaries', () => {
         await release.promise;
         return verified;
       });
-      const merge = jest.fn();
-      const dispatch = jest.fn();
-      const document = fakeDocument({
-        documentPath: '/late-welcome',
-        _bootstrapLoadApplicationState: 'pending',
-        _document: { value: 'bootstrap' },
-        _pendingWelcomes: pendingWelcomes,
-        _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
-        _bootstrapCompactionDeferred: false,
-        _remoteHandlers: {},
-        _now: () => 0,
-        _authProvider: { serializePublicKey: async () => 'local-user' },
-        _userPublicKey: { id: 'local-user' },
-        _readers: { check: async () => true },
-        _verifyMembershipWriterSignature: verify,
-        _syncMessageSerializer: welcomeSerializer,
-        _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
-        _kemKeyPair: kemKeyPair,
-        _kemPublicKeyRaw: kemPublicKeyRaw,
-        _keychain: { merge, keys: async () => [] },
-        _invitationEpoch: undefined,
-        _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
-          async () => undefined,
-        ),
-        _dispatchRemoteUpdateHandlers: dispatch,
+
+      const { document, merge } = await lateBufferedWelcomeFinalization({
+        verify,
+        keys: async () => [],
+        started: started.promise,
+        release: () => release.resolve(),
       });
-      const drain = jest.spyOn(document, '_drainPendingWelcomesUnlocked');
-      const consoleWarn = jest
-        .spyOn(console, 'warn')
-        .mockImplementation(() => undefined);
-      const controller = new AbortController();
 
-      try {
-        const completion = document._completeBootstrapStateApplicationUnlocked(
-          undefined,
-          controller.signal,
-        );
-        await started.promise;
-        controller.abort(new Error('Invitation stream deadline exceeded'));
-        await expect(completion).rejects.toThrow(/deadline exceeded/);
-
-        release.resolve();
-        await expect(drain.mock.results[0]!.value).rejects.toThrow(
-          /deadline exceeded/,
-        );
-      } finally {
-        consoleWarn.mockRestore();
-      }
-
-      expect(drain).toHaveBeenCalledWith(true, controller.signal);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(merge).not.toHaveBeenCalled();
       expect(document._invitationEpoch).toBeUndefined();
-      expect(pendingWelcomes.keysSnapshot()).toEqual(['first', 'second']);
-      expect(document._bootstrapLoadApplicationState).toBe('pending');
-      expect(() => document.document).toThrow(/discard this document instance/);
-      expect(dispatch).not.toHaveBeenCalled();
     },
   );
+
+  test('drops the finalization Welcome epoch advance when keychain ordering settles after the deadline', async () => {
+    const existingEpoch = new Uint8Array(32).fill(9);
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const keys = jest.fn(async () => {
+      started.resolve();
+      await release.promise;
+      return [
+        [existingEpoch, 'existing-key'],
+        [new Uint8Array(32).fill(1), 'welcome-key'],
+      ];
+    });
+
+    const { document, merge } = await lateBufferedWelcomeFinalization({
+      verify: async () => true,
+      keys,
+      invitationEpoch: existingEpoch,
+      started: started.promise,
+      release: () => release.resolve(),
+    });
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(keys).toHaveBeenCalledTimes(1);
+    expect(document._invitationEpoch).toBe(existingEpoch);
+  });
 
   test('open rechecks pending state after asynchronous path validation', async () => {
     const validationStarted = deferred<void>();

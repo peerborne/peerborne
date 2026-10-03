@@ -8617,6 +8617,7 @@ export class PeerborneDocument<
             this._invitationEpoch,
             newEpochId,
           );
+          throwIfLoadAborted(opts.signal);
           if (advanced === true) {
             this._invitationEpoch = newEpochId;
             console.log('Recorded BeeKEM Welcome invitation epoch');
