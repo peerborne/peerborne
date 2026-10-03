@@ -873,6 +873,61 @@ describe('document load response boundaries', () => {
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
   });
 
+  test('counts direct document changes only when their sync commits', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed direct writer update'),
+    );
+    let rejectWriterMerge = true;
+    const document = fakeDocument({
+      documentPath: '/direct-acl-rejection-counters',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['ACL', crdtWriterChangeNode, { id: 'ACL' }],
+      ]),
+      _crdtProvider: {
+        remoteChange: jest.fn((_state: unknown, changes: unknown) => changes),
+      },
+      _mergeWriters: jest.fn(async () => {
+        if (rejectWriterMerge) throw rejection;
+      }),
+      _documentChangeCount: 5,
+      _changesSinceSnapshot: 2,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const tree = {
+      kind: crdtDocumentChangeNode,
+      change: { id: 'ROOT' },
+      children: {
+        ACL: { kind: crdtWriterChangeNode, change: { id: 'ACL' } },
+      },
+    };
+
+    await expect(document._syncDocumentChanges('ROOT', tree)).rejects.toBe(
+      rejection,
+    );
+    expect(document._document).toEqual({});
+    expect(document._hashes).toEqual(new Set());
+    expect(document._documentChangeCount).toBe(5);
+    expect(document._changesSinceSnapshot).toBe(2);
+
+    rejectWriterMerge = false;
+    await expect(
+      document._syncDocumentChanges('ROOT', tree),
+    ).resolves.toBeUndefined();
+    expect(document._document).toEqual({ id: 'ROOT' });
+    expect(document._hashes).toEqual(new Set(['ROOT', 'ACL']));
+    expect(document._documentChangeCount).toBe(6);
+    expect(document._changesSinceSnapshot).toBe(3);
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),

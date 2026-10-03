@@ -2016,6 +2016,7 @@ export class PeerborneDocument<
 
     // First apply changes that were sent directly.
     let newDocument = this._document;
+    let appliedDocumentChanges = 0;
     const newDocumentHashes: string[] = [];
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
@@ -2031,8 +2032,7 @@ export class PeerborneDocument<
             );
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
-            this._documentChangeCount++;
-            this._changesSinceSnapshot++;
+            appliedDocumentChanges++;
             break;
           }
           case crdtReaderChangeNode: {
@@ -2071,6 +2071,8 @@ export class PeerborneDocument<
     if (newDocumentHashes.length) {
       assertStillActive();
       this._document = newDocument;
+      this._documentChangeCount += appliedDocumentChanges;
+      this._changesSinceSnapshot += appliedDocumentChanges;
       for (const newHash of newDocumentHashes) {
         this._hashes.add(newHash);
       }
