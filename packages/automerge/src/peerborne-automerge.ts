@@ -1394,13 +1394,8 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     }
     // 32 random bytes match the width used by BeeKEM-derived epoch IDs
     // (`deriveEpochIdFromRootSecret`), so the wire-format key-ID prefix
-    // is a single fixed width regardless of how the key was provisioned.
-    // Earlier revisions used a 16-byte UUID here, but that required the
-    // PathUpdate handler to truncate 32-byte BeeKEM epoch IDs down to 16
-    // bytes on install -- producing a deterministic cache-key-format
-    // mismatch with `getKey` (stored under hex, looked up under UUID
-    // format). Removing the size asymmetry removes the need for the
-    // truncation in the first place.
+    // is a single fixed width regardless of how the key was provisioned,
+    // and BeeKEM epoch IDs are installed without truncation.
     const keyIDBytes = crypto.getRandomValues(
       new Uint8Array(KEY_ID_LENGTH_BYTES),
     );
