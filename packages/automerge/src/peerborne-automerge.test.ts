@@ -4226,7 +4226,7 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
-  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V3'])(
+  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V4'])(
     'deserializeSyncMessage rejects noncanonical signature context %#',
     (signatureContext) => {
       const wire = buildWire({ documentId: 'doc', signatureContext });

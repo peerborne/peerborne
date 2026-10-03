@@ -3913,7 +3913,7 @@ describe('YjsJSONSerializer', () => {
     );
   });
 
-  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V3'])(
+  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V4'])(
     'deserializeSyncMessage rejects noncanonical signature context %#',
     (signatureContext) => {
       const serializer = new YjsJSONSerializer();
