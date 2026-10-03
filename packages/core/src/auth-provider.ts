@@ -41,7 +41,10 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
    *
    * Implementations MUST capture every caller-owned value needed for the
    * encoding synchronously, before their first asynchronous suspension, and
-   * MUST NOT retain a mutable caller-owned object for later inspection.
+   * MUST NOT retain a mutable caller-owned object for later inspection. Role
+   * transitions snapshot identities before waiting for the document mutation
+   * queue; deferring the read until after an `await` would let the caller
+   * change which identity the queued operation targets.
    *
    * This is used by the BeeKEM Welcome flow (recipient binding) and is
    * intentionally generic so non-CryptoKey providers (e.g.
