@@ -15,8 +15,8 @@ description: Evaluation procedure, findings, and acceptance gates for selecting 
 Issue #186 names `@river-build/mls-rs-wasm`, but that package name returned
 `404 Not Found` from the [npm registry](https://registry.npmjs.org/@river-build%2Fmls-rs-wasm)
 when this evaluation was performed and again during the 2026-09-10
-revalidation. Adding a dependency that is unavailable cannot be the basis of a
-migration plan.
+revalidation. Adding a dependency that is unavailable cannot be the basis of an
+MLS adoption plan.
 
 Registry availability, release status, package metadata, and upstream audit
 statements in this ADR were checked on 2026-08-21 and revalidated on

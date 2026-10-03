@@ -128,7 +128,7 @@ What needs to happen:
 
 ## Completed recently
 
-- Use Peerborne package, API, wire, key-derivation, Redux, and IndexedDB identifiers without compatibility aliases
+- Use Peerborne package, API, wire, key-derivation, Redux, and IndexedDB identifiers throughout
 - Documentation site with Starlight (concepts, cookbook, API reference, community)
 - Cross-NAT distinct-identity invitation and live bidirectional convergence verified in CI
 - Release workflow with secretless validation and gated publishing

@@ -471,11 +471,9 @@ The proposed MLS family uses distinct bounded protocols:
 ```
 
 The current load runtime uses only V4 full/snapshot responses and signed
-security advertisements. Older load formats and their schemas are removed. Peerborne
-has no deployed users requiring an old-format migration. The current BeeKEM
-runtime remains distinct from the future MLS provider proposed here; its
-limitations must remain explicit until that provider passes the acceptance
-gates.
+security advertisements. The current BeeKEM runtime remains distinct from the
+future MLS provider proposed here; its limitations must remain explicit until
+that provider passes the acceptance gates.
 
 ### Delivery, replay, and recovery
 
