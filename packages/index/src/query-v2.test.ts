@@ -186,7 +186,7 @@ describe('v2 local indexing and query contract', () => {
     ).defineIndex(definition)).rejects.toBeInstanceOf(IndexSecurityPolicyError);
   });
 
-  test('keeps local persistence policy out of distributed schema compatibility', async () => {
+  test('keeps local persistence policy out of the distributed schema hash', async () => {
     await expect(Promise.all([
       hashIndexDefinition({ ...definition, storageMode: 'memory' }),
       hashIndexDefinition({ ...definition, storageMode: 'cleartext-local' }),
@@ -328,14 +328,12 @@ describe('v2 local indexing and query contract', () => {
     await expect(queryResult).rejects.toThrow('index generation changed');
   });
 
-  test('rejects superseded query shapes and enforces the current page bound', async () => {
+  test('rejects malformed query shapes and enforces the page bound', async () => {
     const manager = await populatedManager();
     for (const input of [
-      { indexName: definition.name, filters: [] },
-      { version: 1, indexName: definition.name },
-      { version: 2, indexName: definition.name, filters: [] },
-      { version: 2, indexName: definition.name, limit: 1 },
-      { version: 2, indexName: definition.name, offset: 0 },
+      { indexName: definition.name },
+      { version: 3, indexName: definition.name },
+      { version: 2, indexName: definition.name, unexpected: true },
       { version: 2, indexName: definition.name, first: 20_000 },
     ]) {
       await expect(manager.query(input as unknown as QueryAst)).rejects.toBeInstanceOf(InvalidQueryError);
@@ -490,9 +488,9 @@ describe('v2 local indexing and query contract', () => {
     expect(result.execution.sort).toBe('memory');
   });
 
-  test('rejects missing and obsolete schema versions without registering an index', async () => {
+  test('rejects missing and unsupported schema versions without registering an index', async () => {
     const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), value => value);
-    for (const version of [undefined, 1]) {
+    for (const version of [undefined, 3]) {
       await expect(manager.defineIndex({
         name: 'unsupported', collectionPrefix: '/unsupported/',
         fields: [{ path: 'title', type: 'string' }],

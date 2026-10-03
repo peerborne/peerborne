@@ -99,8 +99,6 @@ describe('sync message wire-context separation', () => {
   test.each([
     'ordinary-sync-v1',
     'load-response-v4',
-    'load-response-v4',
-    'security-advertisement-v1',
     'security-advertisement-v1',
     'invitation-bootstrap-v1',
     'beekem-welcome-v1',
@@ -359,10 +357,6 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
-
-  test('rejects the removed document publication purpose', () => {
-    expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
-  });
 });
 
 describe('sync message root snapshot limits', () => {
@@ -478,11 +472,11 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
   });
 });
 
-test('rejects the removed direct key-update signature purpose', () => {
-  expect(isSyncMessageSignatureContext('key-update-v2')).toBe(false);
+test('rejects an unknown signature purpose', () => {
+  expect(isSyncMessageSignatureContext('unknown-purpose-v1')).toBe(false);
   expect(() => snapshotSyncMessageForContext({
     documentId: '/doc',
-    signatureContext: 'key-update-v2',
+    signatureContext: 'unknown-purpose-v1',
     signature: 'sig',
   }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
 });

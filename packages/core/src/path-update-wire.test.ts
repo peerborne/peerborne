@@ -158,6 +158,17 @@ describe('path-update-wire', () => {
 });
 
 describe('path-update-wire V2 inbound boundary', () => {
+  test.each([undefined, 0, 3, '2'])('rejects version %p on both boundaries', (version) => {
+    const update = validPathUpdateV2();
+    const wire = serializePathUpdateV2ForWire(update);
+    expect(() =>
+      serializePathUpdateV2ForWire({ ...update, version } as never),
+    ).toThrow(/version/);
+    expect(() =>
+      deserializePathUpdateV2FromWire({ ...wire, version }),
+    ).toThrow(/version/);
+  });
+
   test('rejects negative-zero tree indices on both boundaries', () => {
     const treeUpdate = validPathUpdateV2();
     treeUpdate.treeNodePublicKeys[0].nodeIndex = -0;
