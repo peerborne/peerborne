@@ -2470,14 +2470,11 @@ describe('AutomergeKeychain', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // BeeKEM PathUpdateV2 compatibility: the flow installs
+  // BeeKEM PathUpdateV2 epoch keys: the flow installs
   // epoch keys via addEpochKey(...) using the FULL 32-byte HKDF output
   // (no truncation). The keychain MUST store the key under a cache-key
   // form that round-trips with getKey() on the exact same 32 bytes.
-  // Earlier revisions stored 32-byte epoch IDs under hex but, for
-  // 16-byte inputs (the result of truncating to the old `keyIDLength`),
-  // looked up under UUID format -- a deterministic cache miss on every
-  // post-rotation lookup. These tests pin the round-trip behaviour.
+  // These tests pin the round-trip behaviour.
   // ───────────────────────────────────────────────────────────────────
 
   test('addEpochKey() round-trips through getKey() for a 32-byte epoch ID', async () => {
@@ -3689,7 +3686,7 @@ describe('AutomergeJSONSerializer', () => {
 
   test('encodes the current sync-message wire bytes', () => {
     const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
-      documentId: 'wire-compatibility',
+      documentId: 'wire-format',
       changes: {
         kind: 'document',
         change: [new Uint8Array([1, 2])],
@@ -3698,7 +3695,7 @@ describe('AutomergeJSONSerializer', () => {
     });
 
     expect(new TextDecoder().decode(wire)).toBe(
-      '{"signatureContext":"ordinary-sync-v1","documentId":"wire-compatibility","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
+      '{"signatureContext":"ordinary-sync-v1","documentId":"wire-format","changes":{"kind":"document","change":["AQI="],"children":{"cid":{"kind":"writer"}}}}',
     );
   });
 

@@ -179,7 +179,7 @@ describe('initial invitation bootstrap capacity', () => {
     ).toThrow('bounded initial founder-plus-one topology');
   });
 
-  test('rejects combined inputs that are individually below the old headroom limit', () => {
+  test('rejects combined inputs that each fit below the bootstrap reserve', () => {
     const individuallyAllowedBytes = 450 * 1024;
     expect(individuallyAllowedBytes).toBeLessThan(
       MAX_INVITATION_OPAQUE_PAYLOAD_BYTES -
