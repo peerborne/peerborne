@@ -20,6 +20,11 @@ jest.mock('./peerborne.js', () => ({
 function fakeDocument(fields: Record<string, unknown>): any {
   return Object.assign(Object.create(PeerborneDocument.prototype), {
     documentPath: '/membership-preflight',
+    _authProvider: {
+      serializePublicKey: async (key: unknown) => JSON.stringify(key),
+      deserializePublicKey: async (serialized: string) =>
+        JSON.parse(serialized),
+    },
     _mutationQueue: {
       run: (operation: () => Promise<unknown>) => operation(),
     },

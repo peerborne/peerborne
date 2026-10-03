@@ -222,7 +222,46 @@ describe('ACL helper functions delegate to docRef', () => {
       await captureRef.current.acl.removeWriter('oldWriterPubKey');
     });
 
-    expect(mockDoc.removeWriter).toHaveBeenCalledWith('oldWriterPubKey');
+    expect(mockDoc.removeWriter).toHaveBeenCalledWith(
+      'oldWriterPubKey',
+      undefined,
+    );
+  });
+
+  test('removeWriter forwards a required remaining writer option', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const captureRef = { current: null as any };
+
+    await act(async () => {
+      render(
+        React.createElement(TestProvider, null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/acl-rm-last-writer',
+            captureRef,
+          }),
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(captureRef.current.docData).toBeDefined();
+    });
+
+    const rejection = new Error('last writer');
+    mockDoc.removeWriter.mockRejectedValueOnce(rejection);
+    await act(async () => {
+      await expect(
+        captureRef.current.acl.removeWriter('onlyWriterPubKey', {
+          requireRemainingWriter: true,
+        }),
+      ).rejects.toBe(rejection);
+    });
+
+    expect(mockDoc.removeWriter).toHaveBeenCalledWith('onlyWriterPubKey', {
+      requireRemainingWriter: true,
+    });
   });
 });
 

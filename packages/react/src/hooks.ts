@@ -9,6 +9,7 @@ import {
   LoadMessageSerializer,
   PeerborneDocument,
   PeerborneConfig,
+  RemoveWriterOptions,
 } from '@peerborne/core';
 import {
   useEffect,
@@ -171,7 +172,10 @@ export function usePeerborneDocumentState<
     removeReader: (user: PublicKey) => Promise<void>;
     writers: PublicKey[];
     addWriter: (user: PublicKey) => Promise<void>;
-    removeWriter: (user: PublicKey) => Promise<void>;
+    removeWriter: (
+      user: PublicKey,
+      options?: RemoveWriterOptions,
+    ) => Promise<void>;
   },
 ] {
   const {
@@ -354,9 +358,9 @@ export function usePeerborneDocumentState<
         const docRef = docCache[documentCacheKey];
         await docRef.addWriter(user);
       },
-      removeWriter: async (user: PublicKey) => {
+      removeWriter: async (user: PublicKey, options?: RemoveWriterOptions) => {
         const docRef = docCache[documentCacheKey];
-        await docRef.removeWriter(user);
+        await docRef.removeWriter(user, options);
       },
     },
   ];

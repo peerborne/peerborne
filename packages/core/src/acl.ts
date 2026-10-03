@@ -23,6 +23,20 @@ export class ACLOperationInProgressError extends Error {
 }
 
 /**
+ * A remote ACL merge that was rejected before any membership state changed.
+ * Only ACL implementations that stage merges and swap them in atomically may
+ * emit it; it certifies that the live ACL is exactly as it was before the call.
+ */
+export class ACLMergeRejectedError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'ACL merge was rejected', {
+      cause,
+    });
+    this.name = 'ACLMergeRejectedError';
+  }
+}
+
+/**
  * Retry an external ACL operation across explicitly reported conflicts.
  * ACL implementations must emit this conflict only from a pre-invocation
  * admission boundary, certifying that the rejected operation made no state
@@ -85,12 +99,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareAdd?(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
+  prepareAdd(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Remove a user from the ACL.
@@ -112,14 +122,8 @@ export interface ACL<ChangesType, PublicKey> {
    * implementation rolled back a partially applied commit. The shipped CRDT
    * adapters complete fallible work during preparation and atomically swap
    * their private staged state only after all commit checks pass.
-   *
-   * Optional for backwards compatibility. Workflows that require
-   * publication-before-commit semantics must feature-detect this method and
-   * fail closed when it is absent.
    */
-  prepareRemove?(
-    publicKey: PublicKey,
-  ): Promise<PreparedACLChange<ChangesType>>;
+  prepareRemove(publicKey: PublicKey): Promise<PreparedACLChange<ChangesType>>;
 
   /**
    * Gets a block of change(s) describing the current state of the ACL.
@@ -130,6 +134,14 @@ export interface ACL<ChangesType, PublicKey> {
 
   /**
    * Applies a block of change(s) to the ACL.
+   *
+   * A thrown {@link ACLOperationInProgressError} certifies that the merge was
+   * rejected at its pre-mutation admission boundary and can be retried after
+   * settlement. A thrown {@link ACLMergeRejectedError} certifies that the
+   * merge was rejected without changing the ACL and must not be retried with
+   * the same changes. Generic callers cannot assume any other exception left a
+   * custom implementation unchanged, so authorization-sensitive orchestration
+   * must fail closed.
    *
    * @param changes A block of change(s) to apply.
    * @return `false` when the merge left the ACL state unchanged, for example
@@ -169,6 +181,3 @@ export interface PreparedACLChange<ChangesType> {
    */
   commit(): void;
 }
-
-/** Backwards-compatible name for a prepared ACL removal. */
-export type PreparedACLRemoval<ChangesType> = PreparedACLChange<ChangesType>;

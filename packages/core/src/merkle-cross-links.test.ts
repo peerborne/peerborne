@@ -7,6 +7,7 @@ import {
   MAX_CROSS_LINKS,
   MAX_RECENT_TIPS,
   mergeRemoteSyncTree,
+  selectAncestryClosedNodes,
   selectCrossLinks,
   stripInlineChanges,
   trackTipInList,
@@ -1021,6 +1022,46 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
     expect(out.has('A')).toBe(true); // new entry added
   });
 
+  test('records only references made by included parents', () => {
+    const tree: Node = {
+      kind: docKind,
+      change: 'payload-D',
+      children: {
+        APPLIED: {
+          kind: docKind,
+          change: 'payload-applied',
+          children: { A: { kind: docKind } },
+        },
+        REJECTED: {
+          kind: docKind,
+          change: 'payload-rejected',
+          children: {
+            B: {
+              kind: docKind,
+              change: 'payload-B',
+              children: { C: { kind: docKind } },
+            },
+            A: { kind: docKind },
+          },
+        },
+      },
+    };
+    const included = new Set(['D', 'APPLIED', 'B']);
+    const includeParent = (parentId: string | undefined): boolean =>
+      parentId !== undefined && included.has(parentId);
+    expect(
+      collectReferencedAncestors('D', tree, new Set<string>(), includeParent),
+    ).toEqual(new Set(['APPLIED', 'REJECTED', 'A', 'C']));
+    expect(
+      collectReferencedAncestors(
+        undefined,
+        tree,
+        new Set<string>(),
+        includeParent,
+      ),
+    ).toEqual(new Set(['A', 'C']));
+  });
+
   test('cycle defence: revisiting a previously-walked CID does not recurse', () => {
     // Construct a pathological tree where two distinct subtree references
     // reach the same intermediate CID. The helper should not infinitely
@@ -1128,6 +1169,95 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
     // entries vs 3 entries), so any tipsHash derived from it would have
     // diverged -- the behavior this regression prevents.
     expect(peerAHashes.size).not.toBe(peerBHashes.size);
+  });
+});
+
+describe('selectAncestryClosedNodes (applied ACL bookkeeping after rejection)', () => {
+  type Node = CRDTChangeNode<string>;
+  const docKind: CRDTChangeNodeKind = crdtDocumentChangeNode;
+  const writerKind: CRDTChangeNodeKind = crdtWriterChangeNode;
+
+  test('selects candidates whose referenced ancestry is known or selected', () => {
+    const tree: Node = {
+      kind: docKind,
+      change: 'payload-root',
+      children: {
+        TOP: {
+          kind: writerKind,
+          change: 'payload-top',
+          children: {
+            GOOD: {
+              kind: writerKind,
+              change: 'payload-good',
+              children: { KNOWN: { kind: docKind } },
+            },
+          },
+        },
+        STALE: {
+          kind: writerKind,
+          change: 'payload-stale',
+          children: { DOC: { kind: docKind, change: 'payload-doc' } },
+        },
+        AFTER_STALE: {
+          kind: writerKind,
+          change: 'payload-after-stale',
+          children: { STALE: { kind: writerKind } },
+        },
+        SPARSE: { kind: writerKind, change: 'payload-sparse' },
+      },
+    };
+    const known = new Set(['KNOWN']);
+    const candidates = new Set([
+      'TOP',
+      'GOOD',
+      'STALE',
+      'AFTER_STALE',
+      'SPARSE',
+    ]);
+
+    expect(
+      selectAncestryClosedNodes('ROOT', tree, candidates, (cid) =>
+        known.has(cid),
+      ),
+    ).toEqual(new Set(['TOP', 'GOOD', 'SPARSE']));
+    expect(candidates.size).toBe(5);
+  });
+
+  test('uses the full occurrence of a candidate first seen sparsely', () => {
+    const tree: Node = {
+      kind: docKind,
+      change: 'payload-root',
+      children: {
+        LEFT: {
+          kind: docKind,
+          change: 'payload-left',
+          children: { ACL: { kind: writerKind } },
+        },
+        RIGHT: {
+          kind: docKind,
+          change: 'payload-right',
+          children: {
+            ACL: {
+              kind: writerKind,
+              change: 'payload-acl',
+              children: { MISSING: { kind: docKind } },
+            },
+          },
+        },
+      },
+    };
+
+    expect(
+      selectAncestryClosedNodes('ROOT', tree, new Set(['ACL']), () => false),
+    ).toEqual(new Set());
+    expect(
+      selectAncestryClosedNodes(
+        'ROOT',
+        tree,
+        new Set(['ACL']),
+        (cid) => cid === 'MISSING',
+      ),
+    ).toEqual(new Set(['ACL']));
   });
 });
 

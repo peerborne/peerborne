@@ -90,22 +90,30 @@ describe('PeerborneDocument reader listing', () => {
     expect(check).not.toHaveBeenCalled();
   });
 
-  test('rejects a present non-function canonical serializer', async () => {
-    const check = jest.fn();
-    const document = fakeDocument({
-      _authProvider: { serializePublicKey: 'not-a-function' },
-      _readers: {
-        users: async () => [{ id: 'reader' }],
-        check,
-      },
-      _writers: { users: async () => [{ id: 'writer' }] },
-    });
+  test.each<[string, unknown]>([
+    ['a missing', undefined],
+    ['a non-function', 'not-a-function'],
+  ])(
+    'rejects %s canonical serializer without ACL fallback',
+    async (_description, serializePublicKey) => {
+      const check = jest.fn();
+      const document = fakeDocument({
+        _authProvider: { serializePublicKey },
+        _readers: {
+          users: async () => [{ id: 'reader' }],
+          check,
+        },
+        _writers: { users: async () => [{ id: 'writer' }] },
+      });
 
-    await expect(document.getReaders()).rejects.toThrow(
-      /serializePublicKey must be a function/,
-    );
-    expect(check).not.toHaveBeenCalled();
-  });
+      await expect(document.getReaders()).rejects.toThrow(
+        new TypeError(
+          'Reader listing requires AuthProvider.serializePublicKey to be a function',
+        ),
+      );
+      expect(check).not.toHaveBeenCalled();
+    },
+  );
 
   test.each<[string, unknown, RegExp]>([
     ['an empty identity', '', /non-empty string/],
@@ -130,57 +138,6 @@ describe('PeerborneDocument reader listing', () => {
       expect(check).not.toHaveBeenCalled();
     },
   );
-
-  test('falls back without a serializer and does not fan out UCAN checks', async () => {
-    const readers = [{ id: 'shared' }, { id: 'reader-only' }];
-    const writers = [
-      { id: 'shared' },
-      { id: 'writer-one' },
-      { id: 'writer-two' },
-    ];
-    const backing = {
-      add: async () => new Uint8Array(),
-      remove: async () => new Uint8Array(),
-      current: () => new Uint8Array(),
-      merge: () => undefined,
-      check: async (key: { id: string }) =>
-        readers.some(({ id }) => id === key.id),
-      users: async () => readers,
-    };
-    const readersACL = new UCANACL(
-      backing,
-      async (key: { id: string }) => key.id,
-      async (id) => ({ id }),
-    );
-    const check = jest.spyOn(readersACL, 'check');
-    const document = fakeDocument({
-      _authProvider: {},
-      _readers: readersACL,
-      _writers: { users: async () => writers },
-    });
-
-    await expect(document.getReaders()).resolves.toEqual([
-      ...readers,
-      writers[1],
-      writers[2],
-    ]);
-    expect(check).toHaveBeenCalledTimes(writers.length);
-  });
-
-  test('legacy fallback only treats literal true as reader membership', async () => {
-    const reader = { id: 'reader' };
-    const writer = { id: 'writer' };
-    const document = fakeDocument({
-      _authProvider: {},
-      _readers: {
-        users: async () => [reader],
-        check: async () => ({ member: true }) as unknown as boolean,
-      },
-      _writers: { users: async () => [writer] },
-    });
-
-    await expect(document.getReaders()).resolves.toEqual([reader, writer]);
-  });
 });
 
 describe('PeerborneDocument writer removal', () => {
@@ -191,10 +148,22 @@ describe('PeerborneDocument writer removal', () => {
         members.add(key);
         return new Uint8Array([1]);
       },
-      remove: jest.fn(async (key: string) => {
+      remove: async (key: string) => {
         members.delete(key);
         return new Uint8Array([2]);
+      },
+      prepareAdd: async (key: string) => ({
+        changes: new Uint8Array([1]),
+        commit: () => {
+          members.add(key);
+        },
       }),
+      prepareRemove: jest.fn(async (key: string) => ({
+        changes: new Uint8Array([2]),
+        commit: () => {
+          members.delete(key);
+        },
+      })),
       current: () => new Uint8Array(),
       merge: () => {
         members.add('writer');
@@ -203,28 +172,22 @@ describe('PeerborneDocument writer removal', () => {
       users: async () => [...members],
     };
     const writersACL = new UCANACL(backing, async (key: string) => key);
-    const makeChange = jest.fn(async () => undefined);
-    const distributeKeyUpdate = jest.fn(async () => undefined);
+    const publish = jest.fn(
+      async (prepared: { commit(): void }) => prepared.commit(),
+    );
     const document = fakeDocument({
+      _readers: { check: async () => true },
       _writers: writersACL,
-      _writerMutationsInFlight: 0,
-      _invalidateWriterKeyCache: () => undefined,
       _ensureCurrentUserCanWrite: async () => undefined,
-      _makeChange: makeChange,
-      _keychain: {
-        current: async () => 'previous-key',
-        add: async () => ['key-id', 'next-key', 'keychain-changes'],
-      },
-      _distributeKeyUpdate: distributeKeyUpdate,
+      _publishPreparedWriterChange: publish,
     });
 
-    await document._removeWriterUnlocked('writer');
+    await document._removeWriterUnlocked('writer', 'writer', false);
     writersACL.merge(new Uint8Array([3]));
-    await document._removeWriterUnlocked('writer');
+    await document._removeWriterUnlocked('writer', 'writer', false);
 
-    expect(backing.remove).toHaveBeenCalledTimes(2);
-    expect(makeChange).toHaveBeenCalledTimes(2);
-    expect(distributeKeyUpdate).toHaveBeenCalledTimes(2);
+    expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledTimes(2);
     expect(members.has('writer')).toBe(false);
   });
 });
