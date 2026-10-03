@@ -996,7 +996,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return automergeACLMergeState(doc) !== before;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
     this._assertComplete('check ACL membership');
@@ -1004,7 +1004,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('check ACL membership');
     return this._acl.users?.[hash] !== undefined;
   }
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async users(capability?: string): Promise<CryptoKey[]> {
     this._assertComplete('list ACL members');
