@@ -2817,12 +2817,8 @@ export class PeerborneDocument<
     serializePublicKey: (publicKey: PublicKey) => Promise<string>,
     deserializePublicKey: (serialized: string) => Promise<PublicKey>,
   ): Promise<{ publicKey: PublicKey; serialized: string }> {
-    const serialized = await serializePublicKey(publicKey);
-    if (typeof serialized !== 'string' || serialized.length === 0) {
-      throw new TypeError(
-        `${featureName} requires a non-empty canonical public-key encoding`,
-      );
-    }
+    const serialized: unknown = await serializePublicKey(publicKey);
+    assertCanonicalACLIdentity(serialized);
     const mutableIdentity =
       (typeof publicKey === 'object' && publicKey !== null) ||
       typeof publicKey === 'function';

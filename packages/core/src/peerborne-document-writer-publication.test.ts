@@ -961,6 +961,47 @@ describe('writer ACL publication boundary', () => {
     },
   );
 
+  test.each(
+    (['addWriter', 'removeWriter', 'addReader', 'removeReader'] as const).flatMap(
+      (operation) =>
+        (
+          [
+            ['an empty identity', '', /non-empty string/],
+            ['a non-string identity', 7, /non-empty string/],
+            ['an unpaired surrogate', '\uD800', /well-formed UTF-16/],
+          ] as const
+        ).map(
+          ([description, identity, expected]) =>
+            [operation, description, identity, expected] as const,
+        ),
+    ),
+  )(
+    '%s rejects %s from the canonical serializer before membership work',
+    async (operation, _description, identity, expected) => {
+      const writers = new StagedWriterACL(new Set(['owner']));
+      const publish = jest.fn(async () => undefined);
+      const { document, readers } = publicationHarness(
+        writers,
+        publish,
+        ['must-not-publish'],
+      );
+      document._authProvider.serializePublicKey = jest.fn(
+        async () => identity,
+      );
+      const unlocked = jest.spyOn(document, `_${operation}Unlocked`);
+
+      await expect(document[operation]('candidate')).rejects.toThrow(expected);
+
+      expect(document._authProvider.deserializePublicKey).not.toHaveBeenCalled();
+      expect(unlocked).not.toHaveBeenCalled();
+      expect(writers.members).toEqual(new Set(['owner']));
+      expect(readers).toEqual(new Set(['candidate']));
+      expect(writers.prepareAddCalls).toBe(0);
+      expect(writers.prepareRemoveCalls).toBe(0);
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
   test('rejects an aliasing deserializer for a mutable writer identity', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const publish = jest.fn(async () => undefined);
