@@ -18,12 +18,6 @@ export type CRDTChangeNodeKind =
  * @typeParam ChangesType A block of CRDT change(s).
  */
 export type CRDTChangeNode<ChangesType> = {
-  /**
-   * Identifier for the document encryption key used to encrypt this node's change.
-   * Preserved through serialize/deserialize round-trips in sync messages.
-   */
-  keyID?: string;
-
   kind: CRDTChangeNodeKind;
 
   /**

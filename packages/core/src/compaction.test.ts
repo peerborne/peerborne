@@ -209,8 +209,8 @@ describe('Snapshot tie-breaking', () => {
    * Returns true if `incoming` should replace `current`.
    */
   function shouldReplace(
-    current: CRDTSnapshotNode<Uint8Array, string> | undefined,
-    incoming: CRDTSnapshotNode<Uint8Array, string>,
+    current: CRDTSnapshotNode<Uint8Array> | undefined,
+    incoming: CRDTSnapshotNode<Uint8Array>,
   ): boolean {
     if (!current) return true;
     if (incoming.compactedCount > current.compactedCount) return true;
@@ -227,13 +227,12 @@ describe('Snapshot tie-breaking', () => {
   function makeSnapshot(
     compactedCount: number,
     lastChangeNodeCID: string,
-  ): CRDTSnapshotNode<Uint8Array, string> {
+  ): CRDTSnapshotNode<Uint8Array> {
     return {
       state: new Uint8Array([1]),
       lastChangeNodeCID,
       compactedCount,
       signature: new Uint8Array([1]),
-      publicKey: 'key',
       timestamp: 1700000000000,
     };
   }

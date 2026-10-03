@@ -5,7 +5,6 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
@@ -33,7 +32,6 @@ import {
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
-import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
   AbstractType,
   Map as YMap,
@@ -81,44 +79,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
     return changes;
   }
 
-  serializeChangeBlock(changes: CRDTChangeBlock<Uint8Array>): string {
-    const obj: Record<string, unknown> = {
-      changes: Base64.fromUint8Array(changes.changes),
-      nonce: Base64.fromUint8Array(changes.nonce),
-    };
-    if (changes.keyID !== undefined) obj.keyID = changes.keyID;
-    if (
-      changes.blindIndexTokens !== undefined &&
-      changes.blindIndexTokens !== null
-    )
-      obj.blindIndexTokens = changes.blindIndexTokens;
-    return this.serialize(obj);
-  }
-  deserializeChangeBlock(changes: string): CRDTChangeBlock<Uint8Array> {
-    const raw = this.deserialize(changes);
-    if (
-      typeof raw !== 'object' ||
-      raw === null ||
-      typeof (raw as Record<string, unknown>).changes !== 'string' ||
-      typeof (raw as Record<string, unknown>).nonce !== 'string'
-    ) {
-      throw new Error(
-        'Invalid change block: expected {changes: string, nonce: string}',
-      );
-    }
-    const deserialized = raw as {
-      changes: string;
-      nonce: string;
-      keyID?: string;
-      blindIndexTokens?: Record<string, string>;
-    };
-    const result: CRDTChangeBlock<Uint8Array> = {
-      changes: Base64.toUint8Array(deserialized.changes),
-      nonce: Base64.toUint8Array(deserialized.nonce),
-    };
-    validateChangeBlockMetadata(deserialized, result);
-    return result;
-  }
   serializeSyncMessage(
     message: CRDTSyncMessage<Uint8Array, CryptoKey>,
   ): Uint8Array {
@@ -134,9 +94,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
           snapshotForWire.signature,
         );
       }
-      // Drop publicKey from wire -- CryptoKey is not JSON-serializable and
-      // snapshot verification uses writer ACL keys, not the embedded key.
-      delete snapshotForWire.publicKey;
     }
     return this.encode(
       this.serializeNormalizedSyncWireValue({

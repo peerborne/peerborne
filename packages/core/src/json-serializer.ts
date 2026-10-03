@@ -13,7 +13,6 @@ import {
 } from './load-security-state-wire.js';
 import type { LoadSecurityCommitments } from './load-security-state.js';
 import { ChangesSerializer } from './changes-serializer.js';
-import { CRDTChangeBlock } from './crdt-change-block.js';
 import { CRDTLoadRequest, snapshotLoadRequest } from './crdt-load-request.js';
 import { CRDTSyncMessage, isSyncMessageSignatureContext } from './crdt-sync-message.js';
 import {
@@ -83,11 +82,6 @@ function deserializeSyncBinaryField(field: string, value: unknown): unknown {
   return decoded;
 }
 
-/**
- * Dangerous property keys that should be stripped from deserialized objects
- * to prevent prototype pollution attacks.
- */
-const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const INVALID_SERIALIZED_JSON = 'Invalid serialized JSON';
 const numberValueOf = Number.prototype.valueOf;
 const stringValueOf = String.prototype.valueOf;
@@ -397,60 +391,6 @@ function transformOwnFieldsInOrder(
   return result;
 }
 
-/**
- * Validate and sanitize keyID and blindIndexTokens fields from a deserialized
- * change block. Shared across JSONSerializer, YjsJSONSerializer, and
- * AutomergeJSONSerializer to avoid duplicating validation logic.
- *
- * Mutates the result object in place by setting keyID and blindIndexTokens
- * if present and valid on the deserialized input.
- *
- * @internal
- * @throws {Error} If keyID is not a string, or blindIndexTokens is not a
- *   plain object with string values.
- */
-export function validateChangeBlockMetadata<ChangesType>(
-  deserialized: { keyID?: unknown; blindIndexTokens?: unknown },
-  result: CRDTChangeBlock<ChangesType>,
-): void {
-  if (Object.prototype.hasOwnProperty.call(deserialized, 'keyID')) {
-    if (typeof deserialized.keyID !== 'string') {
-      throw new Error('keyID must be a string');
-    }
-    result.keyID = deserialized.keyID;
-  }
-  if (Object.prototype.hasOwnProperty.call(deserialized, 'blindIndexTokens')) {
-    const tokens = deserialized.blindIndexTokens;
-    // Validate blindIndexTokens shape: must be a plain object mapping string keys to string values
-    if (
-      tokens === null ||
-      typeof tokens !== 'object' ||
-      Array.isArray(tokens)
-    ) {
-      throw new Error('blindIndexTokens must be a plain object');
-    }
-    const proto = Object.getPrototypeOf(tokens);
-    if (proto !== Object.prototype && proto !== null) {
-      throw new Error('blindIndexTokens must be a plain object');
-    }
-    const sanitized: Record<string, string> = {};
-    for (const [key, val] of Object.entries(
-      tokens as Record<string, unknown>,
-    )) {
-      if (DANGEROUS_KEYS.has(key)) {
-        continue; // silently drop dangerous keys
-      }
-      if (typeof key !== 'string' || typeof val !== 'string') {
-        throw new Error(
-          `blindIndexTokens values must be strings, got non-string at key "${key}"`,
-        );
-      }
-      sanitized[key] = val;
-    }
-    result.blindIndexTokens = sanitized;
-  }
-}
-
 export class JSONSerializer<ChangesType, PublicKey = unknown>
   implements
     ChangesSerializer<ChangesType>,
@@ -530,32 +470,6 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
   deserializeChanges(changes: Uint8Array): ChangesType {
     // Shape validated by subclass overrides; base class trusts JSON.parse output matches ChangesType
     return this.deserialize(this.decode(changes)) as ChangesType;
-  }
-  serializeChangeBlock(changes: CRDTChangeBlock<ChangesType>): string {
-    const obj: Record<string, unknown> = {
-      changes: changes.changes,
-      nonce: Base64.fromUint8Array(changes.nonce),
-    };
-    if (changes.keyID !== undefined) obj.keyID = changes.keyID;
-    if ('blindIndexTokens' in changes) {
-      obj.blindIndexTokens = changes.blindIndexTokens;
-    }
-    return this.serialize(obj);
-  }
-  deserializeChangeBlock(changes: string): CRDTChangeBlock<ChangesType> {
-    // Shape validated by subclass overrides; base class trusts JSON.parse output matches ChangesType
-    const deserialized = this.deserialize(changes) as {
-      changes: ChangesType;
-      nonce: string;
-      keyID?: string;
-      blindIndexTokens?: Record<string, string>;
-    };
-    const result: CRDTChangeBlock<ChangesType> = {
-      changes: deserialized.changes,
-      nonce: Base64.toUint8Array(deserialized.nonce),
-    };
-    validateChangeBlockMetadata(deserialized, result);
-    return result;
   }
   serializeSyncMessage(
     message: CRDTSyncMessage<ChangesType, PublicKey>,

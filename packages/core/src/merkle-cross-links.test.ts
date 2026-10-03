@@ -2139,27 +2139,24 @@ describe('stripInlineChanges (content-bind defense)', () => {
 
   test('does not mutate the kind field of any node', () => {
     // Defense-in-depth: stripInlineChanges must NOT alter the
-    // structural metadata (kind, keyID, children keys). Only `change`
+    // structural metadata (kind, children keys). Only `change`
     // is reset; the rest must survive so the receive-side ACL pre-pass
     // and CRDT type-routing in `sync()` still work after deferred fetch.
     const tree: CRDTChangeNode<Changes> = {
       kind: crdtWriterChangeNode,
-      keyID: 'k1',
       change: { ops: ['acl-add-writer'] },
       children: {
         c1: {
           kind: crdtDocumentChangeNode,
-          keyID: 'k1',
           change: { ops: ['doc-change'] },
         },
       },
     };
     stripInlineChanges(tree);
     expect(tree.kind).toBe(crdtWriterChangeNode);
-    expect(tree.keyID).toBe('k1');
+    expect(Object.keys(tree.children as object)).toEqual(['c1']);
     const c1 = (tree.children as any).c1;
     expect(c1.kind).toBe(crdtDocumentChangeNode);
-    expect(c1.keyID).toBe('k1');
   });
 });
 

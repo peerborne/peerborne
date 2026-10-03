@@ -402,9 +402,8 @@ concurrent branches the responder holds but does not serve.
 
 If a CID appears through multiple paths, compatible sparse cross-link
 references are reconciled with its canonical full node-and-descendant
-description. Multiple full descriptions must match exactly, and kind or
-defined key-identity conflicts are rejected independently of which occurrence
-is visited first. Explicit node, occurrence, traversed-edge, and aggregate
+description. Multiple full descriptions must match exactly, and kind
+conflicts are rejected independently of which occurrence is visited first. Explicit node, occurrence, traversed-edge, and aggregate
 inline-payload limits bound diamond/shared-subgraph work. This is strict local
 manifest evidence, not a live hostile-network acceptance result.
 

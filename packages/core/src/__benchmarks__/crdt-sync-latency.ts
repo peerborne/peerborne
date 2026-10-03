@@ -6,7 +6,7 @@
  * - Sign and verify (ECDSA P-384)
  * - Encrypt and decrypt (AES-GCM)
  * - Combined sign+encrypt and decrypt+verify pipelines
- * - Serialize and deserialize change blocks (JSON wire format)
+ * - Serialize and deserialize changes (JSON serializer)
  */
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { SubtleCrypto } from '../auth-subtlecrypto.js';
@@ -90,23 +90,7 @@ export async function runCrdtSyncLatencyBenchmarks(
       }
     }, iterations);
 
-    // --- Serialize change block ---
     const changeData = 'x'.repeat(bytes);
-    const changeBlock = {
-      changes: changeData,
-      nonce: encrypted.nonce,
-      blindIndexTokens: { title: 'abc123', author: 'def456' },
-    };
-    const serialized = serializer.serializeChangeBlock(changeBlock);
-
-    await runner.run(`serialize-change-block-${label}`, () => {
-      serializer.serializeChangeBlock(changeBlock);
-    }, iterations);
-
-    // --- Deserialize change block ---
-    await runner.run(`deserialize-change-block-${label}`, () => {
-      serializer.deserializeChangeBlock(serialized);
-    }, iterations);
 
     // --- Serialize raw changes (Uint8Array payload) ---
     await runner.run(`serialize-changes-${label}`, () => {
