@@ -2192,7 +2192,6 @@ export class PeerborneDocument<
                   assertWorkerActive,
                   fetchSignal,
                 );
-                assertWorkerActive();
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
                 break;
@@ -2203,7 +2202,6 @@ export class PeerborneDocument<
                   assertWorkerActive,
                   fetchSignal,
                 );
-                assertWorkerActive();
                 this._hashes.add(missingHash);
                 this._trackTip(missingHash, missingHashKind);
                 break;
@@ -2490,11 +2488,23 @@ export class PeerborneDocument<
     assertStillActive?: () => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    await retryLoadACLConflict(async () => {
+    let applied = false;
+    try {
+      await retryLoadACLConflict(async () => {
+        assertStillActive?.();
+        await this._awaitACLMerge(
+          () => this._readers.merge(changes),
+          signal,
+          () => {
+            applied = true;
+          },
+        );
+      }, signal);
       assertStillActive?.();
-      await this._awaitACLMerge(() => this._readers.merge(changes), signal);
-    }, signal);
-    assertStillActive?.();
+    } catch (error) {
+      if (applied) this._markDocumentStatePoisoned();
+      throw error;
+    }
     if (!this._isStateApplicationBlocked()) {
       this._schedulePendingWelcomeDrain();
     }
@@ -2505,10 +2515,13 @@ export class PeerborneDocument<
    * pre-mutation rejection leaves authorization determinate: any other
    * failure, or abandoning a merge that has not settled, poisons the document
    * instance because an opaque merge may already have changed membership.
+   * `onApplied` runs as soon as the merge fulfils, before this call returns,
+   * so callers can fail closed if a later check rejects the applied change.
    */
   private async _awaitACLMerge<T>(
     merge: () => T | PromiseLike<T>,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    onApplied: () => void,
   ): Promise<T> {
     let settled = false;
     let tracked: Promise<T> | undefined;
@@ -2516,6 +2529,7 @@ export class PeerborneDocument<
       tracked = Promise.resolve(merge()).finally(() => {
         settled = true;
       });
+      void tracked.then(onApplied, () => undefined);
       return await awaitLoadWork(tracked, signal);
     } catch (error) {
       if (tracked && !settled) {
@@ -2727,6 +2741,7 @@ export class PeerborneDocument<
     // merge captured the old version and retries if the post-merge
     // invalidation below runs.
     let changed: boolean | void = true;
+    let applied = false;
     this._writerMutationsInFlight++;
     try {
       changed = await retryLoadACLConflict(async () => {
@@ -2741,9 +2756,15 @@ export class PeerborneDocument<
         return await this._awaitACLMerge(
           () => this._writers.merge(changes),
           signal,
+          () => {
+            applied = true;
+          },
         );
       }, signal);
       assertStillActive?.();
+    } catch (error) {
+      if (applied) this._markDocumentStatePoisoned();
+      throw error;
     } finally {
       this._writerMutationsInFlight--;
       if (changed !== false) this._invalidateWriterKeyCache();

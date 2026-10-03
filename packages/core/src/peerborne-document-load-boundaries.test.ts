@@ -3332,7 +3332,7 @@ describe('document load response boundaries', () => {
     expect(applySnapshot).not.toHaveBeenCalled();
     expect(syncDocumentChanges).not.toHaveBeenCalled();
     expect(document._hashes).toEqual(new Set());
-    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
   test('rechecks invitation pristine state at its queued application boundary', async () => {
@@ -5809,9 +5809,12 @@ test('discards deferred and incoming notifications once document state is poison
 });
 
 test.each([
-  ['Readers', true], ['Readers', false],
-  ['Writers', true], ['Writers', false],
-] as const)('cancellation of %s before invocation=%p preserves the mutation boundary', async (kind, beforeInvocation) => {
+  ['Readers', 'before invocation'], ['Readers', 'during the merge'],
+  ['Readers', 'after the merge settles'], ['Readers', 'at the post-merge check'],
+  ['Writers', 'before invocation'], ['Writers', 'during the merge'],
+  ['Writers', 'after the merge settles'], ['Writers', 'at the post-merge check'],
+] as const)('cancellation of %s %s preserves the mutation boundary', async (kind, phase) => {
+  const beforeInvocation = phase === 'before invocation';
   let release!: () => void;
   let entered!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -5833,11 +5836,28 @@ test.each([
     _writers: { merge },
   });
   const controller = new AbortController();
-  if (beforeInvocation) controller.abort(new Error('cancelled load'));
-  const result = document[`_merge${kind}`]({}, undefined, controller.signal);
-  if (!beforeInvocation) {
+  const cancel = (): void => controller.abort(new Error('cancelled load'));
+  if (phase === 'after the merge settles') {
+    const awaitACLMerge = document._awaitACLMerge;
+    document._awaitACLMerge = async (...args: unknown[]) => {
+      const merged = await awaitACLMerge.apply(document, args);
+      cancel();
+      return merged;
+    };
+  }
+  const assertStillActive =
+    phase === 'at the post-merge check'
+      ? (): void => {
+          if (mutated) cancel();
+          if (controller.signal.aborted) throw controller.signal.reason;
+        }
+      : undefined;
+  if (beforeInvocation) cancel();
+  if (phase !== 'during the merge') release();
+  const result = document[`_merge${kind}`]({}, assertStillActive, controller.signal);
+  if (phase === 'during the merge') {
     await started;
-    controller.abort(new Error('cancelled load'));
+    cancel();
   }
   try {
     await expect(result).rejects.toThrow('cancelled load');
