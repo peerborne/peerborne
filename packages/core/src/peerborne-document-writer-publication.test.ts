@@ -1,3 +1,4 @@
+import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
 import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
@@ -203,6 +204,7 @@ function publicationHarness(
     _lastSyncMessage: initialLastSyncMessage,
     _putBlock: jest.fn(async () => hashes[nextHash++]!),
     _signAsWriter: jest.fn(async () => 'signature'),
+    _signAsWriterUnconditional: jest.fn(async () => 'signature'),
     _syncMessageSerializer: {
       serializeSyncMessage: jest.fn((message: unknown) => {
         serializedMessages.push(structuredClone(message));
@@ -345,19 +347,21 @@ describe('writer ACL publication boundary', () => {
       new Set(['parent-cid', 'remote-tip-cid']),
     );
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
-    const sink = jest.fn(async () => undefined);
+    const responseSend = jest.fn(() => true);
+    const responseClose = jest.fn(async () => undefined);
     const consoleError = jest
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
     try {
       await document.handleLoadRequestData(
-        { documentId: '/writer-publication', signature: 'AA==' },
-        { sink },
+        { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+        { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
     } finally {
       consoleError.mockRestore();
     }
-    expect(sink).toHaveBeenCalledWith([]);
+    expect(responseSend).not.toHaveBeenCalled();
+    expect(responseClose).toHaveBeenCalled();
   });
 
   test.each([
@@ -811,6 +815,7 @@ describe('writer ACL publication boundary', () => {
       ['uncommitted-writer-cid', 'committed-retry-cid'],
     );
     document.swarm.config = { enableSigning: true };
+    document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     document._authProvider.encrypt = encrypt;
     document._authProvider.verify = jest.fn(async () => true);
     document._encoder = new TextEncoder();
@@ -819,11 +824,12 @@ describe('writer ACL publication boundary', () => {
     }));
     document._latestSnapshot = {
       lastChangeNodeCID: 'snapshot-boundary',
+      compactedCount: 1, timestamp: 1,
       state: { stable: true },
       signature: new Uint8Array([1]),
     };
-    const loadSink = jest.fn(async () => undefined);
-    const snapshotSink = jest.fn(async () => undefined);
+    const loadSend = jest.fn(() => true);
+    const snapshotSend = jest.fn(() => true);
 
     const addition = document.addWriter('candidate');
     const additionResult = expect(addition).rejects.toThrow(
@@ -832,30 +838,30 @@ describe('writer ACL publication boundary', () => {
     await encryptionStarted.promise;
 
     const loadResponse = document.handleLoadRequestData(
-      { documentId: '/writer-publication', signature: 'AA==' },
-      { sink: loadSink },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+      { send: loadSend, onDrain: async () => {}, close: async () => {} },
     );
     const snapshotResponse = document.handleSnapshotLoadRequestData(
-      { documentId: '/writer-publication', signature: 'AA==' },
-      { sink: snapshotSink },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+      { send: snapshotSend, onDrain: async () => {}, close: async () => {} },
     );
 
     await Promise.resolve();
-    expect(loadSink).not.toHaveBeenCalled();
-    expect(snapshotSink).not.toHaveBeenCalled();
+    expect(loadSend).not.toHaveBeenCalled();
+    expect(snapshotSend).not.toHaveBeenCalled();
 
     pendingEncryption.reject(new Error('encryption rejected'));
     await additionResult;
     await expect(loadResponse).resolves.toBeUndefined();
     await expect(snapshotResponse).resolves.toBeUndefined();
 
-    expect(loadSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
-    expect(snapshotSink).toHaveBeenCalledWith([expect.any(Uint8Array)]);
+    expect(loadSend).toHaveBeenCalledWith(expect.any(Uint8Array));
+    expect(snapshotSend).toHaveBeenCalledWith(expect.any(Uint8Array));
     expect(serializedMessages).toHaveLength(3);
     for (const served of serializedMessages.slice(1)) {
       expect(served.changeId).toBe('parent-cid');
       expect(served.changes.change).toEqual({ prior: true });
-      expect(JSON.stringify(served)).not.toContain('uncommitted-writer-cid');
+      expect(JSON.stringify(served, (_key, value) => typeof value === 'bigint' ? String(value) : value)).not.toContain('uncommitted-writer-cid');
     }
     expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
     expect(publish).not.toHaveBeenCalled();
@@ -1190,7 +1196,11 @@ describe('writer ACL publication boundary', () => {
       delete document._authProvider[codec];
       const run = jest.spyOn(document._mutationQueue, 'run');
 
-      await expect(document[operation]('candidate')).rejects.toThrow(
+      const target =
+        operation === 'addReader'
+          ? document.addReader('candidate', new Uint8Array(65).fill(1))
+          : document[operation]('candidate');
+      await expect(target).rejects.toThrow(
         new TypeError(
           `${featureName} requires AuthProvider.${codec} to be a function`,
         ),

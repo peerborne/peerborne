@@ -1,5 +1,4 @@
 import {
-  FieldFilter,
   FilterOperator,
   IndexDefinition,
   IndexFieldDefinition,
@@ -8,8 +7,6 @@ import {
   InvalidIndexedValueReason,
   QueryAst,
   QueryExpression,
-  QueryFieldExpression,
-  QueryOptions,
 } from './types.js';
 import { extractField } from './field-extractor.js';
 
@@ -41,9 +38,7 @@ export class InvalidQueryError extends TypeError {
 
 export function validateIndexDefinition(definition: IndexDefinition): IndexDefinition {
   if (!isRecord(definition)) throw new InvalidIndexSchemaError('index definition must be an object');
-  const version = definition.version ?? 1;
-  if (version !== 1 && version !== 2) throw new InvalidIndexSchemaError('index version must be 1 or 2');
-  if (version === 1) return structuredClone(definition);
+  if (definition.version !== 2) throw new InvalidIndexSchemaError('index version must be 2');
   if (!isPlainRecord(definition)) {
     throw new InvalidIndexSchemaError('version 2 index definition must be a plain object');
   }
@@ -166,7 +161,7 @@ export function validateIndexDefinition(definition: IndexDefinition): IndexDefin
 
   return {
     ...definition,
-    ...(definition.version !== undefined ? { version } : {}),
+    version: 2,
     fields,
     ...(indexes ? { indexes } : {}),
   };
@@ -247,26 +242,6 @@ export function validateQueryAst(query: QueryAst, definition: IndexDefinition): 
     ...(where ? { where } : {}),
     ...(orderBy ? { orderBy } : {}),
     ...(select ? { select } : {}),
-  };
-}
-
-export function legacyQueryToAst(options: QueryOptions): QueryAst {
-  const expressions: QueryFieldExpression[] = options.filters.map((filter) => ({
-    kind: 'field',
-    path: filter.path,
-    operator: filter.operator,
-    value: filter.value,
-  }));
-  return {
-    version: 2,
-    ...(options.indexName ? { indexName: options.indexName } : {}),
-    ...(options.collectionPrefix ? { collectionPrefix: options.collectionPrefix } : {}),
-    ...(expressions.length === 1 ? { where: expressions[0] } :
-      expressions.length > 1 ? { where: { kind: 'and', expressions } } : {}),
-    ...(options.sort ? { orderBy: options.sort } : {}),
-    ...(options.limit !== undefined ? { first: options.limit } : {}),
-    count: 'exact',
-    allowScan: true,
   };
 }
 
@@ -395,7 +370,7 @@ export function canonicalJsonString(value: unknown): string {
 
 export function canonicalIndexDefinitionString(definition: IndexDefinition): string {
   return canonicalJsonString({
-    version: definition.version ?? 1,
+    version: definition.version,
     name: definition.name,
     collectionPrefix: definition.collectionPrefix,
     fields: definition.fields.map((field) => ({

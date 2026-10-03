@@ -6,26 +6,29 @@ import Delta from 'quill-delta';
 import * as Y from 'yjs';
 
 export function PasswordEditor({
-  userId,
+  indexPath,
+  initialization,
   passwordId,
   peerborne,
 }: {
-  userId: string;
+  indexPath: string;
+  initialization: 'open' | 'create';
   passwordId?: string;
   peerborne: YjsPeerborne;
 }) {
-  const [, changePasswords] = usePeerborneDocumentState(
-    peerborne,
-    `/${userId}/passwords-index`,
-  );
+  const [, changePasswords] = usePeerborneDocumentState(peerborne, indexPath);
   const [doc, changeDoc] = usePeerborneDocumentState(
     peerborne,
     `/passwords/${passwordId}`,
+    'all',
+    initialization,
   );
 
   const id = (doc && doc.getText('id').toString()) || passwordId;
   const name = doc && doc.getText('name').toString();
   const value = doc && doc.getText('value').toString();
+
+  if (!doc) return <p>Waiting for access to this secret.</p>;
 
   return (
     <Form>
@@ -49,7 +52,6 @@ export function PasswordEditor({
             // Apply diffs calculated on text.
             changeDoc((current) => {
               current.getText('name').applyDelta(diff.ops);
-              console.log('Applied diff:', diff, current);
             });
             changePasswords((currentIndex) => {
               currentIndex
@@ -63,11 +65,6 @@ export function PasswordEditor({
                       tRef = new Y.Text();
                       ymap.set('name', tRef);
                     }
-                    console.log(
-                      'Updating index password name entry',
-                      tId,
-                      tRef,
-                    );
                     tRef && tRef.applyDelta(diff.ops);
                   }
                 });

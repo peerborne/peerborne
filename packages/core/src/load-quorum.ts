@@ -1,102 +1,15 @@
-/**
- * Pure quorum-decision logic for the initial-load quorum protocol.
- *
- * Closes the "no quorum protocol for verifying initial document state" gap
- * tracked under issue #189 §5.4 item 2 (also a bullet under #186). The
- * design:
- *
- *   - Loader asks up to K peers in parallel for a `tipsHash` (see
- *     `tips-hash.ts`) advertising their view of the document's tip set.
- *   - Each peer either returns a hash, returns `null` (decline, e.g. unknown
- *     document or unauthorized), or fails to respond before the timeout
- *     (also represented as `null` here).
- *   - This module decides whether enough peers (>= Q) agreed on a single
- *     tip-set hash. If so, the loader proceeds with a normal single-peer
- *     document-load against any peer in the agreeing set. If not, the
- *     loader raises `LoadQuorumFailedError` and the application can decide
- *     how to recover (retry, surface to the user, etc.).
- *
- * The functions in this module are intentionally pure (no I/O, no clock,
- * no network) so the decision logic can be unit-tested in isolation and
- * audited as the trust-critical core of the gate.
- */
-
 import { tipsHashToHex } from './tips-hash.js';
+import { copyUnsharedUint8Array } from './utils.js';
 
-/**
- * A single peer's response to a tip-advertise probe.
- *
- * `hash`:
- *   - `Uint8Array` -- the peer returned a tip-set hash (32 bytes
- *     post-validation; see `tips-hash.ts`).
- *   - `'unknown-doc'` -- the peer explicitly disclaimed the document
- *     (received the 1-byte UNKNOWN_DOC sentinel from the wire). Counted
- *     toward an "unknown-doc" tally that the orchestrator uses to
- *     surface `{ newDoc: true }` when the responding cohort genuinely
- *     does not hold the document -- so a fresh `open()` can create the
- *     document on top of the existing swarm rather than failing with
- *     `LoadQuorumFailedError`.
- *
- *     PRECEDENCE: tip-hash votes take priority over disclaim votes. The
- *     probe samples from `getConnections()`, which is the WHOLE libp2p
- *     mesh -- NOT only peers that hold this specific document. Unrelated
- *     peers in the mesh that have not opened this path legitimately
- *     return `'unknown-doc'`; if they were allowed to outvote a peer
- *     that genuinely holds the document, the loader would silently fork
- *     an existing doc into a new local copy. So when ANY peer returns a
- *     real tip-hash, the `'unknown-doc'` bucket is EXCLUDED from the
- *     agreement vote; the new-doc path is only taken when ZERO peers
- *     reported a real tip-hash. See `Peerborne.tipAdvertiseHandler`
- *     for the wire sentinel.
- *
- *     The new-doc and tip-hash outcomes use the same configured threshold:
- *     Q matching votes can select an outcome, and Q=1 permits one vote to
- *     do so. This tally does not establish independent peer control or
- *     provide Sybil resistance.
- *   - `null` -- the peer did not return a usable hash. This covers BOTH
- *     timeouts AND non-disclaim declines (unauthorized, wrong document
- *     id, deserialization failure, etc.). Non-responding peers are NOT
- *     counted toward "disagreement" -- they simply do not vote.
- */
-export interface PeerTipAdvertisement {
+/** One vote after the caller has authenticated and deduplicated its authority. */
+export interface PeerLoadQuorumVote {
   peerId: string;
-  hash: Uint8Array | 'unknown-doc' | null;
+  hash: Uint8Array | null;
 }
 
-/**
- * Reserved key used in the `decideLoadQuorum` agreement tally for peers
- * that disclaimed the document (returned `'unknown-doc'` from the probe).
- * Chosen so the key cannot collide with a real `tipsHashToHex` output:
- * `tipsHashToHex` produces a 64-char lowercase hex string, while this
- * sentinel is a 11-char string containing a hyphen.
- */
-export const UNKNOWN_DOC_TALLY_KEY = 'unknown-doc';
-
-/**
- * Result of running `decideLoadQuorum` over a set of peer advertisements.
- *
- * On success, `winningHashHex` identifies the agreeing tip set and
- * `agreeingPeerIds` lists the peers that returned that hash -- the loader
- * should pick any one of these for the follow-up full document-load.
- *
- * On failure, `reason` describes why quorum could not be met (used for
- * error messages and observability) and `agreement` records the
- * per-hash vote counts so callers can log the disagreement pattern.
- */
 export type LoadQuorumDecision =
   | {
       ok: true;
-      /**
-       * Discriminates whether the agreeing peers voted for a tip-set hash
-       * (the normal case) or all disclaimed the document via the
-       * `'unknown-doc'` sentinel (the new-doc-creation case). Callers
-       * branch on `kind` to decide whether to proceed with the full
-       * document-load (`'tip-hash'`) or to let the loader return `false`
-       * so a fresh `open()` creates the document on top of the swarm
-       * (`'new-doc'`). See `Peerborne.tipAdvertiseHandler` for the
-       * unknown-doc wire signal.
-       */
-      kind: 'tip-hash' | 'new-doc';
       winningHashHex: string;
       agreeingPeerIds: string[];
       respondingCount: number;
@@ -106,7 +19,7 @@ export type LoadQuorumDecision =
       ok: false;
       reason:
         | 'insufficient-responses'
-        | 'no-majority'
+        | 'no-agreement'
         | 'conflicting-quorum'
         | 'no-peers-queried';
       respondingCount: number;
@@ -115,172 +28,77 @@ export type LoadQuorumDecision =
     };
 
 /**
- * Decide whether a set of tip-advertise responses meets quorum.
- *
- * @param advertisements One entry per peer queried. `hash: null` represents
- *   a non-vote (timeout or decline). Order is irrelevant.
- * @param q The minimum number of *agreeing* peers required. The caller must
- *   preserve an explicit value as a trust floor; this function does not
- *   reduce it to the current cohort size.
- * @returns A {@link LoadQuorumDecision} describing the outcome. Pure: same
- *   inputs always yield the same result.
+ * Count matching authenticated state digests without lowering the requested
+ * Q. An explicit non-majority Q can let two buckets both reach Q; that is a
+ * conflict, not an outcome, so the decision fails instead of letting probe
+ * order pick a winner.
  */
 export function decideLoadQuorum(
-  advertisements: readonly PeerTipAdvertisement[],
+  advertisements: readonly PeerLoadQuorumVote[],
   q: number,
 ): LoadQuorumDecision {
-  // Fail fast on programming errors. `decideLoadQuorum` is exported, so a
-  // direct caller (or a future refactor that bypasses `runLoadQuorum`)
-  // could otherwise pass `q <= 0` / `NaN` / non-integer and silently
-  // disable the quorum gate -- the largest-bucket size would always be
-  // `>= 0 >= q` and a single peer's vote would pass. The orchestrator
-  // validates Q before calling here, but this guard is the load-bearing
-  // backstop for any other code path that builds the advertisements list
-  // by hand. Coding-guideline rule applies here: throw on programming
-  // mistakes (vs. logging warnings for runtime issues) so the failure is
-  // loud at the first call site.
-  if (!Number.isInteger(q) || q < 1) {
+  if (!Number.isSafeInteger(q) || q < 1) {
     throw new Error(
-      `decideLoadQuorum: q must be a positive integer; got ${String(q)}.`,
+      `decideLoadQuorum: q must be a positive integer; got ${String(q)}`,
     );
   }
-  if (advertisements.length === 0) {
-    return {
-      ok: false,
-      reason: 'no-peers-queried',
-      respondingCount: 0,
-      effectiveQ: q,
-      agreement: new Map(),
-    };
-  }
-
-  // Tally agreement keyed by the hex form of each peer's hash (for
-  // tip-hash votes) or `UNKNOWN_DOC_TALLY_KEY` (for `'unknown-doc'`
-  // disclaim votes). Hex is used as the Map key for tip-hash buckets so
-  // two peers returning byte-identical hashes collide on the same bucket;
-  // the unknown-doc sentinel uses a non-hex literal key that cannot
-  // collide with any real `tipsHashToHex` output (64-char lowercase hex).
-  // Mismatches are human-readable in the logged `agreement` snapshot.
   const agreement = new Map<string, string[]>();
   let respondingCount = 0;
-  for (const adv of advertisements) {
-    if (adv.hash === null) {
-      // Non-vote: timeout or non-disclaim decline. Skip without penalty
-      // -- a stale `knownPeers` cache that points at offline peers must
-      // not be counted as disagreement, otherwise a partition + small
-      // mesh would be indistinguishable from active Byzantine behaviour.
+  const seenPeers = new Set<string>();
+  for (const advertisement of advertisements) {
+    if (seenPeers.has(advertisement.peerId)) continue;
+    let hash: Uint8Array;
+    try {
+      hash = copyUnsharedUint8Array(
+        advertisement.hash,
+        32,
+        32,
+        'load-quorum vote hash',
+      );
+    } catch {
       continue;
     }
+    seenPeers.add(advertisement.peerId);
     respondingCount++;
-    // `'unknown-doc'` votes tally under a dedicated reserved key so a
-    // Q-of-K threshold of disclaims is detectable by the orchestrator
-    // exactly like a tip-hash threshold. The key is intentionally NOT a
-    // hex string so it cannot collide with `tipsHashToHex` output.
-    const key =
-      adv.hash === 'unknown-doc'
-        ? UNKNOWN_DOC_TALLY_KEY
-        : tipsHashToHex(adv.hash);
-    let bucket = agreement.get(key);
-    if (!bucket) {
-      bucket = [];
-      agreement.set(key, bucket);
-    }
-    bucket.push(adv.peerId);
+    const hex = tipsHashToHex(hash);
+    const bucket = agreement.get(hex) ?? [];
+    bucket.push(advertisement.peerId);
+    agreement.set(hex, bucket);
   }
-
-  if (respondingCount === 0) {
-    // No peer voted -- partition, all timed out, all declined.
-    const summary = new Map<string, number>();
-    return {
-      ok: false,
-      reason: 'insufficient-responses',
-      respondingCount,
-      effectiveQ: q,
-      agreement: summary,
-    };
-  }
-
-  // Tip-hash votes take PRIORITY over `'unknown-doc'` votes when
-  // selecting the winning bucket. The probe is racing every peer
-  // returned by `getConnections()` -- which is the WHOLE libp2p mesh,
-  // not only peers that have specifically opened this document. So an
-  // honest peer that legitimately holds a document and votes its
-  // `tipsHash` can be outvoted by unrelated peers in the same mesh
-  // that simply have not registered the document path (each of which
-  // legitimately returns the `'unknown-doc'` sentinel). Without this
-  // precedence rule, two such uninvolved peers could outvote the one
-  // peer that actually has the document and force the loader into the
-  // new-doc-creation path -- forking the document silently.
-  //
-  // Precedence rule: if ANY peer returned a real tip-hash, the
-  // `'unknown-doc'` bucket is excluded from the agreement vote. The
-  // tip-hash buckets then decide quorum among themselves (Q-of-respondingCount
-  // for the winning hash). The new-doc path is only ever taken when
-  // ZERO peers reported a real tip-hash AND the `'unknown-doc'` bucket
-  // meets Q -- i.e. the entire responding cohort genuinely disclaims
-  // the document.
-  //
-  // `respondingCount` is intentionally NOT decremented when we exclude
-  // the `'unknown-doc'` bucket: it still represents the cohort that
-  // responded at all (used for the structured failure reason
-  // 'insufficient-responses' versus 'no-majority'). The
-  // `unknownDocBucketSize` count is still surfaced in the `agreement`
-  // snapshot for operator visibility.
-  const hasTipHashVote = [...agreement.keys()].some(
-    (k) => k !== UNKNOWN_DOC_TALLY_KEY,
-  );
-  const eligibleBuckets = hasTipHashVote
-    ? [...agreement.entries()].filter(
-        ([key]) => key !== UNKNOWN_DOC_TALLY_KEY,
-      )
-    : [...agreement.entries()];
-
-  // Find the largest bucket among ELIGIBLE buckets. An explicit
-  // non-majority Q lets two conflicting buckets both reach Q; that is a
-  // conflict, not an outcome, so the decision fails instead of letting
-  // probe order pick a winner.
-  let bestKey: string | null = null;
-  let bestPeers: string[] = [];
+  let winningHashHex = '';
+  let agreeingPeerIds: string[] = [];
   let bucketsMeetingQ = 0;
-  for (const [key, peers] of eligibleBuckets) {
+  for (const [hex, peers] of agreement) {
     if (peers.length >= q) bucketsMeetingQ++;
-    if (peers.length > bestPeers.length) {
-      bestKey = key;
-      bestPeers = peers;
+    if (peers.length > agreeingPeerIds.length) {
+      winningHashHex = hex;
+      agreeingPeerIds = peers;
     }
   }
-
-  if (bestKey === null || bestPeers.length < q || bucketsMeetingQ > 1) {
-    // No bucket reached Q, or more than one did. Build a compact
-    // `hash -> count` snapshot for diagnostics.
-    const summary = new Map<string, number>();
-    for (const [key, peers] of agreement.entries()) {
-      summary.set(key, peers.length);
-    }
-    // Distinguish "we got responses but none agreed enough" from the
-    // earlier "no one responded" branch.
-    const reason =
-      bucketsMeetingQ > 1
-        ? 'conflicting-quorum'
-        : respondingCount < q
-          ? 'insufficient-responses'
-          : 'no-majority';
+  if (agreeingPeerIds.length >= q && bucketsMeetingQ === 1) {
     return {
-      ok: false,
-      reason,
+      ok: true,
+      winningHashHex,
+      agreeingPeerIds,
       respondingCount,
       effectiveQ: q,
-      agreement: summary,
     };
   }
-
   return {
-    ok: true,
-    kind: bestKey === UNKNOWN_DOC_TALLY_KEY ? 'new-doc' : 'tip-hash',
-    winningHashHex: bestKey,
-    agreeingPeerIds: bestPeers,
+    ok: false,
+    reason:
+      advertisements.length === 0
+        ? 'no-peers-queried'
+        : bucketsMeetingQ > 1
+          ? 'conflicting-quorum'
+          : respondingCount < q
+            ? 'insufficient-responses'
+            : 'no-agreement',
     respondingCount,
     effectiveQ: q,
+    agreement: new Map(
+      [...agreement].map(([hex, peers]) => [hex, peers.length]),
+    ),
   };
 }
 
@@ -296,8 +114,7 @@ export function decideLoadQuorum(
  * Worked examples:
  *   - K=1 → Q=1
  *   - K=2 → Q=2
- *   - K=3 → Q=2 (previously K=3 → Q=3 under
- *     `Math.ceil(K/2)+1`, which required all three peers to vote)
+ *   - K=3 → Q=2
  *   - K=4 → Q=3
  *   - K=5 → Q=3
  *   - K=7 → Q=4
@@ -315,7 +132,7 @@ export function defaultQuorumQ(k: number): number {
  * first-seen order. Used by the loader to collapse multiple open
  * connections to the same remote peer into a single quorum entry — without
  * this, one peer with two connections (e.g. direct + relay-circuit) would
- * cast two votes in the tip-advertise tally, allowing a single malicious
+ * cast two votes in the security-advertisement tally, allowing a single malicious
  * peer with multiple connections to single-handedly win an agreement.
  *
  * Pulled out so the dedup behaviour is unit-testable without standing up
@@ -418,7 +235,7 @@ export const DEFAULT_LOAD_QUORUM_K = 3;
  * misconfig are now rejected here with a clear operator-visible error.
  *
  * `loadQuorumTimeoutMs` is also validated here because the value flows
- * directly into `setTimeout(...)` inside a tip-advertise probe race.
+ * directly into `setTimeout(...)` inside a security-advertisement probe race.
  * `NaN`/`Infinity`/`0`/negative values are coerced to immediate-fire or
  * overflow behaviour by the timer queue. We require a finite positive integer
  * no greater than {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a
@@ -480,11 +297,7 @@ export function validateLoadQuorumConfig(config: {
   };
   const checkPositiveInt = (name: string, value: number | undefined): void => {
     if (value === undefined) return;
-    if (
-      typeof value !== 'number' ||
-      !Number.isInteger(value) ||
-      value < 1
-    ) {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
       throw new LoadQuorumFailedError({
         // No document path is available at initialize() time; use a
         // placeholder so the error message remains informative. Callers
@@ -533,7 +346,7 @@ export function validateLoadQuorumConfig(config: {
     config.loadQuorumTimeoutMs,
     LOAD_QUORUM_TIMEOUT_MS_MAX,
   );
-  // Preserve the established compatibility rule only for dormant K/Q.
+  // K/Q do not participate when quorum is disabled.
   if (config.loadQuorumEnabled === false) return;
   checkPositiveInt('loadQuorumK', config.loadQuorumK);
   checkPositiveInt('loadQuorumQ', config.loadQuorumQ);
@@ -589,17 +402,16 @@ export function formatConfigValue(value: unknown): string {
 /**
  * The set of reasons `LoadQuorumFailedError` can be thrown with.
  *
- *   - `'insufficient-responses'` — fewer than `Q` peers returned a usable
- *     tip-set hash within the configured timeout (timeouts, declines,
+ *   - `'insufficient-responses'` — fewer than `Q` authorities returned a usable
+ *     authenticated state digest within the configured timeout (timeouts, declines,
  *     decryption failures).
- *   - `'no-majority'` — historical identifier retained for compatibility:
- *     peers responded but no single tip-set hash reached Q. Q may be an
- *     explicitly configured non-majority threshold.
- *   - `'conflicting-quorum'` — more than one distinct tip-set hash reached
+ *   - `'no-agreement'` — peers responded but no single authenticated state
+ *     digest reached Q. Q may be an explicitly configured non-majority threshold.
+ *   - `'conflicting-quorum'` — more than one distinct state digest reached
  *     Q. Only possible with an explicit non-majority Q; the loader refuses
  *     to let probe order choose between conflicting states.
  *   - `'equivocating-authority'` — one V4 signing authority voted for two
- *     different tip-set hashes in the same round (key compromise or a
+ *     different state digests in the same round (key compromise or a
  *     fork), so the round fails rather than counting either vote.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
@@ -609,10 +421,10 @@ export function formatConfigValue(value: unknown): string {
  *     failure so the misconfiguration is loud at `open()` time.
  *   - `'bind-check-failed-all-agreeing-peers'` — quorum agreement was
  *     reached, but EVERY peer in the agreeing cohort served a full-load
- *     response whose `tips` array did not hash to `winningHashHex` (or
- *     omitted `tips` entirely). Distinct from `'no-majority'` so callers
- *     can tell "no peer was even willing to vote" apart from "the agreeing
- *     cohort was entirely Byzantine on the load step". Surfaced by
+ *     response did not match the authenticated state digest, including its
+ *     served frontier, response manifest, and security commitments. Distinct
+ *     from `'no-agreement'` so callers can distinguish vote disagreement from
+ *     inconsistent full responses. Surfaced by
  *     `PeerborneDocument.load()` after exhausting every narrowed peer.
  *     Without the per-peer retry, a single malicious peer in the agreeing
  *     cohort could vote for the agreed hash and then serve a mismatched
@@ -621,7 +433,7 @@ export function formatConfigValue(value: unknown): string {
  */
 export type LoadQuorumFailedReason =
   | 'insufficient-responses'
-  | 'no-majority'
+  | 'no-agreement'
   | 'conflicting-quorum'
   | 'equivocating-authority'
   | 'no-peers-queried'
@@ -631,7 +443,7 @@ export type LoadQuorumFailedReason =
 
 /**
  * Error thrown by `PeerborneDocument.load()` when the initial-load quorum
- * gate fails -- i.e. fewer than `Q` peers agreed on a tip-set hash within
+ * gate fails -- i.e. fewer than `Q` peers agreed on a state digest within
  * the configured timeout. Applications should catch this and either retry
  * later (peers may converge), surface the failure to the user, or fall
  * back to an explicit `loadQuorumEnabled: false` path if they have an
@@ -652,11 +464,10 @@ export class LoadQuorumFailedError extends Error {
    *  failure case so callers can branch on the specific failure mode.
    *  See {@link LoadQuorumFailedReason} for the full set. */
   public readonly reason: LoadQuorumFailedReason;
-  /** Number of peers that returned any non-null probe result — both
-   *  tip-hash votes AND the `'unknown-doc'` sentinel. Timeouts and
-   *  non-disclaim declines do NOT increment this. Used to distinguish
+  /** Number of peers that returned a signer-attributed vote. Timeouts and
+   *  declines do NOT increment this. Used to distinguish
    *  `'insufficient-responses'` (< Q peers responded at all) from
-   *  `'no-majority'` (≥ Q responded but no single bucket reached Q). */
+   *  `'no-agreement'` (≥ Q responded but no single bucket reached Q). */
   public readonly respondingCount: number;
   /** The effective Q threshold the loader was holding peers to. */
   public readonly requiredQ: number;
@@ -707,20 +518,20 @@ export class LoadQuorumFailedError extends Error {
           : opts.reason === 'invalid-config'
             ? (opts.detail ?? 'invalid load-quorum configuration')
             : opts.reason === 'conflicting-quorum'
-              ? `more than one tip-set hash reached the required ${opts.requiredQ} votes`
+              ? `more than one state digest reached the required ${opts.requiredQ} votes`
             : opts.reason === 'equivocating-authority'
-              ? 'a signing authority voted for conflicting tip-set hashes'
+              ? 'a signing authority voted for conflicting state digests'
             : opts.reason === 'bind-check-failed-all-agreeing-peers'
-              ? `quorum agreed on a tip-set hash but every peer in the agreeing cohort ` +
+              ? `quorum agreed on a state digest but every peer in the agreeing cohort ` +
                 `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +
-                `response whose tips did not hash to the agreed value (or omitted tips entirely); ` +
+                `response that did not match the agreed digest (or omitted tips entirely); ` +
                 `treating as coordinated Byzantine equivocation on the load step`
               : opts.reason === 'agreeing-peers-unreachable'
-                ? `quorum agreed on a tip-set hash but every peer in the agreeing ` +
+                ? `quorum agreed on a state digest but every peer in the agreeing ` +
                   `cohort failed to serve a full load (transport / protocol error, ` +
                   `not a bind mismatch); the document is known to exist but cannot ` +
                   `currently be retrieved from this peer set`
-                : `no tip-set hash reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
+                : `no state digest reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
     super(
       `Initial-load quorum failed for "${opts.documentPath}": ${detail}. ` +
         `Configure PeerborneConfig.loadQuorumK/Q/loadQuorumTimeoutMs, ` +
@@ -732,8 +543,7 @@ export class LoadQuorumFailedError extends Error {
     this.respondingCount = opts.respondingCount;
     this.requiredQ = opts.requiredQ;
     this.agreement = opts.agreement;
-    this.agreeingPeerBindFailures =
-      opts.agreeingPeerBindFailures ?? new Map();
+    this.agreeingPeerBindFailures = opts.agreeingPeerBindFailures ?? new Map();
     // Persist the structured detail so callers can forward it across a
     // rethrow without parsing the human-readable `error.message`. Only
     // load-bearing for `reason === 'invalid-config'`; harmless for

@@ -8,19 +8,19 @@ describe('wire protocol constant verification', () => {
   ) as [string, string][];
 
   test('all constants match a supported namespace/{name}/{semver} convention', () => {
-    const pattern = /^\/(?:collabswarm|peerborne)\/[a-z][a-z-]+\/\d+\.\d+\.\d+$/;
+    const pattern = /^\/peerborne\/[a-z][a-z-]+\/\d+\.\d+\.\d+$/;
     for (const [, value] of allConstants) {
       expect(value).toMatch(pattern);
     }
   });
 
-  test('new invitation protocol uses the Peerborne namespace', () => {
+  test('invitation protocol uses the Peerborne namespace', () => {
     expect(wireProtocols.invitationJoinV1).toBe(
       '/peerborne/invitation-join/1.0.0',
     );
   });
 
-  test('new BeeKEM V2 protocols use the Peerborne namespace', () => {
+  test('BeeKEM V2 protocols use the Peerborne namespace', () => {
     expect(wireProtocols.beekemWelcomeV2).toBe('/peerborne/beekem-welcome/2.0.0');
     expect(wireProtocols.beekemPathUpdateV2).toBe('/peerborne/beekem-pathupdate/2.0.0');
   });
@@ -42,11 +42,9 @@ describe('wire protocol constant verification', () => {
 
   test('protocol name segments match expected purpose', () => {
     const expected: Record<string, string> = {
-      bloomFilterUpdateV1: 'bloom-index',
-      documentLoadV3: 'doc-load',
-      documentKeyUpdateV2: 'key-update',
-      snapshotLoadV3: 'snapshot-load',
-      tipAdvertiseV1: 'tip-advertise',
+      documentLoadV4: 'doc-load',
+      snapshotLoadV4: 'snapshot-load',
+      securityAdvertiseV1: 'security-advertise',
       invitationJoinV1: 'invitation-join',
       beekemWelcomeV2: 'beekem-welcome',
       beekemPathUpdateV2: 'beekem-pathupdate',
@@ -60,11 +58,9 @@ describe('wire protocol constant verification', () => {
 
   test('major version in constant name matches value', () => {
     const nameToMajor: Record<string, number> = {
-      bloomFilterUpdateV1: 1,
-      documentLoadV3: 3,
-      documentKeyUpdateV2: 2,
-      snapshotLoadV3: 3,
-      tipAdvertiseV1: 1,
+      documentLoadV4: 4,
+      snapshotLoadV4: 4,
+      securityAdvertiseV1: 1,
       invitationJoinV1: 1,
       beekemWelcomeV2: 2,
       beekemPathUpdateV2: 2,
@@ -79,7 +75,6 @@ describe('wire protocol constant verification', () => {
 
   test('handler label matches protocol path segment', () => {
     const labelMap: Record<string, string> = {
-      documentKeyUpdateV2: 'key-update',
       invitationJoinV1: 'invitation-join',
       beekemWelcomeV2: 'beekem-welcome',
       beekemPathUpdateV2: 'beekem-pathupdate',

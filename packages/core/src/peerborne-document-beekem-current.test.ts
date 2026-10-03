@@ -44,7 +44,7 @@ const serializer = {
 afterEach(() => jest.restoreAllMocks());
 
 describe('document current BeeKEM delivery', () => {
-  test('signed skipped, stale, obsolete, and wrong-parent updates cannot replace the live tree or append an epoch', async () => {
+  test('signed skipped, stale, and wrong-parent updates cannot replace the live tree or append an epoch', async () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
     const debug = jest.spyOn(console, 'debug').mockImplementation(() => {});
@@ -102,16 +102,8 @@ describe('document current BeeKEM delivery', () => {
         },
       },
     );
-    async function deliver(
-      update: Awaited<ReturnType<BeeKEM['update']>>,
-      obsolete = false,
-    ) {
-      const pathUpdate: any = serializePathUpdateV2ForWire(update.pathUpdate);
-      if (obsolete) {
-        delete pathUpdate.version;
-        delete pathUpdate.generation;
-        delete pathUpdate.parentTreeHash;
-      }
+    async function deliver(update: Awaited<ReturnType<BeeKEM['update']>>) {
+      const pathUpdate = serializePathUpdateV2ForWire(update.pathUpdate);
       const message = {
         documentId: document.documentPath,
         signatureContext: 'beekem-path-update-v1',
@@ -152,7 +144,6 @@ describe('document current BeeKEM delivery', () => {
     expect(document._beekem).toBe(committedTree);
 
     await deliver(first);
-    await deliver(first, true);
     await staleFounder.update();
     await staleFounder.update();
     const wrongParent = await staleFounder.update();

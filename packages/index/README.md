@@ -12,7 +12,7 @@ Client-side indexing and distributed-search protocol primitives for Peerborne do
 
 ## Choose this package
 
-Use this package to build local indexes over documents already available to an application. V2 indexes are memory-only by default; IndexedDB requires the explicit `storageMode: 'cleartext-local'` opt-in because indexed values remain readable at rest. Custom storage implementations must declare `persistent: false` to use the memory default; an unknown persistence capability fails closed. It depends on `@peerborne/core` and `idb`. React is declared as a peer dependency for the optional legacy query hooks.
+Use this package to build local indexes over documents already available to an application. V2 indexes are memory-only by default; IndexedDB requires the explicit `storageMode: 'cleartext-local'` opt-in because indexed values remain readable at rest. Custom storage implementations must declare `persistent: false` to use the memory default; an unknown persistence capability fails closed. It depends on `@peerborne/core` and `idb`. React is declared as a peer dependency for the optional React query hooks.
 
 Distributed APIs currently provide the protocol, authorization, transport-adapter, and federation boundaries. Production libp2p handlers, collection search-key distribution, and a `PeerborneDocument` resolver are not wired end to end. A remote peer can nominate a path only: the requester must load and authorize the document through the normal secure path and re-evaluate the complete predicate locally. Distributed candidate requests cannot opt into full scans or exact remote counts.
 

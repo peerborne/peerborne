@@ -49,19 +49,19 @@ import {
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  documentLoadV3,
-  documentKeyUpdateV2,
+  documentLoadV4,
   invitationJoinV1,
-  snapshotLoadV3,
-  tipAdvertiseV1,
+  invitationCatchUpV1,
+  snapshotLoadV4,
+  securityAdvertiseV1,
 } from './wire-protocols.js';
 import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readFirstDeserializable,
   readPathPrefixedProtocolHeader,
 } from './utils.js';
-import { wrapStream } from './stream-adapter.js';
-import { closeLegacyHeliaStores } from './store-lifecycle.js';
+import { writeStream } from './stream-write.js';
+import { closeHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 import { createAndStartHeliaNode } from './helia-node.js';
 import type { PeerborneHeliaNode } from './helia-node.js';
@@ -114,7 +114,7 @@ import type {
   SharedProtocolMutationResult,
 } from './shared-protocol-admission.js';
 
-/** Maximum allowed document path length in key-update V2 wire format. */
+/** Maximum document path length in path-prefixed shared protocol headers. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
 /** Match the default per-peer load-quorum probe budget. */
@@ -144,13 +144,10 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 /** Minimal stream shape used by shared protocol handlers. */
-interface ProtocolStream {
-  source: AsyncIterable<Uint8ArrayList | Uint8Array>;
-  sink: (data: Iterable<Uint8Array>) => Promise<void>;
-  close: () => Promise<void>;
-  closeRead: () => Promise<void>;
-  abort: (error: Error) => void;
-}
+type ProtocolStream = Pick<
+  Stream,
+  'send' | 'onDrain' | 'close' | 'closeRead' | 'abort' | typeof Symbol.asyncIterator
+>;
 
 class SharedProtocolRequestTimeoutError extends Error {}
 class SharedProtocolHandlerTimeoutError extends Error {}
@@ -228,10 +225,9 @@ type SharedProtocolAbortClassification =
 type SharedProtocolName =
   | 'doc-load'
   | 'snapshot-load'
-  | 'key-update'
   | 'beekem-welcome'
   | 'beekem-pathupdate'
-  | 'tip-advertise';
+  | 'security-advertise';
 
 function sharedProtocolRequestTimeoutMs(configured: unknown): number {
   return typeof configured === 'number' &&
@@ -501,6 +497,13 @@ export class Peerborne<
 
   // configs for the swarm, thus passing its config to all documents opened in a swarm
   protected _config: PeerborneConfig | null = null;
+  private _loadTrustPolicy: Pick<PeerborneConfig,
+    'resolveTrustedDocumentWriters' | 'resolveLoadSecurityCommitments' | 'validateDocumentPath'> = {};
+
+  get resolveTrustedDocumentWriters() { return this._loadTrustPolicy.resolveTrustedDocumentWriters; }
+  get resolveLoadSecurityCommitments() { return this._loadTrustPolicy.resolveLoadSecurityCommitments; }
+  get validateDocumentPath() { return this._loadTrustPolicy.validateDocumentPath; }
+
   private _heliaNode: PeerborneHeliaNode | undefined;
   private _peerId: PeerId | undefined;
   private _peerIds: string[] = [];
@@ -513,7 +516,7 @@ export class Peerborne<
   private _networkStats?: NetworkStats;
 
   private _sharedHandlersRegistration: Promise<void> | undefined;
-  private _openedLegacyStores: OpenableStore[] = [];
+  private _openedStores: OpenableStore[] = [];
   private _initializationInFlight = false;
 
   // Registry of open documents keyed by document path. Shared protocol
@@ -661,8 +664,8 @@ export class Peerborne<
     // preventing leaked background resources (connections, timers, etc.).
     if (this._heliaNode) {
       try { await this._heliaNode.stop(); } catch { /* best-effort */ }
-      await closeLegacyHeliaStores(this._openedLegacyStores);
-      this._openedLegacyStores = [];
+      await closeHeliaStores(this._openedStores);
+      this._openedStores = [];
       this._heliaNode = undefined;
       this._peerId = undefined;
       this._peerIds = [];
@@ -687,6 +690,11 @@ export class Peerborne<
     // here cannot fail later at load time.
     validateLoadQuorumConfig(config);
 
+    this._loadTrustPolicy = Object.freeze({
+      resolveTrustedDocumentWriters: config.resolveTrustedDocumentWriters,
+      resolveLoadSecurityCommitments: config.resolveLoadSecurityCommitments,
+      validateDocumentPath: config.validateDocumentPath,
+    });
     this._config = config;
 
     this._sharedHandlersRegistration = undefined;
@@ -694,10 +702,10 @@ export class Peerborne<
     this._networkStats = config.enableNetworkStats ? new NetworkStats() : undefined;
 
     // Setup Helia node.
-    const { heliaNode, openedLegacyStores } =
+    const { heliaNode, openedStores } =
       await createAndStartHeliaNode(config.helia);
     this._heliaNode = heliaNode;
-    this._openedLegacyStores = openedLegacyStores;
+    this._openedStores = openedStores;
 
     this.libp2p.addEventListener('peer:connect', (event) => {
       const peerId = event.detail.toString();
@@ -937,9 +945,10 @@ export class Peerborne<
    * document path, and routes to the matching PeerborneDocument instance in
    * the registry.
    *
-   * For doc-load, snapshot-load, and tip-advertise, the path is extracted by
-   * deserializing the CRDTLoadRequest. The three update protocols use a
-   * 4-byte length-prefixed document path before their payload.
+   * For doc-load, invitation catch-up, snapshot-load, and security-advertise,
+   * the path is extracted by deserializing the CRDTLoadRequest. The BeeKEM
+   * Welcome and PathUpdate protocols use a 4-byte length-prefixed document
+   * path before their payload.
    */
   private async _registerSharedProtocolHandlers(): Promise<void> {
     if (this._sharedHandlersRegistration) {
@@ -949,17 +958,10 @@ export class Peerborne<
       this._config?.loadQuorumTimeoutMs,
     );
 
-    // Handler implementation for doc-load requests.
-    //
-    // libp2p v3 changed the `StreamHandler` signature from
-    // `({ stream, connection }) => void` to `(stream, connection) => void`.
-    // The raw stream is also now event-driven instead of `{ source, sink }`,
-    // so we wrap it with the stream-adapter shim before passing it to the
-    // legacy pipe-based protocol logic below.
-    const docLoadHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+    const docLoadHandler = (invitationCatchUp = false) => (rawStream: Stream) => {
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -970,7 +972,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
@@ -995,10 +997,14 @@ export class Peerborne<
                 console.warn(
                   'Shared doc-load handler: no document registered, dropping',
                 );
-                await stream.sink([] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
-              await doc.handleLoadRequestData(request, stream, admission);
+              if (invitationCatchUp) {
+                await doc.handleInvitationCatchUpRequestData(request, stream, admission);
+              } else {
+                await doc.handleLoadRequestData(request, stream, admission);
+              }
             },
           );
           return [];
@@ -1009,11 +1015,10 @@ export class Peerborne<
     };
 
     // Handler implementation for snapshot-load requests.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const snapshotLoadHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -1024,7 +1029,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
@@ -1049,7 +1054,7 @@ export class Peerborne<
                 console.warn(
                   'Shared snapshot-load handler: no document registered, dropping',
                 );
-                await stream.sink([] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
               await doc.handleSnapshotLoadRequestData(
@@ -1066,79 +1071,15 @@ export class Peerborne<
       });
     };
 
-    // Handler implementation for key-update requests. The stream data
-    // is prefixed with a 4-byte big-endian length followed by the
-    // UTF-8 document path. The remaining bytes are the encrypted
-    // key-update payload.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    //
-    // The header parse (read assembled bytes, validate the 4-byte
-    // length, decode the UTF-8 path, look up the doc in the registry)
-    // is shared with the BeeKEM Welcome handler below via
-    // `readPathPrefixedProtocolHeader`. Both protocols use the same
-    // wire-format prefix; keeping the validation in one place means a
-    // tightened bound only needs to land once.
-    const keyUpdateHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          let header;
-          try {
-            header = await withSharedProtocolRequestDeadline(
-              () =>
-                readPathPrefixedProtocolHeader(
-                  source,
-                  this._documentRegistry,
-                  'key-update',
-                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  MAX_DOCUMENT_PATH_LENGTH,
-                ),
-              requestTimeoutMs,
-            );
-          } catch (err) {
-            const reason =
-              err instanceof SharedProtocolRequestTimeoutError
-                ? 'request timed out'
-                : 'failed to read request';
-            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            console.warn(`Shared key-update handler: ${reason}, dropping`);
-            return [];
-          }
-          if (header.kind !== 'ok') {
-            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            return [];
-          }
-          await runSharedProtocolHandlerPhase(
-            stream,
-            requestTimeoutMs,
-            'key-update',
-            (admission) =>
-              header.doc.handleKeyUpdateRequestData(
-                header.payload,
-                admission,
-              ),
-          );
-          return [];
-        },
-      ).then(() => undefined).catch(() => {
-        console.error('Shared key-update handler failed');
-      });
-    };
-
-    // Handler for BeeKEM Welcome V2. Wire format mirrors key-update v2:
+    // Handler for BeeKEM Welcome V2. Wire format:
     // 4-byte big-endian path length, then UTF-8 path, then the serialized
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
     // and records the invitation epoch.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    //
-    // Header parse shared with the key-update handler above via
-    // `readPathPrefixedProtocolHeader`.
     const beekemWelcomeHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let header;
           try {
@@ -1184,22 +1125,20 @@ export class Peerborne<
     };
 
     // Handler for BeeKEM PathUpdate V2 (reader-revocation rotations).
-    // Wire format mirrors key-update v2 / BeeKEM Welcome V2: 4-byte
+    // Wire format mirrors BeeKEM Welcome V2: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
     // `pathUpdateEpochId` / `signature` fields. After routing by path
     // the per-document handler verifies the writer signature, applies
     // the PathUpdateV2 via `BeeKEM.processPathUpdate`, and installs the
     // freshly-derived document key in the keychain.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler
-    // signature.
     //
-    // Header parse shared with the key-update + Welcome handlers via
+    // Header parse shared with the Welcome handler via
     // `readPathPrefixedProtocolHeader`.
     const beekemPathUpdateHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let header;
           try {
@@ -1246,17 +1185,16 @@ export class Peerborne<
       });
     };
 
-    // Handler implementation for tip-advertise requests (initial-load
-    // quorum probe; see `wire-protocols.ts::tipAdvertiseV1`). Wire format
-    // mirrors documentLoadV3: a single serialized CRDTLoadRequest in,
+    // Handler implementation for security-advertise requests (initial-load
+    // quorum probe; see `wire-protocols.ts::securityAdvertiseV1`). Wire format
+    // mirrors documentLoadV4: a single serialized CRDTLoadRequest in,
     // a single (small) encrypted/serialized CRDTSyncMessage out (whose
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    const tipAdvertiseHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+    const securityAdvertiseHandler = (rawStream: Stream) => {
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -1267,7 +1205,7 @@ export class Peerborne<
                   (data) =>
                     this._loadMessageSerializer.deserializeLoadRequest(data),
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  this._loadMessageSerializer.createLoadRequestCompletionDetector?.(),
+                  this._loadMessageSerializer.createLoadRequestCompletionDetector(),
                 ),
               requestTimeoutMs,
             );
@@ -1279,25 +1217,20 @@ export class Peerborne<
                   ? 'request too large'
                   : 'failed to read request';
             await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            console.warn(`Shared tip-advertise handler: ${reason}, dropping`);
+            console.warn(`Shared security-advertise handler: ${reason}, dropping`);
             return [];
           }
           await runSharedProtocolHandlerPhase(
             stream,
             requestTimeoutMs,
-            'tip-advertise',
+            'security-advertise',
             async (admission) => {
               const doc = this._documentRegistry.get(request.documentId);
               if (!doc) {
-                // The unauthenticated one-byte sentinel is intentionally only
-                // an existence signal. Quorum protects its interpretation and
-                // the attacker-controlled document ID is never logged.
-                await stream.sink([
-                  new Uint8Array([0xff]),
-                ] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
-              await doc.handleTipAdvertiseRequestData(
+              await doc.handleSecurityAdvertiseRequestData(
                 request,
                 stream,
                 admission,
@@ -1307,7 +1240,7 @@ export class Peerborne<
           return [];
         },
       ).then(() => undefined).catch(() => {
-        console.error('Shared tip-advertise handler failed');
+        console.error('Shared security-advertise handler failed');
       });
     };
 
@@ -1320,9 +1253,9 @@ export class Peerborne<
         await withInvitationProtocolStream(
           async () => rawStream,
           async (openedStream, signal) => {
-            const stream: ProtocolStream = wrapStream(openedStream);
+            const stream: ProtocolStream = openedStream;
             const request = await readInvitationProtocolMessage(
-              stream.source,
+              stream,
               decodeInvitationJoinRequest,
               MAX_INVITATION_JOIN_REQUEST_BYTES,
             );
@@ -1330,7 +1263,7 @@ export class Peerborne<
               request,
               signal,
             );
-            await stream.sink([
+            await writeStream(stream, [
               encodeInvitationProtocolFrame(
                 encodeInvitationAcceptance(acceptance),
                 MAX_INVITATION_MESSAGE_BYTES,
@@ -1349,12 +1282,12 @@ export class Peerborne<
     // stream payload for routing.
     const relayProtocolOptions = { runOnLimitedConnection: true };
     const registration = Promise.all([
-      this.libp2p.handle(documentLoadV3, docLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(snapshotLoadV3, snapshotLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(documentKeyUpdateV2, keyUpdateHandler, relayProtocolOptions),
+      this.libp2p.handle(documentLoadV4, docLoadHandler(), relayProtocolOptions),
+      this.libp2p.handle(invitationCatchUpV1, docLoadHandler(true), relayProtocolOptions),
+      this.libp2p.handle(snapshotLoadV4, snapshotLoadHandler, relayProtocolOptions),
       this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
-      this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
+      this.libp2p.handle(securityAdvertiseV1, securityAdvertiseHandler, relayProtocolOptions),
       this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;
@@ -1686,10 +1619,10 @@ export class Peerborne<
                 },
               ),
             async (rawStream) => {
-              const stream = wrapStream(rawStream);
-              await pipe([encodedRequest], stream.sink);
+              const stream = rawStream;
+              await writeStream(stream, [encodedRequest]);
               const acceptance = await readInvitationProtocolMessage(
-                stream.source,
+                stream,
                 decodeInvitationAcceptance,
                 MAX_INVITATION_MESSAGE_BYTES,
               );

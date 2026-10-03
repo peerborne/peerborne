@@ -77,7 +77,7 @@ Each document has an access control list with two roles:
 
 ```ts
 // Grant read access (the second argument is the reader's raw
-// SEC1-uncompressed P-256 ECDH public key bytes, optional for ACL-only access)
+// SEC1-uncompressed P-256 ECDH public key bytes)
 await document.addReader(peerSigningPublicKey, readerKemPublicKeyBytes);
 
 // Promote an existing explicit reader to write access
@@ -90,18 +90,17 @@ Before calling `addReader`, a founder node must set its KEM key pair:
 await document.setKemKeyPair(kemKeyPair);
 ```
 
-- **Readers** can receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold. Calling `addReader()` without a KEM key grants ACL-only reader membership; call it again with the recipient's KEM key to repair onboarding.
-- **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so onboard it with `addReader(peerSigningPublicKey, readerKemPublicKeyBytes)` before promotion. The identity-to-KEM binding is held in memory by the document instance that added the reader, so ACL-only readers and readers added before a restart cannot currently be promoted. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
+- **Readers** receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold. `addReader()` requires the recipient's KEM public key and rejects a call without it before changing the ACL.
+- **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so onboard it with `addReader(peerSigningPublicKey, readerKemPublicKeyBytes)` before promotion. The identity-to-KEM binding is held in memory by the document instance that added the reader, so readers added before a restart cannot currently be promoted. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
 - Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas.
-- **Ordinary document sync/load signing is configurable.** BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2 membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
+- **Ordinary document sync signing is configurable.** Initial loads, security advertisements, and BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 Where the receiving operation verifies a sync-message signature, that
 signature covers an exact `signatureContext` tag chosen by the operation. This
 prevents a captured, valid body from being reused by a different same-shaped
 authenticated handler after re-encryption. It does not prevent replay within
 the same context, and an authorized writer can still intentionally sign a new
-message for any operation its role permits. Document-publish notifications are
-not application-authenticated and are outside this guarantee.
+message for any operation its role permits.
 
 The reader-row and live-leaf promotion checks above are local API guards. An
 incoming raw ACL delta is not yet checked against replicated identity/KEM
@@ -169,47 +168,41 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 
 | Setting | Effect |
 |---|---|
-| **`enableSigning: true`** (default) | Ordinary sync messages and load responses are signed with ECDSA P-384, then serialized and encrypted with the document key; load requests are signed separately. Post-load receivers verify outer message signatures against current writers. |
-| **`enableSigning: false`** | Stored payloads, sync envelopes, and load responses remain encrypted with the document key, but application-level signing and verification for ordinary sync messages, load requests and responses, and snapshots are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2 messages are separate exceptions described below. |
+| **`enableSigning: true`** (default) | Ordinary sync messages are signed with ECDSA P-384, then serialized and encrypted with the document key. Post-load receivers verify outer message signatures against current writers. |
+| **`enableSigning: false`** | Stored payloads and sync envelopes remain encrypted with the document key, but application-level signing and verification for ordinary sync messages and snapshots are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. Invitation creation and acceptance are rejected. |
 
-BeeKEM Welcome, BeeKEM PathUpdate, and document key-update V2
-membership-control protocols are a deliberate exception to that toggle: their
-outer messages are always writer-signed, and receivers drop unsigned or
-invalidly signed copies regardless of `enableSigning`. Welcome and PathUpdate
-are not ordinary whole-message document-key envelopes. A Welcome ECIES-seals
-its onboarding payload to the recipient's KEM key. A PathUpdate instead carries
-path secrets individually encrypted to the surviving BeeKEM subtrees. A
-key-update V2 message remains encrypted with the previous document key. Peers
-from before this requirement sent unsigned key-updates when signing was
-disabled; current receivers drop those, so all peers in a swarm must run a
-version that signs membership-control messages.
+Initial loads, security advertisements, and the BeeKEM Welcome and PathUpdate
+membership-control protocols are a deliberate exception to that toggle. Load
+requests, load responses, and advertisements are always signed and verified
+against the captured trusted writers. Welcome and PathUpdate outer messages are
+always writer-signed, and receivers drop unsigned or invalidly signed copies
+regardless of `enableSigning`. Welcome and PathUpdate are not ordinary
+whole-message document-key envelopes. A Welcome ECIES-seals its onboarding
+payload to the recipient's KEM key. A PathUpdate instead carries path secrets
+individually encrypted to the surviving BeeKEM subtrees.
 
 ## Initial-load quorum
 
-Before accepting a remote document state, Peerborne can require **Q-of-K**
-distinct currently connected peers to agree on a served-frontier hash. This
-reduces the risk of one peer unilaterally selecting the frontier; it does not
-authenticate the responder-supplied interior tree or prove that the served
-history is complete. Quorum is configured via `PeerborneConfig`:
+V4 loading requires a fresh signed request challenge, trusted writer identities,
+and locally resolved control/group commitments. Configure
+`resolveTrustedDocumentWriters(documentPath)` for a first load and
+`resolveLoadSecurityCommitments(documentPath)` for normal loading and serving.
+The latter supplies the current `version`, `controlHead`, `groupId`, `epoch`,
+`treeHash`, and `confirmedTranscriptHash`; a responder cannot provide its own
+trust root. The runtime compares this tuple but does not yet replay an MLS
+control log.
 
-```ts
-// Override loadQuorumK and loadQuorumQ on the complete config:
-await swarm.initialize({
-  ...defaultConfig(defaultBootstrapConfig([])),
-  loadQuorumK: 3,  // probe up to 3 peers
-  loadQuorumQ: 2,  // require agreement from at least 2
-});
+`loadQuorumK` bounds queried transport peers. `loadQuorumQ` requires that many
+independent trusted signing authorities to agree on one complete response
+manifest and security-state digest. One credential contributes only one vote,
+even through multiple PeerIds. An explicit Q is never lowered when fewer peers
+are available. Distinct compromised authorities can still collude; independent
+trust configuration is essential.
 
-// Documents are then opened normally; quorum runs automatically:
-const document = swarm.doc('/shared-note');
-await document.open();
-```
-
-The quorum check:
-- Probes up to `loadQuorumK` peers for their current frontier hashes
-- Proceeds only when at least `loadQuorumQ` peers agree on the same frontier
-- Rejects the load if agreement cannot be reached
-- Is **not Sybil-resistant** — a peer controlling multiple identities can subvert it
+`loadQuorumEnabled: false` permits one authenticated V4 response and retains
+challenge, tuple, signature, and frontier checks. Unsigned loads are rejected.
+A failed `document.open()` never creates a document. Use `document.create()`
+only when the application has explicitly authorized founding that path.
 
 ## Revocation
 

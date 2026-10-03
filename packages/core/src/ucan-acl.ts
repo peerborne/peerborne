@@ -151,12 +151,11 @@ interface CapturedBackingFinalizer {
  *
  * The identity serializer must be canonical and collision-free for the
  * provider's identity domain, and must capture caller-owned state before its
- * first asynchronous suspension. Object and function identities additionally
- * require a deserializer that returns a fully detached identity with the same
- * canonical encoding. Listing caches retain only bounded, private canonical
- * templates for one backing revision, and every identity returned to a caller
- * is freshly detached. Primitive identities are immutable and remain
- * supported with the two-argument constructor. Backing listings above
+ * first asynchronous suspension. The deserializer must return an identity
+ * with the same canonical encoding; object and function identities must also
+ * be fully detached from the caller's value. Listing caches retain only
+ * bounded, private canonical templates for one backing revision, and every
+ * identity returned to a caller is freshly detached. Backing listings above
  * {@link MAX_UCAN_ACL_LISTING_IDENTITIES} fail before identity codecs start,
  * so sparse or proxied arrays cannot schedule unbounded snapshot work, and
  * listings with holes are rejected instead of serializing a missing entry.
@@ -186,10 +185,16 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
   constructor(
     private readonly _backing: ACL<ChangesType, PublicKey>,
     private readonly _serializePublicKey: (key: PublicKey) => Promise<string>,
-    private readonly _deserializePublicKey?: (
+    private readonly _deserializePublicKey: (
       serialized: string,
     ) => Promise<PublicKey>,
   ) {
+    if (typeof _serializePublicKey !== 'function') {
+      throw new TypeError('UCAN ACL requires a public-key serializer');
+    }
+    if (typeof _deserializePublicKey !== 'function') {
+      throw new TypeError('UCAN ACL requires a public-key deserializer');
+    }
     if (wrappedBackingAcls.has(_backing)) {
       throw new Error(
         'Backing ACL is already wrapped by another UCAN ACL; each backing ACL instance requires exclusive admission state',
@@ -209,9 +214,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       keyBase64,
       operation,
     );
-    if (!this._deserializePublicKey) {
-      return { publicKey: stablePublicKey, keyBase64 };
-    }
     if ((await this._serializePublicKey(stablePublicKey)) !== keyBase64) {
       throw new Error(
         `${operation} rejected a non-canonical public-key round trip`,
@@ -246,15 +248,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     const mutableIdentity =
       (typeof publicKey === 'object' && publicKey !== null) ||
       typeof publicKey === 'function';
-    if (!this._deserializePublicKey) {
-      if (mutableIdentity) {
-        throw new Error(
-          `${operation} requires a public-key deserializer for mutable identities`,
-        );
-      }
-      return publicKey;
-    }
-
     const stablePublicKey = await this._deserializePublicKey(keyBase64);
     if (mutableIdentity && stablePublicKey === publicKey) {
       throw new Error(
@@ -313,9 +306,6 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       keyBase64,
       operation,
     );
-    if (!this._deserializePublicKey) {
-      return { publicKey: stablePublicKey, keyBase64 };
-    }
     if (cacheableEncoding) {
       // Keep a clone that neither the codec nor any caller can retain. Validate
       // canonicality on a separate throwaway clone before caching it.
@@ -1448,8 +1438,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
 /**
  * Provider for UCAN-based ACLs. The codec has the same canonical,
  * collision-free, synchronous-capture and detached-deserialization contract
- * described by {@link UCANACL}. Supply `deserializePublicKey` whenever
- * `PublicKey` is mutable; UCAN metadata transitions fail closed without it.
+ * described by {@link UCANACL}.
  */
 export class UCANACLProvider<ChangesType, PublicKey> implements ACLProvider<ChangesType, PublicKey> {
   private readonly _initializedBackings = new WeakSet<object>();
@@ -1457,10 +1446,19 @@ export class UCANACLProvider<ChangesType, PublicKey> implements ACLProvider<Chan
   constructor(
     private readonly _backingAclProvider: ACLProvider<ChangesType, PublicKey>,
     private readonly _serializePublicKey: (key: PublicKey) => Promise<string>,
-    private readonly _deserializePublicKey?: (
+    private readonly _deserializePublicKey: (
       serialized: string,
     ) => Promise<PublicKey>,
-  ) {}
+  ) {
+    if (typeof _serializePublicKey !== 'function') {
+      throw new TypeError('UCAN ACL provider requires a public-key serializer');
+    }
+    if (typeof _deserializePublicKey !== 'function') {
+      throw new TypeError(
+        'UCAN ACL provider requires a public-key deserializer',
+      );
+    }
+  }
 
   initialize(): UCANACL<ChangesType, PublicKey> {
     const backingAcl = this._backingAclProvider.initialize();

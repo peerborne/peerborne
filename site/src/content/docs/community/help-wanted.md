@@ -16,11 +16,11 @@ test. What remains is persisted KEM/BeeKEM and replay state, offline/delayed
 acceptance, larger-group add-side updates, and multi-peer proof that a revoked
 member cannot read or write subsequent content.
 
-Useful work includes deterministic acceptance tests, state migration design, adversarial cases, and safe UX that never logs keys or private payloads.
+Useful work includes deterministic acceptance tests, durable state design for the current format, adversarial cases, and safe UX that never logs keys or private payloads.
 
 ### Persistence and restart recovery
 
-Content-addressed blocks and IndexedDB-backed components exist, but document and identity recovery across browser/process restart needs executable coverage. Test key persistence separately from document blocks, include schema/version migrations, and verify explicit failure behavior when required state is absent.
+Content-addressed blocks and IndexedDB-backed components exist, but document and identity recovery across browser/process restart needs executable coverage. Test key persistence separately from document blocks, reject persisted state in an unsupported format instead of upgrading it, and verify explicit failure behavior when required state is absent.
 
 ### Partition and live convergence
 
@@ -48,7 +48,7 @@ The six `@peerborne/*` workspaces build, but they are unpublished. Prepare publi
 
 ### Documentation and snippet tests
 
-The Site workflow generates TypeDoc Markdown from source during `yarn workspace @peerborne/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. There is no legacy TypeDoc workflow.
+The Site workflow generates TypeDoc Markdown from source during `yarn workspace @peerborne/site build`; generated files are ignored. Improve source API comments or `site/astro.config.mjs`, not generated Markdown. Add executable snippet/link checks so quick-start and cookbook commands cannot silently drift. Starlight TypeDoc is the only API reference workflow.
 
 ### Benchmark runner and budgets
 

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_DOCUMENT_PUBLISH_PATH,
   DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
   DEFAULT_IDENTITY_KEY_PATH,
   DEFAULT_MAX_CONNECTIONS,
@@ -28,7 +27,6 @@ describe('loadConfig', () => {
     it('returns the documented defaults when env is empty', () => {
       const cfg = loadConfig({})
       expect(cfg.peerDiscoveryTopic).toBe(PUBSUB_PEER_DISCOVERY_TOPIC)
-      expect(cfg.documentPublishPath).toBe(DEFAULT_DOCUMENT_PUBLISH_PATH)
       expect(cfg.wsListen).toBe(`/ip4/0.0.0.0/tcp/${DEFAULT_WS_PORT}/ws`)
       expect(cfg.tcpListen).toBe(`/ip4/0.0.0.0/tcp/${DEFAULT_TCP_PORT}`)
       expect(cfg.ipv6Enabled).toBe(false)
@@ -37,7 +35,6 @@ describe('loadConfig', () => {
       expect(cfg.readinessPort).toBe(DEFAULT_READINESS_PORT)
       expect(cfg.identityKeyPath).toBe(DEFAULT_IDENTITY_KEY_PATH)
       expect(cfg.topicAllowlist).toEqual(DEFAULT_TOPIC_ALLOWLIST)
-      expect(cfg.topicAllowlist).toContain(DEFAULT_DOCUMENT_PUBLISH_PATH)
       expect(cfg.maxAutoTopics).toBe(DEFAULT_MAX_AUTO_TOPICS)
       expect(cfg.maxAutoTopicsPerPeer).toBe(DEFAULT_MAX_AUTO_TOPICS_PER_PEER)
       expect(cfg.gossipsubMaxTopicBytesPerPeer).toBe(
@@ -99,23 +96,10 @@ describe('loadConfig', () => {
     })
 
     it('treats ENABLE_IPV6 values other than "1" as disabled', () => {
-      // Historical behaviour: only the literal string "1" enables IPv6.
       expect(loadConfig({ ENABLE_IPV6: 'true' }).ipv6Enabled).toBe(false)
       expect(loadConfig({ ENABLE_IPV6: 'yes' }).ipv6Enabled).toBe(false)
       expect(loadConfig({ ENABLE_IPV6: '0' }).ipv6Enabled).toBe(false)
       expect(loadConfig({ ENABLE_IPV6: '' }).ipv6Enabled).toBe(false)
-    })
-  })
-
-  describe('DOCUMENT_PUBLISH_PATH', () => {
-    it('uses the default when unset', () => {
-      expect(loadConfig({}).documentPublishPath).toBe(DEFAULT_DOCUMENT_PUBLISH_PATH)
-    })
-
-    it('honours the explicit override', () => {
-      expect(loadConfig({ DOCUMENT_PUBLISH_PATH: '/custom-docs' }).documentPublishPath).toBe(
-        '/custom-docs',
-      )
     })
   })
 
@@ -143,11 +127,11 @@ describe('loadConfig', () => {
       expect(
         loadConfig({
           TOPIC_ALLOWLIST:
-            '/peerborne/document/v3/,/peerborne/documents/v3',
+            '/peerborne/document/v3/,/announcements',
         }).topicAllowlist,
       ).toEqual([
         '/peerborne/document/v3/',
-        '/peerborne/documents/v3',
+        '/announcements',
       ])
     })
 

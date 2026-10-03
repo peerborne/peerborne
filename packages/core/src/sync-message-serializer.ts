@@ -4,7 +4,7 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  * SyncMessageSerializer provides serialization/deserialization methods for
  * `CRDTSyncMessage`s.
  *
- * This is a signed compatibility boundary. Implementations and callers that
+ * This is a signed wire boundary. Implementations and callers that
  * accept untrusted serialized messages must ensure deserialization yields a
  * deep-snapshot-compatible graph: primitives, genuine unshared `Uint8Array`s,
  * dense arrays, plain records containing only enumerable own data properties,
@@ -24,8 +24,7 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  * and decode it unchanged in its original field position. Every admission
  * path rejects a decoded message whose tag is missing or differs from the
  * receiving handler's context, so a serializer that drops the tag rejects
- * all inbound sync, load, invitation, Welcome, PathUpdate, and key-update
- * traffic.
+ * all inbound sync, load, invitation, Welcome, and PathUpdate traffic.
  *
  * @typeParam ChangesType Type describing changes made to a CRDT document. CRDT implementation dependent.
  */

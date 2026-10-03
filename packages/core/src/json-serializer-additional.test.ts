@@ -24,6 +24,8 @@ describe('JSONSerializer additional coverage', () => {
   describe('serializeSyncMessage / deserializeSyncMessage', () => {
     test('round-trip sync message', () => {
       const msg = {
+        signatureContext: 'ordinary-sync-v1' as const,
+        documentId: '/doc',
         changes: { kind: 'document' as const, change: { foo: 'bar' } },
         nonce: 'AQIDBA==',
       };
@@ -34,9 +36,11 @@ describe('JSONSerializer additional coverage', () => {
 
     test('round-trip sync message with additional fields', () => {
       const msg = {
+        signatureContext: 'ordinary-sync-v1' as const,
+        documentId: '/doc',
         changes: { kind: 'document' as const, change: { foo: 'bar' } },
         nonce: 'AQIDBA==',
-        keyUpdate: { epoch: 3 },
+        extension: { epoch: 3 },
         eciesSealed: new Uint8Array([1, 2, 3]),
       };
       const encoded = serializer.serializeSyncMessage(msg);
@@ -52,17 +56,18 @@ describe('JSONSerializer additional coverage', () => {
 
   describe('serializeLoadRequest / deserializeLoadRequest', () => {
     test('round-trip load request', () => {
-      const msg = { documentPath: '/test/doc' };
+      const msg = { documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32) };
       const encoded = serializer.serializeLoadRequest(msg);
       const decoded = serializer.deserializeLoadRequest(encoded);
       expect(decoded).toEqual(msg);
     });
 
-    test('round-trip load request with optional fields', () => {
-      const msg = { documentPath: '/test/doc', requesterKey: 'key-b64' };
-      const encoded = serializer.serializeLoadRequest(msg);
-      const decoded = serializer.deserializeLoadRequest(encoded);
-      expect(decoded).toEqual(msg);
+    test('rejects an omitted challenge and unexpected request fields', () => {
+      expect(() => serializer.serializeLoadRequest({ documentId: '/test/doc', signature: 'AQ==' } as any)).toThrow();
+      const wire = JSON.parse(new TextDecoder().decode(serializer.serializeLoadRequest({
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32),
+      })));
+      expect(() => serializer.deserializeLoadRequest(new TextEncoder().encode(JSON.stringify({ ...wire, extra: true })))).toThrow();
     });
 
     test('deserializeLoadRequest rejects invalid JSON', () => {

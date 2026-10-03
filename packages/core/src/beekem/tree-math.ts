@@ -204,7 +204,9 @@ export function directPath(leafIndex: number, numLeaves: number): number[] {
   assertSupportedNodeIndex(leafIndex, 'leafIndex');
   const w = nodeWidth(numLeaves);
   if (!isLeaf(leafIndex) || leafIndex >= w) {
-    throw new Error(`leafIndex ${leafIndex} is not a leaf in the ${w}-node tree`);
+    throw new Error(
+      `leafIndex ${leafIndex} is not a leaf in the ${w}-node tree`,
+    );
   }
   if (numLeaves <= 1) return [];
   const r = root(numLeaves);

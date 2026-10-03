@@ -1,3 +1,4 @@
+import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
 
@@ -101,11 +102,12 @@ describe('concrete inbound handler log redaction', () => {
     const decrypt = jest.fn(testCase.decrypt);
     const document = fakeDocument({
       _invitationBootstrapReady: true,
+      load: async () => true,
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
       _keychain: { getKey: jest.fn(testCase.getKey) },
-      _authProvider: { nonceBits: 1, decrypt },
+      _authProvider: { nonceBytes: 1, decrypt },
       _syncMessageSerializer: { deserializeSyncMessage },
       load,
       swarm: {
@@ -198,7 +200,7 @@ describe('concrete inbound handler log redaction', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 1 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: async () => new Uint8Array([9]),
       _syncMessageSerializer: {
         deserializeSyncMessage: () => {
@@ -254,7 +256,7 @@ describe('concrete inbound handler log redaction', () => {
   test.each([
     'handleLoadRequestData',
     'handleSnapshotLoadRequestData',
-    'handleTipAdvertiseRequestData',
+    'handleSecurityAdvertiseRequestData',
   ] as const)(
     '%s rejects a truthy non-boolean signature result',
     async (methodName) => {
@@ -270,16 +272,18 @@ describe('concrete inbound handler log redaction', () => {
         },
         _keychain: { current },
       });
-      const sink = jest.fn(async () => undefined);
+      const responseSend = jest.fn(() => true);
+      const responseClose = jest.fn(async () => undefined);
       const logs = captureFailureLogs();
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'AA==' },
-          { sink },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AA==' },
+          { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
-        expect(sink).toHaveBeenCalledTimes(1);
-        expect(sink).toHaveBeenCalledWith([]);
+        expect(responseClose).toHaveBeenCalledTimes(1);
+        expect(responseSend).not.toHaveBeenCalled();
+        expect(responseClose).toHaveBeenCalled();
         expect(current).not.toHaveBeenCalled();
       } finally {
         logs.restore();
@@ -290,7 +294,6 @@ describe('concrete inbound handler log redaction', () => {
   test.each([
     'handleBeeKEMWelcomeRequestData',
     'handleBeeKEMPathUpdateRequestData',
-    'handleKeyUpdateRequestData',
   ] as const)(
     '%s does no work after shared-handler admission expires',
     async (methodName) => {
@@ -311,49 +314,6 @@ describe('concrete inbound handler log redaction', () => {
     },
   );
 
-  test('key-update cannot merge after admission expires during verification', async () => {
-    let active = true;
-    const merge = jest.fn();
-    const admission = {
-      isActive: () => active,
-      runMutation: jest.fn(async (operation: () => unknown) => {
-        if (!active) return { admitted: false as const };
-        return { admitted: true as const, value: await operation() };
-      }),
-    };
-    const document = fakeDocument({
-      _authProvider: { nonceBits: 1 },
-      _keychainProvider: { keyIDLength: 1 },
-      _decryptBlock: async () => new Uint8Array([9]),
-      _syncMessageSerializer: {
-        deserializeSyncMessage: () => ({
-          documentId: privatePath,
-          signature: 'AA==',
-          keychainChanges: new Uint8Array([7]),
-        }),
-        serializeSyncMessage: () => new Uint8Array([8]),
-      },
-      _isSigningEnabled: () => true,
-      _verifyWriterSignature: async () => {
-        active = false;
-        return true;
-      },
-      _keychain: { merge },
-    });
-    const logs = captureFailureLogs();
-
-    try {
-      await document.handleKeyUpdateRequestData(
-        new Uint8Array([1, 2, 3]),
-        admission,
-      );
-      expect(admission.runMutation).not.toHaveBeenCalled();
-      expect(merge).not.toHaveBeenCalled();
-    } finally {
-      logs.restore();
-    }
-  });
-
   test.each([
     [
       'doc-load',
@@ -366,9 +326,9 @@ describe('concrete inbound handler log redaction', () => {
       'Shared snapshot-load request handling failed',
     ],
     [
-      'tip-advertise',
-      'handleTipAdvertiseRequestData',
-      'Shared tip-advertise request handling failed',
+      'security-advertise',
+      'handleSecurityAdvertiseRequestData',
+      'Shared security-advertise request handling failed',
     ],
   ] as const)(
     'redacts an internal provider failure in the real %s responder',
@@ -382,16 +342,18 @@ describe('concrete inbound handler log redaction', () => {
         },
         _writers: { users: async () => [] },
       });
-      const sink = jest.fn(async () => undefined);
+      const responseSend = jest.fn(() => true);
+      const responseClose = jest.fn(async () => undefined);
       const logs = captureFailureLogs();
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'AQ==' },
-          { sink },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AQ==' },
+          { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);
-        expect(sink).toHaveBeenCalledWith([]);
+        expect(responseSend).not.toHaveBeenCalled();
+        expect(responseClose).toHaveBeenCalled();
         expect(logs.text()).not.toContain(privateFailure);
         expect(logs.text()).not.toContain(privatePath);
       } finally {
@@ -436,31 +398,6 @@ describe('concrete inbound handler log redaction', () => {
       await document.handleBeeKEMPathUpdateRequestData(new Uint8Array([2]));
       expect(logs.warn).toHaveBeenCalledWith(
         'Dropping malformed BeeKEM PathUpdateV2',
-      );
-      expect(logs.text()).not.toContain(privateFailure);
-      expect(logs.text()).not.toContain(privatePath);
-    } finally {
-      logs.restore();
-    }
-  });
-
-  test('redacts a decryptor failure in the real key-update handler', async () => {
-    const document = fakeDocument({
-      _authProvider: {
-        nonceBits: 1,
-        decrypt: async () => {
-          throw new Error(privateFailure);
-        },
-      },
-      _keychain: { getKey: () => ({}) },
-      _keychainProvider: { keyIDLength: 1 },
-    });
-    const logs = captureFailureLogs();
-
-    try {
-      await document.handleKeyUpdateRequestData(new Uint8Array([3, 4, 5]));
-      expect(logs.warn).toHaveBeenCalledWith(
-        'Unable to decrypt shared key-update request',
       );
       expect(logs.text()).not.toContain(privateFailure);
       expect(logs.text()).not.toContain(privatePath);

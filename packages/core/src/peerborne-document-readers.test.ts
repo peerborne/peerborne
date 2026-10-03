@@ -173,6 +173,11 @@ describe('PeerborneDocument writer removal', () => {
         commit: () => {
           members.delete(key);
         },
+        claimCommit: () => ({
+          finalize: () => {
+            members.delete(key);
+          },
+        }),
       })),
       current: () => new Uint8Array(),
       merge: () => {
@@ -181,7 +186,11 @@ describe('PeerborneDocument writer removal', () => {
       check: async (key: string) => members.has(key),
       users: async () => [...members],
     };
-    const writersACL = new UCANACL(backing, async (key: string) => key);
+    const writersACL = new UCANACL(
+      backing,
+      async (key: string) => key,
+      async (key: string) => key,
+    );
     const publish = jest.fn(
       async (prepared: {
         commit: { receiver: object; method: () => void };

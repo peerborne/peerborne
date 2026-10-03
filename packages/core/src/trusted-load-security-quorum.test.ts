@@ -52,7 +52,7 @@ describe('trusted V4 security tuple quorum primitives', () => {
       const vote = { hash: bytes(4), signerAuthority: 'writer' };
       Object.defineProperty(vote, field, { get: getter, enumerable: true });
       await expect(runLoadQuorum({
-        protocol: 'security-advertise-v1', peers: ['a', 'b'],
+        peers: ['a', 'b'],
         peerIdOf: (peer) => peer, probeFn: async () => vote,
         documentPath: '/doc', config: { enabled: true, k: 2, q: 2 },
       })).rejects.toMatchObject({ respondingCount: 0 });
@@ -71,7 +71,6 @@ describe('trusted V4 security tuple quorum primitives', () => {
     }));
 
     const err = await runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers,
       peerIdOf: (peer) => peer.id,
       probeFn: (peer) => trustedProbe(peer, trusted),
@@ -108,7 +107,6 @@ describe('trusted V4 security tuple quorum primitives', () => {
 
     await expect(
       runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf: (peer) => peer.id,
         probeFn: (peer) => trustedProbe(peer, trusted),
@@ -135,7 +133,6 @@ describe('trusted V4 security tuple quorum primitives', () => {
       frontier: ['cid'],
     }));
     const result = await runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers,
       peerIdOf: (peer) => peer.id,
       probeFn: (peer) => trustedProbe(peer, trusted),

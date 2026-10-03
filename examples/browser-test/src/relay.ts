@@ -9,7 +9,7 @@ import { webSockets } from '@libp2p/websockets'
 import { tcp } from '@libp2p/tcp'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 
-const PUBSUB_PEER_DISCOVERY = 'swarmdb._peer-discovery._p2p._pubsub'
+const PUBSUB_PEER_DISCOVERY = 'peerborne._peer-discovery._p2p._pubsub'
 
 async function main() {
   // enable('*')

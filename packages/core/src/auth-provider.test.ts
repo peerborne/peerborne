@@ -13,7 +13,7 @@ function createProvider(
     verify: async () => true,
     encrypt: async () => ({ data: new Uint8Array() }),
     decrypt: async () => new Uint8Array(),
-    nonceBits: 96,
+    nonceBytes: 12,
     serializePublicKey: async (key: string) => key,
     deserializePublicKey: async (serialized: string) => serialized,
     ...overrides,

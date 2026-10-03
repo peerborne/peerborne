@@ -1,3 +1,4 @@
+import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { PeerborneDocument } from './peerborne-document.js';
@@ -54,10 +55,12 @@ function encryptedPayload(): Uint8Array {
 
 function loadStream(response = encryptedPayload()) {
   return {
-    sink: async () => undefined,
-    source: (async function* () {
+    send: () => true,
+    onDrain: async () => undefined,
+    close: async () => undefined,
+    [Symbol.asyncIterator]: async function* () {
       yield response;
-    })(),
+    },
   };
 }
 
@@ -77,7 +80,7 @@ function tipStream(response = encryptedPayload()) {
 function loadHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
-    signatureContext: 'load-response-v3',
+    signatureContext: 'load-response-v4',
     tips: [],
     signature: 'AQ==',
   },
@@ -85,15 +88,18 @@ function loadHarness(
   const serializer = new JSONSerializer<any>();
   const verify = jest.fn(async () => true);
   const syncUnlocked = jest.fn(async () => true);
-  const deserializeSyncMessage = jest.fn(() => decoded);
+  const deserializeSyncMessage = jest.fn(() => currentLoadResponse(decoded, decoded.signatureContext as string));
   const document = fakeDocument({
     swarm: { config: {} },
     _writerKeysVersion: 4,
     _writerMutationsInFlight: 0,
     _getWriterKeys: async () => [{}],
     _keychainProvider: { keyIDLength: 32 },
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
+      serializePublicKey: async () => 'fixture-writer',
+      deserializePublicKey: async () => ({}),
       decrypt: async () => new Uint8Array([1]),
       verify,
     },
@@ -111,7 +117,7 @@ function loadHarness(
 function tipHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
-    signatureContext: 'tip-advertisement-v1',
+    signatureContext: 'security-advertisement-v1',
     tipsHash: new Uint8Array(32).fill(5),
     signature: 'AQ==',
   },
@@ -119,7 +125,7 @@ function tipHarness(
   const serializer = new JSONSerializer<any>();
   const verify = jest.fn(async () => true);
   const rawStream = tipStream();
-  const deserializeSyncMessage = jest.fn(() => decoded);
+  const deserializeSyncMessage = jest.fn(() => currentLoadResponse(decoded, decoded.signatureContext as string));
   const document = fakeDocument({
     _writerKeysVersion: 3,
     _writerMutationsInFlight: 0,
@@ -130,9 +136,12 @@ function tipHarness(
       },
     },
     _keychainProvider: { keyIDLength: 32 },
+    _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _keychain: { getKey: jest.fn(() => ({})) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
+      serializePublicKey: async () => 'fixture-writer',
+      deserializePublicKey: async () => ({}),
       decrypt: jest.fn(async () => new Uint8Array([1])),
       verify,
     },
@@ -159,9 +168,39 @@ afterEach(() => {
   for (const spy of consoleSpies) spy.mockRestore();
 });
 
-describe('load-response V3 confinement', () => {
+test('request serialization cannot replace the captured freshness challenge', async () => {
+  const { document } = loadHarness();
+  const session = fixedLoadSession(document);
+  document._authProvider.sign = async () => new Uint8Array([1]);
+  document._loadMessageSerializer = { serializeLoadRequest: (request: any) => {
+    request.loadChallenge.fill(0);
+    return new Uint8Array([1]);
+  } };
+  await expect(document._serializeInitialLoadRequest(session)).rejects.toThrow(/changed during serialization/);
+  expect(session.challenge).toEqual(fixtureLoadChallenge());
+});
+
+test('signs initial load requests when ordinary signing is disabled', async () => {
+  const { document } = loadHarness();
+  document._isSigningEnabled = () => false;
+  const session = fixedLoadSession(document);
+  const sign = jest.fn(async () => new Uint8Array([1]));
+  document._authProvider.sign = sign;
+  document._loadMessageSerializer = {
+    serializeLoadRequest: () => new Uint8Array([2]),
+  };
+
+  await expect(document._serializeInitialLoadRequest(session)).resolves.toEqual(
+    new Uint8Array([2]),
+  );
+  expect(sign).toHaveBeenCalledTimes(1);
+});
+
+describe('load-response V4 confinement', () => {
   test.each([
     ['a foreign field', { welcomeEpochId: new Uint8Array(32) }],
+    ['the current challenge', { loadChallenge: new Uint8Array(32).fill(9) }],
+    ['the trusted security tuple', { loadSecurityState: { ...fixtureLoadCommitments(), epoch: 2n } }],
     ['the required tips', { tips: undefined }],
     ['well-formed tips', { tips: [1] }],
     ['an exact document ID', { documentId: undefined }],
@@ -170,17 +209,14 @@ describe('load-response V3 confinement', () => {
   ])('rejects a response without %s before sync', async (_label, replacement) => {
     const harness = loadHarness({
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       tips: [],
       signature: 'AQ==',
       ...replacement,
     });
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
@@ -189,7 +225,7 @@ describe('load-response V3 confinement', () => {
   test('detaches nested state before deferred verification', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       changes: { kind: 'document', change: { value: 1 } },
       snapshot: {
         state: { value: 2 },
@@ -213,10 +249,7 @@ describe('load-response V3 confinement', () => {
     });
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(true);
 
     const applied = harness.syncUnlocked.mock.calls[0][0] as typeof decoded;
@@ -226,10 +259,29 @@ describe('load-response V3 confinement', () => {
     expect(applied.tips).toEqual(['cid']);
   });
 
+  test('isolates manifest serializers from the authenticated response applied to state', async () => {
+    const decoded = {
+      documentId: documentPath, signatureContext: 'load-response-v4',
+      changeId: 'cid', changes: { kind: 'document', change: { value: 1 } },
+      tips: ['cid'], signature: 'AQ==',
+    };
+    const harness = loadHarness(decoded);
+    harness.document._changesSerializer.serializeChanges = (change: any) => {
+      const bytes = fixtureSerializeChanges(change);
+      change.value = 99;
+      return bytes;
+    };
+    await expect(harness.document._sendLoadRequestAndSync(
+      fixedLoadSession(harness.document), loadStream(), new Uint8Array([1]),
+    )).resolves.toBe(true);
+    expect((harness.syncUnlocked.mock.calls[0][0] as any).changes.change.value).toBe(1);
+    expect(decoded.changes.change.value).toBe(1);
+  });
+
   test('rejects a response whose serializer mutates signed content', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'load-response-v3',
+      signatureContext: 'load-response-v4',
       changes: { kind: 'document', change: { value: 1 } },
       tips: [],
       signature: 'AQ==',
@@ -247,12 +299,44 @@ describe('load-response V3 confinement', () => {
     };
 
     await expect(
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
+    ).resolves.toBe(false);
+
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('skips a response without a signature before verification', async () => {
+    const harness = loadHarness({
+      documentId: documentPath,
+      signatureContext: 'load-response-v4',
+      tips: [],
+    });
+
+    await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
     ).resolves.toBe(false);
+    expect(harness.verify).not.toHaveBeenCalled();
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+  });
 
+  test('skips a response whose signature cannot be decoded', async () => {
+    const harness = loadHarness();
+    harness.document._deserializeSignature = () => {
+      throw new TypeError('malformed signature encoding');
+    };
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
+        loadStream(),
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(false);
+    expect(harness.verify).not.toHaveBeenCalled();
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
@@ -265,6 +349,7 @@ describe('load-response V3 confinement', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -284,6 +369,7 @@ describe('load-response V3 confinement', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -303,6 +389,7 @@ describe('load-response V3 confinement', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -316,10 +403,7 @@ describe('load-response V3 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(0);
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -331,13 +415,7 @@ describe('load-response V3 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(65);
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-        null,
-        undefined,
-        64,
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1]), null, 64),
     ).resolves.toBe(false);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -348,13 +426,10 @@ describe('load-response V3 confinement', () => {
     const harness = loadHarness();
     const decrypt = jest.fn();
     harness.document._authProvider.decrypt = decrypt;
-    harness.document._authProvider.nonceBits = 0;
+    harness.document._authProvider.nonceBytes = 0;
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        loadStream(),
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), loadStream(), new Uint8Array([1])),
     ).resolves.toBe(false);
 
     expect(decrypt).not.toHaveBeenCalled();
@@ -368,19 +443,18 @@ describe('load-response V3 confinement', () => {
     );
 
     await expect(
-      harness.document._sendLoadRequestAndSync(
-        oversizedStream,
-        new Uint8Array([1]),
-      ),
+      harness.document._sendLoadRequestAndSync(fixedLoadSession(harness.document), oversizedStream, new Uint8Array([1])),
     ).rejects.toThrow(/maximum allowed size/);
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
   });
 });
 
-describe('tip-advertisement V1 confinement', () => {
+describe('security-advertisement V1 confinement', () => {
   test.each([
     ['a foreign field', { tips: [] }],
+    ['the current challenge', { loadChallenge: new Uint8Array(32).fill(9) }],
+    ['the trusted security tuple', { loadSecurityState: { ...fixtureLoadCommitments(), epoch: 2n } }],
     ['an exact document ID', { documentId: undefined }],
     ['an exact document ID', { documentId: '' }],
     ['an exact document ID', { documentId: '/other' }],
@@ -388,17 +462,14 @@ describe('tip-advertisement V1 confinement', () => {
   ])('rejects a response without %s', async (_label, replacement) => {
     const harness = tipHarness({
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: new Uint8Array(32).fill(5),
       signature: 'AQ==',
       ...replacement,
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
@@ -407,7 +478,7 @@ describe('tip-advertisement V1 confinement', () => {
     const expected = new Uint8Array(advertised);
     const harness = tipHarness({
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: advertised,
       signature: 'AQ==',
     });
@@ -418,17 +489,14 @@ describe('tip-advertisement V1 confinement', () => {
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toEqual(expected);
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
+    ).resolves.toEqual({ hash: expected, signerAuthority: 'fixture-writer' });
   });
 
   test('rejects a vote whose serializer mutates signed content', async () => {
     const decoded = {
       documentId: documentPath,
-      signatureContext: 'tip-advertisement-v1',
+      signatureContext: 'security-advertisement-v1',
       tipsHash: new Uint8Array(32).fill(5),
       signature: 'AQ==',
     };
@@ -443,10 +511,7 @@ describe('tip-advertisement V1 confinement', () => {
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
@@ -458,26 +523,21 @@ describe('tip-advertisement V1 confinement', () => {
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
   });
 
   test('captures writer authorization before resolving writer keys', async () => {
     const harness = tipHarness();
+    harness.document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     harness.document._getWriterKeys = async () => {
       harness.document._writerKeysVersion += 1;
       return [{}];
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toBeNull();
+      harness.document._captureLoadSession(),
+    ).rejects.toThrow(/Writer authorization changed/);
   });
 
   test('rejects a vote while a writer mutation is in flight', async () => {
@@ -485,10 +545,7 @@ describe('tip-advertisement V1 confinement', () => {
     harness.document._writerMutationsInFlight = 1;
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.verify).not.toHaveBeenCalled();
@@ -496,17 +553,15 @@ describe('tip-advertisement V1 confinement', () => {
 
   test('rejects a vote when a writer mutation starts during key lookup', async () => {
     const harness = tipHarness();
+    harness.document.swarm.resolveLoadSecurityCommitments = fixtureLoadCommitments;
     harness.document._getWriterKeys = async () => {
       harness.document._writerMutationsInFlight = 1;
       return [{}];
     };
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toBeNull();
+      harness.document._captureLoadSession(),
+    ).rejects.toThrow(/Writer authorization changed/);
 
     expect(harness.verify).not.toHaveBeenCalled();
   });
@@ -516,10 +571,7 @@ describe('tip-advertisement V1 confinement', () => {
     harness.document._authProvider.decrypt = async () => new Uint8Array(0);
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.deserializeSyncMessage).not.toHaveBeenCalled();
@@ -527,13 +579,10 @@ describe('tip-advertisement V1 confinement', () => {
 
   test('rejects invalid provider framing before decryption', async () => {
     const harness = tipHarness();
-    harness.document._authProvider.nonceBits = 0;
+    harness.document._authProvider.nonceBytes = 0;
 
     await expect(
-      harness.document._probeTipAdvertise(
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
+      harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
     ).resolves.toBeNull();
 
     expect(harness.document._authProvider.decrypt).not.toHaveBeenCalled();
@@ -565,24 +614,38 @@ function writerDocument(initial: string[]) {
   return { document, writers };
 }
 
-describe('tip-advertisement writer verification', () => {
-  test('stops verifying at the first writer that signed the vote', async () => {
+function sessionWithAuthorities(document: any, writers: readonly unknown[]) {
+  return {
+    ...fixedLoadSession(document),
+    authorities: writers.map((publicKey, index) => ({
+      authorityId: `fixture-writer-${index}`,
+      publicKey,
+    })),
+  };
+}
+
+describe('security-advertisement writer verification', () => {
+  test('verifies each authority sequentially with detached copies', async () => {
     const harness = tipHarness();
     const writers = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-    harness.document._getWriterKeys = async () => writers;
     harness.verify
       .mockImplementationOnce(async () => false)
-      .mockImplementationOnce(async () => true);
+      .mockImplementationOnce(async () => true)
+      .mockImplementationOnce(async () => false);
 
     await expect(
-      harness.document._probeTipAdvertise(
+      harness.document._probeSecurityAdvertise(
+        sessionWithAuthorities(harness.document, writers),
         { toString: () => '/peer/one' },
         new Uint8Array([1]),
       ),
-    ).resolves.toEqual(new Uint8Array(32).fill(5));
+    ).resolves.toEqual({
+      hash: new Uint8Array(32).fill(5),
+      signerAuthority: 'fixture-writer-1',
+    });
 
     expect(harness.verify.mock.calls.map((call: any[]) => call[1])).toEqual(
-      writers.slice(0, 2),
+      writers,
     );
     const [first, second] = harness.verify.mock.calls as any[];
     expect(first[0]).not.toBe(second[0]);
@@ -591,11 +654,11 @@ describe('tip-advertisement writer verification', () => {
 
   test('rejects the vote when no writer signed it', async () => {
     const harness = tipHarness();
-    harness.document._getWriterKeys = async () => [{}, {}];
     harness.verify.mockImplementation(async () => false);
 
     await expect(
-      harness.document._probeTipAdvertise(
+      harness.document._probeSecurityAdvertise(
+        sessionWithAuthorities(harness.document, [{}, {}]),
         { toString: () => '/peer/one' },
         new Uint8Array([1]),
       ),
@@ -686,6 +749,7 @@ describe('writer ACL re-merges', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -708,6 +772,7 @@ describe('writer ACL re-merges', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
+        fixedLoadSession(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -716,7 +781,7 @@ describe('writer ACL re-merges', () => {
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
-  test('keeps a tip vote when verification races an unchanged re-merge', async () => {
+  test('keeps a security vote when verification races an unchanged re-merge', async () => {
     const harness = tipHarness();
     installSetWriterAcl(harness.document, ['founder']);
     harness.verify.mockImplementation(async () => {
@@ -725,18 +790,22 @@ describe('writer ACL re-merges', () => {
     });
 
     await expect(
-      harness.document._probeTipAdvertise(
+      harness.document._probeSecurityAdvertise(
+        fixedLoadSession(harness.document),
         { toString: () => '/peer/one' },
         new Uint8Array([1]),
       ),
-    ).resolves.toEqual(new Uint8Array(32).fill(5));
+    ).resolves.toEqual({
+      hash: new Uint8Array(32).fill(5),
+      signerAuthority: 'fixture-writer',
+    });
   });
 });
 
-describe('legacy load writer conflicts', () => {
+describe('load writer conflicts', () => {
   type Outcome = boolean | 'conflict';
 
-  function legacyLoadHarness(outcomes: Outcome[], peers = ['/p2p/one']) {
+  function loadLoopHarness(outcomes: Outcome[], peers = ['/p2p/one']) {
     const document = fakeDocument({
       swarm: {
         config: { loadQuorumEnabled: false },
@@ -751,11 +820,9 @@ describe('legacy load writer conflicts', () => {
       _writerKeysVersion: 2,
       _writerMutationsInFlight: 0,
       _compactionConfig: { enabled: true },
-      _isSigningEnabled: () => false,
-      _loadMessageSerializer: {
-        serializeLoadRequest: () => new Uint8Array([1]),
-      },
     });
+    document._captureLoadSession = async () => fixedLoadSession(document);
+    document._serializeInitialLoadRequest = async () => new Uint8Array([1]);
     const attempts: string[] = [];
     document._sendLoadRequestAndSync = jest.fn(async () => {
       const outcome = outcomes.shift() ?? false;
@@ -763,7 +830,7 @@ describe('legacy load writer conflicts', () => {
       if (outcome !== 'conflict') return outcome;
       return document._syncValidatedProtocolMessage(
         {},
-        'load-response-v3',
+        'load-response-v4',
         document._writerKeysVersion - 1,
       );
     });
@@ -771,7 +838,7 @@ describe('legacy load writer conflicts', () => {
   }
 
   test('surfaces a conflict instead of reporting that no peer served', async () => {
-    const { attempts, document } = legacyLoadHarness(['conflict', 'conflict']);
+    const { attempts, document } = loadLoopHarness(['conflict', 'conflict']);
 
     await expect(document.load()).rejects.toThrow(
       'Writer authorization changed before load application',
@@ -780,14 +847,14 @@ describe('legacy load writer conflicts', () => {
   });
 
   test('falls back to doc-load after a snapshot-load conflict', async () => {
-    const { attempts, document } = legacyLoadHarness(['conflict', true]);
+    const { attempts, document } = loadLoopHarness(['conflict', true]);
 
     await expect(document.load()).resolves.toBe(true);
     expect(attempts).toEqual(['conflict', 'true']);
   });
 
   test('loads from a later peer after a conflict', async () => {
-    const { document } = legacyLoadHarness(
+    const { document } = loadLoopHarness(
       ['conflict', 'conflict', false, true],
       ['/p2p/one', '/p2p/two'],
     );
@@ -795,10 +862,80 @@ describe('legacy load writer conflicts', () => {
     await expect(document.load()).resolves.toBe(true);
   });
 
-  test('still reports a genuine miss as a new document', async () => {
-    const { attempts, document } = legacyLoadHarness([false, false]);
+  test('still reports a genuine miss as an unserved document', async () => {
+    const { attempts, document } = loadLoopHarness([false, false]);
 
     await expect(document.load()).resolves.toBe(false);
     expect(attempts).toEqual(['false', 'false']);
+  });
+});
+
+describe('load connection handling', () => {
+  const aliceDirect = '/ip4/10.0.0.1/tcp/1/p2p/alice';
+  const aliceRelayed = '/ip4/10.0.0.2/tcp/1/p2p/relay/p2p-circuit/p2p/alice';
+  const bob = '/ip4/10.0.0.3/tcp/1/p2p/bob';
+
+  function connectionHarness(
+    peers: string[],
+    config: Record<string, unknown>,
+  ) {
+    const document = fakeDocument({
+      swarm: {
+        config,
+        heliaNode: {
+          libp2p: {
+            getConnections: () =>
+              peers.map((peer) => ({ remoteAddr: { toString: () => peer } })),
+            dialProtocol: jest.fn(async (peer: { toString(): string }) => ({
+              peer: peer.toString(),
+            })),
+          },
+        },
+      },
+      _writerKeysVersion: 2,
+      _writerMutationsInFlight: 0,
+      _compactionConfig: { enabled: false },
+    });
+    document._captureLoadSession = async () => fixedLoadSession(document);
+    document._serializeInitialLoadRequest = async () => new Uint8Array([1]);
+    return document;
+  }
+
+  test('tries every connection to one peer when quorum is disabled', async () => {
+    const document = connectionHarness([aliceDirect, aliceRelayed], {
+      loadQuorumEnabled: false,
+    });
+    const attempts: string[] = [];
+    document._sendLoadRequestAndSync = jest.fn(
+      async (_session: unknown, stream: { peer: string }) => {
+        attempts.push(stream.peer);
+        return attempts.length > 1;
+      },
+    );
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(new Set(attempts)).toEqual(new Set([aliceDirect, aliceRelayed]));
+  });
+
+  test('probes each peer id once when quorum is enabled', async () => {
+    const document = connectionHarness([aliceDirect, aliceRelayed, bob], {
+      loadQuorumK: 2,
+      loadQuorumQ: 2,
+    });
+    const probed: string[] = [];
+    document._raceSecurityAdvertiseProbe = jest.fn(
+      async (_session: unknown, peer: { toString(): string }) => {
+        const peerId = document._peerIdOf(peer);
+        probed.push(peerId);
+        return {
+          hash: new Uint8Array(32).fill(5),
+          signerAuthority: `writer:${peerId}`,
+        };
+      },
+    );
+    document._sendLoadRequestAndSync = jest.fn(async () => true);
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(probed.sort()).toEqual(['alice', 'bob']);
   });
 });

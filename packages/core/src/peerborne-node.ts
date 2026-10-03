@@ -10,13 +10,10 @@
  * Import from the dedicated `/node` subpath export when running in Node.js:
  *   import { PeerborneNode, defaultNodeConfig } from '@peerborne/core/node';
  */
-import * as fs from 'fs';
 import {
   PeerborneConfig,
   IceServer,
   cloneIceServer,
-  defaultBootstrapConfig,
-  defaultConfig,
   resolveIceServers,
 } from './peerborne-config.js';
 import { Peerborne } from './peerborne.js';
@@ -53,7 +50,7 @@ import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
 import { createNodeHeliaStores } from './node-stores.js';
 import {
-  copyDocumentPubsubConfig,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   defaultDocumentPubsubConfig,
 } from './document-topic.js';
 
@@ -116,7 +113,9 @@ export const defaultNodeConfig = (
         streamMuxers: [yamux()],
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
-          pubsubPeerDiscovery(),
+          pubsubPeerDiscovery({
+            topics: [DEFAULT_PEER_DISCOVERY_TOPIC],
+          }),
           mdns(),
         ],
         services: {
@@ -206,75 +205,7 @@ export class PeerborneNode<
   }
 
   // Start
-  public async start(bootstrapAddresses?: string[]) {
+  public async start() {
     await this.swarm.initialize(this.config);
-    // Thread the Node-side ICE override (resolved and exposed on
-    // `this.config.webrtcIceServers` by `defaultNodeConfig`) into the
-    // browser-side client config so a deployment that customizes STUN/TURN
-    // (or disables it via `[]`) ends up with the same list on both sides.
-    //
-    // Edge case: if a hand-rolled config skips `defaultNodeConfig` and
-    // leaves `webrtcIceServers` unset, `browserSafeIceServers` is left
-    // undefined and `defaultConfig` falls back to its own
-    // `DEFAULT_WEBRTC_ICE_SERVERS`. Configs built via `defaultNodeConfig`
-    // never hit that path.
-    //
-    // Strip `username`/`credential` before passing the list across: TURN
-    // credentials are server-side secrets and the resulting `clientConfig`
-    // is written to a file that can be bundled into browser builds. Browsers
-    // that need authenticated TURN should obtain ephemeral credentials at
-    // runtime instead of receiving long-lived secrets via this file.
-    //
-    // Warn loudly when stripping a non-empty credential: a TURN entry without
-    // its credential will not authenticate, so the browser silently degrades
-    // to STUN-only / host candidates and may fail to connect through
-    // symmetric NATs. Operators should either provide STUN-only entries or
-    // wire up an ephemeral-TURN-credential flow in their app code.
-    const strippedTurnEntries = new Set<string>();
-    const browserSafeIceServers = this.config.webrtcIceServers?.map(
-      ({ username, credential, ...rest }) => {
-        if (username !== undefined || credential !== undefined) {
-          const urlsLabel = Array.isArray(rest.urls)
-            ? rest.urls.join(',')
-            : rest.urls;
-          strippedTurnEntries.add(urlsLabel);
-        }
-        return rest;
-      },
-    );
-    if (strippedTurnEntries.size > 0) {
-      console.warn(
-        `[peerborne] Stripped TURN credentials from clientConfig for: ${Array.from(
-          strippedTurnEntries,
-        ).join('; ')}. Browsers will not authenticate against these TURN servers; ` +
-          'supply ephemeral credentials at runtime instead of long-lived ' +
-          'secrets in clientConfig.',
-      );
-    }
-    const clientConfig = {
-      ...defaultConfig(
-        defaultBootstrapConfig(bootstrapAddresses ?? []),
-        browserSafeIceServers,
-      ),
-      ...copyDocumentPubsubConfig(this.config),
-    };
-    const clientConfigFile =
-      process.env.REACT_APP_CLIENT_CONFIG_FILE || 'client-config.env';
-    fs.writeFile(
-      clientConfigFile,
-      `REACT_APP_CLIENT_CONFIG='${JSON.stringify(clientConfig)}'`,
-      (err: NodeJS.ErrnoException | null) => {
-        if (err) {
-          console.error(`Failed to write ${clientConfigFile}:`, err);
-        } else {
-          console.log(`Wrote ${clientConfigFile}:`, clientConfig);
-        }
-      },
-    );
-  }
-
-  /** Stop Node-owned background listeners. None are currently registered. */
-  public stop() {
-    // Reserved for lifecycle compatibility.
   }
 }

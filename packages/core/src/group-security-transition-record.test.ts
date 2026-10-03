@@ -505,7 +505,7 @@ describe('group-security transition records', () => {
     ).resolves.toBe(true);
   });
 
-  test('strictly validates the delivery codec compatibility boundary', async () => {
+  test('strictly validates the delivery codec id and version', async () => {
     const record = await fixture();
     expect(() =>
       serializeGroupSecurityTransitionRecord({

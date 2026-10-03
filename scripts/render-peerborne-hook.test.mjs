@@ -42,6 +42,6 @@ test('the README visual is a self-contained accessible SVG', () => {
   assert.ok(Buffer.byteLength(svg) <= 100 * 1024);
 });
 
-test('newline normalization handles Windows and legacy checkouts', () => {
+test('newline normalization handles CRLF and lone CR line endings', () => {
   assert.equal(normalizeNewlines('one\r\ntwo\rthree\n'), 'one\ntwo\nthree\n');
 });

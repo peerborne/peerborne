@@ -142,7 +142,7 @@ describe('ordinary sync-message context confinement', () => {
       document.sync({
         documentId: documentPath,
         // @ts-expect-error sync() accepts only the ordinary context
-        signatureContext: 'load-response-v3',
+        signatureContext: 'load-response-v4',
       }),
     ).resolves.toBe(false);
   });
@@ -329,9 +329,9 @@ describe('ordinary sync-message context confinement', () => {
       _verifyMembershipWriterSignature: verify,
       _syncMessageSerializer: {
         serializeSyncMessage: (message: {
-          keychainChanges?: { delta: number };
+          pathUpdate?: { delta: number };
         }) => {
-          message.keychainChanges!.delta = 9;
+          message.pathUpdate!.delta = 9;
           return new Uint8Array([1]);
         },
       },
@@ -341,10 +341,12 @@ describe('ordinary sync-message context confinement', () => {
       document._authenticateMembershipMessage(
         {
           documentId: documentPath,
-          keychainChanges: { delta: 1 },
+          signatureContext: 'beekem-path-update-v1',
+          pathUpdate: { delta: 1 },
+          pathUpdateEpochId: new Uint8Array(32),
           signature: 'AQ==',
         },
-        'key-update-v2',
+        'beekem-path-update-v1',
       ),
     ).resolves.toEqual({ kind: 'malformed' });
     expect(verify).not.toHaveBeenCalled();
@@ -372,7 +374,7 @@ describe('ordinary sync-message context confinement', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 32 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: decryptBlock,
       _syncMessageSerializer: serializer,
       _verifyWriterSignature: verify,
@@ -437,7 +439,7 @@ describe('ordinary sync-message context confinement', () => {
         _hashes: new Set(),
         _computeTopic: () => '/topic',
         _keychainProvider: { keyIDLength: 32 },
-        _authProvider: { nonceBits: 1 },
+        _authProvider: { nonceBytes: 1 },
         _decryptBlock: decryptBlock,
         _syncMessageSerializer: {
           deserializeSyncMessage: (raw: Uint8Array) =>
@@ -500,7 +502,7 @@ describe('ordinary sync-message context confinement', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 32 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: decryptBlock,
       _syncMessageSerializer: serializer,
       _isSigningEnabled: () => false,
@@ -573,7 +575,7 @@ describe('ordinary sync-message context confinement', () => {
       _hashes: new Set(),
       _computeTopic: () => '/topic',
       _keychainProvider: { keyIDLength: 32 },
-      _authProvider: { nonceBits: 1 },
+      _authProvider: { nonceBytes: 1 },
       _decryptBlock: decryptBlock,
       _isSigningEnabled: () => false,
       load,
@@ -652,7 +654,7 @@ describe('snapshot-bearing invitation sync', () => {
 
   test.each([
     ['bootstrap', 'invitation-bootstrap-v1'],
-    ['catch-up', 'load-response-v3'],
+    ['catch-up', 'load-response-v4'],
   ] as const)(
     'recognizes the applied detached snapshot during %s',
     async (phase, context) => {

@@ -47,15 +47,12 @@ import {
 } from './acl.js';
 import {
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -82,24 +79,8 @@ import {
 } from './merkle-dag-serialization.js';
 import {
   EPOCH_ID_LENGTH,
-  GCM_NONCE_LENGTH,
-  EPOCH_SECRET_INFO,
-  ENCRYPTION_KEY_INFO,
-  Epoch,
-  EpochTransition,
   toHex,
-  generateEpochId,
-  deriveEpochSecret,
-  deriveEncryptionKey,
-  createEpoch,
-  EpochManager,
 } from './epoch.js';
-import {
-  GroupKeyAgreementOutput,
-  WelcomeMessage,
-  MembershipProposal,
-  GroupKeyProvider,
-} from './group-key-provider.js';
 import {
   CAP_DOC_ADMIN,
   CAP_DOC_WRITE,
@@ -133,11 +114,9 @@ import { LRUCache } from './lru-cache.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
 } from './wire-protocols.js';
 import {
   DOC_KEY_INFO,
@@ -156,7 +135,7 @@ import {
   decodeWelcomeSealedPayloadV2,
   encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
-import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   decideLoadQuorum,
   effectiveK,
@@ -167,6 +146,7 @@ import {
 import {
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
 } from './document-topic.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
@@ -223,31 +203,14 @@ export {
   CRDTProvider,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
-  GCM_NONCE_LENGTH,
-  EPOCH_SECRET_INFO,
-  ENCRYPTION_KEY_INFO,
-  Epoch,
-  EpochTransition,
   toHex,
-  generateEpochId,
-  deriveEpochSecret,
-  deriveEncryptionKey,
-  createEpoch,
-  EpochManager,
-  GroupKeyAgreementOutput,
-  WelcomeMessage,
-  MembershipProposal,
-  GroupKeyProvider,
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -286,13 +249,11 @@ export {
   canonicalEntryPayload,
   computeEntryHash,
   // Wire protocols
-  bloomFilterUpdateV1,
   beekemWelcomeV2,
   beekemPathUpdateV2,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
-  tipAdvertiseV1,
   // BeeKEM document-key derivation
   DOC_KEY_INFO,
   deriveDocumentKeyFromRootSecret,
@@ -305,7 +266,6 @@ export {
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
-  tipsHash,
   tipsHashToHex,
   TIPS_HASH_LENGTH,
   decideLoadQuorum,
@@ -321,6 +281,7 @@ export {
   // Utilities
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   LRUCache,
   assertCanonicalP384PublicKeyEncoding,
 };
@@ -329,7 +290,7 @@ export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { CreateInvitationOptions } from './peerborne.js';
 export type { InvitationBootstrapBundle } from './peerborne-document.js';
 export type {
-  PeerTipAdvertisement,
+  PeerLoadQuorumVote,
   LoadQuorumDecision,
   LoadQuorumFailedReason,
 } from './load-quorum.js';
@@ -423,12 +384,6 @@ export type {
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
 export {
-  allowsUnauthenticatedUnknownDocumentSentinel,
-  isUnknownDocumentAdvertisement,
-  unknownDocumentAdvertisement,
-} from './initial-load-sentinel-policy.js';
-export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
-export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
   cloneInitialLoadChallenge,
@@ -440,11 +395,10 @@ export {
   validateInitialLoadChallenge,
 } from './initial-load-challenge.js';
 export {
-  documentLoadV3,
   documentLoadV4,
-  snapshotLoadV3,
   snapshotLoadV4,
   securityAdvertiseV1,
+  invitationCatchUpV1,
 } from './wire-protocols.js';
 export type {
   ACLChainConfig,

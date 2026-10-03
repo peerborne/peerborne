@@ -196,7 +196,7 @@ export class FederatedSearchCoordinator<DocType> {
         const item = interleaved[position];
         if (!item) return;
         const remainingResolveTime = resolutionDeadline - Date.now();
-        if (remainingResolveTime <= 0) {
+        if (resolutionBudgetExhausted || remainingResolveTime <= 0) {
           resolutionBudgetExhausted = true;
           return;
         }
@@ -206,10 +206,11 @@ export class FederatedSearchCoordinator<DocType> {
         const referenceKey = candidateReferenceKey(candidate);
         if (claimedReferences.has(referenceKey)) continue;
         claimedReferences.add(referenceKey);
+        const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
+        const boundedByResolutionBudget = timeoutMs === remainingResolveTime;
         try {
           const abortController = new AbortController();
-          const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
-          const resolveDeadline = Date.now() + timeoutMs;
+          const resolveDeadline = Math.min(resolutionDeadline, Date.now() + timeoutMs);
           const resolved = await withTimeout(
             this._resolver.resolveAuthorized(candidate.documentPath, candidate.revision, {
               deadline: resolveDeadline,
@@ -226,8 +227,10 @@ export class FederatedSearchCoordinator<DocType> {
           verified.set(candidate.documentPath, { documentPath: candidate.documentPath, fields });
           sourceExecutions[sourceIndex].candidatesAccepted++;
         } catch (error) {
-          if (error instanceof SourceTimeoutError) resolutionTimeout = true;
-          else resolutionError = true;
+          if (error instanceof SourceTimeoutError) {
+            resolutionTimeout = true;
+            if (boundedByResolutionBudget) resolutionBudgetExhausted = true;
+          } else resolutionError = true;
           // Authorization, retrieval, and decryption failures are fail-closed candidate misses.
         }
       }

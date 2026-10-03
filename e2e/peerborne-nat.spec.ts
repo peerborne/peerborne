@@ -64,7 +64,7 @@ test('distinct identities accept an invitation and converge bidirectionally acro
     ).not.toBeUndefined()));
 
     const path = `/nat-proof-${Date.now()}`;
-    await pages[0].evaluate((p) => (window as any).__PEERBORNE_TEST__.open(p), path);
+    await pages[0].evaluate((p) => (window as any).__PEERBORNE_TEST__.create(p), path);
     await pages[0].evaluate((p) => (window as any).__PEERBORNE_TEST__.change(p, 'fromA', 'alice'), path);
 
     try {
@@ -104,7 +104,7 @@ test('distinct identities accept an invitation and converge bidirectionally acro
       // ACL, and a real document mutation must reject locally.
       const readerPath = `/nat-reader-proof-${Date.now()}`;
       await pages[0].evaluate(
-        (p) => (window as any).__PEERBORNE_TEST__.open(p),
+        (p) => (window as any).__PEERBORNE_TEST__.create(p),
         readerPath,
       );
       await pages[0].evaluate(

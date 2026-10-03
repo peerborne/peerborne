@@ -81,7 +81,7 @@ const intrinsicTypedArrayTagGetter = typedArrayTagGetter;
  *   [4-byte BE path length] [UTF-8 document path] [protocol body]
  *
  * Used by every shared protocol handler that routes by document path
- * (`documentKeyUpdateV2` and BeeKEM Welcome and PathUpdate V2). Centralizing
+ * (BeeKEM Welcome and PathUpdate V2). Centralizing
  * the parse here keeps the validation limits (`maxRequestSize`,
  * `maxPathLength`), the unsigned-32-bit length decode, and the
  * registry-lookup behavior consistent across protocols so the two
@@ -108,8 +108,8 @@ export type PathPrefixedHeaderDropReason =
 
 /**
  * Read and parse the path-prefixed header used by shared protocol
- * handlers (BeeKEM Welcome and PathUpdate V2, document key-update V2), then
- * look up the document in the supplied registry.
+ * handlers (BeeKEM Welcome V2 and PathUpdate V2), then look up
+ * the document in the supplied registry.
  *
  * On any malformed input -- oversized request, short read, invalid
  * length header, unknown document path -- this logs a warning prefixed
@@ -355,7 +355,7 @@ export function snapshotDeepEnumerableData<T>(
   field = 'value',
   limits: DeepDataSnapshotLimits = {
     // The object-count budget already bounds the depth of an acyclic value.
-    // Keeping the default depth equal to that aggregate budget admits legacy
+    // Keeping the default depth equal to that aggregate budget admits ordinary
     // Merkle histories while explicit security-sensitive callers can still
     // impose a tighter structural limit.
     maxDepth: 32_768,

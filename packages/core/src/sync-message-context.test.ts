@@ -24,7 +24,7 @@ describe('sync message wire-context separation', () => {
   test.each([
     ['ordinary-sync-v1', { documentId: '/doc', changes: {}, signature: 'sig' }],
     [
-      'load-response-v3',
+      'load-response-v4',
       {
         documentId: '/doc',
         changes: {},
@@ -34,7 +34,7 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
-      'tip-advertisement-v1',
+      'security-advertisement-v1',
       { documentId: '/doc', tipsHash: new Uint8Array(32), signature: 'sig' },
     ],
     [
@@ -89,10 +89,6 @@ describe('sync message wire-context separation', () => {
         signature: 'sig',
       },
     ],
-    [
-      'key-update-v2',
-      { documentId: '/doc', keychainChanges: {}, signature: 'sig' },
-    ],
   ] as const)('accepts the %s allowlist', (context, message) => {
     const contextual = tagged(context, message);
     expect(snapshotSyncMessageForContext(contextual, context)).toEqual(
@@ -102,14 +98,11 @@ describe('sync message wire-context separation', () => {
 
   test.each([
     'ordinary-sync-v1',
-    'load-response-v3',
     'load-response-v4',
-    'tip-advertisement-v1',
     'security-advertisement-v1',
     'invitation-bootstrap-v1',
     'beekem-welcome-v1',
     'beekem-path-update-v1',
-    'key-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
     expect(() =>
       snapshotSyncMessageForContext({ documentId: '/doc' }, context),
@@ -117,7 +110,7 @@ describe('sync message wire-context separation', () => {
   });
 
   test('rejects a captured same-shaped load response in the invitation context', () => {
-    const captured = tagged('load-response-v3', {
+    const captured = tagged('load-response-v4', {
       documentId: '/doc',
       changes: {},
       keychainChanges: {},
@@ -138,7 +131,7 @@ describe('sync message wire-context separation', () => {
       true,
       ['sign', 'verify'],
     )) as CryptoKeyPair;
-    const loadBody = tagged('load-response-v3', { documentId: '/doc' });
+    const loadBody = tagged('load-response-v4', { documentId: '/doc' });
     const invitationBody = tagged('invitation-bootstrap-v1', {
       documentId: '/doc',
     });
@@ -159,16 +152,14 @@ describe('sync message wire-context separation', () => {
     ['ordinary-sync-v1', { welcomeEpochId: new Uint8Array(32) }],
     ['ordinary-sync-v1', { pathUpdate: {} }],
     ['ordinary-sync-v1', { tipsHash: new Uint8Array(32) }],
-    ['load-response-v3', { tipsHash: new Uint8Array(32) }],
-    ['load-response-v3', { loadSecurityState: {} }],
+    ['invitation-catch-up-v1', { tipsHash: new Uint8Array(32) }],
+    ['invitation-catch-up-v1', { loadSecurityState: {} }],
     ['load-response-v4', { welcomeEpochId: new Uint8Array(32) }],
-    ['tip-advertisement-v1', { tips: ['cid'] }],
-    ['tip-advertisement-v1', { loadSecurityState: {} }],
+    ['security-advertisement-v1', { tips: ['cid'] }],
     ['security-advertisement-v1', { changes: {} }],
     ['invitation-bootstrap-v1', { eciesSealed: new Uint8Array([1]) }],
     ['beekem-welcome-v1', { keychainChanges: {} }],
     ['beekem-path-update-v1', { keychainChanges: {} }],
-    ['key-update-v2', { welcomeEpochId: new Uint8Array(32) }],
   ] as const)(
     'rejects a cross-context field in %s',
     (context, extra) => {
@@ -366,10 +357,6 @@ describe('sync message wire-context separation', () => {
       ),
     ).toThrow(/maximum depth/);
   });
-
-  test('rejects the removed document publication purpose', () => {
-    expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
-  });
 });
 
 describe('sync message root snapshot limits', () => {
@@ -387,44 +374,39 @@ describe('sync message root snapshot limits', () => {
   test('rejects more root keys than the context allows before reading descriptors', () => {
     const { proxy, counter } = countingProxy({
       documentId: '/doc',
-      signatureContext: 'key-update-v2',
-      keychainChanges: {},
+      signatureContext: 'beekem-path-update-v1',
+      pathUpdate: {},
+      pathUpdateEpochId: new Uint8Array(32),
       signature: 'sig',
       extra: 1,
     });
 
     expect(() =>
-      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
-    ).toThrow(/key-update-v2 message exceeds 4 own properties/);
+      snapshotSyncMessageForContext(proxy, 'beekem-path-update-v1'),
+    ).toThrow(/beekem-path-update-v1 message exceeds 5 own properties/);
     expect(counter.descriptorCalls).toBe(0);
   });
 
   test('rejects root key bytes beyond the context field names before reading descriptors', () => {
-    const { proxy, counter } = countingProxy({ ['x'.repeat(51)]: 1 });
+    const { proxy, counter } = countingProxy({ ['x'.repeat(63)]: 1 });
 
     expect(() =>
-      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
-    ).toThrow(/key-update-v2 message exceeds 100 own-property key bytes/);
+      snapshotSyncMessageForContext(proxy, 'beekem-path-update-v1'),
+    ).toThrow(/beekem-path-update-v1 message exceeds 124 own-property key bytes/);
     expect(counter.descriptorCalls).toBe(0);
   });
 
   test('admits a root carrying every allowed field', () => {
-    expect(
-      snapshotSyncMessageForContext(
-        {
-          documentId: '/doc',
-          signatureContext: 'key-update-v2',
-          keychainChanges: {},
-          signature: 'sig',
-        },
-        'key-update-v2',
-      ),
-    ).toEqual({
+    const message = {
       documentId: '/doc',
-      signatureContext: 'key-update-v2',
-      keychainChanges: {},
+      signatureContext: 'beekem-path-update-v1',
+      pathUpdate: {},
+      pathUpdateEpochId: new Uint8Array(32),
       signature: 'sig',
-    });
+    };
+    expect(
+      snapshotSyncMessageForContext(message, 'beekem-path-update-v1'),
+    ).toEqual(message);
   });
 });
 
@@ -488,4 +470,13 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
       syncMessageMatchesSnapshot(expected, candidate, 'ordinary-sync-v1'),
     ).toBe(false);
   });
+});
+
+test('rejects an unknown signature purpose', () => {
+  expect(isSyncMessageSignatureContext('unknown-purpose-v1')).toBe(false);
+  expect(() => snapshotSyncMessageForContext({
+    documentId: '/doc',
+    signatureContext: 'unknown-purpose-v1',
+    signature: 'sig',
+  }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
 });

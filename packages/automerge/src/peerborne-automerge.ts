@@ -316,8 +316,7 @@ function assertAutomergeACLResourceLimits(
 }
 
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
-  // Start without a local `users` root so complete ACL histories produced by
-  // older random-seed releases apply without a competing root assignment.
+  // The first staged addition installs the canonical users root.
   private _acl: AutomergeACLDoc = init();
   private _revision = 0;
   private _retainedChanges = new Map<
@@ -430,8 +429,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     if (getMissingDeps(this._acl, []).length > 0) {
       throw new Error(
         `Cannot ${operation}: Automerge ACL has unresolved change ` +
-          'dependencies. Replay the complete ACL history; legacy incremental ' +
-          'ACL changes that omitted their random seed cannot be migrated safely.',
+          'dependencies. Replay the complete ACL history.',
       );
     }
   }
@@ -469,6 +467,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const ancestryByHash = new Map<string, bigint>();
     const writesByKey = new Map<string, AutomergeACLKeyWrite[]>();
     let usersRootCreations = 0;
+    let canonicalUsersRoot = false;
 
     for (const binaryChange of getAllChanges(acl)) {
       const decoded = decodeChange(binaryChange);
@@ -494,6 +493,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
             );
           }
           usersRootCreations++;
+          canonicalUsersRoot = isCanonicalAutomergeACLUsersRootSeed(decoded);
         }
         if (
           usersObjectId !== undefined &&
@@ -525,6 +525,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       );
     }
     if (users === undefined) return;
+    if (!canonicalUsersRoot) {
+      throw new Error(
+        `Cannot ${operation}: Automerge ACL history requires the canonical users root`,
+      );
+    }
 
     for (const [key, frontier] of writesByKey) {
       // Homogeneous additions and removals are idempotent. A mixed frontier
@@ -991,7 +996,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return automergeACLMergeState(doc) !== before;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
     this._assertComplete('check ACL membership');
@@ -999,7 +1004,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('check ACL membership');
     return this._acl.users?.[hash] !== undefined;
   }
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async users(capability?: string): Promise<CryptoKey[]> {
     this._assertComplete('list ACL members');
@@ -1389,13 +1394,8 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     }
     // 32 random bytes match the width used by BeeKEM-derived epoch IDs
     // (`deriveEpochIdFromRootSecret`), so the wire-format key-ID prefix
-    // is a single fixed width regardless of how the key was provisioned.
-    // Earlier revisions used a 16-byte UUID here, but that required the
-    // PathUpdate handler to truncate 32-byte BeeKEM epoch IDs down to 16
-    // bytes on install -- producing a deterministic cache-key-format
-    // mismatch with `getKey` (stored under hex, looked up under UUID
-    // format). Removing the size asymmetry removes the need for the
-    // truncation in the first place.
+    // is a single fixed width regardless of how the key was provisioned,
+    // and BeeKEM epoch IDs are installed without truncation.
     const keyIDBytes = crypto.getRandomValues(
       new Uint8Array(KEY_ID_LENGTH_BYTES),
     );
@@ -1947,9 +1947,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<
         pathUpdateEpochId:
           message.pathUpdateEpochId &&
           Base64.fromUint8Array(message.pathUpdateEpochId),
-        // Initial-load quorum tip-set hash (#189 §5.4.2). Base64-encoded
+        // Initial-load quorum state digest (#189 §5.4.2). Base64-encoded
         // for JSON-safe transport, mirrored on the deserialize path below.
-        // Only populated on tip-advertise responses.
+        // Only populated on security advertisements.
         tipsHash: message.tipsHash && Base64.fromUint8Array(message.tipsHash),
         // Explicit tip-set advertisement populated on load responses to
         // bind the served state to the responder's frontier (see
@@ -2025,7 +2025,6 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       );
     }
     if (
-      raw.signatureContext !== undefined &&
       !isSyncMessageSignatureContext(raw.signatureContext)
     ) {
       throw new Error(
@@ -2171,7 +2170,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       }
       pathUpdateEpochId = Base64.toUint8Array(raw.pathUpdateEpochId);
     }
-    // Initial-load quorum tip-set hash (#189 §5.4.2). Decoded from base64
+    // Initial-load quorum state digest (#189 §5.4.2). Decoded from base64
     // on the way back to Uint8Array; mirrors the serializer above.
     // Untrusted input -- reject anything that isn't a string AND enforce
     // the fixed-width SHA-256 digest length (32 bytes) at the wire

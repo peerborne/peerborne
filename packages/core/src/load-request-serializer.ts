@@ -22,10 +22,6 @@ export interface LoadMessageSerializer {
   /**
    * Create per-stream framing state for fragmented requests whose writer may
    * remain open while waiting for a response.
-   *
-   * When omitted, a one-chunk request can still complete immediately, but a
-   * fragmented request is decoded only after EOF. This fail-closed fallback
-   * prevents repeated whole-buffer deserialization under byte-dribble input.
    */
-  createLoadRequestCompletionDetector?(): LoadRequestCompletionDetector;
+  createLoadRequestCompletionDetector(): LoadRequestCompletionDetector;
 }

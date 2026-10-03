@@ -617,22 +617,20 @@ export function selectAncestryClosedNodes<ChangesType>(
  *
  * The initial-load quorum binding (#186 / #189 §5.4.2) needs to verify that
  * the full-load response a peer serves actually corresponds to the
- * tip-set hash that peer voted for in the probe round. Previously the
- * loader hashed the responder-supplied `message.tips` array and compared
- * to the quorum-agreed hash -- which trusted the responder's own
- * attestation as the source of truth. A malicious peer could vote hash
- * X, put X's tip CIDs in `message.tips`, and then serve a `changes`
- * payload describing a completely different state; the binding would
- * still pass.
+ * state digest that peer voted for in the probe round. Hashing the
+ * responder-supplied `message.tips` array would trust the responder's own
+ * attestation: a malicious peer could vote for digest X, put X's tip CIDs
+ * in `message.tips`, and then serve a `changes` payload describing a
+ * completely different state.
  *
  * This helper closes that gap: given the served `changes` tree (rooted
  * at `changeId`) plus an optional `snapshotBoundaryCid` from
  * `message.snapshot.lastChangeNodeCID`, it computes the frontier as a
  * function of the payload's structure -- the set of CIDs that appear in
  * the served tree but are NOT referenced as a parent (child-key) of any
- * node in the same tree. Hashing this set with `tipsHash` and comparing
- * to `winningHashHex` produces a binding decision that does not depend
- * on the responder's own attestation.
+ * node in the same tree. Binding this set into `loadAdvertisementHash` and
+ * comparing the digest to `winningHashHex` produces a decision that does not
+ * depend on the responder's own attestation.
  *
  * Algorithm:
  *   - Initialise `cids = {}` and `referenced = {}`.
@@ -653,9 +651,9 @@ export function selectAncestryClosedNodes<ChangesType>(
  *
  * Edge cases:
  *   - Both `changes` undefined AND `snapshotBoundaryCid` empty: the
- *     responder is brand new / has no state. Returns `[]`. The loader
- *     can compare against the canonical hash of `[]` to detect a
- *     responder that voted for a non-empty state but serves nothing.
+ *     responder is brand new / has no state. Returns `[]`, so a responder
+ *     that voted for a non-empty state but serves nothing fails the digest
+ *     comparison.
  *   - `changeId === undefined` with `changes` defined: the served tree
  *     is anonymous (no root CID). Pure helpers in this module already
  *     tolerate `nodeId === undefined`; we record nothing for the
@@ -674,7 +672,7 @@ export function selectAncestryClosedNodes<ChangesType>(
  * then computing `_hashes \ _referencedAncestors` on an EMPTY pre-sync
  * loader, except it works in pure form (no I/O, no Helia blockstore
  * fetch, no document state mutation). The returned array is unsorted;
- * `tipsHash` performs its own canonical sort.
+ * `loadAdvertisementHash` performs its own canonical sort.
  */
 export function computeServedFrontier<ChangesType>(
   changeId: string | undefined,
