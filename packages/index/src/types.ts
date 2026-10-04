@@ -27,8 +27,8 @@ export interface IndexKeyDefinition {
  * Declarative definition for an index over a collection of documents.
  */
 export interface IndexDefinition {
-  /** Definitions without a version retain the v1 API and storage behavior. */
-  version?: 1 | 2;
+  /** Current index schema version. */
+  version: 2;
   /** Unique name for this index. */
   name: string;
   /** Document path prefix that determines which documents belong to this index. */
@@ -60,18 +60,6 @@ export type FilterOperator =
   | 'contains';
 
 /**
- * A single filter condition on an indexed field.
- */
-export interface FieldFilter {
-  /** Dot-notation path to the field. */
-  path: string;
-  /** Comparison operator. */
-  operator: FilterOperator;
-  /** Value to compare against. */
-  value: unknown;
-}
-
-/**
  * Sorting clause for query results.
  */
 export interface SortClause {
@@ -79,24 +67,6 @@ export interface SortClause {
   path: string;
   /** Sort direction. */
   direction: 'asc' | 'desc';
-}
-
-/**
- * Legacy local query API.
- */
-export interface QueryOptions {
-  /** Target a specific named index. */
-  indexName?: string;
-  /** Filter to documents matching this path prefix. */
-  collectionPrefix?: string;
-  /** Filter conditions to apply. */
-  filters: FieldFilter[];
-  /** Sort clauses (applied in order). */
-  sort?: SortClause[];
-  /** Maximum number of results to return. */
-  limit?: number;
-  /** Number of results to skip (for pagination). */
-  offset?: number;
 }
 
 export interface QueryFieldExpression {
@@ -140,7 +110,7 @@ export type QueryScanKind = 'none' | 'bounded' | 'full';
 export interface QueryExecutionInfo {
   source: 'local';
   indexName: string;
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   schemaHash: string;
   generation: string;
   storageMode: 'memory' | 'cleartext-local';
@@ -197,16 +167,6 @@ export interface QueryResultEntry<T> {
   documentPath: string;
   /** The extracted snapshot of the document. */
   snapshot: T;
-}
-
-/**
- * Result of a query against the index.
- */
-export interface QueryResult<T> {
-  /** Matching documents (after filters, sort, limit, offset). */
-  documents: QueryResultEntry<T>[];
-  /** Total count of matching documents before limit/offset. */
-  totalCount: number;
 }
 
 /**
