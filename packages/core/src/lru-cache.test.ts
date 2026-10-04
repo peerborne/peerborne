@@ -1,5 +1,21 @@
 import { describe, expect, jest, test } from '@jest/globals';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { LRUCache } from './lru-cache.js';
+
+function collectGarbage(): void {
+  setFlagsFromString('--expose-gc');
+  (runInNewContext('gc') as () => void)();
+}
+
+async function isCollected(target: WeakRef<object>): Promise<boolean> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    collectGarbage();
+    if (target.deref() === undefined) return true;
+  }
+  return false;
+}
 
 describe('LRUCache', () => {
   test('get/set basic operations', () => {
@@ -241,6 +257,22 @@ describe('LRUCache', () => {
     expect(cache.get('a')).toBe(1);
     expect(cache.get('c')).toBeUndefined();
     expect(cache.get('d')).toBe(4);
+  });
+
+  test('abandoned prepared batch is not retained by the cache', async () => {
+    const cache = new LRUCache<string, object>(2);
+    cache.set('a', { material: 'live' });
+    const stageAndAbandon = (): WeakRef<object> => {
+      const staged = { material: 'staged' };
+      cache.prepareSetMany(new Map([['b', staged]]));
+      return new WeakRef(staged);
+    };
+    const staged = stageAndAbandon();
+
+    await expect(isCollected(staged)).resolves.toBe(true);
+    expect(cache.get('b')).toBeUndefined();
+    cache.set('b', { material: 'later' });
+    expect(cache.size).toBe(2);
   });
 
   test('prepared batch only exposes the last bounded entries', () => {

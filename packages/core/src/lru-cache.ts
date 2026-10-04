@@ -6,7 +6,7 @@ export class LRUCache<K, V> {
   private readonly _map = new Map<K, V>();
   private readonly _maxSize: number;
   private _finalizedEntries: Map<K, V> | undefined;
-  private _pendingEntries: Map<K, V> | undefined;
+  private _pendingEntries: WeakRef<Map<K, V>> | undefined;
   private _finalizedSize: number | undefined;
 
   constructor(maxSize: number = 1000) {
@@ -40,17 +40,19 @@ export class LRUCache<K, V> {
 
   set(key: K, value: V): void {
     this._materializeFinalizedEntries();
-    this._pendingEntries?.delete(key);
+    this._pendingEntries?.deref()?.delete(key);
     this._setMapEntry(key, value);
   }
 
   /**
-   * Stage an insertion whose returned finalizer only exposes a preallocated
-   * entry. Unfinalized entries remain closure-local; only the finalizer assigns
-   * `_finalizedEntries`. Ordinary cache operations materialize those committed
-   * entries into the backing Map afterward. The finalizer
-   * is idempotent and performs no Map work. Callers must not finalize
-   * competing prepared insertions.
+   * Stage a single-entry insertion; see `prepareSetMany()`. The returned
+   * finalizer is the only strong owner of the unfinalized entry, which is never
+   * visible to `get`, `has`, or `size`. The cache keeps a weak reference solely
+   * so a same-key write before finalization supersedes the staged value. Only
+   * the finalizer assigns `_finalizedEntries`; ordinary cache operations
+   * materialize the committed entry into the backing Map afterward. The
+   * finalizer is idempotent and performs no Map work. Callers must not
+   * finalize competing prepared insertions.
    * @internal Used within an externally reserved commit boundary.
    */
   prepareSet(key: K, value: V): () => void {
@@ -60,12 +62,16 @@ export class LRUCache<K, V> {
   /**
    * Flush any previously finalized overlay, then stage a bounded batch insertion.
    * All Map work happens before this method returns; the returned
-   * finalizer only exposes the prebuilt overlay. Cache activity before
-   * finalization is retained when the overlay is later materialized; a write
-   * to a staged key before finalization supersedes the staged value. Callers
-   * must reserve the cache from claim through finalization and must not compose
-   * competing prepared insertions. Finalization cannot check or throw after
-   * another provider may already have committed; validate before obtaining it.
+   * finalizer only exposes the prebuilt overlay. Until finalization, that
+   * finalizer is the only strong owner of the staged entries: the cache holds
+   * them through a weak reference and never exposes them to `get`, `has`, or
+   * `size`, so dropping an abandoned finalizer releases the staged values.
+   * Cache activity before finalization is retained when the overlay is later
+   * materialized; a write to a staged key before finalization supersedes the
+   * staged value. Callers must reserve the cache from claim through
+   * finalization and must not compose competing prepared insertions.
+   * Finalization cannot check or throw after another provider may already have
+   * committed; validate before obtaining it.
    * @internal Used within an externally reserved commit boundary.
    */
   prepareSetMany(entries: ReadonlyMap<K, V>): () => void {
@@ -74,7 +80,7 @@ export class LRUCache<K, V> {
     for (const [key, value] of entries) {
       this._setMapEntry(key, value, preparedEntries);
     }
-    this._pendingEntries = preparedEntries;
+    this._pendingEntries = new WeakRef(preparedEntries);
     let finalized = false;
     return () => {
       if (finalized) return;
@@ -102,7 +108,9 @@ export class LRUCache<K, V> {
       this._setMapEntry(key, value);
     }
     this._finalizedEntries = undefined;
-    if (this._pendingEntries === finalized) this._pendingEntries = undefined;
+    if (this._pendingEntries?.deref() === finalized) {
+      this._pendingEntries = undefined;
+    }
   }
 
   has(key: K): boolean {
