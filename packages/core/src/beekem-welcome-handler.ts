@@ -45,10 +45,10 @@ import {
  *   (not in readers ACL, unsigned when signing is enabled, invalid
  *   signature). The `reason` distinguishes the specific failure.
  */
-export type WelcomeValidationResult<ChangesType = unknown, PublicKey = unknown> =
+export type WelcomeValidationResult<ChangesType = unknown> =
   | {
       kind: 'accept';
-      message: CRDTSyncMessage<ChangesType, PublicKey>;
+      message: CRDTSyncMessage<ChangesType>;
     }
   | { kind: 'drop-not-for-us' }
   | { kind: 'drop-malformed'; reason: WelcomeMalformedReason }
@@ -61,7 +61,7 @@ export type WelcomeValidationResult<ChangesType = unknown, PublicKey = unknown> 
        * a recipient that is not yet a reader may also lack the writer keys
        * needed to verify it. Replays must re-run full validation.
        */
-      message?: CRDTSyncMessage<ChangesType, PublicKey>;
+      message?: CRDTSyncMessage<ChangesType>;
       /** Whether the writer signature on `message` verified. */
       authenticated?: boolean;
     };
@@ -125,7 +125,7 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
    * Serializer used to compute the canonical bytes signed by the
    * inviter (i.e. the sync message with the `signature` field stripped).
    */
-  syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>;
+  syncMessageSerializer: SyncMessageSerializer<ChangesType>;
 }
 
 /**
@@ -140,9 +140,9 @@ export interface WelcomeValidationDeps<ChangesType, PublicKey> {
  * when the result is `accept`.
  */
 export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
-  message: CRDTSyncMessage<ChangesType, PublicKey>,
+  message: CRDTSyncMessage<ChangesType>,
   deps: WelcomeValidationDeps<ChangesType, PublicKey>,
-): Promise<WelcomeValidationResult<ChangesType, PublicKey>> {
+): Promise<WelcomeValidationResult<ChangesType>> {
   // Welcomes are broadcast to every peer. Reject ones addressed elsewhere
   // before paying for canonicalization of a payload that can be megabytes.
   // This is only a fast path: the binding is re-checked on the detached
@@ -165,7 +165,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   // Canonicalize and detach the complete message before the first async
   // provider call. This prevents a caller-owned view/object from changing
   // between signature verification and the caller's eventual state commit.
-  let decoded: CRDTSyncMessage<ChangesType, PublicKey>;
+  let decoded: CRDTSyncMessage<ChangesType>;
   try {
     const encoded = copyUnsharedUint8Array(
       deps.syncMessageSerializer.serializeSyncMessage(message),
@@ -178,7 +178,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
   try {
-    message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+    message = snapshotSyncMessageForContext<ChangesType>(
       decoded,
       'beekem-welcome-v2',
     );
@@ -305,16 +305,16 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     return { kind: 'drop-unauthorized', reason: 'missing-signature' };
   }
   const signature = message.signature;
-  let messageWithoutSignature: CRDTSyncMessage<ChangesType, PublicKey>;
-  let expected: CRDTSyncMessage<ChangesType, PublicKey>;
+  let messageWithoutSignature: CRDTSyncMessage<ChangesType>;
+  let expected: CRDTSyncMessage<ChangesType>;
   try {
-    const verificationMessage = snapshotSyncMessageForContext<
-      ChangesType,
-      PublicKey
-    >(message, 'beekem-welcome-v2');
+    const verificationMessage = snapshotSyncMessageForContext<ChangesType>(
+      message,
+      'beekem-welcome-v2',
+    );
     const { signature: _signature, ...unsigned } = verificationMessage;
     messageWithoutSignature = unsigned;
-    expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+    expected = snapshotSyncMessageForContext<ChangesType>(
       unsigned,
       'beekem-welcome-v2',
       { retainCryptoKeys: true },

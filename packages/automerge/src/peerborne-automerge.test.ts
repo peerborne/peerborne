@@ -4296,7 +4296,7 @@ describe('bounded initial invitation profile', () => {
     const cid = (label: string) => `bafy${label.repeat(55).slice(0, 55)}`;
     const founderCid = cid('f');
     const signature = 'A'.repeat(128);
-    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
+    const baseline: CRDTSyncMessage<Uint8Array[]> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/capacity-growth',
       changeId: founderCid,
       changes: { kind: 'writer', change: founderChanges },
@@ -4329,7 +4329,7 @@ describe('bounded initial invitation profile', () => {
       previousNode = nextNode;
     }
 
-    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
+    const afterMembership: CRDTSyncMessage<Uint8Array[]> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: baseline.documentId,
       changeId: previousCid,
       changes: previousNode,

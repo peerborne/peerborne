@@ -25,8 +25,8 @@ type PublicKey = { id: string };
  * the writer signature. We only need a stable byte representation that
  * is deterministic for equal messages.
  */
-const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
-  serializeSyncMessage(message: CRDTSyncMessage<ChangesType, PublicKey>) {
+const stubSerializer: SyncMessageSerializer<ChangesType> = {
+  serializeSyncMessage(message: CRDTSyncMessage<ChangesType>) {
     return new TextEncoder().encode(
       JSON.stringify(message, (_key, value) =>
         value instanceof Uint8Array
@@ -44,9 +44,9 @@ const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
         Array.isArray(value.__testBytes)
           ? new Uint8Array(value.__testBytes)
           : value,
-    ) as CRDTSyncMessage<ChangesType, PublicKey>;
+    ) as CRDTSyncMessage<ChangesType>;
   },
-} as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+} as unknown as SyncMessageSerializer<ChangesType>;
 
 function makeDeps(
   overrides: Partial<WelcomeValidationDeps<ChangesType, PublicKey>> = {},
@@ -72,7 +72,7 @@ function makeDeps(
  * to open the seal (that happens in the production receive path
  * after validation).
  */
-function baseAcceptableMessage(): CRDTSyncMessage<ChangesType, PublicKey> {
+function baseAcceptableMessage(): CRDTSyncMessage<ChangesType> {
   return {
     documentId: '/doc/welcome',
     signatureContext: 'beekem-welcome-v2',
@@ -144,7 +144,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     const serializer = {
       serializeSyncMessage: () => new Uint8Array([1]),
       deserializeSyncMessage: () => unstable,
-    } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as unknown as SyncMessageSerializer<ChangesType>;
 
     const result = await evaluateBeeKEMWelcome(
       baseAcceptableMessage(),
@@ -175,7 +175,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     const serializer = {
       serializeSyncMessage: () => new Uint8Array([1]),
       deserializeSyncMessage: () => accessorMessage,
-    } as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as unknown as SyncMessageSerializer<ChangesType>;
 
     await expect(
       evaluateBeeKEMWelcome(
@@ -194,7 +194,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     let unsignedSerializationCount = 0;
     const serializer = {
       serializeSyncMessage(
-        message: CRDTSyncMessage<ChangesType, PublicKey>,
+        message: CRDTSyncMessage<ChangesType>,
       ) {
         const bytes = stubSerializer.serializeSyncMessage(message);
         if (message.signature === undefined) {
@@ -207,7 +207,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       },
       deserializeSyncMessage:
         stubSerializer.deserializeSyncMessage.bind(stubSerializer),
-    } as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as SyncMessageSerializer<ChangesType>;
 
     const result = await evaluateBeeKEMWelcome(
       base,
@@ -228,7 +228,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       const msg = {
         ...baseAcceptableMessage(),
         documentId,
-      } as unknown as CRDTSyncMessage<ChangesType, PublicKey>;
+      } as unknown as CRDTSyncMessage<ChangesType>;
       const result = await evaluateBeeKEMWelcome(msg, makeDeps());
       expect(result).toEqual({
         kind: 'drop-malformed',
@@ -517,7 +517,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     let verifiedByte = -1;
     const serializer = {
       serializeSyncMessage(
-        message: CRDTSyncMessage<ChangesType, PublicKey>,
+        message: CRDTSyncMessage<ChangesType>,
       ): Uint8Array {
         serializeCalls++;
         if (serializeCalls === 1) {
@@ -532,7 +532,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       deserializeSyncMessage(data: Uint8Array) {
         return stubSerializer.deserializeSyncMessage(data);
       },
-    } as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as SyncMessageSerializer<ChangesType>;
 
     const result = await evaluateBeeKEMWelcome(
       baseAcceptableMessage(),
@@ -572,7 +572,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       let verifyCalled = false;
       const serializer = {
         serializeSyncMessage(
-          message: CRDTSyncMessage<ChangesType, PublicKey>,
+          message: CRDTSyncMessage<ChangesType>,
         ): Uint8Array {
           serializeCalls++;
           return serializeCalls === 1
@@ -582,7 +582,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
         deserializeSyncMessage(data: Uint8Array) {
           return stubSerializer.deserializeSyncMessage(data);
         },
-      } as SyncMessageSerializer<ChangesType, PublicKey>;
+      } as SyncMessageSerializer<ChangesType>;
 
       const result = await evaluateBeeKEMWelcome(
         baseAcceptableMessage(),
@@ -608,7 +608,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     let verifyCalled = false;
     const serializer = {
       serializeSyncMessage(
-        message: CRDTSyncMessage<ChangesType, PublicKey>,
+        message: CRDTSyncMessage<ChangesType>,
       ): Uint8Array {
         if (!mutated && message.signature === undefined) {
           mutated = true;
@@ -619,7 +619,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       deserializeSyncMessage(data: Uint8Array) {
         return stubSerializer.deserializeSyncMessage(data);
       },
-    } as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as SyncMessageSerializer<ChangesType>;
 
     const result = await evaluateBeeKEMWelcome(
       baseAcceptableMessage(),
@@ -646,7 +646,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
     let verifyCalled = false;
     const serializer = {
       serializeSyncMessage(
-        message: CRDTSyncMessage<ChangesType, PublicKey>,
+        message: CRDTSyncMessage<ChangesType>,
       ): Uint8Array {
         serializeCalls++;
         return serializeCalls === 1
@@ -656,7 +656,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
       deserializeSyncMessage(data: Uint8Array) {
         return stubSerializer.deserializeSyncMessage(data);
       },
-    } as SyncMessageSerializer<ChangesType, PublicKey>;
+    } as SyncMessageSerializer<ChangesType>;
 
     const result = await evaluateBeeKEMWelcome(
       baseAcceptableMessage(),
@@ -677,7 +677,7 @@ describe('evaluateBeeKEMWelcome unit gates', () => {
   });
 
   test('gate ordering: missing welcomeEpochId takes precedence over missing welcomeRecipient', async () => {
-    const msg: CRDTSyncMessage<ChangesType, PublicKey> = {
+    const msg: CRDTSyncMessage<ChangesType> = {
       documentId: '/doc/welcome',
       signatureContext: 'beekem-welcome-v2',
       // Both welcomeEpochId and welcomeRecipient are missing. The

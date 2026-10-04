@@ -88,17 +88,17 @@ export class PendingWelcomeBuffer {
   }
 
   /** Canonically serialize a detached Welcome, then retain its bounded body. */
-  public storeMessage<ChangesType, PublicKey>(
+  public storeMessage<ChangesType>(
     key: string,
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
-    serializer: SyncMessageSerializer<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
+    serializer: SyncMessageSerializer<ChangesType>,
     bufferedAtMs: number,
     authenticated: boolean,
   ): PendingWelcomeStoreResult {
     if (this._entries.has(key) && !authenticated) {
       return { stored: false, replaced: false, evictedKeys: [] };
     }
-    const detached = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+    const detached = snapshotSyncMessageForContext<ChangesType>(
       message,
       'beekem-welcome-v2',
     );

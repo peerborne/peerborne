@@ -1830,10 +1830,7 @@ function deserializeBinaryChanges(changes: string[]): BinaryChange[] {
   return changes.map((c: string) => Base64.toUint8Array(c)) as BinaryChange[];
 }
 
-export class AutomergeJSONSerializer extends JSONSerializer<
-  BinaryChange[],
-  CryptoKey
-> {
+export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
   readonly initialInvitationCapacityProfile =
     INITIAL_INVITATION_CAPACITY_PROFILE;
   serializeChanges(changes: BinaryChange[]): Uint8Array {
@@ -1849,7 +1846,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
   }
 
   serializeSyncMessage(
-    message: CRDTSyncMessage<BinaryChange[], CryptoKey>,
+    message: CRDTSyncMessage<BinaryChange[]>,
   ): Uint8Array {
     let snapshotForWire: any;
     if (message.snapshot) {
@@ -1928,7 +1925,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
 
   deserializeSyncMessage(
     message: Uint8Array,
-  ): CRDTSyncMessage<BinaryChange[], CryptoKey> {
+  ): CRDTSyncMessage<BinaryChange[]> {
     const decoded = this.deserialize(this.decode(message));
     // Wire input is untrusted: a malformed peer can send `null`, an array, or
     // a primitive in place of a sync-message object. Reading properties on
@@ -2196,7 +2193,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       welcomeRecipient,
       welcomeRecipientKemPublicKey,
       eciesSealed,
-      pathUpdate: pathUpdate as CRDTSyncMessage<BinaryChange[], CryptoKey>['pathUpdate'],
+      pathUpdate: pathUpdate as CRDTSyncMessage<BinaryChange[]>['pathUpdate'],
       pathUpdateEpochId,
       tipsHash,
       tips,

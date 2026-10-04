@@ -104,7 +104,7 @@ export function usePeerborne<
   publicKey: PublicKey | undefined,
   provider: CRDTProvider<DocType, ChangesType, ChangeFnType>,
   changesSerializer: ChangesSerializer<ChangesType>,
-  syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>,
+  syncMessageSerializer: SyncMessageSerializer<ChangesType>,
   loadMessageSerializer: LoadMessageSerializer,
   authProvider: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
   aclProvider: ACLProvider<ChangesType, PublicKey>,

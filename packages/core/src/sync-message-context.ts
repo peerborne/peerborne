@@ -114,11 +114,11 @@ const rootSnapshotLimits = Object.fromEntries(
  * so a captured specialized body must not be accepted by ordinary sync or
  * another specialized handler after a reader re-encrypts it.
  */
-export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
+export function snapshotSyncMessageForContext<ChangesType>(
   value: unknown,
   context: SyncMessageContext,
   options: { retainCryptoKeys?: boolean } = {},
-): CRDTSyncMessage<ChangesType, PublicKey> {
+): CRDTSyncMessage<ChangesType> {
   const allowed = allowedFields[context];
   const message = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
     value,
@@ -147,19 +147,19 @@ export function snapshotSyncMessageForContext<ChangesType, PublicKey>(
     `${context} message`,
     syncMessageSnapshotLimits,
     options,
-  ) as CRDTSyncMessage<ChangesType, PublicKey>;
+  ) as CRDTSyncMessage<ChangesType>;
 }
 
 /**
  * @internal Compare an untrusted serializer input with the detached state to
  * apply. Opaque CryptoKey values match only when they are the same objects.
  */
-export function syncMessageMatchesSnapshot<ChangesType, PublicKey>(
-  expected: CRDTSyncMessage<ChangesType, PublicKey>,
+export function syncMessageMatchesSnapshot<ChangesType>(
+  expected: CRDTSyncMessage<ChangesType>,
   candidate: unknown,
   context: SyncMessageContext,
 ): boolean {
-  let actual: CRDTSyncMessage<ChangesType, PublicKey>;
+  let actual: CRDTSyncMessage<ChangesType>;
   try {
     actual = snapshotSyncMessageForContext(candidate, context, {
       retainCryptoKeys: true,

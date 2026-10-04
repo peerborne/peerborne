@@ -391,18 +391,18 @@ function transformOwnFieldsInOrder(
   return result;
 }
 
-export class JSONSerializer<ChangesType, PublicKey = unknown>
+export class JSONSerializer<ChangesType>
   implements
     ChangesSerializer<ChangesType>,
-    SyncMessageSerializer<ChangesType, PublicKey>,
+    SyncMessageSerializer<ChangesType>,
     LoadMessageSerializer
 {
   /** Keep authenticated JSON field order while dropping unknown wire fields. */
   protected orderDecodedSyncFields(
     wire: Record<string, unknown>,
-    decoded: CRDTSyncMessage<ChangesType, PublicKey>,
-  ): CRDTSyncMessage<ChangesType, PublicKey> {
-    const result = {} as CRDTSyncMessage<ChangesType, PublicKey>;
+    decoded: CRDTSyncMessage<ChangesType>,
+  ): CRDTSyncMessage<ChangesType> {
+    const result = {} as CRDTSyncMessage<ChangesType>;
     for (const field of Object.keys(wire)) {
       const descriptor = Object.getOwnPropertyDescriptor(decoded, field);
       if (descriptor !== undefined && descriptor.value !== undefined) {
@@ -477,13 +477,13 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
     return this.deserialize(this.decode(changes)) as ChangesType;
   }
   serializeSyncMessage(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): Uint8Array {
     const wire = transformOwnFieldsInOrder(message, (field, value) =>
       field === 'changes' && value !== undefined
         ? serializeChangeNodeForJSON(
             value as NonNullable<
-              CRDTSyncMessage<ChangesType, PublicKey>['changes']
+              CRDTSyncMessage<ChangesType>['changes']
             >,
             (change) => change,
           )
@@ -493,7 +493,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
   }
   deserializeSyncMessage(
     message: Uint8Array,
-  ): CRDTSyncMessage<ChangesType, PublicKey> {
+  ): CRDTSyncMessage<ChangesType> {
     const raw = requireJSONObject(
       this.deserialize(this.decode(message)),
       'Sync message',
@@ -508,7 +508,7 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
             (change) => change,
           )
         : deserializeSyncBinaryField(field, value),
-    ) as CRDTSyncMessage<ChangesType, PublicKey>;
+    ) as CRDTSyncMessage<ChangesType>;
   }
   serializeLoadRequest(message: CRDTLoadRequest): Uint8Array {
     message = snapshotLoadRequest(message);

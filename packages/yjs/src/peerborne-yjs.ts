@@ -71,7 +71,7 @@ const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeyc
 // binary data in JSON, so this is an acceptable trade-off.
 type iCRDTChangeNode = CRDTChangeNodeWire<string>;
 
-export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
+export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
   serializeChanges(changes: Uint8Array): Uint8Array {
     return changes;
   }
@@ -80,7 +80,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
   }
 
   serializeSyncMessage(
-    message: CRDTSyncMessage<Uint8Array, CryptoKey>,
+    message: CRDTSyncMessage<Uint8Array>,
   ): Uint8Array {
     // Encode snapshot Uint8Array fields (state, signature) as base64 for JSON safety.
     let snapshotForWire: any;
@@ -158,7 +158,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
   }
   deserializeSyncMessage(
     message: Uint8Array,
-  ): CRDTSyncMessage<Uint8Array, CryptoKey> {
+  ): CRDTSyncMessage<Uint8Array> {
     const decoded = this.deserialize(this.decode(message));
     // Wire input is untrusted: reject non-object payloads up front with a
     // descriptive error so the malformed payload can be attributed back to
@@ -415,7 +415,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       welcomeRecipient,
       welcomeRecipientKemPublicKey,
       eciesSealed,
-      pathUpdate: pathUpdate as CRDTSyncMessage<Uint8Array, CryptoKey>['pathUpdate'],
+      pathUpdate: pathUpdate as CRDTSyncMessage<Uint8Array>['pathUpdate'],
       pathUpdateEpochId,
       tipsHash,
       tips,

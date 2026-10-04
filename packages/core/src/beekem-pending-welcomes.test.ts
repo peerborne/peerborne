@@ -39,8 +39,8 @@ import { SyncMessageSerializer } from './sync-message-serializer.js';
 type ChangesType = Uint8Array;
 type PublicKey = { id: string };
 
-const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
-  serializeSyncMessage(message: CRDTSyncMessage<ChangesType, PublicKey>) {
+const stubSerializer: SyncMessageSerializer<ChangesType> = {
+  serializeSyncMessage(message: CRDTSyncMessage<ChangesType>) {
     return new TextEncoder().encode(
       JSON.stringify(message, (_key, value) =>
         value instanceof Uint8Array
@@ -58,9 +58,9 @@ const stubSerializer: SyncMessageSerializer<ChangesType, PublicKey> = {
         typeof value.__testBytes === 'string'
           ? Base64.toUint8Array(value.__testBytes)
           : value,
-    ) as CRDTSyncMessage<ChangesType, PublicKey>;
+    ) as CRDTSyncMessage<ChangesType>;
   },
-} as unknown as SyncMessageSerializer<ChangesType, PublicKey>;
+} as unknown as SyncMessageSerializer<ChangesType>;
 
 function hex(b: Uint8Array): string {
   let s = '';
@@ -104,7 +104,7 @@ class PendingWelcomesHarness {
    * Returns `true` iff the Welcome was accepted (applied).
    */
   async evaluateAndApply(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     opts: { fromBuffer: boolean },
   ): Promise<boolean> {
     const decision = await evaluateBeeKEMWelcome(message, this.depsFor());
@@ -129,7 +129,7 @@ class PendingWelcomesHarness {
 
   /** Mirror of `_bufferPendingWelcome`. */
   bufferPendingWelcome(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     authenticated: boolean,
   ): boolean {
     const epochId = message.welcomeEpochId;
@@ -161,7 +161,7 @@ class PendingWelcomesHarness {
         this.pendingWelcomes.delete(key);
         continue;
       }
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      let message: CRDTSyncMessage<ChangesType>;
       try {
         message = stubSerializer.deserializeSyncMessage(entry.body);
       } catch {
@@ -186,7 +186,7 @@ class PendingWelcomesHarness {
 function welcomeFor(
   epochByte: number,
   recipient = 'me',
-): CRDTSyncMessage<ChangesType, PublicKey> {
+): CRDTSyncMessage<ChangesType> {
   return {
     documentId: '/doc/welcome',
     signatureContext: 'beekem-welcome-v2',
@@ -406,7 +406,7 @@ describe('BeeKEM pending-welcomes buffer (readers-ACL / Welcome reordering)', ()
   test('does NOT buffer malformed Welcomes (missing epoch id)', async () => {
     const h = new PendingWelcomesHarness();
     h.isReader = false;
-    const msg: CRDTSyncMessage<ChangesType, PublicKey> = {
+    const msg: CRDTSyncMessage<ChangesType> = {
       documentId: '/doc/welcome',
       welcomeRecipient: 'me',
       welcomeRecipientKemPublicKey: new Uint8Array(65).fill(0xaa),

@@ -153,7 +153,7 @@ function applyWelcomeStateChanges(
     /** Serialized form of the local user's public key. */
     localSerializedKey: string;
   },
-  message: CRDTSyncMessage<{ id: string; key: string }[], unknown>,
+  message: CRDTSyncMessage<{ id: string; key: string }[]>,
 ): void {
   if (!message.welcomeEpochId) return;
   // Match production: Welcomes without a recipient binding are dropped
@@ -214,7 +214,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
     senderKc.add(id1, 'k1');
     senderKc.add(id2, 'k2');
 
-    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeEpochId: id2,
       welcomeRecipient: 'my-pubkey',
@@ -242,7 +242,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
     const id1 = new Uint8Array(32).fill(1);
     senderKc.add(id1, 'k1');
 
-    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeEpochId: id1,
       welcomeRecipient: 'someone-elses-pubkey',
@@ -266,7 +266,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
     const id1 = new Uint8Array(32).fill(1);
     senderKc.add(id1, 'k1');
 
-    const malformed: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const malformed: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeEpochId: id1,
       // welcomeRecipient omitted
@@ -289,7 +289,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
     const id1 = new Uint8Array(32).fill(1);
     senderKc.add(id1, 'k1');
 
-    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const welcomeMessage: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeEpochId: id1,
       welcomeRecipient: 'my-pubkey',
@@ -386,7 +386,7 @@ describe('BeeKEM Welcome receive flow (Issue #178)', () => {
   });
 
   test('handler drops Welcomes without a welcomeEpochId', () => {
-    const malformedWelcome: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const malformedWelcome: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeRecipient: 'my-pubkey',
       // welcomeEpochId intentionally omitted -- mirrors the
@@ -521,7 +521,7 @@ describe('End-to-end Welcome -> since_invited filtering (Issues #178 + #179)', (
 
     // Sender invites a new reader at epoch index 2 (i.e. id `3`).
     const invitationEpoch = epochs[2];
-    const welcome: CRDTSyncMessage<{ id: string; key: string }[], unknown> = {
+    const welcome: CRDTSyncMessage<{ id: string; key: string }[]> = {
       documentId: '/doc/welcome',
       welcomeEpochId: invitationEpoch,
       welcomeRecipient: 'my-pubkey',

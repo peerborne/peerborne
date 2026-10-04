@@ -25,10 +25,10 @@ interface SizedChanges {
 }
 
 class CountingSyncMessageSerializer
-  implements SyncMessageSerializer<SizedChanges, never>
+  implements SyncMessageSerializer<SizedChanges>
 {
   serializeSyncMessage(
-    message: CRDTSyncMessage<SizedChanges, never>,
+    message: CRDTSyncMessage<SizedChanges>,
   ): Uint8Array {
     const changeBytes = message.changes?.change?.bytes ?? 0;
     const keychainBytes = message.keychainChanges?.bytes ?? 0;
@@ -47,7 +47,7 @@ class CountingSyncMessageSerializer
     );
   }
 
-  deserializeSyncMessage(): CRDTSyncMessage<SizedChanges, never> {
+  deserializeSyncMessage(): CRDTSyncMessage<SizedChanges> {
     throw new Error('not needed by capacity projection tests');
   }
 }
@@ -77,7 +77,7 @@ function twoMemberWelcome(
   };
 }
 
-function messageWithChanges(bytes: number): CRDTSyncMessage<SizedChanges, never> {
+function messageWithChanges(bytes: number): CRDTSyncMessage<SizedChanges> {
   return {
     documentId: '/capacity-test',
     changes: {
