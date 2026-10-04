@@ -180,6 +180,8 @@ export class BeeKEM {
    * Add a new member to the group.
    * Creates a new leaf and derives keys along the path to root.
    * Returns a path update message to broadcast and a welcome for the new member.
+   *
+   * @throws {Error} If a live leaf already owns `memberPublicKey`.
    */
   async addMember(memberPublicKey: CryptoKey): Promise<{
     pathUpdate: PathUpdate;
@@ -707,7 +709,15 @@ export class BeeKEM {
     return foundLocalLeaf;
   }
 
-  /** Return whether any live leaf owns `publicKey`, including duplicates. */
+  /**
+   * Return whether any live leaf owns `publicKey`, including duplicates.
+   *
+   * `publicKey` follows the same input rules as `findLeafByPublicKey`.
+   *
+   * @throws {TypeError} If a Uint8Array input is not a genuine, unshared
+   *   65-byte view, or a CryptoKey input exports to raw bytes of another
+   *   length.
+   */
   async hasLiveLeafWithPublicKey(
     publicKey: CryptoKey | Uint8Array,
   ): Promise<boolean> {
@@ -729,9 +739,11 @@ export class BeeKEM {
    * Comparison is done over the raw exported ECDH public key bytes:
    * - `CryptoKey` inputs are exported via `crypto.subtle.exportKey('raw', ...)`
    *   so the caller doesn't need to pre-export.
-   * - `Uint8Array` inputs are compared directly (assumed to be raw
-   *   SEC1-uncompressed P-256 bytes, the same shape stored on the wire
-   *   and accepted by `addMember` / `_registerBeeKEMReader`).
+   * - `Uint8Array` inputs must be genuine, unshared, exactly
+   *   `ECIES_P256_PUBLIC_KEY_LENGTH` (65) byte SEC1-uncompressed P-256 keys,
+   *   the same shape stored on the wire and accepted by `addMember` /
+   *   `PeerborneDocument._prepareBeeKEMReaderRegistration`. They are copied
+   *   before any await, so later caller mutation cannot redirect the lookup.
    *
    * Blanked leaves (publicKey === null) are skipped: their slot index
    * is meaningless to a "find this member" query, and a match against
@@ -741,6 +753,10 @@ export class BeeKEM {
    * Returns the **node index** (even-indexed tree slot), which is the
    * form `removeMember` consumes. Callers that need the dense
    * leaf-position form should convert via `TreeMath.nodeToLeafIndex`.
+   *
+   * @throws {TypeError} If a Uint8Array input is not a genuine, unshared
+   *   65-byte view, or a CryptoKey input exports to raw bytes of another
+   *   length.
    */
   async findLeafByPublicKey(
     publicKey: CryptoKey | Uint8Array,
