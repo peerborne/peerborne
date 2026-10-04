@@ -945,9 +945,10 @@ export class Peerborne<
    * document path, and routes to the matching PeerborneDocument instance in
    * the registry.
    *
-   * For doc-load, snapshot-load, and security-advertise, the path is extracted by
-   * deserializing the CRDTLoadRequest. The BeeKEM Welcome and PathUpdate
-   * protocols use a 4-byte length-prefixed document path before their payload.
+   * For doc-load, invitation catch-up, snapshot-load, and security-advertise,
+   * the path is extracted by deserializing the CRDTLoadRequest. The BeeKEM
+   * Welcome and PathUpdate protocols use a 4-byte length-prefixed document
+   * path before their payload.
    */
   private async _registerSharedProtocolHandlers(): Promise<void> {
     if (this._sharedHandlersRegistration) {
