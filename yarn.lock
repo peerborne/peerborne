@@ -4699,8 +4699,9 @@ __metadata:
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
     slate: "npm:^0.126.2"
+    slate-dom: "npm:^0.126.0"
     slate-history: "npm:^0.113.1"
-    slate-react: "npm:^0.110.1"
+    slate-react: "npm:^0.127.1"
     typescript: "npm:^5.9.3"
     vite: "npm:^8.3.0"
     vite-plugin-wasm: "npm:^3.6.0"
@@ -14086,6 +14087,23 @@ __metadata:
   languageName: node
   linkType: hard
 
+"slate-dom@npm:^0.126.0":
+  version: 0.126.0
+  resolution: "slate-dom@npm:0.126.0"
+  dependencies:
+    "@juggle/resize-observer": "npm:^3.4.0"
+    direction: "npm:^1.0.4"
+    is-hotkey: "npm:^0.2.0"
+    is-plain-object: "npm:^5.0.0"
+    lodash: "npm:^4.17.21"
+    scroll-into-view-if-needed: "npm:^3.1.0"
+    tiny-invariant: "npm:1.3.1"
+  peerDependencies:
+    slate: ">=0.121.0"
+  checksum: 10/67791f889d320f4af88b852358718588e71de7e44c997bf5bb56fe13985aacf01199f4288daeb93435db30f30c209a4a9e748ac2228cb35df7e3afe3937eaaf8
+  languageName: node
+  linkType: hard
+
 "slate-history@npm:^0.113.1":
   version: 0.113.1
   resolution: "slate-history@npm:0.113.1"
@@ -14097,22 +14115,29 @@ __metadata:
   languageName: node
   linkType: hard
 
-"slate-react@npm:^0.110.1":
-  version: 0.110.1
-  resolution: "slate-react@npm:0.110.1"
+"slate-react@npm:^0.127.1":
+  version: 0.127.1
+  resolution: "slate-react@npm:0.127.1"
   dependencies:
     "@juggle/resize-observer": "npm:^3.4.0"
     direction: "npm:^1.0.4"
     is-hotkey: "npm:^0.2.0"
-    is-plain-object: "npm:^5.0.0"
     lodash: "npm:^4.17.21"
     scroll-into-view-if-needed: "npm:^3.1.0"
     tiny-invariant: "npm:1.3.1"
   peerDependencies:
+    "@types/lodash": ^4.14.0
+    "@types/react": ">=18.0.0"
     react: ">=18.2.0"
     react-dom: ">=18.2.0"
-    slate: ">=0.99.0"
-  checksum: 10/da38f67cdcf2050d155d9c59d74303c5314c33fb2be0c71edf1f0bc506b6b56a6bc59ff0bd25213dbcc5f3bc735d64a6159d6a92575da60f7ce6ce8e342b75a4
+    slate: ">=0.121.0"
+    slate-dom: ">=0.119.1"
+  peerDependenciesMeta:
+    "@types/lodash":
+      optional: true
+    "@types/react":
+      optional: true
+  checksum: 10/ea11afbd132d1f277184444c548b7bd418ef4ab3640acef35c6d5b9fb11e78cc0668ece167697ef1bc2dec05dfe8dda071b4a21c91e294b6f0388eea0290584a
   languageName: node
   linkType: hard
 
