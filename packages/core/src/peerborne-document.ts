@@ -10019,6 +10019,7 @@ export class PeerborneDocument<
         signal,
       });
       if (this._bootstrapLoadApplicationState === 'poisoned') return;
+      throwIfLoadAborted(signal);
       if (outcome !== 'retry') {
         this._pendingWelcomes.delete(key);
         if (outcome === 'applied') {

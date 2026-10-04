@@ -3926,6 +3926,7 @@ describe('document load response boundaries', () => {
   async function lateBufferedWelcomeFinalization(options: {
     verify: (...args: unknown[]) => Promise<boolean>;
     hydrateKeys?: (keyIds: Uint8Array[]) => Promise<unknown[]>;
+    sealedPlaintext?: Uint8Array;
     invitationEpoch?: Uint8Array;
     started: Promise<void>;
     release: () => void;
@@ -3942,10 +3943,11 @@ describe('document load response boundaries', () => {
     );
     const { welcome } = await founder.addMember(kemKeyPair.publicKey);
     const eciesSealed = await eciesSeal(
-      encodeWelcomeSealedPayloadV2({
-        keychainChanges: new Uint8Array([1]),
-        beekemWelcome: welcome,
-      }),
+      options.sealedPlaintext ??
+        encodeWelcomeSealedPayloadV2({
+          keychainChanges: new Uint8Array([1]),
+          beekemWelcome: welcome,
+        }),
       kemKeyPair.publicKey,
     );
     const welcomeEpochId = new Uint8Array(32).fill(1);
@@ -4080,6 +4082,27 @@ describe('document load response boundaries', () => {
       expect(document._invitationEpoch).toBeUndefined();
     },
   );
+
+  test('keeps buffered Welcomes when a late verification yields a terminal Welcome after the deadline', async () => {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const verify = jest.fn(async () => {
+      started.resolve();
+      await release.promise;
+      return true;
+    });
+
+    const { document, prepareMerge } = await lateBufferedWelcomeFinalization({
+      verify,
+      sealedPlaintext: new Uint8Array([0xff]),
+      started: started.promise,
+      release: () => release.resolve(),
+    });
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(prepareMerge).not.toHaveBeenCalled();
+    expect(document._invitationEpoch).toBeUndefined();
+  });
 
   test('drops the finalization Welcome epoch advance when keychain hydration settles after the deadline', async () => {
     const existingEpoch = new Uint8Array(32).fill(9);
