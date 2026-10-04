@@ -13,8 +13,10 @@ On a quorum-bound full load, Peerborne strips inline changes, enumerates the
 served change-tree CIDs, and drains at most eight concurrent Helia
 `blockstore.get()` calls before invoking `sync()`. Successful gets may populate
 the local blockstore; the gate precedes CRDT/ACL mutation, not every local
-storage write. The limit applies only to this quorum prefetch, not single-source loads
-or ordinary missing/deferred-block sync.
+storage write. The same eight-worker cap also bounds the hash-only block
+prefetch of tracked bootstrap and invitation catch-up loads (including
+quorum-disabled loads) and the missing-block fetch pool during sync; only the
+exhaustive prefetch after inline changes are stripped is quorum-specific.
 
 Source: [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts) — `LOAD_PREFETCH_MAX_CONCURRENCY` and the bounded worker pool for blockstore fetches.
 
