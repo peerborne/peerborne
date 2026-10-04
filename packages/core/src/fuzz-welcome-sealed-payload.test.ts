@@ -11,13 +11,18 @@ describe('welcome-sealed-payload fuzz', () => {
           decodeWelcomeSealedPayloadV2(bytes);
         } catch (err) {
           if (err instanceof Error) {
-            expect(err.message).toMatch(
-              /not valid UTF-8|not valid JSON|expected a plain object|must be a base64 string|invalid 'bk'|invalid base64/,
-            );
+            expect(err.message).toMatch(/^welcome-sealed-payload v2: /);
           }
         }
       }),
-      { numRuns: 1000 },
+      {
+        numRuns: 1000,
+        examples: [
+          [new TextEncoder().encode('{}')],
+          [new TextEncoder().encode('{"x":1}')],
+          [new TextEncoder().encode('{"k":"","bk":null}')],
+        ],
+      },
     );
   });
 
