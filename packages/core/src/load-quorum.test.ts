@@ -58,7 +58,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     }
   });
 
-  test('3-way disagreement fails quorum (no-majority)', () => {
+  test('3-way disagreement fails quorum (no-agreement)', () => {
     const decision = decideLoadQuorum(
       [
         { peerId: 'p1', hash: HASH_A },
@@ -69,7 +69,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
     );
     expect(decision.ok).toBe(false);
     if (!decision.ok) {
-      expect(decision.reason).toBe('no-majority');
+      expect(decision.reason).toBe('no-agreement');
       expect(decision.respondingCount).toBe(3);
       expect(decision.agreement.size).toBe(3);
     }
@@ -380,7 +380,7 @@ describe('validateLoadQuorumConfig startup input validation', () => {
     expect((err as LoadQuorumFailedError).message).toMatch(
       /loadQuorumK must be a positive integer; got NaN/,
     );
-    // Defence: the misleading legacy `got null` rendering must NOT appear.
+    // Defence: a misleading `got null` rendering must NOT appear.
     expect((err as LoadQuorumFailedError).message).not.toMatch(
       /got null/,
     );
@@ -537,7 +537,8 @@ describe('validateLoadQuorumConfig startup input validation', () => {
   // loadQuorumTimeoutMs validation
   // ---------------------------------------------------------------------
   // The bug: `loadQuorumTimeoutMs` is passed directly into `setTimeout(...)`
-  // inside the tip-advertise probe race in `_raceTipAdvertiseProbe`. Values
+  // inside the security-advertisement probe race in
+  // `_raceSecurityAdvertiseProbe`. Values
   // like `NaN`, `Infinity`, `0`, and negative are coerced by the timer queue
   // to immediate-fire / overflow behaviour — every probe then resolves as a
   // non-vote, quorum fails on EVERY load even with a fully healthy mesh, and
@@ -797,7 +798,7 @@ describe('defaultQuorumQ (strict-majority formula, #189 §5.4.2)', () => {
     expect(defaultQuorumQ(-1)).toBe(0);
   });
 
-  test('rejects the legacy ceil-based formula at K=3', () => {
+  test('does not use a ceil-based formula at K=3', () => {
     // Math.ceil(3 / 2) + 1 === 3 — would require all three peers to agree,
     // refusing a single timeout. defaultQuorumQ must NOT return 3 here.
     expect(defaultQuorumQ(3)).not.toBe(Math.ceil(3 / 2) + 1);
@@ -925,7 +926,7 @@ describe('LoadQuorumFailedError', () => {
   test('carries structured fields for application-level recovery', () => {
     const err = new LoadQuorumFailedError({
       documentPath: '/docs/x',
-      reason: 'no-majority',
+      reason: 'no-agreement',
       respondingCount: 3,
       requiredQ: 2,
       agreement: new Map([
@@ -937,7 +938,7 @@ describe('LoadQuorumFailedError', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('LoadQuorumFailedError');
     expect(err.documentPath).toBe('/docs/x');
-    expect(err.reason).toBe('no-majority');
+    expect(err.reason).toBe('no-agreement');
     expect(err.respondingCount).toBe(3);
     expect(err.requiredQ).toBe(2);
     expect(err.agreement.size).toBe(3);
@@ -965,9 +966,9 @@ describe('LoadQuorumFailedError', () => {
   test('bind-check-failed-all-agreeing-peers carries per-peer agreeingPeerBindFailures', () => {
     // The 'bind-check-failed-all-agreeing-peers' variant is surfaced by
     // `PeerborneDocument.load()` after the agreeing cohort is exhausted
-    // and every peer failed the post-load tipsHash bind check. The
-    // `agreeingPeerBindFailures` field records, per peer, the hex hash
-    // the responder's served `tips` actually hashed to (or the sentinel
+    // and every peer failed the post-load digest bind check. The
+    // `agreeingPeerBindFailures` field records, per peer, the hex digest
+    // the responder's served state actually produced (or the sentinel
     // `'(missing tips)'` for an omitted-tips response).
     const failures = new Map<string, string>([
       ['12D3KooWPeer1', 'ff'.repeat(32)],
@@ -999,7 +1000,7 @@ describe('LoadQuorumFailedError', () => {
     // unconditionally without a null-check.
     const err = new LoadQuorumFailedError({
       documentPath: '/docs/x',
-      reason: 'no-majority',
+      reason: 'no-agreement',
       respondingCount: 1,
       requiredQ: 2,
       agreement: new Map(),

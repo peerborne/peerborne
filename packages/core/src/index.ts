@@ -79,24 +79,8 @@ import {
 } from './merkle-dag-serialization.js';
 import {
   EPOCH_ID_LENGTH,
-  GCM_NONCE_LENGTH,
-  EPOCH_SECRET_INFO,
-  ENCRYPTION_KEY_INFO,
-  Epoch,
-  EpochTransition,
   toHex,
-  generateEpochId,
-  deriveEpochSecret,
-  deriveEncryptionKey,
-  createEpoch,
-  EpochManager,
 } from './epoch.js';
-import {
-  GroupKeyAgreementOutput,
-  WelcomeMessage,
-  MembershipProposal,
-  GroupKeyProvider,
-} from './group-key-provider.js';
 import {
   CAP_DOC_ADMIN,
   CAP_DOC_WRITE,
@@ -151,7 +135,7 @@ import {
   decodeWelcomeSealedPayloadV2,
   encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
-import { tipsHash, tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   decideLoadQuorum,
   effectiveK,
@@ -219,21 +203,7 @@ export {
   CRDTProvider,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
-  GCM_NONCE_LENGTH,
-  EPOCH_SECRET_INFO,
-  ENCRYPTION_KEY_INFO,
-  Epoch,
-  EpochTransition,
   toHex,
-  generateEpochId,
-  deriveEpochSecret,
-  deriveEncryptionKey,
-  createEpoch,
-  EpochManager,
-  GroupKeyAgreementOutput,
-  WelcomeMessage,
-  MembershipProposal,
-  GroupKeyProvider,
   Keychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
@@ -296,7 +266,6 @@ export {
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
-  tipsHash,
   tipsHashToHex,
   TIPS_HASH_LENGTH,
   decideLoadQuorum,
@@ -321,7 +290,7 @@ export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { CreateInvitationOptions } from './peerborne.js';
 export type { InvitationBootstrapBundle } from './peerborne-document.js';
 export type {
-  PeerTipAdvertisement,
+  PeerLoadQuorumVote,
   LoadQuorumDecision,
   LoadQuorumFailedReason,
 } from './load-quorum.js';

@@ -326,9 +326,9 @@ describe('concrete inbound handler log redaction', () => {
       'Shared snapshot-load request handling failed',
     ],
     [
-      'tip-advertise',
+      'security-advertise',
       'handleSecurityAdvertiseRequestData',
-      'Shared tip-advertise request handling failed',
+      'Shared security-advertise request handling failed',
     ],
   ] as const)(
     'redacts an internal provider failure in the real %s responder',

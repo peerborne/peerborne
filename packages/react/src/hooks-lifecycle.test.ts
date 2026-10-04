@@ -1,6 +1,7 @@
 import { describe, expect, test, jest, afterEach } from '@jest/globals';
 import React, { useState } from 'react';
 import { render, act, cleanup, waitFor } from '@testing-library/react';
+import { usePeerborneDocumentState } from './hooks.js';
 import {
   resetCaches,
   getCacheSizes,
@@ -96,9 +97,10 @@ describe('usePeerborneDocumentState lifecycle', () => {
       await waitFor(() => expect(mockDoc.open).toHaveBeenCalledTimes(1));
       expect(mockDoc.create).not.toHaveBeenCalled();
       await act(async () => rejectOpen(new Error('not found')));
-      await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(2));
+      expect(mockDoc.open).toHaveBeenCalledTimes(1);
       expect(mockDoc.create).toHaveBeenCalledTimes(1);
-      expect(consoleSpy).toHaveBeenCalledWith('Failed to open/find document: /pending');
+      expect(consoleSpy).not.toHaveBeenCalled();
     } finally {
       consoleSpy.mockRestore();
     }
@@ -378,6 +380,134 @@ describe('Multiple subscribers to the same document', () => {
   });
 });
 
+describe('activation failures and initialization modes', () => {
+  const noState = () =>
+    new Error(
+      'No document state is available; use create() to authorize a new document',
+    );
+
+  afterEach(() => {
+    cleanup();
+    resetCaches();
+    jest.restoreAllMocks();
+  });
+
+  test('a failed open is evicted so switching to create founds the document', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValue(noState());
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const captureRef = { current: null as any };
+    const consumer = (initialization: 'open' | 'create') =>
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/open-then-create',
+          initialization,
+          captureRef,
+        }),
+      );
+
+    const view = render(consumer('open'));
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(
+        'Failed to open/find document: /open-then-create',
+      );
+    });
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+
+    view.rerender(consumer('create'));
+    await waitFor(() => {
+      expect(captureRef.current.docData).toEqual({ test: 'data' });
+    });
+    expect(mockDoc.open).toHaveBeenCalledTimes(1);
+    expect(mockDoc.create).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('switching to create while an open is in flight creates once the open fails', async () => {
+    const mockDoc = createMockDocument();
+    let rejectOpen!: (error: Error) => void;
+    mockDoc.open.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOpen = reject;
+        }),
+    );
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const captureRef = { current: null as any };
+    const consumer = (initialization: 'open' | 'create') =>
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/in-flight-open',
+          initialization,
+          captureRef,
+        }),
+      );
+
+    const view = render(consumer('open'));
+    await waitFor(() => expect(mockDoc.open).toHaveBeenCalledTimes(1));
+    view.rerender(consumer('create'));
+    expect(mockDoc.create).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rejectOpen(noState());
+    });
+    await waitFor(() => {
+      expect(captureRef.current.docData).toEqual({ test: 'data' });
+    });
+    expect(mockDoc.open).toHaveBeenCalledTimes(1);
+    expect(mockDoc.create).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['fails', true, 1],
+    ['succeeds', false, 0],
+  ] as const)(
+    'a parent create and a child open of one path share the document when the child open %s',
+    async (_label, openFails, expectedCreates) => {
+      const mockDoc = createMockDocument();
+      if (openFails) mockDoc.open.mockRejectedValue(noState());
+      const mockSwarm = createMockPeerborne(mockDoc);
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const parentRef = { current: undefined as any };
+      const childRef = { current: null as any };
+
+      function Parent() {
+        const [docData] = usePeerborneDocumentState(
+          mockSwarm,
+          '/parent-create',
+          'all',
+          'create',
+        );
+        parentRef.current = docData;
+        return React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/parent-create',
+          captureRef: childRef,
+        });
+      }
+
+      render(React.createElement(TestProvider, null, React.createElement(Parent)));
+      await waitFor(() => {
+        expect(parentRef.current).toEqual({ test: 'data' });
+        expect(childRef.current.docData).toEqual({ test: 'data' });
+        expect(mockDoc.subscribe).toHaveBeenCalledTimes(2);
+      });
+      expect(mockDoc.open).toHaveBeenCalledTimes(1);
+      expect(mockDoc.create).toHaveBeenCalledTimes(expectedCreates);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('usePeerborneDocumentState return value', () => {
   afterEach(() => {
     cleanup();
@@ -440,5 +570,6 @@ describe('usePeerborneDocumentState return value', () => {
     expect(typeof acl.removeReader).toBe('function');
     expect(typeof acl.addWriter).toBe('function');
     expect(typeof acl.removeWriter).toBe('function');
+    expect(typeof acl.setKemKeyPair).toBe('function');
   });
 });

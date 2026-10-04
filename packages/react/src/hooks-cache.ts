@@ -17,9 +17,15 @@ export type PeerborneContextOpenResultAny = {
   writers?: any[];
 };
 
+export type PeerborneDocumentInitialization = 'open' | 'create';
+
 export type PeerborneHookCaches = {
   contextKeyPrefix: string;
   openTasks: Map<string, Promise<PeerborneContextOpenResultAny>>;
+  openTaskModes: WeakMap<
+    Promise<PeerborneContextOpenResultAny>,
+    PeerborneDocumentInitialization
+  >;
   openTaskResults: Map<string, PeerborneContextOpenResultAny>;
   subscriberCounts: Map<string, number>;
 };
@@ -33,6 +39,7 @@ export function getPeerborneHookCaches(peerborne: object): PeerborneHookCaches {
     caches = {
       contextKeyPrefix: `peerborne-${nextContextKeyPrefix++}:`,
       openTasks: new Map(),
+      openTaskModes: new WeakMap(),
       openTaskResults: new Map(),
       subscriberCounts: new Map(),
     };

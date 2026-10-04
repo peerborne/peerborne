@@ -23,6 +23,7 @@ import {
 import {
   getPeerborneDocumentCacheKey,
   getPeerborneHookCaches,
+  type PeerborneDocumentInitialization,
 } from './hooks-cache.js';
 
 export type PeerborneContextOpenResult<
@@ -68,8 +69,6 @@ export const PeerborneContext = createContext<{
   setDocReadersCache: () => {},
   setDocWritersCache: () => {},
 });
-
-const openTaskInitializations = new WeakMap<Promise<unknown>, 'open' | 'create'>();
 
 function setCacheEntry<Cache extends Record<string, Value>, Value>(
   setter: Dispatch<SetStateAction<Cache>>,
@@ -165,7 +164,7 @@ export function usePeerborneDocumentState<
   >,
   documentPath: string,
   originFilter: 'all' | 'remote' | 'local' = 'all',
-  initialization: 'open' | 'create' = 'open',
+  initialization: PeerborneDocumentInitialization = 'open',
 ): [
   DocType | undefined,
   (fn: ChangeFnType, message?: string) => void,
@@ -173,7 +172,7 @@ export function usePeerborneDocumentState<
     readers: PublicKey[];
     addReader: (
       user: PublicKey,
-      readerKemPublicKey?: Uint8Array,
+      readerKemPublicKey: Uint8Array,
     ) => Promise<void>;
     removeReader: (user: PublicKey) => Promise<void>;
     writers: PublicKey[];
@@ -182,6 +181,7 @@ export function usePeerborneDocumentState<
       user: PublicKey,
       options?: RemoveWriterOptions,
     ) => Promise<void>;
+    setKemKeyPair: (keyPair: CryptoKeyPair | undefined) => Promise<void>;
   },
 ] {
   const {
@@ -199,7 +199,8 @@ export function usePeerborneDocumentState<
   const subscriptionIdRef = useRef(`usePeerborneDocumentState-${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
-    const { openTasks, openTaskResults, subscriberCounts } = hookCaches;
+    const { openTasks, openTaskModes, openTaskResults, subscriberCounts } =
+      hookCaches;
     let active = true;
     let subscribedDocRef: PeerborneDocument<
       DocType,
@@ -231,47 +232,72 @@ export function usePeerborneDocumentState<
       setCacheEntry(setDocWritersCache, documentCacheKey, writers);
     };
 
-    (async () => {
-      let openTask = openTasks.get(documentPath) as
-        | Promise<
-            PeerborneContextOpenResult<
-              DocType,
-              ChangesType,
-              ChangeFnType,
-              PrivateKey,
-              PublicKey,
-              DocumentKey
-            >
-          >
-        | undefined;
+    type OpenTask = Promise<
+      PeerborneContextOpenResult<
+        DocType,
+        ChangesType,
+        ChangeFnType,
+        PrivateKey,
+        PublicKey,
+        DocumentKey
+      >
+    >;
 
+    const activate = async (mode: PeerborneDocumentInitialization): OpenTask => {
+      const docRef = peerborne.doc(documentPath);
+      if (!docRef) {
+        throw new Error(`Failed to open/find document: ${documentPath}`);
+      }
+      await docRef[mode]();
+      const readers = await docRef.getReaders();
+      const writers = await docRef.getWriters();
+      return { docRef, readers, writers };
+    };
+
+    const shareTask = (task: OpenTask, mode: PeerborneDocumentInitialization) => {
+      openTasks.set(documentPath, task);
+      openTaskModes.set(task, mode);
+      return task;
+    };
+
+    // A caller adopts a shared activation of the other initialization mode
+    // only if it activates the document, and otherwise runs its own.
+    const joinActivation = (): OpenTask => {
+      const existing = openTasks.get(documentPath) as OpenTask | undefined;
+      if (!existing) {
+        return shareTask(activate(initialization), initialization);
+      }
+      if (openTaskModes.get(existing) !== initialization) {
+        return shareTask(
+          existing.catch(() => activate(initialization)),
+          initialization,
+        );
+      }
+      return existing;
+    };
+
+    // A failed activation is evicted so later mounts start a new one, and a
+    // waiter follows a replacement that superseded the task it joined.
+    const awaitActivation = async (
+      task: OpenTask,
+    ): Promise<Awaited<OpenTask>> => {
       try {
-        while (openTask && openTaskInitializations.get(openTask) !== initialization) {
-          const activated = await openTask.then(() => true, () => false);
-          if (activated) break;
-          if (openTasks.get(documentPath) === openTask) {
-            openTasks.delete(documentPath);
-          }
-          if (!active) return;
-          openTask = openTasks.get(documentPath) as typeof openTask;
+        return await task;
+      } catch (error) {
+        const latest = openTasks.get(documentPath) as OpenTask | undefined;
+        if (latest === task) {
+          openTasks.delete(documentPath);
         }
-        if (!openTask) {
-          const docRef = peerborne.doc(documentPath);
-          if (!docRef) {
-            console.warn(`Failed to open/find document: ${documentPath}`);
-            return;
-          }
-          openTask = (async () => {
-            await docRef[initialization]();
-            const readers = await docRef.getReaders();
-            const writers = await docRef.getWriters();
-            return { docRef, readers, writers };
-          })();
-          openTaskInitializations.set(openTask, initialization);
-          openTasks.set(documentPath, openTask);
+        if (!active || !latest || latest === task) {
+          throw error;
         }
+        return awaitActivation(latest);
+      }
+    };
 
-        const result = await openTask;
+    (async () => {
+      try {
+        const result = await awaitActivation(joinActivation());
         if (!active || !result.docRef) return;
 
         const cachedResult = openTaskResults.get(documentPath);
@@ -361,11 +387,9 @@ export function usePeerborneDocumentState<
     },
     {
       readers: docReadersCache[documentCacheKey],
-      addReader: async (user: PublicKey, readerKemPublicKey?: Uint8Array) => {
+      addReader: async (user: PublicKey, readerKemPublicKey: Uint8Array) => {
         const docRef = docCache[documentCacheKey];
-        await (readerKemPublicKey === undefined
-          ? docRef.addReader(user)
-          : docRef.addReader(user, readerKemPublicKey));
+        await docRef.addReader(user, readerKemPublicKey);
       },
       removeReader: async (user: PublicKey) => {
         const docRef = docCache[documentCacheKey];
@@ -379,6 +403,10 @@ export function usePeerborneDocumentState<
       removeWriter: async (user: PublicKey, options?: RemoveWriterOptions) => {
         const docRef = docCache[documentCacheKey];
         await docRef.removeWriter(user, options);
+      },
+      setKemKeyPair: async (keyPair: CryptoKeyPair | undefined) => {
+        const docRef = docCache[documentCacheKey];
+        await docRef.setKemKeyPair(keyPair);
       },
     },
   ];

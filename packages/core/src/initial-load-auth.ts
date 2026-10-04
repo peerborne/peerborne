@@ -10,7 +10,6 @@ export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
 const reflectApply = Reflect.apply;
 
 export interface InitialLoadAuthenticationOptions<PublicKey> {
-  signingEnabled: boolean;
   payload: Uint8Array;
   signature?: Uint8Array;
   existingWriterKeys: readonly PublicKey[];
@@ -128,14 +127,12 @@ async function verifiedSignerIndexes<PublicKey>(
 export async function identifyInitialLoadSigner<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<IdentifiedInitialLoadSigner<PublicKey> | null> {
-  const signingEnabled = options.signingEnabled;
   const existingWriterKeys = options.existingWriterKeys;
   const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
   const keys = selectedTrustKeys(
     existingWriterKeys,
     trustedBootstrapWriterKeys,
   );
-  if (!signingEnabled) return null;
   const payload = options.payload;
   const signature = options.signature;
   const verify = options.verify;
@@ -159,10 +156,6 @@ export async function identifyInitialLoadSigner<PublicKey>(
 export async function verifyInitialLoadAuthentication<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<boolean> {
-  const signingEnabled = options.signingEnabled;
-  if (!signingEnabled) {
-    return false;
-  }
   const existingWriterKeys = options.existingWriterKeys;
   const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
   const keys = selectedTrustKeys(

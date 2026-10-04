@@ -17,7 +17,6 @@ import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
-import { tipsHash, tipsHashToHex } from './tips-hash.js';
 import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import { BeeKEM } from './beekem/beekem.js';
 
@@ -2415,12 +2414,12 @@ describe('document load response boundaries', () => {
     ).resolves.toBe('queue released');
   });
 
-  test('leaves an incomplete legacy bootstrap pending without notifying subscribers', async () => {
+  test('leaves an incomplete bootstrap pending without notifying subscribers', async () => {
     const message = {
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
-      changeId: 'legacy-head',
+      changeId: 'bootstrap-head',
       changes: { kind: crdtDocumentChangeNode },
     };
     const { document, stream } = signedLoadHarness(
@@ -2438,7 +2437,7 @@ describe('document load response boundaries', () => {
         onStateApplicationStart?: () => void,
       ) => {
         onStateApplicationStart?.();
-        await document._fireOrDeferRemoteUpdateHandlers(['legacy-head']);
+        await document._fireOrDeferRemoteUpdateHandlers(['bootstrap-head']);
         return true;
       },
     );
@@ -2450,19 +2449,115 @@ describe('document load response boundaries', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  test('rejects initial loading when signing is disabled before applying state', async () => {
-    const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
+  test('verifies initial loads when ordinary signing is disabled', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      changeId: 'signed-head',
+      changes: { kind: crdtDocumentChangeNode },
+    };
+    const verify = jest.fn(async (_raw, key) => key === 'writer');
+    const { document, stream } = signedLoadHarness(
+      async () => ['writer'],
+      verify,
+      message,
+    );
     document.swarm.config.enableSigning = false;
+    document._bootstrapLoadApplicationState = 'complete';
+    document._syncUnlocked = jest.fn(async () => {
+      document._hashes.add('signed-head');
+      return true;
+    });
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+      ),
+    ).resolves.toBe(true);
+    expect(verify).toHaveBeenCalled();
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['an unsigned', undefined],
+    ['a forged', 'AAAA'],
+  ])(
+    'rejects %s initial load response when ordinary signing is disabled',
+    async (_label, signature) => {
+      const message: Record<string, unknown> = {
+        documentId: '/load-race',
+        signatureContext: 'load-response-v4',
+        changeId: 'forged-head',
+        changes: { kind: crdtDocumentChangeNode },
+      };
+      if (signature !== undefined) message.signature = signature;
+      const verify = jest.fn(async () => false);
+      const { document, stream } = signedLoadHarness(
+        async () => ['writer'],
+        verify,
+        message,
+      );
+      document.swarm.config.enableSigning = false;
+      document._bootstrapLoadApplicationState = 'complete';
+      document._syncUnlocked = jest.fn(async () => true);
+
+      await expect(
+        document._sendLoadRequestAndSync(
+          await loadSessionFixture(document, undefined),
+          stream,
+          new Uint8Array([1]),
+        ),
+      ).resolves.toBe(false);
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects initial loading without a trusted signing authority', async () => {
+    const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
     document._syncUnlocked = jest.fn();
-    await expect(document._sendLoadRequestAndSync(fixedLoadSession(document), stream, new Uint8Array([1])))
-      .rejects.toThrow(/require a trusted signing authority/);
+    await expect(
+      document._sendLoadRequestAndSync(
+        { ...fixedLoadSession(document), authorities: [] },
+        stream,
+        new Uint8Array([1]),
+      ),
+    ).rejects.toThrow(/require a trusted signing authority/);
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
-    expect(document._getWriterKeys).not.toHaveBeenCalled();
     expect(document._authProvider.verify).not.toHaveBeenCalled();
     expect(document._syncUnlocked).not.toHaveBeenCalled();
     expect(stream.send).not.toHaveBeenCalled();
     expect(stream.abort).toHaveBeenCalledTimes(1);
   });
+
+  test.each([true, false])(
+    'authorizes load requesters by signature when enableSigning is %p',
+    async (enableSigning) => {
+      const verify = jest.fn(async (_raw, key) => key === 'reader');
+      const document = fakeDocument({
+        swarm: { config: { enableSigning } },
+        _deserializeSignature: jest.fn(() => new Uint8Array([1])),
+        _readers: { users: async () => ['reader'] },
+        _writers: { users: async () => [] },
+        _authProvider: { verify },
+      });
+      const request = {
+        documentId: '/signed-load-requester',
+        loadChallenge: fixtureLoadChallenge(),
+        signature: 'AAAA',
+      };
+
+      await expect(document._isLoadRequesterAuthorized(request)).resolves.toBe(
+        true,
+      );
+      await expect(
+        document._isLoadRequesterAuthorized({ ...request, signature: undefined }),
+      ).resolves.toBe(false);
+      expect(verify).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test('tracks and defers an incomplete signer-pinned catch-up', async () => {
     const message = {
@@ -2566,7 +2661,7 @@ describe('document load response boundaries', () => {
     );
     const otherMutations = [
       () => document.removeWriter('writer'),
-      () => document.addReader('reader'),
+      () => document.addReader('reader', new Uint8Array(65).fill(4)),
       () => document.removeReader('reader'),
       () => document.endChange(),
       () => document.snapshot(),
@@ -4102,7 +4197,7 @@ describe('document load response boundaries', () => {
       _isLoadRequesterAuthorized: async () => true,
       _createLoadResponsePlan: async (request: any) => currentLoadResponse({ documentId: '/response-aba', loadChallenge: request.loadChallenge }),
       _servedFrontier: jest.fn(() => []),
-      _signAsWriter: jest.fn(async () => {
+      _signAsWriterUnconditional: jest.fn(async () => {
         signingStarted.resolve();
         return releaseSigning.promise;
       }),
@@ -4178,7 +4273,7 @@ describe('document load response boundaries', () => {
         _changesSerializer: { serializeChanges: fixtureSerializeChanges },
         _latestSnapshot: { state: {}, lastChangeNodeCID: 'SNAPSHOT', compactedCount: 1, timestamp: 1, signature: new Uint8Array([1]) },
         _servedFrontier: jest.fn(() => []),
-        _signAsWriter: jest.fn(async () => {
+        _signAsWriterUnconditional: jest.fn(async () => {
           responseConstructionPaused.resolve();
           await releaseResponseConstruction.promise;
           return 'response-signature';
@@ -4256,7 +4351,7 @@ describe('document load response boundaries', () => {
           loadChallenge: request.loadChallenge,
         }),
       _servedFrontier: jest.fn(() => []),
-      _signAsWriter: jest.fn(async () => 'response-signature'),
+      _signAsWriterUnconditional: jest.fn(async () => 'response-signature'),
       _syncMessageSerializer: {
         serializeSyncMessage: jest.fn(() => new Uint8Array([7])),
       },
@@ -5601,12 +5696,12 @@ describe('document load response boundaries', () => {
     expect(rawStream.close).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledTimes(1);
     expect(rawStream.abort).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'tip-advertise probe completed' }),
+      expect.objectContaining({ message: 'security-advertise probe completed' }),
     );
     expect(rawStream.closeRead).not.toHaveBeenCalled();
   });
 
-  test('treats a cross-context tip advertisement as a non-vote', async () => {
+  test('treats a security advertisement signed for another context as a non-vote', async () => {
     const verify = jest.fn();
     const rawStream = {
       send: jest.fn(() => true),

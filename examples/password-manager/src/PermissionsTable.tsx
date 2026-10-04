@@ -3,7 +3,11 @@ import { PeerborneContext, usePeerborneDocumentState } from '@peerborne/react';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
 import { useContext, useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
-import { YjsPeerborne } from './utils';
+import {
+  decodeKemPublicKey,
+  KemPublicKeyInputError,
+  YjsPeerborne,
+} from './utils';
 
 type DisplayPermission = {
   key: CryptoKey;
@@ -13,7 +17,8 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
-const missingKemMessage = "Enter the new member's KEM public key.";
+const missingKemMessage =
+  "Enter the new member's KEM public key from their Settings page.";
 const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
@@ -25,29 +30,6 @@ async function isLastWriter(
   );
   const writerKeys = new Set(serializedWriters);
   return writerKeys.size === 1 && writerKeys.has(serializedTarget);
-}
-
-class KemPublicKeyInputError extends Error {}
-
-function decodeKemPublicKey(value: string): Uint8Array | undefined {
-  const encoded = value.trim();
-  if (!encoded) return undefined;
-  let decoded: string;
-  try {
-    decoded = atob(encoded);
-  } catch {
-    throw new KemPublicKeyInputError(
-      'The member KEM public key is not valid base64.',
-    );
-  }
-  const raw = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-  if (raw.length !== 65 || raw[0] !== 0x04) {
-    throw new KemPublicKeyInputError(
-      'The member KEM public key must be a 65-byte uncompressed P-256 ' +
-        'public key starting with 0x04.',
-    );
-  }
-  return raw;
 }
 
 export function PermissionsTable({
@@ -131,10 +113,12 @@ export function PermissionsTable({
   return (
     <>
       <p>
-        Enter the member's signing public key and raw P-256 ECDH KEM public key,
-        both base64. The KEM key gives the member a BeeKEM leaf and seals the
-        document key in a Welcome sent to connected peers. A new member requires
-        a KEM key; an existing member's role can change without one.
+        Enter the new member's signing public key and the raw P-256 ECDH KEM
+        public key from their Settings page, both base64. Adding a member gives
+        them a BeeKEM leaf and sends a Welcome sealed to their KEM public key.
+        An existing member's role can change without a KEM key. This example
+        has no flow for the new member to open a shared secret; use the
+        invitation API for that.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -253,30 +237,45 @@ export function PermissionsTable({
                         },
                         ['verify'],
                       )(draftUserKey);
-                      const kemPublicKey = decodeKemPublicKey(draftKemKey);
+                      const kemKey = draftKemKey.trim();
+                      const kemPublicKey = kemKey
+                        ? decodeKemPublicKey(kemKey)
+                        : undefined;
                       const serializedKey = await serializeKey(key);
-                      const isMember = permissions.some(
+                      const current = permissions.find(
                         (permission) => permission.publicKey === serializedKey,
                       );
-                      if (!isMember && !kemPublicKey) {
+                      // Writers keep their reader row, so only a new member
+                      // needs reader onboarding with a KEM public key.
+                      if (!current && !kemPublicKey) {
                         alert(missingKemMessage);
                         return;
                       }
+                      const onboardReader = async () => {
+                        if (!current && kemPublicKey) {
+                          await addReader(key, kemPublicKey);
+                        }
+                      };
 
                       switch (draftPermission) {
                         case 'r': {
-                          if (await isLastWriter(key, writers)) {
-                            alert(lastEditorMessage);
-                            return;
+                          if (current?.permissions === 'rw') {
+                            if (await isLastWriter(key, writers)) {
+                              alert(lastEditorMessage);
+                              return;
+                            }
+                            await removeWriter(key, keepAnotherEditor);
+                          } else {
+                            await onboardReader();
                           }
-                          await addReader(key, kemPublicKey);
-                          await removeWriter(key, keepAnotherEditor);
                           console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          await addReader(key, kemPublicKey);
-                          await addWriter(key);
+                          await onboardReader();
+                          if (current?.permissions !== 'rw') {
+                            await addWriter(key);
+                          }
                           console.log('Added writer');
                           break;
                         }
@@ -297,8 +296,7 @@ export function PermissionsTable({
                           ? lastEditorMessage
                           : 'Unable to update document permissions. Verify ' +
                               'both public keys and the membership ' +
-                              'configuration. Promotion to editor requires ' +
-                              "the member's KEM public key.",
+                              'configuration.',
                       );
                       return;
                     }

@@ -16,7 +16,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: [],
@@ -31,7 +30,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['existing'],
@@ -49,7 +47,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: [],
@@ -62,17 +59,9 @@ describe('verifyInitialLoadAuthentication', () => {
     ).resolves.toBe(true);
   });
 
-  test('rejects disabled signing', async () => {
-    await expect(verifyInitialLoadAuthentication({
-      signingEnabled: false, payload, signature,
-      existingWriterKeys: ['writer'], trustedBootstrapWriterKeys: [],
-      verify: async () => true,
-    })).resolves.toBe(false);
-  });
-
   test('rejects key possession without a trusted signing authority', async () => {
     await expect(verifyInitialLoadAuthentication({
-      signingEnabled: true, payload,
+      payload,
       existingWriterKeys: [], trustedBootstrapWriterKeys: [],
       verify: async () => true,
     })).resolves.toBe(false);
@@ -82,7 +71,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         existingWriterKeys: [],
         trustedBootstrapWriterKeys: ['writer'],
@@ -96,7 +84,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload: new Uint8Array(),
         signature,
         existingWriterKeys: ['writer'],
@@ -110,7 +97,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature: new Uint8Array(),
         existingWriterKeys: ['writer'],
@@ -128,7 +114,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['existing'],
@@ -142,7 +127,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['writer'],
@@ -156,7 +140,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       identifyInitialLoadSigner({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['writer-a', 'writer-b'],
@@ -171,7 +154,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       identifyInitialLoadSigner({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: writerKeys,
@@ -194,8 +176,6 @@ describe('verifyInitialLoadAuthentication', () => {
     );
     const lastWriter = writers[writers.length - 1];
     const options = {
-      strict: true,
-      signingEnabled: true,
       payload,
       signature,
       existingWriterKeys: writers,
@@ -214,7 +194,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       identifyInitialLoadSigner({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: [],
@@ -260,7 +239,6 @@ describe('verifyInitialLoadAuthentication', () => {
     };
     options = {
 
-      signingEnabled: true,
       payload: mutablePayload,
       signature: mutableSignature,
       existingWriterKeys: ['writer-a', 'writer-b'],
@@ -291,7 +269,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload: crossRealmPayload,
         signature: crossRealmSignature,
         existingWriterKeys: ['writer'],
@@ -315,7 +292,6 @@ describe('verifyInitialLoadAuthentication', () => {
       const shared = new Uint8Array(new SharedArrayBuffer(3));
       const options = {
 
-        signingEnabled: true,
         payload: field === 'payload' ? shared : payload,
         signature: field === 'signature' ? shared : signature,
         existingWriterKeys: ['writer'],
@@ -338,7 +314,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       verifyInitialLoadAuthentication({
 
-        signingEnabled: true,
         payload,
         signature: new Uint8Array(
           MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES + 1,
@@ -357,8 +332,6 @@ describe('verifyInitialLoadAuthentication', () => {
   test('a key listed twice is not treated as ambiguous', async () => {
     await expect(
       identifyInitialLoadSigner({
-        strict: true,
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['writer-a', 'writer-b', 'writer-a'],
@@ -372,8 +345,6 @@ describe('verifyInitialLoadAuthentication', () => {
     const seen: string[] = [];
     await expect(
       verifyInitialLoadAuthentication({
-        strict: true,
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['writer-a', 'writer-b', 'writer-c'],
@@ -391,7 +362,6 @@ describe('verifyInitialLoadAuthentication', () => {
     await expect(
       identifyInitialLoadSigner({
 
-        signingEnabled: true,
         payload,
         signature,
         existingWriterKeys: ['writer-a', 'writer-b'],
