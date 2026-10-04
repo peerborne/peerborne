@@ -47,15 +47,12 @@ import {
 } from './acl.js';
 import {
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -239,15 +236,12 @@ export {
   MembershipProposal,
   GroupKeyProvider,
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -422,12 +416,6 @@ export type {
   IdentifiedInitialLoadSigner,
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
-export {
-  allowsUnauthenticatedUnknownDocumentSentinel,
-  isUnknownDocumentAdvertisement,
-  unknownDocumentAdvertisement,
-} from './initial-load-sentinel-policy.js';
-export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
 export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
