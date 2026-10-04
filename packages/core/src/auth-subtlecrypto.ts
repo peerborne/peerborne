@@ -252,11 +252,11 @@ export class SubtleCrypto
   }
 
   /**
-   * Given encrypted changes and a private key, returns a signature.
+   * Given data and a private key, returns a signature.
    *
-   * @param data encrypted data to be signed
+   * @param data bytes to be signed
    * @param privateKey - part of key pair used to sign and verify
-   * @returns signature over the encrypted data
+   * @returns signature over the data
    */
   public async sign(
     data: Uint8Array,
