@@ -440,15 +440,16 @@ new trust root.
 
 Normal network loading in the current runtime uses only the V4 load, V4
 snapshot, and `security-advertise-v1` protocols. `PeerborneDocument.load()`
-captures application-supplied trusted writers
-(`resolveTrustedDocumentWriters`) or a locally resolved security tuple
-(`resolveLoadSecurityCommitments`) and a fresh challenge before probing. It
-counts each authenticated signing authority once, recomputes the complete
-response manifest, and binds the selected response to the agreed digest before
-mutation. `open()` never creates a document; only an explicit `create()` founds
-one. The runtime compares the captured tuple but does not verify an MLS
-genesis, replay a newer control suffix, or persist control state, so the
-MLS-specific paragraphs above remain target behavior, not a runtime capability.
+captures a locally resolved security tuple (`resolveLoadSecurityCommitments`,
+required for every normal load), trusted writer authorities from the local ACL
+or, when it has none, from `resolveTrustedDocumentWriters`, and a fresh
+challenge before probing. It counts each authenticated signing authority once,
+recomputes the complete response manifest, and binds the selected response to
+the agreed digest before mutation. `open()` never creates a document; only an
+explicit `create()` founds one. The runtime compares the captured tuple but
+does not verify an MLS genesis, replay a newer control suffix, or persist
+control state, so the MLS-specific paragraphs above remain target behavior, not
+a runtime capability.
 
 Empty or unauthenticated absence responses do not count as votes. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
