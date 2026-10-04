@@ -81,8 +81,16 @@ describe('load-request stream framing', () => {
     const nonObject = jsonSerializer.createLoadRequestCompletionDetector();
     expect(() => nonObject(encoder.encode('[]'))).toThrow(/must be an object/);
 
+    const request = jsonSerializer.serializeLoadRequest({
+      documentId: '/doc',
+      signature: 'sig',
+      loadChallenge: new Uint8Array(32).fill(7),
+    });
+    expect(jsonSerializer.deserializeLoadRequest(request).documentId).toBe(
+      '/doc',
+    );
     const trailing = jsonSerializer.createLoadRequestCompletionDetector();
-    expect(() => trailing(encoder.encode('{"signatureContext":"ordinary-sync-v1","documentId":"/doc"}x'))).toThrow(
+    expect(() => trailing(Uint8Array.of(...request, 0x78))).toThrow(
       /after JSON load request/,
     );
   });
