@@ -43,6 +43,8 @@ function stampTimestamps(doc: WikiSwarmArticle) {
 interface WikiArticleOwnProps {
   documentId: string;
   create?: boolean;
+  /** Called after `create` founds the article so the URL stops re-creating it. */
+  onCreated?: () => void;
 }
 
 interface WikiArticleProps extends WikiArticleOwnProps {
@@ -129,6 +131,9 @@ class WikiArticle extends React.Component<
         .then(() =>
           this.props.onDocumentOpen(this.props.documentId, this.props.create ? 'create' : 'open'),
         )
+        .then(() => {
+          if (this._mounted && this.props.create) this.props.onCreated?.();
+        })
         .catch(() => { if (this._mounted) this.setState({ loadError: 'Unable to open this article. Check its invitation and connection.' }); });
     }
   }
