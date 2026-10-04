@@ -705,6 +705,39 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     });
   });
 
+  test.each([
+    [
+      'on the root node',
+      { kind: 'document', keyID: 'old', change: new Uint8Array([1]) },
+    ],
+    [
+      'on a nested child',
+      {
+        kind: 'document',
+        change: new Uint8Array([1]),
+        children: {
+          h1: { kind: 'writer', keyID: 'old', change: new Uint8Array([2]) },
+        },
+      },
+    ],
+    [
+      'as an undefined own property',
+      { kind: 'document', keyID: undefined, change: new Uint8Array([1]) },
+    ],
+  ])(
+    'encoder rejects a "keyID" field %s before encoding any leaf',
+    (_label, node) => {
+      const encodeLeaf = jest.fn(hexEncode);
+      expect(() =>
+        serializeChangeNodeForJSON(
+          node as unknown as CRDTChangeNode<Uint8Array>,
+          encodeLeaf,
+        ),
+      ).toThrow(/keyID/);
+      expect(encodeLeaf).not.toHaveBeenCalled();
+    },
+  );
+
   test('encoder is not invoked for nodes whose change is undefined', () => {
     const original: CRDTChangeNode<Uint8Array> = {
       kind: 'document',

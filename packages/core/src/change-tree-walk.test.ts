@@ -140,6 +140,34 @@ describe('bounded iterative change-tree consumers', () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  describe.each([
+    ['collectBoundedChangeTree', collectBoundedChangeTree],
+    ['snapshotBoundedChangeTree', snapshotBoundedChangeTree],
+  ] as const)('%s rejects a keyID field', (_name, walk) => {
+    test('on the root node', () => {
+      const root = { kind: crdtDocumentChangeNode, keyID: 'old' } as Node;
+
+      expect(() => walk('root', root)).toThrow(/keyID/);
+    });
+
+    test('on a nested child', () => {
+      const root: Node = {
+        kind: crdtDocumentChangeNode,
+        children: {
+          child: { kind: crdtWriterChangeNode, keyID: 'old' } as Node,
+        },
+      };
+
+      expect(() => walk('root', root)).toThrow(/keyID/);
+    });
+
+    test('when the own property is undefined', () => {
+      const root = { kind: crdtDocumentChangeNode, keyID: undefined } as Node;
+
+      expect(() => walk('root', root)).toThrow(/keyID/);
+    });
+  });
+
   test('rejects a tree over the aggregate node budget', () => {
     expect(() =>
       collectBoundedChangeTree('root', overNodeBudgetTree()),
