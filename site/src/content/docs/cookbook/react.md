@@ -95,6 +95,8 @@ function Note({ swarm }: { swarm: YjsSwarm }) {
   const [doc, changeDoc, acl, activationError] = usePeerborneDocumentState(
     swarm,
     '/notes/hello',
+    'all',
+    'create',
   );
 
   if (activationError) return <p>Could not open this note.</p>;
@@ -118,6 +120,6 @@ The tuple is `[document | undefined, changeDoc, aclControls, activationError]`; 
 
 ## Lifecycle boundaries
 
-Each document-hook instance unsubscribes on cleanup, and the last subscriber closes and evicts that document. The open-task map deduplicates an in-flight open, including a rapid StrictMode remount. That is the only StrictMode guarantee: it is not a guarantee for swarm initialization, networking, mutations, or every side effect.
+Each document-hook instance unsubscribes on cleanup, and the last subscriber closes and evicts that document. The open-task map deduplicates an in-flight open, including a rapid StrictMode remount. That is the only StrictMode guarantee: it is not a guarantee for swarm initialization, networking, mutations, or every side effect. A failed open or create leaves the open-task map at once, so a later mount or an `initialization` change starts a new activation, and a `'create'` hook that joins an in-flight open of the same path creates the document only if that open fails.
 
-The ACL controls expose `addReader(user, readerKemPublicKey?)`, which forwards the recipient's raw P-256 ECDH KEM key, but they cannot install a KEM key pair. Call `setKemKeyPair` on the document ref before the first membership change. Without a KEM key, `addReader` grants ACL-only membership, and `addWriter` rejects promotion of that reader. The controls alone therefore cannot perform complete distinct-identity onboarding. Use the direct API and the sequence in [Encrypted shared secrets store](../password-manager/). See [Security](../../concepts/security/) for persistence and revocation limits.
+The ACL controls expose `addReader(user, readerKemPublicKey)`, which requires the recipient's raw P-256 ECDH KEM public key, and `setKemKeyPair(keyPair)`, which installs the local KEM key pair on the open document. Distinct-identity onboarding still needs an authenticated key exchange and a recipient flow; see [Encrypted shared secrets store](../password-manager/) and [Security](../../concepts/security/) for persistence and revocation limits.

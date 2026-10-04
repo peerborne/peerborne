@@ -43,7 +43,7 @@ The six libraries are source workspaces and are not yet published to npm. Most a
 - [React integration](https://peerborne.io/cookbook/react/): usePeerborneDocumentState hooks, PeerborneContext provider, document open/change patterns.
 - [Redux integration](https://peerborne.io/cookbook/redux/): Store setup, peerborneReducer, initializeAsync, openDocumentAsync, selector patterns.
 - [Search indexing](https://peerborne.io/cookbook/search-indexing/): IndexManager (materialized indexes), blind-index primitives, bloom-filter gossip (deferred).
-- [Yjs schema design](https://peerborne.io/cookbook/yjs-schema-design/): Y.Map, Y.Array, Y.Text merge behaviors, mutation patterns, ID/counter patterns, migration.
+- [Yjs schema design](https://peerborne.io/cookbook/yjs-schema-design/): Y.Map, Y.Array, Y.Text merge behaviors, mutation patterns, ID/counter patterns, current-schema validation.
 - [Running a relay](https://peerborne.io/cookbook/running-a-relay/): Docker build/run, persistent app-managed identity, readiness, Vite client configuration, and failover/scale limits.
 - [Pinning](https://peerborne.io/cookbook/pinning/): What exists vs what's missing, 10-step integration checklist.
 

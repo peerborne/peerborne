@@ -15,7 +15,8 @@ BeeKEM tree state, epoch document keys, encrypted Welcome messages, and an
 initial-load quorum. Those components have useful focused tests, but they are
 not one authenticated, durable membership state machine. BeeKEM state is
 memory-only, membership delivery is best-effort, the ACL chain is not the
-runtime authority, and the current quorum commits only to the content frontier.
+runtime authority, and the current quorum compares an application-supplied
+security tuple rather than a verified control log.
 Recent BeeKEM transaction helpers can restore in-memory tree/generation state
 after selected operation failures, but they do not persist the accepted
 generation/replay anchor or roll ACL, keychain, and network effects back as one
@@ -414,7 +415,7 @@ any mutation. Quorum is an availability/fork signal, not a substitute for
 cryptography. An identical frontier paired with a different control head,
 epoch, tree closure, snapshot, or keychain delta is not an agreeing vote.
 
-The target V4 loader pins one local tuple and writer-authority set before its
+The V4 loader pins one local tuple and writer-authority set before its
 first V4 probe. Every advertisement, full-document response, and snapshot candidate
 must match that tuple. Votes are deduplicated by the verified writer's canonical
 `AuthProvider.serializePublicKey` value, so one credential presented through
@@ -430,34 +431,32 @@ envelope. Challenge equality is checked before tallying or staging state, so a
 recorded advertisement set and matching full response from an older round are
 rejected while Web Crypto randomness and signature verification hold. This is
 not a timestamp or durable replay ledger, and it does not stop an authorized or
-compromised writer from signing stale state again in the current round. Legacy
-V3 wire behavior is unchanged.
+compromised writer from signing stale state again in the current round. Older load formats are not negotiated or decoded.
 
 The target seam requires exact equality with the captured tuple. It cannot
 yet authenticate and replay a newer control suffix from an older checkpoint,
 so a stale local checkpoint fails closed instead of using quorum state as a
 new trust root.
 
-The repository includes versioned V4 load/advertisement codecs, a
-`security-advertise-v1` quorum-orchestrator mode, challenge binding, complete
-served-response-manifest recomputation, strict pinned-writer bootstrap checks,
-and a sentinel-policy helper. These are isolated primitives with unit tests;
-none is wired into the runtime. `PeerborneDocument.load()` still runs the
-`tip-advertise-v1` quorum without a challenge, security tuple, or control-head
-binding; no handlers are registered for the reserved V4 protocol IDs; and
-there is no strict-mode configuration. The runtime counts the unauthenticated
-`0xff` “unknown document” sentinel as a vote, so a Q-of-K set of peers that
-disclaim a document lets `open()` create a fresh one. The paragraphs above
-describe target behavior, not a runtime capability.
+Normal network loading in the current runtime uses only the V4 load, V4
+snapshot, and `security-advertise-v1` protocols. `PeerborneDocument.load()`
+captures application-supplied trusted writers
+(`resolveTrustedDocumentWriters`) or a locally resolved security tuple
+(`resolveLoadSecurityCommitments`) and a fresh challenge before probing. It
+counts each authenticated signing authority once, recomputes the complete
+response manifest, and binds the selected response to the agreed digest before
+mutation. `open()` never creates a document; only an explicit `create()` founds
+one. The runtime compares the captured tuple but does not verify an MLS
+genesis, replay a newer control suffix, or persist control state, so the
+MLS-specific paragraphs above remain target behavior, not a runtime capability.
 
-In the target architecture, strict mode does not count the `0xff` sentinel
-as a vote. Consequently, a client cannot infer that a name
+Empty or unauthenticated absence responses do not count as votes. Consequently, a client cannot infer that a name
 is safe to create merely because connected peers disclaim it. Creation in an
 existing swarm needs an application-authorized create decision or a future
 authenticated nonexistence protocol; this is an intentional availability
 cost of failing closed.
 
-### Versioning and migration
+### Protocol versions
 
 The proposed MLS family uses distinct bounded protocols:
 
@@ -466,23 +465,15 @@ The proposed MLS family uses distinct bounded protocols:
 /peerborne/mls-control/1.0.0
 /peerborne/mls-welcome/1.0.0
 /peerborne/mls-ack/1.0.0
-/collabswarm/doc-load/4.0.0
-/collabswarm/snapshot-load/4.0.0
-/collabswarm/security-advertise/1.0.0
+/peerborne/doc-load/4.0.0
+/peerborne/snapshot-load/4.0.0
+/peerborne/security-advertise/1.0.0
 ```
 
-The last three are the IDs already reserved as `documentLoadV4`,
-`snapshotLoadV4`, and `securityAdvertiseV1` in `wire-protocols.ts`. Renaming
-them to the `/peerborne/` prefix is a separate wire change that must update
-those constants and this list together.
-
-Runtime integration must replace older load and snapshot formats with this
-single protocol family and remove their decoders and schemas. It must not
-negotiate a downgrade or retain a per-document compatibility mode. Peerborne
-has no deployed users requiring an old-format migration. The current BeeKEM
-runtime remains distinct from the future MLS provider proposed here; its
-limitations must remain explicit until that provider passes the acceptance
-gates.
+The current load runtime uses only V4 full/snapshot responses and signed
+security advertisements. The current BeeKEM runtime remains distinct from the
+future MLS provider proposed here; its limitations must remain explicit until
+that provider passes the acceptance gates.
 
 ### Delivery, replay, and recovery
 
@@ -546,7 +537,7 @@ choosing an unauthenticated replacement controller or control head.
 
 The work cannot be completed by swapping BeeKEM for one package call.
 Dependency selection, provider isolation, authenticated identity, durable
-control state/outbox, versioning, quorum binding, migration, recovery, and
+control state/outbox, versioning, quorum binding, recovery, and
 adversarial tests are all part of the security boundary.
 
 ## References
