@@ -59,7 +59,7 @@ const result = await manager.query({
 
 `PeerborneIndexIntegration.trackDocument(docRef)` returns a readiness promise; the first call waits for initial indexing, and a repeated call for the same path waits for work already queued for that document. Await it before the first query. `untrackDocument()` returns the removal promise, and `dispose()` waits for queued index work. Untrack or dispose subscriptions during teardown.
 
-V2 rejects unindexed scans by default. Set `allowScan: true` only when a full local projection scan is an intentional cost. Results include chosen physical keys, scan and sort strategy, rows visited, schema generation, storage mode, cursor state, and explicit count semantics. Unversioned schemas and superseded query shapes are rejected.
+V2 rejects unindexed scans by default. Set `allowScan: true` only when a full local projection scan is an intentional cost. Results include chosen physical keys, scan and sort strategy, rows visited, schema generation, storage mode, cursor state, and explicit count semantics. Index definitions and queries must declare `version: 2`; other versions and unknown query fields are rejected.
 
 Every field in a physical key must be `required`. Optional fields remain materialized and can be projected or tested during an explicitly allowed full scan, but are not auto-indexed. This prevents a compound index from silently omitting documents whose trailing key field is absent.
 

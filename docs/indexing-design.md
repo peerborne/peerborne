@@ -264,7 +264,7 @@ is possible even if every peer says it is exhausted.
 2. Rotate `keyEpoch` and rebuild advertisements on membership/schema changes;
    retain a bounded overlap window only when explicitly required for rollout.
 3. Wire signed advertisement publication/receipt to GossipSub and direct search
-   to bounded libp2p stream handlers using the exported historical protocol IDs.
+   to bounded libp2p stream handlers using the exported protocol IDs.
 4. Implement blind-token materialization alongside local index updates without
    persisting raw search keys or logging values/tokens.
 5. Implement `AuthorizedDocumentResolver` over the existing document load path,

@@ -67,10 +67,10 @@ Status meanings:
 | --- | --- | --- | --- |
 | React hooks and lifecycle management | Verified | 42 passing hook/cache/lifecycle tests; password-manager typechecked build and Chromium smoke | StrictMode and real reconnect behavior should be browser-tested. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
-| Field extraction and local indexes | Verified | V1 manager/extractor suites plus v2 planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
-| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, legacy-backfill, and corrupted-row suites | Persistent migration should be exercised across actual browser restarts. |
+| Field extraction and local indexes | Verified | Index manager and extractor suites plus planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
+| Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, current-schema rejection, and corrupted-row suites | Persistent schema invalidation should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
-| Bloom-filter CRDT and peer gossip | Partial | Bloom CRDT/gossip suites; clean `--detectOpenHandles` run | Malformed/hostile high-volume gossip still needs resource limits. |
+| Bloom-filter CRDT | Partial | Local Bloom CRDT add, merge, serialization, and false-positive suites | There is no peer distribution protocol; a future one needs authentication and resource limits for hostile high-volume input. |
 | React query subscription binding | Verified | Index React suite | No reference application demonstrates distributed search. |
 | Signed distributed search protocol | Partial | Manifest, replacement-routing, wire binding/replay, blind-disclosure, transport-adapter, and hostile-candidate federation suites | Production libp2p handlers, membership/key distribution, authorized resolver, and multi-peer acceptance tests are not implemented. |
 
