@@ -17,7 +17,8 @@ import { InvitationMembershipQueue } from './invitation-membership.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
-import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
+import { BeeKEM } from './beekem/beekem.js';
 
 jest.mock(
   'it-pipe',
@@ -3924,7 +3925,7 @@ describe('document load response boundaries', () => {
 
   async function lateBufferedWelcomeFinalization(options: {
     verify: (...args: unknown[]) => Promise<boolean>;
-    keys: () => Promise<unknown[]>;
+    hydrateKeys?: (keyIds: Uint8Array[]) => Promise<unknown[]>;
     invitationEpoch?: Uint8Array;
     started: Promise<void>;
     release: () => void;
@@ -3933,13 +3934,21 @@ describe('document load response boundaries', () => {
     const kemPublicKeyRaw = new Uint8Array(
       await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
     );
+    const founderKeyPair = await generateEciesKeyPair();
+    const founder = new BeeKEM();
+    await founder.initialize(
+      founderKeyPair.privateKey,
+      founderKeyPair.publicKey,
+    );
+    const { welcome } = await founder.addMember(kemKeyPair.publicKey);
     const eciesSealed = await eciesSeal(
-      encodeWelcomeSealedPayload({
+      encodeWelcomeSealedPayloadV2({
         keychainChanges: new Uint8Array([1]),
-        beekemWelcome: null,
+        beekemWelcome: welcome,
       }),
       kemKeyPair.publicKey,
     );
+    const welcomeEpochId = new Uint8Array(32).fill(1);
     const pendingWelcomes = new PendingWelcomeBuffer();
     for (const [key, fill] of [
       ['first', 1],
@@ -3960,7 +3969,32 @@ describe('document load response boundaries', () => {
         true,
       );
     }
+    const keyIds = [
+      ...(options.invitationEpoch === undefined
+        ? []
+        : [new Uint8Array(options.invitationEpoch)]),
+      new Uint8Array(welcomeEpochId),
+    ];
+    const epochKey = { algorithm: { name: 'AES-GCM' } };
     const merge = jest.fn();
+    const claimCommit = jest.fn((changes: unknown) => ({
+      finalize: () => {
+        merge(changes);
+      },
+    }));
+    const hydrateKeys = jest.fn(
+      options.hydrateKeys ??
+        (async (ids: Uint8Array[]) =>
+          ids.map((id) => [new Uint8Array(id), epochKey])),
+    );
+    const prepareMerge = jest.fn((changes: unknown) => ({
+      currentKeyId: new Uint8Array(welcomeEpochId),
+      keyIds: keyIds.map((id) => new Uint8Array(id)),
+      hydrateKeys: () =>
+        hydrateKeys(keyIds.map((id) => new Uint8Array(id))),
+      getKey: () => epochKey,
+      claimCommit: () => claimCommit(changes),
+    }));
     const dispatch = jest.fn();
     const document = fakeDocument({
       documentPath: '/late-welcome',
@@ -3979,7 +4013,7 @@ describe('document load response boundaries', () => {
       _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
       _kemKeyPair: kemKeyPair,
       _kemPublicKeyRaw: kemPublicKeyRaw,
-      _keychain: { merge, keys: options.keys },
+      _keychain: { prepareMerge },
       _invitationEpoch: options.invitationEpoch,
       _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
         async () => undefined,
@@ -4014,7 +4048,9 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(() => document.document).toThrow(/discard this document instance/);
     expect(dispatch).not.toHaveBeenCalled();
-    return { document, merge };
+    expect(claimCommit).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+    return { document, hydrateKeys, prepareMerge };
   }
 
   test.each([
@@ -4031,42 +4067,41 @@ describe('document load response boundaries', () => {
         return verified;
       });
 
-      const { document, merge } = await lateBufferedWelcomeFinalization({
-        verify,
-        keys: async () => [],
-        started: started.promise,
-        release: () => release.resolve(),
-      });
+      const { document, prepareMerge } = await lateBufferedWelcomeFinalization(
+        {
+          verify,
+          started: started.promise,
+          release: () => release.resolve(),
+        },
+      );
 
       expect(verify).toHaveBeenCalledTimes(1);
-      expect(merge).not.toHaveBeenCalled();
+      expect(prepareMerge).toHaveBeenCalledTimes(verified ? 1 : 0);
       expect(document._invitationEpoch).toBeUndefined();
     },
   );
 
-  test('drops the finalization Welcome epoch advance when keychain ordering settles after the deadline', async () => {
+  test('drops the finalization Welcome epoch advance when keychain hydration settles after the deadline', async () => {
     const existingEpoch = new Uint8Array(32).fill(9);
     const started = deferred<void>();
     const release = deferred<void>();
-    const keys = jest.fn(async () => {
-      started.resolve();
-      await release.promise;
-      return [
-        [existingEpoch, 'existing-key'],
-        [new Uint8Array(32).fill(1), 'welcome-key'],
-      ];
-    });
 
-    const { document, merge } = await lateBufferedWelcomeFinalization({
+    const { document, hydrateKeys } = await lateBufferedWelcomeFinalization({
       verify: async () => true,
-      keys,
+      hydrateKeys: async (ids) => {
+        started.resolve();
+        await release.promise;
+        return ids.map((id) => [
+          new Uint8Array(id),
+          { algorithm: { name: 'AES-GCM' } },
+        ]);
+      },
       invitationEpoch: existingEpoch,
       started: started.promise,
       release: () => release.resolve(),
     });
 
-    expect(merge).toHaveBeenCalledTimes(1);
-    expect(keys).toHaveBeenCalledTimes(1);
+    expect(hydrateKeys).toHaveBeenCalledTimes(1);
     expect(document._invitationEpoch).toBe(existingEpoch);
   });
 
