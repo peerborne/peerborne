@@ -166,6 +166,7 @@ import {
 import {
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
 } from './document-topic.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
@@ -319,6 +320,7 @@ export {
   // Utilities
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   LRUCache,
   assertCanonicalP384PublicKeyEncoding,
 };

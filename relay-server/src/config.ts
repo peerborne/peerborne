@@ -8,7 +8,7 @@
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2'
 
 /** Topic the relay subscribes to so it can forward peer-discovery messages. */
-export const PUBSUB_PEER_DISCOVERY_TOPIC = 'swarmdb._peer-discovery._p2p._pubsub'
+export const PUBSUB_PEER_DISCOVERY_TOPIC = 'peerborne._peer-discovery._p2p._pubsub'
 
 /** Default cap on the number of auto-subscribed topics. */
 export const DEFAULT_MAX_AUTO_TOPICS = 1000
@@ -22,7 +22,6 @@ export const DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = 64 * 1024
 /** Default exact topics and slash-terminated prefixes accepted by the relay. */
 export const DEFAULT_TOPIC_ALLOWLIST: readonly string[] = [
   '/peerborne/document/v3/',
-  '/peerborne/documents/v3',
 ]
 
 /** Default websocket port. */
@@ -64,9 +63,6 @@ export const DEFAULT_RELAY_MAX_OUTBOUND_HOP_STREAMS = 8
 /** Maximum simultaneous outbound STOP streams per connection. */
 export const DEFAULT_RELAY_MAX_OUTBOUND_STOP_STREAMS = 8
 
-/** Default document publish path (matches peerborne-config.ts default). */
-export const DEFAULT_DOCUMENT_PUBLISH_PATH = '/peerborne/documents/v3'
-
 /**
  * Topic prefixes that are treated as system/internal and should never be
  * auto-subscribed. This module is the canonical definition; `topic-policy.ts`
@@ -81,8 +77,6 @@ export const SYSTEM_TOPIC_PREFIXES: readonly string[] = ['_', 'floodsub:']
 export interface RelayConfig {
   /** Topic the relay subscribes to so it can forward peer-discovery messages. */
   readonly peerDiscoveryTopic: string
-  /** Topic used as the document publish path (seed topic). */
-  readonly documentPublishPath: string
   /** Websocket listen multiaddr. */
   readonly wsListen: string
   /** Plain-TCP listen multiaddr. */
@@ -136,10 +130,9 @@ export interface RelayConfig {
  * string. Callers decide what an omitted value means for their setting.
  *
  * Returns `[]` when the env var is set to a non-empty value that
- * nonetheless parses to zero usable entries (e.g. "," or "   "). This
- * matches the historical inline behaviour where any non-empty string
- * produced an array (possibly empty), and crucially keeps a misconfigured
- * allowlist in "closed mode" rather than silently flipping it open.
+ * nonetheless parses to zero usable entries (e.g. "," or "   "). A set but
+ * unusable value therefore keeps a misconfigured allowlist in "closed mode"
+ * rather than silently flipping it open.
  */
 function parseCsv(value: string | undefined): string[] | null {
   if (value === undefined || value === '') {
@@ -214,7 +207,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
 
   return {
     peerDiscoveryTopic: PUBSUB_PEER_DISCOVERY_TOPIC,
-    documentPublishPath: env.DOCUMENT_PUBLISH_PATH || DEFAULT_DOCUMENT_PUBLISH_PATH,
     wsListen,
     tcpListen,
     ipv6Enabled,
