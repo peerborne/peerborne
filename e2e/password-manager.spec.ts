@@ -258,9 +258,13 @@ test('offers the remembered vault path after logging in again with the same key'
   await expect(page.getByRole('button', { name: 'Open vault', exact: true })).toBeEnabled();
 });
 
-test('requires a KEM public key before adding a new reader', async ({ page }) => {
+test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  let addedReaders = 0;
+  page.on('console', (message) => {
+    if (message.text() === 'Added reader') addedReaders += 1;
+  });
   const dialogs: string[] = [];
   page.on('dialog', (dialog) => {
     dialogs.push(dialog.message());
@@ -277,7 +281,7 @@ test('requires a KEM public key before adding a new reader', async ({ page }) =>
     page.getByRole('cell', { name: 'Editor', exact: true }),
   ).toHaveCount(1, { timeout: 30_000 });
 
-  const { identityKey, kemKey } = await page.evaluate(async () => {
+  const { identityKey, kemKey, otherKemKey } = await page.evaluate(async () => {
     const encode = (bytes: ArrayBuffer) =>
       btoa(String.fromCharCode(...new Uint8Array(bytes)));
     const identity = await crypto.subtle.generateKey(
@@ -285,14 +289,16 @@ test('requires a KEM public key before adding a new reader', async ({ page }) =>
       true,
       ['sign', 'verify'],
     );
-    const kem = await crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits'],
-    );
+    const generateKem = () =>
+      crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
+        'deriveBits',
+      ]);
+    const kem = await generateKem();
+    const otherKem = await generateKem();
     return {
       identityKey: encode(await crypto.subtle.exportKey('raw', identity.publicKey)),
       kemKey: encode(await crypto.subtle.exportKey('raw', kem.publicKey)),
+      otherKemKey: encode(await crypto.subtle.exportKey('raw', otherKem.publicKey)),
     };
   });
 
@@ -317,6 +323,25 @@ test('requires a KEM public key before adding a new reader', async ({ page }) =>
   await expect(
     readerRow.getByRole('cell', { name: 'Reader', exact: true }),
   ).toHaveCount(1);
+  await expect.poll(() => addedReaders).toBe(1);
   expect(dialogs).toHaveLength(1);
+
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect.poll(() => addedReaders).toBe(2);
+  expect(dialogs).toHaveLength(1);
+
+  await page.getByPlaceholder('Member KEM public key').fill(otherKemKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs.slice(1))
+    .toEqual([
+      'Unable to update document permissions. Verify both public keys and ' +
+        'the membership configuration.',
+    ]);
+  expect(addedReaders).toBe(2);
+  await expect(memberRows).toHaveCount(2);
+  await expect(
+    readerRow.getByRole('cell', { name: 'Reader', exact: true }),
+  ).toHaveCount(1);
   expect(errors, 'reader onboarding errors').toEqual([]);
 });

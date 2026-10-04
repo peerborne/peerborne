@@ -246,15 +246,15 @@ export function PermissionsTable({
                         (permission) => permission.publicKey === serializedKey,
                       );
                       // Writers keep their reader row, so only a new member
-                      // needs reader onboarding with a KEM public key.
+                      // requires a KEM public key. Entering it for an existing
+                      // member retries their onboarding, which resends the
+                      // Welcome sealed to that key.
                       if (!current && !kemPublicKey) {
                         alert(missingKemMessage);
                         return;
                       }
                       const onboardReader = async () => {
-                        if (!current && kemPublicKey) {
-                          await addReader(key, kemPublicKey);
-                        }
+                        if (kemPublicKey) await addReader(key, kemPublicKey);
                       };
 
                       switch (draftPermission) {
