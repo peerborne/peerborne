@@ -11,8 +11,8 @@ ACL nodes. It does not establish durable storage or recovery by itself.
 
 An authorized writer can call `snapshot()` when its CRDT provider implements
 `getSnapshot()`. Automatic snapshot creation is disabled by default. A snapshot
-records the serialized state, boundary CID, compacted count, timestamp, and
-creator signature. Its exact type is
+records the serialized state, boundary CID, compacted count, timestamp, and a
+creator signature (empty bytes when `enableSigning` is false). Its exact type is
 [`CRDTSnapshotNode`](../packages/core/src/snapshot-node.ts).
 
 The snapshot is stored in `_latestSnapshot`, separately from the retained sync
@@ -65,11 +65,14 @@ group commitments required by normal V4 loading. See
 
 ## Snapshot verification
 
-Normal network loads require signing. After authenticating the complete load
-response, the receiver applies authenticated ACL entries and verifies the
-snapshot signature against authorized writer keys. The optional embedded
-`publicKey` is not trusted as an authorization source. The signature covers the
-versioned binary payload documented in
+Normal network load responses are always writer-signed, regardless of
+`enableSigning`. After authenticating the complete load response, the receiver
+applies authenticated ACL entries. With `enableSigning` enabled (the default),
+it also verifies the snapshot's own signature against authorized writer keys;
+with `enableSigning: false`, that per-snapshot check is skipped and the snapshot
+bytes are authenticated only by the signed complete response manifest. The
+optional embedded `publicKey` is not trusted as an authorization source. The
+signature covers the versioned binary payload documented in
 [`snapshot-node.ts`](../packages/core/src/snapshot-node.ts), including the state,
 boundary CID, timestamp, and compacted count.
 
