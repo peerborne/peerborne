@@ -210,7 +210,7 @@ function welcomeHarness(
         return key;
       }),
       commit: jest.fn(() => {
-        throw new Error('legacy prepared merge commit must not be used');
+        throw new Error('unclaimed prepared merge commit must not be used');
       }),
     };
     const hydrateKeys = jest.fn(async () => {
@@ -404,7 +404,7 @@ function pathUpdateHarness(
     changes: new Uint8Array([8]),
     history: new Uint8Array([8]),
     commit: jest.fn(() => {
-      throw new Error('legacy epoch commit must not be used');
+      throw new Error('unclaimed epoch commit must not be used');
     }),
   };
   if (options.claimProperty === 'accessor') {
@@ -426,7 +426,7 @@ function pathUpdateHarness(
   );
   const addEpochKey = jest.fn(async (epochId: Uint8Array) => {
     liveEpoch = new Uint8Array(epochId);
-    order.push('legacy-add');
+    order.push('direct-add');
     return new Uint8Array([7]);
   });
   const message: Record<string, unknown> = {

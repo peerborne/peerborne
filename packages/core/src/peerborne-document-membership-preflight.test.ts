@@ -106,6 +106,43 @@ function expectWelcomeFieldPresence(
 }
 
 describe('reader membership preflight', () => {
+  test.each([
+    ['refuses a writer without a Welcome-bootstrapped tree', false, false, true],
+    ['allows the local founder to seed the tree', false, true, false],
+    ['allows a writer whose tree came from a Welcome', true, false, false],
+  ] as const)(
+    'founder gate %s',
+    async (_label, beekemInitialized, createdLocally, rejects) => {
+      const readersCheck = jest.fn(async () => {
+        throw new Error('stop after the founder gate');
+      });
+      const document = fakeDocument({
+        _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+        _beekemInitialized: beekemInitialized,
+        _beekem: beekemInitialized ? { memberCount: 2 } : null,
+        _kemKeyPair: { privateKey: {}, publicKey: {} },
+        _createdLocally: createdLocally,
+        _readers: { check: readersCheck },
+      });
+
+      const addition = document._addReaderUnlocked(
+        { reader: true },
+        JSON.stringify({ reader: true }),
+        await validKemPublicKey(),
+      );
+
+      if (rejects) {
+        await expect(addition).rejects.toThrow(
+          /no BeeKEM tree bootstrapped from a Welcome/,
+        );
+        expect(readersCheck).not.toHaveBeenCalled();
+      } else {
+        await expect(addition).rejects.toThrow('stop after the founder gate');
+        expect(readersCheck).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
   test('key projection failure precedes ACL and BeeKEM mutation', async () => {
     const readerKemPublicKey = await validKemPublicKey();
     const prepareAdd = jest.fn();
