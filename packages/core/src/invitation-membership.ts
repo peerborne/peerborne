@@ -181,8 +181,9 @@ export async function prepareInitialInvitationMembership<Welcome>(
     'ready-to-attest',
   );
 
-  // ACL providers mutate before publication completes. Re-publish both full
-  // snapshots on every attempt so a retry repairs either missing DAG node.
+  // Re-publish both full ACL snapshots on every attempt so an exact retry
+  // re-announces membership that an earlier, partially failed attempt
+  // committed after a delivery-ambiguous publication.
   await options.repairReaders();
   await options.repairWriters();
   return welcome;

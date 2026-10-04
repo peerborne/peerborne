@@ -105,16 +105,11 @@ export class SubtleCrypto
 
   /**
    * Returns the nonce/IV size **in bytes** for the configured encryption
-   * algorithm. The property name is a historical artifact.
+   * algorithm.
    *
    * - AES-GCM: 12 bytes (96-bit IV, standard)
    * - AES-CTR: 16 bytes (128-bit counter block)
    * - AES-CBC: 16 bytes (128-bit IV)
-   *
-   * **Breaking change:** GCM nonce was previously 96 *bytes* (a bug).
-   * It is now 12 bytes (96 bits) per the NIST recommendation. Blocks
-   * encrypted with the old 96-byte nonce cannot be decrypted with this
-   * version. There are no known live users, so no migration is provided.
    */
   get nonceBytes(): number {
     switch (this._encryptionAlgorithmName) {
