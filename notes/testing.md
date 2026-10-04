@@ -7,10 +7,15 @@ corepack enable
 yarn install --immutable
 yarn build
 yarn test
+yarn --cwd relay-server install --immutable
+yarn --cwd relay-server build
 yarn test:relay
 yarn build:examples
 yarn workspace @peerborne/site build
 ```
+
+`relay-server/` is a separate project with its own lockfile, so install and
+build it before `yarn test:relay`, as the CI relay-test job does.
 
 The root test command runs the six library workspaces. Inspect each workspace's
 result. To test one package, use its current name:
