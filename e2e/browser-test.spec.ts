@@ -17,10 +17,10 @@ test('browser-test loads Automerge and initializes without runtime errors', asyn
   await expect(page.getByText('Node Addresses:', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Connect' })).toBeVisible();
 
-  // Opening a document is the first point where the example exercises the
+  // Creating a document is the first point where the example exercises the
   // configured user keys, serializers, crypto, ACL, and keychain providers.
   await page.locator('#open input').fill('/smoke/document');
-  await page.locator('#open button').click();
+  await page.locator('#open').getByRole('button', { name: 'Create', exact: true }).click();
   await expect(page.getByRole('heading', { name: '/smoke/document' })).toBeVisible({
     timeout: 15_000,
   });

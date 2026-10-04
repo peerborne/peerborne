@@ -43,6 +43,22 @@ describe('usePeerborneDocumentState lifecycle', () => {
     );
   });
 
+  test('shares an explicitly created document with later subscribers', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const view = render(React.createElement(TestProvider, null,
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created', initialization: 'create' }),
+    ));
+    await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(1));
+    view.rerender(React.createElement(TestProvider, null,
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created', initialization: 'create' }),
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created' }),
+    ));
+    await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(2));
+    expect(mockDoc.create).toHaveBeenCalledTimes(1);
+    expect(mockDoc.open).not.toHaveBeenCalled();
+  });
+
   test('unsubscribe is called on unmount', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
