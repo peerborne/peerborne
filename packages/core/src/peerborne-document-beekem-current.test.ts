@@ -100,15 +100,9 @@ async function currentDeliveryHarness() {
   );
   async function deliver(
     update: Awaited<ReturnType<BeeKEM['update']>>,
-    obsolete = false,
     signatureContext = 'beekem-path-update-v2',
   ) {
-    const pathUpdate: any = serializePathUpdateV2ForWire(update.pathUpdate);
-    if (obsolete) {
-      delete pathUpdate.version;
-      delete pathUpdate.generation;
-      delete pathUpdate.parentTreeHash;
-    }
+    const pathUpdate = serializePathUpdateV2ForWire(update.pathUpdate);
     const message = {
       documentId: document.documentPath,
       signatureContext,
@@ -139,7 +133,7 @@ async function currentDeliveryHarness() {
 }
 
 describe('document current BeeKEM delivery', () => {
-  test('signed skipped, stale, obsolete, and wrong-parent updates cannot replace the live tree or append an epoch', async () => {
+  test('signed skipped, stale, and wrong-parent updates cannot replace the live tree or append an epoch', async () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
     const debug = jest.spyOn(console, 'debug').mockImplementation(() => {});
@@ -175,7 +169,6 @@ describe('document current BeeKEM delivery', () => {
     expect(document._beekem).toBe(committedTree);
 
     await deliver(first);
-    await deliver(first, true);
     await staleFounder.update();
     await staleFounder.update();
     const wrongParent = await staleFounder.update();
@@ -197,12 +190,12 @@ describe('document current BeeKEM delivery', () => {
       await currentDeliveryHarness();
     const update = await founder.update();
 
-    await deliver(update, false, 'beekem-path-update-v1');
+    await deliver(update, 'beekem-path-update-v1');
     expect(warn).toHaveBeenCalledWith('Dropping malformed BeeKEM PathUpdateV2');
     expect(document._beekem).toBe(reader);
     expect(installedEpochs).toHaveLength(0);
 
-    await deliver(update, false, 'beekem-path-update-v2');
+    await deliver(update, 'beekem-path-update-v2');
     expect(installedEpochs).toHaveLength(1);
     expect(document._beekem.generation).toBe(update.pathUpdate.generation);
   });

@@ -711,8 +711,8 @@ describe('stack-safe JSON serialization', () => {
 });
 
 
-test.each([undefined, 'load-response-v3', 'tip-advertisement-v1', 'key-update-v2'])(
-  'rejects missing or removed sync-message context %p', (signatureContext) => {
+test.each([undefined, 'unknown-purpose-v1', 42])(
+  'rejects missing or unknown sync-message context %p', (signatureContext) => {
     const message = { documentId: '/doc', signatureContext };
     expect(() => jsonSerializer.serializeSyncMessage(message as never)).toThrow(/signatureContext/);
     const bytes = new TextEncoder().encode(JSON.stringify(message));

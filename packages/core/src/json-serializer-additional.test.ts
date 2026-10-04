@@ -62,9 +62,12 @@ describe('JSONSerializer additional coverage', () => {
       expect(decoded).toEqual(msg);
     });
 
-    test('rejects omitted challenge and obsolete request fields', () => {
+    test('rejects an omitted challenge and unexpected request fields', () => {
       expect(() => serializer.serializeLoadRequest({ documentId: '/test/doc', signature: 'AQ==' } as any)).toThrow();
-      expect(() => serializer.deserializeLoadRequest(new TextEncoder().encode(JSON.stringify({ documentPath: '/test/doc', requesterKey: 'key-b64' })))).toThrow();
+      const wire = JSON.parse(new TextDecoder().decode(serializer.serializeLoadRequest({
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32),
+      })));
+      expect(() => serializer.deserializeLoadRequest(new TextEncoder().encode(JSON.stringify({ ...wire, extra: true })))).toThrow();
     });
 
     test('deserializeLoadRequest rejects invalid JSON', () => {

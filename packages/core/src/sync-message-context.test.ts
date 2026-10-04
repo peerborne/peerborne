@@ -370,10 +370,6 @@ describe('sync message wire-context separation', () => {
     ).toThrow(/maximum depth/);
   });
 
-  test('rejects the removed document publication purpose', () => {
-    expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
-  });
-
   test('accepts BeeKEM control messages only in their V2 contexts', () => {
     expect(isSyncMessageSignatureContext('beekem-welcome-v2')).toBe(true);
     expect(isSyncMessageSignatureContext('beekem-path-update-v2')).toBe(true);
@@ -495,11 +491,11 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
   });
 });
 
-test('rejects the removed direct key-update signature purpose', () => {
-  expect(isSyncMessageSignatureContext('key-update-v2')).toBe(false);
+test('rejects an unknown signature purpose', () => {
+  expect(isSyncMessageSignatureContext('unknown-purpose-v1')).toBe(false);
   expect(() => snapshotSyncMessageForContext({
     documentId: '/doc',
-    signatureContext: 'key-update-v2',
+    signatureContext: 'unknown-purpose-v1',
     signature: 'sig',
   }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
 });

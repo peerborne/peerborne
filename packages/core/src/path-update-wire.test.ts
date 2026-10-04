@@ -158,6 +158,17 @@ describe('path-update-wire', () => {
 });
 
 describe('path-update-wire V2 inbound boundary', () => {
+  test.each([undefined, 0, 3, '2'])('rejects version %p on both boundaries', (version) => {
+    const update = validPathUpdateV2();
+    const wire = serializePathUpdateV2ForWire(update);
+    expect(() =>
+      serializePathUpdateV2ForWire({ ...update, version } as never),
+    ).toThrow(/version/);
+    expect(() =>
+      deserializePathUpdateV2FromWire({ ...wire, version }),
+    ).toThrow(/version/);
+  });
+
   test('rejects negative-zero tree indices on both boundaries', () => {
     const treeUpdate = validPathUpdateV2();
     treeUpdate.treeNodePublicKeys[0].nodeIndex = -0;
@@ -224,15 +235,14 @@ describe('path-update-wire V2 inbound boundary', () => {
 });
 
 describe('path-update-wire V2 outbound boundary', () => {
-  test.each([new Uint8Array(), new Uint8Array([1])])(
-    'rejects the obsolete per-node ciphertext field even when populated',
-    (obsoleteCiphertext) => {
+  test.each([true, new Uint8Array([1])])(
+    'rejects an unexpected runtime path node field (%p)',
+    (value) => {
       const update = validPathUpdateV2();
-      const wire = serializePathUpdateV2ForWire(update);
-      Object.assign(update.nodes[0], { encryptedPrivateKey: obsoleteCiphertext });
-      Object.assign(wire.nodes[0], { encryptedPrivateKey: '' });
-      expect(() => serializePathUpdateV2ForWire(update)).toThrow(/field|propert/i);
-      expect(() => deserializePathUpdateV2FromWire(wire)).toThrow(/field|propert/i);
+      Object.assign(update.nodes[0], { unexpected: value });
+      expect(() => serializePathUpdateV2ForWire(update)).toThrow(
+        /node\[0\]: unexpected field 'unexpected'/,
+      );
     },
   );
 

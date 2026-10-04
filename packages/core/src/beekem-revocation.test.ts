@@ -213,7 +213,7 @@ describe('BeeKEM reader revocation', () => {
     const { pathUpdate } = await alice.update();
     const wire = serializePathUpdateV2ForWire(pathUpdate);
 
-    // Flip a bit in the first node's encryptedPrivateKey. The
+    // Flip a bit in the first node's first path-key bundle. The
     // BeeKEM module's AES-GCM-backed ECIES has built-in
     // authentication, so tampered ciphertext must surface as a
     // decryption error -- not silently produce an
