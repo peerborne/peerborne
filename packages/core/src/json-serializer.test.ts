@@ -388,6 +388,29 @@ describe('signed top-level wire field order', () => {
     ).toThrow(/wire field "changes" must be a data property/);
     expect(reads).toBe(0);
   });
+
+  test('refuses to write sync bytes whose signatureContext would be omitted', () => {
+    class WireWriter extends JSONSerializer<any> {
+      write(message: unknown): string {
+        return this.serializeNormalizedSyncWireValue(message);
+      }
+    }
+    const hidden = { documentId: '/doc' };
+    Object.defineProperty(hidden, 'signatureContext', {
+      enumerable: false,
+      value: 'ordinary-sync-v1',
+    });
+
+    expect(() => new WireWriter().write(hidden)).toThrow(
+      /requires a supported signatureContext/,
+    );
+    expect(
+      new WireWriter().write({
+        signatureContext: 'ordinary-sync-v1',
+        documentId: '/doc',
+      }),
+    ).toBe('{"signatureContext":"ordinary-sync-v1","documentId":"/doc"}');
+  });
 });
 
 describe('top-level wire shape', () => {

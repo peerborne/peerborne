@@ -494,7 +494,12 @@ export class JSONSerializer<ChangesType, PublicKey = unknown>
   protected serializeNormalizedSyncWireValue(message: unknown): string {
     const tag = message && typeof message === 'object'
       ? Object.getOwnPropertyDescriptor(message, 'signatureContext') : undefined;
-    if (!tag || !('value' in tag) || !isSyncMessageSignatureContext(tag.value)) {
+    if (
+      !tag ||
+      tag.enumerable !== true ||
+      !('value' in tag) ||
+      !isSyncMessageSignatureContext(tag.value)
+    ) {
       throw new TypeError('Sync message requires a supported signatureContext');
     }
     // Native stringify is far faster; the iterative writer only exists for
