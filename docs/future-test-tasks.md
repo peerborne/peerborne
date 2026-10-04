@@ -20,10 +20,12 @@ current coverage.
   quorum tips, oversized messages, and explicit processing/memory limits.
 - Packaging: install packed artifacts in clean Node, Vite, React, and Redux
   consumer fixtures and exercise public imports at runtime.
-- Lifecycle and indexing: React StrictMode reconnect/leak assertions, schema
-  migration fixtures, distributed blind-index search, and token rotation.
-- Operations: container health/readiness, graceful shutdown, persisted-data
-  upgrade, rollback policy, dependency scanning, and performance budgets.
+- Lifecycle and indexing: React StrictMode reconnect/leak assertions,
+  rejection of unsupported persisted schemas, distributed blind-index search,
+  and token rotation.
+- Operations: container health/readiness, graceful shutdown, fail-closed
+  startup on unsupported persisted data, rollback policy, dependency scanning,
+  and performance budgets.
 
 Completion rule: a task is covered only when its assertion runs from a named
 CI job. Documentation or an opt-in local script alone does not count.

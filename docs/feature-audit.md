@@ -42,7 +42,7 @@ Status meanings:
 | DCUtR, AutoNAT, STUN/TURN configuration | Partial | Configuration tests and NAT specs | TURN-authenticated relay behavior and privacy-mode configuration need acceptance coverage. |
 | Kademlia DHT and bootstrap discovery | Partial | Configuration and peer-discovery specs | Bootstrap outage/replacement and poisoned-peer scenarios are not directly asserted. |
 | Distinct-identity invitation and live bidirectional sync across NAT boundaries | Verified | A dedicated real Peerborne Playwright job forces two isolated Chromium processes with separate signing identities through Circuit Relay, accepts a signed editor invitation without exposing a plaintext document key or injecting one through the test bridge, verifies the recipient-encrypted bootstrap, then asserts fresh A-to-B and B-to-A mutations | The initial release is founder-plus-one and online-only; persistence, partition/rejoin, automatic reconnect, revocation, and relay failover remain unverified. |
-| Initial-load K-of-Q tip verification | Verified | Load-quorum and orchestrator suites | Real peers serving conflicting DAG blocks should be tested end to end. |
+| V4 authenticated initial-load quorum | Partial | Challenge, locally pinned tuple, complete-response-manifest, canonical-authority deduplication, serializer, document-boundary, and quorum suites | The application must supply trusted writers and current security commitments; runtime MLS genesis/control replay and hostile real-peer acceptance remain unverified. |
 | Network statistics | Verified | Network statistics suite | Reference applications do not expose enough diagnostics for operators. |
 
 ## Security and membership
@@ -57,7 +57,7 @@ Status meanings:
 | UCAN creation, signatures, and delegation chains | Verified | Standalone UCAN and UCAN-ACL suites | UCAN capability metadata is process-local and the document mutation path does not evaluate it; it is not replicated or enforced as shared revocation state. |
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |
 | BeeKEM group key agreement | Verified | Current V2 tree, Welcome, churn, transactional rollback, wire-codec, and signed document-handler replay suites | Primitive churn coverage does not establish large-group network support. Updates require the exact parent and next generation; skipped updates need ordered redelivery or explicit ratchet recovery. |
-| Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, blank/self-contained Automerge ACL initialization, complete legacy-history migration, and incomplete-legacy fail-closed suites plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
+| Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, canonical-root Automerge ACL initialization and rejection of noncanonical histories plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
 | Member revocation and PathUpdates | Partial | BeeKEM revocation and PathUpdate codec/handler suites | Delivery is best-effort, BeeKEM state is memory-only, ACL causal authorization is not wired, and a peer that missed the new epoch cannot recover it through an ordinary load encrypted under that epoch. Multi-peer partition/rejoin and explicit recovery remain unverified. |
 | History visibility key filters | Partial | Exported API, document implementation, and focused filter tests | The modes filter distributed epoch keys but do not redact retained CRDT operations or provide historical-content confidentiality; initial invitations therefore require explicit full-history sharing. |
 
@@ -91,10 +91,9 @@ Status meanings:
 
 ## Cross-cutting design findings
 
-1. Public packages, APIs, documentation, and error messages now use
-   **Peerborne**. Historical `swarmdb` and `collabswarm` strings remain only
-   where changing protocol, key-derivation, Redux, or persisted-storage
-   identifiers would break compatibility; see `MIGRATING.md`.
+1. Runtime protocol identifiers, key-derivation domains, Redux actions, and
+   default local-storage names use **Peerborne** identifiers. Only current
+   formats are supported.
 2. The core barrel eagerly imports the complete networking/storage stack. This
    makes simple adapter and serializer consumers pay a large bundle cost and
    increases the chance that environment-specific dependencies leak across the
@@ -107,7 +106,7 @@ Status meanings:
 5. Security primitives have comparatively strong isolated coverage. The most
    important remaining security gap is system-level proof that revocation,
    quorum loading, and ACL forks behave correctly across hostile peers.
-6. The removed legacy `multi-user.spec.ts` claimed data sharing but asserted
+6. The removed `multi-user.spec.ts` claimed data sharing but asserted
    only that several non-empty HTML bodies rendered. It also attached console
    listeners after navigation and logged errors without failing. The transport
    integration app similarly proves plain libp2p/Gossipsub messaging, not a

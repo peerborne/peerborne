@@ -10,7 +10,7 @@ Read the [full contributing guide](https://peerborne.io/community/contributing/)
 - Use [GitHub Issues](https://github.com/Peerborne/peerborne/issues) for reproducible bugs and scoped work.
 - Use [private vulnerability reporting](https://github.com/Peerborne/peerborne/security/advisories/new) for suspected security issues. Never disclose them in public issues or discussions.
 
-Discuss architecture-changing, compatibility-sensitive, or security-sensitive work before implementation.
+Discuss architecture-changing, format-changing, or security-sensitive work before implementation.
 
 ## Development baseline
 
@@ -31,7 +31,7 @@ Run the relevant example or Docker-backed suite for affected behavior. Follow th
 
 - Keep changes and commits focused.
 - State what the validation demonstrates and what remains outside its evidence boundary.
-- Add focused migration, malformed-input, replay, and adversarial tests when changing serializers, protocols, ACL or key formats, persisted state, or other compatibility boundaries.
+- Peerborne has no users, so do not add backward compatibility, migrations, deprecation shims, or migration/compatibility tests. When changing serializers, wire protocols, ACL or key formats, or persisted state, update producers and consumers together and add focused malformed-input, replay, and adversarial tests for the current format.
 - Never expose credentials, signing keys, KEM keys, document keys, private payloads, or other secrets in code, tests, logs, issues, or pull requests.
 - Do not edit generated API Markdown under `site/src/content/docs/reference/api/`; change source comments or TypeDoc configuration and rebuild the site.
 - Run `git diff --check` and confirm unrelated files, generated output, and lockfiles are unchanged unless required.
