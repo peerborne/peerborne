@@ -249,9 +249,14 @@ export function usePeerborneDocumentState<
         throw new Error(`Failed to open/find document: ${documentPath}`);
       }
       await docRef[mode]();
-      const readers = await docRef.getReaders();
-      const writers = await docRef.getWriters();
-      return { docRef, readers, writers };
+      try {
+        const readers = await docRef.getReaders();
+        const writers = await docRef.getWriters();
+        return { docRef, readers, writers };
+      } catch (error) {
+        await docRef.close().catch(() => {});
+        throw error;
+      }
     };
 
     const shareTask = (task: OpenTask, mode: PeerborneDocumentInitialization) => {

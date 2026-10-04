@@ -427,6 +427,49 @@ describe('activation failures and initialization modes', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  test('a failed ACL listing closes the activated document so a later mount reopens it', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.getReaders.mockRejectedValueOnce(new Error('listing failed'));
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const laterRef = { current: null as any };
+
+    render(
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/listing-failure',
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(
+        'Failed to open/find document: /listing-failure',
+      );
+    });
+    expect(mockDoc.close).toHaveBeenCalledTimes(1);
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+
+    render(
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/listing-failure',
+          captureRef: laterRef,
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(laterRef.current.docData).toEqual({ test: 'data' });
+    });
+    expect(mockDoc.open).toHaveBeenCalledTimes(2);
+    expect(mockDoc.close).toHaveBeenCalledTimes(1);
+  });
+
   test('switching to create while an open is in flight creates once the open fails', async () => {
     const mockDoc = createMockDocument();
     let rejectOpen!: (error: Error) => void;
