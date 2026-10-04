@@ -1368,7 +1368,8 @@ const swarmDoc = swarm.doc('/projects/project-123');
 await swarmDoc.create();
 
 // Change the document — the change function receives the Y.Doc
-swarmDoc.change((doc: Y.Doc) => {
+await swarmDoc.change((doc: Y.Doc) => {
+  initializeProject(doc);
   const meta = doc.getMap('meta');
   meta.set('title', 'My Project');
 
