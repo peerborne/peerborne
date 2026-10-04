@@ -199,8 +199,13 @@ export function usePeerborneDocumentState<
   const subscriptionIdRef = useRef(`usePeerborneDocumentState-${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
-    const { openTasks, openTaskModes, openTaskResults, subscriberCounts } =
-      hookCaches;
+    const {
+      openTasks,
+      openTaskModes,
+      openTaskResults,
+      subscriberCounts,
+      activationRetries,
+    } = hookCaches;
     let active = true;
     let subscribedDocRef: PeerborneDocument<
       DocType,
@@ -300,7 +305,9 @@ export function usePeerborneDocumentState<
       }
     };
 
-    (async () => {
+    // A consumer whose activation failed stays counted, so it retries once
+    // another consumer activates the path and holds its own subscription.
+    const run = async () => {
       try {
         const result = await awaitActivation(joinActivation());
         if (!active || !result.docRef) return;
@@ -338,13 +345,31 @@ export function usePeerborneDocumentState<
       } catch {
         if (active) {
           console.warn(`Failed to open/find document: ${documentPath}`);
+          const retries = activationRetries.get(documentPath) ?? new Set();
+          retries.add(run);
+          activationRetries.set(documentPath, retries);
         }
+        return;
       }
-    })();
+
+      const retries = activationRetries.get(documentPath);
+      activationRetries.delete(documentPath);
+      retries?.forEach((retry) => {
+        if (retry !== run) retry();
+      });
+    };
+
+    run();
 
     return () => {
       active = false;
       subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
+
+      const retries = activationRetries.get(documentPath);
+      retries?.delete(run);
+      if (retries?.size === 0) {
+        activationRetries.delete(documentPath);
+      }
 
       const count = (subscriberCounts.get(documentPath) || 1) - 1;
       if (count > 0) {

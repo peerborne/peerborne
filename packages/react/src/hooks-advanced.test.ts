@@ -511,17 +511,20 @@ describe('Error handling', () => {
     const mockSwarm = createMockPeerborne(mockDoc);
     const caches = getPeerborneHookCaches(mockSwarm);
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const firstRef = { current: null as any };
     const laterRef = { current: null as any };
 
     try {
+      let firstView!: ReturnType<typeof render>;
       await act(async () => {
-        render(
+        firstView = render(
           React.createElement(
             TestProvider,
             null,
             React.createElement(TestConsumer, {
               peerborne: mockSwarm,
               documentPath: '/open-retry',
+              captureRef: firstRef,
             }),
           ),
         );
@@ -536,8 +539,9 @@ describe('Error handling', () => {
       expect(caches.openTaskResults.has('/open-retry')).toBe(false);
       expect(caches.subscriberCounts.get('/open-retry')).toBe(1);
 
+      let laterView!: ReturnType<typeof render>;
       await act(async () => {
-        render(
+        laterView = render(
           React.createElement(
             TestProvider,
             null,
@@ -552,13 +556,84 @@ describe('Error handling', () => {
 
       await waitFor(() => {
         expect(laterRef.current.docData).toEqual({ test: 'data' });
+        expect(firstRef.current.docData).toEqual({ test: 'data' });
       });
       expect(mockDoc.open).toHaveBeenCalledTimes(2);
-      expect(mockDoc.subscribe).toHaveBeenCalledTimes(1);
+      expect(mockDoc.subscribe).toHaveBeenCalledTimes(2);
+      expect(caches.activationRetries.has('/open-retry')).toBe(false);
       expect(consoleSpy).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(consoleSpy.mock.calls)).not.toContain(
         'sensitive failure details',
       );
+
+      act(() => {
+        laterView.unmount();
+      });
+      expect(caches.subscriberCounts.get('/open-retry')).toBe(1);
+      expect(mockDoc._subscriptions.size).toBe(1);
+      const [{ handler: firstHandler }] = mockDoc._subscriptions.values();
+      act(() => {
+        firstHandler({ test: 'updated' }, ['reader1'], ['writer1']);
+      });
+      expect(firstRef.current.docData).toEqual({ test: 'updated' });
+      expect(mockDoc.close).not.toHaveBeenCalled();
+
+      act(() => {
+        firstView.unmount();
+      });
+      await waitFor(() => {
+        expect(mockDoc.close).toHaveBeenCalledTimes(1);
+      });
+      expect(mockDoc._subscriptions.size).toBe(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('a failed consumer that unmounts is not retried by a later activation', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValueOnce(new Error('open failed'));
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const caches = getPeerborneHookCaches(mockSwarm);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const laterRef = { current: null as any };
+
+    try {
+      const failedView = render(
+        React.createElement(
+          TestProvider,
+          null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/unmounted-retry',
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(caches.activationRetries.get('/unmounted-retry')?.size).toBe(1);
+      });
+      act(() => {
+        failedView.unmount();
+      });
+      expect(caches.activationRetries.has('/unmounted-retry')).toBe(false);
+      expect(caches.subscriberCounts.has('/unmounted-retry')).toBe(false);
+
+      render(
+        React.createElement(
+          TestProvider,
+          null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/unmounted-retry',
+            captureRef: laterRef,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(laterRef.current.docData).toEqual({ test: 'data' });
+      });
+      expect(mockDoc.subscribe).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
     } finally {
       consoleSpy.mockRestore();
     }
