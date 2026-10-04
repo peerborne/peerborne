@@ -5,8 +5,8 @@ import { QueryAstResult } from './types.js';
 
 // We test the hooks' backing logic by directly exercising IndexManager's
 // subscribe()/defineIndex()/removeIndex() — the same primitives the hooks
-// wrap. This keeps the tests focused on observable behavior without the
-// overhead of standing up a React renderer and jsdom.
+// wrap — against real storage. Rendered hook state transitions are covered
+// in react-hooks.test.ts.
 
 /**
  * Subscribe to the manager and return a `waitForResults(count)` helper that
