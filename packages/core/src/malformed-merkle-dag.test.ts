@@ -36,7 +36,7 @@ describe('deserializeChangeNodeFromJSON malformed inputs', () => {
   test('rejects a string keyID', () => {
     expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: 'test-key-id', change: 'leaf' } as any, id)).toThrow(/"keyID"/);
   });
-  test('rejects non-string keyID', () => {
+  test('rejects a numeric keyID', () => {
     expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: 123 } as any, id)).toThrow(/"keyID"/);
   });
   test('rejects keyID on a nested child', () => {
