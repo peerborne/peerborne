@@ -42,11 +42,11 @@ describe('Automerge bootstrap keychain application', () => {
       document._syncUnlocked(
         {
           documentId: '/automerge-bootstrap-keychain',
-          signatureContext: 'load-response-v3',
+          signatureContext: 'load-response-v4',
           keychainChanges: emptyHistory,
         },
         false,
-        'load-response-v3',
+        'load-response-v4',
         beginStateApplication,
         false,
         logicalKeychainChange,
@@ -64,11 +64,11 @@ describe('Automerge bootstrap keychain application', () => {
       document._syncUnlocked(
         {
           documentId: '/automerge-bootstrap-keychain',
-          signatureContext: 'load-response-v3',
+          signatureContext: 'load-response-v4',
           keychainChanges: dependentChanges,
         },
         false,
-        'load-response-v3',
+        'load-response-v4',
         beginStateApplication,
         false,
         logicalKeychainChange,

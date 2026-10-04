@@ -42,9 +42,9 @@ describe('wire protocol constant verification', () => {
 
   test('protocol name segments match expected purpose', () => {
     const expected: Record<string, string> = {
-      documentLoadV3: 'doc-load',
-      snapshotLoadV3: 'snapshot-load',
-      tipAdvertiseV1: 'tip-advertise',
+      documentLoadV4: 'doc-load',
+      snapshotLoadV4: 'snapshot-load',
+      securityAdvertiseV1: 'security-advertise',
       invitationJoinV1: 'invitation-join',
       beekemWelcomeV2: 'beekem-welcome',
       beekemPathUpdateV2: 'beekem-pathupdate',
@@ -58,9 +58,9 @@ describe('wire protocol constant verification', () => {
 
   test('major version in constant name matches value', () => {
     const nameToMajor: Record<string, number> = {
-      documentLoadV3: 3,
-      snapshotLoadV3: 3,
-      tipAdvertiseV1: 1,
+      documentLoadV4: 4,
+      snapshotLoadV4: 4,
+      securityAdvertiseV1: 1,
       invitationJoinV1: 1,
       beekemWelcomeV2: 2,
       beekemPathUpdateV2: 2,

@@ -173,6 +173,11 @@ describe('PeerborneDocument writer removal', () => {
         commit: () => {
           members.delete(key);
         },
+        claimCommit: () => ({
+          finalize: () => {
+            members.delete(key);
+          },
+        }),
       })),
       current: () => new Uint8Array(),
       merge: () => {
