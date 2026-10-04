@@ -118,24 +118,51 @@ class WikiArticle extends React.Component<
   componentDidMount() {
     this._mounted = true;
     // Load this article upon component mount.
-    if (this.props.onDocumentOpen && this.props.documentId) {
-      console.log('Loading article at:', this.props.documentId);
-      // Get relay/bootstrap address from env. The relay multiaddr
-      // (e.g. /ip4/.../tcp/9001/ws/p2p/...) is used as a bootstrap peer
-      // for libp2p peer discovery — NOT as a listen address.
-      const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
-      const bootstrapPeers = relayAddr ? [relayAddr] : [];
-      const config = defaultConfig(defaultBootstrapConfig(bootstrapPeers));
-      this.props
-        .onInitialize(config)
-        .then(() =>
-          this.props.onDocumentOpen(this.props.documentId, this.props.create ? 'create' : 'open'),
-        )
-        .then(() => {
-          if (this._mounted && this.props.create) this.props.onCreated?.();
-        })
-        .catch(() => { if (this._mounted) this.setState({ loadError: 'Unable to open this article. Check its invitation and connection.' }); });
+    if (this.props.documentId) {
+      this._activate();
     }
+  }
+
+  // The router keeps this instance when the URL switches between /document/
+  // and /create/ for the same ID, so a failed load retries in the new mode.
+  componentDidUpdate(prevProps: WikiArticleProps) {
+    if (
+      Boolean(prevProps.create) !== Boolean(this.props.create) &&
+      this.state.loadError
+    ) {
+      this.setState({ loadError: undefined });
+      this._activate();
+    }
+  }
+
+  private _activate() {
+    const create = Boolean(this.props.create);
+    console.log('Loading article at:', this.props.documentId);
+    // Get relay/bootstrap address from env. The relay multiaddr
+    // (e.g. /ip4/.../tcp/9001/ws/p2p/...) is used as a bootstrap peer
+    // for libp2p peer discovery — NOT as a listen address.
+    const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
+    const bootstrapPeers = relayAddr ? [relayAddr] : [];
+    const config = defaultConfig(defaultBootstrapConfig(bootstrapPeers));
+    this.props
+      .onInitialize(config)
+      .then(() =>
+        this.props.onDocumentOpen(this.props.documentId, create ? 'create' : 'open'),
+      )
+      .then(() => {
+        if (this._mounted && this.props.create) this.props.onCreated?.();
+      })
+      .catch(() => {
+        if (!this._mounted) return;
+        if (Boolean(this.props.create) !== create) {
+          this._activate();
+          return;
+        }
+        this.setState({
+          loadError:
+            'Unable to open this article. Check its invitation and connection.',
+        });
+      });
   }
 
   componentWillUnmount() {

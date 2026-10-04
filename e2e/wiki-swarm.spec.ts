@@ -44,3 +44,28 @@ test('wiki-swarm Search routes an encoded article ID to the article view', async
     { timeout: 30_000 },
   );
 });
+
+test('wiki-swarm creates an article after Search fails to open it', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  const documentId = `e2e-create-${Date.now()}`;
+  const encodedId = encodeURIComponent(documentId);
+
+  await page.goto('/');
+  await page.getByRole('textbox', { name: 'Document ID' }).fill(documentId);
+  await page.getByRole('link', { name: 'Search' }).click();
+  await expect(page.getByRole('alert')).toContainText(
+    'Unable to open this article',
+    { timeout: 30_000 },
+  );
+
+  await page.getByRole('link', { name: 'Create article' }).click();
+  await expect(
+    page.getByRole('textbox', { name: 'Article title' }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(`/document/${encodedId}`);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(errors, 'article creation errors').toEqual([]);
+});
