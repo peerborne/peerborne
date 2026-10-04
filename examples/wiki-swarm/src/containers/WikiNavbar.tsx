@@ -16,7 +16,7 @@ export default function WikiNavbar() {
         value={currentSearch}
         onChange={e => setCurrentSearch(e.target.value)}
       />
-      <Link className="btn btn-outline-secondary" to={`/document/${currentSearch}`}>
+      <Link className="btn btn-outline-secondary" to={`/document/${encodeURIComponent(currentSearch)}`}>
         Search
       </Link>
       {currentSearch && <Link className="btn btn-primary" to={`/create/${encodeURIComponent(currentSearch)}`}>
