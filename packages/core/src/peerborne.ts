@@ -50,7 +50,6 @@ import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
   documentLoadV3,
-  documentKeyUpdateV2,
   invitationJoinV1,
   snapshotLoadV3,
   tipAdvertiseV1,
@@ -60,7 +59,7 @@ import {
   readFirstDeserializable,
   readPathPrefixedProtocolHeader,
 } from './utils.js';
-import { wrapStream } from './stream-adapter.js';
+import { writeStream } from './stream-write.js';
 import { closeLegacyHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 import { createAndStartHeliaNode } from './helia-node.js';
@@ -144,13 +143,10 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 /** Minimal stream shape used by shared protocol handlers. */
-interface ProtocolStream {
-  source: AsyncIterable<Uint8ArrayList | Uint8Array>;
-  sink: (data: Iterable<Uint8Array>) => Promise<void>;
-  close: () => Promise<void>;
-  closeRead: () => Promise<void>;
-  abort: (error: Error) => void;
-}
+type ProtocolStream = Pick<
+  Stream,
+  'send' | 'onDrain' | 'close' | 'closeRead' | 'abort' | typeof Symbol.asyncIterator
+>;
 
 class SharedProtocolRequestTimeoutError extends Error {}
 class SharedProtocolHandlerTimeoutError extends Error {}
@@ -228,7 +224,6 @@ type SharedProtocolAbortClassification =
 type SharedProtocolName =
   | 'doc-load'
   | 'snapshot-load'
-  | 'key-update'
   | 'beekem-welcome'
   | 'beekem-pathupdate'
   | 'tip-advertise';
@@ -949,17 +944,10 @@ export class Peerborne<
       this._config?.loadQuorumTimeoutMs,
     );
 
-    // Handler implementation for doc-load requests.
-    //
-    // libp2p v3 changed the `StreamHandler` signature from
-    // `({ stream, connection }) => void` to `(stream, connection) => void`.
-    // The raw stream is also now event-driven instead of `{ source, sink }`,
-    // so we wrap it with the stream-adapter shim before passing it to the
-    // legacy pipe-based protocol logic below.
     const docLoadHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -995,7 +983,7 @@ export class Peerborne<
                 console.warn(
                   'Shared doc-load handler: no document registered, dropping',
                 );
-                await stream.sink([] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
               await doc.handleLoadRequestData(request, stream, admission);
@@ -1011,9 +999,9 @@ export class Peerborne<
     // Handler implementation for snapshot-load requests.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const snapshotLoadHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -1049,7 +1037,7 @@ export class Peerborne<
                 console.warn(
                   'Shared snapshot-load handler: no document registered, dropping',
                 );
-                await stream.sink([] as Iterable<Uint8Array>);
+                await writeStream(stream, [] as Iterable<Uint8Array>);
                 return;
               }
               await doc.handleSnapshotLoadRequestData(
@@ -1066,79 +1054,17 @@ export class Peerborne<
       });
     };
 
-    // Handler implementation for key-update requests. The stream data
-    // is prefixed with a 4-byte big-endian length followed by the
-    // UTF-8 document path. The remaining bytes are the encrypted
-    // key-update payload.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    //
-    // The header parse (read assembled bytes, validate the 4-byte
-    // length, decode the UTF-8 path, look up the doc in the registry)
-    // is shared with the BeeKEM Welcome handler below via
-    // `readPathPrefixedProtocolHeader`. Both protocols use the same
-    // wire-format prefix; keeping the validation in one place means a
-    // tightened bound only needs to land once.
-    const keyUpdateHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
-      return pipe(
-        stream.source,
-        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
-          let header;
-          try {
-            header = await withSharedProtocolRequestDeadline(
-              () =>
-                readPathPrefixedProtocolHeader(
-                  source,
-                  this._documentRegistry,
-                  'key-update',
-                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                  MAX_DOCUMENT_PATH_LENGTH,
-                ),
-              requestTimeoutMs,
-            );
-          } catch (err) {
-            const reason =
-              err instanceof SharedProtocolRequestTimeoutError
-                ? 'request timed out'
-                : 'failed to read request';
-            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            console.warn(`Shared key-update handler: ${reason}, dropping`);
-            return [];
-          }
-          if (header.kind !== 'ok') {
-            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
-            return [];
-          }
-          await runSharedProtocolHandlerPhase(
-            stream,
-            requestTimeoutMs,
-            'key-update',
-            (admission) =>
-              header.doc.handleKeyUpdateRequestData(
-                header.payload,
-                admission,
-              ),
-          );
-          return [];
-        },
-      ).then(() => undefined).catch(() => {
-        console.error('Shared key-update handler failed');
-      });
-    };
-
-    // Handler for BeeKEM Welcome V2. Wire format mirrors key-update v2:
+    // Handler for BeeKEM Welcome V2. Wire format:
     // 4-byte big-endian path length, then UTF-8 path, then the serialized
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
     // and records the invitation epoch.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     //
-    // Header parse shared with the key-update handler above via
-    // `readPathPrefixedProtocolHeader`.
     const beekemWelcomeHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let header;
           try {
@@ -1197,9 +1123,9 @@ export class Peerborne<
     // Header parse shared with the key-update + Welcome handlers via
     // `readPathPrefixedProtocolHeader`.
     const beekemPathUpdateHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let header;
           try {
@@ -1254,9 +1180,9 @@ export class Peerborne<
     // on decline.
     // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const tipAdvertiseHandler = (rawStream: Stream) => {
-      const stream: ProtocolStream = wrapStream(rawStream);
+      const stream: ProtocolStream = rawStream;
       return pipe(
-        stream.source,
+        stream,
         async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
           let request;
           try {
@@ -1292,7 +1218,7 @@ export class Peerborne<
                 // The unauthenticated one-byte sentinel is intentionally only
                 // an existence signal. Quorum protects its interpretation and
                 // the attacker-controlled document ID is never logged.
-                await stream.sink([
+                await writeStream(stream, [
                   new Uint8Array([0xff]),
                 ] as Iterable<Uint8Array>);
                 return;
@@ -1320,9 +1246,9 @@ export class Peerborne<
         await withInvitationProtocolStream(
           async () => rawStream,
           async (openedStream, signal) => {
-            const stream: ProtocolStream = wrapStream(openedStream);
+            const stream: ProtocolStream = openedStream;
             const request = await readInvitationProtocolMessage(
-              stream.source,
+              stream,
               decodeInvitationJoinRequest,
               MAX_INVITATION_JOIN_REQUEST_BYTES,
             );
@@ -1330,7 +1256,7 @@ export class Peerborne<
               request,
               signal,
             );
-            await stream.sink([
+            await writeStream(stream, [
               encodeInvitationProtocolFrame(
                 encodeInvitationAcceptance(acceptance),
                 MAX_INVITATION_MESSAGE_BYTES,
@@ -1351,7 +1277,6 @@ export class Peerborne<
     const registration = Promise.all([
       this.libp2p.handle(documentLoadV3, docLoadHandler, relayProtocolOptions),
       this.libp2p.handle(snapshotLoadV3, snapshotLoadHandler, relayProtocolOptions),
-      this.libp2p.handle(documentKeyUpdateV2, keyUpdateHandler, relayProtocolOptions),
       this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
       this.libp2p.handle(tipAdvertiseV1, tipAdvertiseHandler, relayProtocolOptions),
@@ -1686,10 +1611,10 @@ export class Peerborne<
                 },
               ),
             async (rawStream) => {
-              const stream = wrapStream(rawStream);
-              await pipe([encodedRequest], stream.sink);
+              const stream = rawStream;
+              await writeStream(stream, [encodedRequest]);
               const acceptance = await readInvitationProtocolMessage(
-                stream.source,
+                stream,
                 decodeInvitationAcceptance,
                 MAX_INVITATION_MESSAGE_BYTES,
               );
