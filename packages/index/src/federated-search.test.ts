@@ -347,6 +347,35 @@ describe('FederatedSearchCoordinator', () => {
       clock.mockRestore();
     }
   });
+
+  test('stops resolution at the budget when shorter per-candidate timeouts fire first', async () => {
+    const manager = new IndexManager<Record<string, unknown>>(new MemoryIndexStorage(), (value) => value);
+    await manager.defineIndex(definition);
+    const signals: AbortSignal[] = [];
+    const resolveAuthorized = jest.fn<AuthorizedDocumentResolver['resolveAuthorized']>(
+      async (_documentPath, _revision, options) => {
+        if (options) signals.push(options.signal);
+        return new Promise<undefined>(() => undefined);
+      },
+    );
+    const coordinator = new FederatedSearchCoordinator(manager, { resolveAuthorized }, {
+      maxCandidatesPerSource: 64,
+      resolveBudgetMs: 50,
+      resolveTimeoutMs: 20,
+      resolveConcurrency: 1,
+    });
+    const candidates = Array.from({ length: 64 }, (_, index) => ({ documentPath: `/articles/slow-${index}` }));
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const result = await coordinator.search(query(), [new StaticSource('slow-documents', candidates)]);
+      expect(resolveAuthorized.mock.calls.length).toBeLessThan(candidates.length);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+      expect(result.coverage.reasons).toContain('candidate-resolution-budget-exhausted');
+      expect(result.coverage.reasons).toContain('candidate-resolution-timeout');
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 function query(): QueryAst {
