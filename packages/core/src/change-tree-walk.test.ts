@@ -704,4 +704,49 @@ describe('bounded iterative change-tree consumers', () => {
       log.mockRestore();
     }
   });
+
+  test.each([
+    ['after', false],
+    ['before', true],
+  ])(
+    'pruning keeps an inline ACL payload when its deferred alias appears %s it',
+    (_order, deferredFirst) => {
+      const founderChange = new Uint8Array([1]);
+      const inlineParent: Node = {
+        kind: crdtDocumentChangeNode,
+        change: new Uint8Array([2]),
+        children: {
+          'cid-founder': { kind: crdtWriterChangeNode, change: founderChange },
+        },
+      };
+      const deferredFounder: Node = { kind: crdtWriterChangeNode };
+      const root: Node = {
+        kind: crdtDocumentChangeNode,
+        change: new Uint8Array([3]),
+        children: deferredFirst
+          ? { 'cid-founder': deferredFounder, 'cid-parent': inlineParent }
+          : { 'cid-parent': inlineParent, 'cid-founder': deferredFounder },
+      };
+      const document = fakeDocument({
+        documentPath: '/acl-alias-prune',
+        _lastSyncMessage: {
+          documentId: '/acl-alias-prune',
+          changeId: 'root',
+          changes: root,
+        },
+      });
+      const log = jest
+        .spyOn(console, 'log')
+        .mockImplementation(() => undefined);
+
+      try {
+        expect(document._pruneChanges(1)).toEqual(new Set(['cid-parent']));
+        expect(document._lastSyncMessage.changes.children).toEqual({
+          'cid-founder': { kind: crdtWriterChangeNode, change: founderChange },
+        });
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 });

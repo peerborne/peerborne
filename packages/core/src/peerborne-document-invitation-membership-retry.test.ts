@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 
 import {
+  crdtDocumentChangeNode,
   crdtReaderChangeNode,
   crdtWriterChangeNode,
   type CRDTChangeNode,
@@ -12,7 +13,17 @@ import {
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
-jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
+jest.mock(
+  'multiformats',
+  () => ({
+    CID: class {
+      static parse(value: string) {
+        return { toString: () => value };
+      }
+    },
+  }),
+  { virtual: true },
+);
 jest.mock('@helia/unixfs', () => ({ unixfs: jest.fn() }), { virtual: true });
 jest.mock(
   '@libp2p/gossipsub',
@@ -57,6 +68,12 @@ class StagedMembershipACL {
 
   async users(): Promise<string[]> {
     return [...this.members];
+  }
+
+  async merge(change: MembershipChange): Promise<void> {
+    for (const identity of 'add' in change ? [change.add] : change.snapshot) {
+      this.members.add(identity);
+    }
   }
 
   async prepareAdd(identity: string) {
@@ -286,4 +303,127 @@ describe('exact invitation retry after a partial failure', () => {
       ).not.toThrow();
     },
   );
+});
+
+describe('invitation bootstrap after founder history compaction', () => {
+  test('verifies the snapshot when pruning saw a later deferred founder alias', async () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const publish = jest.fn<() => Promise<void>>(async () => undefined);
+      const { document } = await founderDocument(publish);
+      let bootstrap: any;
+      document._syncMessageSerializer.serializeSyncMessage = jest.fn(
+        (message: any) => {
+          if (message.signatureContext === 'invitation-bootstrap-v1') {
+            bootstrap = { ...message };
+          }
+          return new Uint8Array([3]);
+        },
+      );
+      const blocks = new Map<string, unknown>([
+        [founderWriterCid, { add: 'founder' }],
+      ]);
+      let nextCid = 0;
+      Object.assign(document, {
+        _putBlock: jest.fn(async (changes: unknown) => {
+          const cid = `change-cid-${++nextCid}`;
+          blocks.set(cid, changes);
+          return cid;
+        }),
+        _encoder: new TextEncoder(),
+        _userKey: 'founder-signing-key',
+        _document: {},
+        _crdtProvider: { getSnapshot: jest.fn(() => ({ compacted: true })) },
+        _compactionConfig: {
+          enabled: false,
+          pruneAfterSnapshot: true,
+          keepRecentNodes: 1,
+          gcAfterPrune: false,
+        },
+        _snapshotUnsupported: false,
+        _documentChangeCount: 0,
+        _changesSinceSnapshot: 0,
+        _prepareInvitationBootstrapCapacity: jest.fn(async () => ({
+          keychainChanges: { keychain: 1 },
+          snapshot: document._latestSnapshot,
+          serializedBootstrapBaselineBytes: 0,
+          welcomeWithoutBeeKEMBytes: 0,
+        })),
+      });
+      document._authProvider.sign = jest.fn(async () => new Uint8Array([9]));
+
+      await document._makeChange({ text: 'first' }, crdtDocumentChangeNode);
+      await document._makeChange({ text: 'second' }, crdtDocumentChangeNode);
+      await expect(document.snapshot()).resolves.toBeDefined();
+      await document.buildInvitationBootstrap(
+        'recipient',
+        await rawPublicKey(await kemKeyPair()),
+        'reader',
+      );
+      delete bootstrap.keychainChanges;
+
+      const writers = new StagedMembershipACL([]);
+      const getBlock = jest.fn(async (cid: { toString(): string }) => {
+        const block = blocks.get(cid.toString());
+        if (block === undefined) throw new Error('block unavailable');
+        return block;
+      });
+      const applySnapshot = jest.fn(
+        (_current: unknown, state: unknown) => state,
+      );
+      const recipient = Object.assign(
+        Object.create(PeerborneDocument.prototype),
+        {
+          documentPath,
+          swarm: { isPendingInvitationDocument: () => true },
+          _bootstrapLoadApplicationState: 'pending',
+          _subscribed: false,
+          _hashes: new Set<string>(),
+          _referencedAncestors: new Set<string>(),
+          _recentTips: [],
+          _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+          _pendingWelcomes: new Map(),
+          _readers: new StagedMembershipACL([]),
+          _writers: writers,
+          _readerPublicationsInFlight: 0,
+          _writerPublicationsInFlight: 0,
+          _writerMutationsInFlight: 0,
+          _writerKeysVersion: 0,
+          _cachedWriterKeys: null,
+          _document: {},
+          _documentChangeCount: 0,
+          _changesSinceSnapshot: 0,
+          _encoder: new TextEncoder(),
+          _keychain: {},
+          _crdtProvider: {
+            applySnapshot,
+            remoteChange: jest.fn((current: unknown) => current),
+          },
+          _changesSerializer: {
+            serializeChanges: jest.fn(() => new Uint8Array([7])),
+          },
+          _authProvider: {
+            verify: jest.fn(
+              async (_payload: Uint8Array, key: string) => key === 'founder',
+            ),
+          },
+          _getBlock: getBlock,
+        },
+      ) as any;
+
+      await expect(
+        recipient._syncInvitationBootstrapWithKeychain(bootstrap, {}, {}),
+      ).resolves.toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      expect(applySnapshot).toHaveBeenCalledTimes(1);
+      expect(recipient._isLatestSnapshotFrom(bootstrap)).toBe(true);
+      expect([...writers.members]).toEqual(['founder']);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
 });
