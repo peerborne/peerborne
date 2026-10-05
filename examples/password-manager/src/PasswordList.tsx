@@ -1,5 +1,13 @@
 import React from 'react';
-import { Button, ListGroup, Container, Col, Row, Form } from 'react-bootstrap';
+import {
+  Alert,
+  Button,
+  ListGroup,
+  Container,
+  Col,
+  Row,
+  Form,
+} from 'react-bootstrap';
 import { usePeerborneDocumentState } from '@peerborne/react';
 import * as uuid from 'uuid';
 import { YjsPeerborne } from './utils';
@@ -50,6 +58,7 @@ export function PasswordVault({
     initialization: VaultInitialization,
   ) => {
     rememberVault(userId, indexPath);
+    setExistingVaultPath(indexPath);
     setVault({ indexPath, initialization });
   };
   const trimmedVaultPath = existingVaultPath.trim();
@@ -65,6 +74,7 @@ export function PasswordVault({
             indexPath={vault.indexPath}
             initialization={vault.initialization}
             kemKeyPair={kemKeyPair}
+            onLeave={() => setVault(undefined)}
           />
         </>
       ) : (
@@ -102,11 +112,13 @@ export function PasswordList({
   initialization,
   peerborne,
   kemKeyPair,
+  onLeave,
 }: {
   indexPath: string;
   initialization: VaultInitialization;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
+  onLeave: () => void;
 }) {
   const [currentPasswordId, setCurrentPasswordId] = React.useState<string>();
   const [viewedIds, setViewedIds] = React.useState<string[]>([]);
@@ -115,12 +127,8 @@ export function PasswordList({
     setViewedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
     setCurrentPasswordId(id);
   };
-  const [passwords, changePasswords] = usePeerborneDocumentState(
-    peerborne,
-    indexPath,
-    'all',
-    initialization,
-  );
+  const [passwords, changePasswords, , activationError] =
+    usePeerborneDocumentState(peerborne, indexPath, 'all', initialization);
   const [importingPassword, setImportingPassword] = React.useState(false);
   const [importPasswordId, setImportPasswordId] = React.useState('');
   const [importPasswordName, setImportPasswordName] = React.useState('');
@@ -128,6 +136,17 @@ export function PasswordList({
   let importButtonDisabled: boolean = true;
   if (importPasswordId) {
     importButtonDisabled = false;
+  }
+
+  if (activationError) {
+    return (
+      <Alert variant="danger">
+        Could not {initialization} this vault.{' '}
+        <Button size="sm" variant="outline-danger" onClick={onLeave}>
+          Choose another vault
+        </Button>
+      </Alert>
+    );
   }
 
   return (

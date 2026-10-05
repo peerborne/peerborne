@@ -345,3 +345,60 @@ test('requires a KEM public key before adding a new reader and retries existing 
   ).toHaveCount(1);
   expect(errors, 'reader onboarding errors').toEqual([]);
 });
+
+test('offers to leave a vault only after it fails to open', async ({
+  page,
+}) => {
+  const failedOpens: string[] = [];
+  page.on('console', (message) => {
+    if (message.text().startsWith('Failed to open/find document: ')) {
+      failedOpens.push(message.text());
+    }
+  });
+  const missingPath = '/missing/vaults/unknown';
+  const leaveVault = page.getByRole('button', {
+    name: 'Choose another vault',
+    exact: true,
+  });
+  const newSecret = page.getByRole('button', {
+    name: 'New Secret',
+    exact: true,
+  });
+
+  await page.goto('/login');
+  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await expect(page).toHaveURL(/\/secrets$/);
+  const vaultPath = page.getByLabel('Vault path');
+  await vaultPath.fill(missingPath);
+  await page.getByRole('button', { name: 'Open vault', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Could not open this vault. Choose another vault',
+  );
+  await expect
+    .poll(() => failedOpens)
+    .toEqual([`Failed to open/find document: ${missingPath}`]);
+  await expect(newSecret).toHaveCount(0);
+
+  await leaveVault.click();
+  await expect(vaultPath).toHaveValue(missingPath);
+  await page.getByRole('button', { name: 'Open vault', exact: true }).click();
+  await expect(leaveVault).toBeVisible();
+  await expect.poll(() => failedOpens).toHaveLength(2);
+
+  await leaveVault.click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await expect(newSecret).toBeEnabled();
+  await expect(leaveVault).toHaveCount(0);
+  await newSecret.click();
+  const name = page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true });
+  await name.fill('Kept secret');
+  await expect(page.getByText('Kept secret', { exact: true })).toBeVisible();
+  await expect(leaveVault).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(failedOpens).toHaveLength(2);
+});
