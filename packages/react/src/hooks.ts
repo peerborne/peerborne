@@ -69,6 +69,8 @@ export const PeerborneContext = createContext<{
   setDocWritersCache: () => {},
 });
 
+const openTaskInitializations = new WeakMap<Promise<unknown>, 'open' | 'create'>();
+
 function setCacheEntry<Cache extends Record<string, Value>, Value>(
   setter: Dispatch<SetStateAction<Cache>>,
   key: string,
@@ -244,6 +246,15 @@ export function usePeerborneDocumentState<
         | undefined;
 
       try {
+        while (openTask && openTaskInitializations.get(openTask) !== initialization) {
+          const activated = await openTask.then(() => true, () => false);
+          if (activated) break;
+          if (openTasks.get(documentPath) === openTask) {
+            openTasks.delete(documentPath);
+          }
+          if (!active) return;
+          openTask = openTasks.get(documentPath) as typeof openTask;
+        }
         if (!openTask) {
           const docRef = peerborne.doc(documentPath);
           if (!docRef) {
@@ -256,6 +267,7 @@ export function usePeerborneDocumentState<
             const writers = await docRef.getWriters();
             return { docRef, readers, writers };
           })();
+          openTaskInitializations.set(openTask, initialization);
           openTasks.set(documentPath, openTask);
         }
 
