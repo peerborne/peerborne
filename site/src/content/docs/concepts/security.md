@@ -173,13 +173,15 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 
 Initial loads, security advertisements, and the BeeKEM Welcome and PathUpdate
 membership-control protocols are a deliberate exception to that toggle. Load
-requests, load responses, and advertisements are always signed and verified
-against the captured trusted writers. Welcome and PathUpdate outer messages are
-always writer-signed, and receivers drop unsigned or invalidly signed copies
-regardless of `enableSigning`. Welcome and PathUpdate are not ordinary
-whole-message document-key envelopes. A Welcome ECIES-seals its onboarding
-payload to the recipient's KEM key. A PathUpdate instead carries path secrets
-individually encrypted to the surviving BeeKEM subtrees.
+and advertisement requests are always signed by the requester, and each
+responder verifies them against its own current reader and writer ACLs. Load
+responses and advertisements are always writer-signed, and the loader verifies
+them against its captured trusted writer authorities. Welcome and PathUpdate
+outer messages are always writer-signed, and receivers drop unsigned or
+invalidly signed copies regardless of `enableSigning`. Welcome and PathUpdate
+are not ordinary whole-message document-key envelopes. A Welcome ECIES-seals
+its onboarding payload to the recipient's KEM key. A PathUpdate instead
+carries path secrets individually encrypted to the surviving BeeKEM subtrees.
 
 ## Initial-load quorum
 
