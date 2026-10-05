@@ -59,7 +59,7 @@ await ownerDocumentRef.addWriter(recipientIdentityPublicKey);
 
 Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status. Calling `addReader(identity)` without KEM bytes changes the reader ACL but sends no encrypted Welcome.
 
-The React wrapper's `addReader(user, kemRaw)` forwards an optional KEM key, but the wrapper cannot call `setKemKeyPair`, so it cannot implement this onboarding sequence by itself. The password-manager example installs its generated KEM key pair on the document ref directly, and its permissions table accepts a member's signing public key and raw KEM public key, both base64. Its Chromium test promotes a reader added with a generated KEM key to editor in one browser. The example does not display or persist a user's own KEM key, and no two-browser test proves that a second identity receives the Welcome and decrypts the document.
+The React wrapper's `addReader(user, kemRaw)` forwards an optional KEM key, but the wrapper cannot call `setKemKeyPair`, so it cannot implement this onboarding sequence by itself. The password-manager example installs its generated KEM key pair on the document ref directly, and its permissions table requires a new member's signing public key and raw KEM public key, both base64, before any membership change. Its Chromium test promotes a reader added with a generated KEM key to editor in one browser. The example does not display or persist a user's own KEM key, and no two-browser test proves that a second identity receives the Welcome and decrypts the document.
 
 ## Safer implementation checklist
 

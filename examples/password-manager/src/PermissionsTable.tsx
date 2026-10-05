@@ -13,6 +13,7 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
+const missingKemMessage = "Enter the new member's KEM public key.";
 const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
@@ -132,10 +133,8 @@ export function PermissionsTable({
       <p>
         Enter the member's signing public key and raw P-256 ECDH KEM public key,
         both base64. The KEM key gives the member a BeeKEM leaf and seals the
-        document key in a Welcome sent to connected peers. A member added
-        without one gets an authorization role only: they cannot open the
-        document or be promoted to editor until you set their role again with
-        their KEM key.
+        document key in a Welcome sent to connected peers. A new member requires
+        a KEM key; an existing member's role can change without one.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -252,6 +251,14 @@ export function PermissionsTable({
                         ['verify'],
                       )(draftUserKey);
                       const kemPublicKey = decodeKemPublicKey(draftKemKey);
+                      const serializedKey = await serializeKey(key);
+                      const isMember = permissions.some(
+                        (permission) => permission.publicKey === serializedKey,
+                      );
+                      if (!isMember && !kemPublicKey) {
+                        alert(missingKemMessage);
+                        return;
+                      }
 
                       switch (draftPermission) {
                         case 'r': {

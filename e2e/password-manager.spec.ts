@@ -135,17 +135,33 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   });
 
   const truncatedKemKey = btoa(atob(memberKemKey).slice(0, 64));
+  const missingKemMessage = "Enter the new member's KEM public key.";
   const invalidBase64Message = 'The member KEM public key is not valid base64.';
   const invalidShapeMessage =
     'The member KEM public key must be a 65-byte uncompressed P-256 ' +
     'public key starting with 0x04.';
 
   await page.getByPlaceholder('Public Key to add').fill(memberKey);
+
+  await page.getByRole('combobox').selectOption('rw');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect.poll(() => dialogs).toEqual([missingKemMessage]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
   await page.getByRole('combobox').selectOption('r');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([missingKemMessage, missingKemMessage]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
 
   await page.getByPlaceholder('Member KEM public key').fill('not-base64!');
   await page.getByRole('button', { name: 'Set role' }).click();
-  await expect.poll(() => dialogs).toEqual([invalidBase64Message]);
+  await expect
+    .poll(() => dialogs)
+    .toEqual([missingKemMessage, missingKemMessage, invalidBase64Message]);
   await expect(memberRows).toHaveCount(1);
   await expect(memberRow).toHaveCount(0);
 
@@ -153,7 +169,12 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect
     .poll(() => dialogs)
-    .toEqual([invalidBase64Message, invalidShapeMessage]);
+    .toEqual([
+      missingKemMessage,
+      missingKemMessage,
+      invalidBase64Message,
+      invalidShapeMessage,
+    ]);
   await expect(memberRows).toHaveCount(1);
   await expect(memberRow).toHaveCount(0);
 
@@ -164,6 +185,7 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   ).toBeVisible({ timeout: 30_000 });
   await expect(memberRows).toHaveCount(2);
 
+  await page.getByPlaceholder('Member KEM public key').fill('');
   await page.getByRole('combobox').selectOption('rw');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(
@@ -173,6 +195,8 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRows).toHaveCount(2);
 
   expect(dialogs, 'permission update dialogs').toEqual([
+    missingKemMessage,
+    missingKemMessage,
     invalidBase64Message,
     invalidShapeMessage,
   ]);
