@@ -26,10 +26,27 @@ async function isLastWriter(
   return writerKeys.size === 1 && writerKeys.has(serializedTarget);
 }
 
+class KemPublicKeyInputError extends Error {}
+
 function decodeKemPublicKey(value: string): Uint8Array | undefined {
   const encoded = value.trim();
   if (!encoded) return undefined;
-  return Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+  let decoded: string;
+  try {
+    decoded = atob(encoded);
+  } catch {
+    throw new KemPublicKeyInputError(
+      'The member KEM public key is not valid base64.',
+    );
+  }
+  const raw = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+  if (raw.length !== 65 || raw[0] !== 0x04) {
+    throw new KemPublicKeyInputError(
+      'The member KEM public key must be a 65-byte uncompressed P-256 ' +
+        'public key starting with 0x04.',
+    );
+  }
+  return raw;
 }
 
 export function PermissionsTable({
@@ -261,6 +278,10 @@ export function PermissionsTable({
                         }
                       }
                     } catch (error) {
+                      if (error instanceof KemPublicKeyInputError) {
+                        alert(error.message);
+                        return;
+                      }
                       alert(
                         error instanceof LastWriterRemovalError
                           ? lastEditorMessage
