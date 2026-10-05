@@ -15,27 +15,6 @@ import * as Y from 'yjs';
 import { PasswordEditor } from './PasswordEditor';
 import { useLocation } from 'react-router-dom';
 
-type VaultInitialization = 'open' | 'create';
-
-const vaultStorageKey = (userId: string) =>
-  `peerborne-password-manager:vault:${userId}`;
-
-function readRememberedVault(userId: string): string {
-  try {
-    return localStorage.getItem(vaultStorageKey(userId)) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function rememberVault(userId: string, indexPath: string): void {
-  try {
-    localStorage.setItem(vaultStorageKey(userId), indexPath);
-  } catch {
-    // The vault path stays visible when browser storage is unavailable.
-  }
-}
-
 export function PasswordVault({
   userId,
   peerborne,
@@ -46,62 +25,27 @@ export function PasswordVault({
   kemKeyPair: CryptoKeyPair;
 }) {
   const { pathname } = useLocation();
-  const [vault, setVault] = React.useState<{
-    indexPath: string;
-    initialization: VaultInitialization;
-  }>();
-  const [existingVaultPath, setExistingVaultPath] = React.useState(() =>
-    readRememberedVault(userId),
-  );
-  const selectVault = (
-    indexPath: string,
-    initialization: VaultInitialization,
-  ) => {
-    rememberVault(userId, indexPath);
-    setExistingVaultPath(indexPath);
-    setVault({ indexPath, initialization });
-  };
-  const trimmedVaultPath = existingVaultPath.trim();
+  const [indexPath, setIndexPath] = React.useState<string>();
   return (
     <div hidden={pathname !== '/secrets'}>
-      {vault ? (
-        <>
-          <p className="mt-3">
-            Vault: <code>{vault.indexPath}</code>
-          </p>
-          <PasswordList
-            peerborne={peerborne}
-            indexPath={vault.indexPath}
-            initialization={vault.initialization}
-            kemKeyPair={kemKeyPair}
-            onLeave={() => setVault(undefined)}
-          />
-        </>
+      {indexPath ? (
+        <PasswordList
+          peerborne={peerborne}
+          indexPath={indexPath}
+          kemKeyPair={kemKeyPair}
+          onLeave={() => setIndexPath(undefined)}
+        />
       ) : (
-        <Form className="mt-3" onSubmit={(e) => e.preventDefault()}>
+        <div className="mt-3">
           <Button
-            onClick={() =>
-              selectVault(`/${userId}/vaults/${uuid.v4()}`, 'create')
-            }
+            onClick={() => setIndexPath(`/${userId}/vaults/${uuid.v4()}`)}
           >
             Create a vault
           </Button>
-          <Form.Control
-            className="mt-3"
-            aria-label="Vault path"
-            placeholder="Enter an existing vault path"
-            value={existingVaultPath}
-            onChange={(e) => setExistingVaultPath(e.target.value)}
-          />
-          <Button
-            className="mt-2"
-            variant="success"
-            disabled={!trimmedVaultPath}
-            onClick={() => selectVault(trimmedVaultPath, 'open')}
-          >
-            Open vault
-          </Button>
-        </Form>
+          <p className="mt-2 text-muted">
+            A vault lasts only for the current session.
+          </p>
+        </div>
       )}
     </div>
   );
@@ -109,13 +53,11 @@ export function PasswordVault({
 
 export function PasswordList({
   indexPath,
-  initialization,
   peerborne,
   kemKeyPair,
   onLeave,
 }: {
   indexPath: string;
-  initialization: VaultInitialization;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
   onLeave: () => void;
@@ -128,7 +70,7 @@ export function PasswordList({
     setCurrentPasswordId(id);
   };
   const [passwords, changePasswords, , activationError] =
-    usePeerborneDocumentState(peerborne, indexPath, 'all', initialization);
+    usePeerborneDocumentState(peerborne, indexPath, 'all', 'create');
   const [importingPassword, setImportingPassword] = React.useState(false);
   const [importPasswordId, setImportPasswordId] = React.useState('');
   const [importPasswordName, setImportPasswordName] = React.useState('');
@@ -141,7 +83,7 @@ export function PasswordList({
   if (activationError) {
     return (
       <Alert variant="danger">
-        Could not {initialization} this vault.{' '}
+        Could not create this vault.{' '}
         <Button size="sm" variant="outline-danger" onClick={onLeave}>
           Choose another vault
         </Button>

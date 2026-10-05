@@ -5,7 +5,7 @@ description: Assess the password-manager source example and the incomplete disti
 
 **Status: Runnable from source for startup smoke; Deferred/incomplete integration for sharing and revocation.**
 
-[`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its typechecked production build and strict Chromium startup smoke test pass. It has no acceptance test proving two-user sharing, invitation delivery, restart recovery, or revocation.
+[`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its typechecked production build and strict Chromium startup smoke test pass. It has no acceptance test proving two-user sharing, invitation delivery, restart recovery, or revocation. A vault lasts only for the current browser session; reopening one after a reload is tracked in [issue #534](https://github.com/Peerborne/peerborne/issues/534).
 
 :::caution
 Do not store real passwords, recovery codes, API tokens, or other credentials in this example. Peerborne is under active development, is not independently audited, and has no assured durability or recovery path.

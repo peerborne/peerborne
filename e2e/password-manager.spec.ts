@@ -233,31 +233,6 @@ test('creates a vault and preserves a secret across selection and navigation', a
   await expect(name).toHaveValue('Smoke secret');
 });
 
-test('offers the remembered vault path after logging in again with the same key', async ({ page }) => {
-  await page.goto('/login');
-  const privateKey = page.getByPlaceholder('Enter private key');
-  const publicKey = page.getByPlaceholder('Enter public key');
-  await expect(privateKey).not.toHaveValue('');
-  await expect(publicKey).not.toHaveValue('');
-  const keys = {
-    privateKey: await privateKey.inputValue(),
-    publicKey: await publicKey.inputValue(),
-  };
-  await page.getByRole('button', { name: 'Login', exact: true }).click();
-  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
-  const vaultPath = page.locator('code').filter({ hasText: '/vaults/' });
-  await expect(vaultPath).toBeVisible();
-  const createdPath = (await vaultPath.textContent()) ?? '';
-
-  await page.goto('/login');
-  await expect(privateKey).not.toHaveValue(keys.privateKey);
-  await privateKey.fill(keys.privateKey);
-  await publicKey.fill(keys.publicKey);
-  await page.getByRole('button', { name: 'Login', exact: true }).click();
-  await expect(page.getByLabel('Vault path')).toHaveValue(createdPath);
-  await expect(page.getByRole('button', { name: 'Open vault', exact: true })).toBeEnabled();
-});
-
 test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -346,16 +321,39 @@ test('requires a KEM public key before adding a new reader and retries existing 
   expect(errors, 'reader onboarding errors').toEqual([]);
 });
 
-test('offers to leave a vault only after it fails to open', async ({
+test('offers only vault creation and leaves a vault that failed to create', async ({
   page,
 }) => {
-  const failedOpens: string[] = [];
+  await page.addInitScript(() => {
+    const generateKey = SubtleCrypto.prototype.generateKey;
+    const injection = window as unknown as { failNextVaultKey?: boolean };
+    SubtleCrypto.prototype.generateKey = function (
+      this: SubtleCrypto,
+      algorithm: AlgorithmIdentifier,
+      ...rest: unknown[]
+    ) {
+      if (
+        injection.failNextVaultKey &&
+        (algorithm as Algorithm).name === 'AES-GCM'
+      ) {
+        injection.failNextVaultKey = false;
+        return Promise.reject(new Error('Injected vault key failure'));
+      }
+      return Reflect.apply(generateKey, this, [algorithm, ...rest]);
+    } as SubtleCrypto['generateKey'];
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  const failedCreates: string[] = [];
   page.on('console', (message) => {
     if (message.text().startsWith('Failed to open/find document: ')) {
-      failedOpens.push(message.text());
+      failedCreates.push(message.text());
     }
   });
-  const missingPath = '/missing/vaults/unknown';
+  const createVault = page.getByRole('button', {
+    name: 'Create a vault',
+    exact: true,
+  });
   const leaveVault = page.getByRole('button', {
     name: 'Choose another vault',
     exact: true,
@@ -369,27 +367,33 @@ test('offers to leave a vault only after it fails to open', async ({
   await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
   await page.getByRole('button', { name: 'Login', exact: true }).click();
   await expect(page).toHaveURL(/\/secrets$/);
-  const vaultPath = page.getByLabel('Vault path');
-  await vaultPath.fill(missingPath);
-  await page.getByRole('button', { name: 'Open vault', exact: true }).click();
+  await expect(page.getByRole('button')).toHaveText(['Create a vault']);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  await expect(
+    page.getByText('A vault lasts only for the current session.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { failNextVaultKey?: boolean }).failNextVaultKey =
+      true;
+  });
+  await createVault.click();
   await expect(page.getByRole('alert')).toHaveText(
-    'Could not open this vault. Choose another vault',
+    'Could not create this vault. Choose another vault',
   );
   await expect
-    .poll(() => failedOpens)
-    .toEqual([`Failed to open/find document: ${missingPath}`]);
+    .poll(() => failedCreates)
+    .toEqual([
+      expect.stringMatching(/^Failed to open\/find document: \/.+\/vaults\//),
+    ]);
   await expect(newSecret).toHaveCount(0);
 
   await leaveVault.click();
-  await expect(vaultPath).toHaveValue(missingPath);
-  await page.getByRole('button', { name: 'Open vault', exact: true }).click();
-  await expect(leaveVault).toBeVisible();
-  await expect.poll(() => failedOpens).toHaveLength(2);
-
-  await leaveVault.click();
-  await page
-    .getByRole('button', { name: 'Create a vault', exact: true })
-    .click();
+  await expect(page.getByRole('button')).toHaveText(['Create a vault']);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  await createVault.click();
   await expect(newSecret).toBeEnabled();
   await expect(leaveVault).toHaveCount(0);
   await newSecret.click();
@@ -400,5 +404,6 @@ test('offers to leave a vault only after it fails to open', async ({
   await expect(page.getByText('Kept secret', { exact: true })).toBeVisible();
   await expect(leaveVault).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
-  expect(failedOpens).toHaveLength(2);
+  expect(failedCreates).toHaveLength(1);
+  expect(errors, 'vault creation errors').toEqual([]);
 });
