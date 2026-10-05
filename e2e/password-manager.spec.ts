@@ -157,7 +157,12 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRows).toHaveCount(1);
   await expect(memberRow).toHaveCount(0);
 
-  await page.getByPlaceholder('Member KEM public key').fill('not-base64!');
+  await expect(
+    page.getByLabel('Member signing public key', { exact: true }),
+  ).toHaveValue(memberKey);
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill('not-base64!');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect
     .poll(() => dialogs)
@@ -165,7 +170,9 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRows).toHaveCount(1);
   await expect(memberRow).toHaveCount(0);
 
-  await page.getByPlaceholder('Member KEM public key').fill(truncatedKemKey);
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill(truncatedKemKey);
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect
     .poll(() => dialogs)
@@ -178,14 +185,16 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRows).toHaveCount(1);
   await expect(memberRow).toHaveCount(0);
 
-  await page.getByPlaceholder('Member KEM public key').fill(memberKemKey);
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill(memberKemKey);
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(
     memberRow.getByRole('cell', { name: 'Reader', exact: true }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(memberRows).toHaveCount(2);
 
-  await page.getByPlaceholder('Member KEM public key').fill('');
+  await page.getByLabel('Member KEM public key', { exact: true }).fill('');
   await page.getByRole('combobox').selectOption('rw');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(

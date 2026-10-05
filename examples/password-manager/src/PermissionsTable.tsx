@@ -213,12 +213,14 @@ export function PermissionsTable({
           <tr>
             <td>
               <Form.Control
+                aria-label="Member signing public key"
                 placeholder="Public Key to add"
                 value={draftUserKey}
                 onChange={(e) => setDraftUserKey(e.target.value)}
               />
               <Form.Control
                 className="mt-2"
+                aria-label="Member KEM public key"
                 placeholder="Member KEM public key"
                 value={draftKemKey}
                 onChange={(e) => setDraftKemKey(e.target.value)}
@@ -227,6 +229,7 @@ export function PermissionsTable({
             <td>
               <Form.Control
                 as="select"
+                aria-label="Member role"
                 value={draftPermission}
                 onChange={(e) =>
                   setDraftPermission(e.target.value as 'r' | 'rw')
