@@ -5016,6 +5016,42 @@ describe('UCANACL', () => {
       await expectClaimStatePoisoned();
     });
 
+    test.each([
+      [
+        'an own undefined then',
+        (finalize: () => void) => ({ finalize, then: undefined }),
+      ],
+      [
+        'a non-callable then on a null-prototype record',
+        (finalize: () => void) =>
+          Object.assign(Object.create(null) as object, { finalize, then: 1 }),
+      ],
+    ])(
+      'a plain claim record with %s is rejected as asynchronous',
+      async (_description, makeClaim) => {
+        const members = new Set(['user1']);
+        installMembershipBacking(members);
+        const finalize = jest.fn(() => {
+          members.delete('user1');
+        });
+        const record = makeClaim(finalize);
+        backing.prepareRemove = jest.fn(async () => ({
+          changes: 'remove-claim',
+          claimCommit: jest.fn(() => record),
+          commit: jest.fn(),
+        }));
+        const prepared = await acl.prepareRemove('user1');
+
+        expect(() => prepared.claimCommit()).toThrow(
+          /must complete synchronously/,
+        );
+
+        expect(finalize).not.toHaveBeenCalled();
+        expect(members.has('user1')).toBe(true);
+        await expectClaimStatePoisoned();
+      },
+    );
+
     test('a native promise claim cannot hide its asynchronous brand behind an own undefined then', async () => {
       const members = new Set(['user1']);
       installMembershipBacking(members);

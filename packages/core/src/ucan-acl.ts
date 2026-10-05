@@ -160,9 +160,12 @@ interface CapturedBackingFinalizer {
  * A backing commit claim consumed by this wrapper must be a plain record whose
  * immediate prototype is `Object.prototype` or `null`. Class instances are
  * rejected so a custom constructor or Promise species hook cannot disguise an
- * asynchronous claim as a synchronous record. `Promise.prototype` is allowed
- * only through inspection so a safe rejection handler can be attached before
- * the asynchronous result is rejected; a Promise is never accepted as a claim.
+ * asynchronous claim as a synchronous record. A claim record must not have a
+ * `then` property, even a non-callable one: any visible `then` is rejected as
+ * asynchronous, so a native Promise that shadows its `then` cannot pass as a
+ * claim. `Promise.prototype` is allowed only through inspection so a safe
+ * rejection handler can be attached before the asynchronous result is
+ * rejected; a Promise is never accepted as a claim.
  * Promises with unsafe constructor/species hooks cannot be safely observed and
  * may still produce an unhandled rejection; backing providers must not return
  * asynchronous values from synchronous operations.
