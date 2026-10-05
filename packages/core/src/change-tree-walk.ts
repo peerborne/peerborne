@@ -148,7 +148,9 @@ function collectBoundedChangeTreeInternal<ChangesType>(
       throw new TypeError('change tree node has an invalid kind');
     }
     if (Object.prototype.hasOwnProperty.call(snapshot, 'keyID')) {
-      throw new TypeError('change tree node must not carry a keyID field');
+      throw new TypeError(
+        'change tree node: "keyID" is not a change-node field',
+      );
     }
     const change = snapshot.change as ChangesType | undefined;
     const children = snapshot.children;

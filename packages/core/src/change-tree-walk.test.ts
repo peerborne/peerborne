@@ -147,7 +147,9 @@ describe('bounded iterative change-tree consumers', () => {
     test('on the root node', () => {
       const root = { kind: crdtDocumentChangeNode, keyID: 'old' } as Node;
 
-      expect(() => walk('root', root)).toThrow(/keyID/);
+      expect(() => walk('root', root)).toThrow(
+        /"keyID" is not a change-node field/,
+      );
     });
 
     test('on a nested child', () => {
@@ -158,13 +160,17 @@ describe('bounded iterative change-tree consumers', () => {
         },
       };
 
-      expect(() => walk('root', root)).toThrow(/keyID/);
+      expect(() => walk('root', root)).toThrow(
+        /"keyID" is not a change-node field/,
+      );
     });
 
     test('when the own property is undefined', () => {
       const root = { kind: crdtDocumentChangeNode, keyID: undefined } as Node;
 
-      expect(() => walk('root', root)).toThrow(/keyID/);
+      expect(() => walk('root', root)).toThrow(
+        /"keyID" is not a change-node field/,
+      );
     });
   });
 

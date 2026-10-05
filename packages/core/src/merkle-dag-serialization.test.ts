@@ -733,7 +733,7 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
           node as unknown as CRDTChangeNode<Uint8Array>,
           encodeLeaf,
         ),
-      ).toThrow(/keyID/);
+      ).toThrow(/"keyID" is not a change-node field/);
       expect(encodeLeaf).not.toHaveBeenCalled();
     },
   );
