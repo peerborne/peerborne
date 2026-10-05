@@ -716,6 +716,7 @@ describe('document load response boundaries', () => {
       _writerPublicationsInFlight: 0,
       _invalidateWriterKeyCache: jest.fn(),
       _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       _refreshLastSyncMessageFromSync: jest.fn(),
     });
 
@@ -737,7 +738,74 @@ describe('document load response boundaries', () => {
     await expect(syncing).rejects.toBe(rejection);
     expect(document._bootstrapLoadApplicationState).toBe('complete');
     expect(document._hashes).toEqual(new Set(['GOOD']));
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['GOOD']],
+    ]);
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
+  test('notifies missing blocks a sibling committed before a certified rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    let releaseBad!: () => void;
+    const siblingCommitted = new Promise<void>((resolve) => {
+      releaseBad = resolve;
+    });
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/deferred-sibling-document',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['DOC', crdtDocumentChangeNode, undefined],
+        ['BAD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => {
+        const id = cid.toString();
+        if (id === 'BAD') await siblingCommitted;
+        return { id };
+      }),
+      _crdtProvider: {
+        remoteChange: jest.fn((_state: unknown, changes: unknown) => {
+          releaseBad();
+          return changes;
+        }),
+      },
+      _mergeWriters: jest.fn(async () => {
+        throw rejection;
+      }),
+      _readers: {
+        users: jest.fn(async () => ['reader']),
+        check: jest.fn(async () => false),
+      },
+      _writers: { users: jest.fn(async () => ['writer']) },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: { subscriber: handler },
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('BAD', {
+        kind: crdtWriterChangeNode,
+        children: { DOC: { kind: crdtDocumentChangeNode } },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._document).toEqual({ id: 'DOC' });
+    expect(document._hashes).toEqual(new Set(['DOC']));
+    expect(document._documentChangeCount).toBe(1);
+    expect(handler.mock.calls).toEqual([
+      [{ id: 'DOC' }, ['reader', 'writer'], ['writer'], ['DOC']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
   });
 
   test('keeps ancestors referenced by applied nodes after a deferred ACL rejection', async () => {
@@ -794,6 +862,10 @@ describe('document load response boundaries', () => {
       new Set(['GOOD', 'BAD', 'KNOWN']),
     );
     expect(document._currentFrontier().sort()).toEqual(['OTHER', 'ROOT']);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['ROOT']],
+      [['GOOD']],
+    ]);
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
   });
 
@@ -869,7 +941,9 @@ describe('document load response boundaries', () => {
       ['GOOD', crdtWriterChangeNode],
       ['TOP', crdtWriterChangeNode],
     ]);
-    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['TOP', 'GOOD']],
+    ]);
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
   });
 

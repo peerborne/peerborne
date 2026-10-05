@@ -1964,8 +1964,9 @@ export class PeerborneDocument<
     // this sync added unless a node that did apply still references them, so
     // a retried delivery can record them again without hiding applied heads.
     // Direct ACL entries that merged before the rejection are live, so they
-    // are recorded when their delivered ancestry is already known; otherwise
-    // they stay unrecorded so a retry still walks their discarded ancestors.
+    // are recorded and notified when their delivered ancestry is already
+    // known; otherwise they stay unrecorded so a retry still walks their
+    // discarded ancestors.
     const newlyReferencedAncestors = [
       ...collectReferencedAncestors(changeId, changes, new Set<string>()),
     ].filter((cid) => !this._referencedAncestors.has(cid));
@@ -1973,7 +1974,10 @@ export class PeerborneDocument<
       this._referencedAncestors.add(cid);
     }
     const appliedDirectACLNodes = new Map<string, CRDTChangeNodeKind>();
-    const rejectCertifiedACLMerge = (error: unknown): never => {
+    const rejectCertifiedACLMerge = async (
+      error: unknown,
+      appliedMissingHashes: readonly string[] = [],
+    ): Promise<never> => {
       if (error instanceof ACLMergeRejectedError) {
         const recordable = selectAncestryClosedNodes(
           changeId,
@@ -1981,8 +1985,10 @@ export class PeerborneDocument<
           new Set(appliedDirectACLNodes.keys()),
           (cid) => this._hashes.has(cid),
         );
-        for (const [cid, kind] of [...appliedDirectACLNodes].reverse()) {
-          if (!recordable.has(cid)) continue;
+        const recordedDirectACLNodes = [...appliedDirectACLNodes].filter(
+          ([cid]) => recordable.has(cid),
+        );
+        for (const [cid, kind] of [...recordedDirectACLNodes].reverse()) {
           this._hashes.add(cid);
           this._trackTip(cid, kind);
         }
@@ -1997,6 +2003,13 @@ export class PeerborneDocument<
           if (!appliedReferences.has(cid)) {
             this._referencedAncestors.delete(cid);
           }
+        }
+        const committedHashes = [
+          ...recordedDirectACLNodes.map(([cid]) => cid),
+          ...appliedMissingHashes,
+        ];
+        if (committedHashes.length > 0) {
+          await this._fireOrDeferRemoteUpdateHandlers(committedHashes);
         }
       }
       throw error;
@@ -2110,7 +2123,9 @@ export class PeerborneDocument<
     // the poison assertion prevents an abort-ignoring fetch from applying
     // state if it ever settles later. A certified ACL rejection stops new
     // claims but lets in-flight siblings settle under the load signal, because
-    // abandoning an opaque sibling merge would poison the document.
+    // abandoning an opaque sibling merge would poison the document. Remote
+    // update handlers are notified of what those siblings applied before the
+    // rejection propagates, because a retry skips their recorded hashes.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
@@ -2270,7 +2285,12 @@ export class PeerborneDocument<
         signal?.removeEventListener('abort', forwardAbort);
       }
       assertStillActive();
-      if (certifiedACLRejection) rejectCertifiedACLMerge(certifiedACLRejection);
+      const appliedHashes = appliedMissingDocumentHashes.filter(
+        (hash): hash is string => hash !== undefined,
+      );
+      if (certifiedACLRejection) {
+        await rejectCertifiedACLMerge(certifiedACLRejection, appliedHashes);
+      }
       const workerFailure = workerResults.find(
         (result): result is PromiseRejectedResult =>
           result.status === 'rejected',
@@ -2281,9 +2301,6 @@ export class PeerborneDocument<
           'Missing change block fetch limits exceeded',
         );
       }
-      const appliedHashes = appliedMissingDocumentHashes.filter(
-        (hash): hash is string => hash !== undefined,
-      );
       if (appliedHashes.length > 0) {
         assertStillActive();
         await this._fireOrDeferRemoteUpdateHandlers(appliedHashes);
