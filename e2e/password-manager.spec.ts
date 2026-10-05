@@ -134,9 +134,30 @@ test('sets a new member as a reader and then promotes them to editor', async ({
     has: page.getByRole('cell', { name: memberKey, exact: true }),
   });
 
+  const truncatedKemKey = btoa(atob(memberKemKey).slice(0, 64));
+  const invalidBase64Message = 'The member KEM public key is not valid base64.';
+  const invalidShapeMessage =
+    'The member KEM public key must be a 65-byte uncompressed P-256 ' +
+    'public key starting with 0x04.';
+
   await page.getByPlaceholder('Public Key to add').fill(memberKey);
-  await page.getByPlaceholder('Member KEM public key').fill(memberKemKey);
   await page.getByRole('combobox').selectOption('r');
+
+  await page.getByPlaceholder('Member KEM public key').fill('not-base64!');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect.poll(() => dialogs).toEqual([invalidBase64Message]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
+  await page.getByPlaceholder('Member KEM public key').fill(truncatedKemKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([invalidBase64Message, invalidShapeMessage]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
+  await page.getByPlaceholder('Member KEM public key').fill(memberKemKey);
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(
     memberRow.getByRole('cell', { name: 'Reader', exact: true }),
@@ -151,6 +172,9 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRow).toHaveCount(1);
   await expect(memberRows).toHaveCount(2);
 
-  expect(dialogs, 'permission update dialogs').toEqual([]);
+  expect(dialogs, 'permission update dialogs').toEqual([
+    invalidBase64Message,
+    invalidShapeMessage,
+  ]);
   expect(errors, 'permission update errors').toEqual([]);
 });
