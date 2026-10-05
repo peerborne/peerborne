@@ -483,11 +483,15 @@ describe('AutomergeACL', () => {
           MAX_AUTOMERGE_ACL_CHANGES + 1,
         );
         const hostileReceiver = new AutomergeACL();
-        expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
+        let mergeRejection: unknown;
+        try {
+          hostileReceiver.merge(oversizedNearSeedHistory);
+        } catch (error) {
+          mergeRejection = error;
+        }
+        expect(mergeRejection).toBeInstanceOf(ACLMergeRejectedError);
+        expect((mergeRejection as ACLMergeRejectedError).message).toContain(
           `Automerge ACL changes exceed the ${MAX_AUTOMERGE_ACL_CHANGES}-change limit`,
-        );
-        expect(() => hostileReceiver.merge(oversizedNearSeedHistory)).toThrow(
-          ACLMergeRejectedError,
         );
         expect(hostileReceiver.current()).toEqual([]);
       }
