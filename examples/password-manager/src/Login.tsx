@@ -62,6 +62,9 @@ export function Login({
     };
   }, []);
 
+  const keysReady =
+    !!generatedKemKeyPair && !!generatedPublicKey && !!generatedPrivateKey;
+
   return (
     <Container className="ml-auto mr-auto mt-5">
       <Row className="mt-5">
@@ -109,18 +112,20 @@ export function Login({
 
           <Button
             variant="primary"
+            disabled={!keysReady}
             onClick={async () => {
-              generatedKemKeyPair && setKemKeyPair(generatedKemKeyPair);
+              if (!keysReady) {
+                return;
+              }
+              setKemKeyPair(generatedKemKeyPair);
               setPublicKey &&
-                generatedPublicKey &&
                 setPublicKey(await importKey(generatedPublicKey, ['verify']));
               setPrivateKey &&
-                generatedPrivateKey &&
                 setPrivateKey(await importKey(generatedPrivateKey, ['sign']));
               setBootstrapPeers &&
                 draftBootstrapPeers &&
                 setBootstrapPeers(draftBootstrapPeers.split('\n'));
-              setUserId && generatedPublicKey && setUserId(btoa(generatedPublicKey));
+              setUserId && setUserId(btoa(generatedPublicKey));
               // Redirect to the /secrets page.
               navigate('/secrets');
             }}
