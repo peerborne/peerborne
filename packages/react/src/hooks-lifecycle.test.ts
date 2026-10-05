@@ -106,6 +106,30 @@ describe('usePeerborneDocumentState lifecycle', () => {
     }
   });
 
+  test('an open subscriber waits for a pending create and opens only if it fails', async () => {
+    let rejectCreate!: (error: Error) => void;
+    const mockDoc = createMockDocument();
+    mockDoc.create.mockImplementationOnce(
+      () => new Promise<void>((_, reject) => { rejectCreate = reject; }),
+    );
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      render(React.createElement(TestProvider, null,
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/pending-create', initialization: 'create' }),
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/pending-create' }),
+      ));
+      await waitFor(() => expect(mockDoc.create).toHaveBeenCalledTimes(1));
+      expect(mockDoc.open).not.toHaveBeenCalled();
+      await act(async () => rejectCreate(new Error('already exists')));
+      await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(2));
+      expect(mockDoc.create).toHaveBeenCalledTimes(1);
+      expect(mockDoc.open).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   test('a create subscriber adopts a document that a pending open activated', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
