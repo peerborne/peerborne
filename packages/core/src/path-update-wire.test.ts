@@ -169,6 +169,16 @@ describe('path-update-wire V2 inbound boundary', () => {
     ).toThrow(/version/);
   });
 
+  test('rejects an omitted version on both boundaries', () => {
+    const { version: _updateVersion, ...update } = validPathUpdateV2();
+    const { version: _wireVersion, ...wire } =
+      serializePathUpdateV2ForWire(validPathUpdateV2());
+    expect(() => serializePathUpdateV2ForWire(update as never)).toThrow(
+      /version/,
+    );
+    expect(() => deserializePathUpdateV2FromWire(wire)).toThrow(/version/);
+  });
+
   test('rejects negative-zero tree indices on both boundaries', () => {
     const treeUpdate = validPathUpdateV2();
     treeUpdate.treeNodePublicKeys[0].nodeIndex = -0;
