@@ -521,16 +521,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
             `${operationName} result`,
           );
         } catch {
-          if (requirePlainClaimResult) {
-            this._backingSyncContractViolated = true;
-            this._observeInvalidNativePromiseReturn(
-              result,
-              `${operationName} result`,
-            );
-            throw new TypeError(
-              `${operationName} returned an invalid asynchronous result`,
-            );
-          }
+          this._backingSyncContractViolated = true;
+          this._observeInvalidNativePromiseReturn(
+            result,
+            `${operationName} result`,
+          );
+          throw new TypeError(
+            `${operationName} returned an invalid asynchronous result`,
+          );
         }
         if (requirePlainClaimResult && !hasThenProperty && !observationIsSafe) {
           this._backingSyncContractViolated = true;
@@ -545,10 +543,12 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
         if (observationIsSafe) {
           // The captured intrinsic checks the internal Promise brand without
           // assimilating a custom thenable. Attempt it for every object whose
-          // species path is known to be hook-free. Plain claim results fail
-          // closed when that proof is unavailable; opaque current-state reads
-          // accept any synchronous ChangesType value and rely on the provider
-          // contract for deliberately ambiguous object shapes.
+          // species path is known to be hook-free. Every result whose species
+          // path cannot be inspected fails closed above. Plain claim results
+          // also fail closed when the inspected path is not hook-free; opaque
+          // current-state reads and merge reports accept those synchronous
+          // values and rely on the provider contract for deliberately
+          // ambiguous object shapes.
           isNativePromise = observeNativePromiseSettlement(result);
         }
         if (

@@ -2863,6 +2863,33 @@ describe('UCANACL', () => {
     );
   });
 
+  test.each([
+    ['current', 'Backing ACL current-state read'],
+    ['merge', 'Backing ACL merge'],
+  ] as const)(
+    'poisons a backing %s Promise whose constructor cannot be inspected',
+    async (method, operationName) => {
+      const constructorGetter = jest.fn(() => {
+        throw new Error('hostile constructor getter');
+      });
+      const hiddenPromise = Promise.resolve();
+      Object.defineProperties(hiddenPromise, {
+        then: { value: undefined },
+        constructor: { get: constructorGetter },
+      });
+      backing[method].mockReturnValue(hiddenPromise);
+
+      expect(() =>
+        method === 'current' ? acl.current() : acl.merge('incoming-changes'),
+      ).toThrow(`${operationName} returned an invalid asynchronous result`);
+      expect(constructorGetter).not.toHaveBeenCalled();
+      await expect(acl.check('key1')).rejects.toThrow(
+        /backing ACL violated a synchronous operation contract/,
+      );
+      expect(backing.check).not.toHaveBeenCalled();
+    },
+  );
+
   test('poisons an asynchronous backing merge contract violation', async () => {
     let asynchronousMerge!: Promise<unknown>;
     backing.merge.mockImplementation(() => {
