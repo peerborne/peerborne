@@ -54,7 +54,7 @@ function fakeDocument(fields: Record<string, unknown>): any {
 function validMessage(epochId: Uint8Array) {
   return {
     documentId: documentPath,
-    signatureContext: 'beekem-path-update-v1' as const,
+    signatureContext: 'beekem-path-update-v2' as const,
     pathUpdate: serializePathUpdateV2ForWire(pathUpdateFixture()),
     pathUpdateEpochId: epochId,
     signature: 'AQ==',
@@ -347,7 +347,7 @@ async function welcomeHarness() {
   const welcomeEpochId = new Uint8Array(32).fill(7);
   const message = {
     documentId: documentPath,
-    signatureContext: 'beekem-welcome-v1',
+    signatureContext: 'beekem-welcome-v2',
     welcomeEpochId,
     welcomeRecipient: 'local-user',
     welcomeRecipientKemPublicKey: kemPublicKeyRaw,

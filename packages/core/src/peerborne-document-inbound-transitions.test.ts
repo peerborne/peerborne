@@ -150,7 +150,7 @@ function bufferWelcome(
 function welcomeMessage(epochId: Uint8Array, token: number) {
   return {
     documentId: '/inbound-transitions',
-    signatureContext: 'beekem-welcome-v1',
+    signatureContext: 'beekem-welcome-v2',
     welcomeEpochId: new Uint8Array(epochId),
     welcomeRecipient: 'local',
     welcomeRecipientKemPublicKey: new Uint8Array(localKemPublicKey),
@@ -431,7 +431,7 @@ function pathUpdateHarness(
   });
   const message: Record<string, unknown> = {
     documentId: '/inbound-transitions',
-    signatureContext: 'beekem-path-update-v1',
+    signatureContext: 'beekem-path-update-v2',
     signature: 'signed-by-writer',
     pathUpdate: { senderLeafIndex: 4, nodes: [] },
     pathUpdateEpochId: new Uint8Array(nextEpoch),

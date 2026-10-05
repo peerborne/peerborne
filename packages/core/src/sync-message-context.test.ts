@@ -70,7 +70,7 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
-      'beekem-welcome-v1',
+      'beekem-welcome-v2',
       {
         documentId: '/doc',
         welcomeEpochId: new Uint8Array(32),
@@ -81,7 +81,7 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
-      'beekem-path-update-v1',
+      'beekem-path-update-v2',
       {
         documentId: '/doc',
         pathUpdate: {},
@@ -107,8 +107,8 @@ describe('sync message wire-context separation', () => {
     'tip-advertisement-v1',
     'security-advertisement-v1',
     'invitation-bootstrap-v1',
-    'beekem-welcome-v1',
-    'beekem-path-update-v1',
+    'beekem-welcome-v2',
+    'beekem-path-update-v2',
     'key-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
     expect(() =>
@@ -166,8 +166,8 @@ describe('sync message wire-context separation', () => {
     ['tip-advertisement-v1', { loadSecurityState: {} }],
     ['security-advertisement-v1', { changes: {} }],
     ['invitation-bootstrap-v1', { eciesSealed: new Uint8Array([1]) }],
-    ['beekem-welcome-v1', { keychainChanges: {} }],
-    ['beekem-path-update-v1', { keychainChanges: {} }],
+    ['beekem-welcome-v2', { keychainChanges: {} }],
+    ['beekem-path-update-v2', { keychainChanges: {} }],
     ['key-update-v2', { welcomeEpochId: new Uint8Array(32) }],
   ] as const)(
     'rejects a cross-context field in %s',
@@ -369,6 +369,13 @@ describe('sync message wire-context separation', () => {
 
   test('rejects the removed document publication purpose', () => {
     expect(isSyncMessageSignatureContext('document-publish-v1')).toBe(false);
+  });
+
+  test('accepts BeeKEM control messages only in their V2 contexts', () => {
+    expect(isSyncMessageSignatureContext('beekem-welcome-v2')).toBe(true);
+    expect(isSyncMessageSignatureContext('beekem-path-update-v2')).toBe(true);
+    expect(isSyncMessageSignatureContext('beekem-welcome-v1')).toBe(false);
+    expect(isSyncMessageSignatureContext('beekem-path-update-v1')).toBe(false);
   });
 });
 

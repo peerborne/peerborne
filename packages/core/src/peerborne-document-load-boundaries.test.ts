@@ -3960,7 +3960,7 @@ describe('document load response boundaries', () => {
         key,
         welcomeSerializer.serializeSyncMessage({
           documentId: '/late-welcome',
-          signatureContext: 'beekem-welcome-v1',
+          signatureContext: 'beekem-welcome-v2',
           welcomeEpochId: new Uint8Array(32).fill(fill),
           welcomeRecipient: 'local-user',
           welcomeRecipientKemPublicKey: kemPublicKeyRaw,

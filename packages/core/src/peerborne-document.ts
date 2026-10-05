@@ -3590,7 +3590,7 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType, PublicKey>,
     context: Extract<
       SyncMessageContext,
-      'beekem-path-update-v1' | 'key-update-v2'
+      'beekem-path-update-v2' | 'key-update-v2'
     >,
   ): Promise<
     | { kind: 'authenticated'; writerKeysVersion: number }
@@ -9414,7 +9414,7 @@ export class PeerborneDocument<
     // Build the welcome message.
     const welcomeMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
-      signatureContext: 'beekem-welcome-v1',
+      signatureContext: 'beekem-welcome-v2',
     };
 
     // The invitation epoch is the *current* keychain key ID at the time
@@ -10682,7 +10682,7 @@ export class PeerborneDocument<
   ): Promise<void> {
     const message: CRDTSyncMessage<ChangesType, PublicKey> = {
       documentId: this.documentPath,
-      signatureContext: 'beekem-path-update-v1',
+      signatureContext: 'beekem-path-update-v2',
       pathUpdate: serializePathUpdateV2ForWire(pathUpdate),
       pathUpdateEpochId,
     };
@@ -10780,7 +10780,7 @@ export class PeerborneDocument<
         );
         message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
           this._syncMessageSerializer.deserializeSyncMessage(stablePayload),
-          'beekem-path-update-v1',
+          'beekem-path-update-v2',
         );
       } catch {
         console.warn('Dropping malformed BeeKEM PathUpdateV2');
@@ -10814,7 +10814,7 @@ export class PeerborneDocument<
       // Writer signature is mandatory.
       const authentication = await this._authenticateMembershipMessage(
         message,
-        'beekem-path-update-v1',
+        'beekem-path-update-v2',
       );
       if (authentication.kind !== 'authenticated') {
         console.warn(
