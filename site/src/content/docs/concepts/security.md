@@ -185,12 +185,13 @@ individually encrypted to the surviving BeeKEM subtrees.
 
 V4 loading requires a fresh signed request challenge, trusted writer identities,
 and locally resolved control/group commitments. Configure
-`resolveTrustedDocumentWriters(documentPath)` for a first load and
-`resolveLoadSecurityCommitments(documentPath)` for normal loading and serving.
-The latter supplies the current `version`, `controlHead`, `groupId`, `epoch`,
-`treeHash`, and `confirmedTranscriptHash`; a responder cannot provide its own
-trust root. The runtime compares this tuple but does not yet replay an MLS
-control log.
+`resolveLoadSecurityCommitments(documentPath)` for every load, including the
+first, and for serving. It supplies the current `version`, `controlHead`,
+`groupId`, `epoch`, `treeHash`, and `confirmedTranscriptHash`; a responder
+cannot provide its own trust root. Trusted writers come from the local writer
+ACL; when it is empty, as on a first load,
+`resolveTrustedDocumentWriters(documentPath)` must supply them. The runtime
+compares this tuple but does not yet replay an MLS control log.
 
 `loadQuorumK` bounds queried transport peers. `loadQuorumQ` requires that many
 independent trusted signing authorities to agree on one complete response

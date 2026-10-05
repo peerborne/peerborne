@@ -41,11 +41,12 @@ convergence through this complete path are not yet demonstrated in CI.
 
 Normal network loading uses V4 exclusively. Before probing, the loader captures
 canonical trusted signing authorities, a locally resolved control/group tuple,
-and a fresh 32-byte challenge. A first load needs
-`resolveTrustedDocumentWriters`; normal loading and serving need
-`resolveLoadSecurityCommitments`. Applications must supply independently trusted
-state. The runtime does not yet verify an MLS genesis or replay a newer control
-suffix from peers.
+and a fresh 32-byte challenge. Every load, including the first, and every
+response a peer serves needs `resolveLoadSecurityCommitments`. Signing
+authorities come from the local writer ACL or, when it is empty as on a first
+load, from `resolveTrustedDocumentWriters`. Applications must supply
+independently trusted state. The runtime does not yet verify an MLS genesis or
+replay a newer control suffix from peers.
 
 Quorum probes count each authenticated signing authority once across transport
 PeerIds. The agreed digest binds the document, served frontier, captured tuple,
