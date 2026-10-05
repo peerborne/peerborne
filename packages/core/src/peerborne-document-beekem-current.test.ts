@@ -213,7 +213,7 @@ describe('document current BeeKEM delivery', () => {
       {
         documentPath: '/current-beekem',
         _encoder: new TextEncoder(),
-        _syncMessageSerializer: new JSONSerializer<any, CryptoKey>(),
+        _syncMessageSerializer: new JSONSerializer<any>(),
         _keychain: { current: async () => [new Uint8Array(32)] },
         _authProvider: { serializePublicKey: async () => 'reader' },
         _signAsWriterUnconditional: async (message: {
