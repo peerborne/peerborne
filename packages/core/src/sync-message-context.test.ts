@@ -70,6 +70,17 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
+      'invitation-catch-up-v1',
+      {
+        documentId: '/doc',
+        changes: {},
+        keychainChanges: {},
+        tips: ['cid'],
+        loadChallenge: new Uint8Array(32),
+        signature: 'sig',
+      },
+    ],
+    [
       'beekem-welcome-v2',
       {
         documentId: '/doc',
@@ -99,10 +110,9 @@ describe('sync message wire-context separation', () => {
   test.each([
     'ordinary-sync-v1',
     'load-response-v4',
-    'load-response-v4',
-    'security-advertisement-v1',
     'security-advertisement-v1',
     'invitation-bootstrap-v1',
+    'invitation-catch-up-v1',
     'beekem-welcome-v2',
     'beekem-path-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
