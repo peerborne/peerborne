@@ -83,14 +83,14 @@ export function TestConsumer(props: {
   initialization?: 'open' | 'create';
   captureRef?: { current: any };
 }) {
-  const [docData, changeFn, acl] = usePeerborneDocumentState(
+  const [docData, changeFn, acl, activationError] = usePeerborneDocumentState(
     props.peerborne,
     props.documentPath,
     props.originFilter,
     props.initialization,
   );
   if (props.captureRef) {
-    props.captureRef.current = { docData, changeFn, acl };
+    props.captureRef.current = { docData, changeFn, acl, activationError };
   }
   return React.createElement('div', { 'data-testid': 'doc-data' }, JSON.stringify(docData));
 }

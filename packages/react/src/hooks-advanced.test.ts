@@ -538,6 +538,9 @@ describe('Error handling', () => {
       expect(caches.openTasks.has('/open-retry')).toBe(false);
       expect(caches.openTaskResults.has('/open-retry')).toBe(false);
       expect(caches.subscriberCounts.get('/open-retry')).toBe(1);
+      expect(firstRef.current.activationError).toEqual(
+        new Error('sensitive failure details'),
+      );
 
       let laterView!: ReturnType<typeof render>;
       await act(async () => {
@@ -558,6 +561,8 @@ describe('Error handling', () => {
         expect(laterRef.current.docData).toEqual({ test: 'data' });
         expect(firstRef.current.docData).toEqual({ test: 'data' });
       });
+      expect(firstRef.current.activationError).toBeUndefined();
+      expect(laterRef.current.activationError).toBeUndefined();
       expect(mockDoc.open).toHaveBeenCalledTimes(2);
       expect(mockDoc.subscribe).toHaveBeenCalledTimes(2);
       expect(caches.activationRetries.has('/open-retry')).toBe(false);

@@ -183,6 +183,7 @@ export function usePeerborneDocumentState<
     ) => Promise<void>;
     setKemKeyPair: (keyPair: CryptoKeyPair | undefined) => Promise<void>;
   },
+  Error | undefined,
 ] {
   const {
     docCache,
@@ -197,6 +198,11 @@ export function usePeerborneDocumentState<
   const hookCaches = getPeerborneHookCaches(peerborne);
   const documentCacheKey = getPeerborneDocumentCacheKey(hookCaches, documentPath);
   const subscriptionIdRef = useRef(`usePeerborneDocumentState-${Math.random().toString(36).slice(2)}`);
+  const activationKey = `${documentCacheKey}\0${initialization}\0${originFilter}`;
+  const [activationFailure, setActivationFailure] = useState<{
+    key: string;
+    error: Error;
+  }>();
 
   useEffect(() => {
     const {
@@ -342,9 +348,14 @@ export function usePeerborneDocumentState<
           originFilter,
         );
         subscribedDocRef = docRef;
-      } catch {
+        setActivationFailure(undefined);
+      } catch (error) {
         if (active) {
           console.warn(`Failed to open/find document: ${documentPath}`);
+          setActivationFailure({
+            key: activationKey,
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
           const retries = activationRetries.get(documentPath) ?? new Set();
           retries.add(run);
           activationRetries.set(documentPath, retries);
@@ -363,6 +374,7 @@ export function usePeerborneDocumentState<
 
     return () => {
       active = false;
+      setActivationFailure(undefined);
       subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
 
       const retries = activationRetries.get(documentPath);
@@ -407,7 +419,7 @@ export function usePeerborneDocumentState<
           }
         });
     };
-  }, [documentCacheKey, documentPath, hookCaches, initialization, originFilter, peerborne]);
+  }, [activationKey, documentCacheKey, documentPath, hookCaches, initialization, originFilter, peerborne]);
 
   return [
     docDataCache[documentCacheKey],
@@ -439,5 +451,6 @@ export function usePeerborneDocumentState<
         await docRef.setKemKeyPair(keyPair);
       },
     },
+    activationFailure?.key === activationKey ? activationFailure.error : undefined,
   ];
 }

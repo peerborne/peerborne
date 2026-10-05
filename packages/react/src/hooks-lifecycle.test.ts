@@ -417,14 +417,81 @@ describe('activation failures and initialization modes', () => {
       );
     });
     expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+    expect(captureRef.current.activationError).toEqual(noState());
 
     view.rerender(consumer('create'));
     await waitFor(() => {
       expect(captureRef.current.docData).toEqual({ test: 'data' });
     });
+    expect(captureRef.current.activationError).toBeUndefined();
     expect(mockDoc.open).toHaveBeenCalledTimes(1);
     expect(mockDoc.create).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports an activation failure only for the activation that failed', async () => {
+    const failure = noState();
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockImplementation(() => new Promise(() => {}));
+    mockDoc.open.mockRejectedValueOnce(failure);
+    const mockSwarm = createMockPeerborne(mockDoc);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const renders: Array<[string, Error | undefined]> = [];
+    function Recorder({ documentPath }: { documentPath: string }) {
+      const [, , , activationError] = usePeerborneDocumentState(
+        mockSwarm,
+        documentPath,
+      );
+      renders.push([documentPath, activationError]);
+      return null;
+    }
+    const recorder = (documentPath: string) =>
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(Recorder, { documentPath }),
+      );
+
+    const view = render(recorder('/failed-path'));
+    await waitFor(() => {
+      expect(renders[renders.length - 1]).toEqual(['/failed-path', failure]);
+    });
+    expect(renders[renders.length - 1][1]).toBe(failure);
+
+    const switched = renders.length;
+    view.rerender(recorder('/pending-path'));
+    await waitFor(() => expect(mockDoc.open).toHaveBeenCalledTimes(2));
+    view.rerender(recorder('/failed-path'));
+    await waitFor(() => expect(mockDoc.open).toHaveBeenCalledTimes(3));
+
+    expect(renders.slice(switched).map(([path]) => path)).toContain(
+      '/pending-path',
+    );
+    expect(renders.slice(switched).filter(([, error]) => error)).toEqual([]);
+  });
+
+  test('reports a non-Error activation rejection as an Error', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValueOnce('offline');
+    const mockSwarm = createMockPeerborne(mockDoc);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const captureRef = { current: null as any };
+
+    render(
+      React.createElement(
+        TestProvider,
+        null,
+        React.createElement(TestConsumer, {
+          peerborne: mockSwarm,
+          documentPath: '/rejected-with-string',
+          captureRef,
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(captureRef.current.activationError).toBeInstanceOf(Error);
+    });
+    expect(captureRef.current.activationError.message).toBe('offline');
   });
 
   test('a failed ACL listing closes the activated document so a later mount reopens it', async () => {
