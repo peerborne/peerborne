@@ -113,7 +113,7 @@ import type {
   SharedProtocolMutationResult,
 } from './shared-protocol-admission.js';
 
-/** Maximum allowed document path length in key-update V2 wire format. */
+/** Maximum document path length in path-prefixed shared protocol headers. */
 export const MAX_DOCUMENT_PATH_LENGTH = 4096;
 
 /** Match the default per-peer load-quorum probe budget. */
@@ -933,8 +933,8 @@ export class Peerborne<
    * the registry.
    *
    * For doc-load, snapshot-load, and tip-advertise, the path is extracted by
-   * deserializing the CRDTLoadRequest. The three update protocols use a
-   * 4-byte length-prefixed document path before their payload.
+   * deserializing the CRDTLoadRequest. The BeeKEM Welcome and PathUpdate
+   * protocols use a 4-byte length-prefixed document path before their payload.
    */
   private async _registerSharedProtocolHandlers(): Promise<void> {
     if (this._sharedHandlersRegistration) {
@@ -997,7 +997,6 @@ export class Peerborne<
     };
 
     // Handler implementation for snapshot-load requests.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const snapshotLoadHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
@@ -1059,8 +1058,6 @@ export class Peerborne<
     // welcome sync-message body. After routing by path, the per-document
     // handler verifies the writer signature, merges the keychain delta,
     // and records the invitation epoch.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
-    //
     const beekemWelcomeHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
@@ -1110,17 +1107,15 @@ export class Peerborne<
     };
 
     // Handler for BeeKEM PathUpdate V2 (reader-revocation rotations).
-    // Wire format mirrors key-update v2 / BeeKEM Welcome V2: 4-byte
+    // Wire format mirrors BeeKEM Welcome V2: 4-byte
     // big-endian path length, then UTF-8 path, then the serialized
     // sync-message body carrying the `pathUpdate` /
     // `pathUpdateEpochId` / `signature` fields. After routing by path
     // the per-document handler verifies the writer signature, applies
     // the PathUpdateV2 via `BeeKEM.processPathUpdate`, and installs the
     // freshly-derived document key in the keychain.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler
-    // signature.
     //
-    // Header parse shared with the key-update + Welcome handlers via
+    // Header parse shared with the Welcome handler via
     // `readPathPrefixedProtocolHeader`.
     const beekemPathUpdateHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
@@ -1178,7 +1173,6 @@ export class Peerborne<
     // a single (small) encrypted/serialized CRDTSyncMessage out (whose
     // only populated payload field is `tipsHash`), or an empty response
     // on decline.
-    // See note on `docLoadHandler` above re: the v3 StreamHandler signature.
     const tipAdvertiseHandler = (rawStream: Stream) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
