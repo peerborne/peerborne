@@ -61,10 +61,10 @@ describe('merkle-dag-serialization fuzz', () => {
           const result = deserializeChangeNodeFromJSON(node, id);
           expect(result.kind).toBe(kind);
           expect(Object.prototype.hasOwnProperty.call(result, 'keyID')).toBe(false);
-          if (change) expect(result.change).toBe(change);
+          expect(result.change).toBe(change);
         },
       ),
-      { numRuns: 500 },
+      { numRuns: 500, examples: [[crdtDocumentChangeNode, '', undefined]] },
     );
   });
 
