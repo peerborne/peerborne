@@ -636,9 +636,9 @@ function finalizePreparedCommitClaim(
 }
 
 
-interface InvitationBootstrapCapacityPlan<ChangesType, PublicKey> {
+interface InvitationBootstrapCapacityPlan<ChangesType> {
   readonly keychainChanges: ChangesType;
-  readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  readonly snapshot?: CRDTSnapshotNode<ChangesType>;
   readonly serializedBootstrapBaselineBytes: number;
   readonly welcomeWithoutBeeKEMBytes: number;
 }
@@ -1273,7 +1273,7 @@ export class PeerborneDocument<
    */
 
   // Last sync message (for populating load requests).
-  private _lastSyncMessage?: CRDTSyncMessage<ChangesType, PublicKey>;
+  private _lastSyncMessage?: CRDTSyncMessage<ChangesType>;
 
   // Set of already-merged change blocks.
   private _hashes = new Set<string>();
@@ -1358,7 +1358,7 @@ export class PeerborneDocument<
 
   // Compaction state.
   private _compactionConfig: CompactionConfig;
-  private _latestSnapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  private _latestSnapshot?: CRDTSnapshotNode<ChangesType>;
   private _latestSnapshotSource?: object;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
@@ -1498,14 +1498,14 @@ export class PeerborneDocument<
     >,
 
     /**
-     * ChangesSerializer is responsible for serializing/deserializing CRDTChangeBlocks.
+     * ChangesSerializer is responsible for serializing/deserializing CRDT changes.
      */
     private readonly _changesSerializer: ChangesSerializer<ChangesType>,
 
     /**
      * SyncMessageSerializer is responsible for serializing/deserializing CRDTSyncMessages.
      */
-    private readonly _syncMessageSerializer: SyncMessageSerializer<ChangesType, PublicKey>,
+    private readonly _syncMessageSerializer: SyncMessageSerializer<ChangesType>,
 
     /**
      * LoadMessageSerializer is responsible for serializing/deserializing CRDTLoadMessages.
@@ -2117,8 +2117,8 @@ export class PeerborneDocument<
     }
   }
 
-  private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType, PublicKey> {
-    const message: CRDTSyncMessage<ChangesType, PublicKey> = {
+  private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType> {
+    const message: CRDTSyncMessage<ChangesType> = {
       ...(this._lastSyncMessage || {
         documentId: this.documentPath,
       }),
@@ -3030,7 +3030,7 @@ export class PeerborneDocument<
   private async _createLoadResponsePlan(
     request: CRDTLoadRequest,
     context: 'load-response-v4' | 'invitation-catch-up-v1',
-  ): Promise<CRDTSyncMessage<ChangesType, PublicKey>> {
+  ): Promise<CRDTSyncMessage<ChangesType>> {
     const challenge = cloneInitialLoadChallenge(request.loadChallenge!);
     const message = this._createSyncMessage(context);
     delete message.signature;
@@ -3046,13 +3046,13 @@ export class PeerborneDocument<
         this.documentPath, this.swarm.resolveLoadSecurityCommitments,
       );
     }
-    return snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+    return snapshotSyncMessageForContext<ChangesType>(message, context);
   }
 
   private async _loadResponseManifestHash(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): Promise<Uint8Array> {
-    message = snapshotSyncMessageForContext<ChangesType, PublicKey>(message, 'load-response-v4');
+    message = snapshotSyncMessageForContext<ChangesType>(message, 'load-response-v4');
     return loadResponseManifestHash({
       changeId: message.changeId,
       changes: message.changes,
@@ -3594,11 +3594,7 @@ export class PeerborneDocument<
   }
 
   /**
-   * Verify a snapshot signature by trying all authorized writers.
-   * Unlike sync message signatures (which are string-encoded), snapshot
-   * signatures are raw Uint8Array. This avoids depending on the snapshot's
-   * embedded publicKey field which may not survive serialization for all
-   * key types (e.g. CryptoKey).
+   * Verify a snapshot signature by trying every authorized writer key.
    */
   private async _verifySnapshotSignature(payload: Uint8Array, signature: Uint8Array) {
     if (!this._isSigningEnabled()) {
@@ -3616,7 +3612,7 @@ export class PeerborneDocument<
   }
 
   private async _signAsWriter(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): Promise<string> {
     if (!this._isSigningEnabled()) {
       return '';
@@ -3636,7 +3632,7 @@ export class PeerborneDocument<
    * is mandatory" requirement should use the unconditional variant.
    */
   private async _signAsWriterUnconditional(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): Promise<string> {
     const { signature: oldSignature, ...messageWithoutSignature } = message;
 
@@ -3655,7 +3651,7 @@ export class PeerborneDocument<
    * side and the SECURITY NOTE there for the threat model).
    */
   private async _signWelcomeAsWriter(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): Promise<string> {
     return this._signAsWriterUnconditional(message);
   }
@@ -3698,7 +3694,7 @@ export class PeerborneDocument<
    * must be unchanged after verification.
    */
   private async _authenticateMembershipMessage(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     context: Extract<SyncMessageContext, 'beekem-path-update-v2'>,
   ): Promise<
     | { kind: 'authenticated'; writerKeysVersion: number }
@@ -3708,8 +3704,8 @@ export class PeerborneDocument<
   > {
     const signature = message.signature;
     if (!signature) return { kind: 'missing-signature' };
-    let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
-    let expected: CRDTSyncMessage<ChangesType, PublicKey>;
+    let unsigned: CRDTSyncMessage<ChangesType>;
+    let expected: CRDTSyncMessage<ChangesType>;
     let raw: Uint8Array;
     const serialize = (): Uint8Array =>
       copyUnsharedUint8Array(
@@ -3720,9 +3716,9 @@ export class PeerborneDocument<
       );
     try {
       const { signature: _signature, ...detached } =
-        snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+        snapshotSyncMessageForContext<ChangesType>(message, context);
       unsigned = detached;
-      expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      expected = snapshotSyncMessageForContext<ChangesType>(
         unsigned,
         context,
         { retainCryptoKeys: true },
@@ -4514,7 +4510,7 @@ export class PeerborneDocument<
         await this._loadResponseManifestHash(responsePlan),
       );
 
-      const advertisement: CRDTSyncMessage<ChangesType, PublicKey> = {
+      const advertisement: CRDTSyncMessage<ChangesType> = {
         documentId: this.documentPath,
         signatureContext: 'security-advertisement-v1',
         tipsHash: hash,
@@ -4861,9 +4857,9 @@ export class PeerborneDocument<
           return false;
         }
 
-        let message: CRDTSyncMessage<ChangesType, PublicKey>;
+        let message: CRDTSyncMessage<ChangesType>;
         try {
-          message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+          message = snapshotSyncMessageForContext<ChangesType>(
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             session.context,
           );
@@ -5826,9 +5822,9 @@ export class PeerborneDocument<
       } catch {
         return null;
       }
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      let message: CRDTSyncMessage<ChangesType>;
       try {
-        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        message = snapshotSyncMessageForContext<ChangesType>(
           this._syncMessageSerializer.deserializeSyncMessage(stablePlaintext),
           'security-advertisement-v1',
         );
@@ -6346,13 +6342,10 @@ export class PeerborneDocument<
             return;
           }
 
-          const message = snapshotSyncMessageForContext<
-            ChangesType,
-            PublicKey
-          >(
+          const message = snapshotSyncMessageForContext<ChangesType>(
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             'ordinary-sync-v1',
-          ) as OrdinarySyncMessage<ChangesType, PublicKey>;
+          ) as OrdinarySyncMessage<ChangesType>;
           if (message.documentId !== this.documentPath) return;
 
           return this.sync(message);
@@ -6420,12 +6413,9 @@ export class PeerborneDocument<
                   return TopicValidatorResult.Ignore;
                 }
 
-                let syncMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+                let syncMessage: CRDTSyncMessage<ChangesType>;
                 try {
-                  syncMessage = snapshotSyncMessageForContext<
-                    ChangesType,
-                    PublicKey
-                  >(
+                  syncMessage = snapshotSyncMessageForContext<ChangesType>(
                     this._syncMessageSerializer.deserializeSyncMessage(
                       rawContent,
                     ),
@@ -6578,11 +6568,11 @@ export class PeerborneDocument<
    * that already verified a specialized message use an internal boundary.
    */
   public async sync(
-    message: OrdinarySyncMessage<ChangesType, PublicKey>,
+    message: OrdinarySyncMessage<ChangesType>,
   ): Promise<boolean> {
-    let detached: CRDTSyncMessage<ChangesType, PublicKey>;
+    let detached: CRDTSyncMessage<ChangesType>;
     try {
-      detached = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      detached = snapshotSyncMessageForContext<ChangesType>(
         message,
         'ordinary-sync-v1',
       );
@@ -6595,7 +6585,7 @@ export class PeerborneDocument<
   }
 
   private async _syncValidatedProtocolMessage(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     context: Extract<
       SyncMessageContext,
       'load-response-v4' | 'invitation-bootstrap-v1' | 'invitation-catch-up-v1'
@@ -6619,7 +6609,7 @@ export class PeerborneDocument<
    * The caller must hold `_mutationQueue` with bootstrap state pending.
    */
   private async _syncInvitationBootstrapWithKeychain(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     invitationKeychain: Keychain<ChangesType, DocumentKey>,
     beekem: BeeKEM,
     changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
@@ -6675,7 +6665,7 @@ export class PeerborneDocument<
   }
 
   private _isLatestSnapshotFrom(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
   ): boolean {
     return (
       message.snapshot !== undefined &&
@@ -6689,17 +6679,17 @@ export class PeerborneDocument<
    * verification and rejects serializer-driven drift from `message`.
    */
   private _serializeUnsignedForVerification(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     context: SyncMessageContext,
     maxBytes: number,
   ): { raw: Uint8Array; unchanged: () => boolean } | undefined {
-    let unsigned: CRDTSyncMessage<ChangesType, PublicKey>;
-    let expected: CRDTSyncMessage<ChangesType, PublicKey>;
+    let unsigned: CRDTSyncMessage<ChangesType>;
+    let expected: CRDTSyncMessage<ChangesType>;
     try {
       const { signature: _signature, ...detached } =
-        snapshotSyncMessageForContext<ChangesType, PublicKey>(message, context);
+        snapshotSyncMessageForContext<ChangesType>(message, context);
       unsigned = detached;
-      expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+      expected = snapshotSyncMessageForContext<ChangesType>(
         unsigned,
         context,
         { retainCryptoKeys: true },
@@ -6740,7 +6730,7 @@ export class PeerborneDocument<
 
   /** Apply a sync message after any required membership-queue admission. */
   private async _syncUnlocked(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     verifySignature: boolean,
     context: Extract<SyncMessageContext, 'ordinary-sync-v1' | 'load-response-v4' | 'invitation-bootstrap-v1' | 'invitation-catch-up-v1'>,
     onStateApplicationStart?: () => void,
@@ -6774,7 +6764,7 @@ export class PeerborneDocument<
         ) {
           sourceSnapshot = descriptor.value as object;
         }
-        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        message = snapshotSyncMessageForContext<ChangesType>(
           message,
           context,
         );
@@ -6942,8 +6932,7 @@ export class PeerborneDocument<
             String(this._latestSnapshot.lastChangeNodeCID ?? ''))
       ) {
         // Verify the snapshot signature against the deterministic payload
-        // by trying all authorized writers (publicKey may not survive
-        // serialization for all key types, e.g. CryptoKey).
+        // by trying all authorized writers.
         // When signing is disabled, skip serialization and signature
         // verification -- accept the snapshot unconditionally.
         // WARNING: This means any peer can inject arbitrary snapshot state when
@@ -7326,7 +7315,7 @@ export class PeerborneDocument<
   /**
    * Returns the current snapshot, if one exists.
    */
-  public get latestSnapshot(): CRDTSnapshotNode<ChangesType, PublicKey> | undefined {
+  public get latestSnapshot(): CRDTSnapshotNode<ChangesType> | undefined {
     this._assertNoIncompleteBootstrapLoad();
     return this._latestSnapshot;
   }
@@ -7397,13 +7386,13 @@ export class PeerborneDocument<
    * @throws {Error} If the current user does not have write access to this document.
    *   Only writers are authorized to create snapshots.
    */
-  public async snapshot(): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  public async snapshot(): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     return this._runStateMutation(() => this._snapshotUnlocked());
   }
 
   private async _snapshotUnlocked(
     signal?: AbortSignal,
-  ): Promise<CRDTSnapshotNode<ChangesType, PublicKey> | undefined> {
+  ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     await this._ensureCurrentUserCanWrite();
     throwIfLoadAborted(signal);
 
@@ -7435,12 +7424,11 @@ export class PeerborneDocument<
       signature = new Uint8Array(0);
     }
 
-    const snapshotNode: CRDTSnapshotNode<ChangesType, PublicKey> = {
+    const snapshotNode: CRDTSnapshotNode<ChangesType> = {
       state,
       lastChangeNodeCID,
       compactedCount,
       signature,
-      publicKey: this._userPublicKey,
       timestamp,
     };
 
@@ -8286,7 +8274,7 @@ export class PeerborneDocument<
   private async _prepareInvitationBootstrapCapacity(
     reader: PublicKey,
   ): Promise<
-    InvitationBootstrapCapacityPlan<ChangesType, PublicKey>
+    InvitationBootstrapCapacityPlan<ChangesType>
   > {
     this._assertInitialInvitationCapacityProfile();
 
@@ -8693,12 +8681,9 @@ export class PeerborneDocument<
             );
           }
 
-          let bootstrapMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+          let bootstrapMessage: CRDTSyncMessage<ChangesType>;
           try {
-            bootstrapMessage = snapshotSyncMessageForContext<
-              ChangesType,
-              PublicKey
-            >(
+            bootstrapMessage = snapshotSyncMessageForContext<ChangesType>(
               this._syncMessageSerializer.deserializeSyncMessage(
                 bootstrapPlaintext,
               ),
@@ -8768,10 +8753,10 @@ export class PeerborneDocument<
               'Invitation bootstrap keychain does not match its sealed Welcome',
             );
           }
-          const messageToApply = snapshotSyncMessageForContext<
-            ChangesType,
-            PublicKey
-          >(bootstrapMessage, 'invitation-bootstrap-v1');
+          const messageToApply = snapshotSyncMessageForContext<ChangesType>(
+            bootstrapMessage,
+            'invitation-bootstrap-v1',
+          );
           // The sealed Welcome is the authoritative keychain bootstrap and was
           // staged above. Do not merge the duplicate message field through the
           // live sync path, where a later failure could strand a
@@ -8920,7 +8905,7 @@ export class PeerborneDocument<
     const kemPub = new Uint8Array(readerKemPublicKey);
 
     // Build the welcome message.
-    const welcomeMessage: CRDTSyncMessage<ChangesType, PublicKey> = {
+    const welcomeMessage: CRDTSyncMessage<ChangesType> = {
       documentId: this.documentPath,
       signatureContext: 'beekem-welcome-v2',
     };
@@ -9098,7 +9083,7 @@ export class PeerborneDocument<
    * @internal
    */
   private async _evaluateAndApplyBeeKEMWelcome(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     opts: {
       fromBuffer: boolean;
       failClosedOnCommitError?: boolean;
@@ -9432,7 +9417,7 @@ export class PeerborneDocument<
    * @internal
    */
   private _bufferPendingWelcome(
-    message: CRDTSyncMessage<ChangesType, PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
     authenticated: boolean,
   ): void {
     const epochId = message.welcomeEpochId;
@@ -9509,7 +9494,7 @@ export class PeerborneDocument<
         );
         continue;
       }
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      let message: CRDTSyncMessage<ChangesType>;
       try {
         message = this._syncMessageSerializer.deserializeSyncMessage(
           entry.body,
@@ -10182,7 +10167,7 @@ export class PeerborneDocument<
     pathUpdate: PathUpdateV2,
     pathUpdateEpochId: Uint8Array,
   ): Promise<void> {
-    const message: CRDTSyncMessage<ChangesType, PublicKey> = {
+    const message: CRDTSyncMessage<ChangesType> = {
       documentId: this.documentPath,
       signatureContext: 'beekem-path-update-v2',
       pathUpdate: serializePathUpdateV2ForWire(pathUpdate),
@@ -10270,7 +10255,7 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
+      let message: CRDTSyncMessage<ChangesType>;
       try {
         const stablePayload = copyUnsharedUint8Array(
           payload,
@@ -10278,7 +10263,7 @@ export class PeerborneDocument<
           MAX_SHARED_PROTOCOL_REQUEST_BYTES,
           'BeeKEM PathUpdateV2 message',
         );
-        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
+        message = snapshotSyncMessageForContext<ChangesType>(
           this._syncMessageSerializer.deserializeSyncMessage(stablePayload),
           'beekem-path-update-v2',
         );

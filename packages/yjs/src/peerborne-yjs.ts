@@ -5,7 +5,6 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
-  CRDTChangeBlock,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTSyncMessage,
@@ -33,7 +32,6 @@ import {
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
-import { validateChangeBlockMetadata } from '@peerborne/core';
 import {
   AbstractType,
   Map as YMap,
@@ -73,7 +71,7 @@ const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeyc
 // binary data in JSON, so this is an acceptable trade-off.
 type iCRDTChangeNode = CRDTChangeNodeWire<string>;
 
-export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
+export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
   serializeChanges(changes: Uint8Array): Uint8Array {
     return changes;
   }
@@ -81,46 +79,8 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
     return changes;
   }
 
-  serializeChangeBlock(changes: CRDTChangeBlock<Uint8Array>): string {
-    const obj: Record<string, unknown> = {
-      changes: Base64.fromUint8Array(changes.changes),
-      nonce: Base64.fromUint8Array(changes.nonce),
-    };
-    if (changes.keyID !== undefined) obj.keyID = changes.keyID;
-    if (
-      changes.blindIndexTokens !== undefined &&
-      changes.blindIndexTokens !== null
-    )
-      obj.blindIndexTokens = changes.blindIndexTokens;
-    return this.serialize(obj);
-  }
-  deserializeChangeBlock(changes: string): CRDTChangeBlock<Uint8Array> {
-    const raw = this.deserialize(changes);
-    if (
-      typeof raw !== 'object' ||
-      raw === null ||
-      typeof (raw as Record<string, unknown>).changes !== 'string' ||
-      typeof (raw as Record<string, unknown>).nonce !== 'string'
-    ) {
-      throw new Error(
-        'Invalid change block: expected {changes: string, nonce: string}',
-      );
-    }
-    const deserialized = raw as {
-      changes: string;
-      nonce: string;
-      keyID?: string;
-      blindIndexTokens?: Record<string, string>;
-    };
-    const result: CRDTChangeBlock<Uint8Array> = {
-      changes: Base64.toUint8Array(deserialized.changes),
-      nonce: Base64.toUint8Array(deserialized.nonce),
-    };
-    validateChangeBlockMetadata(deserialized, result);
-    return result;
-  }
   serializeSyncMessage(
-    message: CRDTSyncMessage<Uint8Array, CryptoKey>,
+    message: CRDTSyncMessage<Uint8Array>,
   ): Uint8Array {
     // Encode snapshot Uint8Array fields (state, signature) as base64 for JSON safety.
     let snapshotForWire: any;
@@ -134,9 +94,6 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
           snapshotForWire.signature,
         );
       }
-      // Drop publicKey from wire -- CryptoKey is not JSON-serializable and
-      // snapshot verification uses writer ACL keys, not the embedded key.
-      delete snapshotForWire.publicKey;
     }
     return this.encode(
       this.serializeNormalizedSyncWireValue({
@@ -201,7 +158,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
   }
   deserializeSyncMessage(
     message: Uint8Array,
-  ): CRDTSyncMessage<Uint8Array, CryptoKey> {
+  ): CRDTSyncMessage<Uint8Array> {
     const decoded = this.deserialize(this.decode(message));
     // Wire input is untrusted: reject non-object payloads up front with a
     // descriptive error so the malformed payload can be attributed back to
@@ -458,7 +415,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       welcomeRecipient,
       welcomeRecipientKemPublicKey,
       eciesSealed,
-      pathUpdate: pathUpdate as CRDTSyncMessage<Uint8Array, CryptoKey>['pathUpdate'],
+      pathUpdate: pathUpdate as CRDTSyncMessage<Uint8Array>['pathUpdate'],
       pathUpdateEpochId,
       tipsHash,
       tips,

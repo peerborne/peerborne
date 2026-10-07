@@ -4,7 +4,7 @@ import { JSONSerializer } from './json-serializer.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
 import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
-const serializer = new JSONSerializer<unknown, CryptoKey>();
+const serializer = new JSONSerializer<unknown>();
 
 describe('JSON sync security fields', () => {
   test('redacts a base64 decoder failure with the field contract', () => {

@@ -169,15 +169,12 @@ export interface InitialInvitationCapacityProjection {
   readonly projectedEncryptedBootstrapBytes: number;
 }
 
-export interface ProjectInitialInvitationCapacityOptions<
-  ChangesType,
-  PublicKey,
-> {
-  readonly currentMessage: CRDTSyncMessage<ChangesType, PublicKey>;
+export interface ProjectInitialInvitationCapacityOptions<ChangesType> {
+  readonly currentMessage: CRDTSyncMessage<ChangesType>;
   readonly keychainChanges: ChangesType;
-  readonly snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  readonly snapshot?: CRDTSnapshotNode<ChangesType>;
   readonly tips: readonly string[];
-  readonly serializer: SyncMessageSerializer<ChangesType, PublicKey>;
+  readonly serializer: SyncMessageSerializer<ChangesType>;
 }
 
 function base64Length(rawBytes: number): number {
@@ -185,13 +182,10 @@ function base64Length(rawBytes: number): number {
 }
 
 /** Build and size the complete pre-membership bootstrap baseline once. */
-export function projectInitialInvitationBootstrapCapacity<
-  ChangesType,
-  PublicKey,
->(
-  options: ProjectInitialInvitationCapacityOptions<ChangesType, PublicKey>,
+export function projectInitialInvitationBootstrapCapacity<ChangesType>(
+  options: ProjectInitialInvitationCapacityOptions<ChangesType>,
 ): InitialInvitationCapacityProjection {
-  const projected: CRDTSyncMessage<ChangesType, PublicKey> = {
+  const projected: CRDTSyncMessage<ChangesType> = {
     ...options.currentMessage,
     signatureContext: 'invitation-bootstrap-v1',
     keychainChanges: options.keychainChanges,

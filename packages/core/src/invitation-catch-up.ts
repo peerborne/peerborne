@@ -31,11 +31,8 @@ export function assertInvitationCidsInstalled(
 }
 
 /** @internal Apply one invitation sync and require its full advertised tree. */
-export async function syncInvitationMessageCompletely<
-  ChangesType,
-  PublicKey,
->(
-  message: CRDTSyncMessage<ChangesType, PublicKey>,
+export async function syncInvitationMessageCompletely<ChangesType>(
+  message: CRDTSyncMessage<ChangesType>,
   installedCids: ReadonlySet<string>,
   sync: () => Promise<boolean>,
   phase: 'bootstrap' | 'catch-up',

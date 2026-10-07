@@ -28,7 +28,7 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  *
  * @typeParam ChangesType Type describing changes made to a CRDT document. CRDT implementation dependent.
  */
-export interface SyncMessageSerializer<ChangesType, PublicKey = unknown> {
-  serializeSyncMessage(message: CRDTSyncMessage<ChangesType, PublicKey>): Uint8Array;
-  deserializeSyncMessage(message: Uint8Array): CRDTSyncMessage<ChangesType, PublicKey>;
+export interface SyncMessageSerializer<ChangesType> {
+  serializeSyncMessage(message: CRDTSyncMessage<ChangesType>): Uint8Array;
+  deserializeSyncMessage(message: Uint8Array): CRDTSyncMessage<ChangesType>;
 }

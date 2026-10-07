@@ -3703,103 +3703,6 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
-    const provider = new AutomergeProvider<{ title: string }>();
-    const doc = provider.newDocument();
-    const [, changes] = provider.localChange(doc, '', (d) => {
-      d.title = 'test';
-    });
-    const block = {
-      changes,
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      keyID: 'epoch-key-abc-123',
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.keyID).toBe('epoch-key-abc-123');
-    expect(deserialized.nonce).toEqual(block.nonce);
-    expect(deserialized.changes).toHaveLength(changes.length);
-  });
-
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with blindIndexTokens', () => {
-    const provider = new AutomergeProvider<{ title: string }>();
-    const doc = provider.newDocument();
-    const [, changes] = provider.localChange(doc, '', (d) => {
-      d.title = 'test';
-    });
-    const block = {
-      changes,
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      blindIndexTokens: { 'field.name': 'hmac-token-abc', 'field.email': 'hmac-token-def' },
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.blindIndexTokens).toEqual({
-      'field.name': 'hmac-token-abc',
-      'field.email': 'hmac-token-def',
-    });
-  });
-
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with empty blindIndexTokens', () => {
-    const provider = new AutomergeProvider<{ title: string }>();
-    const doc = provider.newDocument();
-    const [, changes] = provider.localChange(doc, '', (d) => {
-      d.title = 'test';
-    });
-    const block = {
-      changes,
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      blindIndexTokens: {},
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.blindIndexTokens).toEqual({});
-  });
-
-  test('deserializeChangeBlock sanitizes dangerous keys in blindIndexTokens', () => {
-    const provider = new AutomergeProvider<{ title: string }>();
-    const doc = provider.newDocument();
-    const [, changes] = provider.localChange(doc, '', (d) => {
-      d.title = 'test';
-    });
-    // Serialize normally first to get valid changes encoding
-    const validBlock = {
-      changes,
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-    };
-    const validSerialized = serializer.serializeChangeBlock(validBlock);
-    // Parse, inject dangerous blindIndexTokens, re-serialize
-    const parsed = JSON.parse(validSerialized);
-    parsed.blindIndexTokens = {
-      '__proto__': 'evil',
-      'constructor': 'evil',
-      'prototype': 'evil',
-      'safe-key': 'safe-value',
-    };
-    const malicious = JSON.stringify(parsed);
-    const deserialized = serializer.deserializeChangeBlock(malicious);
-    expect(deserialized.blindIndexTokens).toEqual({ 'safe-key': 'safe-value' });
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, '__proto__')).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, 'constructor')).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, 'prototype')).toBe(false);
-  });
-
-  test('deserializeChangeBlock without keyID or blindIndexTokens omits them', () => {
-    const provider = new AutomergeProvider<{ title: string }>();
-    const doc = provider.newDocument();
-    const [, changes] = provider.localChange(doc, '', (d) => {
-      d.title = 'test';
-    });
-    const block = {
-      changes,
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.keyID).toBeUndefined();
-    expect(deserialized.blindIndexTokens).toBeUndefined();
-  });
-
   // Build a sync-message Uint8Array wire payload directly from a JS object,
   // bypassing `serializeSyncMessage`'s type-safety so we can test that
   // `deserializeSyncMessage` rejects every defined-but-malformed shape of
@@ -3829,6 +3732,22 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
+  test('deserializeSyncMessage rejects a change-node "keyID"', () => {
+    const wire = buildWire({
+      signatureContext: 'ordinary-sync-v1' as const,
+      documentId: 'doc',
+      changeId: 'ROOT',
+      changes: {
+        kind: 'document',
+        change: ['AQ=='],
+        children: { PARENT: { kind: 'writer', keyID: 'epoch-7' } },
+      },
+    });
+    expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+      /"keyID" is not a change-node field/,
+    );
+  });
+
   test('deserializeSyncMessage accepts omitted "changes" field', () => {
     const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
@@ -3844,7 +3763,6 @@ describe('AutomergeJSONSerializer', () => {
       changeId: 'ROOT',
       changes: {
         kind: 'document' as const,
-        keyID: 'epoch-7',
         change: [new Uint8Array([1])],
         children: {
           PARENT: {
@@ -4247,6 +4165,24 @@ describe('AutomergeJSONSerializer', () => {
     );
   });
 
+  test('reserializes snapshot fields verbatim so the signature covers an injected publicKey', () => {
+    const wire = buildWire({
+      signatureContext: 'ordinary-sync-v1' as const,
+      documentId: 'doc',
+      snapshot: {
+        state: ['AQ=='],
+        lastChangeNodeCID: 'cid',
+        compactedCount: 1,
+        signature: 'Ag==',
+        publicKey: 'injected',
+        timestamp: 1,
+      },
+    });
+    expect(
+      serializer.serializeSyncMessage(serializer.deserializeSyncMessage(wire)),
+    ).toEqual(wire);
+  });
+
   test('deserializeSyncMessage rejects array snapshot', () => {
     const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: [1, 2, 3] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
@@ -4360,7 +4296,7 @@ describe('bounded initial invitation profile', () => {
     const cid = (label: string) => `bafy${label.repeat(55).slice(0, 55)}`;
     const founderCid = cid('f');
     const signature = 'A'.repeat(128);
-    const baseline: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
+    const baseline: CRDTSyncMessage<Uint8Array[]> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/capacity-growth',
       changeId: founderCid,
       changes: { kind: 'writer', change: founderChanges },
@@ -4393,7 +4329,7 @@ describe('bounded initial invitation profile', () => {
       previousNode = nextNode;
     }
 
-    const afterMembership: CRDTSyncMessage<Uint8Array[], CryptoKey> = { signatureContext: 'ordinary-sync-v1' as const,
+    const afterMembership: CRDTSyncMessage<Uint8Array[]> = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: baseline.documentId,
       changeId: previousCid,
       changes: previousNode,

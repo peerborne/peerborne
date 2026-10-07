@@ -3420,20 +3420,6 @@ describe('YjsJSONSerializer', () => {
     expect(serializer.deserializeChanges(data)).toBe(data);
   });
 
-  test('serializeChangeBlock/deserializeChangeBlock round-trip', () => {
-    const serializer = new YjsJSONSerializer();
-    const block = {
-      changes: new Uint8Array([1, 2, 3, 4, 5]),
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    expect(typeof serialized).toBe('string');
-
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.changes).toEqual(block.changes);
-    expect(deserialized.nonce).toEqual(block.nonce);
-  });
-
   test('serializeSyncMessage/deserializeSyncMessage round-trip with Merkle DAG', () => {
     const serializer = new YjsJSONSerializer();
     const message = { signatureContext: 'ordinary-sync-v1' as const,
@@ -3535,7 +3521,6 @@ describe('YjsJSONSerializer', () => {
       changeId: 'ROOT',
       changes: {
         kind: 'document' as const,
-        keyID: 'epoch-7',
         change: new Uint8Array([1]),
         children: {
           PARENT: { kind: 'writer' as const, change: new Uint8Array([2]) },
@@ -3724,77 +3709,19 @@ describe('YjsJSONSerializer', () => {
     );
   });
 
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with keyID', () => {
+  test('deserializeSyncMessage rejects a change-node "keyID"', () => {
     const serializer = new YjsJSONSerializer();
-    const block = {
-      changes: new Uint8Array([1, 2, 3]),
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      keyID: 'epoch-key-abc-123',
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.changes).toEqual(block.changes);
-    expect(deserialized.nonce).toEqual(block.nonce);
-    expect(deserialized.keyID).toBe('epoch-key-abc-123');
-  });
-
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with blindIndexTokens', () => {
-    const serializer = new YjsJSONSerializer();
-    const block = {
-      changes: new Uint8Array([5, 6, 7]),
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      blindIndexTokens: { 'field.name': 'hmac-token-abc', 'field.email': 'hmac-token-def' },
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.blindIndexTokens).toEqual({
-      'field.name': 'hmac-token-abc',
-      'field.email': 'hmac-token-def',
-    });
-  });
-
-  test('serializeChangeBlock/deserializeChangeBlock round-trip with empty blindIndexTokens', () => {
-    const serializer = new YjsJSONSerializer();
-    const block = {
-      changes: new Uint8Array([8, 9]),
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-      blindIndexTokens: {},
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.blindIndexTokens).toEqual({});
-  });
-
-  test('deserializeChangeBlock sanitizes dangerous keys in blindIndexTokens', () => {
-    const serializer = new YjsJSONSerializer();
-    // Manually construct JSON with dangerous keys
-    const malicious = JSON.stringify({
-      changes: 'AQID', // base64 for [1,2,3]
-      nonce: 'ChsMDQ4PEBESExQV', // base64 for 12-byte nonce
-      blindIndexTokens: {
-        '__proto__': 'evil',
-        'constructor': 'evil',
-        'prototype': 'evil',
-        'safe-key': 'safe-value',
-      },
-    });
-    const deserialized = serializer.deserializeChangeBlock(malicious);
-    expect(deserialized.blindIndexTokens).toEqual({ 'safe-key': 'safe-value' });
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, '__proto__')).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, 'constructor')).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(deserialized.blindIndexTokens, 'prototype')).toBe(false);
-  });
-
-  test('deserializeChangeBlock without keyID or blindIndexTokens omits them', () => {
-    const serializer = new YjsJSONSerializer();
-    const block = {
-      changes: new Uint8Array([1, 2, 3]),
-      nonce: new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]),
-    };
-    const serialized = serializer.serializeChangeBlock(block);
-    const deserialized = serializer.deserializeChangeBlock(serialized);
-    expect(deserialized.keyID).toBeUndefined();
-    expect(deserialized.blindIndexTokens).toBeUndefined();
+    const wire = new TextEncoder().encode(
+      JSON.stringify({
+        signatureContext: 'ordinary-sync-v1' as const,
+        documentId: 'doc',
+        changeId: 'ROOT',
+        changes: { kind: 'document', keyID: 'epoch-7', change: 'AQ==' },
+      }),
+    );
+    expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
+      /"keyID" is not a change-node field/,
+    );
   });
 
   test('serializeSyncMessage handles message without optional fields', () => {
@@ -3930,6 +3857,25 @@ describe('YjsJSONSerializer', () => {
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'keychainChanges' must be a string when present.*got array/,
     );
+  });
+
+  test('reserializes snapshot fields verbatim so the signature covers an injected publicKey', () => {
+    const serializer = new YjsJSONSerializer();
+    const wire = buildWire({
+      signatureContext: 'ordinary-sync-v1' as const,
+      documentId: 'doc',
+      snapshot: {
+        state: 'AQ==',
+        lastChangeNodeCID: 'cid',
+        compactedCount: 1,
+        signature: 'Ag==',
+        publicKey: 'injected',
+        timestamp: 1,
+      },
+    });
+    expect(
+      serializer.serializeSyncMessage(serializer.deserializeSyncMessage(wire)),
+    ).toEqual(wire);
   });
 
   test('deserializeSyncMessage rejects array snapshot', () => {

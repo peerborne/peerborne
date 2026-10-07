@@ -31,8 +31,8 @@ export function isSyncMessageSignatureContext(
  * tag is required so callers that omit it fail to compile instead of being
  * rejected at runtime.
  */
-export type OrdinarySyncMessage<ChangesType, PublicKey = unknown> =
-  CRDTSyncMessage<ChangesType, PublicKey> & {
+export type OrdinarySyncMessage<ChangesType> =
+  CRDTSyncMessage<ChangesType> & {
     signatureContext: 'ordinary-sync-v1';
   };
 
@@ -42,7 +42,7 @@ export type OrdinarySyncMessage<ChangesType, PublicKey = unknown> =
  *
  * @typeParam ChangesType A block of CRDT change(s).
  */
-export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
+export type CRDTSyncMessage<ChangesType> = {
   /**
    * ID of a peerborne document.
    */
@@ -81,7 +81,7 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * When present, peers can load from the snapshot state instead of replaying
    * the full change history. Post-snapshot changes are still included in `changes`.
    */
-  snapshot?: CRDTSnapshotNode<ChangesType, PublicKey>;
+  snapshot?: CRDTSnapshotNode<ChangesType>;
 
   /**
    * Optional document keys list. Populated by **load responses** (doc-load and

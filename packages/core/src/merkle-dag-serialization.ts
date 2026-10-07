@@ -87,13 +87,12 @@ export function describeValue(value: unknown): string {
 /**
  * Wire-shape mirror of `CRDTChangeNode<T>` used during JSON serialization.
  *
- * The `kind` / `keyID` / `children` shape is preserved exactly; only the
+ * The `kind` / `children` shape is preserved exactly; only the
  * `change` payload at each leaf is rewritten to a JSON-friendly type by the
  * caller-provided encoder.
  */
 export type CRDTChangeNodeWire<TOut> = {
   kind: CRDTChangeNode<unknown>['kind'];
-  keyID?: string;
   change?: TOut;
   children?:
     | { [hash: string]: CRDTChangeNodeWire<TOut> }
@@ -102,8 +101,8 @@ export type CRDTChangeNodeWire<TOut> = {
 
 /**
  * Iteratively serialize a `CRDTChangeNode` tree by transforming each node's
- * `change` payload via the provided encoder, preserving the `kind`, `keyID`,
- * and `children` structure for round-tripping through JSON.
+ * `change` payload via the provided encoder, preserving the `kind` and
+ * `children` structure for round-tripping through JSON.
  *
  * A `children` value equal to `crdtChangeNodeDeferred` (i.e. `false`) is
  * preserved verbatim so deferred subtrees survive the round-trip.
@@ -293,7 +292,6 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
       );
     }
     const kind = sourceSnapshot.kind;
-    const keyID = sourceSnapshot.keyID;
     const wireChange = sourceSnapshot.change as TIn | undefined;
     const wireChildren = sourceSnapshot.children;
     if (!isValidChangeNodeKind(kind)) {
@@ -305,11 +303,9 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
           .join(', ')} (got ${JSON.stringify(kind)})`,
       );
     }
-    if (keyID !== undefined && typeof keyID !== 'string') {
+    if (Object.prototype.hasOwnProperty.call(sourceSnapshot, 'keyID')) {
       throw new Error(
-        `Invalid merkle-dag node: "keyID" must be a string when present (got ${describeValue(
-          keyID,
-        )})`,
+        'Invalid merkle-dag node: "keyID" is not a change-node field',
       );
     }
 
@@ -352,9 +348,6 @@ export function deserializeChangeNodeFromJSON<TIn, TOut>(
       switch (field) {
         case 'kind':
           result.kind = kind;
-          break;
-        case 'keyID':
-          if (keyID !== undefined) result.keyID = keyID;
           break;
         case 'change':
           if (wireChange !== undefined) {

@@ -11,7 +11,6 @@ export {
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
   JSONSerializer,
-  validateChangeBlockMetadata,
   LRUCache,
   TIPS_HASH_LENGTH,
   SubtleCrypto,

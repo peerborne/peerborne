@@ -136,7 +136,7 @@ describe('sync message wire-context separation', () => {
   });
 
   test('cryptographically binds otherwise identical bodies to different contexts', async () => {
-    const serializer = new JSONSerializer<unknown, CryptoKey>();
+    const serializer = new JSONSerializer<unknown>();
     const auth = new SubtleCrypto();
     const keyPair = (await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },

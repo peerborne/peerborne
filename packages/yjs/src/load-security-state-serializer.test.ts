@@ -141,7 +141,6 @@ describe('YjsJSONSerializer load security state', () => {
     const changes = {} as CRDTChangeNode<Uint8Array>;
     changes.children = { PARENT: child };
     changes.change = new Uint8Array([1]);
-    changes.keyID = 'epoch-7';
     changes.kind = 'document';
 
     const first = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,

@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import { CRDTChangeNode, crdtChangeNodeDeferred } from './crdt-change-node.js';
 import {
   CRDTChangeNodeWire,
@@ -76,18 +76,15 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
   test('round-trips a leaf-only Uint8Array[] node (mirrors automerge)', () => {
     const original: CRDTChangeNode<Uint8Array[]> = {
       kind: 'writer',
-      keyID: 'key-1',
       change: [new Uint8Array([5, 6]), new Uint8Array([7, 8, 9])],
     };
 
     const wire = serializeChangeNodeForJSON(original, encodeBytesArray);
     expect(wire.kind).toBe('writer');
-    expect(wire.keyID).toBe('key-1');
     expect(wire.change).toEqual(['0506', '070809']);
 
     const restored = deserializeChangeNodeFromJSON(wire, decodeBytesArray);
     expect(restored.kind).toBe('writer');
-    expect(restored.keyID).toBe('key-1');
     expectBytesArrayEqual(
       restored.change as Uint8Array[],
       original.change as Uint8Array[],
@@ -121,7 +118,6 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
           children: {
             h1a: {
               kind: 'writer',
-              keyID: 'k-1',
               change: new Uint8Array([0x01]),
             },
             h1b: {
@@ -177,7 +173,6 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     >;
     expect(Object.keys(h1Children).sort()).toEqual(['h1a', 'h1b']);
     expect(h1Children.h1a.kind).toBe('writer');
-    expect(h1Children.h1a.keyID).toBe('k-1');
     expectBytesEqual(
       h1Children.h1a.change as Uint8Array,
       new Uint8Array([0x01]),
@@ -210,7 +205,6 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       children: {
         parent: {
           kind: 'writer',
-          keyID: 'epoch-1',
           change: new Uint8Array([0xbb]),
         },
       },
@@ -252,7 +246,6 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
           children: {
             'a.1': {
               kind: 'reader',
-              keyID: 'reader-key',
               change: [new Uint8Array([5, 6, 7])],
             },
           },
@@ -283,7 +276,7 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       string,
       CRDTChangeNode<Uint8Array[]>
     >;
-    expect(aChildren['a.1'].keyID).toBe('reader-key');
+    expect(aChildren['a.1'].kind).toBe('reader');
     expectBytesArrayEqual(aChildren['a.1'].change as Uint8Array[], [
       new Uint8Array([5, 6, 7]),
     ]);
@@ -656,75 +649,43 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       ).toThrow(/"kind" must be one of.*got "hacker"/);
     });
 
-    test('throws when "keyID" is a number', () => {
-      // Regression: prior to keyID validation a peer could send
-      // `keyID: 123` and the value would flow through `...node` into the
-      // typed `CRDTChangeNode`, silently violating the `keyID?: string`
-      // contract.
+    test.each([
+      ['a string', 'k-1'],
+      ['a number', 123],
+      ['null', null],
+      ['an object', { evil: true }],
+    ])('rejects a node-level "keyID" that is %s', (_label, keyID) => {
       const malformed = {
         kind: 'writer',
-        keyID: 123,
+        keyID,
         change: '01',
       } as unknown as CRDTChangeNodeWire<string>;
       expect(() =>
         deserializeChangeNodeFromJSON(malformed, decodeBytes),
-      ).toThrow(/"keyID" must be a string when present.*got number/);
+      ).toThrow(/"keyID" is not a change-node field/);
     });
 
-    test('throws when "keyID" is null', () => {
-      const malformed = {
-        kind: 'writer',
-        keyID: null,
-        change: '01',
-      } as unknown as CRDTChangeNodeWire<string>;
-      expect(() =>
-        deserializeChangeNodeFromJSON(malformed, decodeBytes),
-      ).toThrow(/"keyID" must be a string when present.*got null/);
-    });
-
-    test('throws when "keyID" is an object', () => {
-      const malformed = {
-        kind: 'writer',
-        keyID: { evil: true },
-        change: '01',
-      } as unknown as CRDTChangeNodeWire<string>;
-      expect(() =>
-        deserializeChangeNodeFromJSON(malformed, decodeBytes),
-      ).toThrow(/"keyID" must be a string when present.*got object/);
-    });
-
-    test('throws when a nested child has an invalid "keyID"', () => {
+    test('rejects a nested "keyID" before decoding any change payload', () => {
       const malformed = JSON.parse(
         '{"kind":"document","change":"01","children":' +
-          '{"h1":{"kind":"writer","keyID":42,"change":"02"}}}',
+          '{"h1":{"kind":"writer","keyID":"epoch-1","change":"02"}}}',
       ) as CRDTChangeNodeWire<string>;
+      const decode = jest.fn(decodeBytes);
+      expect(() => deserializeChangeNodeFromJSON(malformed, decode)).toThrow(
+        /"keyID" is not a change-node field/,
+      );
+      expect(decode).not.toHaveBeenCalled();
+    });
+
+    test('rejects an explicitly undefined "keyID" own property', () => {
+      const malformed = {
+        kind: 'document',
+        keyID: undefined,
+        change: '01',
+      } as unknown as CRDTChangeNodeWire<string>;
       expect(() =>
         deserializeChangeNodeFromJSON(malformed, decodeBytes),
-      ).toThrow(/"keyID" must be a string when present.*got number/);
-    });
-
-    test('accepts omitted "keyID" (optional field)', () => {
-      const node: CRDTChangeNodeWire<string> = {
-        kind: 'document',
-        change: '01',
-      };
-      const restored = deserializeChangeNodeFromJSON(node, decodeBytes);
-      expect(restored.keyID).toBeUndefined();
-      // Explicit construction must not set `keyID` as an own property when
-      // omitted; consumers iterating own keys should not see it.
-      expect(Object.prototype.hasOwnProperty.call(restored, 'keyID')).toBe(
-        false,
-      );
-    });
-
-    test('accepts a string "keyID"', () => {
-      const node: CRDTChangeNodeWire<string> = {
-        kind: 'writer',
-        keyID: 'k-1',
-        change: '01',
-      };
-      const restored = deserializeChangeNodeFromJSON(node, decodeBytes);
-      expect(restored.keyID).toBe('k-1');
+      ).toThrow(/"keyID" is not a change-node field/);
     });
 
     test('strips unknown extra wire properties via explicit construction', () => {
@@ -743,6 +704,39 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
       ).toBeUndefined();
     });
   });
+
+  test.each([
+    [
+      'on the root node',
+      { kind: 'document', keyID: 'old', change: new Uint8Array([1]) },
+    ],
+    [
+      'on a nested child',
+      {
+        kind: 'document',
+        change: new Uint8Array([1]),
+        children: {
+          h1: { kind: 'writer', keyID: 'old', change: new Uint8Array([2]) },
+        },
+      },
+    ],
+    [
+      'as an undefined own property',
+      { kind: 'document', keyID: undefined, change: new Uint8Array([1]) },
+    ],
+  ])(
+    'encoder rejects a "keyID" field %s before encoding any leaf',
+    (_label, node) => {
+      const encodeLeaf = jest.fn(hexEncode);
+      expect(() =>
+        serializeChangeNodeForJSON(
+          node as unknown as CRDTChangeNode<Uint8Array>,
+          encodeLeaf,
+        ),
+      ).toThrow(/"keyID" is not a change-node field/);
+      expect(encodeLeaf).not.toHaveBeenCalled();
+    },
+  );
 
   test('encoder is not invoked for nodes whose change is undefined', () => {
     const original: CRDTChangeNode<Uint8Array> = {
@@ -874,7 +868,6 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
     const original = {} as CRDTChangeNode<Uint8Array>;
     original.children = { PARENT: child };
     original.change = new Uint8Array([1]);
-    original.keyID = 'epoch-7';
     original.kind = 'document';
 
     const first = JSON.stringify(
@@ -892,12 +885,10 @@ describe('serializeChangeNodeForJSON / deserializeChangeNodeFromJSON', () => {
 
   test('preserves signed JSON bytes across nested encode/decode/re-encode', () => {
     // Production creates nodes as { kind, change } and appends children when
-    // a prior head exists. Node-level keyID is not currently populated by the
-    // shipped producer, but its documented canonical position is before change.
-    // The receiver must preserve both forms because signatures cover JSON bytes.
+    // a prior head exists. The receiver must preserve that order because
+    // signatures cover JSON bytes.
     const original: CRDTChangeNode<Uint8Array> = {
       kind: 'document',
-      keyID: 'epoch-7',
       change: new Uint8Array([1]),
     };
     original.children = {

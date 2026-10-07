@@ -53,7 +53,7 @@ jest.mock('./peerborne.js', () => ({
 }));
 
 const documentPath = '/signature-relabel';
-const serializer = new JSONSerializer<any, CryptoKey>();
+const serializer = new JSONSerializer<any>();
 const auth = new SubtleCrypto();
 let writer: CryptoKeyPair;
 

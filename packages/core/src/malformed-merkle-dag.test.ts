@@ -33,11 +33,15 @@ describe('deserializeChangeNodeFromJSON malformed inputs', () => {
   test('rejects unknown kind', () => {
     expect(() => deserializeChangeNodeFromJSON({ kind: 'invalid-kind' } as any, id)).toThrow(/"kind"/);
   });
-  test('rejects non-string keyID when present', () => {
+  test('rejects a string keyID', () => {
+    expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: 'test-key-id', change: 'leaf' } as any, id)).toThrow(/"keyID"/);
+  });
+  test('rejects a numeric keyID', () => {
     expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: 123 } as any, id)).toThrow(/"keyID"/);
   });
-  test('rejects object keyID when present', () => {
-    expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: {} } as any, id)).toThrow(/"keyID"/);
+  test('rejects keyID on a nested child', () => {
+    const wire: any = { kind: crdtDocumentChangeNode, children: { abc: { kind: crdtWriterChangeNode, keyID: 'child-key', change: 'child-payload' } } };
+    expect(() => deserializeChangeNodeFromJSON(wire, id)).toThrow(/"keyID"/);
   });
   test('rejects non-object children', () => {
     expect(() => deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, children: 42 } as any, id)).toThrow(/"children"/);
@@ -52,25 +56,21 @@ describe('deserializeChangeNodeFromJSON malformed inputs', () => {
 
 describe('deserializeChangeNodeFromJSON valid inputs', () => {
   test('deserializes a leaf document-change node', () => {
-    const result = deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, keyID: 'test-key-id', change: 'leaf' } as any, id);
+    const result = deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, change: 'leaf' } as any, id);
     expect(result.kind).toBe(crdtDocumentChangeNode);
-    expect(result.keyID).toBe('test-key-id');
     expect(result.change).toBe('leaf');
-  });
-  test('deserializes a leaf node without keyID', () => {
-    const result = deserializeChangeNodeFromJSON({ kind: crdtDocumentChangeNode, change: 'data' } as any, id);
-    expect(result.keyID).toBeUndefined();
+    expect(Object.keys(result)).toEqual(['kind', 'change']);
   });
   test('deserializes a leaf node without change', () => {
-    const result = deserializeChangeNodeFromJSON({ kind: crdtWriterChangeNode, keyID: 'writer-key' } as any, id);
+    const result = deserializeChangeNodeFromJSON({ kind: crdtWriterChangeNode } as any, id);
     expect(result.kind).toBe(crdtWriterChangeNode);
     expect(result.change).toBeUndefined();
   });
   test('deserializes a node with nested children', () => {
-    const wire: any = { kind: crdtDocumentChangeNode, children: { abc: { kind: crdtWriterChangeNode, keyID: 'child-key', change: 'child-payload' } } };
+    const wire: any = { kind: crdtDocumentChangeNode, children: { abc: { kind: crdtWriterChangeNode, change: 'child-payload' } } };
     const result: any = deserializeChangeNodeFromJSON(wire, id);
     expect(result.children.abc.kind).toBe(crdtWriterChangeNode);
-    expect(result.children.abc.keyID).toBe('child-key');
+    expect(result.children.abc.change).toBe('child-payload');
   });
   test('children map uses null prototype', () => {
     const wire: any = { kind: crdtDocumentChangeNode, children: { abc: { kind: crdtWriterChangeNode } } };
