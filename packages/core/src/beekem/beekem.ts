@@ -9,12 +9,18 @@ import {
   MAX_BEEKEM_TREE_LEAVES,
 } from './types.js';
 import * as TreeMath from './tree-math.js';
-import { eciesSeal, eciesOpen } from '../ecies.js';
+import {
+  eciesSeal,
+  eciesOpen,
+  ECIES_P256_PUBLIC_KEY_LENGTH,
+} from '../ecies.js';
 import { snapshotBeeKEMWelcomeForProcessing } from '../beekem-welcome-wire.js';
+import { copyUnsharedUint8Array } from '../utils.js';
 
 /** ECDH curve used for tree key pairs. */
 const ECDH_CURVE = 'P-256';
 const ECDH_ALGO = { name: 'ECDH', namedCurve: ECDH_CURVE };
+const isArrayBufferView = ArrayBuffer.isView;
 
 /** Cast Uint8Array to ArrayBuffer for WebCrypto API compatibility. */
 function toBuffer(data: Uint8Array): ArrayBuffer {
@@ -174,12 +180,20 @@ export class BeeKEM {
    * Add a new member to the group.
    * Creates a new leaf and derives keys along the path to root.
    * Returns a path update message to broadcast and a welcome for the new member.
+   *
+   * @throws {Error} If a live leaf already owns `memberPublicKey`.
    */
   async addMember(memberPublicKey: CryptoKey): Promise<{
     pathUpdate: PathUpdate;
     welcome: BeeKEMWelcome;
     rootSecret: Uint8Array;
   }> {
+    if (await this.hasLiveLeafWithPublicKey(memberPublicKey)) {
+      throw new Error(
+        'Cannot add BeeKEM member: public key is already owned by a live leaf',
+      );
+    }
+
     this._assertInitializedForMutation('add a member');
     if (this._numLeaves >= MAX_BEEKEM_TREE_LEAVES) {
       throw new Error(
@@ -674,21 +688,62 @@ export class BeeKEM {
   }
 
   /**
-   * Find the node index of the leaf whose public key matches `publicKey`,
-   * or `undefined` if no such (non-blanked) leaf exists.
+   * Return true only when the tree contains exactly one live leaf and that
+   * leaf is the local member. Blanked and missing leaf slots do not count.
    *
-   * Used by `PeerborneDocument.removeReader` as the canonical source
-   * of truth for leaf-index lookup during revocation: the writer's
-   * in-memory `_readerLeafIndices` cache is wiped on process restart,
-   * so revocation must be able to recover the leaf assignment from
-   * tree state alone.
+   * This is intentionally stricter than checking `memberCount === 1` because
+   * removed members leave blanked positions behind. Callers use this as proof
+   * that no remote member remains when identity-to-leaf caches are absent.
+   */
+  hasOnlyLocalLiveLeaf(): boolean {
+    if (this._myLeafIndex < 0) return false;
+
+    let foundLocalLeaf = false;
+    for (let leafPos = 0; leafPos < this._numLeaves; leafPos++) {
+      const nodeIndex = TreeMath.leafToNodeIndex(leafPos);
+      const node = this._nodes.get(nodeIndex);
+      if (!node || node.type !== 'leaf' || !node.publicKey) continue;
+      if (nodeIndex !== this._myLeafIndex) return false;
+      foundLocalLeaf = true;
+    }
+    return foundLocalLeaf;
+  }
+
+  /**
+   * Return whether any live leaf owns `publicKey`, including duplicates.
+   *
+   * `publicKey` follows the same input rules as `findLeafByPublicKey`.
+   *
+   * @throws {TypeError} If a Uint8Array input is not a genuine, unshared
+   *   65-byte view, or a CryptoKey input exports to raw bytes of another
+   *   length.
+   */
+  async hasLiveLeafWithPublicKey(
+    publicKey: CryptoKey | Uint8Array,
+  ): Promise<boolean> {
+    return (
+      await this._matchingLiveLeafIndices(publicKey, 1)
+    ).length > 0;
+  }
+
+  /**
+   * Find the node index of the unique live leaf whose public key matches
+   * `publicKey`, or `undefined` if no such leaf exists or the key appears in
+   * more than one non-blanked leaf.
+   *
+   * Used by `PeerborneDocument` as the canonical source of truth for live
+   * leaf-index lookup during reader revocation and writer promotion. The
+   * writer's in-memory leaf-index cache can be missing, so role transitions
+   * must be able to recover an unambiguous assignment from tree state alone.
    *
    * Comparison is done over the raw exported ECDH public key bytes:
    * - `CryptoKey` inputs are exported via `crypto.subtle.exportKey('raw', ...)`
    *   so the caller doesn't need to pre-export.
-   * - `Uint8Array` inputs are compared directly (assumed to be raw
-   *   SEC1-uncompressed P-256 bytes, the same shape stored on the wire
-   *   and accepted by `addMember` / `_registerBeeKEMReader`).
+   * - `Uint8Array` inputs must be genuine, unshared, exactly
+   *   `ECIES_P256_PUBLIC_KEY_LENGTH` (65) byte SEC1-uncompressed P-256 keys,
+   *   the same shape stored on the wire and accepted by `addMember` /
+   *   `PeerborneDocument._prepareBeeKEMReaderRegistration`. They are copied
+   *   before any await, so later caller mutation cannot redirect the lookup.
    *
    * Blanked leaves (publicKey === null) are skipped: their slot index
    * is meaningless to a "find this member" query, and a match against
@@ -698,19 +753,33 @@ export class BeeKEM {
    * Returns the **node index** (even-indexed tree slot), which is the
    * form `removeMember` consumes. Callers that need the dense
    * leaf-position form should convert via `TreeMath.nodeToLeafIndex`.
+   *
+   * @throws {TypeError} If a Uint8Array input is not a genuine, unshared
+   *   65-byte view, or a CryptoKey input exports to raw bytes of another
+   *   length.
    */
   async findLeafByPublicKey(
     publicKey: CryptoKey | Uint8Array,
   ): Promise<number | undefined> {
-    let target: Uint8Array;
-    if (publicKey instanceof Uint8Array) {
-      target = publicKey;
-    } else {
-      target = new Uint8Array(
-        await crypto.subtle.exportKey('raw', publicKey),
-      );
-    }
+    const matches = await this._matchingLiveLeafIndices(publicKey, 2);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
 
+  private async _matchingLiveLeafIndices(
+    publicKey: CryptoKey | Uint8Array,
+    maximumMatches: number,
+  ): Promise<number[]> {
+    // Capture caller-owned byte views before any await. CryptoKey inputs are
+    // immutable, so exporting their public bytes first cannot redirect the lookup.
+    const target = copyUnsharedUint8Array(
+      isArrayBufferView(publicKey)
+        ? publicKey
+        : new Uint8Array(await crypto.subtle.exportKey('raw', publicKey)),
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      ECIES_P256_PUBLIC_KEY_LENGTH,
+      'BeeKEM public key lookup',
+    );
+    const matchingLeafIndices: number[] = [];
     for (let leafPos = 0; leafPos < this._numLeaves; leafPos++) {
       const nodeIndex = TreeMath.leafToNodeIndex(leafPos);
       const node = this._nodes.get(nodeIndex);
@@ -728,9 +797,12 @@ export class BeeKEM {
           break;
         }
       }
-      if (match) return nodeIndex;
+      if (match) {
+        matchingLeafIndices.push(nodeIndex);
+        if (matchingLeafIndices.length >= maximumMatches) break;
+      }
     }
-    return undefined;
+    return matchingLeafIndices;
   }
 
   /**

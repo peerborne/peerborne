@@ -13,6 +13,7 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
+const missingKemMessage = "Enter the new member's KEM public key.";
 const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
@@ -24,6 +25,29 @@ async function isLastWriter(
   );
   const writerKeys = new Set(serializedWriters);
   return writerKeys.size === 1 && writerKeys.has(serializedTarget);
+}
+
+class KemPublicKeyInputError extends Error {}
+
+function decodeKemPublicKey(value: string): Uint8Array | undefined {
+  const encoded = value.trim();
+  if (!encoded) return undefined;
+  let decoded: string;
+  try {
+    decoded = atob(encoded);
+  } catch {
+    throw new KemPublicKeyInputError(
+      'The member KEM public key is not valid base64.',
+    );
+  }
+  const raw = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+  if (raw.length !== 65 || raw[0] !== 0x04) {
+    throw new KemPublicKeyInputError(
+      'The member KEM public key must be a 65-byte uncompressed P-256 ' +
+        'public key starting with 0x04.',
+    );
+  }
+  return raw;
 }
 
 export function PermissionsTable({
@@ -49,6 +73,7 @@ export function PermissionsTable({
   const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
+  const [draftKemKey, setDraftKemKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
 
   // addReader seeds BeeKEM leaf 0 from the founder's KEM key pair, so install
@@ -106,8 +131,10 @@ export function PermissionsTable({
   return (
     <>
       <p>
-        These controls change authorization roles only. This example does not
-        deliver the encryption keys a new member needs to open the document.
+        Enter the member's signing public key and raw P-256 ECDH KEM public key,
+        both base64. The KEM key gives the member a BeeKEM leaf and seals the
+        document key in a Welcome sent to connected peers. A new member requires
+        a KEM key; an existing member's role can change without one.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -186,14 +213,23 @@ export function PermissionsTable({
           <tr>
             <td>
               <Form.Control
+                aria-label="Member signing public key"
                 placeholder="Public Key to add"
                 value={draftUserKey}
                 onChange={(e) => setDraftUserKey(e.target.value)}
+              />
+              <Form.Control
+                className="mt-2"
+                aria-label="Member KEM public key"
+                placeholder="Member KEM public key"
+                value={draftKemKey}
+                onChange={(e) => setDraftKemKey(e.target.value)}
               />
             </td>
             <td>
               <Form.Control
                 as="select"
+                aria-label="Member role"
                 value={draftPermission}
                 onChange={(e) =>
                   setDraftPermission(e.target.value as 'r' | 'rw')
@@ -217,6 +253,15 @@ export function PermissionsTable({
                         },
                         ['verify'],
                       )(draftUserKey);
+                      const kemPublicKey = decodeKemPublicKey(draftKemKey);
+                      const serializedKey = await serializeKey(key);
+                      const isMember = permissions.some(
+                        (permission) => permission.publicKey === serializedKey,
+                      );
+                      if (!isMember && !kemPublicKey) {
+                        alert(missingKemMessage);
+                        return;
+                      }
 
                       switch (draftPermission) {
                         case 'r': {
@@ -224,13 +269,13 @@ export function PermissionsTable({
                             alert(lastEditorMessage);
                             return;
                           }
-                          await addReader(key);
+                          await addReader(key, kemPublicKey);
                           await removeWriter(key, keepAnotherEditor);
                           console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          await addReader(key);
+                          await addReader(key, kemPublicKey);
                           await addWriter(key);
                           console.log('Added writer');
                           break;
@@ -243,11 +288,17 @@ export function PermissionsTable({
                         }
                       }
                     } catch (error) {
+                      if (error instanceof KemPublicKeyInputError) {
+                        alert(error.message);
+                        return;
+                      }
                       alert(
                         error instanceof LastWriterRemovalError
                           ? lastEditorMessage
                           : 'Unable to update document permissions. Verify ' +
-                              'the public key and membership configuration.',
+                              'both public keys and the membership ' +
+                              'configuration. Promotion to editor requires ' +
+                              "the member's KEM public key.",
                       );
                       return;
                     }

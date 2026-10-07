@@ -105,14 +105,27 @@ test('sets a new member as a reader and then promotes them to editor', async ({
       .filter({ has: page.getByRole('cell', { name: 'Editor', exact: true }) }),
   ).toHaveCount(1, { timeout: 30_000 });
 
-  const memberKey = await page.evaluate(async () => {
-    const { publicKey } = await crypto.subtle.generateKey(
+  const { memberKey, memberKemKey } = await page.evaluate(async () => {
+    const exportRaw = async (publicKey: CryptoKey) => {
+      const raw = new Uint8Array(
+        await crypto.subtle.exportKey('raw', publicKey),
+      );
+      return btoa(String.fromCharCode(...raw));
+    };
+    const signing = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
       true,
       ['sign', 'verify'],
     );
-    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', publicKey));
-    return btoa(String.fromCharCode(...raw));
+    const kem = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    );
+    return {
+      memberKey: await exportRaw(signing.publicKey),
+      memberKemKey: await exportRaw(kem.publicKey),
+    };
   });
   const memberRows = page
     .getByRole('row')
@@ -121,14 +134,67 @@ test('sets a new member as a reader and then promotes them to editor', async ({
     has: page.getByRole('cell', { name: memberKey, exact: true }),
   });
 
+  const truncatedKemKey = btoa(atob(memberKemKey).slice(0, 64));
+  const missingKemMessage = "Enter the new member's KEM public key.";
+  const invalidBase64Message = 'The member KEM public key is not valid base64.';
+  const invalidShapeMessage =
+    'The member KEM public key must be a 65-byte uncompressed P-256 ' +
+    'public key starting with 0x04.';
+
   await page.getByPlaceholder('Public Key to add').fill(memberKey);
+
+  await page.getByRole('combobox').selectOption('rw');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect.poll(() => dialogs).toEqual([missingKemMessage]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
   await page.getByRole('combobox').selectOption('r');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([missingKemMessage, missingKemMessage]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
+  await expect(
+    page.getByLabel('Member signing public key', { exact: true }),
+  ).toHaveValue(memberKey);
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill('not-base64!');
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([missingKemMessage, missingKemMessage, invalidBase64Message]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill(truncatedKemKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([
+      missingKemMessage,
+      missingKemMessage,
+      invalidBase64Message,
+      invalidShapeMessage,
+    ]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(memberRow).toHaveCount(0);
+
+  await page
+    .getByLabel('Member KEM public key', { exact: true })
+    .fill(memberKemKey);
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(
     memberRow.getByRole('cell', { name: 'Reader', exact: true }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(memberRows).toHaveCount(2);
 
+  await page.getByLabel('Member KEM public key', { exact: true }).fill('');
   await page.getByRole('combobox').selectOption('rw');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect(
@@ -137,6 +203,11 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   await expect(memberRow).toHaveCount(1);
   await expect(memberRows).toHaveCount(2);
 
-  expect(dialogs, 'permission update dialogs').toEqual([]);
+  expect(dialogs, 'permission update dialogs').toEqual([
+    missingKemMessage,
+    missingKemMessage,
+    invalidBase64Message,
+    invalidShapeMessage,
+  ]);
   expect(errors, 'permission update errors').toEqual([]);
 });

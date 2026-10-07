@@ -183,7 +183,9 @@ describe('PeerborneDocument writer removal', () => {
     };
     const writersACL = new UCANACL(backing, async (key: string) => key);
     const publish = jest.fn(
-      async (prepared: { commit(): void }) => prepared.commit(),
+      async (prepared: {
+        commit: { receiver: object; method: () => void };
+      }) => Reflect.apply(prepared.commit.method, prepared.commit.receiver, []),
     );
     const document = fakeDocument({
       _readers: { check: async () => true },
@@ -192,9 +194,13 @@ describe('PeerborneDocument writer removal', () => {
       _publishPreparedWriterChange: publish,
     });
 
-    await document._removeWriterUnlocked('writer', 'writer', false);
+    const localWriter = Promise.resolve({
+      publicKey: 'local',
+      serialized: 'local',
+    });
+    await document._removeWriterUnlocked('writer', 'writer', false, localWriter);
     writersACL.merge(new Uint8Array([3]));
-    await document._removeWriterUnlocked('writer', 'writer', false);
+    await document._removeWriterUnlocked('writer', 'writer', false, localWriter);
 
     expect(backing.prepareRemove).toHaveBeenCalledTimes(2);
     expect(publish).toHaveBeenCalledTimes(2);
