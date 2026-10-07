@@ -387,7 +387,7 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { documentId: privatePath, signature: 'signature' },
+          { documentId: privatePath, signature: 'AQ==' },
           { sink },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);
@@ -461,6 +461,32 @@ describe('concrete inbound handler log redaction', () => {
       await document.handleKeyUpdateRequestData(new Uint8Array([3, 4, 5]));
       expect(logs.warn).toHaveBeenCalledWith(
         'Unable to decrypt shared key-update request',
+      );
+      expect(logs.text()).not.toContain(privateFailure);
+      expect(logs.text()).not.toContain(privatePath);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test('redacts a rejected pending-Welcome drain', async () => {
+    const document = fakeDocument({
+      _pendingWelcomes: new Map([['pending', {}]]),
+      _mutationQueue: {
+        run: jest.fn(async () => {
+          throw new Error(privateFailure);
+        }),
+      },
+    });
+    const logs = captureFailureLogs();
+
+    try {
+      document._schedulePendingWelcomeDrain();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(logs.error).toHaveBeenCalledWith(
+        'Failed to drain pending BeeKEM Welcomes',
       );
       expect(logs.text()).not.toContain(privateFailure);
       expect(logs.text()).not.toContain(privatePath);

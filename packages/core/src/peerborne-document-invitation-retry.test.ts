@@ -52,7 +52,16 @@ function catchUpHarness(
   signatureValid = true,
   onConflict?: () => void,
 ) {
-  const verify = jest.fn(async () => signatureValid);
+  const continuation = {};
+  // Invitation catch-up runs inside the acceptance transaction, which already
+  // owns the mutation FIFO, so model a writer change during verification.
+  const verify = jest.fn(async () => {
+    if (conflicts-- > 0) {
+      document._writerKeysVersion++;
+      onConflict?.();
+    }
+    return signatureValid;
+  });
   const sync = jest.fn(async () => true);
   const streams: any[] = [];
   const dialProtocol = jest.fn(async () => {
@@ -93,25 +102,26 @@ function catchUpHarness(
     },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
-    _hashes: new Set(),
+    _hashes: new Set(['bootstrap-cid']),
+    _bootstrapLoadApplicationState: 'pending',
+    _activeInvitationBootstrapContinuation: continuation,
+    _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
     _syncUnlocked: sync,
     _mutationQueue: {
-      run: async (operation: () => Promise<unknown>) => {
-        if (conflicts-- > 0) {
-          document._writerKeysVersion++;
-          onConflict?.();
-        }
-        return operation();
+      run: async () => {
+        throw new Error('invitation catch-up must not re-enter the FIFO');
       },
     },
   });
-  return { document, verify, sync, dialProtocol, streams };
+  const catchUp = () =>
+    document._loadInvitationCatchUp('/founder', 'issuer', 'reader', continuation);
+  return { document, verify, sync, dialProtocol, streams, catchUp };
 }
 
 describe('invitation catch-up writer-version races', () => {
   test('retries a queued writer change with a fresh issuer-verified response', async () => {
-    const { document, verify, sync, dialProtocol, streams } = catchUpHarness(1);
-    await expect(document._loadInvitationCatchUp('/founder', 'issuer')).resolves.toBe(true);
+    const { verify, sync, dialProtocol, streams, catchUp } = catchUpHarness(1);
+    await expect(catchUp()).resolves.toBe(true);
     expect(dialProtocol).toHaveBeenCalledTimes(2);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(sync).toHaveBeenCalledTimes(1);
@@ -120,8 +130,8 @@ describe('invitation catch-up writer-version races', () => {
   });
 
   test('bounds repeated writer conflicts to three attempts without applying state', async () => {
-    const { document, sync, dialProtocol } = catchUpHarness(Infinity);
-    await expect(document._loadInvitationCatchUp('/founder', 'issuer')).rejects.toThrow(/writer.*changed/i);
+    const { sync, dialProtocol, catchUp } = catchUpHarness(Infinity);
+    await expect(catchUp()).rejects.toThrow(/writer.*changed/i);
     expect(dialProtocol).toHaveBeenCalledTimes(3);
     expect(sync).not.toHaveBeenCalled();
   });
@@ -130,12 +140,10 @@ describe('invitation catch-up writer-version races', () => {
     let now = 100;
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
     try {
-      const { document, sync, dialProtocol } = catchUpHarness(1, true, () => {
+      const { sync, dialProtocol, catchUp } = catchUpHarness(1, true, () => {
         now += 30_001;
       });
-      await expect(
-        document._loadInvitationCatchUp('/founder', 'issuer'),
-      ).rejects.toThrow(/deadline exceeded/);
+      await expect(catchUp()).rejects.toThrow(/deadline exceeded/);
       expect(dialProtocol).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();
     } finally {
@@ -146,8 +154,8 @@ describe('invitation catch-up writer-version races', () => {
   test('does not retry a rejected issuer signature', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const { document, verify, sync, dialProtocol } = catchUpHarness(0, false);
-      await expect(document._loadInvitationCatchUp('/founder', 'issuer')).resolves.toBe(false);
+      const { verify, sync, dialProtocol, catchUp } = catchUpHarness(0, false);
+      await expect(catchUp()).resolves.toBe(false);
       expect(dialProtocol).toHaveBeenCalledTimes(1);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();

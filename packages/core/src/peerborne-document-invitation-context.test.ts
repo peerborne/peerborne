@@ -90,6 +90,7 @@ function invitationHarness(
   decoded: Record<string, unknown> = {
     documentId: documentPath,
     signatureContext: 'invitation-bootstrap-v1',
+    keychainChanges: { delta: 1 },
     tips: [],
     signature: 'AQ==',
   },
@@ -104,7 +105,7 @@ function invitationHarness(
     getKey: () => ({}),
     commit,
   }));
-  const liveKeychain = {};
+  const liveKeychain = { keys: async () => [] };
   const invitationKeychain = { prepareMerge };
   const verify = jest.fn(async () => true);
   const syncValidated = jest.fn(async () => true);
@@ -120,8 +121,14 @@ function invitationHarness(
     _mutationQueue: {
       run: (operation: () => Promise<unknown>) => operation(),
     },
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
     _hashes: new Set(),
     _subscribed: false,
+    _createdLocally: false,
+    _pendingWelcomes: new Map(),
+    _pendingBootstrapRemoteUpdateHashes: new Set(),
+    _remoteHandlers: {},
     _compactionInProgress: false,
     _kemKeyPair: { privateKey: {}, publicKey: {} },
     _kemPublicKeyRaw: new Uint8Array(65),
@@ -132,6 +139,7 @@ function invitationHarness(
     _keychain: liveKeychain,
     _changesSerializer: {
       deserializeChanges: jest.fn(() => ({ delta: 1 })),
+      serializeChanges: jest.fn(() => new Uint8Array([1])),
     },
     _authProvider: {
       nonceBits: 1,
@@ -141,7 +149,7 @@ function invitationHarness(
     _syncMessageSerializer: serializer,
     _syncUnlocked: syncValidated,
     _assertAcceptedInvitationMembership: jest.fn(async () => undefined),
-    open: jest.fn(async () => true),
+    _open: jest.fn(async () => true),
     close,
     _loadInvitationCatchUp: jest.fn(async () => true),
   });
@@ -238,6 +246,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     const harness = invitationHarness({
       documentId: documentPath,
       signatureContext: 'invitation-bootstrap-v1',
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
       ...replacement,
@@ -279,6 +288,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     const decoded: Record<string, unknown> = {
       documentId: documentPath,
       signatureContext: 'load-response-v3',
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
     };
@@ -299,7 +309,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._assertAcceptedInvitationMembership).not.toHaveBeenCalled();
     expect(harness.document._loadInvitationCatchUp).not.toHaveBeenCalled();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
     expect(harness.close).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._hashes).toBe(originalHashes);
@@ -320,7 +330,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.commit).toHaveBeenCalledTimes(1);
     expect(harness.syncValidated).toHaveBeenCalledTimes(1);
     expect(harness.document._keychain).toBe(harness.invitationKeychain);
-    expect(harness.document.open).toHaveBeenCalledTimes(1);
+    expect(harness.document._open).toHaveBeenCalledTimes(1);
   });
 
   test('requires the advertised epoch to be the staged current key', async () => {
@@ -397,6 +407,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       signatureContext: 'invitation-bootstrap-v1',
       changeId: 'cid',
       changes: { kind: 'document', change: { value: 1 } },
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
     };
@@ -468,6 +479,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       documentId: documentPath,
       signatureContext: 'invitation-bootstrap-v1',
       changes: [] as unknown[],
+      keychainChanges: { delta: 1 },
       tips: [],
       signature: 'AQ==',
     });
@@ -505,7 +517,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._beekem).toBeUndefined();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
   });
 
   test('restores the live keychain and withholds BeeKEM on sync rejection', async () => {
@@ -525,7 +537,7 @@ describe('invitation-bootstrap V1 confinement', () => {
     expect(harness.document._keychain).toBe(harness.liveKeychain);
     expect(harness.document._keychain).not.toBe(harness.invitationKeychain);
     expect(harness.document._beekem).toBeUndefined();
-    expect(harness.document.open).not.toHaveBeenCalled();
+    expect(harness.document._open).not.toHaveBeenCalled();
   });
 
   test('restores the live keychain after a completeness failure', async () => {
@@ -534,6 +546,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       signatureContext: 'invitation-bootstrap-v1',
       changeId: 'cid',
       changes: { kind: 'document', change: { value: 1 } },
+      keychainChanges: { delta: 1 },
       tips: ['cid'],
       signature: 'AQ==',
     });
@@ -591,7 +604,7 @@ describe('invitation-bootstrap V1 confinement', () => {
         'reader',
         '/ip4/127.0.0.1/tcp/1',
       ),
-    ).rejects.toThrow('state was rejected');
+    ).rejects.toThrow('requires a pristine document instance');
 
     expect(harness.syncValidated).not.toHaveBeenCalled();
     expect(harness.document._keychain).toBe(harness.liveKeychain);
@@ -605,7 +618,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       observed.push(harness.document._compactionInProgress);
       return true;
     });
-    harness.document.open.mockImplementation(async () => {
+    harness.document._open.mockImplementation(async () => {
       observed.push(harness.document._compactionInProgress);
       return true;
     });
@@ -645,7 +658,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       order.push('catch-up');
       return true;
     });
-    harness.document.open.mockImplementation(async () => {
+    harness.document._open.mockImplementation(async () => {
       order.push('open');
       return true;
     });
@@ -680,7 +693,7 @@ describe('invitation-bootstrap V1 confinement', () => {
       ),
     ).rejects.toThrow('catch-up load failed');
 
-    expect(harness.document.open).toHaveBeenCalledTimes(1);
+    expect(harness.document._open).toHaveBeenCalledTimes(1);
     expect(harness.close).toHaveBeenCalledTimes(1);
     expect(harness.document._invitationBootstrapReady).toBe(false);
     expect(harness.document._compactionInProgress).toBe(false);
