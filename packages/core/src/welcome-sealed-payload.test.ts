@@ -1,9 +1,8 @@
+import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { Base64 } from 'js-base64';
 import {
-  encodeWelcomeSealedPayload,
   encodeWelcomeSealedPayloadV2,
-  decodeWelcomeSealedPayload,
   decodeWelcomeSealedPayloadV2,
   MAX_WELCOME_SEALED_PLAINTEXT_BYTES,
 } from './welcome-sealed-payload';
@@ -17,39 +16,23 @@ describe('welcome-sealed-payload round-trip', () => {
   const keychainBytes = new Uint8Array([1, 2, 3, 4, 5]);
 
   test('encode then decode with beekemWelcome present', () => {
-    const beekemWelcome = {
-      leafIndex: 2,
-      pathKeys: [
-        {
-          nodeIndex: 1,
-          publicKey: new Uint8Array(65).fill(10),
-          encryptedPrivateKey: new Uint8Array(125).fill(40),
-        },
-      ],
-      treeNodePublicKeys: [
-        { nodeIndex: 0, publicKey: new Uint8Array(65).fill(70) },
-      ],
-      treeHash: new Uint8Array(32).fill(99),
-    };
-    const encoded = encodeWelcomeSealedPayload({
+    const beekemWelcome = welcomeFixture();
+    const encoded = encodeWelcomeSealedPayloadV2({
       keychainChanges: keychainBytes,
       beekemWelcome,
     });
-    const decoded = decodeWelcomeSealedPayload(encoded);
+    const decoded = decodeWelcomeSealedPayloadV2(encoded);
     expect(decoded.keychainChanges).toEqual(keychainBytes);
     expect(decoded.beekemWelcome).not.toBeNull();
     expect(decoded.beekemWelcome!.leafIndex).toBe(2);
     expect(decoded.beekemWelcome!.pathKeys).toHaveLength(1);
   });
 
-  test('encode then decode with beekemWelcome null', () => {
-    const encoded = encodeWelcomeSealedPayload({
+  test('rejects a key-only envelope at encoding', () => {
+    expect(() => encodeWelcomeSealedPayloadV2({
       keychainChanges: keychainBytes,
-      beekemWelcome: null,
-    });
-    const decoded = decodeWelcomeSealedPayload(encoded);
-    expect(decoded.keychainChanges).toEqual(keychainBytes);
-    expect(decoded.beekemWelcome).toBeNull();
+      beekemWelcome: null as never,
+    })).toThrow(/BeeKEMWelcomeV2/);
   });
 });
 
@@ -209,7 +192,7 @@ describe('welcome-sealed-payload V2 boundary', () => {
     expect(entryReads).toBe(0);
   });
 
-  test('requires every Welcome path key from the new leaf through the root', () => {
+  test('accepts Welcome path gaps only at blank direct-path nodes', () => {
     const publicKey = (fill: number) => new Uint8Array(65).fill(fill);
     const completeWelcome = {
       ...beekemWelcome,
@@ -235,28 +218,79 @@ describe('welcome-sealed-payload V2 boundary', () => {
       ],
     };
     const completeWire = serializeBeeKEMWelcomeV2ForWire(completeWelcome);
-    const nonContiguousWire = {
-      ...completeWire,
-      pathKeys: [completeWire.pathKeys[1]],
-      treeNodePublicKeys: [
-        ...completeWire.treeNodePublicKeys,
-        { nodeIndex: 5, publicKey: null },
-      ],
-    };
+    const gappedWire = serializeBeeKEMWelcomeV2ForWire({
+      ...completeWelcome,
+      pathKeys: [completeWelcome.pathKeys[1]],
+    });
 
+    expect(gappedWire.treeNodePublicKeys).toContainEqual({
+      nodeIndex: 5,
+      publicKey: null,
+    });
+    expect(
+      deserializeBeeKEMWelcomeV2FromWire(gappedWire).pathKeys.map(
+        (node) => node.nodeIndex,
+      ),
+    ).toEqual([3]);
     expect(() =>
-      deserializeBeeKEMWelcomeV2FromWire(nonContiguousWire),
-    ).toThrow(/non-contiguous/);
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...gappedWire,
+        treeNodePublicKeys: gappedWire.treeNodePublicKeys.map((node) =>
+          node.nodeIndex === 5
+            ? { nodeIndex: 5, publicKey: completeWire.pathKeys[0].publicKey }
+            : node,
+        ),
+      }),
+    ).toThrow(/direct-path node 5 must be blank/);
     expect(() =>
       serializeBeeKEMWelcomeV2ForWire({
         ...completeWelcome,
         pathKeys: [completeWelcome.pathKeys[1]],
         treeNodePublicKeys: [
           ...completeWelcome.treeNodePublicKeys,
+          { nodeIndex: 5, publicKey: publicKey(5) },
+        ],
+      }),
+    ).toThrow(/direct-path node 5 must be blank/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...gappedWire,
+        treeNodePublicKeys: gappedWire.treeNodePublicKeys.filter(
+          (node) => node.nodeIndex !== 5,
+        ),
+      }),
+    ).toThrow(/complete tree/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [...completeWire.pathKeys].reverse(),
+      }),
+    ).toThrow(/pathKeys\[1\] has an invalid, duplicate, or out-of-order/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [
+          { ...completeWire.pathKeys[0], nodeIndex: 1 },
+          completeWire.pathKeys[1],
+        ],
+        treeNodePublicKeys: [
+          ...completeWire.treeNodePublicKeys.filter(
+            (node) => node.nodeIndex !== 1,
+          ),
           { nodeIndex: 5, publicKey: null },
         ],
       }),
-    ).toThrow(/non-contiguous/);
+    ).toThrow(/pathKeys\[0\] has an invalid, duplicate, or out-of-order/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({
+        ...completeWire,
+        pathKeys: [completeWire.pathKeys[0]],
+        treeNodePublicKeys: [
+          ...completeWire.treeNodePublicKeys,
+          { nodeIndex: 3, publicKey: null },
+        ],
+      }),
+    ).toThrow(/must end at the root/);
   });
 
   test('detaches keychain bytes using their intrinsic length', () => {
@@ -433,20 +467,17 @@ describe('welcome-sealed-payload V2 boundary', () => {
   });
 });
 
-describe('decodeWelcomeSealedPayload error paths', () => {
+describe('decodeWelcomeSealedPayloadV2 error paths', () => {
   test('throws on invalid UTF-8', () => {
     const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]);
-    expect(() => decodeWelcomeSealedPayload(invalidUtf8)).toThrow(/not valid UTF-8/);
+    expect(() => decodeWelcomeSealedPayloadV2(invalidUtf8)).toThrow(/not valid UTF-8/);
   });
 
   test('throws on invalid JSON', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('not json {{{'))).toThrow(/not valid JSON/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('not json {{{'))).toThrow(/not valid JSON/);
   });
 
-  test.each([
-    decodeWelcomeSealedPayload,
-    decodeWelcomeSealedPayloadV2,
-  ])('does not expose decrypted plaintext through parse errors', (decode) => {
+  test.each([decodeWelcomeSealedPayloadV2])('does not expose decrypted plaintext through parse errors', (decode) => {
     const privateMarker = 'PRIVATE-WELCOME-PLAINTEXT';
     let caught: unknown;
     try {
@@ -465,46 +496,41 @@ describe('decodeWelcomeSealedPayload error paths', () => {
   });
 
   test('throws on array instead of object', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('[]'))).toThrow(/expected a plain object/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('[]'))).toThrow(/expected a plain object/);
   });
 
   test('throws on null', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('null'))).toThrow(/expected a plain object/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('null'))).toThrow(/expected a plain object/);
   });
 
   test('throws on string', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('"hello"'))).toThrow(/expected a plain object/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('"hello"'))).toThrow(/expected a plain object/);
   });
 
   test('throws on number', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('42'))).toThrow(/expected a plain object/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('42'))).toThrow(/expected a plain object/);
   });
 
   test('throws when k is missing', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('{}'))).toThrow(/'k'.*base64/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('{}'))).toThrow(/'k'/);
   });
 
   test('throws when k is not a string', () => {
-    expect(() => decodeWelcomeSealedPayload(new TextEncoder().encode('{"k":123}'))).toThrow(/'k'.*base64/);
+    expect(() => decodeWelcomeSealedPayloadV2(new TextEncoder().encode('{"k":123}'))).toThrow(/'k'/);
   });
 
   test('throws when bk is invalid', () => {
     const k = Base64.fromUint8Array(new Uint8Array([1, 2, 3]));
     const text = new TextEncoder().encode(JSON.stringify({ k, bk: 'bad' }));
-    expect(() => decodeWelcomeSealedPayload(text)).toThrow(/invalid 'bk'.*BeeKEM welcome/);
+    expect(() => decodeWelcomeSealedPayloadV2(text)).toThrow(/invalid 'bk'/);
   });
 
-  test('allows bk absent', () => {
-    const k = Base64.fromUint8Array(new Uint8Array([1, 2, 3]));
-    const result = decodeWelcomeSealedPayload(new TextEncoder().encode(JSON.stringify({ k })));
-    expect(result.keychainChanges).toEqual(new Uint8Array([1, 2, 3]));
-    expect(result.beekemWelcome).toBeNull();
-  });
-
-  test('allows bk null', () => {
-    const k = Base64.fromUint8Array(new Uint8Array([1, 2, 3]));
-    const result = decodeWelcomeSealedPayload(new TextEncoder().encode(JSON.stringify({ k, bk: null })));
-    expect(result.keychainChanges).toEqual(new Uint8Array([1, 2, 3]));
-    expect(result.beekemWelcome).toBeNull();
-  });
+  test.each([{ k: 'AQ==' }, { k: 'AQ==', bk: null }])(
+    'rejects a key-only envelope %j',
+    (value) => {
+      expect(() => decodeWelcomeSealedPayloadV2(
+        new TextEncoder().encode(JSON.stringify(value)),
+      )).toThrow(/'bk'/);
+    },
+  );
 });

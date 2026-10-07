@@ -234,7 +234,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate** carries BeeKEM tree and key-rotation state to surviving members
+- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
 - Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
 
 ```ts
@@ -243,12 +243,15 @@ await document.removeReader(revokedPeerSigningPublicKey);
 ```
 `removeReader` generates and distributes BeeKEM PathUpdates internally as part
 of the operation. This key-rotation delivery is best-effort; an update may not
-reach every surviving member.
+reach every surviving member. Receivers reject skipped generations, stale
+updates, and updates from a different parent tree before committing an epoch,
+so every member must apply transitions in order.
 A surviving reader that misses the new epoch cannot recover it with an ordinary
 load response, because that response is encrypted under the unknown current
 epoch. Recovery requires a separate recipient-bound re-invitation or explicit
 key-recovery flow; Peerborne does not automatically re-invite members or run
-a key-recovery flow.
+a key-recovery flow. A Welcome must carry a generation-bearing BeeKEM tree;
+key-only Welcome payloads are rejected.
 
 The bundled Yjs and Automerge providers compose the local reader-ACL removal,
 epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through

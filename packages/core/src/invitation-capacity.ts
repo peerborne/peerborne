@@ -1,7 +1,7 @@
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
-import type { BeeKEMWelcome } from './beekem/types.js';
+import type { BeeKEMWelcomeV2 } from './beekem/types.js';
 import { MAX_INVITATION_OPAQUE_PAYLOAD_BYTES } from './invitation-wire.js';
 
 /** Tested/attested provider combination with a founder-plus-one size bound. */
@@ -22,7 +22,7 @@ export const INITIAL_INVITATION_MAX_SIGNATURE_BYTES = 96;
 /** 32-byte epoch prefix + 12-byte nonce + 16-byte AES-GCM tag. */
 export const INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES = 60;
 
-/** Two-member BeeKEM JSON plus ECIES framing measures 845 bytes. */
+/** Bounded two-member BeeKEM V2 JSON plus ECIES framing. */
 export const INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES = 4 * 1024;
 
 /** Additional margin for framing and future compatible wire additions. */
@@ -113,7 +113,7 @@ export function assertInitialInvitationCapacityProfile<PrivateKey, PublicKey>(
 
 /** @internal Reject Welcome trees outside the measured founder-plus-one shape. */
 export function assertInitialInvitationBeeKEMWelcomeShape(
-  welcome: BeeKEMWelcome,
+  welcome: BeeKEMWelcomeV2,
 ): void {
   const pathKey = welcome.pathKeys[0];
   const founderLeaf = welcome.treeNodePublicKeys[0];

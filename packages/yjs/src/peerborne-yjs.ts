@@ -166,9 +166,9 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
           Base64.fromUint8Array(message.welcomeRecipientKemPublicKey),
         eciesSealed:
           message.eciesSealed && Base64.fromUint8Array(message.eciesSealed),
-        // BeeKEM PathUpdate v1/v2 fields. `pathUpdate` is already the
-        // negotiated version's JSON-safe serialized shape, so pass it
-        // through verbatim.
+        // BeeKEM PathUpdate V2 fields. `pathUpdate` is already the
+        // JSON-safe `SerializedPathUpdateV2` shape, so pass it through
+        // verbatim.
         // `pathUpdateEpochId` is a `Uint8Array`; base64-encode it the
         // same way as `welcomeEpochId`.
         pathUpdate: message.pathUpdate,
@@ -356,8 +356,8 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array, CryptoKey> {
       }
       welcomeRecipient = raw.welcomeRecipient;
     }
-    // The `pathUpdate` field is the serialized v1|v2 union. Its internal
-    // shape is validated by the decoder selected by protocol negotiation.
+    // The `pathUpdate` field is a `SerializedPathUpdateV2`. Its internal
+    // shape is validated by `deserializePathUpdateV2FromWire`.
     // Reject obviously malformed
     // top-level values (null / array / primitive) here so a peer who
     // sends e.g. `pathUpdate: 42` doesn't propagate that through to the

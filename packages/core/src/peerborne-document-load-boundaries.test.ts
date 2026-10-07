@@ -17,7 +17,8 @@ import { InvitationMembershipQueue } from './invitation-membership.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { tipsHash, tipsHashToHex } from './tips-hash.js';
-import { encodeWelcomeSealedPayload } from './welcome-sealed-payload.js';
+import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
+import { BeeKEM } from './beekem/beekem.js';
 
 jest.mock(
   'it-pipe',
@@ -1298,6 +1299,35 @@ describe('document load response boundaries', () => {
     expect(readers).toHaveBeenCalledTimes(2);
     expect(writers).toHaveBeenCalledTimes(2);
     expect(verify).toHaveBeenCalledTimes(1);
+  });
+
+  test('verifies writers serially with isolated payload and signature bytes', async () => {
+    let active = 0;
+    let peak = 0;
+    const payloads: number[][] = [];
+    const signatures: number[][] = [];
+    const { document, stream } = signedLoadHarness(
+      async () => ['rejecting-writer', 'accepting-writer'],
+      async (raw, writer, signature) => {
+        active++;
+        peak = Math.max(peak, active);
+        payloads.push([...raw as Uint8Array]);
+        signatures.push([...signature as Uint8Array]);
+        (raw as Uint8Array).fill(99);
+        (signature as Uint8Array).fill(99);
+        await Promise.resolve();
+        active--;
+        return writer === 'accepting-writer';
+      },
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(stream, new Uint8Array([1])))
+      .resolves.toBe(true);
+    expect(peak).toBe(1);
+    expect(payloads).toEqual([[8], [8], [8], [8]]);
+    expect(signatures).toEqual(Array.from({ length: 4 }, () => [0, 0, 0]));
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
   test('reports a writer conflict after an admitted signer is removed', async () => {
@@ -3895,7 +3925,8 @@ describe('document load response boundaries', () => {
 
   async function lateBufferedWelcomeFinalization(options: {
     verify: (...args: unknown[]) => Promise<boolean>;
-    keys: () => Promise<unknown[]>;
+    hydrateKeys?: (keyIds: Uint8Array[]) => Promise<unknown[]>;
+    sealedPlaintext?: Uint8Array;
     invitationEpoch?: Uint8Array;
     started: Promise<void>;
     release: () => void;
@@ -3904,13 +3935,22 @@ describe('document load response boundaries', () => {
     const kemPublicKeyRaw = new Uint8Array(
       await crypto.subtle.exportKey('raw', kemKeyPair.publicKey),
     );
+    const founderKeyPair = await generateEciesKeyPair();
+    const founder = new BeeKEM();
+    await founder.initialize(
+      founderKeyPair.privateKey,
+      founderKeyPair.publicKey,
+    );
+    const { welcome } = await founder.addMember(kemKeyPair.publicKey);
     const eciesSealed = await eciesSeal(
-      encodeWelcomeSealedPayload({
-        keychainChanges: new Uint8Array([1]),
-        beekemWelcome: null,
-      }),
+      options.sealedPlaintext ??
+        encodeWelcomeSealedPayloadV2({
+          keychainChanges: new Uint8Array([1]),
+          beekemWelcome: welcome,
+        }),
       kemKeyPair.publicKey,
     );
+    const welcomeEpochId = new Uint8Array(32).fill(1);
     const pendingWelcomes = new PendingWelcomeBuffer();
     for (const [key, fill] of [
       ['first', 1],
@@ -3920,7 +3960,7 @@ describe('document load response boundaries', () => {
         key,
         welcomeSerializer.serializeSyncMessage({
           documentId: '/late-welcome',
-          signatureContext: 'beekem-welcome-v1',
+          signatureContext: 'beekem-welcome-v2',
           welcomeEpochId: new Uint8Array(32).fill(fill),
           welcomeRecipient: 'local-user',
           welcomeRecipientKemPublicKey: kemPublicKeyRaw,
@@ -3931,7 +3971,32 @@ describe('document load response boundaries', () => {
         true,
       );
     }
+    const keyIds = [
+      ...(options.invitationEpoch === undefined
+        ? []
+        : [new Uint8Array(options.invitationEpoch)]),
+      new Uint8Array(welcomeEpochId),
+    ];
+    const epochKey = { algorithm: { name: 'AES-GCM' } };
     const merge = jest.fn();
+    const claimCommit = jest.fn((changes: unknown) => ({
+      finalize: () => {
+        merge(changes);
+      },
+    }));
+    const hydrateKeys = jest.fn(
+      options.hydrateKeys ??
+        (async (ids: Uint8Array[]) =>
+          ids.map((id) => [new Uint8Array(id), epochKey])),
+    );
+    const prepareMerge = jest.fn((changes: unknown) => ({
+      currentKeyId: new Uint8Array(welcomeEpochId),
+      keyIds: keyIds.map((id) => new Uint8Array(id)),
+      hydrateKeys: () =>
+        hydrateKeys(keyIds.map((id) => new Uint8Array(id))),
+      getKey: () => epochKey,
+      claimCommit: () => claimCommit(changes),
+    }));
     const dispatch = jest.fn();
     const document = fakeDocument({
       documentPath: '/late-welcome',
@@ -3950,7 +4015,7 @@ describe('document load response boundaries', () => {
       _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
       _kemKeyPair: kemKeyPair,
       _kemPublicKeyRaw: kemPublicKeyRaw,
-      _keychain: { merge, keys: options.keys },
+      _keychain: { prepareMerge },
       _invitationEpoch: options.invitationEpoch,
       _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
         async () => undefined,
@@ -3985,7 +4050,9 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe('pending');
     expect(() => document.document).toThrow(/discard this document instance/);
     expect(dispatch).not.toHaveBeenCalled();
-    return { document, merge };
+    expect(claimCommit).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+    return { document, hydrateKeys, prepareMerge };
   }
 
   test.each([
@@ -4002,42 +4069,62 @@ describe('document load response boundaries', () => {
         return verified;
       });
 
-      const { document, merge } = await lateBufferedWelcomeFinalization({
-        verify,
-        keys: async () => [],
-        started: started.promise,
-        release: () => release.resolve(),
-      });
+      const { document, prepareMerge } = await lateBufferedWelcomeFinalization(
+        {
+          verify,
+          started: started.promise,
+          release: () => release.resolve(),
+        },
+      );
 
       expect(verify).toHaveBeenCalledTimes(1);
-      expect(merge).not.toHaveBeenCalled();
+      expect(prepareMerge).toHaveBeenCalledTimes(verified ? 1 : 0);
       expect(document._invitationEpoch).toBeUndefined();
     },
   );
 
-  test('drops the finalization Welcome epoch advance when keychain ordering settles after the deadline', async () => {
+  test('keeps buffered Welcomes when a late verification yields a terminal Welcome after the deadline', async () => {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const verify = jest.fn(async () => {
+      started.resolve();
+      await release.promise;
+      return true;
+    });
+
+    const { document, prepareMerge } = await lateBufferedWelcomeFinalization({
+      verify,
+      sealedPlaintext: new Uint8Array([0xff]),
+      started: started.promise,
+      release: () => release.resolve(),
+    });
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(prepareMerge).not.toHaveBeenCalled();
+    expect(document._invitationEpoch).toBeUndefined();
+  });
+
+  test('drops the finalization Welcome epoch advance when keychain hydration settles after the deadline', async () => {
     const existingEpoch = new Uint8Array(32).fill(9);
     const started = deferred<void>();
     const release = deferred<void>();
-    const keys = jest.fn(async () => {
-      started.resolve();
-      await release.promise;
-      return [
-        [existingEpoch, 'existing-key'],
-        [new Uint8Array(32).fill(1), 'welcome-key'],
-      ];
-    });
 
-    const { document, merge } = await lateBufferedWelcomeFinalization({
+    const { document, hydrateKeys } = await lateBufferedWelcomeFinalization({
       verify: async () => true,
-      keys,
+      hydrateKeys: async (ids) => {
+        started.resolve();
+        await release.promise;
+        return ids.map((id) => [
+          new Uint8Array(id),
+          { algorithm: { name: 'AES-GCM' } },
+        ]);
+      },
       invitationEpoch: existingEpoch,
       started: started.promise,
       release: () => release.resolve(),
     });
 
-    expect(merge).toHaveBeenCalledTimes(1);
-    expect(keys).toHaveBeenCalledTimes(1);
+    expect(hydrateKeys).toHaveBeenCalledTimes(1);
     expect(document._invitationEpoch).toBe(existingEpoch);
   });
 

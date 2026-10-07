@@ -1,6 +1,5 @@
 import { CRDTChangeNode } from './crdt-change-node.js';
 import {
-  SerializedPathUpdate,
   SerializedPathUpdateV2,
 } from './path-update-wire.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
@@ -13,8 +12,8 @@ const signatureContexts = [
   'tip-advertisement-v1',
   'security-advertisement-v1',
   'invitation-bootstrap-v1',
-  'beekem-welcome-v1',
-  'beekem-path-update-v1',
+  'beekem-welcome-v2',
+  'beekem-path-update-v2',
   'key-update-v2',
 ] as const;
 const signatureContextSet = new Set<string>(signatureContexts);
@@ -153,18 +152,16 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   /**
    * Sealed payload for BeeKEM Welcome messages. The wire field carries the
    * output of `eciesSeal` over a Welcome envelope encrypted under the
-   * recipient's ECDH public key (`welcomeRecipientKemPublicKey`). V1 permits a
-   * missing/null legacy bootstrap; the separate V2 envelope requires a
-   * non-null generation- and leaf-count-bearing Welcome. Integrations MUST
-   * select the decoder from the negotiated protocol rather than infer a
-   * version from payload contents.
+   * recipient's ECDH public key (`welcomeRecipientKemPublicKey`). Only the V2
+   * envelope is accepted, and it requires a non-null generation- and
+   * leaf-count-bearing Welcome.
    *
    * The sealed bytes are base64-encoded on the wire for JSON
    * transport.
    *
    * SECURITY: the writer signature covers the sealed bytes, not the
    * plaintext, so alteration fails signature verification. Exact replay
-   * retains a valid signature; V2 integrations MUST also enforce the Welcome
+   * retains a valid signature; receivers MUST also enforce the Welcome
    * generation transition. AES-GCM authenticates the ciphertext under the
    * derived per-message key, so a non-recipient cannot read or alter the
    * plaintext without detection.
@@ -172,16 +169,10 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
   eciesSealed?: Uint8Array;
 
   /**
-   * Optional BeeKEM ratchet-tree update reserved for the distinct V1 and V2
-   * PathUpdate wire protocols. V1 carries `SerializedPathUpdate`; V2 carries
-   * the explicit generation, tree snapshot, and resolution bundles in
-   * `SerializedPathUpdateV2`. Integrations MUST select the decoder from the
-   * negotiated protocol; neither version may be reinterpreted as the other.
-   *
-   * Only populated on a BeeKEM PathUpdate wire path; absent on
-   * sync messages flowing over GossipSub / document-load / Welcome.
+   * Parent-bound BeeKEM V2 ratchet-tree update. Only the PathUpdate protocol
+   * carries this value; document sync, load, and Welcome messages omit it.
    */
-  pathUpdate?: SerializedPathUpdate | SerializedPathUpdateV2;
+  pathUpdate?: SerializedPathUpdateV2;
 
   /**
    * Optional 32-byte epoch identifier paired with `pathUpdate`. The
@@ -190,7 +181,7 @@ export type CRDTSyncMessage<ChangesType, PublicKey = unknown> = {
    * `BeeKEM.processPathUpdate` and validates that the two match
    * byte-for-byte before installing the new key. Mismatch means the
    * receiver derived a different root than the sender (e.g. stale
-   * local tree state) and the PathUpdate is rejected rather than
+   * local tree state) and the PathUpdateV2 is rejected rather than
    * installing a key under the wrong epoch ID.
    *
    * Both ends key the on-wire encrypted-block prefix on this exact

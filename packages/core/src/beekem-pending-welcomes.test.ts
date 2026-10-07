@@ -189,7 +189,7 @@ function welcomeFor(
 ): CRDTSyncMessage<ChangesType, PublicKey> {
   return {
     documentId: '/doc/welcome',
-    signatureContext: 'beekem-welcome-v1',
+    signatureContext: 'beekem-welcome-v2',
     welcomeEpochId: new Uint8Array(EPOCH_ID_LENGTH).fill(epochByte),
     welcomeRecipient: recipient,
     // Recipient KEM binding + sealed payload presence are both

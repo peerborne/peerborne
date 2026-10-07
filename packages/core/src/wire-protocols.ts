@@ -109,181 +109,46 @@ export const securityAdvertiseV1 = '/collabswarm/security-advertise/1.0.0';
 // `/collabswarm/*` protocol IDs remain unchanged compatibility boundaries.
 export const invitationJoinV1 = '/peerborne/invitation-join/1.0.0';
 
-// BeeKEM Welcome v1: onboards a new reader into a document. The inviting
-// writer sends a Welcome containing (a) the invitation epoch ID the
-// recipient should record so subsequent `since_invited` key filtering works,
-// and (b) the keychain changes filtered per the document's
-// `HistoryVisibility` setting. This filters epoch keys, not retained CRDT
-// operations. The payload uses the same shared
-// length-prefixed-document-path header as the V2 key-update protocol so
-// the shared handler can route incoming Welcomes to the correct document.
+// BeeKEM Welcome v2 onboards a new reader into a document. The inviting
+// writer sends the invitation epoch ID, the keychain changes filtered by the
+// document's `HistoryVisibility` setting (this filters epoch keys, not retained
+// CRDT operations), and a generation- and leaf-count-bearing BeeKEM tree for
+// the recipient's leaf. The frame uses the shared length-prefixed document
+// path header so the shared handler can route it to the correct document.
 //
-// =============================================================================
-// CONFIDENTIALITY: payload sealed to the recipient (ECIES, P-256 ECDH +
-// HKDF-SHA-256 + AES-256-GCM)
-// =============================================================================
-// The Welcome's keychain delta is **not** broadcast in the clear. The
-// `CRDTSyncMessage` carrying a Welcome has a dedicated `eciesSealed` field
-// (see `crdt-sync-message.ts` / `ecies.ts`) which is the ECIES sealed-box
-// over the serialized keychain changes, encrypted under the recipient's
-// ECDH public key (`welcomeRecipientKemPublicKey`). Only the recipient
-// holding the matching ECDH private key can recover the plaintext keychain
-// delta -- a non-recipient peer that is connected at broadcast time sees
-// only the opaque ciphertext + ephemeral public key + nonce + tag.
+// The keychain delta and BeeKEM Welcome travel only in the `eciesSealed`
+// field, sealed to `welcomeRecipientKemPublicKey` with ECIES (P-256 ECDH,
+// HKDF-SHA-256, AES-256-GCM). The writer signature covers the sealed bytes and
+// the signed `welcomeRecipient` binding, so a peer cannot alter the payload or
+// re-point it at another identity. The receiver commits the keychain delta
+// only together with the BeeKEM bootstrap.
 //
-// The writer signature covers the sealed bytes (not the plaintext), so a
-// connected peer cannot alter the sealed payload without invalidating the
-// signature. The recipient binding (`welcomeRecipient`, also covered by
-// the signature) prevents an authorized writer from re-pointing a sealed
-// payload at a different identity than the one the encryption keypair
-// belongs to.
-//
-// Defense-in-depth retained from earlier versions of this protocol:
-//   - `welcomeRecipient` continues to gate processing: a well-behaved
-//     non-target peer drops the Welcome rather than attempting to install
-//     the keychain delta. Confidentiality is enforced by ECIES; the
-//     recipient binding is the authorization gate.
-//   - libp2p's Noise/TLS transport still protects on-wire bytes from
-//     off-path observers, on top of the application-layer encryption.
-//
-// =============================================================================
-// Race mitigation on the receive side
-// =============================================================================
-// The inviter sends the readers-ACL update over pubsub and the Welcome over
-// a direct stream; without coordination these can arrive out of order on the
-// recipient. The Welcome itself is fire-and-forget: there is NO ack protocol
-// in this version, and the inviter does NOT retry. Instead, the recipient's
-// `PeerborneDocument._evaluateAndApplyBeeKEMWelcome` buffers Welcomes
-// dropped solely because the local user is not yet in the readers ACL into a
-// small bounded `pendingWelcomes` buffer keyed by `hex(welcomeEpochId)`.
-// It retains canonical serialized bodies rather than decoded object graphs.
-// Each Welcome may use the full shared-protocol request limit (10 MiB), which
-// matches what a sender can emit; the buffer retains at most 20 MiB in total
-// and 16 entries, each for ~5 min.
-// The buffer is drained on every readers-ACL merge, so a Welcome that arrived
-// before its corresponding ACL update gets replayed automatically through the
-// full authentication path. A Welcome that exceeds a size bound or exhausts
-// the TTL without an unblocking ACL update is discarded; the recipient must
-// then obtain a fresh recipient-bound Welcome or use another explicit key
-// recovery path.
-//
-// Note: only the reader-onboarding path is currently wired through
-// `PeerborneDocument.addReader`. A writer-onboarding flow that
-// piggy-backs on the same wire format is a future extension; until that
-// is wired up the protocol is documented as a reader-only flow.
-export const beekemWelcomeV1 = '/collabswarm/beekem-welcome/1.0.0';
-
-// Reserved compatibility boundary for the generation- and leaf-count-bearing
-// Welcome v2 wire format. Runtime dialing and handler integration land with
-// the corresponding transactional document transition.
+// The readers-ACL update travels over pubsub and the Welcome over a direct
+// stream, so they can arrive out of order. The inviter does not retry. A
+// Welcome dropped only because the local user is not yet in the readers ACL
+// is retained as a canonical serialized body (at most 16 entries, 20 MiB in
+// total, ~5 min each) and replayed through the full authentication path on
+// every readers-ACL merge. A Welcome that exceeds a bound or expires is
+// discarded; the recipient then needs a fresh recipient-bound Welcome.
 export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 
-// BeeKEM PathUpdate v1: distributes a BeeKEM ratchet-tree path update to
-// every surviving member of a document. Used by
-// `PeerborneDocument.removeReader` to revoke a reader: the writer
-// calls `BeeKEM.removeMember`, which blanks the removed leaf AND
-// re-keys the writer's path to root in a single step (no separate
-// `BeeKEM.update` call is involved -- see the "Wire format" section
-// below for why). The resulting `PathUpdate` is broadcast to every
-// surviving reader, which applies it with `BeeKEM.processPathUpdate`
-// and re-derives the document key from
-// the fresh root secret (see `derive-doc-key.ts`). The removed reader
-// cannot derive the new key — their leaf is blanked and the new path key
-// material is encrypted to subtrees they no longer occupy. This is a
-// primitive-level property: delivery to surviving readers is best-effort,
-// and a reader that misses the update cannot recover the new epoch with an
-// ordinary load.
+// BeeKEM PathUpdate v2 distributes a writer's ratchet-tree path update to
+// every surviving member. `PeerborneDocument.removeReader` uses it to revoke a
+// reader: `BeeKEM.removeMember` blanks the removed leaf and re-keys the
+// writer's path to the root in one step, and receivers derive the new document
+// key from the fresh root secret. Each update is bound to its committed parent
+// tree and advances exactly one generation. The removed reader cannot derive
+// the new key because its leaf is blanked and the new path secrets are
+// encrypted only to the remaining subtree resolutions.
 //
-// =============================================================================
-// SAFETY-CRITICAL: writer-only
-// =============================================================================
-// The PathUpdate body is **writer-signed unconditionally**, mirroring the
-// BeeKEM Welcome v1 protocol: peer-reachable signing keys are checked
-// regardless of the `enableSigning` document toggle. A malicious peer that
-// could forge a PathUpdate would force every surviving reader to switch
-// to an attacker-controlled BeeKEM state, making all subsequent
-// document traffic readable to the attacker. Receivers MUST drop any
-// PathUpdate whose signature is missing or invalid.
-//
-// =============================================================================
-// Wire format (mirrors `documentKeyUpdateV2` / `beekemWelcomeV1` framing)
-// =============================================================================
-//   [4-byte BE doc-path length] [UTF-8 doc-path] [serialized sync message]
-//
-// The sync message carries:
-//   - `pathUpdate`: the `PathUpdate` produced by
-//     `BeeKEM.removeMember(leafIdx)`, serialized via the
-//     `SerializedPathUpdate` wire shape (see `path-update-wire.ts`).
-//     `removeMember` itself blanks the removed leaf, blanks every
-//     internal node on the removed direct path, and re-derives fresh
-//     key material along the writer's own path to root -- the path
-//     re-derivation is part of `removeMember`, NOT a separate
-//     follow-up `BeeKEM.update()` call. (A redundant `update()` would
-//     only discard the fresh material `removeMember` just produced.)
-//   - `pathUpdateEpochId`: the 32-byte HKDF-derived epoch identifier
-//     (output of `deriveEpochIdFromRootSecret`). Receivers compare the
-//     full 32 bytes against their locally-derived ID and install the
-//     new document key under that same 32-byte ID. The keychain
-//     providers' `keyIDLength` is 32 -- byte-identical to the HKDF
-//     output width -- so the wire-format key-ID prefix, the
-//     `pathUpdateEpochId` field on this protocol, and the keychain's
-//     storage key are all the same 32 bytes. No truncation step
-//     exists; an earlier (buggy) revision truncated to a narrower
-//     keychain key-ID width and produced a deterministic post-rotation
-//     decrypt failure on every receiver.
-//   - `signature`: writer signature over the canonical
-//     (signature-stripped) serialization of the sync message.
-//
-// =============================================================================
-// Confidentiality
-// =============================================================================
-// PathUpdates carry only public-key material plus key updates encrypted
-// to specific subtree resolution keys — no plaintext document secrets —
-// so on-wire encryption (Noise/TLS via libp2p) is sufficient. The
-// security guarantee comes from BeeKEM itself: only members on the
-// non-blanked side of each path-update step can decrypt the corresponding
-// encrypted-private-key field. A revoked reader who observes the
-// PathUpdate cannot recover the root secret.
-//
-// =============================================================================
-// Failure modes
-// =============================================================================
-// Surviving readers MUST receive the PathUpdate (or an equivalent
-// out-of-band Welcome / load that observes the post-rotation
-// keychain state) to install the new epoch key. The PathUpdate
-// distribution is fire-and-forget: the library logs each failed
-// dial but does not retry, matching the best-effort posture of the
-// rest of the document protocol.
-//
-// If a surviving reader misses the PathUpdate, their local keychain
-// state diverges from the writer's. Subsequent writer-originated
-// traffic is encrypted under the new epoch key (`pathUpdateEpochId`
-// is the wire-format key-ID prefix); the recipient has no entry for
-// that ID in their local keychain and the decrypt fails.
-//
-// Recovery is NOT guaranteed by a vanilla `loadDocument` against an
-// arbitrary peer: `handleLoadRequestData` encrypts its response under
-// the responder's `_keychain.current()`, so the recipient can
-// decrypt the load response only if they ALSO already hold the
-// responder's current key. The reliable recovery path today is a
-// fresh BeeKEM Welcome from an authorized writer (Welcome payloads
-// are sealed under the recipient's KEM public key, not under the
-// keychain), which both rebootstraps the recipient's BeeKEM ratchet
-// state and re-shares the keychain.
-//
-// Future work: implement reliable PathUpdate delivery (e.g. signed
-// ACK + retry, or rolling-window resend on libp2p reconnect) so a
-// transient dial failure does not require a full re-onboard. Tracked
-// as a follow-up; in the meantime, application-level policy should
-// treat surviving-reader connectivity at revocation time as a
-// liveness requirement.
-export const beekemPathUpdateV1 = '/collabswarm/beekem-pathupdate/1.0.0';
-
-// Reserved compatibility boundary for the parent-tree-, generation-, and
-// shape-bound PathUpdate v2 wire format. Runtime dialing and handler
-// integration land with the corresponding transactional document transition.
+// The update is writer-signed unconditionally, regardless of the
+// `enableSigning` document toggle; receivers drop any update whose signature
+// is missing or invalid. Delivery is best-effort: the sender logs failed dials
+// and does not retry. A member that misses an update cannot recover the new
+// epoch with an ordinary load, because load responses are encrypted under the
+// responder's current key; it needs a recipient-bound re-invitation or another
+// explicit key-recovery flow.
 export const beekemPathUpdateV2 = '/peerborne/beekem-pathupdate/2.0.0';
 
-// The historical protocol namespace is retained as a wire-compatibility boundary.
 export const searchIndexAdvertiseV1 = '/collabswarm/search-index-advertise/1.0.0';
 export const searchQueryV1 = '/collabswarm/search-query/1.0.0';

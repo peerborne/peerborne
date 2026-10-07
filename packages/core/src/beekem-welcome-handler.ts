@@ -180,7 +180,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   try {
     message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
       decoded,
-      'beekem-welcome-v1',
+      'beekem-welcome-v2',
     );
   } catch {
     return {
@@ -311,12 +311,12 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     const verificationMessage = snapshotSyncMessageForContext<
       ChangesType,
       PublicKey
-    >(message, 'beekem-welcome-v1');
+    >(message, 'beekem-welcome-v2');
     const { signature: _signature, ...unsigned } = verificationMessage;
     messageWithoutSignature = unsigned;
     expected = snapshotSyncMessageForContext<ChangesType, PublicKey>(
       unsigned,
-      'beekem-welcome-v1',
+      'beekem-welcome-v2',
       { retainCryptoKeys: true },
     );
   } catch {
@@ -342,7 +342,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
     !syncMessageMatchesSnapshot(
       expected,
       messageWithoutSignature,
-      'beekem-welcome-v1',
+      'beekem-welcome-v2',
     )
   ) {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };

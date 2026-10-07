@@ -91,7 +91,7 @@ const allowedFields: Readonly<
     'tips',
     'signature',
   ]),
-  'beekem-welcome-v1': new Set([
+  'beekem-welcome-v2': new Set([
     'documentId',
     'signatureContext',
     'welcomeEpochId',
@@ -100,7 +100,7 @@ const allowedFields: Readonly<
     'eciesSealed',
     'signature',
   ]),
-  'beekem-path-update-v1': new Set([
+  'beekem-path-update-v2': new Set([
     'documentId',
     'signatureContext',
     'pathUpdate',
