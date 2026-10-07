@@ -9,9 +9,11 @@ import { PasswordEditor } from './PasswordEditor';
 export function PasswordList({
   userId,
   peerborne,
+  kemKeyPair,
 }: {
   userId: string;
   peerborne: YjsPeerborne;
+  kemKeyPair: CryptoKeyPair;
 }) {
   const [currentPassword, setCurrentPassword] = React.useState<
     Y.Map<Y.Text> | undefined
@@ -135,6 +137,7 @@ export function PasswordList({
               userId={userId}
               peerborne={peerborne}
               passwordId={currentPasswordId}
+              kemKeyPair={kemKeyPair}
             />
           )}
         </Col>

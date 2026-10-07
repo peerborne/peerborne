@@ -3,7 +3,6 @@ import {
   ACL,
   ACLOperationInProgressError,
   PreparedACLChange,
-  PreparedACLRemoval,
 } from './acl.js';
 import { ACLProvider } from './acl-provider.js';
 import { UCAN, createUCAN } from './ucan.js';
@@ -604,9 +603,7 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     }
   }
 
-  private _backingPrepareAdd():
-    | NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>
-    | undefined {
+  private _backingPrepareAdd(): ACL<ChangesType, PublicKey>['prepareAdd'] {
     return this._runBackingInspection(
       'Backing ACL addition preparation lookup',
       () => {
@@ -615,45 +612,31 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
           'prepareAdd',
           'Backing ACL prepareAdd',
         );
-        if (!property.found) return undefined;
         const prepareAdd = property.value;
-        if (prepareAdd === undefined) return undefined;
         if (typeof prepareAdd !== 'function') {
-          throw new TypeError(
-            'Backing ACL prepareAdd property must be a function when present',
-          );
+          throw new TypeError('Backing ACL prepareAdd must be a function');
         }
-        return prepareAdd as NonNullable<
-          ACL<ChangesType, PublicKey>['prepareAdd']
-        >;
+        return prepareAdd as ACL<ChangesType, PublicKey>['prepareAdd'];
       },
     );
   }
 
-  private _backingPrepareRemove():
-    | NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>
-    | undefined {
-    return this._runBackingInspection(
-      'Backing ACL preparation lookup',
-      () => {
-        const property = this._backingDataProperty(
-          this._backing,
-          'prepareRemove',
-          'Backing ACL prepareRemove',
-        );
-        if (!property.found) return undefined;
-        const prepareRemove = property.value;
-        if (prepareRemove === undefined) return undefined;
-        if (typeof prepareRemove !== 'function') {
-          throw new TypeError(
-            'Backing ACL prepareRemove property must be a function when present',
-          );
-        }
-        return prepareRemove as NonNullable<
-          ACL<ChangesType, PublicKey>['prepareRemove']
-        >;
-      },
-    );
+  private _backingPrepareRemove(): ACL<
+    ChangesType,
+    PublicKey
+  >['prepareRemove'] {
+    return this._runBackingInspection('Backing ACL preparation lookup', () => {
+      const property = this._backingDataProperty(
+        this._backing,
+        'prepareRemove',
+        'Backing ACL prepareRemove',
+      );
+      const prepareRemove = property.value;
+      if (typeof prepareRemove !== 'function') {
+        throw new TypeError('Backing ACL prepareRemove must be a function');
+      }
+      return prepareRemove as ACL<ChangesType, PublicKey>['prepareRemove'];
+    });
   }
 
   private _backingDataProperty(
@@ -781,22 +764,14 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
       publicKey,
       'ACL addition',
       async (snapshot) => {
-        const prepareAdd = this._backingPrepareAdd();
-        if (typeof prepareAdd === 'function') {
-          const prepared = await this._prepareBackingAddition(
-            snapshot.publicKey,
-            snapshot.keyBase64,
-            prepareAdd,
-            true,
-          );
-          prepared.commit();
-          return prepared.changes;
-        }
-        const changes = await this._runBackingMutation(() =>
-          this._backing.add(snapshot.publicKey),
+        const prepared = await this._prepareBackingAddition(
+          snapshot.publicKey,
+          snapshot.keyBase64,
+          this._backingPrepareAdd(),
+          true,
         );
-        this._revokedKeys.delete(snapshot.keyBase64);
-        return changes;
+        prepared.commit();
+        return prepared.changes;
       },
     );
   }
@@ -807,24 +782,19 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     return this._startMembershipMutation(
       publicKey,
       'Prepared ACL addition',
-      async (snapshot) => {
-        const prepareAdd = this._backingPrepareAdd();
-        if (typeof prepareAdd !== 'function') {
-          throw new Error('Backing ACL does not support staged addition');
-        }
-        return this._prepareBackingAddition(
+      async (snapshot) =>
+        this._prepareBackingAddition(
           snapshot.publicKey,
           snapshot.keyBase64,
-          prepareAdd,
-        );
-      },
+          this._backingPrepareAdd(),
+        ),
     );
   }
 
   private async _prepareBackingAddition(
     publicKey: PublicKey,
     keyBase64: string,
-    prepareAdd: NonNullable<ACL<ChangesType, PublicKey>['prepareAdd']>,
+    prepareAdd: ACL<ChangesType, PublicKey>['prepareAdd'],
     allowActiveMutation = false,
   ): Promise<PreparedACLChange<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL addition');
@@ -876,52 +846,37 @@ export class UCANACL<ChangesType, PublicKey> implements ACL<ChangesType, PublicK
     publicKey: PublicKey;
     keyBase64: string;
   }): Promise<ChangesType> {
-    const prepareRemove = this._backingPrepareRemove();
-    if (typeof prepareRemove === 'function') {
-      const prepared = await this._prepareBackingRemoval(
-        snapshot.publicKey,
-        snapshot.keyBase64,
-        prepareRemove,
-        true,
-      );
-      prepared.commit();
-      return prepared.changes;
-    }
-
-    const changes = await this._runBackingMutation(() =>
-      this._backing.remove(snapshot.publicKey),
+    const prepared = await this._prepareBackingRemoval(
+      snapshot.publicKey,
+      snapshot.keyBase64,
+      this._backingPrepareRemove(),
+      true,
     );
-    this._revokedKeys.add(snapshot.keyBase64);
-    this._entries.delete(snapshot.keyBase64);
-    return changes;
+    prepared.commit();
+    return prepared.changes;
   }
 
   async prepareRemove(
     publicKey: PublicKey,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     return this._startMembershipMutation(
       publicKey,
       'Prepared ACL removal',
-      async (snapshot) => {
-        const prepareRemove = this._backingPrepareRemove();
-        if (typeof prepareRemove !== 'function') {
-          throw new Error('Backing ACL does not support staged removal');
-        }
-        return this._prepareBackingRemoval(
+      async (snapshot) =>
+        this._prepareBackingRemoval(
           snapshot.publicKey,
           snapshot.keyBase64,
-          prepareRemove,
-        );
-      },
+          this._backingPrepareRemove(),
+        ),
     );
   }
 
   private async _prepareBackingRemoval(
     publicKey: PublicKey,
     keyBase64: string,
-    prepareRemove: NonNullable<ACL<ChangesType, PublicKey>['prepareRemove']>,
+    prepareRemove: ACL<ChangesType, PublicKey>['prepareRemove'],
     allowActiveMutation = false,
-  ): Promise<PreparedACLRemoval<ChangesType>> {
+  ): Promise<PreparedACLChange<ChangesType>> {
     this._assertBackingOperationAvailable('Prepared ACL removal');
     const prepared = await this._runBackingPreparation(() =>
       reflectApply(prepareRemove, this._backing, [publicKey]),

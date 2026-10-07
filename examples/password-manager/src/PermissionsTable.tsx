@@ -1,6 +1,7 @@
-import { usePeerborneDocumentState } from '@peerborne/react';
+import { LastWriterRemovalError } from '@peerborne/core';
+import { PeerborneContext, usePeerborneDocumentState } from '@peerborne/react';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
 import { YjsPeerborne } from './utils';
 
@@ -10,21 +11,63 @@ type DisplayPermission = {
   permissions: 'r' | 'rw';
 };
 
+const lastEditorMessage =
+  'The last editor cannot be demoted or removed. Add another editor first.';
+const keepAnotherEditor = { requireRemainingWriter: true } as const;
+
+async function isLastWriter(
+  target: CryptoKey,
+  writers: readonly CryptoKey[] | undefined,
+): Promise<boolean> {
+  const [serializedTarget, ...serializedWriters] = await Promise.all(
+    [target, ...(writers ?? [])].map((key) => serializeKey(key)),
+  );
+  const writerKeys = new Set(serializedWriters);
+  return writerKeys.size === 1 && writerKeys.has(serializedTarget);
+}
+
 export function PermissionsTable({
   passwordId,
   peerborne,
+  kemKeyPair,
 }: {
   passwordId?: string;
   peerborne: YjsPeerborne;
+  kemKeyPair: CryptoKeyPair;
 }) {
+  const documentPath = `/passwords/${passwordId}`;
   const [
     ,
     ,
     { readers, addReader, removeReader, writers, addWriter, removeWriter },
-  ] = usePeerborneDocumentState(peerborne, `/passwords/${passwordId}`);
+  ] = usePeerborneDocumentState(peerborne, documentPath);
+  const { docCache } = useContext(PeerborneContext);
+  const docRef = Object.values(docCache).find(
+    (candidate) =>
+      candidate.swarm === peerborne && candidate.documentPath === documentPath,
+  );
+  const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
+
+  // addReader seeds BeeKEM leaf 0 from the founder's KEM key pair, so install
+  // it once per document before any membership change.
+  useEffect(() => {
+    if (!docRef) return;
+    let active = true;
+    (async () => {
+      if (!docRef.getKemPublicKeyRaw()) {
+        await docRef.setKemKeyPair(kemKeyPair);
+      }
+      if (active) setKemReadyDocRef(docRef);
+    })().catch(() => {
+      console.error(`Failed to install a KEM key pair for ${documentPath}`);
+    });
+    return () => {
+      active = false;
+    };
+  }, [docRef, documentPath, kemKeyPair]);
 
   // Update `permissions` whenever document `readers` and/or `writers` changes.
   useEffect(() => {
@@ -62,11 +105,15 @@ export function PermissionsTable({
 
   return (
     <>
+      <p>
+        These controls change authorization roles only. This example does not
+        deliver the encryption keys a new member needs to open the document.
+      </p>
       <Table striped bordered hover>
         <thead>
           <tr>
             <th>User</th>
-            <th colSpan={2}>Permisssions</th>
+            <th colSpan={2}>Authorization role</th>
           </tr>
         </thead>
         <tbody>
@@ -81,32 +128,49 @@ export function PermissionsTable({
                   {permission.publicKey}
                 </td>
                 <td>
-                  {permission.permissions === 'rw' ? 'Read/Write' : 'Read'}
+                  {permission.permissions === 'rw' ? 'Editor' : 'Reader'}
                 </td>
                 <td>
                   <Button
                     variant="danger"
                     onClick={() => {
-                      switch (permission.permissions) {
-                        case 'r': {
-                          removeReader(permission.key).then(() =>
-                            console.log('Removed reader: ', permission),
+                      (async () => {
+                        try {
+                          switch (permission.permissions) {
+                            case 'r': {
+                              await removeReader(permission.key);
+                              console.log('Removed reader: ', permission);
+                              break;
+                            }
+                            case 'rw': {
+                              // Writers keep an explicit reader row, so demote
+                              // before revoking read access.
+                              await removeWriter(
+                                permission.key,
+                                keepAnotherEditor,
+                              );
+                              await removeReader(permission.key);
+                              console.log('Removed editor: ', permission);
+                              break;
+                            }
+                            default: {
+                              console.warn(
+                                'Found unrecognized permission type: ',
+                                permission,
+                              );
+                            }
+                          }
+                        } catch (error) {
+                          alert(
+                            error instanceof LastWriterRemovalError
+                              ? lastEditorMessage
+                              : 'Unable to remove this member. The document ' +
+                                  'founder cannot be removed, and an editor ' +
+                                  'must also hold reader access before ' +
+                                  'demotion.',
                           );
-                          break;
                         }
-                        case 'rw': {
-                          removeWriter(permission.key).then(() =>
-                            console.log('Removed writer: ', permission),
-                          );
-                          break;
-                        }
-                        default: {
-                          console.warn(
-                            'Found unrecognized permission type: ',
-                            permission,
-                          );
-                        }
-                      }
+                      })();
                     }}
                   >
                     Remove
@@ -135,13 +199,14 @@ export function PermissionsTable({
                   setDraftPermission(e.target.value as 'r' | 'rw')
                 }
               >
-                <option value="r">Read</option>
-                <option value="rw">Read/Write</option>
+                <option value="r">Reader</option>
+                <option value="rw">Editor</option>
               </Form.Control>
             </td>
             <td>
               <Button
                 variant="success"
+                disabled={!docRef || kemReadyDocRef !== docRef}
                 onClick={() => {
                   (async () => {
                     try {
@@ -155,15 +220,19 @@ export function PermissionsTable({
 
                       switch (draftPermission) {
                         case 'r': {
-                          addReader(key).then(() =>
-                            console.log('Added reader: ', draftUserKey),
-                          );
+                          if (await isLastWriter(key, writers)) {
+                            alert(lastEditorMessage);
+                            return;
+                          }
+                          await addReader(key);
+                          await removeWriter(key, keepAnotherEditor);
+                          console.log('Added reader');
                           break;
                         }
                         case 'rw': {
-                          addWriter(key).then(() =>
-                            console.log('Added writer: ', draftUserKey),
-                          );
+                          await addReader(key);
+                          await addWriter(key);
+                          console.log('Added writer');
                           break;
                         }
                         default: {
@@ -173,16 +242,19 @@ export function PermissionsTable({
                           );
                         }
                       }
-                    } catch {
+                    } catch (error) {
                       alert(
-                        `The entered key: "${draftUserKey}" is not a valid User public key!`,
+                        error instanceof LastWriterRemovalError
+                          ? lastEditorMessage
+                          : 'Unable to update document permissions. Verify ' +
+                              'the public key and membership configuration.',
                       );
                       return;
                     }
                   })();
                 }}
               >
-                Add
+                Set role
               </Button>
             </td>
           </tr>

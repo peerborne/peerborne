@@ -5,7 +5,7 @@ import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
   PeerborneDocument,
 } from './peerborne-document.js';
-import { ACLOperationInProgressError } from './acl.js';
+import { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
 import {
   crdtDocumentChangeNode,
   crdtReaderChangeNode,
@@ -628,6 +628,416 @@ describe('document load response boundaries', () => {
     expect(document._remoteUpdateNotificationTail).toBeUndefined();
   });
 
+  test('propagates a certified ACL rejection from a missing block without poisoning', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    const refresh = jest.fn();
+    const trackTip = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/deferred-acl-rejection',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(['KNOWN']),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ACL', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async () => ({ remote: true })),
+      _mergeWriters: jest.fn(async () => {
+        throw rejection;
+      }),
+      _trackTip: trackTip,
+      _refreshLastSyncMessageFromSync: refresh,
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        document._syncDocumentChanges('ACL', {
+          kind: crdtWriterChangeNode,
+          children: {
+            PARENT: { kind: crdtDocumentChangeNode },
+            KNOWN: { kind: crdtDocumentChangeNode },
+          },
+        }),
+      ).rejects.toBe(rejection);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(document._mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set());
+    expect(document._referencedAncestors).toEqual(new Set(['KNOWN']));
+    expect(trackTip).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
+  test('lets an in-flight sibling ACL merge settle after a certified rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    let releaseBad!: () => void;
+    const badFetched = new Promise<void>((resolve) => {
+      releaseBad = resolve;
+    });
+    let finishGood!: () => void;
+    const goodMerged = new Promise<void>((resolve) => {
+      finishGood = resolve;
+    });
+    const merge = jest.fn((changes: { id: string }) => {
+      if (changes.id === 'BAD') throw rejection;
+      releaseBad();
+      return goodMerged;
+    });
+    const document = fakeDocument({
+      documentPath: '/deferred-sibling-acl',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['BAD', crdtWriterChangeNode, undefined],
+        ['GOOD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => {
+        const id = cid.toString();
+        if (id === 'BAD') await badFetched;
+        return { id };
+      }),
+      _writers: { merge },
+      _writerMutationsInFlight: 0,
+      _writerPublicationsInFlight: 0,
+      _invalidateWriterKeyCache: jest.fn(),
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    const syncing = document._syncDocumentChanges('BAD', {
+      kind: crdtWriterChangeNode,
+    });
+    let settled = false;
+    void syncing.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let i = 0; i < 20 && merge.mock.calls.length < 2; i++) {
+      await Promise.resolve();
+    }
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    finishGood();
+
+    await expect(syncing).rejects.toBe(rejection);
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+    expect(document._hashes).toEqual(new Set(['GOOD']));
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['GOOD']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
+  test('notifies missing blocks a sibling committed before a certified rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    let releaseBad!: () => void;
+    const siblingCommitted = new Promise<void>((resolve) => {
+      releaseBad = resolve;
+    });
+    const handler = jest.fn();
+    const document = fakeDocument({
+      documentPath: '/deferred-sibling-document',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['DOC', crdtDocumentChangeNode, undefined],
+        ['BAD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => {
+        const id = cid.toString();
+        if (id === 'BAD') await siblingCommitted;
+        return { id };
+      }),
+      _crdtProvider: {
+        remoteChange: jest.fn((_state: unknown, changes: unknown) => {
+          releaseBad();
+          return changes;
+        }),
+      },
+      _mergeWriters: jest.fn(async () => {
+        throw rejection;
+      }),
+      _readers: {
+        users: jest.fn(async () => ['reader']),
+        check: jest.fn(async () => false),
+      },
+      _writers: { users: jest.fn(async () => ['writer']) },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: { subscriber: handler },
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('BAD', {
+        kind: crdtWriterChangeNode,
+        children: { DOC: { kind: crdtDocumentChangeNode } },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._document).toEqual({ id: 'DOC' });
+    expect(document._hashes).toEqual(new Set(['DOC']));
+    expect(document._documentChangeCount).toBe(1);
+    expect(handler.mock.calls).toEqual([
+      [{ id: 'DOC' }, ['reader', 'writer'], ['writer'], ['DOC']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
+  test('keeps ancestors referenced by applied nodes after a deferred ACL rejection', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed deferred writer update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/deferred-acl-ancestors',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(['KNOWN', 'OTHER']),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['GOOD', crdtWriterChangeNode, undefined],
+        ['BAD', crdtWriterChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(async (cid: { toString(): string }) => ({
+        id: cid.toString(),
+      })),
+      _crdtProvider: { remoteChange: jest.fn((state: unknown) => state) },
+      _mergeWriters: jest.fn(async (changes: { id: string }) => {
+        if (changes.id === 'BAD') throw rejection;
+      }),
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ROOT', {
+        kind: crdtDocumentChangeNode,
+        change: { id: 'ROOT' },
+        children: {
+          GOOD: {
+            kind: crdtWriterChangeNode,
+            children: { KNOWN: { kind: crdtDocumentChangeNode } },
+          },
+          BAD: {
+            kind: crdtWriterChangeNode,
+            children: { OTHER: { kind: crdtDocumentChangeNode } },
+          },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'OTHER', 'ROOT', 'GOOD']),
+    );
+    expect(document._referencedAncestors).toEqual(
+      new Set(['GOOD', 'BAD', 'KNOWN']),
+    );
+    expect(document._currentFrontier().sort()).toEqual(['OTHER', 'ROOT']);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['ROOT']],
+      [['GOOD']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
+  test('records direct ACL entries applied before a rejection when their ancestry is known', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed direct writer update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/direct-acl-rejection-bookkeeping',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(['KNOWN', 'OTHER']),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['TOP', crdtWriterChangeNode, { id: 'TOP' }],
+        ['GOOD', crdtWriterChangeNode, { id: 'GOOD' }],
+        ['STALE', crdtWriterChangeNode, { id: 'STALE' }],
+        ['DOC', crdtDocumentChangeNode, { id: 'DOC' }],
+        ['BAD', crdtWriterChangeNode, { id: 'BAD' }],
+      ]),
+      _crdtProvider: { remoteChange: jest.fn((state: unknown) => state) },
+      _mergeWriters: jest.fn(async (changes: { id: string }) => {
+        if (changes.id === 'BAD') throw rejection;
+      }),
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ROOT', {
+        kind: crdtDocumentChangeNode,
+        change: { id: 'ROOT' },
+        children: {
+          TOP: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'TOP' },
+            children: {
+              GOOD: {
+                kind: crdtWriterChangeNode,
+                change: { id: 'GOOD' },
+                children: { KNOWN: { kind: crdtDocumentChangeNode } },
+              },
+            },
+          },
+          STALE: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'STALE' },
+            children: {
+              DOC: { kind: crdtDocumentChangeNode, change: { id: 'DOC' } },
+            },
+          },
+          BAD: {
+            kind: crdtWriterChangeNode,
+            change: { id: 'BAD' },
+            children: { OTHER: { kind: crdtDocumentChangeNode } },
+          },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._mergeWriters).toHaveBeenCalledTimes(4);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'OTHER', 'TOP', 'GOOD']),
+    );
+    expect(document._referencedAncestors).toEqual(new Set(['GOOD', 'KNOWN']));
+    expect(document._currentFrontier().sort()).toEqual(['OTHER', 'TOP']);
+    expect(document._trackTip.mock.calls).toEqual([
+      ['GOOD', crdtWriterChangeNode],
+      ['TOP', crdtWriterChangeNode],
+    ]);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['TOP', 'GOOD']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
+  test('counts direct document changes only when their sync commits', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed direct writer update'),
+    );
+    let rejectWriterMerge = true;
+    const document = fakeDocument({
+      documentPath: '/direct-acl-rejection-counters',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ROOT', crdtDocumentChangeNode, { id: 'ROOT' }],
+        ['ACL', crdtWriterChangeNode, { id: 'ACL' }],
+      ]),
+      _crdtProvider: {
+        remoteChange: jest.fn((_state: unknown, changes: unknown) => changes),
+      },
+      _mergeWriters: jest.fn(async () => {
+        if (rejectWriterMerge) throw rejection;
+      }),
+      _documentChangeCount: 5,
+      _changesSinceSnapshot: 2,
+      _trackTip: jest.fn(),
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const tree = {
+      kind: crdtDocumentChangeNode,
+      change: { id: 'ROOT' },
+      children: {
+        ACL: { kind: crdtWriterChangeNode, change: { id: 'ACL' } },
+      },
+    };
+
+    await expect(document._syncDocumentChanges('ROOT', tree)).rejects.toBe(
+      rejection,
+    );
+    expect(document._document).toEqual({});
+    expect(document._hashes).toEqual(new Set());
+    expect(document._documentChangeCount).toBe(5);
+    expect(document._changesSinceSnapshot).toBe(2);
+
+    rejectWriterMerge = false;
+    await expect(
+      document._syncDocumentChanges('ROOT', tree),
+    ).resolves.toBeUndefined();
+    expect(document._document).toEqual({ id: 'ROOT' });
+    expect(document._hashes).toEqual(new Set(['ROOT', 'ACL']));
+    expect(document._documentChangeCount).toBe(6);
+    expect(document._changesSinceSnapshot).toBe(3);
+  });
+
+  test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
+    const rejection = new ACLMergeRejectedError(
+      new Error('malformed sent reader update'),
+    );
+    const document = fakeDocument({
+      documentPath: '/sent-acl-rejection',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(['KNOWN']),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['ACL', crdtReaderChangeNode, { remote: true }],
+      ]),
+      _mergeReaders: jest.fn(async () => {
+        throw rejection;
+      }),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+    });
+
+    await expect(
+      document._syncDocumentChanges('ACL', {
+        kind: crdtReaderChangeNode,
+        children: {
+          PARENT: { kind: crdtDocumentChangeNode },
+          KNOWN: { kind: crdtDocumentChangeNode },
+        },
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(document._referencedAncestors).toEqual(new Set(['KNOWN']));
+    expect(document._hashes).toEqual(new Set());
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
+
   test('keeps bootstrap pending when its deferred audience conflicts', async () => {
     const conflict = new ACLOperationInProgressError(
       'reader listing',
@@ -755,6 +1165,105 @@ describe('document load response boundaries', () => {
     expect(writerUsers).toHaveBeenCalledTimes(1);
     expect(readerCheck).toHaveBeenCalledTimes(1);
     expect(document._hashes).toEqual(new Set(['DOC', 'READER', 'WRITER']));
+  });
+
+  test('releases the queue when abort races a poisoned missing ACL merge', async () => {
+    const secret = 'partially-applied-writer-merge-secret';
+    const writers = new Set(['owner']);
+    const refresh = jest.fn();
+    const mergeMutated = deferred<void>();
+    const finishMerge = deferred<void>();
+    const stalledFetchStarted = deferred<void>();
+    const stalledFetchAborted = deferred<void>();
+    const loadController = new AbortController();
+    const mutationQueue = new InvitationMembershipQueue();
+    const document = fakeDocument({
+      documentPath: '/missing-writer-poison',
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 2,
+      _document: {},
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _lastSyncMessage: undefined,
+      _mergeSyncTree: jest.fn(async () => [
+        ['WRITER', crdtWriterChangeNode, undefined],
+        ['STALLED', crdtDocumentChangeNode, undefined],
+      ]),
+      _getBlock: jest.fn(
+        async (
+          cid: { toString(): string },
+          options: { signal: AbortSignal },
+        ) => {
+          if (cid.toString() === 'WRITER') {
+            return { add: 'injected-writer' };
+          }
+          stalledFetchStarted.resolve();
+          options.signal.addEventListener(
+            'abort',
+            () => stalledFetchAborted.resolve(),
+            { once: true },
+          );
+          return new Promise<never>(() => undefined);
+        },
+      ),
+      _writers: {
+        merge: jest.fn(async () => {
+          writers.add('injected-writer');
+          mergeMutated.resolve();
+          await finishMerge.promise;
+          throw new Error(secret);
+        }),
+        users: jest.fn(async () => [...writers]),
+      },
+      _writerPublicationsInFlight: 0,
+      _writerMutationsInFlight: 0,
+      _writerKeysVersion: 0,
+      _cachedWriterKeys: null,
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _recentTips: [],
+      _pendingBootstrapRemoteUpdateHashes: new Set<string>(),
+      _remoteHandlers: {},
+      _mutationQueue: mutationQueue,
+      _refreshLastSyncMessageFromSync: refresh,
+      _bootstrapCompactionDeferred: false,
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      const syncing = mutationQueue.run(() =>
+        document._syncDocumentChanges(
+          'HEAD',
+          { kind: crdtDocumentChangeNode },
+          { signal: loadController.signal },
+        ),
+      );
+      await Promise.all([stalledFetchStarted.promise, mergeMutated.promise]);
+      loadController.abort();
+      finishMerge.resolve();
+
+      await expect(syncing).rejects.toThrow(
+        /indeterminate authorization state/,
+      );
+      await expect(stalledFetchAborted.promise).resolves.toBeUndefined();
+      await expect(
+        mutationQueue.run(async () => 'queue released'),
+      ).resolves.toBe('queue released');
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(writers).toContain('injected-writer');
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
+    expect(document._hashes).not.toContain('WRITER');
+    expect(refresh).not.toHaveBeenCalled();
+    await expect(document.getWriters()).rejects.toThrow(
+      /discard this document instance/,
+    );
   });
 
   test('retries ACL conflicts while authorizing a load requester', async () => {
@@ -2200,6 +2709,10 @@ describe('document load response boundaries', () => {
     const otherMutation = jest.fn(async () => undefined);
     const document = fakeDocument({
       documentPath: '/poisoned',
+      _authProvider: {
+        serializePublicKey: async (key: string) => key,
+        deserializePublicKey: async (serialized: string) => serialized,
+      },
       _bootstrapLoadApplicationState: 'pending',
       _document: { value: 'partial' },
       _hashes: new Set(['partial']),
@@ -2893,7 +3406,7 @@ describe('document load response boundaries', () => {
     expect(applySnapshot).not.toHaveBeenCalled();
     expect(syncDocumentChanges).not.toHaveBeenCalled();
     expect(document._hashes).toEqual(new Set());
-    expect(document._bootstrapLoadApplicationState).toBe('pending');
+    expect(document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
   test('rechecks invitation pristine state at its queued application boundary', async () => {
@@ -5352,3 +5865,86 @@ test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     expect(sink).not.toHaveBeenCalled();
   },
 );
+
+describe('poisoned state and cancellation boundaries', () => {
+
+test('discards deferred and incoming notifications once document state is poisoned', async () => {
+  const pending = new Set(['deferred']);
+  const notify = jest.fn();
+  const document = fakeDocument({
+    _bootstrapLoadApplicationState: 'poisoned',
+    _pendingBootstrapRemoteUpdateHashes: pending,
+    _fireRemoteUpdateHandlers: notify,
+  });
+  await document._fireOrDeferRemoteUpdateHandlers(['incoming']);
+  await document._fireOrDeferRemoteUpdateHandlers(['later']);
+  expect(pending.size).toBe(0);
+  expect(notify).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['Readers', 'before invocation'], ['Readers', 'during the merge'],
+  ['Readers', 'after the merge settles'], ['Readers', 'at the post-merge check'],
+  ['Writers', 'before invocation'], ['Writers', 'during the merge'],
+  ['Writers', 'after the merge settles'], ['Writers', 'at the post-merge check'],
+] as const)('cancellation of %s %s preserves the mutation boundary', async (kind, phase) => {
+  const beforeInvocation = phase === 'before invocation';
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let mutated = false;
+  const merge = jest.fn(async () => {
+    entered();
+    await gate;
+    mutated = true;
+  });
+  const document = fakeDocument({
+    documentPath: '/abort-boundary',
+    _bootstrapLoadApplicationState: 'pristine',
+    _bootstrapLoadApplicationRevision: 0,
+    _writerKeysVersion: 0,
+    _writerMutationsInFlight: 0,
+    _writerPublicationsInFlight: 0,
+    _readers: { merge },
+    _writers: { merge },
+  });
+  const controller = new AbortController();
+  const cancel = (): void => controller.abort(new Error('cancelled load'));
+  if (phase === 'after the merge settles') {
+    const awaitACLMerge = document._awaitACLMerge;
+    document._awaitACLMerge = async (...args: unknown[]) => {
+      const merged = await awaitACLMerge.apply(document, args);
+      cancel();
+      return merged;
+    };
+  }
+  const assertStillActive =
+    phase === 'at the post-merge check'
+      ? (): void => {
+          if (mutated) cancel();
+          if (controller.signal.aborted) throw controller.signal.reason;
+        }
+      : undefined;
+  if (beforeInvocation) cancel();
+  if (phase !== 'during the merge') release();
+  const result = document[`_merge${kind}`]({}, assertStillActive, controller.signal);
+  if (phase === 'during the merge') {
+    await started;
+    cancel();
+  }
+  try {
+    await expect(result).rejects.toThrow('cancelled load');
+    expect(document._bootstrapLoadApplicationState).toBe(beforeInvocation ? 'pristine' : 'poisoned');
+    expect(merge).toHaveBeenCalledTimes(beforeInvocation ? 0 : 1);
+  } finally {
+    release();
+  }
+  if (!beforeInvocation) {
+    await merge.mock.results[0].value;
+    expect(mutated).toBe(true);
+    expect(() => document._assertDocumentStateNotPoisoned()).toThrow(/discard this document instance/);
+  }
+});
+
+});
