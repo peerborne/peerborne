@@ -32,7 +32,7 @@ import {
 const founderKem = await generateEciesKeyPair();
 
 const note = peerborne.doc('/notes/launch-plan');
-await note.open();
+await note.create();
 // The initial invitation path intentionally shares the retained document
 // history, so this choice must be explicit.
 note.historyVisibility = 'full_history';

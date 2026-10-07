@@ -9767,13 +9767,9 @@ export class PeerborneDocument<
     //    would be unable to decrypt the ACL change.
     //
     //    The full 32-byte ID is both what we put on the wire AND what
-    //    the keychain stores: `keyIDLength` is now 32 in the shipped
+    //    the keychain stores: `keyIDLength` is 32 in the shipped
     //    providers (matches `deriveEpochIdFromRootSecret`), so there is
-    //    no truncation step. Earlier revisions truncated to 16 bytes
-    //    here, which collided with the keychain providers' UUID-style
-    //    cache-key encoding for 16-byte inputs and produced a
-    //    deterministic post-rotation decrypt failure on the receiver
-    //    side (key stored under hex, looked up under UUID format).
+    //    no truncation step.
     const [newKey, derivedEpochId32] = await Promise.all([
       deriveDocumentKeyFromRootSecret(rootSecret),
       deriveEpochIdFromRootSecret(rootSecret),

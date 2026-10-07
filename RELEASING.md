@@ -77,7 +77,7 @@ Registry publication and dist-tag updates are not atomic. A failure can leave a 
 
 After publication, verify each package/version and final dist-tag with `npm view`, install all six into a fresh consumer, and compare registry integrity with `release-manifest.json`. Remove obsolete temporary staging tags after verification if desired.
 
-## Trusted publishing migration
+## Trusted publishing
 
 The bootstrap token remains necessary for the first publication and for current dist-tag promotion. After all six packages exist, configure npm trusted publishing for this repository, `release.yml`, and the `npm-publish` environment. Tokenless package publication can then be evaluated, but do not remove authenticated dist-tag handling until the workflow has a tested replacement. Rotate or revoke the bootstrap token promptly.
 

@@ -4,7 +4,7 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  * SyncMessageSerializer provides serialization/deserialization methods for
  * `CRDTSyncMessage`s.
  *
- * This is a signed compatibility boundary. Implementations and callers that
+ * This is a signed wire boundary. Implementations and callers that
  * accept untrusted serialized messages must ensure deserialization yields a
  * deep-snapshot-compatible graph: primitives, genuine unshared `Uint8Array`s,
  * dense arrays, plain records containing only enumerable own data properties,

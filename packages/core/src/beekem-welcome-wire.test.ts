@@ -228,6 +228,27 @@ describe('beekem-welcome-wire', () => {
 
 describe('beekem-welcome-wire V2 inbound boundary', () => {
   type WelcomeWire = ReturnType<typeof serializeBeeKEMWelcomeV2ForWire>;
+  test.each([undefined, 0, 3, '2'])('rejects version %p on both boundaries', (version) => {
+    const welcome = welcomeFixture();
+    const wire = serializeBeeKEMWelcomeV2ForWire(welcome);
+    expect(() =>
+      serializeBeeKEMWelcomeV2ForWire({ ...welcome, version } as never),
+    ).toThrow(/version/);
+    expect(() =>
+      deserializeBeeKEMWelcomeV2FromWire({ ...wire, version }),
+    ).toThrow(/version/);
+  });
+
+  test('rejects an omitted version on both boundaries', () => {
+    const { version: _welcomeVersion, ...welcome } = welcomeFixture();
+    const { version: _wireVersion, ...wire } =
+      serializeBeeKEMWelcomeV2ForWire(welcomeFixture());
+    expect(() => serializeBeeKEMWelcomeV2ForWire(welcome as never)).toThrow(
+      /version/,
+    );
+    expect(() => deserializeBeeKEMWelcomeV2FromWire(wire)).toThrow(/version/);
+  });
+
   test.each([
     [
       'duplicate path keys',

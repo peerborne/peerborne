@@ -1,6 +1,6 @@
 ---
 title: "ADR 0003: Zero-knowledge membership proofs"
-description: Proposal not to add a zero-knowledge proof system to the MLS migration without a concrete privacy statement and threat model.
+description: Proposal not to add a zero-knowledge proof system to MLS adoption without a concrete privacy statement and threat model.
 ---
 
 - Status: Proposed
@@ -37,7 +37,7 @@ defines a different accountable-anonymity model.
 ## Decision
 
 Do not add `snarkjs`, circuits, proving parameters, proof fields, or a ZKP wire
-protocol as part of the MLS migration. First implement and review the explicit
+protocol as part of MLS adoption. First implement and review the explicit
 identity, authorization, control-chain, persistence, and group-transition
 model in ADR 0001. The generic provider and coordinator do not imply anonymous
 or privacy-preserving membership.
@@ -99,8 +99,9 @@ questions:
    independent circuit and implementation audits exist?
 8. What are worst-case proving and verification time, memory, proof size, and
    denial-of-service limits in Node.js and Chromium, including low-end devices?
-9. How will circuit, verifier, credential, and protocol versions migrate while
-   offline peers and persisted documents still exist?
+9. How are circuit, verifier, credential, and protocol versions changed
+   together, and how do offline peers and persisted documents fail closed on an
+   unsupported version?
 10. Which user-visible privacy claim follows, and which metadata and collusion
     attacks explicitly remain out of scope?
 11. How would the pinned dependency's license obligations apply to the exact

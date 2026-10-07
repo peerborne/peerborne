@@ -9,7 +9,7 @@ Peerborne does not currently provide a runnable, end-to-end pinning daemon or du
 
 ## What exists
 
-The Node-only `PeerborneNode` has no document-announcement receiver, decoder, or compatibility setting. Remote announcements cannot create or open documents, attach subscriptions, or request pinning.
+The Node-only `PeerborneNode` has no document-announcement receiver or decoder. Remote announcements cannot create or open documents, attach subscriptions, or request pinning.
 
 A remotely initiated pinning protocol needs an authenticated envelope with an explicit signed purpose, signer authorization, local pin policy, and replay protection. An ordinary signed sync message does not grant pinning authority to a node that has not opened the document and has no trusted writer ACL.
 

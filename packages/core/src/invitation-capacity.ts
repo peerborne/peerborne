@@ -25,7 +25,7 @@ export const INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES = 60;
 /** Bounded two-member BeeKEM V2 JSON plus ECIES framing. */
 export const INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES = 4 * 1024;
 
-/** Additional margin for framing and future compatible wire additions. */
+/** Additional margin for framing and future wire fields. */
 export const INITIAL_INVITATION_BOOTSTRAP_RESERVE_BYTES = 128 * 1024;
 
 export interface InitialInvitationCapacityProfileDeclaration {

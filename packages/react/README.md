@@ -24,3 +24,5 @@ Use these bindings in a React application. It depends on `@peerborne/core`, decl
 - [API reference](https://peerborne.io/reference/)
 - [Current limitations](https://peerborne.io/concepts/limitations/)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
+
+Pass `'create'` as the fourth argument to `usePeerborneDocumentState` when the application explicitly authorizes a new path. The default opens existing state; a failed open never creates a replacement on its own. Concurrent subscribers share one activation for that path. A `'create'` subscriber that joins an in-flight open creates the document only if that open fails, and a failed activation is dropped so the next mount retries it.

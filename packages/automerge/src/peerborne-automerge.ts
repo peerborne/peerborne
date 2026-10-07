@@ -996,7 +996,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     return automergeACLMergeState(doc) !== before;
   }
   // AutomergeACL uses binary access control (user is either in the list or not).
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async check(publicKey: CryptoKey, capability?: string): Promise<boolean> {
     this._assertComplete('check ACL membership');
@@ -1004,7 +1004,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('check ACL membership');
     return this._acl.users?.[hash] !== undefined;
   }
-  // The capability parameter is accepted for interface compatibility but ignored here;
+  // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
   async users(capability?: string): Promise<CryptoKey[]> {
     this._assertComplete('list ACL members');
@@ -1394,13 +1394,8 @@ export class AutomergeKeychain implements Keychain<BinaryChange[], CryptoKey> {
     }
     // 32 random bytes match the width used by BeeKEM-derived epoch IDs
     // (`deriveEpochIdFromRootSecret`), so the wire-format key-ID prefix
-    // is a single fixed width regardless of how the key was provisioned.
-    // Earlier revisions used a 16-byte UUID here, but that required the
-    // PathUpdate handler to truncate 32-byte BeeKEM epoch IDs down to 16
-    // bytes on install -- producing a deterministic cache-key-format
-    // mismatch with `getKey` (stored under hex, looked up under UUID
-    // format). Removing the size asymmetry removes the need for the
-    // truncation in the first place.
+    // is a single fixed width regardless of how the key was provisioned,
+    // and BeeKEM epoch IDs are installed without truncation.
     const keyIDBytes = crypto.getRandomValues(
       new Uint8Array(KEY_ID_LENGTH_BYTES),
     );

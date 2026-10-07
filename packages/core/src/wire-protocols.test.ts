@@ -14,13 +14,13 @@ describe('wire protocol constant verification', () => {
     }
   });
 
-  test('new invitation protocol uses the Peerborne namespace', () => {
+  test('invitation protocol uses the Peerborne namespace', () => {
     expect(wireProtocols.invitationJoinV1).toBe(
       '/peerborne/invitation-join/1.0.0',
     );
   });
 
-  test('new BeeKEM V2 protocols use the Peerborne namespace', () => {
+  test('BeeKEM V2 protocols use the Peerborne namespace', () => {
     expect(wireProtocols.beekemWelcomeV2).toBe('/peerborne/beekem-welcome/2.0.0');
     expect(wireProtocols.beekemPathUpdateV2).toBe('/peerborne/beekem-pathupdate/2.0.0');
   });

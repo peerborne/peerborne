@@ -26,3 +26,5 @@ The current local-change thunk has a documented ordering limitation; review the 
 - [API reference](https://peerborne.io/reference/)
 - [Current limitations](https://peerborne.io/concepts/limitations/)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
+
+Use `openDocumentAsync(path, selector, 'create')` to explicitly create a new document. The default opens existing authenticated state and propagates load failures without creating a replacement.
