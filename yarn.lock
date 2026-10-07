@@ -1683,6 +1683,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@helia/delegated-routing-client@npm:^1.0.7":
+  version: 1.0.7
+  resolution: "@helia/delegated-routing-client@npm:1.0.7"
+  dependencies:
+    "@helia/delegated-routing-v1-http-api-client": "npm:^9.0.0"
+    "@helia/interface": "npm:^7.1.2"
+    "@libp2p/interface": "npm:^3.2.3"
+    it-first: "npm:^3.0.11"
+    it-map: "npm:^3.1.6"
+    multiformats: "npm:^14.0.0"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/fe682529ac4cc82b9cf3b2bdf7409213a0f33bcca4ced986e35f0c93e183a6429d605e1b6d8000237f5121b4998602ffee3c374a462fc2b9167fa24f338f7ffe
+  languageName: node
+  linkType: hard
+
 "@helia/delegated-routing-v1-http-api-client@npm:^9.0.0":
   version: 9.0.2
   resolution: "@helia/delegated-routing-v1-http-api-client@npm:9.0.2"
@@ -1747,6 +1762,26 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@helia/interface@npm:^7.1.2":
+  version: 7.1.2
+  resolution: "@helia/interface@npm:7.1.2"
+  dependencies:
+    "@ipshipyard/crypto": "npm:^1.1.0"
+    "@ipshipyard/keychain": "npm:^1.0.2"
+    "@libp2p/interface": "npm:^3.2.3"
+    "@multiformats/dns": "npm:^1.0.13"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    abort-error: "npm:^1.0.2"
+    birnam: "npm:^1.0.0"
+    interface-blockstore: "npm:^7.0.1"
+    interface-datastore: "npm:^10.0.1"
+    main-event: "npm:^1.0.4"
+    multiformats: "npm:^14.0.0"
+    progress-events: "npm:^1.1.0"
+  checksum: 10/22a25ac6bfc716b5d6a7ba8c8c2738d2304fdcb750f9f6d1dbad02f0a08eefd5faed61b1273c1df611ad22a8b2c06dd645f9200edbfc76d941a72edbb8cd1cea
+  languageName: node
+  linkType: hard
+
 "@helia/libp2p@npm:^2.1.3":
   version: 2.1.3
   resolution: "@helia/libp2p@npm:2.1.3"
@@ -1783,6 +1818,45 @@ __metadata:
     multiformats: "npm:^14.0.0"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/4fdcbff6507c87d19eb581a078e85f93bf7789db4ba9249e277f797e5d7486aa29e41c1ce90204a4850949671a5d6eb403b6f9b4d3d7da20d95828934d38c01d
+  languageName: node
+  linkType: hard
+
+"@helia/libp2p@npm:^2.1.5":
+  version: 2.1.5
+  resolution: "@helia/libp2p@npm:2.1.5"
+  dependencies:
+    "@helia/delegated-routing-client": "npm:^1.0.7"
+    "@helia/delegated-routing-v1-http-api-client": "npm:^9.0.0"
+    "@helia/interface": "npm:^7.1.2"
+    "@ipshipyard/libp2p-auto-tls": "npm:^2.0.1"
+    "@libp2p/autonat": "npm:^3.0.21"
+    "@libp2p/bootstrap": "npm:^12.0.24"
+    "@libp2p/circuit-relay-v2": "npm:^4.2.6"
+    "@libp2p/config": "npm:^1.1.32"
+    "@libp2p/dcutr": "npm:^3.0.21"
+    "@libp2p/http": "npm:^2.0.2"
+    "@libp2p/identify": "npm:^4.1.7"
+    "@libp2p/interface": "npm:^3.2.3"
+    "@libp2p/kad-dht": "npm:^16.3.2"
+    "@libp2p/keychain": "npm:^6.1.2"
+    "@libp2p/mdns": "npm:^12.0.24"
+    "@libp2p/mplex": "npm:^12.0.24"
+    "@libp2p/noise": "npm:^17.0.2"
+    "@libp2p/peer-id": "npm:^6.0.10"
+    "@libp2p/ping": "npm:^3.1.6"
+    "@libp2p/tcp": "npm:^11.0.21"
+    "@libp2p/tls": "npm:^3.1.3"
+    "@libp2p/upnp-nat": "npm:^4.0.21"
+    "@libp2p/webrtc": "npm:^6.0.24"
+    "@libp2p/websockets": "npm:^10.1.14"
+    "@libp2p/yamux": "npm:^8.0.3"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    it-foreach: "npm:^2.1.7"
+    it-map: "npm:^3.1.6"
+    libp2p: "npm:^3.3.3"
+    multiformats: "npm:^14.0.0"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/bc96f77c16d4f0a815047e0522bfd19f9b0a2e1b3197e28d61669c8fad1cbf7171c01171ac9468615f1129e2fafeb0ce3d7a4e12a7db639a46255ecbf9a3861c
   languageName: node
   linkType: hard
 
@@ -3287,7 +3361,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/noise@npm:^17.0.3":
+"@libp2p/noise@npm:^17.0.2, @libp2p/noise@npm:^17.0.3":
   version: 17.0.3
   resolution: "@libp2p/noise@npm:17.0.3"
   dependencies:
@@ -3741,6 +3815,18 @@ __metadata:
     uint8arraylist: "npm:^3.0.2"
     uint8arrays: "npm:^6.1.1"
   checksum: 10/10aef19639de39a48132d729875fced4249ce000fdc97af9f9c3adaff7daffa51880276708882640627c4a4669eedb64dab419fde3ff96a5fe96a7a3bbfe84ac
+  languageName: node
+  linkType: hard
+
+"@libp2p/yamux@npm:^8.0.3":
+  version: 8.0.3
+  resolution: "@libp2p/yamux@npm:8.0.3"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/utils": "npm:^7.4.1"
+    race-signal: "npm:^2.0.0"
+    uint8arraylist: "npm:^3.0.2"
+  checksum: 10/e8296c92dfaafe157eccf042703c37eea6067d9c94fc37e659bec70f43f1c3c3e90f74834f820d4a34477a7c7e91e22d346e9a39cb73c85ebbd5b21adad36b66
   languageName: node
   linkType: hard
 
@@ -4497,7 +4583,7 @@ __metadata:
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
     "@helia/bitswap": "npm:^4.0.17"
-    "@helia/libp2p": "npm:^2.1.3"
+    "@helia/libp2p": "npm:^2.1.5"
     "@helia/unixfs": "npm:^8.0.7"
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
