@@ -4093,7 +4093,9 @@ export class PeerborneDocument<
 
     // Collect all ACL nodes from a subtree that is about to be pruned.
     // Re-attached ACL nodes are stored as leaf nodes (children stripped) so they
-    // don't keep nested children subtrees alive after pruning.
+    // don't keep nested children subtrees alive after pruning. When one CID
+    // appears both inline and as a deferred alias, the inline payload is kept
+    // so receivers can apply it without fetching the block.
     // Non-ACL (document) node CIDs are added to the prunedCIDs set.
     const collectACLNodes = (
       children: Record<string, CRDTChangeNode<ChangesType>>,
@@ -4106,9 +4108,11 @@ export class PeerborneDocument<
           childNode.kind === crdtReaderChangeNode ||
           childNode.kind === crdtWriterChangeNode
         ) {
-          // Shallow copy without children to avoid retaining the full subtree.
-          const { children: _dropped, ...leafNode } = childNode;
-          out[childHash] = leafNode as CRDTChangeNode<ChangesType>;
+          if (out[childHash]?.change === undefined) {
+            // Shallow copy without children to avoid retaining the full subtree.
+            const { children: _dropped, ...leafNode } = childNode;
+            out[childHash] = leafNode as CRDTChangeNode<ChangesType>;
+          }
         } else {
           // Document node being pruned -- record its CID.
           prunedCIDs.add(childHash);
@@ -8064,8 +8068,9 @@ export class PeerborneDocument<
    * signing the outer acceptance and enforcing single-use offer semantics.
    * Membership work is not transactional: an error after mutation begins can
    * leave partial or complete recipient membership without a returned bundle.
-   * Only an exact, same-process retry is eligible to repair and attest that
-   * state.
+   * Only an exact, same-process retry is eligible to complete and attest that
+   * state. It publishes only the membership deltas that are still missing;
+   * committed ACL nodes reach the recipient through the signed bootstrap tree.
    *
    * @internal
    */
@@ -8161,20 +8166,6 @@ export class PeerborneDocument<
       },
       addWriter: () =>
         this._addWriterUnlocked(reader, serializedReader, beginMutation),
-      repairReaders: async () => {
-        beginMutation();
-        return this._makeChange(
-          await retryACLConflict(() => this._readers.current()),
-          crdtReaderChangeNode,
-        );
-      },
-      repairWriters: async () => {
-        beginMutation();
-        return this._makeChange(
-          await retryACLConflict(() => this._writers.current()),
-          crdtWriterChangeNode,
-        );
-      },
     });
 
     const [welcomeEpochId, documentKey] = await this._keychain.current();

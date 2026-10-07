@@ -315,42 +315,43 @@ describe('initial invitation membership topology', () => {
   });
 });
 
-describe('invitation membership repair', () => {
-  test('re-publishes both ACL snapshots after a partial failure and exact retry', async () => {
-    const state = topology({
-      readers: ['recipient'],
-      writers: ['founder'],
-    });
-    let readerRepairs = 0;
-    let writerRepairs = 0;
-    let failWriterRepair = true;
+describe('exact invitation membership retry', () => {
+  test('re-runs idempotent onboarding after a partial failure and attests', async () => {
+    const state = topology();
+    const calls: string[] = [];
+    let failWriter = true;
 
     const prepare = () =>
       prepareInitialInvitationMembership({
         role: 'editor',
         getState: async () => state,
-        addReader: async () => 'cached-welcome',
+        addReader: async () => {
+          calls.push('addReader');
+          if (!state.readers.includes('recipient')) {
+            (state.readers as string[]).push('recipient');
+          }
+          return 'cached-welcome';
+        },
         addWriter: async () => {
+          calls.push('addWriter');
+          if (failWriter) {
+            failWriter = false;
+            throw new Error('publish failed');
+          }
           if (!state.writers.includes('recipient')) {
             (state.writers as string[]).push('recipient');
-          }
-        },
-        repairReaders: async () => {
-          readerRepairs++;
-        },
-        repairWriters: async () => {
-          writerRepairs++;
-          if (failWriterRepair) {
-            failWriterRepair = false;
-            throw new Error('publish failed');
           }
         },
       });
 
     await expect(prepare()).rejects.toThrow('publish failed');
     await expect(prepare()).resolves.toBe('cached-welcome');
-    expect(readerRepairs).toBe(2);
-    expect(writerRepairs).toBe(2);
+    expect(calls).toEqual([
+      'addReader',
+      'addWriter',
+      'addReader',
+      'addWriter',
+    ]);
     expect(state).toEqual(
       topology({
         readers: ['recipient'],
