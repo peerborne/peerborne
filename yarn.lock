@@ -2806,17 +2806,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@libp2p/bootstrap@npm:^12.0.30":
-  version: 12.0.30
-  resolution: "@libp2p/bootstrap@npm:12.0.30"
+"@libp2p/bootstrap@npm:^12.0.32":
+  version: 12.0.32
+  resolution: "@libp2p/bootstrap@npm:12.0.32"
   dependencies:
     "@libp2p/interface": "npm:^3.3.0"
-    "@libp2p/interface-internal": "npm:^3.1.12"
+    "@libp2p/interface-internal": "npm:^3.1.13"
     "@libp2p/peer-id": "npm:^6.0.15"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@multiformats/multiaddr-matcher": "npm:^3.0.2"
     main-event: "npm:^1.0.1"
-  checksum: 10/690206315f95accc1b07b4a97290306a490f31e7f54f1e4f924890b5dd705ee4b4f1b6c18c980ec1000f0b277550dd9f55e0fbae49695cbb34c75efb17e0c6e3
+  checksum: 10/84291f0f248ea3dc2252531583e5e4f842d4760b244a6935964be7c1ec408d1a4e41d3a47304af3b14928c8679302d6d2c4feac82a679fce4249b13d0bd94301
   languageName: node
   linkType: hard
 
@@ -4502,7 +4502,7 @@ __metadata:
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
     "@libp2p/autonat": "npm:^3.0.27"
-    "@libp2p/bootstrap": "npm:^12.0.30"
+    "@libp2p/bootstrap": "npm:^12.0.32"
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/dcutr": "npm:^3.0.26"
     "@libp2p/gossipsub": "npm:^17.1.2"
