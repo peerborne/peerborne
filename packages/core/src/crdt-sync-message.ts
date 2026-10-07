@@ -14,7 +14,6 @@ const signatureContexts = [
   'invitation-bootstrap-v1',
   'beekem-welcome-v2',
   'beekem-path-update-v2',
-  'key-update-v2',
 ] as const;
 const signatureContextSet = new Set<string>(signatureContexts);
 

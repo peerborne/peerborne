@@ -27,7 +27,8 @@ import {
   shuffleArray,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import { wrapStream, type DuplexStream } from './stream-adapter.js';
+import type { Stream } from '@libp2p/interface';
+import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
   AuthProvider,
@@ -139,7 +140,6 @@ import {
 } from './acl.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
-  keychainHistorySinceOrReject,
   MAX_KEYCHAIN_EPOCHS,
   type Keychain,
 } from './keychain.js';
@@ -1858,10 +1858,10 @@ export class PeerborneDocument<
     const blockKeyID = block.slice(0, this._keychainProvider.keyIDLength);
     const blockNonce = block.slice(
       this._keychainProvider.keyIDLength,
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
     );
     const blockData = block.slice(
-      this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+      this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
     );
     const content = await awaitLoadWork(
       this._decryptBlock(blockKeyID, blockNonce, blockData, getKey),
@@ -3009,7 +3009,7 @@ export class PeerborneDocument<
 
   private async _sendAuthorizedLoadResponse(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     data: Iterable<Uint8Array>,
     bootstrapRevision: number,
     admission?: SharedProtocolHandlerAdmission,
@@ -3031,10 +3031,10 @@ export class PeerborneDocument<
         }
         if (!isSharedProtocolHandlerActive(admission)) return;
         if (!authorized) {
-          return { completion: stream.sink([] as Iterable<Uint8Array>) };
+          return { completion: writeStream(stream, [] as Iterable<Uint8Array>) };
         }
         this._assertBootstrapResponseRevision(bootstrapRevision);
-        return { completion: stream.sink(data) };
+        return { completion: writeStream(stream, data) };
       });
       if (conflict === undefined) {
         await dispatch?.completion;
@@ -3588,10 +3588,7 @@ export class PeerborneDocument<
    */
   private async _authenticateMembershipMessage(
     message: CRDTSyncMessage<ChangesType, PublicKey>,
-    context: Extract<
-      SyncMessageContext,
-      'beekem-path-update-v2' | 'key-update-v2'
-    >,
+    context: Extract<SyncMessageContext, 'beekem-path-update-v2'>,
   ): Promise<
     | { kind: 'authenticated'; writerKeysVersion: number }
     | {
@@ -3872,19 +3869,17 @@ export class PeerborneDocument<
         return this._keychain.history();
       case 'since_invited':
         if (this._invitationEpoch === undefined) {
-          // No recorded invitation epoch (founding member, or a node that
-          // joined before Welcome wiring landed). Request the narrowest
+          // Founding members have no invitation epoch. Request the narrowest
           // distribution interpretation. The provider rejects if its CRDT
           // cannot represent the isolated current key replay-safely.
           return await this._keychain.currentKeyChange();
         }
-        // `historySince` is optional on the Keychain interface for source
-        // compatibility. The helper rejects when the provider omits it because
-        // core cannot assume a freshly synthesized current-key delta is safe to
-        // regenerate or replay.
-        return await keychainHistorySinceOrReject(this._keychain)(
-          this._invitationEpoch,
-        );
+        if (typeof this._keychain.historySince !== 'function') {
+          throw new TypeError(
+            'Keychain must implement replay-safe history slicing',
+          );
+        }
+        return await this._keychain.historySince(this._invitationEpoch);
       case 'current_only':
       default:
         // Request only the current key. Providers reject when their CRDT cannot
@@ -4182,7 +4177,7 @@ export class PeerborneDocument<
    */
   public async handleLoadRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4190,14 +4185,14 @@ export class PeerborneDocument<
       if (!isSharedProtocolHandlerActive(admission)) return;
       if (message.documentId !== this.documentPath) {
         console.warn('Shared doc-load request targeted the wrong document');
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared doc-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4283,7 +4278,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4301,7 +4296,7 @@ export class PeerborneDocument<
    */
   public async handleSnapshotLoadRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4311,14 +4306,14 @@ export class PeerborneDocument<
         console.warn(
           'Shared snapshot-load request targeted the wrong document',
         );
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared snapshot-load request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4328,7 +4323,7 @@ export class PeerborneDocument<
         // No snapshot available -- respond with empty payload so the peer
         // can fall back to the normal doc-load protocol.
         console.log('No snapshot available; sending an empty response');
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
@@ -4388,7 +4383,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4424,7 +4419,7 @@ export class PeerborneDocument<
    */
   public async handleTipAdvertiseRequestData(
     message: CRDTLoadRequest,
-    stream: { sink: (data: Iterable<Uint8Array>) => Promise<void> },
+    stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
@@ -4441,7 +4436,7 @@ export class PeerborneDocument<
         console.warn(
           'Shared tip-advertise request targeted the wrong document',
         );
-        await stream.sink([] as Iterable<Uint8Array>);
+        await writeStream(stream, [] as Iterable<Uint8Array>);
         return;
       }
 
@@ -4450,7 +4445,7 @@ export class PeerborneDocument<
       if (!(await this._isLoadRequesterAuthorized(message))) {
         console.warn('Shared tip-advertise request was unauthorized');
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
         return;
       }
@@ -4527,7 +4522,7 @@ export class PeerborneDocument<
       // Ensure the stream is closed so the requester doesn't hang.
       try {
         if (isSharedProtocolHandlerActive(admission)) {
-          await stream.sink([] as Iterable<Uint8Array>);
+          await writeStream(stream, [] as Iterable<Uint8Array>);
         }
       } catch {
         // The shared handler owns final stream teardown.
@@ -4632,7 +4627,7 @@ export class PeerborneDocument<
    *   `false` return value (by trying the next available peer) and thrown errors.
    */
   private async _sendLoadRequestAndSync(
-    stream: Pick<DuplexStream, 'sink' | 'source' | 'abort'>,
+    stream: Pick<Stream, 'send' | 'onDrain' | 'close' | 'abort' | typeof Symbol.asyncIterator>,
     serializedRequest: Uint8Array,
     expectedTipsHashHex: string | null = null,
     requiredResponseSigner?: PublicKey,
@@ -4720,13 +4715,13 @@ export class PeerborneDocument<
       }, responseTimeoutMs);
     });
     try {
-      await Promise.race([pipe([serializedRequest], stream.sink), deadline]);
+      await Promise.race([writeStream(stream, [serializedRequest]), deadline]);
     } catch (error) {
       clearResponseDeadline();
       throw error;
     }
     return await pipe(
-      stream.source,
+      stream,
       async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
         let assembled: Uint8Array;
         const readResponse = readUint8Iterable(source, responseLimit).catch(
@@ -4752,7 +4747,7 @@ export class PeerborneDocument<
         // look it up in the keychain. Responses shorter than the encryption
         // header are treated as malformed and rejected.
         const keyIDLength = this._keychainProvider.keyIDLength;
-        const nonceLength = this._authProvider.nonceBits;
+        const nonceLength = this._authProvider.nonceBytes;
         if (
           !Number.isSafeInteger(keyIDLength) ||
           keyIDLength <= 0 ||
@@ -5790,13 +5785,13 @@ export class PeerborneDocument<
     // closed -- on partitioned/slow peers, each `load()` could leak K
     // streams, exhausting per-connection stream quotas.
     let rawStream: import('@libp2p/interface').Stream;
-    let stream: { sink: (data: Iterable<Uint8Array>) => Promise<void>; source: AsyncIterable<Uint8ArrayList | Uint8Array> };
+    let stream: Stream;
     try {
       rawStream = await this.libp2p.dialProtocol(peer, [tipAdvertiseV1], {
         runOnLimitedConnection: true,
         signal,
       });
-      stream = wrapStream(rawStream);
+      stream = rawStream;
     } catch {
       // Peer doesn't support tip-advertise or dial failed -- treat as non-vote.
       return null;
@@ -5832,7 +5827,7 @@ export class PeerborneDocument<
       signal.addEventListener('abort', onAbort, { once: true });
     }
     try {
-      await pipe([serializedRequest], stream.sink);
+      await writeStream(stream, [serializedRequest]);
       // Size-bound the tip-advertise response read. A `tipAdvertiseV1`
       // body is an encrypted `CRDTSyncMessage` carrying the `documentId`
       // (up to `MAX_DOCUMENT_PATH_LENGTH` bytes BEFORE encryption — this
@@ -5850,7 +5845,7 @@ export class PeerborneDocument<
       // surrounding `try { ... } catch { return null; }` — surfacing as a
       // non-vote (same outcome as a timeout), NOT a quorum disagreement.
       const assembled = await readUint8Iterable(
-        stream.source,
+        stream,
         MAX_TIP_ADVERTISE_RESPONSE_SIZE,
       );
       if (assembled.length === 0) {
@@ -5871,7 +5866,7 @@ export class PeerborneDocument<
         return 'unknown-doc';
       }
       const keyIDLength = this._keychainProvider.keyIDLength;
-      const nonceLength = this._authProvider.nonceBits;
+      const nonceLength = this._authProvider.nonceBytes;
       if (
         !Number.isSafeInteger(keyIDLength) ||
         keyIDLength <= 0 ||
@@ -6126,7 +6121,7 @@ export class PeerborneDocument<
               serializedRequest = request;
             }
             return this._sendLoadRequestAndSync(
-              wrapStream(rawStream),
+              rawStream,
               request,
               null,
               issuerPublicKey,
@@ -6240,9 +6235,6 @@ export class PeerborneDocument<
    *   applying state but did not complete. The document instance remains
    *   fail-closed and must be discarded.
    */
-  // Key exchange happens during:
-  // - Load messages.
-  // - ACL updates via /collabswarm/key-update/1.0.0 protocol
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
     // A failed bootstrap may have partially changed ACL/keychain state without
     // producing a DAG head. Do not let a later load retry or `open()` interpret
@@ -6492,13 +6484,9 @@ export class PeerborneDocument<
       if (this._compactionConfig.enabled) {
         try {
           console.log('Trying snapshot-load from peer:', peer.toString());
-          // dialProtocol returns a libp2p v3 `Stream` (event-driven, with a
-          // `send()`/iterator pair). Wrap it into the v2 `{ source, sink }`
-          // duplex shape that `_sendLoadRequestAndSync` (and the legacy
-          // `it-pipe` calls inside it) still expects.
-          const snapshotStream = wrapStream(await this.libp2p.dialProtocol(peer, [
+          const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV3,
-          ], { runOnLimitedConnection: true }));
+          ], { runOnLimitedConnection: true });
           const loaded = await this._sendLoadRequestAndSync(
             snapshotStream,
             serializedRequest,
@@ -6541,10 +6529,9 @@ export class PeerborneDocument<
 
       try {
         console.log('Trying doc-load from peer:', peer.toString());
-        // See snapshot-load above for why we wrap the v3 Stream here.
-        const docStream = wrapStream(await this.libp2p.dialProtocol(peer, [
+        const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV3,
-        ], { runOnLimitedConnection: true }));
+        ], { runOnLimitedConnection: true });
         const loaded = await this._sendLoadRequestAndSync(
           docStream,
           serializedRequest,
@@ -6763,10 +6750,10 @@ export class PeerborneDocument<
       );
       const blockNonce = rawMessage.detail.data.slice(
         this._keychainProvider.keyIDLength,
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
       );
       const blockData = rawMessage.detail.data.slice(
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBits,
+        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
       );
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
         .then((rawContent) => {
@@ -6832,11 +6819,11 @@ export class PeerborneDocument<
                 const blockNonce = message.data.slice(
                   this._keychainProvider.keyIDLength,
                   this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBits,
+                    this._authProvider.nonceBytes,
                 );
                 const blockData = message.data.slice(
                   this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBits,
+                    this._authProvider.nonceBytes,
                 );
                 const rawContent = await this._decryptBlock(
                   blockKeyID,
@@ -7302,22 +7289,17 @@ export class PeerborneDocument<
     const hasKeychainChanges = keychainChanges !== undefined;
 
     // The built-in providers do not share one byte-level empty encoding. When
-    // staging and logical commitments are available,
-    // compare the live and projected key sequences before reserving a bootstrap
-    // instance. A semantic no-op is still committed atomically so providers
-    // retain causal metadata, but it does not expose new logical key state.
-    // Opaque legacy keychains retain the conservative begin-before-merge behavior.
+    // bootstrapping, compare the live and projected key sequences before
+    // reserving a bootstrap instance. A semantic no-op is still committed
+    // atomically so providers retain causal metadata, but it does not expose
+    // new logical key state.
     const preparedKeychainMerge =
       hasKeychainChanges &&
-      onStateApplicationStart !== undefined &&
-      this._keychain.prepareMerge
+      onStateApplicationStart !== undefined
         ? this._keychain.prepareMerge(keychainChanges)
         : undefined;
     let logicalKeychainStateChanged: boolean | undefined;
-    if (
-      preparedKeychainMerge?.stateCommitment &&
-      this._keychain.stateCommitment
-    ) {
+    if (preparedKeychainMerge !== undefined) {
       const [liveCommitment, preparedCommitment] = await awaitLoadWork(
         Promise.all([
           this._keychain.stateCommitment(),
@@ -8074,9 +8056,10 @@ export class PeerborneDocument<
 
   /**
    * Remove a user's explicit write authorization while preserving their
-   * explicit reader authorization. A writer-only legacy member is rejected:
-   * this operation does not rotate document keys, so silently removing its
-   * only ACL row would misrepresent retained read access as full revocation.
+   * explicit reader authorization. A writer without explicit reader
+   * membership is rejected: this operation does not rotate document keys, so
+   * silently removing its only ACL row would misrepresent retained read access
+   * as full revocation.
    * To fully revoke an editor, first downgrade it here, then call
    * `removeReader` so the reader-removal flow rotates the BeeKEM epoch.
    *
@@ -9025,7 +9008,7 @@ export class PeerborneDocument<
     }
     const invitationKemPublicKeyRaw = new Uint8Array(this._kemPublicKeyRaw);
     const keyIDLength = this._keychainProvider.keyIDLength;
-    const nonceLength = this._authProvider.nonceBits;
+    const nonceLength = this._authProvider.nonceBytes;
     if (
       !Number.isSafeInteger(keyIDLength) ||
       keyIDLength <= 0 ||
@@ -9382,7 +9365,7 @@ export class PeerborneDocument<
    * application-layer ECIES seal is the primary confidentiality
    * guarantee against on-path connected peers.
    *
-   * Wire format (mirrors `documentKeyUpdateV2`):
+   * Wire format:
    *   [4-byte BE doc-path length] [UTF-8 doc-path] [serialized sync message]
    */
   private async _sendBeeKEMWelcome(
@@ -9497,12 +9480,10 @@ export class PeerborneDocument<
     const failedPeers: string[] = [];
     for (const peer of peers) {
       try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemWelcomeV2], {
+        const stream = await this.libp2p.dialProtocol(peer, [beekemWelcomeV2], {
             runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
+          });
+        await writeStream(stream, [payload]);
       } catch (err) {
         failedPeers.push(peer.toString());
         console.warn(
@@ -10661,7 +10642,7 @@ export class PeerborneDocument<
    * are both performed inside `removeMember`; no follow-up
    * `BeeKEM.update()` call is involved).
    *
-   * Wire format mirrors `documentKeyUpdateV2`: a 4-byte big-endian
+   * Wire format starts with a 4-byte big-endian
    * document-path length, the UTF-8 path bytes, then the serialized
    * sync message body (which carries the `pathUpdate` /
    * `pathUpdateEpochId` / `signature` fields). The message is
@@ -10707,12 +10688,10 @@ export class PeerborneDocument<
     const failedPeers: string[] = [];
     for (const peer of peers) {
       try {
-        const stream = wrapStream(
-          await this.libp2p.dialProtocol(peer, [beekemPathUpdateV2], {
+        const stream = await this.libp2p.dialProtocol(peer, [beekemPathUpdateV2], {
             runOnLimitedConnection: true,
-          }),
-        );
-        await pipe([payload], stream.sink);
+          });
+        await writeStream(stream, [payload]);
       } catch (err) {
         failedPeers.push(peer.toString());
         console.warn(
@@ -10740,7 +10719,7 @@ export class PeerborneDocument<
    * `PathUpdateV2`, applies it to the local BeeKEM tree via
    * `processPathUpdate`, and installs the resulting document key
    * under the supplied epoch ID. Mirrors the wire framing used by
-   * `handleKeyUpdateRequestData` and `handleBeeKEMWelcomeRequestData`.
+   * `handleBeeKEMWelcomeRequestData`.
    *
    * SECURITY: the writer signature is **always** verified, regardless
    * of the swarm-wide `enableSigning` toggle. An unsigned or
@@ -10960,152 +10939,6 @@ export class PeerborneDocument<
       console.log('Installed BeeKEM-derived epoch key via PathUpdateV2');
     } catch {
       console.error('Shared BeeKEM PathUpdateV2 handling failed');
-    }
-  }
-
-  /**
-   * Handles a key-update request with pre-read payload data. Called by
-   * the shared protocol handler in Peerborne after reading the document
-   * path header and routing.
-   *
-   * @internal
-   * @param payload The encrypted key-update payload (without the document
-   *   path header that was already stripped by the shared handler).
-   */
-  public async handleKeyUpdateRequestData(
-    payload: Uint8Array,
-    admission?: SharedProtocolHandlerAdmission,
-  ): Promise<void> {
-    return this._runStateMutation(async () => {
-      if (!isSharedProtocolHandlerActive(admission)) return;
-      await this._handleKeyUpdateRequestDataUnlocked(payload, admission);
-    });
-  }
-
-  private async _handleKeyUpdateRequestDataUnlocked(
-    payload: Uint8Array,
-    admission?: SharedProtocolHandlerAdmission,
-  ): Promise<void> {
-    try {
-      const keyIDLength = this._keychainProvider.keyIDLength;
-      const nonceLength = this._authProvider.nonceBits;
-      if (
-        !Number.isSafeInteger(keyIDLength) ||
-        keyIDLength <= 0 ||
-        !Number.isSafeInteger(nonceLength) ||
-        nonceLength <= 0 ||
-        !Number.isSafeInteger(keyIDLength + nonceLength + 1) ||
-        keyIDLength + nonceLength + 1 > MAX_SHARED_PROTOCOL_REQUEST_BYTES
-      ) {
-        console.warn('Dropping key-update request with invalid framing widths');
-        return;
-      }
-      let stablePayload: Uint8Array;
-      try {
-        stablePayload = copyUnsharedUint8Array(
-          payload,
-          keyIDLength + nonceLength + 1,
-          MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-          'Document key-update payload',
-        );
-      } catch {
-        console.warn('Dropping malformed key-update request framing');
-        return;
-      }
-
-      // Decrypt the key update message.
-      const blockKeyID = stablePayload.slice(0, keyIDLength);
-      const blockNonce = stablePayload.slice(
-        keyIDLength,
-        keyIDLength + nonceLength,
-      );
-      const blockData = stablePayload.slice(keyIDLength + nonceLength);
-
-      let rawContent: Uint8Array | undefined;
-      try {
-        const decrypted = await this._decryptBlock(
-          blockKeyID,
-          blockNonce,
-          blockData,
-        );
-        if (decrypted !== undefined) {
-          rawContent = copyUnsharedUint8Array(
-            decrypted,
-            1,
-            MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-            'Decrypted document key-update message',
-          );
-        }
-      } catch {
-        console.warn('Failed to decrypt shared key-update request');
-        return;
-      }
-
-      if (!rawContent) {
-        console.warn('Unable to decrypt shared key-update request');
-        return;
-      }
-      if (!isSharedProtocolHandlerActive(admission)) return;
-
-      let message: CRDTSyncMessage<ChangesType, PublicKey>;
-      try {
-        message = snapshotSyncMessageForContext<ChangesType, PublicKey>(
-          this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-          'key-update-v2',
-        );
-      } catch {
-        console.warn('Dropping malformed or cross-context key-update request');
-        return;
-      }
-
-      // The shared V2 key-update handler already routes by the
-      // length-prefixed document-path header and drops invalid headers;
-      // this check is kept as a defense-in-depth guard against malformed
-      // or misrouted messages.
-      if (message.documentId !== this.documentPath) {
-        console.warn('Ignoring key-update for the wrong document');
-        return;
-      }
-
-      if (message.keychainChanges == null) {
-        console.warn('Dropping key-update without keychain changes');
-        return;
-      }
-
-      const authentication = await this._authenticateMembershipMessage(
-        message,
-        'key-update-v2',
-      );
-      if (authentication.kind !== 'authenticated') {
-        console.warn(
-          {
-            'missing-signature': 'Dropping unsigned key-update request',
-            malformed: 'Dropping malformed key-update request',
-            'invalid-signature': 'Dropping key-update with an invalid signature',
-            changed: 'Dropping key-update after payload or writer ACL changed during verification',
-          }[authentication.kind],
-        );
-        return;
-      }
-      const { writerKeysVersion } = authentication;
-
-      console.log('Received shared key-update request');
-
-      // Merge keychain changes.
-      try {
-        const committed = await runSharedProtocolMutation(admission, () => {
-          if (this._writerKeysVersion !== writerKeysVersion) {
-            throw new Error('Writer ACL changed before key-update commit');
-          }
-          this._keychain.merge(message.keychainChanges!);
-        });
-        if (!committed.admitted) return;
-        console.log('Updated keychain via shared key-update protocol');
-      } catch {
-        console.error('Failed to merge shared key-update changes');
-      }
-    } catch {
-      console.error('Shared key-update request handling failed');
     }
   }
 

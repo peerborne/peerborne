@@ -103,7 +103,7 @@ function loadHarness(plaintext: Uint8Array) {
     _keychainProvider: { keyIDLength: 1 },
     _keychain: { getKey: () => ({}) },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => plaintext,
       verify: auth.verify.bind(auth),
     },
@@ -116,10 +116,12 @@ function loadHarness(plaintext: Uint8Array) {
     _syncUnlocked: sync,
   });
   const stream = {
-    sink: async () => undefined,
-    source: (async function* () {
+    send: () => true,
+    onDrain: async () => undefined,
+    close: async () => undefined,
+    [Symbol.asyncIterator]: async function* () {
       yield new Uint8Array([1, 2, 3]);
-    })(),
+    },
     abort: jest.fn(),
   };
   return { document, stream, sync };
@@ -164,7 +166,7 @@ async function invitationHarness(plaintext: Uint8Array) {
       initialize: () => invitationKeychain,
     },
     _authProvider: {
-      nonceBits: 1,
+      nonceBytes: 1,
       decrypt: async () => plaintext,
       verify: auth.verify.bind(auth),
     },

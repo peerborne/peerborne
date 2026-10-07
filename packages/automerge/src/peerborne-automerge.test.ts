@@ -1205,8 +1205,9 @@ describe('AutomergeACL', () => {
     expect(await acl.check(key2)).toBe(false);
 
     const fresh = new AutomergeACL();
-    expect(() => fresh.merge(independentChanges)).not.toThrow();
-    expect(await fresh.check(key2)).toBe(true);
+    expect(() => fresh.merge(independentChanges)).toThrow(/canonical users root/);
+    expect(fresh.current()).toEqual([]);
+    expect(await fresh.check(key2)).toBe(false);
   });
 
   test('rejects a concurrent membership assignment and deletion atomically', async () => {
@@ -1644,38 +1645,41 @@ describe('AutomergeACL', () => {
     expect(second.current()).toEqual(first.current());
   });
 
-  test('loads a complete ACL history from the legacy random-seed format', async () => {
+  test('rejects a complete ACL history with a noncanonical random seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAllAutomergeChanges(legacyWithMember));
+    expect(() => receiver.merge(getAllAutomergeChanges(noncanonicalWithMember))).toThrow(
+      /requires the canonical users root/,
+    );
 
-    expect(await receiver.check(key1)).toBe(true);
-    expect(await receiver.users()).toHaveLength(1);
+    expect(receiver.current()).toEqual([]);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.users()).toEqual([]);
   });
 
-  test('fails closed for a legacy incremental change that omitted its seed', async () => {
+  test('fails closed for an incremental change that omitted its seed', async () => {
     const serialized = await serializeKey(key1);
-    const legacyBase = automergeFrom<{ users: Record<string, true> }>({
+    const noncanonicalBase = automergeFrom<{ users: Record<string, true> }>({
       users: {},
     });
-    const legacyWithMember = automergeChange(legacyBase, (doc) => {
+    const noncanonicalWithMember = automergeChange(noncanonicalBase, (doc) => {
       doc.users[serialized] = true;
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAutomergeChanges(legacyBase, legacyWithMember));
+    receiver.merge(getAutomergeChanges(noncanonicalBase, noncanonicalWithMember));
 
     await expect(receiver.check(key1)).rejects.toThrow(
       /unresolved change dependencies.*complete ACL history/i,
     );
-    expect(() => receiver.current()).toThrow(/cannot be migrated safely/i);
+    expect(() => receiver.current()).toThrow(/unresolved change dependencies/i);
   });
 
   test('allows valid child-before-parent delivery once dependencies arrive', async () => {
@@ -1753,13 +1757,11 @@ describe('AutomergeACL', () => {
   test('rejects malformed dependency-incomplete membership changes on admission', async () => {
     const serialized1 = await serializeKey(key1);
     const serialized2 = await serializeKey(key2);
-    const founder = automergeChange(
-      automergeInit<{ users: Record<string, unknown> }>(),
-      (doc) => {
-        doc.users = {};
-        doc.users[serialized1] = true;
-      },
-    );
+    const founderACL = new AutomergeACL();
+    await founderACL.add(key1);
+    const founder = automergeClone(
+      (founderACL as any)._acl,
+    ) as ReturnType<typeof automergeInit<{ users: Record<string, unknown> }>>;
     const founderChanges = getAllAutomergeChanges(founder);
     const predecessor = automergeChange(automergeClone(founder), (doc) => {
       doc.users[serialized2] = true;
@@ -1800,13 +1802,11 @@ describe('AutomergeACL', () => {
     const extraKeys = Array.from({ length: MAX_AUTOMERGE_ACL_MEMBERS }, () =>
       createECDH('secp384r1').generateKeys('base64'),
     );
-    const founder = automergeChange(
-      automergeInit<{ users: Record<string, unknown> }>(),
-      (doc) => {
-        doc.users = {};
-        doc.users[serialized1] = true;
-      },
-    );
+    const founderACL = new AutomergeACL();
+    await founderACL.add(key1);
+    const founder = automergeClone(
+      (founderACL as any)._acl,
+    ) as ReturnType<typeof automergeInit<{ users: Record<string, unknown> }>>;
     const predecessor = automergeChange(automergeClone(founder), (doc) => {
       doc.users[serialized2] = true;
     });
@@ -1834,18 +1834,16 @@ describe('AutomergeACL', () => {
 
     receiver.merge(getAllAutomergeChanges(predecessor));
     expect(await receiver.check(key2)).toBe(true);
-    expect(receiver.current()).toHaveLength(3);
+    expect(receiver.current()).toHaveLength(4);
   });
 
   test('rejects malformed membership changes whose users root is still missing', async () => {
     const serialized1 = await serializeKey(key1);
-    const founder = automergeChange(
-      automergeInit<{ users: Record<string, unknown> }>(),
-      (doc) => {
-        doc.users = {};
-        doc.users[serialized1] = true;
-      },
-    );
+    const founderACL = new AutomergeACL();
+    await founderACL.add(key1);
+    const founder = automergeClone(
+      (founderACL as any)._acl,
+    ) as ReturnType<typeof automergeInit<{ users: Record<string, unknown> }>>;
     const founderChanges = getAllAutomergeChanges(founder);
     const invalidKey = automergeChange(automergeClone(founder), (doc) => {
       doc.users['not-a-p384-key'] = true;
@@ -1920,9 +1918,12 @@ describe('AutomergeACL', () => {
     expect(() => receiver.merge(second.creation)).toThrow(
       /conflicting users roots/,
     );
-    receiver.merge(first.predecessor);
-    expect(await receiver.check(key1)).toBe(true);
-    expect(await receiver.check(key2)).toBe(false);
+    expect(() => receiver.merge(first.predecessor)).toThrow(
+      /requires the canonical users root/,
+    );
+    await expect(receiver.check(key1)).rejects.toThrow(
+      /unresolved change dependencies/,
+    );
   });
 
   test('a new dependency-incomplete change still stales prepared removal', async () => {

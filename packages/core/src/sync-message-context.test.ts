@@ -89,10 +89,6 @@ describe('sync message wire-context separation', () => {
         signature: 'sig',
       },
     ],
-    [
-      'key-update-v2',
-      { documentId: '/doc', keychainChanges: {}, signature: 'sig' },
-    ],
   ] as const)('accepts the %s allowlist', (context, message) => {
     const contextual = tagged(context, message);
     expect(snapshotSyncMessageForContext(contextual, context)).toEqual(
@@ -109,7 +105,6 @@ describe('sync message wire-context separation', () => {
     'invitation-bootstrap-v1',
     'beekem-welcome-v2',
     'beekem-path-update-v2',
-    'key-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
     expect(() =>
       snapshotSyncMessageForContext({ documentId: '/doc' }, context),
@@ -168,7 +163,6 @@ describe('sync message wire-context separation', () => {
     ['invitation-bootstrap-v1', { eciesSealed: new Uint8Array([1]) }],
     ['beekem-welcome-v2', { keychainChanges: {} }],
     ['beekem-path-update-v2', { keychainChanges: {} }],
-    ['key-update-v2', { welcomeEpochId: new Uint8Array(32) }],
   ] as const)(
     'rejects a cross-context field in %s',
     (context, extra) => {
@@ -394,44 +388,39 @@ describe('sync message root snapshot limits', () => {
   test('rejects more root keys than the context allows before reading descriptors', () => {
     const { proxy, counter } = countingProxy({
       documentId: '/doc',
-      signatureContext: 'key-update-v2',
-      keychainChanges: {},
+      signatureContext: 'beekem-path-update-v2',
+      pathUpdate: {},
+      pathUpdateEpochId: new Uint8Array(32),
       signature: 'sig',
       extra: 1,
     });
 
     expect(() =>
-      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
-    ).toThrow(/key-update-v2 message exceeds 4 own properties/);
+      snapshotSyncMessageForContext(proxy, 'beekem-path-update-v2'),
+    ).toThrow(/beekem-path-update-v2 message exceeds 5 own properties/);
     expect(counter.descriptorCalls).toBe(0);
   });
 
   test('rejects root key bytes beyond the context field names before reading descriptors', () => {
-    const { proxy, counter } = countingProxy({ ['x'.repeat(51)]: 1 });
+    const { proxy, counter } = countingProxy({ ['x'.repeat(63)]: 1 });
 
     expect(() =>
-      snapshotSyncMessageForContext(proxy, 'key-update-v2'),
-    ).toThrow(/key-update-v2 message exceeds 100 own-property key bytes/);
+      snapshotSyncMessageForContext(proxy, 'beekem-path-update-v2'),
+    ).toThrow(/beekem-path-update-v2 message exceeds 124 own-property key bytes/);
     expect(counter.descriptorCalls).toBe(0);
   });
 
   test('admits a root carrying every allowed field', () => {
-    expect(
-      snapshotSyncMessageForContext(
-        {
-          documentId: '/doc',
-          signatureContext: 'key-update-v2',
-          keychainChanges: {},
-          signature: 'sig',
-        },
-        'key-update-v2',
-      ),
-    ).toEqual({
+    const message = {
       documentId: '/doc',
-      signatureContext: 'key-update-v2',
-      keychainChanges: {},
+      signatureContext: 'beekem-path-update-v2',
+      pathUpdate: {},
+      pathUpdateEpochId: new Uint8Array(32),
       signature: 'sig',
-    });
+    };
+    expect(
+      snapshotSyncMessageForContext(message, 'beekem-path-update-v2'),
+    ).toEqual(message);
   });
 });
 
@@ -495,4 +484,13 @@ describe('snapshot comparison of opaque CryptoKeys', () => {
       syncMessageMatchesSnapshot(expected, candidate, 'ordinary-sync-v1'),
     ).toBe(false);
   });
+});
+
+test('rejects the removed direct key-update signature purpose', () => {
+  expect(isSyncMessageSignatureContext('key-update-v2')).toBe(false);
+  expect(() => snapshotSyncMessageForContext({
+    documentId: '/doc',
+    signatureContext: 'key-update-v2',
+    signature: 'sig',
+  }, 'ordinary-sync-v1')).toThrow(/signatureContext/);
 });

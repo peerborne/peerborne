@@ -47,15 +47,12 @@ import {
 } from './acl.js';
 import {
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
 } from './keychain.js';
 export type { PreparedCommitClaim } from './prepared-commit.js';
 import {
@@ -133,7 +130,6 @@ import { LRUCache } from './lru-cache.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  bloomFilterUpdateV1,
   searchIndexAdvertiseV1,
   searchQueryV1,
   invitationJoinV1,
@@ -167,6 +163,7 @@ import {
 import {
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
 } from './document-topic.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
@@ -239,15 +236,12 @@ export {
   MembershipProposal,
   GroupKeyProvider,
   Keychain,
-  TransactionalKeychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
   PreparedKeychainMerge,
   KeychainAppendIntent,
   MAX_KEYCHAIN_EPOCHS,
   computeKeychainStateCommitment,
-  isTransactionalKeychain,
-  keychainHistorySinceOrReject,
   KeychainProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -286,7 +280,6 @@ export {
   canonicalEntryPayload,
   computeEntryHash,
   // Wire protocols
-  bloomFilterUpdateV1,
   beekemWelcomeV2,
   beekemPathUpdateV2,
   searchIndexAdvertiseV1,
@@ -321,6 +314,7 @@ export {
   // Utilities
   documentTopic,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_PEER_DISCOVERY_TOPIC,
   LRUCache,
   assertCanonicalP384PublicKeyEncoding,
 };
@@ -422,12 +416,6 @@ export type {
   IdentifiedInitialLoadSigner,
   InitialLoadAuthenticationOptions,
 } from './initial-load-auth.js';
-export {
-  allowsUnauthenticatedUnknownDocumentSentinel,
-  isUnknownDocumentAdvertisement,
-  unknownDocumentAdvertisement,
-} from './initial-load-sentinel-policy.js';
-export type { InitialLoadSentinelPolicy } from './initial-load-sentinel-policy.js';
 export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,

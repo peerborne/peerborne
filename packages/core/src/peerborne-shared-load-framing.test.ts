@@ -1,10 +1,10 @@
+import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { Peerborne } from './peerborne.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
-  documentKeyUpdateV2,
   documentLoadV3,
   snapshotLoadV3,
   tipAdvertiseV1,
@@ -47,7 +47,6 @@ const jsonProtocols = [
 ] as const;
 
 const rawProtocols = [
-  ['key-update', documentKeyUpdateV2, 'handleKeyUpdateRequestData'],
   ['beekem-welcome', beekemWelcomeV2, 'handleBeeKEMWelcomeRequestData'],
   [
     'beekem-pathupdate',
@@ -168,9 +167,9 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
+          stream: ProtocolWriteStream,
         ) => {
-          await stream.sink([response]);
+          await writeStream(stream, [response]);
         },
       );
       (peerborne as any)._documentRegistry.set('/fragmented', {
@@ -234,8 +233,8 @@ describe('shared protocol request boundaries', () => {
       const documentHandler = jest.fn(
         async (
           _request: unknown,
-          stream: { sink(data: Uint8Array[]): Promise<void> },
-        ) => stream.sink([response]),
+          stream: ProtocolWriteStream,
+        ) => writeStream(stream, [response]),
       );
       (peerborne as any)._documentRegistry.set('/registered', {
         handleLoadRequestData: documentHandler,
@@ -426,7 +425,7 @@ describe('shared protocol request boundaries', () => {
       },
     );
     (peerborne as any)._documentRegistry.set('/registered', {
-      handleKeyUpdateRequestData: documentHandler,
+      handleBeeKEMWelcomeRequestData: documentHandler,
     });
     const { resource, stream } = streamFromChunks(
       [pathPrefixedMessage('/registered')],
@@ -438,7 +437,7 @@ describe('shared protocol request boundaries', () => {
 
     try {
       let settled = false;
-      const result = handlers.get(documentKeyUpdateV2)!(stream).then(() => {
+      const result = handlers.get(beekemWelcomeV2)!(stream).then(() => {
         settled = true;
       });
       await commitStarted.promise;
