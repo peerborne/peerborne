@@ -2,7 +2,7 @@ import { tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 /** One vote after the caller has authenticated and deduplicated its authority. */
-export interface PeerTipAdvertisement {
+export interface PeerLoadQuorumVote {
   peerId: string;
   hash: Uint8Array | null;
 }
@@ -10,7 +10,6 @@ export interface PeerTipAdvertisement {
 export type LoadQuorumDecision =
   | {
       ok: true;
-      kind: 'tip-hash';
       winningHashHex: string;
       agreeingPeerIds: string[];
       respondingCount: number;
@@ -20,7 +19,7 @@ export type LoadQuorumDecision =
       ok: false;
       reason:
         | 'insufficient-responses'
-        | 'no-majority'
+        | 'no-agreement'
         | 'conflicting-quorum'
         | 'no-peers-queried';
       respondingCount: number;
@@ -35,7 +34,7 @@ export type LoadQuorumDecision =
  * order pick a winner.
  */
 export function decideLoadQuorum(
-  advertisements: readonly PeerTipAdvertisement[],
+  advertisements: readonly PeerLoadQuorumVote[],
   q: number,
 ): LoadQuorumDecision {
   if (!Number.isSafeInteger(q) || q < 1) {
@@ -79,7 +78,6 @@ export function decideLoadQuorum(
   if (agreeingPeerIds.length >= q && bucketsMeetingQ === 1) {
     return {
       ok: true,
-      kind: 'tip-hash',
       winningHashHex,
       agreeingPeerIds,
       respondingCount,
@@ -95,7 +93,7 @@ export function decideLoadQuorum(
           ? 'conflicting-quorum'
           : respondingCount < q
             ? 'insufficient-responses'
-            : 'no-majority',
+            : 'no-agreement',
     respondingCount,
     effectiveQ: q,
     agreement: new Map(
@@ -116,8 +114,7 @@ export function decideLoadQuorum(
  * Worked examples:
  *   - K=1 → Q=1
  *   - K=2 → Q=2
- *   - K=3 → Q=2 (previously K=3 → Q=3 under
- *     `Math.ceil(K/2)+1`, which required all three peers to vote)
+ *   - K=3 → Q=2
  *   - K=4 → Q=3
  *   - K=5 → Q=3
  *   - K=7 → Q=4
@@ -135,7 +132,7 @@ export function defaultQuorumQ(k: number): number {
  * first-seen order. Used by the loader to collapse multiple open
  * connections to the same remote peer into a single quorum entry — without
  * this, one peer with two connections (e.g. direct + relay-circuit) would
- * cast two votes in the tip-advertise tally, allowing a single malicious
+ * cast two votes in the security-advertisement tally, allowing a single malicious
  * peer with multiple connections to single-handedly win an agreement.
  *
  * Pulled out so the dedup behaviour is unit-testable without standing up
@@ -238,7 +235,7 @@ export const DEFAULT_LOAD_QUORUM_K = 3;
  * misconfig are now rejected here with a clear operator-visible error.
  *
  * `loadQuorumTimeoutMs` is also validated here because the value flows
- * directly into `setTimeout(...)` inside a tip-advertise probe race.
+ * directly into `setTimeout(...)` inside a security-advertisement probe race.
  * `NaN`/`Infinity`/`0`/negative values are coerced to immediate-fire or
  * overflow behaviour by the timer queue. We require a finite positive integer
  * no greater than {@link LOAD_QUORUM_TIMEOUT_MS_MAX} so an operator typo or a
@@ -405,17 +402,16 @@ export function formatConfigValue(value: unknown): string {
 /**
  * The set of reasons `LoadQuorumFailedError` can be thrown with.
  *
- *   - `'insufficient-responses'` — fewer than `Q` peers returned a usable
- *     tip-set hash within the configured timeout (timeouts, declines,
+ *   - `'insufficient-responses'` — fewer than `Q` authorities returned a usable
+ *     authenticated state digest within the configured timeout (timeouts, declines,
  *     decryption failures).
- *   - `'no-majority'` — historical identifier retained for compatibility:
- *     peers responded but no single tip-set hash reached Q. Q may be an
- *     explicitly configured non-majority threshold.
- *   - `'conflicting-quorum'` — more than one distinct tip-set hash reached
+ *   - `'no-agreement'` — peers responded but no single authenticated state
+ *     digest reached Q. Q may be an explicitly configured non-majority threshold.
+ *   - `'conflicting-quorum'` — more than one distinct state digest reached
  *     Q. Only possible with an explicit non-majority Q; the loader refuses
  *     to let probe order choose between conflicting states.
  *   - `'equivocating-authority'` — one V4 signing authority voted for two
- *     different tip-set hashes in the same round (key compromise or a
+ *     different state digests in the same round (key compromise or a
  *     fork), so the round fails rather than counting either vote.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
@@ -425,10 +421,10 @@ export function formatConfigValue(value: unknown): string {
  *     failure so the misconfiguration is loud at `open()` time.
  *   - `'bind-check-failed-all-agreeing-peers'` — quorum agreement was
  *     reached, but EVERY peer in the agreeing cohort served a full-load
- *     response whose `tips` array did not hash to `winningHashHex` (or
- *     omitted `tips` entirely). Distinct from `'no-majority'` so callers
- *     can tell "no peer was even willing to vote" apart from "the agreeing
- *     cohort was entirely Byzantine on the load step". Surfaced by
+ *     response did not match the authenticated state digest, including its
+ *     served frontier, response manifest, and security commitments. Distinct
+ *     from `'no-agreement'` so callers can distinguish vote disagreement from
+ *     inconsistent full responses. Surfaced by
  *     `PeerborneDocument.load()` after exhausting every narrowed peer.
  *     Without the per-peer retry, a single malicious peer in the agreeing
  *     cohort could vote for the agreed hash and then serve a mismatched
@@ -437,7 +433,7 @@ export function formatConfigValue(value: unknown): string {
  */
 export type LoadQuorumFailedReason =
   | 'insufficient-responses'
-  | 'no-majority'
+  | 'no-agreement'
   | 'conflicting-quorum'
   | 'equivocating-authority'
   | 'no-peers-queried'
@@ -447,7 +443,7 @@ export type LoadQuorumFailedReason =
 
 /**
  * Error thrown by `PeerborneDocument.load()` when the initial-load quorum
- * gate fails -- i.e. fewer than `Q` peers agreed on a tip-set hash within
+ * gate fails -- i.e. fewer than `Q` peers agreed on a state digest within
  * the configured timeout. Applications should catch this and either retry
  * later (peers may converge), surface the failure to the user, or fall
  * back to an explicit `loadQuorumEnabled: false` path if they have an
@@ -468,11 +464,10 @@ export class LoadQuorumFailedError extends Error {
    *  failure case so callers can branch on the specific failure mode.
    *  See {@link LoadQuorumFailedReason} for the full set. */
   public readonly reason: LoadQuorumFailedReason;
-  /** Number of peers that returned any non-null probe result — both
-   *  tip-hash votes. Timeouts and
-   *  non-disclaim declines do NOT increment this. Used to distinguish
+  /** Number of peers that returned a signer-attributed vote. Timeouts and
+   *  declines do NOT increment this. Used to distinguish
    *  `'insufficient-responses'` (< Q peers responded at all) from
-   *  `'no-majority'` (≥ Q responded but no single bucket reached Q). */
+   *  `'no-agreement'` (≥ Q responded but no single bucket reached Q). */
   public readonly respondingCount: number;
   /** The effective Q threshold the loader was holding peers to. */
   public readonly requiredQ: number;
@@ -523,20 +518,20 @@ export class LoadQuorumFailedError extends Error {
           : opts.reason === 'invalid-config'
             ? (opts.detail ?? 'invalid load-quorum configuration')
             : opts.reason === 'conflicting-quorum'
-              ? `more than one tip-set hash reached the required ${opts.requiredQ} votes`
+              ? `more than one state digest reached the required ${opts.requiredQ} votes`
             : opts.reason === 'equivocating-authority'
-              ? 'a signing authority voted for conflicting tip-set hashes'
+              ? 'a signing authority voted for conflicting state digests'
             : opts.reason === 'bind-check-failed-all-agreeing-peers'
-              ? `quorum agreed on a tip-set hash but every peer in the agreeing cohort ` +
+              ? `quorum agreed on a state digest but every peer in the agreeing cohort ` +
                 `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +
-                `response whose tips did not hash to the agreed value (or omitted tips entirely); ` +
+                `response that did not match the agreed digest (or omitted tips entirely); ` +
                 `treating as coordinated Byzantine equivocation on the load step`
               : opts.reason === 'agreeing-peers-unreachable'
-                ? `quorum agreed on a tip-set hash but every peer in the agreeing ` +
+                ? `quorum agreed on a state digest but every peer in the agreeing ` +
                   `cohort failed to serve a full load (transport / protocol error, ` +
                   `not a bind mismatch); the document is known to exist but cannot ` +
                   `currently be retrieved from this peer set`
-                : `no tip-set hash reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
+                : `no state digest reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
     super(
       `Initial-load quorum failed for "${opts.documentPath}": ${detail}. ` +
         `Configure PeerborneConfig.loadQuorumK/Q/loadQuorumTimeoutMs, ` +

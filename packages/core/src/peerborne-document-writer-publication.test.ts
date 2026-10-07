@@ -204,6 +204,7 @@ function publicationHarness(
     _lastSyncMessage: initialLastSyncMessage,
     _putBlock: jest.fn(async () => hashes[nextHash++]!),
     _signAsWriter: jest.fn(async () => 'signature'),
+    _signAsWriterUnconditional: jest.fn(async () => 'signature'),
     _syncMessageSerializer: {
       serializeSyncMessage: jest.fn((message: unknown) => {
         serializedMessages.push(structuredClone(message));
@@ -1195,7 +1196,11 @@ describe('writer ACL publication boundary', () => {
       delete document._authProvider[codec];
       const run = jest.spyOn(document._mutationQueue, 'run');
 
-      await expect(document[operation]('candidate')).rejects.toThrow(
+      const target =
+        operation === 'addReader'
+          ? document.addReader('candidate', new Uint8Array(65).fill(1))
+          : document[operation]('candidate');
+      await expect(target).rejects.toThrow(
         new TypeError(
           `${featureName} requires AuthProvider.${codec} to be a function`,
         ),
@@ -1239,8 +1244,12 @@ describe('writer ACL publication boundary', () => {
         async () => identity,
       );
       const unlocked = jest.spyOn(document, `_${operation}Unlocked`);
+      const target =
+        operation === 'addReader'
+          ? document.addReader('candidate', new Uint8Array(65).fill(1))
+          : document[operation]('candidate');
 
-      await expect(document[operation]('candidate')).rejects.toThrow(expected);
+      await expect(target).rejects.toThrow(expected);
 
       expect(document._authProvider.deserializePublicKey).not.toHaveBeenCalled();
       expect(unlocked).not.toHaveBeenCalled();

@@ -92,11 +92,12 @@ type YjsSwarm = Peerborne<
 >;
 
 function Note({ swarm }: { swarm: YjsSwarm }) {
-  const [doc, changeDoc, acl] = usePeerborneDocumentState(
+  const [doc, changeDoc, acl, activationError] = usePeerborneDocumentState(
     swarm,
     '/notes/hello',
   );
 
+  if (activationError) return <p>Could not open this note.</p>;
   if (!doc) return <p>Opening…</p>;
 
   return (
@@ -111,7 +112,7 @@ function Note({ swarm }: { swarm: YjsSwarm }) {
 }
 ```
 
-The tuple is `[document | undefined, changeDoc, aclControls]`; `originFilter` is optionally `'all'`, `'remote'`, or `'local'`.
+The tuple is `[document | undefined, changeDoc, aclControls, activationError]`; `originFilter` is optionally `'all'`, `'remote'`, or `'local'`. `activationError` is the `Error` from this hook's latest failed activation of the current path (opening or creating it, or reading its readers and writers). It is `undefined` until an activation fails, and it is cleared when an activation succeeds or the path, the `'open'` or `'create'` initialization mode, or `originFilter` changes. A hook whose activation failed retries only after another hook instance activates the same path, so render `activationError` to let users leave or correct a document that cannot be activated.
 
 `changeDoc` returns `void`. It fire-and-forgets `documentRef.change()` and does not return or catch its promise, so authorization, storage, encryption, or publication rejection is dropped by the wrapper. It is also a no-op before the document ref reaches the cache. Use the direct document API when the UI must await and report failures.
 

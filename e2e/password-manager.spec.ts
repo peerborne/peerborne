@@ -137,7 +137,8 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   });
 
   const truncatedKemKey = btoa(atob(memberKemKey).slice(0, 64));
-  const missingKemMessage = "Enter the new member's KEM public key.";
+  const missingKemMessage =
+    "Enter the new member's KEM public key from their Settings page.";
   const invalidBase64Message = 'The member KEM public key is not valid base64.';
   const invalidShapeMessage =
     'The member KEM public key must be a 65-byte uncompressed P-256 ' +
@@ -230,4 +231,179 @@ test('creates a vault and preserves a secret across selection and navigation', a
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('link', { name: 'Secrets', exact: true }).click();
   await expect(name).toHaveValue('Smoke secret');
+});
+
+test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  let addedReaders = 0;
+  page.on('console', (message) => {
+    if (message.text() === 'Added reader') addedReaders += 1;
+  });
+  const dialogs: string[] = [];
+  page.on('dialog', (dialog) => {
+    dialogs.push(dialog.message());
+    void dialog.accept();
+  });
+
+  await page.goto('/login');
+  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await page.getByText(/^Unnamed Secret/).click();
+  await expect(
+    page.getByRole('cell', { name: 'Editor', exact: true }),
+  ).toHaveCount(1, { timeout: 30_000 });
+
+  const { identityKey, kemKey, otherKemKey } = await page.evaluate(async () => {
+    const encode = (bytes: ArrayBuffer) =>
+      btoa(String.fromCharCode(...new Uint8Array(bytes)));
+    const identity = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    );
+    const generateKem = () =>
+      crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
+        'deriveBits',
+      ]);
+    const kem = await generateKem();
+    const otherKem = await generateKem();
+    return {
+      identityKey: encode(await crypto.subtle.exportKey('raw', identity.publicKey)),
+      kemKey: encode(await crypto.subtle.exportKey('raw', kem.publicKey)),
+      otherKemKey: encode(await crypto.subtle.exportKey('raw', otherKem.publicKey)),
+    };
+  });
+
+  const memberRows = page
+    .getByRole('row')
+    .filter({ has: page.getByRole('button', { name: 'Remove' }) });
+  await page.getByPlaceholder('Public Key to add').fill(identityKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs)
+    .toEqual([
+      "Enter the new member's KEM public key from their Settings page.",
+    ]);
+  await expect(memberRows).toHaveCount(1);
+
+  await page.getByPlaceholder('Member KEM public key').fill(kemKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  const readerRow = memberRows.filter({
+    has: page.getByRole('cell', { name: identityKey, exact: true }),
+  });
+  await expect(readerRow).toHaveCount(1, { timeout: 30_000 });
+  await expect(
+    readerRow.getByRole('cell', { name: 'Reader', exact: true }),
+  ).toHaveCount(1);
+  await expect.poll(() => addedReaders).toBe(1);
+  expect(dialogs).toHaveLength(1);
+
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect.poll(() => addedReaders).toBe(2);
+  expect(dialogs).toHaveLength(1);
+
+  await page.getByPlaceholder('Member KEM public key').fill(otherKemKey);
+  await page.getByRole('button', { name: 'Set role' }).click();
+  await expect
+    .poll(() => dialogs.slice(1))
+    .toEqual([
+      'Unable to update document permissions. Verify both public keys and ' +
+        'the membership configuration.',
+    ]);
+  expect(addedReaders).toBe(2);
+  await expect(memberRows).toHaveCount(2);
+  await expect(
+    readerRow.getByRole('cell', { name: 'Reader', exact: true }),
+  ).toHaveCount(1);
+  expect(errors, 'reader onboarding errors').toEqual([]);
+});
+
+test('offers only vault creation and leaves a vault that failed to create', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const generateKey = SubtleCrypto.prototype.generateKey;
+    const injection = window as unknown as { failNextVaultKey?: boolean };
+    SubtleCrypto.prototype.generateKey = function (
+      this: SubtleCrypto,
+      algorithm: AlgorithmIdentifier,
+      ...rest: unknown[]
+    ) {
+      if (
+        injection.failNextVaultKey &&
+        (algorithm as Algorithm).name === 'AES-GCM'
+      ) {
+        injection.failNextVaultKey = false;
+        return Promise.reject(new Error('Injected vault key failure'));
+      }
+      return Reflect.apply(generateKey, this, [algorithm, ...rest]);
+    } as SubtleCrypto['generateKey'];
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  const failedCreates: string[] = [];
+  page.on('console', (message) => {
+    if (message.text().startsWith('Failed to open/find document: ')) {
+      failedCreates.push(message.text());
+    }
+  });
+  const createVault = page.getByRole('button', {
+    name: 'Create a vault',
+    exact: true,
+  });
+  const leaveVault = page.getByRole('button', {
+    name: 'Choose another vault',
+    exact: true,
+  });
+  const newSecret = page.getByRole('button', {
+    name: 'New Secret',
+    exact: true,
+  });
+
+  await page.goto('/login');
+  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await expect(page).toHaveURL(/\/secrets$/);
+  await expect(page.getByRole('button')).toHaveText(['Create a vault']);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  await expect(
+    page.getByText('A vault lasts only for the current session.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { failNextVaultKey?: boolean }).failNextVaultKey =
+      true;
+  });
+  await createVault.click();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Could not create this vault. Choose another vault',
+  );
+  await expect
+    .poll(() => failedCreates)
+    .toEqual([
+      expect.stringMatching(/^Failed to open\/find document: \/.+\/vaults\//),
+    ]);
+  await expect(newSecret).toHaveCount(0);
+
+  await leaveVault.click();
+  await expect(page.getByRole('button')).toHaveText(['Create a vault']);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  await createVault.click();
+  await expect(newSecret).toBeEnabled();
+  await expect(leaveVault).toHaveCount(0);
+  await newSecret.click();
+  const name = page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true });
+  await name.fill('Kept secret');
+  await expect(page.getByText('Kept secret', { exact: true })).toBeVisible();
+  await expect(leaveVault).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(failedCreates).toHaveLength(1);
+  expect(errors, 'vault creation errors').toEqual([]);
 });

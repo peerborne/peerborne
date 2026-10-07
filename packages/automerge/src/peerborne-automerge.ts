@@ -1952,9 +1952,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<
         pathUpdateEpochId:
           message.pathUpdateEpochId &&
           Base64.fromUint8Array(message.pathUpdateEpochId),
-        // Initial-load quorum tip-set hash (#189 §5.4.2). Base64-encoded
+        // Initial-load quorum state digest (#189 §5.4.2). Base64-encoded
         // for JSON-safe transport, mirrored on the deserialize path below.
-        // Only populated on tip-advertise responses.
+        // Only populated on security advertisements.
         tipsHash: message.tipsHash && Base64.fromUint8Array(message.tipsHash),
         // Explicit tip-set advertisement populated on load responses to
         // bind the served state to the responder's frontier (see
@@ -2175,7 +2175,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<
       }
       pathUpdateEpochId = Base64.toUint8Array(raw.pathUpdateEpochId);
     }
-    // Initial-load quorum tip-set hash (#189 §5.4.2). Decoded from base64
+    // Initial-load quorum state digest (#189 §5.4.2). Decoded from base64
     // on the way back to Uint8Array; mirrors the serializer above.
     // Untrusted input -- reject anything that isn't a string AND enforce
     // the fixed-width SHA-256 digest length (32 bytes) at the wire

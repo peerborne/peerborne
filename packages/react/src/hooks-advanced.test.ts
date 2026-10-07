@@ -111,37 +111,7 @@ describe('ACL helper functions delegate to docRef', () => {
     resetCaches();
   });
 
-  test('addReader calls docRef.addReader with the given key', async () => {
-    const mockDoc = createMockDocument();
-    const mockSwarm = createMockPeerborne(mockDoc);
-    const captureRef = { current: null as any };
-
-    await act(async () => {
-      render(
-        React.createElement(TestProvider, null,
-          React.createElement(TestConsumer, {
-            peerborne: mockSwarm,
-            documentPath: '/acl-add-reader',
-            captureRef,
-          }),
-        ),
-      );
-    });
-
-    // Wait for the full open→subscribe→getReaders→getWriters→setDocDataCache
-    // cycle to complete so docRef is in docCache and ACL helpers have a live ref.
-    await waitFor(() => {
-      expect(captureRef.current.docData).toBeDefined();
-    });
-
-    await act(async () => {
-      await captureRef.current.acl.addReader('newUserPubKey');
-    });
-
-    expect(mockDoc.addReader).toHaveBeenCalledWith('newUserPubKey');
-  });
-
-  test('addReader forwards the reader KEM public key needed for promotion', async () => {
+  test('addReader forwards the reader KEM public key', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
     const captureRef = { current: null as any };
@@ -173,6 +143,35 @@ describe('ACL helper functions delegate to docRef', () => {
       readerKemPublicKey,
     );
     expect(mockDoc.addWriter).toHaveBeenCalledWith('newUserPubKey');
+  });
+
+  test('setKemKeyPair installs the KEM key pair on the open document', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const captureRef = { current: null as any };
+
+    await act(async () => {
+      render(
+        React.createElement(TestProvider, null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/acl-set-kem-key-pair',
+            captureRef,
+          }),
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(captureRef.current.docData).toBeDefined();
+    });
+
+    const keyPair = { publicKey: {}, privateKey: {} } as CryptoKeyPair;
+    await act(async () => {
+      await captureRef.current.acl.setKemKeyPair(keyPair);
+    });
+
+    expect(mockDoc.setKemKeyPair).toHaveBeenCalledWith(keyPair);
   });
 
   test('removeReader calls docRef.removeReader with the given key', async () => {
@@ -506,27 +505,29 @@ describe('Error handling', () => {
     }
   });
 
-  test('a rejected open is handled, evicted on unmount, and retried on remount', async () => {
+  test('a rejected open is evicted and retried by a later mount while the first stays mounted', async () => {
     const mockDoc = createMockDocument();
     mockDoc.open.mockRejectedValueOnce(new Error('sensitive failure details'));
     const mockSwarm = createMockPeerborne(mockDoc);
     const caches = getPeerborneHookCaches(mockSwarm);
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const firstRef = { current: null as any };
+    const laterRef = { current: null as any };
 
     try {
-      let unmount: () => void;
+      let firstView!: ReturnType<typeof render>;
       await act(async () => {
-        const result = render(
+        firstView = render(
           React.createElement(
             TestProvider,
             null,
             React.createElement(TestConsumer, {
               peerborne: mockSwarm,
               documentPath: '/open-retry',
+              captureRef: firstRef,
             }),
           ),
         );
-        unmount = result.unmount;
       });
 
       await waitFor(() => {
@@ -534,34 +535,110 @@ describe('Error handling', () => {
           'Failed to open/find document: /open-retry',
         );
       });
-      expect(caches.openTasks.has('/open-retry')).toBe(true);
+      expect(caches.openTasks.has('/open-retry')).toBe(false);
       expect(caches.openTaskResults.has('/open-retry')).toBe(false);
+      expect(caches.subscriberCounts.get('/open-retry')).toBe(1);
+      expect(firstRef.current.activationError).toEqual(
+        new Error('sensitive failure details'),
+      );
 
-      act(() => {
-        unmount!();
-      });
-      await waitFor(() => {
-        expect(caches.openTasks.has('/open-retry')).toBe(false);
-        expect(caches.subscriberCounts.has('/open-retry')).toBe(false);
-      });
-
+      let laterView!: ReturnType<typeof render>;
       await act(async () => {
-        render(
+        laterView = render(
           React.createElement(
             TestProvider,
             null,
             React.createElement(TestConsumer, {
               peerborne: mockSwarm,
               documentPath: '/open-retry',
+              captureRef: laterRef,
             }),
           ),
         );
       });
 
       await waitFor(() => {
-        expect(mockDoc.subscribe).toHaveBeenCalled();
+        expect(laterRef.current.docData).toEqual({ test: 'data' });
+        expect(firstRef.current.docData).toEqual({ test: 'data' });
       });
+      expect(firstRef.current.activationError).toBeUndefined();
+      expect(laterRef.current.activationError).toBeUndefined();
       expect(mockDoc.open).toHaveBeenCalledTimes(2);
+      expect(mockDoc.subscribe).toHaveBeenCalledTimes(2);
+      expect(caches.activationRetries.has('/open-retry')).toBe(false);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(consoleSpy.mock.calls)).not.toContain(
+        'sensitive failure details',
+      );
+
+      act(() => {
+        laterView.unmount();
+      });
+      expect(caches.subscriberCounts.get('/open-retry')).toBe(1);
+      expect(mockDoc._subscriptions.size).toBe(1);
+      const [{ handler: firstHandler }] = mockDoc._subscriptions.values();
+      act(() => {
+        firstHandler({ test: 'updated' }, ['reader1'], ['writer1']);
+      });
+      expect(firstRef.current.docData).toEqual({ test: 'updated' });
+      expect(mockDoc.close).not.toHaveBeenCalled();
+
+      act(() => {
+        firstView.unmount();
+      });
+      await waitFor(() => {
+        expect(mockDoc.close).toHaveBeenCalledTimes(1);
+      });
+      expect(mockDoc._subscriptions.size).toBe(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('a failed consumer that unmounts is not retried by a later activation', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValueOnce(new Error('open failed'));
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const caches = getPeerborneHookCaches(mockSwarm);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const laterRef = { current: null as any };
+
+    try {
+      const failedView = render(
+        React.createElement(
+          TestProvider,
+          null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/unmounted-retry',
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(caches.activationRetries.get('/unmounted-retry')?.size).toBe(1);
+      });
+      act(() => {
+        failedView.unmount();
+      });
+      expect(caches.activationRetries.has('/unmounted-retry')).toBe(false);
+      expect(caches.subscriberCounts.has('/unmounted-retry')).toBe(false);
+
+      render(
+        React.createElement(
+          TestProvider,
+          null,
+          React.createElement(TestConsumer, {
+            peerborne: mockSwarm,
+            documentPath: '/unmounted-retry',
+            captureRef: laterRef,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(laterRef.current.docData).toEqual({ test: 'data' });
+      });
+      expect(mockDoc.subscribe).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
     } finally {
       consoleSpy.mockRestore();
     }

@@ -142,7 +142,7 @@ describe('ordinary sync-message context confinement', () => {
       document.sync({
         documentId: documentPath,
         // @ts-expect-error sync() accepts only the ordinary context
-        signatureContext: 'load-response-v3',
+        signatureContext: 'load-response-v4',
       }),
     ).resolves.toBe(false);
   });

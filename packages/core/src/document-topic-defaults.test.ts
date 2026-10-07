@@ -9,7 +9,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('document topic defaults', () => {
-  test('provides the shared v3 defaults', () => {
+  test('provides the shared document-topic defaults', () => {
     expect(defaultDocumentPubsubConfig()).toEqual({
       pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
     });

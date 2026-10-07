@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, Table, Row, Container } from 'react-bootstrap';
-import { YjsPeerborne } from './utils';
+import { encodeKemPublicKey, YjsPeerborne } from './utils';
 import { serializeKey } from '@peerborne/yjs';
 
 function KeyCell({children}: {children?: React.ReactNode}) {
@@ -33,11 +33,14 @@ function ActionCell({value}: {value: string}) {
 export function Settings({
   peerborne,
   publicKey,
+  kemKeyPair,
 }: {
   peerborne: YjsPeerborne;
   publicKey?: CryptoKey;
+  kemKeyPair?: CryptoKeyPair;
 }) {
   const [serializedKey, setSerializedKey] = useState<string | undefined>();
+  const [kemPublicKey, setKemPublicKey] = useState<string | undefined>();
 
   useEffect(() => {
     (async () => {
@@ -47,6 +50,21 @@ export function Settings({
       setSerializedKey(await serializeKey(publicKey));
     })();
   }, [publicKey]);
+
+  useEffect(() => {
+    let active = true;
+    setKemPublicKey(undefined);
+    if (kemKeyPair) {
+      void crypto.subtle
+        .exportKey('raw', kemKeyPair.publicKey)
+        .then((raw) => {
+          if (active) setKemPublicKey(encodeKemPublicKey(new Uint8Array(raw)));
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [kemKeyPair]);
 
   return (
     <Container className="ml-auto mr-auto mt-5">
@@ -68,6 +86,11 @@ export function Settings({
               <KeyCell>Public Key</KeyCell>
               <ValueCell>{serializedKey}</ValueCell>
               <ActionCell value={serializedKey}></ActionCell>
+            </tr>}
+            {kemPublicKey && <tr>
+              <KeyCell>KEM Public Key</KeyCell>
+              <ValueCell>{kemPublicKey}</ValueCell>
+              <ActionCell value={kemPublicKey}></ActionCell>
             </tr>}
 
             {!serializedKey && (peerborne.libp2p.getMultiaddrs().length === 0) && (

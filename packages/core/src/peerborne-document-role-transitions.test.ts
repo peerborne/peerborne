@@ -472,16 +472,30 @@ describe('membership call-boundary snapshots', () => {
     expect(addReaderUnlocked).not.toHaveBeenCalled();
   });
 
-  test('requires identity codecs even for ACL-only reader onboarding', async () => {
+  test('requires identity codecs for reader onboarding', async () => {
     const document = fakeDocument();
     delete document._authProvider.serializePublicKey;
     delete document._authProvider.deserializePublicKey;
 
-    await expect(document.addReader('target')).rejects.toThrow(
+    await expect(document.addReader('target', kemPublicKey())).rejects.toThrow(
       /requires AuthProvider\.serializePublicKey/,
     );
     expect(document._testState.readerCheck).not.toHaveBeenCalled();
   });
+
+  test.each([undefined, null, 'kem', [4]])(
+    'rejects reader onboarding without KEM key bytes (%p)',
+    async (readerKemPublicKey) => {
+      const document = fakeDocument();
+      const serialize = jest.spyOn(document._authProvider, 'serializePublicKey');
+
+      await expect(
+        document.addReader('target', readerKemPublicKey as never),
+      ).rejects.toThrow(/readerKemPublicKey/);
+      expect(serialize).not.toHaveBeenCalled();
+      expect(document._testState.readerCheck).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('reader addition staging', () => {
@@ -1799,7 +1813,7 @@ describe('writer and reader removal ordering', () => {
     expect(document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
-  test('fails closed before publication when transactional epoch staging is unavailable', async () => {
+  test('rejects a keychain without prepareEpochKey before publication', async () => {
     const document = fakeDocument({
       readers: ['target'],
       liveLeafIndex: 2,
@@ -1809,7 +1823,7 @@ describe('writer and reader removal ordering', () => {
     delete document._keychain.prepareEpochKey;
 
     await expect(document.removeReader(targetUser)).rejects.toThrow(
-      /does not support transactional epoch-key staging/,
+      /Keychain\.prepareEpochKey must be a function/,
     );
 
     expect(document._testState.readerIds.has('target')).toBe(true);

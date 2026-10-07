@@ -159,7 +159,11 @@ function App() {
               element={
                 loggedIn ? (
                   peerborne ? (
-                    <Settings peerborne={peerborne} publicKey={publicKey} />
+                    <Settings
+                      peerborne={peerborne}
+                      publicKey={publicKey}
+                      kemKeyPair={kemKeyPair}
+                    />
                   ) : (
                     <i>Loading peerborne...</i>
                   )

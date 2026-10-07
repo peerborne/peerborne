@@ -821,7 +821,7 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
     expect(merged.filter(([cid]) => cid.startsWith('L'))).toHaveLength(128);
   });
 
-  test('accepts a 4097-node legacy chain beyond the V4 node budget', () => {
+  test('accepts a 4097-node ordinary sync chain beyond the V4 load node budget', () => {
     const depth = 4_097;
     const root: Node = { kind: docKind, change: 'root' };
     let cursor = root;
@@ -1166,7 +1166,7 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
 
     // Counter-check: the old buggy implementation (`Array.from(_hashes)`)
     // would have produced DIFFERENT frontiers for these two peers (4
-    // entries vs 3 entries), so any tipsHash derived from it would have
+    // entries vs 3 entries), so any digest derived from it would have
     // diverged -- the behavior this regression prevents.
     expect(peerAHashes.size).not.toBe(peerBHashes.size);
   });
@@ -1278,7 +1278,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
   test('empty payload (no changes, no snapshot) => empty frontier', () => {
     // A responder that has no state at all serves nothing. Their
     // "frontier" is the canonical empty set, which the quorum loader
-    // compares to `tipsHash([])`. Honest brand-new responders bootstrap
+    // compares to `digest([])`. Honest brand-new responders bootstrap
     // cleanly under this case.
     expect(computeServedFrontier(undefined, undefined, undefined)).toEqual([]);
     expect(computeServedFrontier(undefined, undefined, '')).toEqual([]);
@@ -1369,7 +1369,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
 
   test('forged tips attack: responder ships changes for state Y but claims state X tips', () => {
     // This is the attack the structural-binding closes. Imagine the
-    // quorum agreed on `winningHashHex = tipsHash([X_HEAD])`. A
+    // quorum agreed on `winningHashHex = digest([X_HEAD])`. A
     // Byzantine responder votes hash X (truthfully in the probe
     // round), then on the load serves changes rooted at a completely
     // different head Y_HEAD. The responder also fakes `message.tips =
@@ -1377,7 +1377,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
     // anywhere.
     //
     // The previous (responder-attestation) binding would have
-    // compared `tipsHash([X_HEAD]) === winningHashHex` and PASSED,
+    // compared `digest([X_HEAD]) === winningHashHex` and PASSED,
     // allowing the divergent state Y to be applied. The new
     // structural binding examines the served payload and computes
     // the frontier as `[Y_HEAD]`. Hashing that gives a value that
@@ -1429,7 +1429,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
     // (and hashes it correctly into the winning hash they voted for),
     // but the served `changes` tree only embeds H1. The
     // structurally-derived frontier is {H1}, which hashes
-    // differently from `tipsHash([H1, H2])`. The loader's primary
+    // differently from `digest([H1, H2])`. The loader's primary
     // structural check fires; the responder's `tips` is also
     // checked against the structural frontier as defense-in-depth.
     const tree: CRDTChangeNode<unknown> = {
@@ -1517,7 +1517,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
    * cannot serve
    * all of them in a single load response (the wire shape carries one
    * tree rooted at `_lastSyncMessage.changeId`). Advertising
-   * `tipsHash(_currentFrontier())` therefore disagrees with the served
+   * `digest(_currentFrontier())` therefore disagrees with the served
    * payload's structural frontier and the loader's bind check rejects
    * an honest peer.
    *
@@ -1541,8 +1541,8 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
       //
       // The served payload's structural frontier is {H1}, which is
       // exactly what the loader's `computeServedFrontier` derives. The
-      // fix in `_servedFrontier()` advertises tipsHash({H1}) instead of
-      // tipsHash({H1, H2, H3}), so the probe and the load round agree.
+      // fix in `_servedFrontier()` advertises digest({H1}) instead of
+      // digest({H1, H2, H3}), so the probe and the load round agree.
       const servedTree: CRDTChangeNode<unknown> = {
         kind: docKind,
         // H1 is a leaf in A's served subtree -- no children, no
@@ -1562,7 +1562,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
       // After the loader applies the served payload, its
       // `_currentFrontier()` will be {H1} (the only head in the
       // received tree). Two honest peers in the same logical state
-      // would each advertise tipsHash({H1}); the quorum agrees on
+      // would each advertise digest({H1}); the quorum agrees on
       // {H1}; the structural bind check on the loader hashes the
       // received payload to {H1}; they match. Quorum succeeds for an
       // honest responder.
@@ -1665,8 +1665,8 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
       // semantics on {H1, H2, H3} -- but actually only serves H1's
       // tree, would lose against the loader's structural derivation.
       // Two honest peers running the FIX (advertise=served) would
-      // both produce tipsHash({H1}); the liar's hash is
-      // tipsHash({H1,H2,H3}). The liar's hash doesn't even win the
+      // both produce digest({H1}); the liar's hash is
+      // digest({H1,H2,H3}). The liar's hash doesn't even win the
       // quorum (the honest peers disagree with the liar), but if it
       // somehow did, the loader's structural derivation would still
       // hash to {H1} and reject the bind.
@@ -1720,7 +1720,7 @@ describe('computeServedFrontier (served-payload frontier derivation)', () => {
  * coverage can only grow, never shrink.
  *
  * A peer that joined via `load()` and never made a local change previously
- * left `_lastSyncMessage` undefined, advertised `tipsHash([])`, and
+ * left `_lastSyncMessage` undefined, advertised `digest([])`, and
  * served an empty load. Two such relay peers would agree on the empty
  * hash, satisfy quorum, and let an honest newcomer accept an empty
  * document while the mesh had data.
@@ -1887,8 +1887,8 @@ describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () =
     //
     // Pre-fix: B's _lastSyncMessage stays undefined -> served frontier
     // is []. If C opens, probes B alone (allowSinglePeer K=1), and B
-    // votes tipsHash([]), C accepts an empty document while the mesh
-    // had X. The fix forces B to advertise tipsHash({X}) and ship X's
+    // votes digest([]), C accepts an empty document while the mesh
+    // had X. The fix forces B to advertise digest({X}) and ship X's
     // tree on the load.
     const incoming: CRDTChangeNode<unknown> = { kind: docKind };
     const after = refreshLastSync(undefined, undefined, 'X', incoming);
@@ -1909,7 +1909,7 @@ describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () =
     // Two peers B and C both `load()`-ed from A. With the fix, both
     // have _lastSyncMessage = (X, treeX). Their served frontiers and
     // hashes match, so a newcomer D probing {B, C} sees them agree on
-    // tipsHash({X}). Crucially: they no longer falsely agree on the
+    // digest({X}). Crucially: they no longer falsely agree on the
     // EMPTY hash; they agree on the CORRECT non-empty hash.
     const treeX: CRDTChangeNode<unknown> = { kind: docKind };
     const bAfter = refreshLastSync(undefined, undefined, 'X', treeX);
@@ -2009,16 +2009,16 @@ describe('relay-peer served-frontier (_lastSyncMessage refresh from sync)', () =
     // End-to-end structural property the fix establishes:
     //   1. Relay peer B receives a sync tree (X, treeX). Refresh updates
     //      _lastSyncMessage so the served frontier is {X}.
-    //   2. C opens, runs `securityAdvertiseV1` against B, gets tipsHash({X}).
+    //   2. C opens, runs `securityAdvertiseV1` against B, gets digest({X}).
     //   3. C runs `documentLoadV4` against B. B ships (X, treeX) as the
     //      load response.
     //   4. C derives `computeServedFrontier(X, treeX)` over the
     //      received payload, hashes it, compares to the agreed
-    //      tipsHash({X}). The two MATCH because both come from the
+    //      digest({X}). The two MATCH because both come from the
     //      same payload structure.
     //
     // Without the fix, step 1 leaves _lastSyncMessage undefined, B
-    // advertises tipsHash([]), and step 3 ships an empty load. C
+    // advertises digest([]), and step 3 ships an empty load. C
     // accepts an empty document while the mesh had X (the bug).
     const treeX: CRDTChangeNode<unknown> = { kind: docKind };
     const refreshed = refreshLastSync(undefined, undefined, 'X', treeX);

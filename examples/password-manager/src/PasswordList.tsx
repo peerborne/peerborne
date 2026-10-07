@@ -1,5 +1,13 @@
 import React from 'react';
-import { Button, ListGroup, Container, Col, Row, Form } from 'react-bootstrap';
+import {
+  Alert,
+  Button,
+  ListGroup,
+  Container,
+  Col,
+  Row,
+  Form,
+} from 'react-bootstrap';
 import { usePeerborneDocumentState } from '@peerborne/react';
 import * as uuid from 'uuid';
 import { YjsPeerborne } from './utils';
@@ -25,11 +33,19 @@ export function PasswordVault({
           peerborne={peerborne}
           indexPath={indexPath}
           kemKeyPair={kemKeyPair}
+          onLeave={() => setIndexPath(undefined)}
         />
       ) : (
-        <Button onClick={() => setIndexPath(`/${userId}/vaults/${uuid.v4()}`)}>
-          Create a vault
-        </Button>
+        <div className="mt-3">
+          <Button
+            onClick={() => setIndexPath(`/${userId}/vaults/${uuid.v4()}`)}
+          >
+            Create a vault
+          </Button>
+          <p className="mt-2 text-muted">
+            A vault lasts only for the current session.
+          </p>
+        </div>
       )}
     </div>
   );
@@ -39,10 +55,12 @@ export function PasswordList({
   indexPath,
   peerborne,
   kemKeyPair,
+  onLeave,
 }: {
   indexPath: string;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
+  onLeave: () => void;
 }) {
   const [currentPasswordId, setCurrentPasswordId] = React.useState<string>();
   const [viewedIds, setViewedIds] = React.useState<string[]>([]);
@@ -51,12 +69,8 @@ export function PasswordList({
     setViewedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
     setCurrentPasswordId(id);
   };
-  const [passwords, changePasswords] = usePeerborneDocumentState(
-    peerborne,
-    indexPath,
-    'all',
-    'create',
-  );
+  const [passwords, changePasswords, , activationError] =
+    usePeerborneDocumentState(peerborne, indexPath, 'all', 'create');
   const [importingPassword, setImportingPassword] = React.useState(false);
   const [importPasswordId, setImportPasswordId] = React.useState('');
   const [importPasswordName, setImportPasswordName] = React.useState('');
@@ -64,6 +78,17 @@ export function PasswordList({
   let importButtonDisabled: boolean = true;
   if (importPasswordId) {
     importButtonDisabled = false;
+  }
+
+  if (activationError) {
+    return (
+      <Alert variant="danger">
+        Could not create this vault.{' '}
+        <Button size="sm" variant="outline-danger" onClick={onLeave}>
+          Choose another vault
+        </Button>
+      </Alert>
+    );
   }
 
   return (

@@ -57,7 +57,6 @@ function runFixtureQuorum<T>(options: {
 }) {
   return runLoadQuorum({
     ...options,
-    protocol: 'security-advertise-v1',
     probeFn: async (peer) => {
       const hash = await options.probeFn(peer);
       return hash === null ? null : {
@@ -322,16 +321,13 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect(serveFn).not.toHaveBeenCalledWith('p3');
   });
 
-  test('(c2-missing-tips) responder omits `tips` on v3 quorum-enabled load => per-peer bind failure; loader tries next agreeing peer', async () => {
-    // The v3 load-response
-    // contract requires `tips` to be present on every quorum-enabled
+  test('(c2-missing-tips) responder omits `tips` on a quorum-enabled load => per-peer bind failure; loader tries next agreeing peer', async () => {
+    // The load-response contract requires `tips` on every quorum-enabled
     // load response so the responder commits to an explicit frontier
-    // attestation. A v3 responder that omits `tips` previously slipped
-    // through the bind path (the `Array.isArray(message.tips)` defense-
-    // in-depth branch simply skipped). Now the omission is treated as
-    // a per-peer bind failure with the sentinel `'(missing tips)'` so
-    // the loader retries the next agreeing peer, so one peer cannot
-    // unilaterally deny service to the load.
+    // attestation. The omission is treated as a per-peer bind failure with
+    // the sentinel `'(missing tips)'` so the loader retries the next
+    // agreeing peer, so one peer cannot unilaterally deny service to the
+    // load.
     //
     // The simulated harness models the missing-tips case by having the
     // peer's `serveFn` return the `'(missing tips)'` sentinel (which
@@ -353,8 +349,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     if (!('ok' in result)) throw new Error('expected ok=true');
     expect(result.narrowedPeers).toEqual(['p1', 'p2', 'p3']);
 
-    // p1 voted X but omits `tips` on the load response (v3 protocol
-    // violation). p2 is honest: voted X, serves X with tips. p3 should
+    // p1 voted X but omits `tips` on the load response (load-response
+    // contract violation). p2 is honest: voted X, serves X with tips. p3 should
     // never be touched -- p2 succeeds.
     const MISSING_TIPS = '(missing tips)';
     const serveFn = jest.fn(async (peer: TestPeer) => {
@@ -374,7 +370,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
   });
 
   test('(c2-missing-tips-all) ALL agreeing peers omit `tips` => LoadQuorumFailedError(bind-check-failed-all-agreeing-peers) with `(missing tips)` sentinel', async () => {
-    // The whole cohort violates the v3 protocol contract by omitting
+    // The whole cohort violates the load-response contract by omitting
     // `tips` on every load response. Loader must exhaust the cohort,
     // escalate with the dedicated reason, and record the
     // `'(missing tips)'` sentinel per peer so operators can tell
@@ -456,7 +452,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
   test('(c4) multi-head honest responder: advertise=served frontier hash binds; loader accepts even when responder has un-served concurrent heads', async () => {
     // Regression: previously, an
     // honest peer with multiple concurrent heads in `_currentFrontier()`
-    // would advertise tipsHash({H1, H2, H3}) in the probe round but
+    // would advertise digest({H1, H2, H3}) in the probe round but
     // only serve a tree rooted at H1 (the wire shape carries one tree).
     // The loader's structural derivation `computeServedFrontier` over
     // the served payload yielded {H1}, hashed differently from the
@@ -466,12 +462,12 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // this peer would actually ship), so probe and load round agree
     // for honest responders. This test models a 3-peer cohort where
     // all three peers have un-served concurrent heads but the same
-    // served frontier {H1}: all three vote tipsHash({H1}), all three
+    // served frontier {H1}: all three vote digest({H1}), all three
     // serve a payload whose structural frontier is {H1}, and the bind
     // check accepts.
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
-    // Every honest peer advertises tipsHash(servedFrontier). HASH_X
-    // stands in for tipsHash({H1}) here -- the orchestrator is
+    // Every honest peer advertises digest(servedFrontier). HASH_X
+    // stands in for digest({H1}) here -- the orchestrator is
     // hash-agnostic, so we just need the value to be the same across
     // all three peers (probe round) AND match what each peer serves
     // on the load round.
@@ -492,7 +488,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
     // Each peer's load response structurally hashes to HASH_X (the
     // served-frontier hash). Before the fix this would have been
-    // tipsHash({served-only}) while the probe was tipsHash({served +
+    // digest({served-only}) while the probe was digest({served +
     // un-served}), so the bind check would have rejected. After the
     // fix both sides agree.
     const serveFn = jest.fn(async () => HASH_X_HEX);
@@ -507,7 +503,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect(loadOutcome.attempts).toEqual(['p1']);
   });
 
-  test('(c5) Byzantine responder that lies about heads: advertises tipsHash(claimed-full-frontier) but serves a tree hashing to served-only => bind check rejects', async () => {
+  test('(c5) Byzantine responder that lies about heads: advertises digest(claimed-full-frontier) but serves a tree hashing to served-only => bind check rejects', async () => {
     // Complement to (c4): a peer using a mismatched full-frontier
     // advertisement (or acting maliciously) would compute its hash
     // over its full local DAG frontier {H1, H2, H3} but only ship H1's
@@ -648,7 +644,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const singlePeer = path === 'single-peer';
       const peers = singlePeer ? ['p1'] : ['p1', 'p2', 'p3'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) =>
@@ -671,7 +666,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     },
   );
 
-  test('accepts genuine cross-realm hashes in legacy and signer-attributed paths', async () => {
+  test('accepts genuine cross-realm hashes in fixture and signer-attributed votes', async () => {
     const crossRealmHash = () =>
       runInNewContext('new Uint8Array(32).fill(0xaa)') as Uint8Array;
 
@@ -689,7 +684,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     });
 
     const quorum = await runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers: ['p1', 'p2', 'p3'],
       peerIdOf,
       probeFn: async (peer) => ({
@@ -713,7 +707,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     '%s rejects an empty signer authority as a non-vote',
     async (_path, peers, config) => {
       const error = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({ hash: HASH_X, signerAuthority: '' }),
@@ -755,7 +748,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect((err as LoadQuorumFailedError).respondingCount).toBe(0);
   });
 
-  test('quorum disabled: returns { skipped: true } so caller falls through to legacy load', async () => {
+  test('quorum disabled: returns { skipped: true } so caller loads without a quorum digest', async () => {
     const peers: TestPeer[] = ['p1', 'p2', 'p3'];
     probeMock.mockResolvedValue(HASH_X);
     const result = await runFixtureQuorum({
@@ -848,7 +841,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // was valid at `initialize()` but later mutated to `NaN`/`Infinity`/`-1`
     // BEFORE `load()` ran, `effectiveK(NaN, peers)` returned 0 through its
     // defensive guards, the K=0 branch returned `{ skipped: true }`, and
-    // `load()` fell through to the legacy unbound load — but
+    // `load()` loaded without a quorum digest — but
     // `loadQuorumEnabled` was still `true`, so the operator's intent
     // (quorum-protected load) was silently violated. The defensive
     // re-validation at the top of `runLoadQuorum` now catches this as a
@@ -859,7 +852,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // throw — those are covered by the existing "quorum disabled" and
     // "empty peer list" tests above, plus the explicit re-check below.
 
-    test('K = NaN throws LoadQuorumFailedError(invalid-config) (was: silent skip => legacy unbound load)', async () => {
+    test('K = NaN throws LoadQuorumFailedError(invalid-config) instead of skipping the quorum', async () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       const err = await runFixtureQuorum({
@@ -1205,12 +1198,9 @@ describe('runLoadQuorum: injected orchestration contract', () => {
   // ---------------------------------------------------------------------
   // single-peer warning text
   // ---------------------------------------------------------------------
-  // The legacy wording was "only one peer known", which is accurate when
-  // the mesh truly has one peer but actively misleading when the operator
-  // configured `loadQuorumK = 1` with more peers available — they would
-  // see the warning and assume their mesh had collapsed even though it
-  // hadn't. The rewritten message includes both the configured K and the
-  // actual peer count so the cause is unambiguous in either case.
+  // The message includes both the configured K and the actual peer count,
+  // so an operator who configured `loadQuorumK = 1` with more peers
+  // available is not told that the mesh collapsed to one peer.
 
   describe('single-peer fallback warning text reflects both cause cases', () => {
     let warnSpy: ReturnType<typeof jest.spyOn>;
@@ -1269,8 +1259,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       // (raising K), not at "configure more peers" which is irrelevant.
       expect(msg).toMatch(/Increase loadQuorumK/);
       expect(msg).not.toMatch(/Configure additional peers/);
-      // Sanity: must NOT use the misleading legacy "only one peer known"
-      // phrasing, which was accurate only for case 1.
+      // Sanity: must NOT claim "only one peer known", which is accurate
+      // only for case 1.
       expect(msg).not.toMatch(/only one peer known/);
     });
 
@@ -1380,8 +1370,8 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
   test('size-cap-triggered non-vote does NOT poison quorum when honest majority still responds', async () => {
     // Regression for the DoS hardening: an
-    // oversized tip-advertise response is surfaced as `null` (non-vote)
-    // by `_probeTipAdvertise`'s outer catch. Verify that a single peer
+    // oversized security advertisement is surfaced as `null` (non-vote)
+    // by `_probeSecurityAdvertise`'s outer catch. Verify that a single peer
     // hitting the size cap does not flip the quorum into a Byzantine
     // verdict -- the remaining honest peers must still be able to form
     // a Q-of-K majority.
@@ -1405,24 +1395,10 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     expect(result.winningHashHex).toBe(HASH_X_HEX);
   });
 
-  describe('legacy load loop preserves un-deduped peer list', () => {
-    // Regression: the load loop previously
-    // deduped peers by peer id UNCONDITIONALLY -- before the quorum probe,
-    // affecting BOTH the quorum probe AND the legacy single-peer load
-    // loop. When `loadQuorumEnabled: false`, the legacy loop should keep
-    // multiple multiaddrs for the same peer id (e.g. direct connection +
-    // relay-circuit fallback) so the second can be tried if the first
-    // fails. The fix uses `quorumPeers = dedupePeersByPeerId(orderedPeers)`
-    // for the probe only; `orderedPeers` (un-deduped) is preserved for
-    // the legacy loop.
-    //
-    // The control-flow snippet under test mirrors the relevant slice of
-    // `PeerborneDocument.load()`: build `quorumPeers` for the probe,
-    // keep `orderedPeers` for the loop. The tests here do NOT use real
-    // multiaddrs -- they use `{ id, addr }` test doubles where `id` is
-    // the peer id and `addr` is a per-connection sentinel. The
-    // `peerIdOf` extractor returns `id` so dedup collapses entries
-    // sharing the same `id` but different `addr`.
+  describe('probe dedup by peer id', () => {
+    // The probe round dedupes connections by peer id so one peer cannot cast
+    // two votes; the load loop itself keeps every connection (covered against
+    // `PeerborneDocument.load()` in peerborne-document-load-context.test.ts).
 
     interface MultiAddrPeer {
       id: string;
@@ -1430,103 +1406,12 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     }
     const idOf = (p: MultiAddrPeer) => p.id;
 
-    function simulateLegacyLoop(opts: {
-      orderedPeers: MultiAddrPeer[];
-      // Per-connection result. Returns `true` if the load succeeded for
-      // this connection, `false` to fall through to the next one.
-      loadFn: (peer: MultiAddrPeer) => Promise<boolean>;
-    }): Promise<{
-      attempts: MultiAddrPeer[];
-      loadedFromAddr: string | null;
-    }> {
-      const attempts: MultiAddrPeer[] = [];
-      return (async () => {
-        for (const peer of opts.orderedPeers) {
-          attempts.push(peer);
-          const ok = await opts.loadFn(peer);
-          if (ok) return { attempts, loadedFromAddr: peer.addr };
-        }
-        return { attempts, loadedFromAddr: null };
-      })();
-    }
-
-    test('quorum disabled: legacy loop iterates ALL multiaddrs for the same peer id', async () => {
-      // Two connections to the same peer id "alice": a direct dial that
-      // fails, and a relay-circuit fallback that succeeds. The legacy
-      // loop must try BOTH (the fallback is the whole point of having
-      // multiple connections). Under the bug, dedup collapses the two
-      // entries to one and the loader gives up after the direct dial
-      // fails.
-      const orderedPeers: MultiAddrPeer[] = [
-        { id: 'alice', addr: '/direct/alice' },
-        { id: 'alice', addr: '/p2p-circuit/alice' },
-      ];
-
-      // Dedup is for the QUORUM probe only; the legacy loop keeps
-      // `orderedPeers` un-deduped (this mirrors the production code in
-      // `PeerborneDocument.load()`).
-      const quorumPeers = dedupePeersByPeerId(orderedPeers, idOf);
-      expect(quorumPeers).toEqual([
-        { id: 'alice', addr: '/direct/alice' },
-      ]);
-
-      // Quorum disabled => legacy loop walks `orderedPeers` (un-deduped).
-      const loadFn = jest.fn(async (peer: MultiAddrPeer) => {
-        // Direct fails; circuit succeeds.
-        return peer.addr === '/p2p-circuit/alice';
-      });
-      const outcome = await simulateLegacyLoop({
-        orderedPeers,
-        loadFn,
-      });
-      expect(outcome.attempts).toEqual([
-        { id: 'alice', addr: '/direct/alice' },
-        { id: 'alice', addr: '/p2p-circuit/alice' },
-      ]);
-      expect(outcome.loadedFromAddr).toBe('/p2p-circuit/alice');
-      // Both connections were tried.
-      expect(loadFn).toHaveBeenCalledTimes(2);
-    });
-
-    test('quorum disabled: prior buggy behaviour (loop over deduped list) would have stopped after the failed direct dial', async () => {
-      // Documenting the regression we are guarding against: under the
-      // pre-fix code, the loop iterated `dedupePeersByPeerId(orderedPeers)`,
-      // i.e. only ONE entry per peer id. The fallback connection was
-      // never tried.
-      const orderedPeers: MultiAddrPeer[] = [
-        { id: 'alice', addr: '/direct/alice' },
-        { id: 'alice', addr: '/p2p-circuit/alice' },
-      ];
-      const dedupedAsBug = dedupePeersByPeerId(orderedPeers, idOf);
-      const loadFn = jest.fn(async (peer: MultiAddrPeer) => {
-        return peer.addr === '/p2p-circuit/alice';
-      });
-      const outcome = await simulateLegacyLoop({
-        orderedPeers: dedupedAsBug,
-        loadFn,
-      });
-      // Bug behaviour: only the direct dial is attempted, so the load
-      // fails even though a valid fallback existed.
-      expect(outcome.attempts).toEqual([
-        { id: 'alice', addr: '/direct/alice' },
-      ]);
-      expect(outcome.loadedFromAddr).toBeNull();
-      expect(loadFn).toHaveBeenCalledTimes(1);
-    });
-
-    test('quorum disabled: distinct peer ids are unaffected', async () => {
-      // Sanity check: dedup-by-peer-id is a no-op when each peer id
-      // appears once. The fix doesn't regress this path.
+    test('distinct peer ids are unaffected', () => {
       const orderedPeers: MultiAddrPeer[] = [
         { id: 'alice', addr: '/direct/alice' },
         { id: 'bob', addr: '/direct/bob' },
       ];
-      const quorumPeers = dedupePeersByPeerId(orderedPeers, idOf);
-      expect(quorumPeers).toEqual(orderedPeers);
-      const loadFn = jest.fn(async (peer: MultiAddrPeer) => peer.id === 'alice');
-      const outcome = await simulateLegacyLoop({ orderedPeers, loadFn });
-      expect(outcome.loadedFromAddr).toBe('/direct/alice');
-      expect(loadFn).toHaveBeenCalledTimes(1);
+      expect(dedupePeersByPeerId(orderedPeers, idOf)).toEqual(orderedPeers);
     });
 
     test('quorum enabled: probe-only dedup still applies (single vote per peer id)', async () => {
@@ -1826,10 +1711,10 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     // the LOSING hash. The previous behaviour widened trust scope to
     // escape this edge case, defeating the very narrowing the gate
     // exists to enforce. The fix raises a structured
-    // `LoadQuorumFailedError(no-majority)` so the caller sees the same
+    // `LoadQuorumFailedError(no-agreement)` so the caller sees the same
     // contract as any other quorum failure.
 
-    test('unstable peerIdOf that maps probe-round ids to non-existent post-narrowing ids => LoadQuorumFailedError(no-majority)', async () => {
+    test('unstable peerIdOf that maps probe-round ids to non-existent post-narrowing ids => LoadQuorumFailedError(no-agreement)', async () => {
       const peers: TestPeer[] = ['p1', 'p2', 'p3'];
       probeMock.mockResolvedValue(HASH_X);
       // Probe round sees ids `p1/p2/p3`; narrowing round sees totally
@@ -1851,7 +1736,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       }).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(LoadQuorumFailedError);
-      expect((err as LoadQuorumFailedError).reason).toBe('no-majority');
+      expect((err as LoadQuorumFailedError).reason).toBe('no-agreement');
       // Agreement map carries the winning hex + the count of agreeing
       // peers so observability is preserved across the fail-closed path.
       const agreement = (err as LoadQuorumFailedError).agreement;
@@ -1866,7 +1751,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('one signer across multiple libp2p PeerIds contributes only one vote', async () => {
       const peers: TestPeer[] = ['sybil-1', 'sybil-2', 'sybil-3'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async () => ({
@@ -1887,7 +1771,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('distinct caller-authenticated signer authorities can satisfy V4 quorum', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
       const result = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) => ({
@@ -1906,7 +1789,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
     test('one signer voting for two different hashes fails the round', async () => {
       const peers: TestPeer[] = ['peer-a', 'peer-b', 'peer-c'];
       const err = await runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers,
         peerIdOf,
         probeFn: async (peer) => ({
@@ -1927,7 +1809,6 @@ describe('runLoadQuorum: injected orchestration contract', () => {
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         await runLoadQuorum({
-          protocol: 'security-advertise-v1',
           peers: ['p1', 'p2', 'p3'],
           peerIdOf,
           probeFn: async (peer) => {
@@ -1953,23 +1834,22 @@ describe('runLoadQuorum: injected orchestration contract', () => {
         peers,
         peerIdOf,
         probeFn: async () => HASH_X,
-        documentPath: '/legacy',
+        documentPath: '/fixture-authorities',
         config: { enabled: true, k: 2, q: 2 },
       });
 
-      if (!('ok' in result)) throw new Error('expected legacy quorum success');
+      if (!('ok' in result)) throw new Error('expected quorum success');
       expect(result.narrowedPeers).toEqual(peers);
     });
   });
 });
 
 
-describe('quorum protocol separation', () => {
+describe('quorum vote normalization', () => {
   test.each([new Uint8Array(32).fill(0xaa), 'unknown-doc'] as const)(
-    'never counts a response from another protocol alongside a V4 authority',
+    'never counts a bare digest or absence marker alongside a signer-attributed vote',
     async (wrongFamily) => {
       await expect(runLoadQuorum({
-        protocol: 'security-advertise-v1',
         peers: ['signed', 'unsigned-a', 'unsigned-b'],
         peerIdOf,
         probeFn: async (peer) => peer === 'signed'
@@ -1983,23 +1863,15 @@ describe('quorum protocol separation', () => {
 
   test('rejects an unattributed single-peer V4 response', async () => {
     await expect(runLoadQuorum({
-      protocol: 'security-advertise-v1', peers: ['a'], peerIdOf,
+      peers: ['a'], peerIdOf,
       probeFn: async () => 'unknown-doc', documentPath: '/unsigned-single',
       config: { allowSinglePeer: true },
     })).rejects.toMatchObject({ reason: 'insufficient-responses', respondingCount: 0 });
   });
 
-  test('requires explicit protocol selection even with no peers', async () => {
-    await expect(runLoadQuorum({
-      protocol: undefined as never, peers: [], peerIdOf,
-      probeFn: async () => null, documentPath: '/missing-family',
-    })).rejects.toMatchObject({ reason: 'invalid-config' });
-  });
-
   test('accepts a detached signer-attributed record from another realm', async () => {
     const vote = runInNewContext('({ hash: new Uint8Array(32).fill(0xaa), signerAuthority: "writer-a" })');
     await expect(runLoadQuorum({
-      protocol: 'security-advertise-v1',
       peers: ['a'], peerIdOf, probeFn: async () => vote,
       documentPath: '/cross-realm-vote', config: { allowSinglePeer: true },
     })).resolves.toMatchObject({ ok: true });

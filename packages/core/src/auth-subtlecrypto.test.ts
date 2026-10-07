@@ -9,7 +9,7 @@ const nativeCryptoDescriptor = Object.getOwnPropertyDescriptor(
   'crypto',
 );
 
-// These legacy negative fixtures expect mismatched ECDSA key usages to fail at
+// These negative fixtures expect mismatched ECDSA key usages to fail at
 // sign/verify time; native Web Crypto correctly rejects them during import.
 beforeAll(() => {
   Object.defineProperty(globalThis, 'crypto', {
