@@ -5,6 +5,7 @@ import {
   MAX_KEYCHAIN_EPOCHS,
 } from './keychain.js';
 import type { KeychainAppendIntent } from './keychain.js';
+import type { PreparedCommitClaim } from './prepared-commit.js';
 
 const KEY_ID_LENGTH_BYTES = 32;
 
@@ -177,6 +178,111 @@ function stateCommitment(
   );
 }
 
+/** @internal Staged merge state supplied by a CRDT adapter. */
+export type CanonicalMergeClaimOptions = {
+  readonly stagedEntries: readonly CanonicalKeychainEntry[];
+  readonly deserializeKey: (serialized: string) => Promise<CryptoKey>;
+  readonly isBaseCurrent: () => boolean;
+  readonly prepareCacheSet: (
+    entries: ReadonlyMap<string, CryptoKey>,
+  ) => () => void;
+  readonly publish: () => void;
+};
+
+/** @internal Claim state machine shared by the CRDT adapters' merges. */
+export type CanonicalMergeClaim = {
+  readonly hydrateKeys: () => Promise<[Uint8Array, CryptoKey][]>;
+  readonly getKey: (keyID: Uint8Array) => CryptoKey | undefined;
+  readonly claimCommit: () => PreparedCommitClaim;
+  readonly commit: () => void;
+};
+
+function createMergeClaim({
+  stagedEntries,
+  deserializeKey,
+  isBaseCurrent,
+  prepareCacheSet,
+  publish,
+}: CanonicalMergeClaimOptions): CanonicalMergeClaim {
+  const stagedKeyCache = new Map<string, CryptoKey>();
+  let state: 'prepared' | 'claimed' | 'committed' = 'prepared';
+  let hydrationInProgress = false;
+  let hydrationPromise: Promise<void> | undefined;
+  const assertPrepared = () => {
+    if (state !== 'prepared') {
+      throw new Error(
+        'Prepared keychain merge was already committed or claimed',
+      );
+    }
+  };
+  const hydrateKeys = async (): Promise<[Uint8Array, CryptoKey][]> => {
+    assertPrepared();
+    let pending = hydrationPromise;
+    if (pending === undefined) {
+      hydrationInProgress = true;
+      const newHydration = (async () => {
+        const hydrated = new Map<string, CryptoKey>();
+        for (const [keyID, serialized] of stagedEntries) {
+          hydrated.set(keyID, await deserializeKey(serialized));
+        }
+        for (const [keyID, key] of hydrated) {
+          stagedKeyCache.set(keyID, key);
+        }
+      })();
+      hydrationPromise = newHydration;
+      void newHydration.then(
+        () => {
+          hydrationInProgress = false;
+        },
+        () => {
+          hydrationInProgress = false;
+          if (hydrationPromise === newHydration) {
+            hydrationPromise = undefined;
+          }
+        },
+      );
+      pending = newHydration;
+    }
+    await pending;
+    assertPrepared();
+    return stagedEntries.map(([keyID]) => [
+      cacheKeyToKeyId(keyID),
+      stagedKeyCache.get(keyID)!,
+    ]);
+  };
+  const claimCommit = (): PreparedCommitClaim => {
+    assertPrepared();
+    if (!isBaseCurrent()) {
+      throw new Error('Keychain changed while merge was staged');
+    }
+    if (hydrationInProgress) {
+      throw new Error(
+        'Prepared keychain merge cannot be claimed while key hydration is in progress',
+      );
+    }
+    const finalizeCache = prepareCacheSet(stagedKeyCache);
+    const claim = {
+      finalize: () => {
+        // PreparedCommitClaim requires the caller to reserve this revision
+        // through finalization. A stale check here could throw after another
+        // provider has committed, breaking the shared atomic boundary.
+        if (state === 'committed') return;
+        finalizeCache();
+        publish();
+        state = 'committed';
+      },
+    };
+    state = 'claimed';
+    return claim;
+  };
+  return {
+    hydrateKeys,
+    getKey: (keyID: Uint8Array) => stagedKeyCache.get(keyIdToCacheKey(keyID)),
+    claimCommit,
+    commit: () => claimCommit().finalize(),
+  };
+}
+
 /** @internal Canonical validation shared by the CRDT adapters. */
 export const canonicalKeychain = Object.freeze({
   toHex,
@@ -191,4 +297,5 @@ export const canonicalKeychain = Object.freeze({
   isKeychainPrefix,
   snapshotAppendIntent,
   stateCommitment,
+  createMergeClaim,
 });
