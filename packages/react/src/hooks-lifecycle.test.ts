@@ -43,6 +43,79 @@ describe('usePeerborneDocumentState lifecycle', () => {
     );
   });
 
+  test('shares an explicitly created document with later subscribers', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const view = render(React.createElement(TestProvider, null,
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created', initialization: 'create' }),
+    ));
+    await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(1));
+    view.rerender(React.createElement(TestProvider, null,
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created', initialization: 'create' }),
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/created' }),
+    ));
+    await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(2));
+    expect(mockDoc.create).toHaveBeenCalledTimes(1);
+    expect(mockDoc.open).not.toHaveBeenCalled();
+  });
+
+  test('creates after switching from a failed open instead of reusing its rejection', async () => {
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockRejectedValueOnce(new Error('not found'));
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const view = render(React.createElement(TestProvider, null,
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/switch' }),
+      ));
+      await waitFor(() => expect(consoleSpy).toHaveBeenCalledWith('Failed to open/find document: /switch'));
+      view.rerender(React.createElement(TestProvider, null,
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/switch', initialization: 'create' }),
+      ));
+      await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(1));
+      expect(mockDoc.create).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('a create subscriber waits for a pending open and creates only if it fails', async () => {
+    let rejectOpen!: (error: Error) => void;
+    const mockDoc = createMockDocument();
+    mockDoc.open.mockImplementationOnce(
+      () => new Promise<void>((_, reject) => { rejectOpen = reject; }),
+    );
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      render(React.createElement(TestProvider, null,
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/pending' }),
+        React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/pending', initialization: 'create' }),
+      ));
+      await waitFor(() => expect(mockDoc.open).toHaveBeenCalledTimes(1));
+      expect(mockDoc.create).not.toHaveBeenCalled();
+      await act(async () => rejectOpen(new Error('not found')));
+      await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(1));
+      expect(mockDoc.create).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).toHaveBeenCalledWith('Failed to open/find document: /pending');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('a create subscriber adopts a document that a pending open activated', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    render(React.createElement(TestProvider, null,
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/opened' }),
+      React.createElement(TestConsumer, { peerborne: mockSwarm, documentPath: '/opened', initialization: 'create' }),
+    ));
+    await waitFor(() => expect(mockDoc.subscribe).toHaveBeenCalledTimes(2));
+    expect(mockDoc.open).toHaveBeenCalledTimes(1);
+    expect(mockDoc.create).not.toHaveBeenCalled();
+  });
+
   test('unsubscribe is called on unmount', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);

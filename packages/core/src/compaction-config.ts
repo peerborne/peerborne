@@ -38,7 +38,7 @@ export interface CompactionConfig {
 
 /**
  * Default compaction configuration.
- * Compaction is disabled by default for backward compatibility.
+ * Compaction is disabled by default until explicitly enabled.
  */
 export const defaultCompactionConfig: CompactionConfig = {
   enabled: false,

@@ -3439,7 +3439,7 @@ describe('YjsJSONSerializer', () => {
 
   test('serializeSyncMessage/deserializeSyncMessage round-trip with Merkle DAG', () => {
     const serializer = new YjsJSONSerializer();
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'test-doc-123',
       changeId: 'cid-abc',
       changes: {
@@ -3476,7 +3476,7 @@ describe('YjsJSONSerializer', () => {
   test('round-trips the maximum accepted nesting without overflowing JSON serialization', () => {
     const serializer = new YjsJSONSerializer();
     const genericSerialize = jest.spyOn(serializer, 'serialize');
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'maximum-depth',
       changes: nestedTree(MAX_MERKLE_DAG_DEPTH),
     });
@@ -3486,7 +3486,7 @@ describe('YjsJSONSerializer', () => {
     expect(genericSerialize).not.toHaveBeenCalled();
     genericSerialize.mockRestore();
     expect(() =>
-      serializer.serializeSyncMessage({
+      serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
         documentId: 'over-maximum-depth',
         changes: nestedTree(MAX_MERKLE_DAG_DEPTH + 1),
       }),
@@ -3495,7 +3495,7 @@ describe('YjsJSONSerializer', () => {
 
   test('round-trips 4096 shallow history nodes with stable wire bytes', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'wide-history',
       changes: shallowTree(SHALLOW_HISTORY_NODE_COUNT),
     });
@@ -3512,9 +3512,9 @@ describe('YjsJSONSerializer', () => {
     ).toHaveLength(SHALLOW_HISTORY_NODE_COUNT - 1);
   });
 
-  test('preserves the existing sync-message wire bytes', () => {
+  test('encodes the current sync-message wire bytes', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'wire-compatibility',
       changes: {
         kind: 'document',
@@ -3524,7 +3524,7 @@ describe('YjsJSONSerializer', () => {
     });
 
     expect(new TextDecoder().decode(wire)).toBe(
-      '{"documentId":"wire-compatibility","changes":{"kind":"document","change":"AQI=","children":{"cid":{"kind":"writer"}}}}',
+      '{"signatureContext":"ordinary-sync-v1","documentId":"wire-compatibility","changes":{"kind":"document","change":"AQI=","children":{"cid":{"kind":"writer"}}}}',
     );
   });
 
@@ -3533,7 +3533,7 @@ describe('YjsJSONSerializer', () => {
     // Mirror the intended V4 response construction order: signature already
     // has an insertion slot from the cached sync message, while
     // keychainChanges is appended after the V4 challenge.
-    const message: any = {
+    const message: any = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: '/signed-load',
       changeId: 'ROOT',
       changes: {
@@ -3577,7 +3577,7 @@ describe('YjsJSONSerializer', () => {
     const serializer = new YjsJSONSerializer();
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = i * 7;
-    const message = {
+    const message = { signatureContext: 'beekem-welcome-v2' as const,
       documentId: 'welcome-doc',
       welcomeEpochId: epochId,
       keychainChanges: new Uint8Array([1, 2, 3]),
@@ -3590,7 +3590,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage omits welcomeEpochId when absent on wire', () => {
     const serializer = new YjsJSONSerializer();
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'no-welcome-doc',
     };
     const serialized = serializer.serializeSyncMessage(message);
@@ -3600,7 +3600,7 @@ describe('YjsJSONSerializer', () => {
 
   test('serializeSyncMessage/deserializeSyncMessage preserves welcomeRecipient', () => {
     const serializer = new YjsJSONSerializer();
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'welcome-doc',
       welcomeRecipient: 'recipient-serialized-pubkey-base64',
     };
@@ -3613,7 +3613,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage omits welcomeRecipient when absent on wire', () => {
     const serializer = new YjsJSONSerializer();
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'no-welcome-doc',
     };
     const serialized = serializer.serializeSyncMessage(message);
@@ -3625,7 +3625,7 @@ describe('YjsJSONSerializer', () => {
     const serializer = new YjsJSONSerializer();
     const kemPub = new Uint8Array(65);
     for (let i = 0; i < kemPub.length; i++) kemPub[i] = (i * 11) & 0xff;
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'welcome-doc',
       welcomeRecipientKemPublicKey: kemPub,
     };
@@ -3638,7 +3638,7 @@ describe('YjsJSONSerializer', () => {
     const serializer = new YjsJSONSerializer();
     const sealed = new Uint8Array(200);
     for (let i = 0; i < sealed.length; i++) sealed[i] = (i * 13) & 0xff;
-    const message = {
+    const message = { signatureContext: 'beekem-welcome-v2' as const,
       documentId: 'welcome-doc',
       eciesSealed: sealed,
     };
@@ -3670,7 +3670,7 @@ describe('YjsJSONSerializer', () => {
       ],
       treeHash: 'DQ4P',
     };
-    const wire = serializer.serializeSyncMessage({
+    const wire = serializer.serializeSyncMessage({ signatureContext: 'beekem-path-update-v2' as const,
       documentId: 'pathupdate-v2-doc',
       pathUpdate,
     });
@@ -3681,7 +3681,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage omits pathUpdate when absent on wire', () => {
     const serializer = new YjsJSONSerializer();
-    const message = { documentId: 'no-pathupdate-doc' };
+    const message = { signatureContext: 'ordinary-sync-v1' as const, documentId: 'no-pathupdate-doc' };
     const serialized = serializer.serializeSyncMessage(message);
     const deserialized = serializer.deserializeSyncMessage(serialized);
     expect(deserialized.pathUpdate).toBeUndefined();
@@ -3691,7 +3691,7 @@ describe('YjsJSONSerializer', () => {
     const serializer = new YjsJSONSerializer();
     const epochId = new Uint8Array(32);
     for (let i = 0; i < epochId.length; i++) epochId[i] = (i * 3) & 0xff;
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'pathupdate-doc',
       pathUpdateEpochId: epochId,
     };
@@ -3704,7 +3704,7 @@ describe('YjsJSONSerializer', () => {
     const serializer = new YjsJSONSerializer();
     // Construct the wire payload directly so we can violate type safety.
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', pathUpdate: 'oops' }),
+      JSON.stringify({ signatureContext: 'beekem-path-update-v2' as const, documentId: 'doc', pathUpdate: 'oops' }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/pathUpdate/);
   });
@@ -3712,7 +3712,7 @@ describe('YjsJSONSerializer', () => {
   test('deserializeSyncMessage rejects null pathUpdate', () => {
     const serializer = new YjsJSONSerializer();
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', pathUpdate: null }),
+      JSON.stringify({ signatureContext: 'beekem-path-update-v2' as const, documentId: 'doc', pathUpdate: null }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(/pathUpdate/);
   });
@@ -3720,7 +3720,7 @@ describe('YjsJSONSerializer', () => {
   test('deserializeSyncMessage rejects non-string pathUpdateEpochId', () => {
     const serializer = new YjsJSONSerializer();
     const wire = new TextEncoder().encode(
-      JSON.stringify({ documentId: 'doc', pathUpdateEpochId: 42 }),
+      JSON.stringify({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', pathUpdateEpochId: 42 }),
     );
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /pathUpdateEpochId/,
@@ -3802,7 +3802,7 @@ describe('YjsJSONSerializer', () => {
 
   test('serializeSyncMessage handles message without optional fields', () => {
     const serializer = new YjsJSONSerializer();
-    const message = {
+    const message = { signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'minimal-doc',
     };
 
@@ -3823,7 +3823,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects "changes: null" (validation bypass regression)', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', changes: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got null/,
     );
@@ -3831,7 +3831,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects "changes: 0"', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', changes: 0 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: 0 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got number/,
     );
@@ -3839,7 +3839,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects "changes: \\"\\"" (empty string)', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', changes: '' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changes: '' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /expected a plain object.*got string/,
     );
@@ -3847,7 +3847,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage accepts omitted "changes" field', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.changes).toBeUndefined();
   });
@@ -3867,7 +3867,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects payload with non-string documentId (number)', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 42 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 42 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got number/,
     );
@@ -3875,7 +3875,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects payload with null documentId', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got null/,
     );
@@ -3883,7 +3883,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects payload with object documentId', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: { id: 'doc' } });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: { id: 'doc' } });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'documentId' must be a string.*got object/,
     );
@@ -3891,7 +3891,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects non-string changeId', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', changeId: 7 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', changeId: 7 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'changeId' must be a string when present.*got number/,
     );
@@ -3899,7 +3899,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects non-string signature', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', signature: 7 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', signature: 7 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'signature' must be a string when present.*got number/,
     );
@@ -3916,7 +3916,7 @@ describe('YjsJSONSerializer', () => {
     );
   });
 
-  test.each([7, 'load-response-v3 ', 'LOAD-RESPONSE-V3'])(
+  test.each([7, 'load-response-v4 ', 'LOAD-RESPONSE-V3'])(
     'deserializeSyncMessage rejects noncanonical signature context %#',
     (signatureContext) => {
       const serializer = new YjsJSONSerializer();
@@ -3929,7 +3929,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects non-string keychainChanges', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', keychainChanges: [1, 2, 3] });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', keychainChanges: [1, 2, 3] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'keychainChanges' must be a string when present.*got array/,
     );
@@ -3937,7 +3937,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects array snapshot', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', snapshot: [1, 2, 3] });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: [1, 2, 3] });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got array/,
     );
@@ -3949,7 +3949,7 @@ describe('YjsJSONSerializer', () => {
   // so peers can't bypass it by sending `snapshot: null/0/""`.
   test('deserializeSyncMessage rejects "snapshot: null" (validation bypass regression)', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', snapshot: null });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: null });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got null/,
     );
@@ -3957,7 +3957,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects "snapshot: 0"', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', snapshot: 0 });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: 0 });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got number/,
     );
@@ -3965,7 +3965,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage rejects "snapshot: \\"\\"" (empty string)', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc', snapshot: '' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc', snapshot: '' });
     expect(() => serializer.deserializeSyncMessage(wire)).toThrow(
       /Invalid sync message.*'snapshot' must be an object when present.*got string/,
     );
@@ -3973,7 +3973,7 @@ describe('YjsJSONSerializer', () => {
 
   test('deserializeSyncMessage accepts omitted "snapshot" field', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({ documentId: 'doc' });
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const, documentId: 'doc' });
     const deserialized = serializer.deserializeSyncMessage(wire);
     expect(deserialized.snapshot).toBeUndefined();
   });
@@ -4008,7 +4008,7 @@ describe('YjsJSONSerializer', () => {
   // `CRDTSyncMessage`.
   test('deserializeSyncMessage strips peer-supplied junk keys', () => {
     const serializer = new YjsJSONSerializer();
-    const wire = buildWire({
+    const wire = buildWire({ signatureContext: 'ordinary-sync-v1' as const,
       documentId: 'doc',
       changeId: 'cid',
       somethingExtra: 'evil',

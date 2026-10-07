@@ -24,7 +24,7 @@ describe('sync message wire-context separation', () => {
   test.each([
     ['ordinary-sync-v1', { documentId: '/doc', changes: {}, signature: 'sig' }],
     [
-      'load-response-v3',
+      'load-response-v4',
       {
         documentId: '/doc',
         changes: {},
@@ -34,7 +34,7 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
-      'tip-advertisement-v1',
+      'security-advertisement-v1',
       { documentId: '/doc', tipsHash: new Uint8Array(32), signature: 'sig' },
     ],
     [
@@ -70,6 +70,17 @@ describe('sync message wire-context separation', () => {
       },
     ],
     [
+      'invitation-catch-up-v1',
+      {
+        documentId: '/doc',
+        changes: {},
+        keychainChanges: {},
+        tips: ['cid'],
+        loadChallenge: new Uint8Array(32),
+        signature: 'sig',
+      },
+    ],
+    [
       'beekem-welcome-v2',
       {
         documentId: '/doc',
@@ -98,11 +109,10 @@ describe('sync message wire-context separation', () => {
 
   test.each([
     'ordinary-sync-v1',
-    'load-response-v3',
     'load-response-v4',
-    'tip-advertisement-v1',
     'security-advertisement-v1',
     'invitation-bootstrap-v1',
+    'invitation-catch-up-v1',
     'beekem-welcome-v2',
     'beekem-path-update-v2',
   ] as const)('rejects a missing signature tag in %s', (context) => {
@@ -112,7 +122,7 @@ describe('sync message wire-context separation', () => {
   });
 
   test('rejects a captured same-shaped load response in the invitation context', () => {
-    const captured = tagged('load-response-v3', {
+    const captured = tagged('load-response-v4', {
       documentId: '/doc',
       changes: {},
       keychainChanges: {},
@@ -133,7 +143,7 @@ describe('sync message wire-context separation', () => {
       true,
       ['sign', 'verify'],
     )) as CryptoKeyPair;
-    const loadBody = tagged('load-response-v3', { documentId: '/doc' });
+    const loadBody = tagged('load-response-v4', { documentId: '/doc' });
     const invitationBody = tagged('invitation-bootstrap-v1', {
       documentId: '/doc',
     });
@@ -154,11 +164,10 @@ describe('sync message wire-context separation', () => {
     ['ordinary-sync-v1', { welcomeEpochId: new Uint8Array(32) }],
     ['ordinary-sync-v1', { pathUpdate: {} }],
     ['ordinary-sync-v1', { tipsHash: new Uint8Array(32) }],
-    ['load-response-v3', { tipsHash: new Uint8Array(32) }],
-    ['load-response-v3', { loadSecurityState: {} }],
+    ['invitation-catch-up-v1', { tipsHash: new Uint8Array(32) }],
+    ['invitation-catch-up-v1', { loadSecurityState: {} }],
     ['load-response-v4', { welcomeEpochId: new Uint8Array(32) }],
-    ['tip-advertisement-v1', { tips: ['cid'] }],
-    ['tip-advertisement-v1', { loadSecurityState: {} }],
+    ['security-advertisement-v1', { tips: ['cid'] }],
     ['security-advertisement-v1', { changes: {} }],
     ['invitation-bootstrap-v1', { eciesSealed: new Uint8Array([1]) }],
     ['beekem-welcome-v2', { keychainChanges: {} }],

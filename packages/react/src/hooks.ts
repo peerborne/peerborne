@@ -69,6 +69,8 @@ export const PeerborneContext = createContext<{
   setDocWritersCache: () => {},
 });
 
+const openTaskInitializations = new WeakMap<Promise<unknown>, 'open' | 'create'>();
+
 function setCacheEntry<Cache extends Record<string, Value>, Value>(
   setter: Dispatch<SetStateAction<Cache>>,
   key: string,
@@ -163,6 +165,7 @@ export function usePeerborneDocumentState<
   >,
   documentPath: string,
   originFilter: 'all' | 'remote' | 'local' = 'all',
+  initialization: 'open' | 'create' = 'open',
 ): [
   DocType | undefined,
   (fn: ChangeFnType, message?: string) => void,
@@ -243,6 +246,15 @@ export function usePeerborneDocumentState<
         | undefined;
 
       try {
+        while (openTask && openTaskInitializations.get(openTask) !== initialization) {
+          const activated = await openTask.then(() => true, () => false);
+          if (activated) break;
+          if (openTasks.get(documentPath) === openTask) {
+            openTasks.delete(documentPath);
+          }
+          if (!active) return;
+          openTask = openTasks.get(documentPath) as typeof openTask;
+        }
         if (!openTask) {
           const docRef = peerborne.doc(documentPath);
           if (!docRef) {
@@ -250,11 +262,12 @@ export function usePeerborneDocumentState<
             return;
           }
           openTask = (async () => {
-            await docRef.open();
+            await docRef[initialization]();
             const readers = await docRef.getReaders();
             const writers = await docRef.getWriters();
             return { docRef, readers, writers };
           })();
+          openTaskInitializations.set(openTask, initialization);
           openTasks.set(documentPath, openTask);
         }
 
@@ -338,7 +351,7 @@ export function usePeerborneDocumentState<
           }
         });
     };
-  }, [documentCacheKey, documentPath, hookCaches, originFilter, peerborne]);
+  }, [documentCacheKey, documentPath, hookCaches, initialization, originFilter, peerborne]);
 
   return [
     docDataCache[documentCacheKey],

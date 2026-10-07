@@ -15,10 +15,7 @@ import {
   defaultBootstrapConfig,
   SubtleCrypto,
 } from '@peerborne/core';
-import {
-  PeerborneContext,
-  usePeerborne,
-} from '@peerborne/react';
+import { PeerborneContext, usePeerborne } from '@peerborne/react';
 import {
   YjsProvider,
   YjsJSONSerializer,
@@ -26,7 +23,7 @@ import {
   YjsACLProvider,
 } from '@peerborne/yjs';
 import { Login } from './Login';
-import { PasswordList } from './PasswordList';
+import { PasswordVault } from './PasswordList';
 import { Settings } from './Settings';
 
 const crdt = new YjsProvider();
@@ -120,6 +117,14 @@ function App() {
             </Nav.Item>
           </Nav>
 
+          {loggedIn && peerborne && userId && kemKeyPair && (
+            <PasswordVault
+              key={userId}
+              userId={userId}
+              peerborne={peerborne}
+              kemKeyPair={kemKeyPair}
+            />
+          )}
           <Routes>
             <Route
               path="/login"
@@ -139,38 +144,35 @@ function App() {
             />
             <Route
               path="/secrets"
-              element={loggedIn ? (
-                peerborne && userId && kemKeyPair ? (
-                  <PasswordList
-                    userId={userId}
-                    peerborne={peerborne}
-                    kemKeyPair={kemKeyPair}
-                  />
+              element={
+                loggedIn ? (
+                  peerborne && userId && kemKeyPair ? null : (
+                    <i>Loading peerborne...</i>
+                  )
                 ) : (
-                  <i>Loading peerborne...</i>
+                  <Navigate to="/login" replace />
                 )
-              ) : (
-                <Navigate to="/login" replace />
-              )}
+              }
             />
             <Route
               path="/settings"
-              element={loggedIn ? (
-                peerborne ? (
-                  <Settings
-                    peerborne={peerborne}
-                    publicKey={publicKey}
-                  />
+              element={
+                loggedIn ? (
+                  peerborne ? (
+                    <Settings peerborne={peerborne} publicKey={publicKey} />
+                  ) : (
+                    <i>Loading peerborne...</i>
+                  )
                 ) : (
-                  <i>Loading peerborne...</i>
+                  <Navigate to="/login" replace />
                 )
-              ) : (
-                <Navigate to="/login" replace />
-              )}
+              }
             />
             <Route
               path="/"
-              element={<Navigate to={loggedIn ? '/secrets' : '/login'} replace />}
+              element={
+                <Navigate to={loggedIn ? '/secrets' : '/login'} replace />
+              }
             />
           </Routes>
         </Container>
