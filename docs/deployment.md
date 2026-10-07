@@ -320,7 +320,7 @@ The repository provides four relay-related Dockerfiles:
 
 | File | Purpose | Build command |
 | --- | --- | --- |
-| `relay-server/Dockerfile` | Standard relay (used by `docker-compose.yaml`) | `docker build -t peerborne-relay relay-server/` |
+| `relay-server/Dockerfile` | Standard relay (used by the root and `guides/docker/` Compose files) | `docker build -t peerborne-relay relay-server/` |
 | `Dockerfile.relay` | Relay built from repo root context | `docker build -f Dockerfile.relay -t peerborne-relay .` |
 | `guides/docker/Dockerfile.relay` | Standalone relay with extended comments | `docker build -f guides/docker/Dockerfile.relay -t peerborne-relay relay-server/` |
 | `guides/docker/Dockerfile.bootstrap` | Relay with pubsub peer discovery (same code) | `docker build -f guides/docker/Dockerfile.bootstrap -t peerborne-bootstrap relay-server/` |

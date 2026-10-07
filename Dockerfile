@@ -32,7 +32,6 @@ COPY examples/password-manager/package.json /app/examples/password-manager/packa
 RUN yarn install
 
 FROM node:22.19-alpine
-ENV SKIP_PREFLIGHT_CHECK=true
 RUN mkdir -p /app
 COPY --from=builder /app /app
 WORKDIR /app
