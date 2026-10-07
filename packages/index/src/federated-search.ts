@@ -190,13 +190,18 @@ export class FederatedSearchCoordinator<DocType> {
     }
     let cursor = 0;
     const resolutionDeadline = Date.now() + this._resolveBudgetMs;
+    const resolutionBudget = new AbortController();
+    const resolutionBudgetTimer = setTimeout(() => {
+      resolutionBudgetExhausted = true;
+      resolutionBudget.abort();
+    }, this._resolveBudgetMs);
     const workers = Array.from({ length: Math.min(this._resolveConcurrency, interleaved.length) }, async () => {
       while (true) {
         const position = cursor++;
         const item = interleaved[position];
         if (!item) return;
         const remainingResolveTime = resolutionDeadline - Date.now();
-        if (remainingResolveTime <= 0) {
+        if (resolutionBudgetExhausted || remainingResolveTime <= 0) {
           resolutionBudgetExhausted = true;
           return;
         }
@@ -206,10 +211,11 @@ export class FederatedSearchCoordinator<DocType> {
         const referenceKey = candidateReferenceKey(candidate);
         if (claimedReferences.has(referenceKey)) continue;
         claimedReferences.add(referenceKey);
+        const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
+        const boundedByResolutionBudget = timeoutMs === remainingResolveTime;
         try {
           const abortController = new AbortController();
-          const timeoutMs = Math.min(this._resolveTimeoutMs, remainingResolveTime);
-          const resolveDeadline = Date.now() + timeoutMs;
+          const resolveDeadline = Math.min(resolutionDeadline, Date.now() + timeoutMs);
           const resolved = await withTimeout(
             this._resolver.resolveAuthorized(candidate.documentPath, candidate.revision, {
               deadline: resolveDeadline,
@@ -217,6 +223,7 @@ export class FederatedSearchCoordinator<DocType> {
             }),
             timeoutMs,
             () => abortController.abort(),
+            resolutionBudget.signal,
           );
           if (!resolved || resolved.documentPath !== candidate.documentPath ||
               (candidate.revision !== undefined && resolved.revision !== candidate.revision)) continue;
@@ -226,13 +233,19 @@ export class FederatedSearchCoordinator<DocType> {
           verified.set(candidate.documentPath, { documentPath: candidate.documentPath, fields });
           sourceExecutions[sourceIndex].candidatesAccepted++;
         } catch (error) {
-          if (error instanceof SourceTimeoutError) resolutionTimeout = true;
-          else resolutionError = true;
+          if (error instanceof SourceTimeoutError) {
+            resolutionTimeout = true;
+            if (boundedByResolutionBudget) resolutionBudgetExhausted = true;
+          } else resolutionError = true;
           // Authorization, retrieval, and decryption failures are fail-closed candidate misses.
         }
       }
     });
-    await Promise.all(workers);
+    try {
+      await Promise.all(workers);
+    } finally {
+      clearTimeout(resolutionBudgetTimer);
+    }
 
     let merged = Array.from(verified.values());
     merged.sort((left, right) => compareEntriesForQuery(
@@ -450,19 +463,27 @@ function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   onTimeout?: () => void,
+  signal?: AbortSignal,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', expire);
+    };
+    const expire = () => {
+      cleanup();
       onTimeout?.();
       reject(new SourceTimeoutError());
-    }, timeoutMs);
+    };
+    const timer = setTimeout(expire, timeoutMs);
+    signal?.addEventListener('abort', expire);
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        cleanup();
         resolve(value);
       },
       (error) => {
-        clearTimeout(timer);
+        cleanup();
         reject(error);
       },
     );

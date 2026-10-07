@@ -164,7 +164,6 @@ Peerborne therefore retains these historical identifiers:
 - the `collabswarm-doc-key-v1` HKDF domain-separation label
 - the `swarmdb-epoch-v1` epoch label and existing `swarmdb` discovery topics
 - the `/collabswarm-blocks` and `/collabswarm-data` IndexedDB locations
-- the `collabswarm-index` default index database name
 - the `COLLABSWARM_*` Redux action string values
 
 These strings are protocol and persistence boundaries, not current product or
