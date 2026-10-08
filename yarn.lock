@@ -4723,7 +4723,7 @@ __metadata:
     "@types/slate": "npm:^0.47.16"
     "@vitejs/plugin-react": "npm:^6.1.1"
     bootstrap: "npm:^5.3.8"
-    dayjs: "npm:^1.11.13"
+    dayjs: "npm:^1.11.23"
     react: "npm:^19.3.0"
     react-bootstrap: "npm:^2.10.10"
     react-bootstrap-icons: "npm:^1.11.6"
@@ -7096,10 +7096,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"dayjs@npm:^1.11.13":
-  version: 1.11.13
-  resolution: "dayjs@npm:1.11.13"
-  checksum: 10/7374d63ab179b8d909a95e74790def25c8986e329ae989840bacb8b1888be116d20e1c4eee75a69ea0dfbae13172efc50ef85619d304ee7ca3c01d5878b704f5
+"dayjs@npm:^1.11.23":
+  version: 1.11.23
+  resolution: "dayjs@npm:1.11.23"
+  checksum: 10/61d29544ca1553369f75541b5abf9c1bb6a978991498923a2d5721c9df3eca513b2c15ff5534de6930dc553de5d6f2b8f8047149f3528df906b21f51df637463
   languageName: node
   linkType: hard
 
