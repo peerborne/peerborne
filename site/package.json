@@ -22,7 +22,7 @@
     "@peerborne/core": "workspace:*",
     "@peerborne/yjs": "workspace:*",
     "astro": "^7.3.5",
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@astrojs/markdown-remark": "^7.3.0",
