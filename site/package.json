@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "benchmarks:snapshot": "node scripts/collect-benchmark-snapshot.mjs",
-    "build:dependencies": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc",
+    "build:dependencies": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc && yarn workspace @peerborne/automerge tsc && yarn workspace @peerborne/react tsc",
     "dev": "yarn run build:dependencies && astro dev",
-    "build": "yarn figures:test && yarn diagrams:check && yarn charts:check && yarn run build:dependencies && astro build && node scripts/generate-llms-full.mjs",
+    "build": "yarn sync:check && yarn figures:test && yarn diagrams:check && yarn charts:check && yarn run build:dependencies && yarn run check:snippets && astro build && node scripts/generate-llms-full.mjs",
     "charts:generate": "node scripts/generate-benchmark-charts.mjs",
     "charts:check": "node scripts/generate-benchmark-charts.mjs --check",
     "charts:test": "node --test scripts/generate-benchmark-charts.test.mjs && yarn charts:check",
@@ -15,7 +15,10 @@
     "diagrams:check": "node scripts/generate-doc-diagrams.mjs --check",
     "diagrams:test": "node --test scripts/generate-doc-diagrams.test.mjs && yarn diagrams:check",
     "figures:test": "node --test scripts/rehype-docs-figures.test.mjs",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "check:snippets": "node scripts/check-doc-snippets.mjs",
+    "sync:check": "node scripts/generate-sync-assets.mjs --check",
+    "sync:generate": "node scripts/generate-sync-assets.mjs --gif"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.9",

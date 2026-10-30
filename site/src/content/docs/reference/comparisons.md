@@ -5,6 +5,31 @@ description: How Peerborne compares to other local-first, CRDT, and realtime col
 
 Peerborne occupies a specific niche: **encrypted, peer-to-peer CRDT document collaboration with open-source libraries**. This page compares it to related projects to help you understand when Peerborne is the right choice.
 
+## Baseline architectures
+
+Peerborne wraps Yjs or Automerge; those engines are also useful independently.
+The table compares baseline setups, not every plugin, custom encryption layer,
+or hosted product. It is not a speed or memory benchmark.
+
+| Choice | Peerborne | Yjs + providers | Automerge + Repo | WebSockets + Postgres |
+| --- | --- | --- | --- | --- |
+| Transport | libp2p; WebRTC / configured Circuit Relay | Choose WebRTC, WebSocket, or another provider | Choose Repo network adapters | App server broadcasts updates |
+| Document E2EE | Built in; group lifecycle is alpha | Provider/application choice; y-webrtc supports a shared room password | Separate from baseline Repo configuration | Add application encryption; TLS alone ends at the server |
+| State storage | Encrypted Helia blocks; browser IndexedDB | Add a persistence provider, such as y-indexeddb | Storage adapter, including IndexedDB or filesystem | Authoritative server tables; optional application cache |
+| Client memory | Loaded CRDT + graph/caches; no total cap | Loaded document + CRDT metadata | Loaded documents + history/metadata | Application chooses a working set |
+| Offline reconciliation | CRDT adapters; live partition/rejoin unverified | Merge when updates arrive | Merge when updates arrive | Application queue and conflict policy |
+
+Upstream sources: [Yjs providers](https://docs.yjs.dev/ecosystem/connection-provider),
+[Yjs persistence](https://docs.yjs.dev/getting-started/allowing-offline-editing),
+[y-webrtc security](https://github.com/yjs/y-webrtc#readme),
+[Automerge Repo](https://automerge.org/docs/reference/repositories/), and
+[Postgres client/server architecture](https://www.postgresql.org/docs/current/tutorial-arch.html).
+Memory entries describe where state lives; no universal safe document size is
+implied. The WebSockets/Postgres column describes a conventional application
+architecture, not a single packaged product. See Peerborne's
+[feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md)
+for its evidence boundaries. Forward secrecy and MLS are not implemented.
+
 ## Peerborne vs Yjs (standalone)
 
 [Yjs](https://docs.yjs.dev) is a high-performance CRDT library for shared editing. It provides shared types (`Y.Map`, `Y.Array`, `Y.Text`), network-agnostic sync, and an ecosystem of network and persistence providers. Encryption, authentication, access control, and provider selection remain application choices.

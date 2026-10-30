@@ -1,23 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-label="Peerborne logo">
-  <g stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" opacity="0.55">
-    <line x1="64" y1="64" x2="64" y2="22" />
-    <line x1="64" y1="64" x2="27.6" y2="43" />
-    <line x1="64" y1="64" x2="27.6" y2="85" />
-    <line x1="64" y1="64" x2="64" y2="106" />
-    <line x1="64" y1="64" x2="100.4" y2="85" />
-    <line x1="64" y1="64" x2="100.4" y2="43" />
-    <line x1="64" y1="22" x2="27.6" y2="43" />
-    <line x1="27.6" y1="43" x2="27.6" y2="85" />
-    <line x1="27.6" y1="85" x2="64" y2="106" />
-    <line x1="64" y1="106" x2="100.4" y2="85" />
-    <line x1="100.4" y1="85" x2="100.4" y2="43" />
-    <line x1="100.4" y1="43" x2="64" y2="22" />
-  </g>
-  <circle cx="64" cy="22" r="9" fill="#2dd4bf" />
-  <circle cx="27.6" cy="43" r="9" fill="#2dd4bf" />
-  <circle cx="27.6" cy="85" r="9" fill="#2dd4bf" />
-  <circle cx="64" cy="106" r="9" fill="#2dd4bf" />
-  <circle cx="100.4" cy="85" r="9" fill="#2dd4bf" />
-  <circle cx="100.4" cy="43" r="9" fill="#2dd4bf" />
-  <circle cx="64" cy="64" r="13" fill="#6366f1" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" shape-rendering="crispEdges" role="img" aria-labelledby="title">
+  <title id="title">Peerborne pixel network</title>
+  <path d="M30 12h4v40h-4zM12 20h4v10h36V20h4v14H8V20h4zm0 24h4V34h36v10h4V30H8v14h4z" fill="#7964b0"/>
+  <path d="M26 4h12v4h4v12h-4v4H26v-4h-4V8h4zM6 16h12v4h4v12h-4v4H6v-4H2V20h4zm40 0h12v4h4v12h-4v4H46v-4h-4V20h4zM6 36h12v4h4v12h-4v4H6v-4H2V40h4zm40 0h12v4h4v12h-4v4H46v-4h-4V40h4zM26 40h12v4h4v12h-4v4H26v-4h-4V44h4z" fill="#a3efb8"/>
+  <path d="M20 20h24v24H20z" fill="#242136"/>
+  <path d="M24 24h16v16H24z" fill="#b7a1ff"/>
+  <path d="M28 28h8v8h-8z" fill="#f5f0e8"/>
 </svg>

@@ -1,0 +1,8 @@
+flowchart LR
+  UI[UI layer] <--> Hook[React document hook]
+  Hook <--> CRDT[In-memory Automerge or Yjs]
+  CRDT <--> Crypto[Sign / encrypt · decrypt / verify]
+  Epoch[Epoch keys and ACLs] --> Crypto
+  Crypto <--> Storage[Helia blockstore / IndexedDB]
+  Crypto <--> Network[libp2p · WebRTC / Circuit Relay]
+  Network <--> Peer[Remote peer]

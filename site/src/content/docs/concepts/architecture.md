@@ -5,6 +5,14 @@ description: How Peerborne is structured — packages, data flow, networking, an
 
 Peerborne composes several open-source subsystems into a coherent local-first stack. This page describes how the pieces fit together.
 
+## Runtime overview
+
+![UI and React connect to an in-memory CRDT. Epoch keys feed encryption before local persistence and peer transport.](/diagrams/runtime.svg)
+
+[Mermaid source](/diagrams/runtime.mmd). Change transactions are not a separate
+durable batching WAL. Epoch and ACL primitives do not establish forward
+secrecy; see [Epoch Transitions](../epoch-transitions/).
+
 ## Package dependency graph
 
 ![Peerborne core is the shared dependency of the Yjs and Automerge adapters and the React, Redux, and index integrations. Core composes libp2p, Helia and Bitswap, limited IPNS DHT record support, BeeKEM membership code, and an optional UCAN ACL provider that participates in authorization when selected by the application.](../../../assets/diagrams/package-dependencies.svg "Package dependencies: adapters and integrations point to core; core composes runtime primitives.")

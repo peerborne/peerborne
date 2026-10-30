@@ -4,11 +4,46 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   cleanMdx,
+  inlineCodeSnippets,
   mapOutsideFences,
   rewriteMarkdownLinks,
 } from './generate-llms-full.mjs';
 
 const repository = fileURLToPath(new URL('../..', import.meta.url));
+
+test('includes checked TSX snippets in the plain-text corpus and preserves JSX', () => {
+  const source = resolve(repository, 'site/src/content/docs/getting-started/react-workspace.mdx');
+  const markdown = [
+    "import workspace from '../../../snippets/Workspace.tsx?raw';",
+    '<Code code={workspace} lang="tsx" title="Workspace.tsx" />',
+    '',
+    '```mdx',
+    '<Code code={notImported} lang="tsx" />',
+    '```',
+  ].join('\n');
+  const output = cleanMdx(inlineCodeSnippets(markdown, source));
+  assert.match(output, /```tsx\nimport \{ usePeerborneDocumentState \}/);
+  assert.match(output, /return <button onClick/);
+  assert.match(output, /```mdx\n<Code code=\{notImported\}/);
+});
+
+test('rejects raw imports outside the snippet directory and unresolved Code sources', () => {
+  const source = resolve(repository, 'site/src/content/docs/index.mdx');
+  assert.throws(
+    () => inlineCodeSnippets("import secret from '../../../../../README.md?raw';", source),
+    /raw code import must be a TSX file inside site\/src\/snippets/,
+  );
+  assert.throws(
+    () => inlineCodeSnippets('<Code code={missing} lang="tsx" />', source),
+    /Code must reference an imported raw snippet/,
+  );
+});
+
+test('represents the scripted sync story honestly in the plain-text corpus', () => {
+  const output = cleanMdx('<SyncStory />');
+  assert.match(output, /scripted sync illustration/);
+  assert.match(output, /not an acceptance test/);
+});
 
 test('rejects an unclosed fenced block', () => {
   assert.throws(

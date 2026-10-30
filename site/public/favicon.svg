@@ -1,17 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <g stroke="#2dd4bf" stroke-width="4" stroke-linecap="round" opacity="0.55">
-    <line x1="64" y1="64" x2="64" y2="22" />
-    <line x1="64" y1="64" x2="27.6" y2="43" />
-    <line x1="64" y1="64" x2="27.6" y2="85" />
-    <line x1="64" y1="64" x2="64" y2="106" />
-    <line x1="64" y1="64" x2="100.4" y2="85" />
-    <line x1="64" y1="64" x2="100.4" y2="43" />
-  </g>
-  <circle cx="64" cy="22" r="12" fill="#2dd4bf" />
-  <circle cx="27.6" cy="43" r="12" fill="#2dd4bf" />
-  <circle cx="27.6" cy="85" r="12" fill="#2dd4bf" />
-  <circle cx="64" cy="106" r="12" fill="#2dd4bf" />
-  <circle cx="100.4" cy="85" r="12" fill="#2dd4bf" />
-  <circle cx="100.4" cy="43" r="12" fill="#2dd4bf" />
-  <circle cx="64" cy="64" r="16" fill="#6366f1" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
+  <path fill="#242136" d="M0 0h32v32H0z"/>
+  <path fill="#7964b0" d="M6 6h20v20H6z"/>
+  <path fill="#242136" d="M8 8h16v16H8z"/>
+  <path fill="#a3efb8" d="M2 2h8v8H2zm20 0h8v8h-8zM2 22h8v8H2zm20 0h8v8h-8z"/>
+  <path fill="#b7a1ff" d="M10 10h12v12H10z"/>
+  <path fill="#f5f0e8" d="M14 14h4v4h-4z"/>
 </svg>
