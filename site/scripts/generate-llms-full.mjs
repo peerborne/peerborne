@@ -44,6 +44,7 @@ function documentationOrder(path) {
     'index.',
     'getting-started/',
     'concepts/',
+    'runbooks/',
     'cookbook/',
     'reference/',
     'community/',
@@ -222,6 +223,10 @@ export function cleanMdx(markdown, sourceName = 'MDX') {
     let clean = removeMdxImports(chunk, sourceName);
 
     clean = clean.replace(
+      /<SyncStory\s*\/>/g,
+      'The landing page includes a scripted sync illustration: two clients edit, disconnect, edit concurrently, reconnect, and converge. Traffic, byte counts, cryptography, and timings are simulated; this is not an acceptance test.',
+    );
+    clean = clean.replace(
       /^[ \t]*<Card\b([^>]*)>([\s\S]*?)^[ \t]*<\/Card>[ \t]*$/gm,
       (_match, attributes, body) => {
         const title = attributeValue(attributes, 'title');
@@ -257,6 +262,35 @@ export function cleanMdx(markdown, sourceName = 'MDX') {
     }
 
     return clean;
+  }, sourceName);
+}
+
+export function inlineCodeSnippets(markdown, sourcePath) {
+  const snippets = new Map();
+  const sourceName = repositoryPath(sourcePath);
+  const snippetsRoot = resolve(root, 'site/src/snippets');
+  return mapOutsideFences(markdown, (chunk) => {
+    for (const match of chunk.matchAll(/^import\s+(\w+)\s+from\s+['"]([^'"]+\?raw)['"];?\s*$/gm)) {
+      const path = resolve(dirname(sourcePath), match[2].slice(0, -4));
+      if (!pathIsInside(snippetsRoot, path) || !path.endsWith('.tsx')) {
+        throw new Error(`${sourceName}: raw code import must be a TSX file inside site/src/snippets`);
+      }
+      snippets.set(match[1], readFileSync(path, 'utf8').trimEnd());
+    }
+    return chunk.replace(/<Code\b([^>]*?)\/>/g, (_match, attributes) => {
+      const name = /\bcode\s*=\s*\{\s*(\w+)\s*\}/.exec(attributes)?.[1];
+      if (!snippets.has(name)) {
+        throw new Error(`${sourceName}: Code must reference an imported raw snippet`);
+      }
+      const language = attributeValue(attributes, 'lang') ?? '';
+      if (!/^[\w-]*$/.test(language)) {
+        throw new Error(`${sourceName}: invalid code language`);
+      }
+      const code = snippets.get(name);
+      const fenceLength = Math.max(3, ...Array.from(code.matchAll(/`+/g), (match) => match[0].length + 1));
+      const fence = '`'.repeat(fenceLength);
+      return `\n${fence}${language}\n${code}\n${fence}\n`;
+    });
   }, sourceName);
 }
 
@@ -396,7 +430,9 @@ function cleanContent(path) {
   const sourceName = repositoryPath(path);
   let content = withoutFrontmatter.replace(/^#\s+[^\n]+\n+/, '');
 
-  if (path.endsWith('.mdx')) content = cleanMdx(content, sourceName);
+  if (path.endsWith('.mdx')) {
+    content = cleanMdx(inlineCodeSnippets(content, path), sourceName);
+  }
   content = mapOutsideFences(
     content,
     (chunk) => chunk.replace(/^(#{1,5})(?=\s)/gm, '#$1'),

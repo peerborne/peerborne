@@ -5,6 +5,21 @@ description: Performance characteristics, benchmarks, tuning guidance, and curre
 
 Peerborne makes several deliberate performance tradeoffs to balance security, consistency, and resource use. This page documents the design decisions, benchmark suites, and tuning guidance.
 
+## Measure the client work
+
+Peerborne has no established linear-scaling guarantee, total document memory
+cap, or browser frame budget. CRDT deltas, bounded block fetching, cache limits,
+and opt-in snapshots control specific costs; they do not bound the whole app.
+Change transactions combine mutations into one delta and sync message. They
+are not a durable batching WAL or a guarantee of batched disk I/O.
+
+For an application workload, record the commit, browser/runtime, hardware,
+encoded bytes, edit history, peak memory, and latency distributions. Measure
+local mutation, crypto, storage, transport, merge, and UI rendering separately.
+Include cold opens, repeated deletes, several open documents, and reconnects.
+The [offline persistence runbook](../../runbooks/offline-persistence/) covers
+origin quota and recovery checks.
+
 ## Design decisions
 
 ### Load concurrency cap

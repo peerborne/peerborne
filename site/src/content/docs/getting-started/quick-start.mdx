@@ -4,6 +4,7 @@ description: Build Peerborne and open a real encrypted document in Chromium from
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
+import SyncDemo from '../../../components/SyncDemo.astro';
 
 <Aside type="note" title="Packages are not published yet">
 The `@peerborne/*` packages are not currently available from npm. This guide
@@ -24,6 +25,18 @@ libp2p, opens an Automerge document, and fails on browser runtime errors.
 - A Chromium-compatible host for the browser smoke test
 
 Docker is not required for this quick start.
+
+## Try the in-page replicas
+
+Add a task on either side, choose **Go offline**, add a different task on each
+side, and **Reconnect**. Both lists should contain the two additions. This
+exercise runs real Yjs merge and Web Crypto in one page through an illustrative
+channel; the boundary is described below the component. Then follow the steps
+to open a real Peerborne document locally.
+
+<SyncDemo />
+
+## Open a real document from source
 
 <Steps>
 
@@ -84,7 +97,7 @@ Docker is not required for this quick start.
    ```
 
    Open the URL printed by Vite. In the **Open Document** field, enter a path
-   such as `/quick-start/demo`, then open it. The page displays the document and
+   such as `/quick-start/demo`, then choose **Create**. The page displays the document and
    the local libp2p node addresses.
 
 </Steps>
@@ -170,6 +183,9 @@ it covers.
 
 ## Next steps
 
+- [Your first React workspace](../react-workspace/) — copy a ten-line component and its full node/context setup
+- [Documents](../../concepts/documents/), [Identities](../../concepts/identities/), and [Epoch Transitions](../../concepts/epoch-transitions/) — the three boundaries to understand before sharing
+- [Production Runbooks](../../runbooks/) — evaluate persistence limits and relay operation
 - [Why Peerborne?](../../concepts/why-peerborne/) — understand the value proposition and when to use it
 - [Architecture](../../concepts/architecture/) — see how the pieces fit together with diagrams
 - [Concepts](../../concepts/local-first/) — dive into local-first design, CRDTs, networking, storage, and security

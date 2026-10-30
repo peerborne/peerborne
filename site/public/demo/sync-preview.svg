@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc" shape-rendering="crispEdges">
+    <title id="title">Peerborne: Back in sync</title>
+    <desc id="desc">Scripted illustration of two local document replicas. No live transport, cryptography, or measured timing. The 124B and epoch frames are simulated.</desc>
+    <g font-family="Menlo, Consolas, monospace">
+      <rect x="0" y="0" width="1120" height="660" fill="#1b1929" />
+      <rect x="24" y="25" width="8" height="8" fill="#a3efb8"/><rect x="41" y="25" width="8" height="8" fill="#a3efb8"/><rect x="58" y="25" width="8" height="8" fill="#a3efb8"/>
+      <text x="94" y="36" font-size="18" fill="#a7a0b6" >/workspace/release</text>
+      <text x="920" y="36" font-size="15" fill="#a7a0b6" letter-spacing="2">SIMULATION</text>
+      <rect x="0" y="60" width="560" height="364" fill="#1b382a" />
+      <rect x="26" y="79" width="30" height="30" fill="#30234c" />
+      <text x="35" y="100" font-size="18" fill="#f5f0e8" >A</text>
+      <text x="70" y="101" font-size="21" fill="#f5f0e8" font-weight="bold">Client A</text>
+      <text x="416" y="101" font-size="17" fill="#a3efb8" >● Online</text>
+      <rect x="0" y="126" width="560" height="34" fill="#242136" />
+      <text x="28" y="149" font-size="16" fill="#a7a0b6" >workspace.ts</text>
+      <text x="420" y="149" font-size="13" fill="#a7a0b6" >local state</text>
+      <text x="28" y="190" font-size="19" fill="#d6c8ff" xml:space="preserve">{</text><text x="28" y="213" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;title&quot;: &quot;Release plan&quot;,</text><text x="28" y="236" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;status&quot;: &quot;review&quot;,</text><text x="28" y="259" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;tasks&quot;: [</text><text x="28" y="282" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Design schema&quot;,</text><text x="28" y="305" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Write tests&quot;,</text><text x="28" y="328" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Ship offline&quot;</text><text x="28" y="351" font-size="19" fill="#d6c8ff" xml:space="preserve">  ]</text><text x="28" y="374" font-size="19" fill="#d6c8ff" xml:space="preserve">}</text><rect x="560" y="60" width="560" height="364" fill="#1b382a" />
+      <rect x="586" y="79" width="30" height="30" fill="#1b382a" />
+      <text x="595" y="100" font-size="18" fill="#f5f0e8" >B</text>
+      <text x="630" y="101" font-size="21" fill="#f5f0e8" font-weight="bold">Client B</text>
+      <text x="976" y="101" font-size="17" fill="#a3efb8" >● Online</text>
+      <rect x="560" y="126" width="560" height="34" fill="#242136" />
+      <text x="588" y="149" font-size="16" fill="#a7a0b6" >workspace.ts</text>
+      <text x="980" y="149" font-size="13" fill="#a7a0b6" >local state</text>
+      <text x="588" y="190" font-size="19" fill="#d6c8ff" xml:space="preserve">{</text><text x="588" y="213" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;title&quot;: &quot;Release plan&quot;,</text><text x="588" y="236" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;status&quot;: &quot;review&quot;,</text><text x="588" y="259" font-size="19" fill="#d6c8ff" xml:space="preserve">  &quot;tasks&quot;: [</text><text x="588" y="282" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Design schema&quot;,</text><text x="588" y="305" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Write tests&quot;,</text><text x="588" y="328" font-size="19" fill="#d6c8ff" xml:space="preserve">    &quot;Ship offline&quot;</text><text x="588" y="351" font-size="19" fill="#d6c8ff" xml:space="preserve">  ]</text><text x="588" y="374" font-size="19" fill="#d6c8ff" xml:space="preserve">}</text>
+      <path d="M0 60H1120M560 60V424M0 424H1120" stroke="#756c89"/>
+      <rect x="0" y="425" width="1120" height="100" fill="#11101a" />
+      <text x="28" y="447" font-size="12" fill="#a7a0b6" letter-spacing="1">SIMULATED FRAMES · NO LIVE NETWORK</text>
+      <text x="28" y="475" font-size="16" fill="#a3efb8" >[Peerborne] Epoch 4 -&gt; Epoch 5 transition complete</text><text x="28" y="500" font-size="16" fill="#a3efb8" >[P2P] 124B delta synced via minimal common ancestor</text>
+      <text x="28" y="556" font-size="21" fill="#f5f0e8" font-weight="bold">06 / 06   Back in sync</text>
+      <rect x="28" y="581" width="166" height="3" fill="#756c89" />
+          <text x="28" y="607" font-size="14" fill="#a7a0b6" >Start in sync</text><rect x="210" y="581" width="166" height="3" fill="#756c89" />
+          <text x="210" y="607" font-size="14" fill="#a7a0b6" >Edit on A</text><rect x="392" y="581" width="166" height="3" fill="#756c89" />
+          <text x="392" y="607" font-size="14" fill="#a7a0b6" >B goes offline</text><rect x="574" y="581" width="166" height="3" fill="#756c89" />
+          <text x="574" y="607" font-size="14" fill="#a7a0b6" >Both edit</text><rect x="756" y="581" width="166" height="3" fill="#756c89" />
+          <text x="756" y="607" font-size="14" fill="#a7a0b6" >Reconnect</text><rect x="938" y="581" width="166" height="3" fill="#b7a1ff" />
+          <text x="938" y="607" font-size="14" fill="#f5f0e8" >Back in sync</text>
+      <text x="28" y="643" font-size="14" fill="#a7a0b6" >Scripted UI · no measured timings · sample 124B / epoch frames · peerborne.io</text>
+    </g>
+  </svg>

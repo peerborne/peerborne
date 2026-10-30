@@ -519,8 +519,9 @@
   }
   .peer-card,
   .wire-panel {
-    border: 1px solid var(--sl-color-gray-5);
-    border-radius: 0.75rem;
+    border: 2px solid var(--pb-color-border);
+    border-top: 4px solid var(--sl-color-accent);
+    box-shadow: 4px 4px 0 var(--pb-color-shadow);
     background: var(--sl-color-black);
     padding: 1rem;
     display: flex;
@@ -530,6 +531,7 @@
   .peer-card header,
   .wire-panel header {
     font-weight: 600;
+    font-size: 0.8125rem;
     color: var(--sl-color-white);
     display: flex;
     align-items: center;
@@ -538,7 +540,7 @@
   .peer-dot {
     width: 0.6rem;
     height: 0.6rem;
-    border-radius: 50%;
+    flex-shrink: 0;
     display: inline-block;
   }
   .peer-dot.alice {
@@ -562,7 +564,6 @@
     align-items: center;
     gap: 0.5rem;
     background: var(--sl-color-gray-6);
-    border-radius: 0.5rem;
     padding: 0.35rem 0.6rem;
   }
   .todo-list :global(button) {
@@ -596,17 +597,16 @@
   .peer-card input {
     width: 100%;
     min-width: 0;
-    border: 1px solid var(--sl-color-gray-5);
-    border-radius: 0.5rem;
+    border: 2px solid var(--pb-color-border);
     background: var(--sl-color-gray-6);
     color: var(--sl-color-white);
     padding: 0.4rem 0.6rem;
   }
   .peer-card form button {
-    border: none;
-    border-radius: 0.5rem;
-    background: var(--sl-color-accent);
-    color: white;
+    border: 2px solid var(--pb-color-border);
+    box-shadow: 3px 3px 0 var(--pb-color-shadow);
+    background: var(--sl-color-text-accent);
+    color: var(--sl-color-text-invert);
     padding: 0.4rem 0.8rem;
     cursor: pointer;
     font-weight: 600;
@@ -624,6 +624,10 @@
   }
   .wire-panel {
     background: var(--sl-color-gray-6);
+    border-top-color: var(--pb-color-peach);
+  }
+  .peer-card:last-child {
+    border-top-color: var(--sw-color-teal);
   }
   .offline .wire-panel {
     border-style: dashed;
@@ -670,8 +674,8 @@
   }
   .pause-btn {
     align-self: flex-start;
-    border: 1px solid var(--sl-color-gray-4);
-    border-radius: 0.5rem;
+    border: 2px solid var(--pb-color-border);
+    box-shadow: 3px 3px 0 var(--pb-color-shadow);
     background: var(--sl-color-black);
     color: var(--sl-color-white);
     padding: 0.4rem 0.8rem;
@@ -696,8 +700,7 @@
     color: var(--sl-color-red-high, #fb7185);
   }
   .demo-fallback {
-    border: 1px dashed var(--sl-color-gray-5);
-    border-radius: 0.75rem;
+    border: 2px dashed var(--pb-color-border);
     padding: 1rem;
     color: var(--sl-color-gray-3);
   }

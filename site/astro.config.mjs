@@ -26,7 +26,7 @@ const removeGeneratedApiLanding = {
 
 const socialCard = {
   url: 'https://peerborne.io/social-card.png',
-  alt: 'Peerborne — encrypted local-first state, carried by peers.',
+  alt: 'Peerborne — local-first TypeScript state with end-to-end encryption.',
 };
 
 // Deployed through GitHub Pages at the custom apex domain.
@@ -72,7 +72,7 @@ export default defineConfig({
         }),
       ],
       title: 'Peerborne',
-      description: 'Encrypted local-first state, carried by peers.',
+      description: 'Local-first TypeScript state with end-to-end encryption.',
       logo: {
         src: './src/assets/logo.svg',
         alt: 'Peerborne',
@@ -120,12 +120,43 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: 'Getting started',
-          items: ['getting-started/quick-start'],
+          label: 'Getting Started',
+          items: [
+            { label: 'Five-minute source tutorial', slug: 'getting-started/quick-start' },
+            'getting-started/react-workspace',
+            {
+              label: 'Frameworks and examples',
+              collapsed: true,
+              items: [
+                'cookbook/react',
+                'cookbook/redux',
+                'cookbook/peerborne-note',
+                'cookbook/invitations',
+                'cookbook/collaborative-wiki',
+                'cookbook/password-manager',
+                'cookbook/search-indexing',
+                'cookbook/yjs-schema-design',
+              ],
+            },
+            {
+              label: 'Community',
+              collapsed: true,
+              items: [
+                'community',
+                'community/faq',
+                'community/roadmap',
+                'community/contributing',
+                'community/help-wanted',
+              ],
+            },
+          ],
         },
         {
-          label: 'Concepts',
+          label: 'Core Concepts',
           items: [
+            'concepts/documents',
+            'concepts/identities',
+            'concepts/epoch-transitions',
             'concepts/why-peerborne',
             'concepts/architecture',
             'concepts/local-first',
@@ -138,27 +169,21 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Cookbook',
+          label: 'Production Runbooks',
           items: [
-            'cookbook/peerborne-note',
-            'cookbook/invitations',
-            'cookbook/collaborative-wiki',
-            'cookbook/password-manager',
-            'cookbook/react',
-            'cookbook/redux',
-            'cookbook/search-indexing',
-            'cookbook/yjs-schema-design',
+            'runbooks',
+            'runbooks/offline-persistence',
             'cookbook/running-a-relay',
             'cookbook/pinning',
           ],
         },
         {
-          label: 'Reference',
+          label: 'API Reference',
           items: [
             'reference',
             'reference/comparisons',
             {
-              label: 'Security ADRs',
+              label: 'Security design decisions',
               collapsed: true,
               items: [
                 'reference/security-design/0001-mls-document-security-architecture',
@@ -167,16 +192,6 @@ export default defineConfig({
               ],
             },
             typeDocSidebarGroup,
-          ],
-        },
-        {
-          label: 'Community',
-          items: [
-            'community',
-            'community/faq',
-            'community/roadmap',
-            'community/contributing',
-            'community/help-wanted',
           ],
         },
       ],

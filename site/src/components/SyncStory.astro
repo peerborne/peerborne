@@ -1,0 +1,140 @@
+---
+import { syncStory } from '../lib/sync-story';
+
+const final = syncStory[syncStory.length - 1];
+const state = JSON.stringify(final.a, null, 2);
+---
+
+<figure class="sync-story not-content" aria-label="Simulated offline collaboration" data-sync-story>
+  <div class="story-toolbar">
+    <span class="story-window" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="story-path">/workspace/release</span>
+    <span class="story-label">SIMULATION</span>
+  </div>
+  <div class="story-clients">
+    <section class="story-client" aria-label="Client A replica">
+      <header>
+        <span><b class="client-mark">A</b> Client A</span>
+        <span class="network-badge" data-network="a" data-connection="online">● Online</span>
+      </header>
+      <div class="story-file">workspace.ts <span>local state</span></div>
+      <pre tabindex="0" aria-label="Client A shared state"><code data-state="a">{state}</code></pre>
+    </section>
+    <section class="story-client" aria-label="Client B replica">
+      <header>
+        <span><b class="client-mark client-b">B</b> Client B</span>
+        <span class="network-badge" data-network="b" data-connection="online">● Online</span>
+      </header>
+      <div class="story-file">workspace.ts <span>local state</span></div>
+      <pre tabindex="0" aria-label="Client B shared state"><code data-state="b">{state}</code></pre>
+    </section>
+  </div>
+  <div class="story-console" aria-label="Simulated console frames">
+    <span class="console-label">SIMULATED FRAMES · NO LIVE NETWORK</span>
+    <div data-logs>{final.logs.map((line) => <code>{line}</code>)}</div>
+  </div>
+  <div class="story-playback" data-controls hidden>
+    <div class="story-description" role="status" aria-live="polite" aria-atomic="true">
+      <strong data-title>{final.label}</strong>
+      <span data-detail>{final.detail}</span>
+    </div>
+    <div class="story-buttons">
+      <button type="button" data-play aria-label="Play sync story">Play</button>
+      <button type="button" data-next aria-label="Next step in sync story">Next step →</button>
+    </div>
+  </div>
+  <ol class="story-steps" aria-label="Sync story steps">
+    {syncStory.map((frame, index) => (
+      <li>
+        <button type="button" data-step={index} aria-label={frame.label} disabled>
+          <span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+          {frame.label}
+        </button>
+      </li>
+    ))}
+  </ol>
+  <figcaption>
+    <strong>Scripted illustration.</strong> No Peerborne node, real transport,
+    cryptographic operation, or measured timing runs here. The 124B frame and
+    epoch transition are sample text; reconnecting does not itself rotate keys.
+    CRDT rules select a scalar value; convergence does not preserve both scalar
+    edits. Try the <a href="/getting-started/quick-start/#try-the-in-page-replicas">in-page Yjs exercise</a>
+    or run the <a href="/getting-started/quick-start/">real browser example</a>.
+  </figcaption>
+</figure>
+
+<script>
+  import '../lib/sync-story-controller';
+</script>
+
+<style>
+  .sync-story {
+    --story-bg: #1b1929;
+    --story-line: #756c89;
+    --story-muted: #a7a0b6;
+    margin: 0 0 2.5rem;
+    background: var(--story-bg);
+    border: 1px solid var(--story-line);
+    border-radius: 0;
+    color: #f5f0e8;
+    overflow: hidden;
+    font-family: var(--sl-font);
+    font-size: 0.875rem;
+  }
+  .story-toolbar, .story-client header, .story-file, .story-playback {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.9rem 1.25rem;
+  }
+  .story-toolbar { border-bottom: 1px solid var(--story-line); }
+  .story-window { display: flex; gap: 0.35rem; }
+  .story-window i { width: 0.45rem; height: 0.45rem; background: #a3efb8; border-radius: 0; }
+  .story-path { margin-right: auto; font-family: var(--sl-font-mono); color: var(--story-muted); }
+  .story-label, .console-label { font: 0.65rem var(--sl-font-mono); letter-spacing: 0.06em; color: var(--story-muted); }
+  .story-clients { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .story-client { min-width: 0; }
+  .story-client + .story-client { border-left: 1px solid var(--story-line); }
+  .story-client header > span:first-child { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; }
+  .client-mark { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 0; background: #30234c; color: #d6c8ff; }
+  .client-b { background: #1b382a; color: #99f6e4; }
+  .network-badge { font: 0.7rem var(--sl-font-mono); color: #a3efb8; white-space: nowrap; }
+  .network-badge[data-connection='offline'] { color: #ffb887; }
+  .network-badge[data-connection='syncing'] { color: #d6c8ff; }
+  .story-file { padding-block: 0.6rem; background: #242136; color: #c6d2e5; font: 0.75rem var(--sl-font-mono); }
+  .story-file span { color: var(--story-muted); font-size: 0.65rem; }
+  .story-client pre { margin: 0; padding: 1.2rem 1.4rem; min-height: 17.5rem; overflow-x: auto; line-height: 1.7; color: #d6c8ff; background: transparent; border: none; font-size: clamp(0.7rem, 1.6vw, 0.9rem); transition: background-color 250ms ease; }
+  [data-phase='3'] .story-client pre { background: #382819; }
+  [data-phase='5'] .story-client pre { background: #1b382a; }
+  .story-console { padding: 0.8rem 1.25rem; border-top: 1px solid var(--story-line); border-bottom: 1px solid var(--story-line); background: #11101a; }
+  .story-console [data-logs] { min-height: 3rem; padding-top: 0.45rem; overflow-x: auto; }
+  .story-console :global(code) { display: block; white-space: pre; color: #a3efb8; font: 0.7rem/1.8 var(--sl-font-mono); }
+  .story-description { display: grid; gap: 0.2rem; }
+  .story-description span { color: var(--story-muted); font-size: 0.75rem; }
+  .story-buttons { display: flex; gap: 0.45rem; flex-shrink: 0; }
+  .story-buttons button { border: 1px solid #51617a; border-radius: 0; padding: 0.4rem 0.65rem; background: #202c3f; color: #f5f0e8; font: inherit; cursor: pointer; }
+  .story-buttons button:hover { background: #344461; }
+  .story-steps { list-style: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0; padding: 0; border-top: 1px solid var(--story-line); }
+  .story-steps li { min-width: 0; }
+  .story-steps button { display: flex; flex-direction: column; gap: 0.3rem; width: 100%; height: 100%; border: none; border-top: 2px solid transparent; padding: 0.6rem; text-align: left; color: #b4bfd0; background: transparent; font: 0.65rem/1.4 var(--sl-font); cursor: pointer; }
+  .story-steps button span { color: #8393ac; font-family: var(--sl-font-mono); }
+  .story-steps button[aria-current] { border-top-color: #b7a1ff; color: #f5f0e8; background: #202a3b; }
+  button:focus-visible, pre:focus-visible { outline: 2px solid #d6c8ff; outline-offset: -3px; }
+  figcaption { padding: 0.8rem 1.25rem; border-top: 1px solid var(--story-line); color: var(--story-muted); font-size: 0.75rem; line-height: 1.7; }
+  figcaption a { color: #d6c8ff; }
+  [hidden] { display: none !important; }
+  @media (max-width: 40rem) {
+    .story-toolbar, .story-client header, .story-file { padding-inline: 0.7rem; }
+    .story-path { font-size: 0.65rem; }
+    .story-client header { gap: 0.35rem; flex-wrap: wrap; }
+    .story-file span { display: none; }
+    .story-client pre { padding: 0.75rem; min-height: 16rem; font-size: 0.65rem; }
+    .story-playback { align-items: flex-start; flex-direction: column; }
+    .story-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .story-steps button { min-height: 3.6rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .story-client pre { transition: none; }
+  }
+</style>

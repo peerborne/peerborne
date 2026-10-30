@@ -9,6 +9,8 @@ Use the feature audit and concept documentation as the authority for capability 
 - [Full handwritten documentation corpus](https://peerborne.io/llms-full.txt): Every hand-authored site page plus the feature and verification audit in one generated file.
 - [Try Peerborne Note](https://try.peerborne.io/): Bounded initial-release founder-plus-one Automerge invitation demo; early-stage and not production-ready.
 - [Quick start](https://peerborne.io/getting-started/quick-start/): Build Peerborne from source and exercise the verified browser path.
+- [React workspace](https://peerborne.io/getting-started/react-workspace/): Ten-line component, complete node initialization, and stateful context setup using the shipped APIs.
+- [Production Runbooks](https://peerborne.io/runbooks/): Evaluation procedures for alpha software; persistence limits, relay operation, and recovery requirements.
 - [Why Peerborne](https://peerborne.io/concepts/why-peerborne/): Value proposition, when to use/not use.
 - [Architecture](https://peerborne.io/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
 - [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager, peerborne-note).
@@ -28,6 +30,10 @@ The six libraries are source workspaces and are not yet published to npm. Most a
 
 ## Concepts
 
+- [Documents](https://peerborne.io/concepts/documents/): Document lifecycle, typed mutations, collaboration boundaries, and merge semantics.
+- [Identities](https://peerborne.io/concepts/identities/): Signing keys, document keys, KEM state, and application-owned persistence.
+- [Epoch Transitions](https://peerborne.io/concepts/epoch-transitions/): Key rotation primitives and current group-secrecy limits; forward secrecy and MLS are not implemented.
+- [Performance](https://peerborne.io/concepts/performance/): Cost controls, benchmark provenance, reproducible measurements, and application measurement plan.
 - [Local-first design](https://peerborne.io/concepts/local-first/): What "local-first" means, implemented behavior, missing features (no outbox, no reconnect, no restart recovery).
 - [CRDT model](https://peerborne.io/concepts/crdts/): Yjs and Automerge integration, shadow sync graph, document.change() lifecycle, CRDTProvider interface, convergence boundaries, snapshots/compaction.
 - [Networking](https://peerborne.io/concepts/networking/): libp2p transports (WebSocket, WebRTC, WebTransport), Circuit Relay v2, GossipSub pubsub, peer discovery (bootstrap, Kademlia DHT, AutoNAT), NAT traversal (DCUtR, STUN/TURN), relay trust model.
@@ -37,6 +43,7 @@ The six libraries are source workspaces and are not yet published to npm. Most a
 
 ## Cookbook
 
+- [Offline persistence and size limits](https://peerborne.io/runbooks/offline-persistence/): Origin quota estimates, document budgets, and application recovery checks.
 - [Peerborne Note](https://peerborne.io/cookbook/peerborne-note/): Try the initial-release demo and understand its identity, invitation, relay, privacy, and recovery boundaries.
 - [Collaborative wiki](https://peerborne.io/cookbook/collaborative-wiki/): Run the wiki-swarm example (Vite, Redux, Automerge). Startup smoke only.
 - [Password manager](https://peerborne.io/cookbook/password-manager/): Run the password-manager example with key material setup and ACL management.

@@ -1,6 +1,6 @@
 ---
-title: Encrypted local-first state, carried by peers
-description: Peerborne is a toolkit for encrypted, local-first CRDT documents synchronized over peer-to-peer networks.
+title: Local-first TypeScript state with end-to-end encryption
+description: Build private collaborative apps with TypeScript, Automerge or Yjs, and encrypted peer-to-peer document updates.
 head:
   - tag: meta
     attrs:
@@ -8,237 +8,141 @@ head:
       content: website
 template: splash
 hero:
-  title: Encrypted local-first state, carried by peers
-  tagline: >-
-    A TypeScript toolkit for encrypted CRDT documents that live on user devices
-    and synchronize without a trusted plaintext database.
+  title: Local-first<br />TypeScript state.<br />End-to-end<br />encrypted.
+  tagline: Your servers never see document plaintext. Wrap Automerge or Yjs with local storage, peer-to-peer sync, and React bindings.
   image:
-    file: ../../assets/logo.svg
+    file: ../../assets/peer-network.svg
+    alt: Pixel-art computers connected peer to peer around an encrypted document.
   actions:
+    - text: Run the quick start
+      link: /getting-started/quick-start/
+      icon: right-arrow
     - text: Try Peerborne Note
       link: https://try.peerborne.io/
       icon: rocket
-    - text: Quick start
-      link: ./getting-started/quick-start/
-      icon: right-arrow
       variant: secondary
-    - text: View on GitHub
+    - text: Star on GitHub
       link: https://github.com/Peerborne/peerborne
       icon: star
-      variant: minimal
+      variant: secondary
 ---
 
-import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
-import SyncDemo from '../../components/SyncDemo.astro';
+import { Card, CardGrid, Code, LinkButton } from '@astrojs/starlight/components';
+import SyncStory from '../../components/SyncStory.astro';
+import workspace from '../../snippets/Workspace.tsx?raw';
 
+<SyncStory />
 
+<div className="release-note">
 
-## What is Peerborne?
+**Alpha · source workspaces only · not production-ready.** Build from this repository;
+packages are not published to npm. See the
+[capability and evidence audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md).
 
-Peerborne is a set of **composable TypeScript libraries** that let you build applications where documents live on user devices and sync directly between peers — encrypted, signed, and content-addressed. There is no application database server. Relays carry ciphertext without seeing plaintext.
+</div>
 
-A centralized database is simpler and should be the default for most applications. Peerborne is for cases where central custody of plaintext—or dependence on one always-reachable application server—is the downside you need to remove.
-
-## Try the initial-release demo
-
-[Peerborne Note](https://try.peerborne.io/) is a small, real
-Peerborne-and-Automerge application. Create a note locally, choose read-only or
-editing access, and send one invitation link to a collaborator. Document data
-is encrypted before it crosses the relay; the relay can still observe
-connection and traffic metadata and can drop or delay traffic.
-
-Both browsers must remain open and online while the first recipient claims the
-15-minute invitation. Peerborne Note is early-stage and not production-ready:
-do not use it for sensitive or durable data, and do not rely on identity or
-document recovery, automatic reconnect, revocation UX, or relay failover.
-
-<LinkButton href="https://try.peerborne.io/" icon="rocket">
-  Open Peerborne Note
-</LinkButton>{' '}
-<LinkButton
-  href="cookbook/peerborne-note/"
-  icon="information"
-  variant="secondary"
->
-  Read the demo boundaries
-</LinkButton>
+## Less plumbing around collaborative state
 
 <CardGrid>
-  <Card title="Encrypted by default" icon="seti:lock">
-    Stored change payloads, ordinary GossipSub sync envelopes, and load
-    responses are encrypted with the document key (AES-GCM by default). Each
-    complete outgoing ordinary sync message is also signed with ECDSA P-384 by
-    default before encryption. BeeKEM membership-control formats protect their
-    key material with separate recipient- or node-specific encryption.
-    (Ordinary document signing can be configured via `enableSigning`.)
+  <Card title="Real-time sync" icon="random">
+    WebRTC and Circuit Relay v2 transports, with GossipSub document updates.
+    Configure reachable bootstrap/relay peers; there is no hosted zero-config
+    network. [Connect clients →](/concepts/networking/)
   </Card>
-  <Card title="No trusted plaintext custodian" icon="setting">
-    Helia and libp2p provide local storage and peer-to-peer transport. Relays
-    help peers connect, but carry encrypted document payloads rather than acting
-    as the authoritative application database.
+  <Card title="Encrypted collaboration" icon="seti:lock">
+    AES-GCM document encryption, signing by default, ACLs, and epoch key rotation
+    primitives. Relays see encrypted payloads and traffic metadata. Forward
+    secrecy and MLS are not implemented. [Read the security model →](/concepts/security/)
   </Card>
-  <Card title="CRDT adapters" icon="puzzle">
-    Use Yjs or Automerge documents. Replicas converge after valid updates are
-    delivered, without a central consensus service. Battle-tested merge semantics
-    with Peerborne's security model.
-  </Card>
-  <Card title="Composable, not monolithic" icon="grid">
-    Six libraries — use only what you need. Core, CRDT adapters
-    (Yjs, Automerge), UI bindings (React, Redux), and client-side indexing.
+  <Card title="Control over client cost" icon="setting">
+    CRDT deltas, change transactions, bounded block fetching, and opt-in
+    compaction. Measure your workload: linear scaling, main-thread latency, and
+    batched disk I/O are not established guarantees. [Inspect performance →](/concepts/performance/)
   </Card>
 </CardGrid>
 
-## A Yjs document in a few lines
+## A React component in ten lines
 
-Once a Peerborne node is configured with the Yjs adapter, documents feel like
-familiar CRDT shared types wrapped in encryption and access control:
+Bind a document to React. Edit a typed object; the Automerge adapter produces
+CRDT updates and Peerborne handles document encryption and publication.
 
-```ts
-import { Peerborne, SubtleCrypto, defaultConfig,
-  defaultBootstrapConfig } from '@peerborne/core';
-import { YjsProvider, YjsACLProvider,
-  YjsKeychainProvider, YjsJSONSerializer } from '@peerborne/yjs';
+<Code code={workspace} lang="tsx" title="Workspace.tsx" />
 
-// The application must supply an ECDSA P-384 key pair:
-const userKeyPair = await crypto.subtle.generateKey(
-  { name: 'ECDSA', namedCurve: 'P-384' },
-  true,
-  ['sign', 'verify'],
-) as CryptoKeyPair;
+This uses the shipped `usePeerborneDocumentState` hook after node initialization
+and context setup. `WorkspaceNode` is a type from the companion application
+module. Copy the [complete setup and entry point](/getting-started/react-workspace/).
+The hook returns `void` and drops mutation rejections; use
+`await document.change(...)` when a save action must report failure.
 
-const swarm = new Peerborne(
-  userKeyPair.privateKey,
-  userKeyPair.publicKey,
-  new YjsProvider(),
-  new YjsJSONSerializer(),
-  new YjsJSONSerializer(),
-  new YjsJSONSerializer(),
-  new SubtleCrypto(),
-  new YjsACLProvider(),
-  new YjsKeychainProvider(),
-);
-await swarm.initialize(defaultConfig(defaultBootstrapConfig([])));
+<LinkButton href="/getting-started/react-workspace/" icon="right-arrow">
+  Build this workspace
+</LinkButton>
 
-// Optionally connect to bootstrap peers:
-// await swarm.connect(['/dns4/relay.example.com/tcp/443/wss/p2p/12D3...']);
+## The runtime, at a glance
 
-const todos = swarm.doc('/todo-list');
-await todos.create();
+![UI and React hook connected to an in-memory CRDT; signed and encrypted updates flow to the Helia blockstore and libp2p, with epoch keys supplied to the crypto layer.](/diagrams/runtime.svg)
 
-todos.subscribe('ui', (state) => {
-  render(state.getArray<string>('items').toArray());
-});
+Encryption comes before storage and transport. Change transactions combine
+mutations; they are not a durable batching WAL. Read the
+[architecture](/concepts/architecture/) or use the
+[Mermaid diagram source](/diagrams/runtime.mmd).
 
-await todos.change((state) => {
-  state.getArray<string>('items').push(['Ship it']);
-});
-```
+## Choose the stack for your constraints
 
-The repository contains runnable examples that show provider setup, identity
-creation, and connecting peers. See the [quick start](getting-started/quick-start/)
-to run them locally.
+Peerborne composes these CRDT engines. Choose it when you want to experiment
+with their merge semantics inside an encrypted peer-to-peer stack.
 
-## Illustrative encrypted Yjs sync
+| | Peerborne | Yjs + providers | Automerge + Repo | WebSockets + Postgres |
+| --- | --- | --- | --- | --- |
+| **Transport** | libp2p; WebRTC / configured relays | Choose a network provider | Choose Repo adapters | App server broadcasts |
+| **Document E2EE** | Built in; group lifecycle is alpha | Provider/application choice | Separate from baseline Repo | Add application encryption |
+| **Storage** | Encrypted Helia blocks / IndexedDB | Add persistence provider | Repo storage adapter | Server database + app cache |
+| **Client memory** | Loaded CRDT + graph/caches; no total cap | Loaded CRDT + metadata | Loaded docs + history | Choose a client working set |
 
-Try edits on either in-page replica, disconnect them, and reconnect to merge the
-queued Yjs updates. The simulation boundary and omitted Peerborne subsystems are
-listed directly below the demo.
+Yjs providers can add encryption, including a shared password in y-webrtc.
+This compares the baseline architectures; it does not rank speed, maturity, or
+safe document sizes. See [sources and trade-offs](/reference/comparisons/).
 
-<SyncDemo />
+## Measure the work your app actually does
 
-## How it works
+Inspect the [benchmark sources](https://github.com/Peerborne/peerborne/tree/main/packages/core/src/__benchmarks__)
+and [measurement guide](/concepts/performance/): crypto operations, simulated
+update delivery, and index queries are different workloads. The committed benchmark snapshot records its
+machine, runtime, source commit, and sample counts. A pinned ESM runner makes
+the workloads reproducible; the guide includes bounded smoke commands. Results
+remain informational, with no CI performance thresholds or browser frame-budget
+guarantee.
 
-1. **Edit locally.** A provider applies each change to the local CRDT replica.
-   The application sees changes immediately — no network round-trip.
-2. **Store, sign, encrypt, publish.** Peerborne encrypts and stores the change
-   payload under a CID, then signs the complete sync message when enabled,
-   encrypts its serialized envelope, and publishes that full envelope through
-   GossipSub.
-3. **Authenticate and merge.** Recipients decrypt the envelope, verify its
-   outer signature against known writers when enabled, apply inline history,
-   and fetch only missing or deferred CID payloads. The Yjs or Automerge layer
-   reconciles delivered concurrent edits.
+The default browser smoke test opens one real encrypted document. A separate
+cross-NAT acceptance suite verifies a signed distinct-identity invitation and
+live bidirectional updates through Circuit Relay. Partition/rejoin convergence,
+restart recovery, and relay failover still
+need stronger evidence. [Review current limits →](/concepts/limitations/)
 
-Peerborne currently verifies a signed, distinct-identity invitation and fresh
-Automerge edits in both directions across a Circuit Relay boundary in CI.
-Broader partition/rejoin, persistence, public WSS deployment, and relay-failover
-coverage remains active work.
-
-## Key design choices
-
-| Choice | Rationale |
-|---|---|
-| **End-to-end encryption** | Infrastructure that lacks the document key carries document-key ciphertext (AES-GCM by default); ECDSA P-384 authenticates sync-envelope signers when enabled. |
-| **Content-addressed storage** | Encrypted serialized change payloads are immutable under their CIDs. |
-| **Shadow sync graph** | Encrypted sync messages carry CID-keyed change trees rather than embedding graph links in stored payloads. Concurrent edits coexist; the CRDT layer resolves delivered changes. |
-| **CRDT-agnostic core** | Peerborne wraps Yjs and Automerge without coupling to either. Swap CRDT implementations without changing your application. |
-| **libp2p networking** | Battle-tested peer-to-peer stack: WebSockets, WebRTC, WebTransport, Circuit Relay v2, GossipSub. |
-| **Q-of-K quorum loading** | Require matching served-frontier hashes from distinct connected peers before binding a selected response. This reduces single-peer risk but does not prove complete interior history. |
-| **BeeKEM key sharing** | Dynamic group key encapsulation. Add and remove readers without re-encrypting the document. |
-
-See the [architecture page](concepts/architecture/) for detailed diagrams of the
-data flow, networking stack, and encryption model.
-
-## How Peerborne compares
-
-| Tool | Use case | Server role |
-|---|---|---|
-| **Peerborne** | Encrypted peer-to-peer CRDT documents | Self-hosted relay/bootstrap; document payloads end-to-end encrypted |
-| **Yjs** | High-performance CRDT runtime | Bring or configure a sync provider |
-| **Automerge** | JSON-like CRDT documents | Configure Repo storage/network adapters |
-| **Liveblocks** | Real-time presence + collaboration | Managed backend service |
-| **RxDB** | Local-first NoSQL database | Flexible replication to many backends |
-| **Jazz** | Local-first relational database | Managed or self-hosted sync server |
-| **Electric Sync** | Sync Postgres data to clients | Postgres read-path sync engine |
-
-Peerborne is designed for **end-to-end encrypted documents** that sync through
-**self-hosted relay infrastructure without exposing document plaintext**. Relays
-can still observe connection and traffic metadata. See the
-[full comparisons](reference/comparisons/) for detailed trade-offs against each
-project.
-
-## Built in the open
-
-Peerborne is young enough that careful bug reports, API feedback, documentation,
-and unusual network tests can materially shape the project.
+## Pick your next step
 
 <CardGrid>
-  <Card title="Try Peerborne Note" icon="rocket">
-    Open the [initial-release demo](https://try.peerborne.io/), then inspect its
-    [source and browser tests](https://github.com/Peerborne/peerborne/tree/main/examples/peerborne-note).
+  <Card title="01 · Getting Started" icon="rocket">
+    Run the [five-minute source tutorial](/getting-started/quick-start/), try
+    the in-page replicas, or copy the [React setup](/getting-started/react-workspace/).
   </Card>
-  <Card title="Read the docs" icon="book">
-    Understand the [architecture](concepts/architecture/), learn the
-    [concepts](concepts/local-first/), and try the
-    [cookbook](cookbook/collaborative-wiki/) recipes.
+  <Card title="02 · Core Concepts" icon="document">
+    Understand [Documents](/concepts/documents/), [Identities](/concepts/identities/),
+    and [Epoch Transitions](/concepts/epoch-transitions/) before adding collaborators.
   </Card>
-  <Card title="Join the conversation" icon="chat">
-    Browse [open issues](https://github.com/Peerborne/peerborne/issues) or ask a
-    question in [GitHub Discussions](https://github.com/Peerborne/peerborne/discussions).
+  <Card title="03 · Production Runbooks" icon="setting">
+    Evaluate [offline persistence limits](/runbooks/offline-persistence/) and
+    [run your own relay](/cookbook/running-a-relay/). These are evaluation
+    procedures for alpha software.
   </Card>
-  <Card title="Contribute" icon="pencil">
-    Check the [roadmap](community/roadmap/), the [help wanted](community/help-wanted/)
-    list, and the [contributing guide](community/contributing/).
+  <Card title="04 · API Reference" icon="seti:typescript">
+    Explore the [TypeScript APIs](/reference/) for all six source workspaces,
+    generated directly from their source declarations.
   </Card>
 </CardGrid>
 
-<LinkButton
-  href="https://try.peerborne.io/"
-  icon="rocket"
->
-  Try Peerborne Note
-</LinkButton>{' '}
-<LinkButton
-  href="./getting-started/quick-start/"
-  icon="right-arrow"
-  variant="secondary"
->
-  Quick start
-</LinkButton>{' '}
-<LinkButton
-  href="concepts/why-peerborne/"
-  icon="information"
-  variant="minimal"
->
-  Why Peerborne?
-</LinkButton>
+Building an encrypted editor or workspace? [Star Peerborne](https://github.com/Peerborne/peerborne)
+to follow development, or bring an API question to
+[Discussions](https://github.com/Peerborne/peerborne/discussions).
+[Contributions](/community/contributing/) and [reproducible bug reports](https://github.com/Peerborne/peerborne/issues)
+help shape the next release.

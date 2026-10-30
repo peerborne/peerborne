@@ -1,0 +1,80 @@
+---
+title: Your first React workspace
+description: A ten-line React component and complete initialization using the current Peerborne APIs.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import workspace from '../../../snippets/Workspace.tsx?raw';
+import setup from '../../../snippets/peerborne.tsx?raw';
+import main from '../../../snippets/main.tsx?raw';
+
+Build the repository with the [source quick start](../quick-start/) first. The
+six `@peerborne/*` packages are unpublished workspaces. Use these files in a
+browser React/TypeScript workspace with `@peerborne/core`,
+`@peerborne/automerge`, `@peerborne/react`, React, and React DOM available.
+Automerge's browser build also needs Vite's WASM setup; the
+[wiki example configuration](https://github.com/Peerborne/peerborne/blob/main/examples/wiki-swarm/vite.config.ts)
+shows the required plugins. This is a local document exercise, with no relay or
+second identity required.
+
+## The component: ten lines
+
+The shipped hook uses explicit `create` initialization for this new document,
+subscribes to updates, and provides a
+mutation callback. With the Automerge adapter, that callback edits a typed
+JavaScript object.
+
+<Code code={workspace} lang="tsx" title="Workspace.tsx" />
+
+`usePeerborneDocumentState` is the real exported API. The setup module below is
+application code supplied by this guide. There is no `usePeerborneDoc` export
+or one-call identity/session factory in the current packages.
+
+## Initialize a node once
+
+Copy this module alongside the component. It selects Automerge, serializers,
+signing, ACLs, key management, and browser networking defaults. The context's
+stateful caches are required for the hook to trigger React renders.
+
+<Code code={setup} lang="tsx" title="peerborne.tsx" />
+
+This exercise creates a fresh, non-extractable signing key on every page load.
+A reload therefore creates a **new identity**. Before building a persistent
+application, design storage for the signing identity, document keys, and KEM
+state separately; see [Identities](../../concepts/identities/). A document path
+alone does not give another client its keys or access.
+
+## Mount and change state
+
+Use an HTML entry point containing `<div id="root"></div>` and load this module:
+
+<Code code={main} lang="tsx" title="main.tsx" />
+
+Click **Name this workspace**. The button becomes **Ready to ship** after the
+document subscription updates. The node starts once, outside the React render
+lifecycle.
+
+`change` currently returns `void` and drops mutation rejections. This compact
+component demonstrates the subscription API; use
+`await document.change(...)` with application error handling when a save action
+must report authorization, storage, or publication failures. See the
+[React integration guide](../../cookbook/react/) for lifecycle details.
+
+## Connect another client
+
+Pass your relay's dialable multiaddr to `defaultBootstrapConfig` instead of an
+empty list; see [Run your own relay](../../cookbook/running-a-relay/). An empty
+bootstrap list creates a local node with no configured bootstrap peers.
+Connecting does not onboard a new identity. Use the current
+[signed invitation flow](../../cookbook/invitations/) to share with one online
+collaborator, and review its membership and recovery limits.
+
+The component, setup, and entry point are stored as source files and checked
+together against the workspace APIs:
+
+```sh
+yarn build
+node site/scripts/check-doc-snippets.mjs
+```
+
+For a runnable browser application, follow the [source quick start](../quick-start/).
