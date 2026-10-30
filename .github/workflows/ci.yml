@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Technical verification workload size
+        type: choice
+        default: smoke
+        options: [smoke, full]
+      topology:
+        description: Native WebRTC graph (the full mesh may exceed Chromium limits)
+        type: choice
+        default: mesh
+        options: [mesh, ring]
 
 permissions:
   contents: read
@@ -89,6 +101,49 @@ jobs:
         with:
           name: example-test-results
           path: test-results/
+          retention-days: 30
+
+  technical-verification:
+    name: Technical verification (diagnostic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PEERBORNE_VERIFY_PROFILE: ${{ inputs.profile || 'smoke' }}
+      PEERBORNE_VERIFY_TOPOLOGY: ${{ inputs.topology || 'mesh' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+          cache: 'yarn'
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Build workspace packages
+        id: build
+        run: yarn build
+      - name: Run CRDT and epoch diagnostics
+        run: node --expose-gc verification/run.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
+      - name: Install Chromium
+        id: chromium
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: yarn exec playwright install chromium --with-deps
+      - name: Run Chromium storage and WebRTC diagnostics
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: yarn exec playwright test --config=verification/playwright.config.ts
+      - name: Collect capability gaps
+        if: always()
+        run: node verification/collect.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
+      - name: Upload technical verification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: technical-verification-${{ env.PEERBORNE_VERIFY_PROFILE }}-${{ env.PEERBORNE_VERIFY_TOPOLOGY }}
+          path: verification/results/
           retention-days: 30
 
   integration:
@@ -207,6 +262,17 @@ jobs:
         run: yarn test:peerborne-nat
         env:
           CI: true
+      - name: Profile encrypted Circuit Relay transfer
+        run: yarn verify:technical:nat
+        env:
+          CI: true
+      - name: Upload relay verification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: technical-verification-relay
+          path: verification/results/
+          retention-days: 30
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -226,7 +292,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion
-        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> $GITHUB_OUTPUT
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
       - run: corepack enable
       - uses: actions/setup-node@v7
         with:
