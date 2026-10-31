@@ -15,4 +15,5 @@ export const views = {
   },
   monaco: { label: 'Monaco', load: () => import('./views/monaco') },
   zustand: { label: 'Zustand', load: () => import('./views/zustand') },
+  jotai: { label: 'Jotai', load: () => import('./views/jotai') },
 };
