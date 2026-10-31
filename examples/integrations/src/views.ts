@@ -13,4 +13,5 @@ export const views = {
     label: 'Tiptap / ProseMirror',
     load: () => import('./views/tiptap'),
   },
+  monaco: { label: 'Monaco', load: () => import('./views/monaco') },
 };

@@ -18,6 +18,7 @@
     "@tiptap/starter-kit": "^3.32.2",
     "@tiptap/y-tiptap": "^3.0.12",
     "loro-crdt": "^1.17.1",
+    "monaco-editor": "^0.57.0",
     "prosemirror-model": "^1.25.12",
     "prosemirror-state": "^1.4.4",
     "prosemirror-view": "^1.42.6",
@@ -26,6 +27,7 @@
     "svelte": "^5.57.3",
     "vue": "^3.5.44",
     "y-codemirror.next": "^0.3.6",
+    "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.33"
   },

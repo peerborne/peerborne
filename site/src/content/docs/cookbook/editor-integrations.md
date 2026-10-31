@@ -45,6 +45,7 @@ contains the following editor integrations:
 | --- | --- |
 | CodeMirror 6 | `y-codemirror.next`, using the mirror's `Y.Text` |
 | Tiptap / ProseMirror | Collaboration extension, with StarterKit undo/redo disabled |
+| Monaco | `y-monaco`, with an editor worker and the documented module-path alias |
 
 From a built source checkout, start
 `yarn workspace @peerborne/integration-examples start` and choose the editor.
