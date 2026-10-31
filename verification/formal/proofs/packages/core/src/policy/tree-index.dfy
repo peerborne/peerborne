@@ -392,6 +392,8 @@ function treeRight(index: int, leaves: int): int
   ensures (nodeLevel(treeRight(index, leaves)) < nodeLevel(index))
   ensures index < treeRight(index, leaves)
 {
+  InternalNotLast(index, leaves);
+  rightChild_ensures(index);
   clampRightChild(rightChild(index), treeWidth(leaves))
 }
 
