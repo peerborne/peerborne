@@ -23,6 +23,7 @@ test('release ordered packages list is exact', () => {
     '@peerborne/vue',
     '@peerborne/svelte',
     '@peerborne/loro',
+    '@peerborne/tanstack-db',
   ]);
 });
 

@@ -63,6 +63,7 @@ export default defineConfig({
             '../packages/vue',
             '../packages/svelte',
             '../packages/loro',
+            '../packages/tanstack-db',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },

@@ -9,6 +9,7 @@ export const packages = [
   { name: '@peerborne/vue', directory: 'packages/vue', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
   { name: '@peerborne/svelte', directory: 'packages/svelte', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
   { name: '@peerborne/loro', directory: 'packages/loro', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
+  { name: '@peerborne/tanstack-db', directory: 'packages/tanstack-db', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
 ];
 
 export const strictSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;

@@ -4,4 +4,8 @@ export const views = {
   vue: { label: 'Vue', load: () => import('./views/vue') },
   svelte: { label: 'Svelte', load: () => import('./views/svelte') },
   loro: { label: 'Loro', load: () => import('./views/loro') },
+  'tanstack-db': {
+    label: 'TanStack DB',
+    load: () => import('./views/tanstack-db'),
+  },
 };

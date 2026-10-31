@@ -14,6 +14,7 @@ test('release package allowlist is exact and ordered', () => {
     '@peerborne/vue',
     '@peerborne/svelte',
     '@peerborne/loro',
+    '@peerborne/tanstack-db',
   ]);
 });
 

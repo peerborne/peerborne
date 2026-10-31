@@ -36,6 +36,7 @@ try {
     '@peerborne/vue',
     '@peerborne/svelte',
     '@peerborne/loro',
+    '@peerborne/tanstack-db',
     '@peerborne/react',
     '@peerborne/react/store',
     '@peerborne/redux',

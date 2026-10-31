@@ -16,7 +16,7 @@ corepack enable
 yarn install --immutable
 ```
 
-The sixteen root workspaces are ten libraries under `packages/`, five browser/SSR examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
+The seventeen root workspaces are eleven libraries under `packages/`, five browser/SSR examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
 
 Current workspace package names use `@peerborne/*`. They are not published to npm, so develop and test against repository workspaces only.
 
@@ -45,9 +45,9 @@ cross-NAT job supplies the current two-browser invitation evidence.
 ## Build and test commands
 
 ```sh
-yarn build                         # ten library workspaces
+yarn build                         # eleven library workspaces
 yarn build:examples                # libraries, then all four Vite examples
-yarn test                          # ten library Jest suites
+yarn test                          # eleven library Jest suites
 yarn test:relay                    # separate relay-server Jest suite
 yarn workspace @peerborne/site build
 yarn exec playwright install chromium
@@ -119,7 +119,7 @@ The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight Typ
 - Address review findings. Repository policy expects Copilot review to return no comments on the latest head and all applicable CI checks to pass.
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless the contributor explicitly requests them.
 
-The CI workflow runs the ten-package build and unit-test matrix, relay tests,
+The CI workflow runs the eleven-package build and unit-test matrix, relay tests,
 four example smoke suites, Docker integration, NAT traversal, and the real
 Peerborne cross-NAT job. The separate Site workflow builds generated TypeDoc
 and the site.
@@ -128,4 +128,4 @@ Review timing depends on maintainer availability; there is no response or review
 
 ## License
 
-Peerborne and all ten package manifests use the MIT License.
+Peerborne and all eleven package manifests use the MIT License.
