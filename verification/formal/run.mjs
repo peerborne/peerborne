@@ -196,6 +196,32 @@ for (const entry of manifest.sources) {
   ]);
   if (!/Dafny auditor completed with 0 findings/.test(audit))
     throw new Error(`Unproved assumptions in ${entry.path}:\n${audit}`);
+  const solverSeeds = [];
+  for (const seed of entry.solverSeeds ?? []) {
+    if (!Number.isSafeInteger(seed) || seed < 0 || seed > 2147483647)
+      throw new Error(`Invalid solver seed for ${entry.path}`);
+    const seedStarted = performance.now();
+    const output = execute(dafny, [
+      'verify',
+      '--unicode-char:false',
+      '--allow-deprecation',
+      '--verification-time-limit:10',
+      '--boogie',
+      `/randomSeed:${seed}`,
+      artifacts.proof,
+    ]);
+    const verified = output.match(
+      /verifier finished with ([1-9]\d*) verified, 0 errors/,
+    );
+    if (!verified)
+      throw new Error(`Incomplete solver-seed check for ${entry.path}`);
+    solverSeeds.push({
+      seed,
+      verifiedObligations: Number(verified[1]),
+      elapsedMs: performance.now() - seedStarted,
+    });
+    console.log(`${entry.path}: solver seed ${seed} verified`);
+  }
   results.push({
     source: entry.path,
     sourceSha256: digestFile(join(projectRoot, entry.path)),
@@ -204,6 +230,7 @@ for (const entry of manifest.sources) {
     selectedFunctions: entry.functions,
     verifiedMembers: record.passed,
     auditFindings: 0,
+    solverSeeds,
     elapsedMs: performance.now() - begin,
     auditReport: relative(projectRoot, auditFile),
   });
@@ -218,7 +245,7 @@ const report = {
     0,
   ),
   proofModel:
-    'Bounded exact integer arithmetic, real division/ceiling for sizing, uint64 BigInt epochs, JavaScript UTF-16 strings and local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
+    'Bounded exact integer arithmetic, real division/ceiling for sizing and finite-real scalar order, uint64 BigInt epochs, JavaScript UTF-16 strings and local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
   elapsedMs: performance.now() - started,
   results,
 };

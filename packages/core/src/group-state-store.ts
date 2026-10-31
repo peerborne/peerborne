@@ -1,5 +1,16 @@
 import { trackQueuedOperation } from './queued-operation.js';
 import {
+  adjustStoreBytes,
+  nextStoreRevision,
+  classifyStoreCommitBaseline,
+} from './policy/store-budget.js';
+import {
+  insertPendingPackage,
+  removePendingPackage,
+  insertConsumptionMarker,
+  bindOperationToRecord,
+} from './policy/package-partition.js';
+import {
   EncryptedGroupState,
   EncryptedKeyPackageState,
   GroupKeyPackage,
@@ -273,10 +284,11 @@ export class InMemoryGroupStateStore implements DurableGroupStateStore {
       try {
         const result = await operation(transaction);
         validateMemoryTransactionBeforeCommit(transaction);
-        if (current.revision === Number.MAX_SAFE_INTEGER) {
+        const revision = nextStoreRevision(current.revision);
+        if (revision === -1) {
           throw new Error('group-state store revision limit reached');
         }
-        working.revision = current.revision + 1;
+        working.revision = revision;
         this.groups.set(encodedKey, cloneMutableState(working));
         return result;
       } finally {
@@ -439,7 +451,12 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       throw new Error('pending KeyPackage byte limit reached');
     }
     this.#adjustCommittedBytes(pendingEntryCommittedBytes(snapshot));
-    this.#working.pendingKeyPackages.set(encodedReference, snapshot);
+    this.#working.pendingKeyPackages = insertPendingPackage(
+      this.#working.pendingKeyPackages,
+      this.#working.consumedKeyPackageRefs,
+      encodedReference,
+      snapshot,
+    );
     return true;
   }
 
@@ -542,8 +559,17 @@ class MemoryTransaction implements GroupStateStoreTransaction {
         this.#working.pendingKeyPackageRequests.delete(operationId);
       }
     }
-    this.#working.pendingKeyPackages.delete(encodedReference);
-    this.#working.consumedKeyPackageRefs.set(encodedReference, stableReference);
+    const pendingPackages = removePendingPackage(
+      this.#working.pendingKeyPackages,
+      encodedReference,
+    );
+    const consumedReferences = insertConsumptionMarker(
+      this.#working.consumedKeyPackageRefs,
+      encodedReference,
+      stableReference,
+    );
+    this.#working.pendingKeyPackages = pendingPackages;
+    this.#working.consumedKeyPackageRefs = consumedReferences;
     return cloneEncryptedKeyPackageState(pending);
   }
 
@@ -607,7 +633,11 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     }
     this.#adjustCommittedBytes(replayEntryCommittedBytes(stableEntry));
     if (operationId !== undefined) {
-      this.#working.operationToRecord.set(operationId, recordId);
+      this.#working.operationToRecord = bindOperationToRecord(
+        this.#working.operationToRecord,
+        operationId,
+        recordId,
+      );
     }
     this.#working.replay.set(recordId, stableEntry);
     return true;
@@ -646,17 +676,21 @@ class MemoryTransaction implements GroupStateStoreTransaction {
 
   #validateBeforeCommit(): void {
     this.#assertActive();
-    if (this.#working.revision !== this.#baseRevision) {
-      throw new Error('group-state transaction baseline revision changed');
-    }
     const finalEpoch =
       this.#working.encryptedState === undefined
         ? undefined
         : getEncryptedGroupStateValue(this.#working.encryptedState).epoch;
-    if (
-      this.#baseEpoch !== undefined &&
-      (finalEpoch === undefined || finalEpoch < this.#baseEpoch)
-    ) {
+    const baseline = classifyStoreCommitBaseline(
+      this.#baseRevision,
+      this.#working.revision,
+      this.#baseEpoch !== undefined,
+      finalEpoch !== undefined,
+      this.#baseEpoch ?? 0n,
+      finalEpoch ?? 0n,
+    );
+    if (baseline === 'revision')
+      throw new Error('group-state transaction baseline revision changed');
+    if (baseline === 'rollback') {
       throw new Error('encrypted group-state rollback rejected at commit');
     }
     const recomputedCommittedBytes = committedStateBytes(
@@ -728,12 +762,13 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   }
 
   #adjustCommittedBytes(delta: number): void {
-    const next = this.#committedBytes + delta;
-    if (
-      !Number.isSafeInteger(next) ||
-      next < COMMITTED_STATE_FIXED_OVERHEAD ||
-      next > this.#maximumCommittedBytes
-    ) {
+    const next = adjustStoreBytes(
+      this.#committedBytes,
+      delta,
+      COMMITTED_STATE_FIXED_OVERHEAD,
+      this.#maximumCommittedBytes,
+    );
+    if (!Number.isSafeInteger(next) || next === -1) {
       throw new Error('group-state store committed-byte limit reached');
     }
     this.#committedBytes = next;
@@ -1405,8 +1440,8 @@ function addCommittedBytes(
   addition: number,
   maximum: number,
 ): number {
-  const next = total + addition;
-  if (!Number.isSafeInteger(next) || next > maximum) {
+  const next = adjustStoreBytes(total, addition, 0, maximum);
+  if (!Number.isSafeInteger(next) || next === -1) {
     throw new Error('group-state store committed-byte limit reached');
   }
   return next;

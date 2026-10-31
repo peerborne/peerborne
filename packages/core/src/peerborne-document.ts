@@ -1,3 +1,4 @@
+import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
@@ -4207,7 +4208,13 @@ export class PeerborneDocument<
         current.children !== undefined &&
         current.children !== crdtChangeNodeDeferred
       ) {
-        if (!isACLNode && documentNodesVisited >= keepCount) {
+        if (
+          shouldPruneDocumentChildren(
+            isACLNode,
+            documentNodesVisited,
+            keepCount,
+          )
+        ) {
           // This document node is at the boundary -- prune its children,
           // but preserve any ACL nodes within the entire subtree.
           const preservedACL: Record<string, CRDTChangeNode<ChangesType>> = {};

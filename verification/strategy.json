@@ -17,7 +17,7 @@
     },
     {
       "id": "tree-arithmetic",
-      "formalBoundary": "Exponentiation, integer-domain runtime guards and full tree traversal are outside the pinned emitter; properties retain independent BigInt/binary oracles.",
+      "formalBoundary": "All supported tree indices, parent/child identities and bounded ragged-tree paths are proved. Native integer guards, exact power lookup and JavaScript execution are calibrated with independent BigInt/binary oracles.",
       "evidence": ["packages/core/src/beekem/tree-math.test.ts"],
       "sources": ["packages/core/src/beekem/tree-math.ts"]
     },
@@ -55,16 +55,20 @@
     },
     {
       "id": "asynchronous-lifecycle",
-      "formalBoundary": "Promise scheduling, failures, callback side effects, rollback and detached encrypted envelopes require generated execution histories.",
+      "formalBoundary": "Sequential partition, revision, epoch, byte-budget and claim laws are proved. Promise scheduling, failures, callback side effects, rollback and native encrypted-envelope ownership require generated execution histories.",
       "evidence": [
         "packages/core/src/queue-properties.test.ts",
-        "packages/core/src/group-store-properties.test.ts"
+        "packages/core/src/group-store-properties.test.ts",
+        "packages/core/src/store-lifecycle-properties.test.ts",
+        "packages/core/src/commit-lifecycle-properties.test.ts"
       ],
       "sources": [
         "packages/core/src/invitation-membership.ts",
         "packages/core/src/invitation-policy.ts",
         "packages/core/src/store-lifecycle.ts",
-        "packages/core/src/group-state-store.ts"
+        "packages/core/src/group-state-store.ts",
+        "packages/core/src/keychain-canonical.ts",
+        "packages/core/src/group-security-coordinator.ts"
       ]
     },
     {
@@ -93,10 +97,11 @@
     },
     {
       "id": "query-and-index-state",
-      "formalBoundary": "Native floating-point/string order, JSON cursors, index planning and IndexedDB are checked against an independent full-scan oracle; the arithmetic expansion bound alone does not prove query correctness.",
+      "formalBoundary": "Scalar order, lexicographic order composition and prefix-page reconstruction are proved within the model. Native IEEE-754/UTF-16 correspondence, field extraction, JSON cursors, index planning and IndexedDB still require independent full-scan and bitwise ordering oracles.",
       "evidence": [
         "packages/index/src/query-properties.test.ts",
-        "packages/index/src/field-extractor.test.ts"
+        "packages/index/src/field-extractor.test.ts",
+        "packages/index/src/query-order-properties.test.ts"
       ],
       "sources": [
         "packages/index/src/index-manager.ts",
@@ -135,6 +140,16 @@
       "formalBoundary": "Counter mutation and finite floating-point byte inputs are outside the integer-only functional proof.",
       "evidence": ["packages/core/src/network-stats-properties.test.ts"],
       "sources": ["packages/core/src/network-stats.ts"]
+    },
+    {
+      "id": "graph-adapter",
+      "formalBoundary": "Least graph reachability, edge-linear queue bounds and ACL pruning admission are proved for detached nodes and edges. Heap traversal, CID aliases, object snapshots and descendant ACL preservation remain runtime boundaries.",
+      "evidence": ["packages/core/src/graph-boundary-properties.test.ts"],
+      "sources": [
+        "packages/core/src/blockstore-gc.ts",
+        "packages/core/src/change-tree-walk.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

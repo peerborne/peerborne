@@ -1,3 +1,5 @@
+import { compareCodeUnits, compareFiniteNumbers } from './query-order.js';
+export { compareCodeUnits } from './query-order.js';
 import {
   FilterOperator,
   IndexDefinition,
@@ -348,13 +350,9 @@ export function compareIndexScalars(a: IndexScalar | undefined, b: IndexScalar |
   if (a === b) return 0;
   if (a === undefined) return -1;
   if (b === undefined) return 1;
-  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'number' && typeof b === 'number') return compareFiniteNumbers(a, b);
   if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
   return compareCodeUnits(String(a), String(b));
-}
-
-export function compareCodeUnits(left: string, right: string): number {
-  return left === right ? 0 : left < right ? -1 : 1;
 }
 
 export function projectFields(fields: Record<string, unknown>, select?: string[]): Record<string, unknown> {

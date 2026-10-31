@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 39 production functions in 17 proof units. The runtime calls
+LemmaScript checks 77 production functions in 24 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -29,25 +29,32 @@ the pinned toolchain's model. The
 [manifest](../verification/formal/manifest.json) names every function, production
 consumer, proof obligation and non-vacuity witness.
 
-| Production source                                                           | Functions | Proved behavior                                                                                                                                                                      |
-| --------------------------------------------------------------------------- | --------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                 |
-| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                        |
-| [Quorum](../packages/core/src/policy/quorum.ts)                             |         3 | Strict-majority default, explicit trust floor, and exactly one qualifying digest bucket; ambiguous or absent winners are rejected.                                                   |
-| [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                          |
-| [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability. |
-| [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                             |
-| [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                           |
-| [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                            |
-| [Invitation replay](../packages/core/src/policy/replay-admission.ts)        |         2 | Complete conflict/replay/fresh-admission classification; an identical replay does not consume fresh capacity.                                                                        |
-| [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                        |
-| [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)            |         1 | Exact valid-advance conditions: revision +1, epoch unchanged or +1, same-epoch control-head binding and terminal poison.                                                             |
-| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                       |
-| [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                              |
-| [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                         |
-| [UTF-16 scanner](../packages/core/src/internal/canonical-encoding.ts)       |         4 | A string is accepted iff every surrogate code unit has its matching adjacent partner.                                                                                                |
-| [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                             |
-| [React cache key](../packages/react/src/hooks-cache.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                            |
+| Production source                                                           | Functions | Proved behavior                                                                                                                                                                                           |
+| --------------------------------------------------------------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                                      |
+| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                                             |
+| [Quorum](../packages/core/src/policy/quorum.ts)                             |         3 | Strict-majority default, explicit trust floor, and exactly one qualifying digest bucket; ambiguous or absent winners are rejected.                                                                        |
+| [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
+| [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
+| [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
+| [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                                                |
+| [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
+| [Invitation replay](../packages/core/src/policy/replay-admission.ts)        |         2 | Complete conflict/replay/fresh-admission classification; an identical replay does not consume fresh capacity.                                                                                             |
+| [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
+| [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)            |         1 | Exact valid-advance conditions: revision +1, epoch unchanged or +1, same-epoch control-head binding and terminal poison.                                                                                  |
+| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                                            |
+| [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
+| [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
+| [UTF-16 scanner](../packages/core/src/internal/canonical-encoding.ts)       |         4 | A string is accepted iff every surrogate code unit has its matching adjacent partner.                                                                                                                     |
+| [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                                                  |
+| [React cache key](../packages/react/src/hooks-cache.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                                                 |
+| [Package partition](../packages/core/src/policy/package-partition.ts)       |         4 | Exact pending insertion/removal, irreversible consumption-marker growth, disjoint consume transfer with conserved membership/count, and stable operation-to-record bindings.                              |
+| [Store budget and baseline](../packages/core/src/policy/store-budget.ts)    |         3 | Exact framed-byte reservation/release within 128 MiB, safe revision increment, stale-baseline rejection and nondecreasing committed epochs; composition over delta/commit sequences.                      |
+| [Commit lifecycle](../packages/core/src/policy/commit-lifecycle.ts)         |         4 | Claims require a current prepared base without active hydration; finalization is absorbing/idempotent, and coordinator admission/recovery preserve fork/poison/error priority.                            |
+| [Replay retention](../packages/core/src/policy/replay-window.ts)            |         4 | Exact first gap in the retained interval, monotone uint64 epoch floors, a retained authorization predecessor, and protection of every pending delivery from pruning.                                      |
+| [Graph reachability](../packages/core/src/policy/graph-reachability.ts)     |         2 | Exact least successor-closed set containing the root, including cyclic/disconnected graphs; terminating traversal with at most E+1 queued entries and direct ACL-node pruning exclusion.                  |
+| [BeeKEM tree indices](../packages/core/src/policy/tree-index.ts)            |        17 | Exact levels, roots, leaf-index inverses, parent/child identities including ragged trees, sibling pairs, bounded path links to the root and matching copaths.                                             |
+| [Query order and pages](../packages/index/src/query-order.ts)               |         4 | UTF-16/finite-real scalar order, lazy first-difference/direction/path ordering, symmetry and transitivity under per-field order laws, and exact reconstruction by successive positive-sized prefix pages. |
 
 The capability tables are frozen to preserve the constant-model assumption.
 Numeric contracts bound arithmetic to domains where JavaScript executes the
@@ -55,6 +62,41 @@ proved integer arithmetic exactly. Callers still have to supply validated,
 detached values. A proof of a pure decision does not authenticate its inputs,
 make its commit atomic, establish storage durability or prove eventual progress.
 The cache-key proof does not prove WeakMap identity or namespace allocation.
+
+The additional algorithm domains match the runtime guards: at most 32,768
+node occurrences and 131,072 edges for graph input; at most 2^30 BeeKEM leaves
+(indices through 2^31-2); at most eight query sort fields; and replay windows
+from 1 through 65,535 over uint64 epochs. Graph proofs use exact set/edge
+accounting; they bound logical queue entries, not engine bytes or wall time.
+The native tree adapter rejects object cycles before constructing the detached
+graph, while the graph kernel itself supports cycles and duplicate edges.
+
+Tree exponentiation uses a frozen 32-entry exact power table. Local arithmetic
+lemmas split the 31 supported levels into finite cases while quantifying over
+all valid indices and bounds; these are proofs, not sampled tree tests. All
+helper lemmas have checked bodies and pass the same zero-assumption audit.
+Scalar arithmetic is isolated in a proof module with a checked bridge to the
+emitted arithmetic. CI also verifies the complete tree unit under four fixed
+solver seeds to catch sensitivity to solver heuristics.
+The recursion measure establishes at most 30 path steps, so the runtime no
+longer allocates defensive visited sets for supported BeeKEM traversals.
+
+Package maps are copied on update within their existing table bounds. The
+partition laws concern the map transitions; encrypted-byte ownership, native
+Map behavior, transaction queues and callback execution remain runtime checks.
+Commit claims do not prove that publication callbacks cannot fail or reenter.
+The coordinator proof covers recovery/admission decisions and replay retention,
+not the whole asynchronous recovery protocol or durable exactly-once delivery.
+The ACL pruning predicate protects an ACL node directly; descendant copying and
+reattachment remain covered by the existing document integration regressions.
+
+Query proofs assume a pure stable per-field comparator with results -1, 0 or 1.
+The transitivity composition explicitly requires the per-field order laws;
+it does not establish arbitrary user callbacks. Finite native numbers embed
+into the real-order model for comparisons only. NaN/Infinity rejection,
+field normalization, cursor decoding/binding and IndexedDB ordering still need
+runtime evidence. Prefix-page reconstruction assumes a fixed ordered input;
+it is not a claim of snapshot isolation while documents change between pages.
 
 The [feature audit](feature-audit.md) remains authoritative about product gaps.
 For example, safe epoch-fork rejection is not automatic fork reconciliation;
@@ -64,23 +106,23 @@ post-compromise security, key erasure or cryptographic unforgeability.
 
 ## Property testing after proofs
 
-The inventory audits 24 property-suite files containing 50 explicit
+The inventory audits 28 property-suite files containing 57 explicit
 `fast-check` assertions across all six library packages. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
 properties can invoke the same assertion more than once.
 
-| Unproved boundary                       | Generated evidence                                                                                                                                                                                     |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| JavaScript number/string/byte semantics | Native UTF-16 calibration, BigInt sizing/quorum oracles, byte ownership, chunked framing, invalid work-counter rollback and bounded tree arithmetic.                                                   |
-| Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection and detached snapshots.                                                                                                                                         |
-| Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                              |
-| Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback and outbox ownership.                                                         |
-| Cryptographic adapters                  | AES round trips and tampering, signed UCAN delegation chains and signed resource/privilege/lifetime escalation attempts. These are integrity checks, not secrecy proofs.                               |
-| CRDT dependencies                       | Automerge/Yjs concurrent set/delete and string/object schema changes, reordered and duplicate deltas, missing ancestry, late replicas, snapshot recovery and per-actor witnesses.                      |
-| Query/index behavior                    | Memory and IndexedDB execution against a separate full-scan oracle, nested predicates, finite numeric ordering, cursor binding, pagination and reopen; generated field traversal and Bloom merge laws. |
-| UI identity and state                   | React instance/cache isolation, Redux histories against a Map oracle, prior-state immutability, prototype-sensitive IDs and state-selector identity.                                                   |
-| Mutable statistics                      | Counters, event aggregation and reset against independently calculated totals.                                                                                                                         |
+| Unproved boundary                       | Generated evidence                                                                                                                                                                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
+| Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
+| Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
+| Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback, one-time package consumption, stable operation bindings, hydration/claim/finalize schedules and outbox ownership. |
+| Cryptographic adapters                  | AES round trips and tampering, signed UCAN delegation chains and signed resource/privilege/lifetime escalation attempts. These are integrity checks, not secrecy proofs.                                                                    |
+| CRDT dependencies                       | Automerge/Yjs concurrent set/delete and string/object schema changes, reordered and duplicate deltas, missing ancestry, late replicas, snapshot recovery and per-actor witnesses.                                                           |
+| Query/index behavior                    | Memory and IndexedDB execution against a separate full-scan oracle, nested predicates, finite numeric ordering, cursor binding, pagination and reopen; generated field traversal and Bloom merge laws.                                      |
+| UI identity and state                   | React instance/cache isolation, Redux histories against a Map oracle, prior-state immutability, prototype-sensitive IDs and state-selector identity.                                                                                        |
+| Mutable statistics                      | Counters, event aggregation and reset against independently calculated totals.                                                                                                                                                              |
 
 Native cryptographic entropy is not mocked; generated data and schedules have
 fixed seeds. These suites run in the existing `yarn test` CI job. The formal CI
@@ -104,14 +146,15 @@ where they check behavior outside the contracts.
 
 ## Cost and remaining work
 
-The 39-function proof check takes roughly 40–55 seconds on the development host;
-the report records actual duration, source/proof hashes and tool versions.
+The 77-function proof check takes roughly two minutes on the development host,
+including the four additional tree solver-seed checks. The generated report records each run's duration,
+source/proof hashes and tool versions.
 Controls run separately. First-time setup downloads the compiler dependencies
 and a roughly 55–65 MB Dafny distribution. Specification review, proof authoring
 and JavaScript/model correspondence dominate cost; repeated checks are cheap.
 Host timing is an observation, not a cross-machine performance guarantee.
 
-The source inventory contains roughly 59,000 physical first-party TypeScript
+The source inventory contains roughly 60,000 physical first-party TypeScript
 lines, 2,500 function bodies including callbacks, and 1,000 await expressions.
 Run `yarn verify:formal:inventory` for current counts and remaining top-level
 functions. These structural measurements do not identify pure code or measure

@@ -24,7 +24,7 @@ jobs:
   formal-verification:
     name: Formal policy verification
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
