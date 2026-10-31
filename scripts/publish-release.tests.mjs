@@ -22,6 +22,7 @@ test('release ordered packages list is exact', () => {
     '@peerborne/index',
     '@peerborne/vue',
     '@peerborne/svelte',
+    '@peerborne/loro',
   ]);
 });
 

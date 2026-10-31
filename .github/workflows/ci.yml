@@ -80,6 +80,7 @@ jobs:
           - store
           - vue
           - svelte
+          - loro
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion

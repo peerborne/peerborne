@@ -3,4 +3,5 @@ export const views = {
   react: { label: 'React', load: () => import('./views/react') },
   vue: { label: 'Vue', load: () => import('./views/vue') },
   svelte: { label: 'Svelte', load: () => import('./views/svelte') },
+  loro: { label: 'Loro', load: () => import('./views/loro') },
 };

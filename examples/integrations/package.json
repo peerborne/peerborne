@@ -2,11 +2,13 @@
   "name": "@peerborne/integration-examples",
   "dependencies": {
     "@peerborne/core": "workspace:^",
+    "@peerborne/loro": "workspace:^",
     "@peerborne/react": "workspace:^",
     "@peerborne/store": "workspace:^",
     "@peerborne/svelte": "workspace:^",
     "@peerborne/vue": "workspace:^",
     "@peerborne/yjs": "workspace:^",
+    "loro-crdt": "^1.17.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "svelte": "^5.57.3",

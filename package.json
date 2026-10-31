@@ -10,6 +10,7 @@
     "packages/store",
     "packages/vue",
     "packages/svelte",
+    "packages/loro",
     "examples/browser-test",
     "examples/wiki-swarm",
     "examples/password-manager",
@@ -29,9 +30,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' run tsc",
+    "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' --include '@peerborne/loro' run tsc",
     "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' --include '@peerborne/peerborne-note' --include '@peerborne/integration-examples' run build",
-    "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' run test",
+    "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' --include '@peerborne/loro' run test",
     "test:e2e": "yarn test:e2e:examples",
     "test:e2e:examples": "yarn test:e2e:password-manager && yarn test:e2e:wiki-swarm && yarn test:e2e:browser-test && yarn test:e2e:peerborne-note && yarn test:e2e:integrations",
     "test:e2e:password-manager": "yarn workspace @peerborne/password-manager build && playwright test --config=playwright.password-manager.config.ts",
