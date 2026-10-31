@@ -468,6 +468,103 @@ describe('invitation catch-up', () => {
     expect(rawStream.close).not.toHaveBeenCalled();
   });
 
+  test('reopens a closing connection only at the signed founder', async () => {
+    const founderAddress =
+      '/dns4/relay.example/tcp/443/wss/p2p/relay/p2p-circuit/p2p/founder';
+    const closed = Object.assign(new Error('Connection muxer is closing'), {
+      name: 'ConnectionClosedError',
+    });
+    const stream = { close: jest.fn(async () => {}), abort: jest.fn() };
+    const dial = jest
+      .fn(async (
+        _address: string,
+        _signal: AbortSignal,
+        _forceNewConnection: boolean,
+      ) => stream)
+      .mockRejectedValueOnce(closed);
+    const verify = jest.fn(async () => true);
+
+    await expect(
+      withIssuerPinnedInvitationStream(founderAddress, dial, verify),
+    ).resolves.toBe(true);
+
+    expect(dial).toHaveBeenCalledTimes(2);
+    expect(
+      dial.mock.calls.every(([address]) => address === founderAddress),
+    ).toBe(true);
+    expect(dial.mock.calls[0][1]).toBe(dial.mock.calls[1][1]);
+    expect(dial.mock.calls.map(([, , force]) => force)).toEqual([false, true]);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(stream.close).toHaveBeenCalledTimes(1);
+    expect(stream.abort).not.toHaveBeenCalled();
+  });
+
+  test('bounds closing connections before verifying a response', async () => {
+    const closed = Object.assign(new Error('Connection is closed'), {
+      name: 'ConnectionClosedError',
+    });
+    const dial = jest.fn(async () => {
+      throw closed;
+    });
+    const verify = jest.fn(async () => true);
+
+    await expect(
+      withIssuerPinnedInvitationStream('signed-founder', dial, verify),
+    ).rejects.toBe(closed);
+    expect(dial).toHaveBeenCalledTimes(3);
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  test('cancels a reopen at the original stream deadline', async () => {
+    const closed = Object.assign(new Error('Connection is closed'), {
+      name: 'ConnectionClosedError',
+    });
+    let calls = 0;
+    const dial = jest.fn(async (_address: string, signal: AbortSignal) => {
+      if (++calls === 1) throw closed;
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const verify = jest.fn(async () => true);
+
+    await expect(
+      withIssuerPinnedInvitationStream('signed-founder', dial, verify, 5),
+    ).rejects.toThrow(/deadline exceeded/);
+    expect(dial).toHaveBeenCalledTimes(2);
+    expect(dial.mock.calls[0][1].aborted).toBe(true);
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  test('does not retry other dial failures or verification errors', async () => {
+    const denied = new Error('Founder identity did not match');
+    const rejectedDial = jest.fn(async () => {
+      throw denied;
+    });
+    const verify = jest.fn(async () => true);
+    await expect(
+      withIssuerPinnedInvitationStream('signed-founder', rejectedDial, verify),
+    ).rejects.toBe(denied);
+    expect(rejectedDial).toHaveBeenCalledTimes(1);
+    expect(verify).not.toHaveBeenCalled();
+
+    const stream = { close: jest.fn(async () => {}), abort: jest.fn() };
+    const dial = jest.fn(async () => stream);
+    const closed = Object.assign(
+      new Error('Connection closed during verification'),
+      { name: 'ConnectionClosedError' },
+    );
+    const failedVerification = jest.fn(async () => {
+      throw closed;
+    });
+    await expect(
+      withIssuerPinnedInvitationStream('signed-founder', dial, failedVerification),
+    ).rejects.toBe(closed);
+    expect(dial).toHaveBeenCalledTimes(1);
+    expect(failedVerification).toHaveBeenCalledTimes(1);
+    expect(stream.abort).toHaveBeenCalledTimes(1);
+  });
+
   test('aborts an over-cap founder response and does not retain the stream', async () => {
     const rawStream = {
       close: jest.fn(async () => {}),
@@ -495,6 +592,10 @@ describe('invitation catch-up', () => {
   });
 
   test('aborts a stream that opens only after its deadline', async () => {
+    let observeAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      observeAbort = resolve;
+    });
     let resolveOpen!: (stream: {
       close: () => Promise<void>;
       abort: (error: Error) => void;
@@ -507,7 +608,9 @@ describe('invitation catch-up', () => {
     });
     const rawStream = {
       close: jest.fn(async () => {}),
-      abort: jest.fn((_error: Error) => {}),
+      abort: jest.fn((_error: Error) => {
+        observeAbort();
+      }),
     };
     const operation = jest.fn(async () => true);
 
@@ -521,8 +624,7 @@ describe('invitation catch-up', () => {
     ).rejects.toThrow(/deadline exceeded/);
 
     resolveOpen(rawStream);
-    await Promise.resolve();
-    await Promise.resolve();
+    await aborted;
 
     expect(operation).not.toHaveBeenCalled();
     expect(rawStream.abort).toHaveBeenCalledTimes(1);

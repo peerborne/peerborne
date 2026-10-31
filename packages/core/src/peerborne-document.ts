@@ -5980,9 +5980,10 @@ export class PeerborneDocument<
         if (remainingMs <= 0) throw new Error('Invitation catch-up deadline exceeded');
         return await withIssuerPinnedInvitationStream(
           founderAddress,
-          (address, signal) =>
+          (address, signal, forceNewConnection) =>
             this.libp2p.dialProtocol(multiaddr(address) as any, [invitationCatchUpV1], {
               runOnLimitedConnection: true,
+              force: forceNewConnection,
               signal,
             }),
           async (rawStream, signal) => {
