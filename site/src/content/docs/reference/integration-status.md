@@ -14,6 +14,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | Vue | Shallow composable, SSR/lifecycle tests, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, and local browser mutation | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| TanStack DB | Experimental collection adapter pinned to 1.0.0-rc.1.1; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 
@@ -32,3 +33,5 @@ warrants one. The full runtime still needs browser dependency resolution;
 no published CDN bundle is claimed.
 
 Loro snapshots retain full application operation history. Use separate paths for separate engines. The example retains the existing Yjs ACL, keychain, and byte serializers; it does not provide content-history redaction.
+
+TanStack DB currently copies and replaces the complete row snapshot per notification. Query-driven network sync, incremental projection, relational durability, and distributed transactions are not implemented.

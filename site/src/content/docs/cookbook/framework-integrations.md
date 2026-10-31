@@ -19,4 +19,8 @@ Shallow composable, SSR/lifecycle tests, and browser example. See the [source ex
 
 Svelte 5 readable, server/lifecycle tests, and compiled browser example. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
 
+## TanStack DB
+
+Experimental collection adapter pinned to 1.0.0-rc.1.1; CRUD, rollback, and browser exercise. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
+
 The React hook uses `@peerborne/react/store`, requires no context caches, and returns a stable server snapshot. Initialize the node only in the browser. Bindings acquire ownership after mounting; state projections keep the CRDT authoritative rather than creating another mutation/sync authority.

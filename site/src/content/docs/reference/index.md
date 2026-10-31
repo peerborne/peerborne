@@ -13,6 +13,7 @@ The package API reference is generated from source doc comments on every site bu
 | `@peerborne/react` | package root, `/store` | Context hooks and a lightweight external-store binding. |
 | `@peerborne/redux` | package root | Redux bindings, including actions, reducers, and selectors. |
 | `@peerborne/index` | package root, `/react` | Indexing and querying, with React hooks in `/react`. |
+| `@peerborne/tanstack-db` | package root | Experimental TanStack DB collection adapter. |
 | `@peerborne/loro` | package root | Experimental Loro document provider. |
 | `@peerborne/svelte` | package root | Svelte 5 readable document stores. |
 | `@peerborne/vue` | package root | Vue 3 composables over shared document stores. |

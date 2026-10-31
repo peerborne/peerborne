@@ -4660,9 +4660,11 @@ __metadata:
     "@peerborne/react": "workspace:^"
     "@peerborne/store": "workspace:^"
     "@peerborne/svelte": "workspace:^"
+    "@peerborne/tanstack-db": "workspace:^"
     "@peerborne/vue": "workspace:^"
     "@peerborne/yjs": "workspace:^"
     "@sveltejs/vite-plugin-svelte": "npm:^7.3.1"
+    "@tanstack/db": "npm:1.0.0-rc.1.1"
     "@types/node": "npm:^22.12.0"
     "@types/react": "npm:^19.3.0"
     "@types/react-dom": "npm:^19.2.3"
@@ -4833,6 +4835,21 @@ __metadata:
     typescript: "npm:^5.9.3"
   peerDependencies:
     svelte: ^5.57.3
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/tanstack-db@workspace:^, @peerborne/tanstack-db@workspace:packages/tanstack-db":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/tanstack-db@workspace:packages/tanstack-db"
+  dependencies:
+    "@peerborne/store": "workspace:^"
+    "@tanstack/db": "npm:1.0.0-rc.1.1"
+    "@types/node": "npm:^26.6.2"
+    jest: "npm:^30.5.2"
+    ts-jest: "npm:^29.4.14"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    "@tanstack/db": 1.0.0-rc.1.1
   languageName: unknown
   linkType: soft
 
@@ -5368,6 +5385,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@standard-schema/spec@npm:^1.1.0":
+  version: 1.1.0
+  resolution: "@standard-schema/spec@npm:1.1.0"
+  checksum: 10/a209615c9e8b2ea535d7db0a5f6aa0f962fd4ab73ee86a46c100fb78116964af1f55a27c1794d4801e534a196794223daa25ff5135021e03c7828aa3d95e1763
+  languageName: node
+  linkType: hard
+
 "@sveltejs/acorn-typescript@npm:^1.0.13":
   version: 1.0.13
   resolution: "@sveltejs/acorn-typescript@npm:1.0.13"
@@ -5405,6 +5429,37 @@ __metadata:
   dependencies:
     tslib: "npm:^2.4.0"
   checksum: 10/6ba2f7e215d32d71fce139e2cfc426b3ed7eaa709febdeb07b97260a4c9eea4784cf047cc1271be273990b08220b576b94a42b5780947c0b3be84973a847a24d
+  languageName: node
+  linkType: hard
+
+"@tanstack/db-ivm@npm:1.0.0-rc.1.1":
+  version: 1.0.0-rc.1.1
+  resolution: "@tanstack/db-ivm@npm:1.0.0-rc.1.1"
+  dependencies:
+    fractional-indexing: "npm:^3.2.0"
+  peerDependencies:
+    typescript: ">=4.7"
+  checksum: 10/0be513402ce99a765ad074e6b05eef4f45c101c68810cb234ab551f4f1d73a505765b08c90aaa16409efcd2fbb80cac62ae2cf46d8248d0035f08d0f4b46775a
+  languageName: node
+  linkType: hard
+
+"@tanstack/db@npm:1.0.0-rc.1.1":
+  version: 1.0.0-rc.1.1
+  resolution: "@tanstack/db@npm:1.0.0-rc.1.1"
+  dependencies:
+    "@standard-schema/spec": "npm:^1.1.0"
+    "@tanstack/db-ivm": "npm:1.0.0-rc.1.1"
+    "@tanstack/pacer-lite": "npm:^0.2.1"
+  peerDependencies:
+    typescript: ">=4.7"
+  checksum: 10/c3049a29ccc1cdc038046755fd609c22e7690b6656474de765c89d2380cf10159bdea034e3c8ce252d7d505bad38dcd901799e0887314256245793eed8402163
+  languageName: node
+  linkType: hard
+
+"@tanstack/pacer-lite@npm:^0.2.1":
+  version: 0.2.2
+  resolution: "@tanstack/pacer-lite@npm:0.2.2"
+  checksum: 10/0eb2555b31dd6a704f60c3c3c91e276031e4259d98fe91d641ec27ce22a124a421577c5ce6cc94c4d75d499fd3cc9238527ad2757e6167a108f4ac435c269bef
   languageName: node
   linkType: hard
 
@@ -8577,6 +8632,13 @@ __metadata:
     hasown: "npm:^2.0.4"
     mime-types: "npm:^2.1.35"
   checksum: 10/de6614c8537c92fa5fa3ee7e827758f98f5a9c033f348b7de81855ef36e5cb867e75d9f405d9483ab8d724a4a20d4e79926a299fa8dbba38f530eb659f0884e4
+  languageName: node
+  linkType: hard
+
+"fractional-indexing@npm:^3.2.0":
+  version: 3.4.0
+  resolution: "fractional-indexing@npm:3.4.0"
+  checksum: 10/39a3d87f5f1ff2c8bc945f57b9ca68ff1891aeb32c1b18394b0c1278a2ed1a9559a37da621f68836aebcadcd788a35221f53f38ed57fb9ed13aa2f31b37f4598
   languageName: node
   linkType: hard
 

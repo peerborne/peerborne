@@ -81,6 +81,7 @@ jobs:
           - vue
           - svelte
           - loro
+          - tanstack-db
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion
