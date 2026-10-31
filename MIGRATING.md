@@ -5,6 +5,17 @@ The project previously used the Swarmbase product name and a mix of
 Peerborne. The library packages were never published to npm, so the rename is a
 clean source-level break rather than a registry migration.
 
+## Module loading in 0.1.0
+
+All six packages ship a single ESM build. ESM imports and CommonJS `require()`
+resolve to that same build, using Node.js 22.19.0 or newer's native ESM
+interoperability. There is no separate CommonJS build. CommonJS applications can
+also use `await import('@peerborne/core')`.
+
+Release validation checks both loading styles from the packed packages,
+including shared export identity and TypeScript NodeNext declarations for ESM
+and CommonJS consumers. Older Node.js versions are unsupported.
+
 ## Repository move
 
 The canonical repository is now `https://github.com/Peerborne/peerborne`.

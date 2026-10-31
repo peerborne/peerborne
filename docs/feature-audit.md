@@ -78,7 +78,7 @@ Status meanings:
 
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
-| Buildable ESM workspace packages | Verified | Topological TypeScript build and full unit suite; exact packed tarballs are inspected and installed in a clean consumer for ESM imports, strict NodeNext typechecking, and a Vite build | Packages are not yet published; registry installation, browser runtime execution, and packaged daemon execution are not tested. |
+| Buildable ESM workspace packages | Verified | Topological TypeScript build and full unit suite; exact packed tarballs are inspected and installed in a clean Node 22.19.0 consumer for ESM and native CommonJS imports, shared export identity, strict NodeNext typechecking for both module styles, and a Vite build | Packages are not yet published; registry installation, browser runtime execution, and packaged daemon execution are not tested. |
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
 | Password-manager reference app | Partial | Vite production build and strict Chromium startup smoke test pass | No two-browser synchronization test; bundle is about 2.0 MB minified. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |

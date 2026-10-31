@@ -60,13 +60,18 @@ What needs to happen:
 
 ### 6. External package publication
 
-**Status: Not implemented.** The `@peerborne/*` packages are source workspaces, not published to npm. The release workflow (#321) defines the publication pipeline but npm scope ownership, `NPM_TOKEN`, and publication gates are not yet configured.
+**Status: First release pending.** The six `@peerborne/*` packages are prepared
+as `0.1.0` source workspaces and remain unpublished. Packed-package validation
+covers ESM and native CommonJS loading on Node.js 22.19.0, TypeScript NodeNext
+declarations, and a Vite build. The release workflow validates artifacts before
+the protected `npm-publish` job. See the
+[release guide](https://github.com/Peerborne/peerborne/blob/main/RELEASING.md)
+for bootstrap authorization and publishing controls.
 
 What needs to happen:
-- npm scope `@peerborne` claimed
-- `NPM_TOKEN` and `NPM_PUBLISH_ENABLED` secrets configured
-- First npm release published
+- First `0.1.0` release published from a reviewed `v0.1.0` tag
 - External consumer validation (import from npm, build, run)
+- Configure trusted publishing for all six packages and revoke the bootstrap token after verification
 
 ### 7. Documentation and snippet tests
 

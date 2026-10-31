@@ -8,28 +8,28 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "url": "git+https://github.com/peerborne/peerborne.git",
     "directory": "packages/redux"
   },
   "scripts": {
-    "tsc": "tsc -b && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "tsc": "tsc -b",
     "prepublishOnly": "yarn tsc",
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json"
   },
-  "main": "dist/cjs/src/index.js",
+  "main": "dist/esm/src/index.js",
   "types": "dist/esm/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/esm/src/index.d.ts",
       "import": "./dist/esm/src/index.js",
-      "require": "./dist/cjs/src/index.js",
+      "require": "./dist/esm/src/index.js",
       "default": "./dist/esm/src/index.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
-    "dist",
+    "dist/esm/**",
     "!dist/**/*.test.*",
     "!dist/**/*.spec.*",
     "!dist/**/__tests__/**",

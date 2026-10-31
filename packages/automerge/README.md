@@ -1,5 +1,7 @@
 # `@peerborne/automerge`
 
+Version 0.1.0 is alpha software, not production-ready. Packages ship one ESM build, with native CommonJS `require()` interoperability on Node.js 22.19.0 or newer.
+
 Build collaborative applications with Automerge's JSON-like CRDT documents. This package provides the CRDT provider, serialization, ACL, and keychain adapters that connect Automerge documents to Peerborne's encrypted peer-to-peer sync engine.
 
 ## What you get

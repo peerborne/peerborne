@@ -1,5 +1,7 @@
 # `@peerborne/core`
 
+Version 0.1.0 is alpha software, not production-ready. Packages ship one ESM build, with native CommonJS `require()` interoperability on Node.js 22.19.0 or newer.
+
 Encrypted, peer-to-peer collaboration for TypeScript. Peerborne provides the core document, storage, networking, encryption, access-control, and key-management primitives that the Peerborne project composes into a local-first CRDT toolkit.
 
 ## What you get

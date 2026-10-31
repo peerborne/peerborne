@@ -8,35 +8,35 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "url": "git+https://github.com/peerborne/peerborne.git",
     "directory": "packages/index"
   },
   "scripts": {
-    "tsc": "tsc -b && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "tsc": "tsc -b",
     "prepublishOnly": "yarn tsc",
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
     "benchmark": "tsx src/__benchmarks__/run.ts"
   },
-  "main": "dist/cjs/src/index.js",
+  "main": "dist/esm/src/index.js",
   "types": "dist/esm/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/esm/src/index.d.ts",
       "import": "./dist/esm/src/index.js",
-      "require": "./dist/cjs/src/index.js",
+      "require": "./dist/esm/src/index.js",
       "default": "./dist/esm/src/index.js"
     },
     "./package.json": "./package.json",
     "./react": {
       "types": "./dist/esm/src/react.d.ts",
       "import": "./dist/esm/src/react.js",
-      "require": "./dist/cjs/src/react.js",
+      "require": "./dist/esm/src/react.js",
       "default": "./dist/esm/src/react.js"
     }
   },
   "files": [
-    "dist",
+    "dist/esm/**",
     "!dist/**/*.test.*",
     "!dist/**/*.spec.*",
     "!dist/**/__tests__/**",

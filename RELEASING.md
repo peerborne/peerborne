@@ -1,6 +1,8 @@
 # Releasing
 
-The six `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
+The initial release is `0.1.0`, promoted to `latest`. It remains alpha software, not production-ready. The six `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
+
+Packages ship one ESM build. Both `import` and CommonJS `require()` resolve to it through Node.js 22.19.0 or newer's native ESM interoperability. There is no separate CommonJS compilation or compatibility bundle.
 
 ## Release allowlist and versioning
 
@@ -37,7 +39,7 @@ Use `scripts/tag-release.sh` without `--push` to create the tag locally for insp
 
 ## Secretless artifact validation
 
-Pull requests, manual workflow dispatches, and `v*` tag pushes install, build, test, pack, inspect, and exercise the exact tarballs in a clean ESM, TypeScript NodeNext, and Vite consumer. Pull requests and manual dispatches have no npm environment, npm token, or OIDC permission and can never publish. A tag must exactly match the six package versions, use strict SemVer, and point to a commit contained in `origin/main`.
+Pull requests, manual workflow dispatches, and `v*` tag pushes install, build, test, pack, inspect, and exercise the exact tarballs in a clean npm consumer. Validation covers ESM imports, native CommonJS loading, shared export identity, TypeScript NodeNext declarations for both module styles, and a Vite browser build. Legacy CommonJS output is excluded from the package contents. Pull requests and manual dispatches have no npm environment, npm token, or OIDC permission and can never publish. A tag must exactly match the six package versions, use strict SemVer, and point to a commit contained in `origin/main`.
 
 To reproduce artifact validation locally:
 
@@ -55,12 +57,12 @@ yarn release:validate-consumer "$ARTIFACT_DIR" "$(dirname "$ARTIFACT_DIR")"
 Before pushing the first tag:
 
 1. Confirm the npm `@peerborne` scope is owned and all maintainers use 2FA.
-2. Create a short-lived granular npm token with only the organization/package write access needed for bootstrap publication and dist-tag changes.
+2. Create a short-lived granular npm token with bypass 2FA enabled and only the scope/package write access needed for bootstrap publication and dist-tag changes. Enter it directly into the GitHub environment secret; never put the token in chat, source, shell arguments, or logs.
 3. Create a protected GitHub environment named `npm-publish`; store the token only as its `NPM_TOKEN` environment secret.
 4. Require designated reviewers for that environment, restrict deployment branches/tags to the intended `v*` release tags, and disable administrator bypass. These controls are mandatory because a tag push is the publication approval boundary.
 5. Create the repository variable `NPM_PUBLISH_ENABLED` with value `true` only when publication is operationally enabled. Missing or any other value leaves tag runs in validation-only mode.
 
-The publish job fails when `NPM_TOKEN` is empty and runs `npm whoami` before registry changes. It has only `contents: read` and `id-token: write`; the latter is used for npm provenance. Validation jobs do not receive that permission.
+For the initial bootstrap, the publish job uses `NPM_TOKEN` and runs `npm whoami` before registry changes. When that secret is absent, it uses GitHub Actions OIDC; this requires trusted publishers to have already been configured for all six packages. It has only `contents: read` and `id-token: write`; the latter supports trusted publishing and npm provenance. Validation jobs do not receive that permission.
 
 ## Publishing and recovery
 
@@ -79,7 +81,15 @@ After publication, verify each package/version and final dist-tag with `npm view
 
 ## Trusted publishing migration
 
-The bootstrap token remains necessary for the first publication and for current dist-tag promotion. After all six packages exist, configure npm trusted publishing for this repository, `release.yml`, and the `npm-publish` environment. Tokenless package publication can then be evaluated, but do not remove authenticated dist-tag handling until the workflow has a tested replacement. Rotate or revoke the bootstrap token promptly.
+The bootstrap token is needed for the first publication because trusted publishing can only be configured for existing packages. After all six packages exist, configure each package's npm trusted publisher with:
+
+- GitHub organization: `peerborne`
+- Repository: `peerborne`
+- Workflow filename: `release.yml`
+- Environment: `npm-publish`
+- Allowed operations: direct publishing and dist-tag management
+
+The workflow pins npm 11.21.1, which supports OIDC for both package publication and dist-tag promotion. Verify a release through OIDC before removing the environment's `NPM_TOKEN` and revoking the bootstrap token. `npm whoami` does not validate OIDC permissions. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/#managing-dist-tags-with-trusted-publishing) and [setup prerequisites](https://docs.npmjs.com/cli/v11/commands/npm-trust/#prerequisites).
 
 ## Release notes
 

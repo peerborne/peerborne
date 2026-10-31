@@ -8,11 +8,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "url": "git+https://github.com/peerborne/peerborne.git",
     "directory": "packages/core"
   },
   "scripts": {
-    "tsc": "tsc -b && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "tsc": "tsc -b",
     "prepublishOnly": "yarn tsc",
     "test": "jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
@@ -20,37 +20,37 @@
     "benchmark": "tsx src/__benchmarks__/run.ts",
     "test:coverage": "jest --coverage"
   },
-  "main": "dist/cjs/src/index.js",
+  "main": "dist/esm/src/index.js",
   "types": "dist/esm/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/esm/src/index.d.ts",
       "import": "./dist/esm/src/index.js",
-      "require": "./dist/cjs/src/index.js",
+      "require": "./dist/esm/src/index.js",
       "default": "./dist/esm/src/index.js"
     },
     "./package.json": "./package.json",
     "./node": {
       "types": "./dist/esm/src/peerborne-node.d.ts",
       "import": "./dist/esm/src/peerborne-node.js",
-      "require": "./dist/cjs/src/peerborne-node.js",
+      "require": "./dist/esm/src/peerborne-node.js",
       "default": "./dist/esm/src/peerborne-node.js"
     },
     "./browser-primitives": {
       "types": "./dist/esm/src/browser-primitives.d.ts",
       "import": "./dist/esm/src/browser-primitives.js",
-      "require": "./dist/cjs/src/browser-primitives.js",
+      "require": "./dist/esm/src/browser-primitives.js",
       "default": "./dist/esm/src/browser-primitives.js"
     },
     "./wire-protocols": {
       "types": "./dist/esm/src/wire-protocols.d.ts",
       "import": "./dist/esm/src/wire-protocols.js",
-      "require": "./dist/cjs/src/wire-protocols.js",
+      "require": "./dist/esm/src/wire-protocols.js",
       "default": "./dist/esm/src/wire-protocols.js"
     }
   },
   "files": [
-    "dist",
+    "dist/esm/**",
     "!dist/**/*.test.*",
     "!dist/**/*.spec.*",
     "!dist/**/__tests__/**",
