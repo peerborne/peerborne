@@ -1,139 +1,85 @@
-import { generateEciesKeyPair } from '@peerborne/core';
 import React from 'react';
-import { Button, Container, Row, Form } from 'react-bootstrap';
-import { useNavigate } from 'react-router-dom';
-import { exportKey, importKey } from './utils';
-
-export const passwordManagerNamespace = '/password-manager';
+import { Alert, Button, Container, Form } from 'react-bootstrap';
+import { serializeKey } from '@peerborne/yjs';
+import { getBrowserIdentity, type BrowserIdentity } from './vault-store';
 
 export function Login({
-  setUserId,
-  setPublicKey,
-  setPrivateKey,
-  setKemKeyPair,
-  setBootstrapPeers,
+  onLogin,
 }: {
-  userId?: string;
-  setUserId?: (userId: string) => void;
-  publicKey?: CryptoKey;
-  setPublicKey?: (publicKey: CryptoKey) => void;
-  privateKey?: CryptoKey;
-  setPrivateKey?: (privateKey: CryptoKey) => void;
-  setKemKeyPair: (kemKeyPair: CryptoKeyPair) => void;
-  bootstrapPeers?: string[];
-  setBootstrapPeers?: (peers: string[]) => void;
+  onLogin: (identity: BrowserIdentity, peers: string[]) => Promise<void>;
 }) {
-  const navigate = useNavigate();
-  const [generatedPrivateKey, setGeneratedPrivateKey] = React.useState<
-    string | undefined
-  >();
-  const [generatedPublicKey, setGeneratedPublicKey] = React.useState<
-    string | undefined
-  >();
-  const [generatedKemKeyPair, setGeneratedKemKeyPair] = React.useState<
-    CryptoKeyPair | undefined
-  >();
-  const [draftBootstrapPeers, setDraftBootstrapPeers] = React.useState('');
-  // Generate a keypair.
+  const [identity, setIdentity] = React.useState<BrowserIdentity>();
+  const [publicKey, setPublicKey] = React.useState('');
+  const [peers, setPeers] = React.useState('');
+  const [error, setError] = React.useState<string>();
+  const [busy, setBusy] = React.useState(false);
   React.useEffect(() => {
-    console.log(`Calling <Login /> init effect`);
-    (async () => {
-      const keypair = await crypto.subtle.generateKey(
-        {
-          name: 'ECDSA',
-          namedCurve: 'P-384',
-        },
-        true,
-        ['sign', 'verify'],
-      );
-      // Secret documents seed BeeKEM leaf 0 with this P-256 ECDH key pair
-      // before their first membership change.
-      setGeneratedKemKeyPair(await generateEciesKeyPair());
-
-      // Save these new generated keypairs.
-      const exportedPrivateKey = await exportKey(keypair.privateKey);
-      const exportedPublicKey = await exportKey(keypair.publicKey);
-      setGeneratedPublicKey(exportedPublicKey);
-      setGeneratedPrivateKey(exportedPrivateKey);
-    })();
-
+    let active = true;
+    void getBrowserIdentity()
+      .then(async (value) => {
+        const key = await serializeKey(value.signing.publicKey);
+        if (active) {
+          setIdentity(value);
+          setPublicKey(key);
+        }
+      })
+      .catch(() => {
+        if (active)
+          setError(
+            'Could not restore the browser identity. Existing vaults were left unchanged.',
+          );
+      });
     return () => {
-      // Nothing to cleanup.
+      active = false;
     };
   }, []);
-
-  const keysReady =
-    !!generatedKemKeyPair && !!generatedPublicKey && !!generatedPrivateKey;
-
   return (
-    <Container className="ml-auto mr-auto mt-5">
-      <Row className="mt-5">
-        {/* Allow user to enter a keypair */}
-        <Form>
-          <Form.Group className="mb-3" controlId="formBasicPrivateKey">
-            <Form.Label>Private Key</Form.Label>
-            <Form.Control
-              type="password"
-              placeholder="Enter private key"
-              value={generatedPrivateKey || ''}
-              onChange={(e) => setGeneratedPrivateKey(e.target.value)}
-            />
-            <Form.Text className="text-muted">
-              We've auto-generated a key for you. Feel free to provide your own
-              key (must be in JWK format).
-            </Form.Text>
-          </Form.Group>
-
-          <Form.Group className="mb-3" controlId="formBasicPublicKey">
-            <Form.Label>Public Key</Form.Label>
-            <Form.Control
-              as="textarea"
-              rows={6}
-              placeholder="Enter public key"
-              value={generatedPublicKey || ''}
-              onChange={(e) => setGeneratedPublicKey(e.target.value)}
-            />
-            <Form.Text className="text-muted">
-              We've auto-generated a key for you. Feel free to provide your own
-              key (must be in JWK format).
-            </Form.Text>
-          </Form.Group>
-
-          <Form.Group className="mb-3" controlId="formBootstrapPeers">
-            <Form.Label>Bootstrap Peers</Form.Label>
-            <Form.Control
-              as="textarea"
-              rows={6}
-              placeholder="Enter a list of (line separated) Peer IDs"
-              value={draftBootstrapPeers || ''}
-              onChange={(e) => setDraftBootstrapPeers(e.target.value)}
-            />
-          </Form.Group>
-
-          <Button
-            variant="primary"
-            disabled={!keysReady}
-            onClick={async () => {
-              if (!keysReady) {
-                return;
-              }
-              setKemKeyPair(generatedKemKeyPair);
-              setPublicKey &&
-                setPublicKey(await importKey(generatedPublicKey, ['verify']));
-              setPrivateKey &&
-                setPrivateKey(await importKey(generatedPrivateKey, ['sign']));
-              setBootstrapPeers &&
-                draftBootstrapPeers &&
-                setBootstrapPeers(draftBootstrapPeers.split('\n'));
-              setUserId && setUserId(btoa(generatedPublicKey));
-              // Redirect to the /secrets page.
-              navigate('/secrets');
-            }}
-          >
-            Login
-          </Button>
-        </Form>
-      </Row>
+    <Container className="mt-5">
+      <p>
+        Your identity and encrypted vaults are saved in this browser. Clearing
+        site data removes access to them. Login uses the browser identity; it
+        does not provide a password lock or a backup.
+      </p>
+      {error && <Alert variant="danger">{error}</Alert>}
+      <Form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!identity || busy) return;
+          setBusy(true);
+          void onLogin(
+            identity,
+            peers
+              .split('\n')
+              .map((value) => value.trim())
+              .filter(Boolean),
+          )
+            .catch((error) =>
+              setError(
+                error instanceof Error
+                  ? error.message
+                  : 'Could not start the vault session. Your saved data was left unchanged.',
+              ),
+            )
+            .finally(() => setBusy(false));
+        }}
+      >
+        <Form.Group className="mb-3" controlId="browser-public-key">
+          <Form.Label>Public Key</Form.Label>
+          <Form.Control as="textarea" rows={3} value={publicKey} readOnly />
+        </Form.Group>
+        <Form.Group className="mb-3" controlId="bootstrap-peers">
+          <Form.Label>Bootstrap Peers</Form.Label>
+          <Form.Control
+            as="textarea"
+            value={peers}
+            onChange={(event) => setPeers(event.target.value)}
+            placeholder="Optional peer addresses, one per line"
+          />
+        </Form.Group>
+        <Button type="submit" disabled={!identity || busy}>
+          {busy ? 'Opening…' : 'Login'}
+        </Button>
+      </Form>
     </Container>
   );
 }

@@ -60,7 +60,13 @@ the browser origin. Those backends can retain bytes across a tab refresh, but
 complete Peerborne reconstruction from that persisted state is not yet an
 end-to-end guarantee.
 
-**Current status**: Local block storage works in single-session tests. Complete restart recovery (close browser → reopen → verify document state) has **not been proven in CI**. The blockstore persists, but Helia/libp2p reinitialization and document re-opening after a browser restart are not end-to-end tested.
+**Current status**: Local block storage works in single-session tests. The
+[password-manager example](../../cookbook/password-manager/) explicitly saves
+encrypted, self-signed document checkpoints and tests reopening after Chromium
+relaunch with the same profile. This application-managed path restores keys,
+CRDT state, and membership before opening locally. Retaining blocks alone does
+not restore those things; other applications and peer-assisted recovery remain
+unverified.
 
 ### No automatic replication factor
 
@@ -165,11 +171,12 @@ Verified in CI:
 - Block creation, storage, and retrieval in a single browser session
 - Encrypted existing history loaded through Circuit Relay
 - IndexedDB blockstore initialization and basic read/write
+- Password-manager identity and encrypted checkpoint restoration after browser relaunch
 
 Not verified:
 
-- Complete browser restart and document recovery
-- Multi-session persistence (close → reopen → verify)
+- Browser restart and document recovery outside the password-manager checkpoint path
+- Multi-device and peer-assisted recovery
 - Compaction and GC with subsequent recovery
 - Pinning publisher integration
 - Remote block fetch (bitswap/HTTP) of blocks stored by a different peer

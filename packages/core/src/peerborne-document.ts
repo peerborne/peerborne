@@ -1,5 +1,7 @@
 import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
+import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
+import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
 import { identifyInitialLoadSigner, verifyInitialLoadAuthentication, InitialLoadAuthenticationBudget } from './initial-load-auth.js';
@@ -6247,6 +6249,289 @@ export class PeerborneDocument<
   }
 
   private _activationInProgress = false;
+  private _localCheckpointReady = false;
+
+  /**
+   * Capture a bounded, self-signed local checkpoint. The payload contains
+   * document keys: applications must encrypt it before storage and must never
+   * transmit it. This is local recovery, not a network trust or backup format.
+   */
+  public async exportCheckpoint(): Promise<DocumentCheckpoint> {
+    return this._runStateMutation(async () => {
+      if (this._inTransaction || this._hashes.size === 0)
+        throw new Error('No committed document state to checkpoint');
+      const message: CRDTSyncMessage<ChangesType> = {
+        documentId: this.documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        ...(this._lastSyncMessage?.changeId === undefined
+          ? {}
+          : {
+              changeId: this._lastSyncMessage.changeId,
+              changes: this._lastSyncMessage.changes,
+            }),
+        ...(this._latestSnapshot === undefined
+          ? {}
+          : { snapshot: this._latestSnapshot }),
+      };
+      if (this._beekemInitialized && !this._kemKeyPair)
+        throw new Error('Checkpoint requires the persistent KEM identity');
+      const beekem =
+        this._beekemInitialized && this._beekem
+          ? await this._beekem.exportLocalState(this._kemKeyPair!.publicKey)
+          : null;
+      const payload = encodeCheckpointState({
+        format: 'peerborne/local-document-checkpoint/1',
+        documentPath: this.documentPath,
+        owner: await requireSerializePublicKey(
+          this._authProvider,
+          'Local checkpoint',
+        )(this._userPublicKey),
+        document: checkpointEncode(
+          this._changesSerializer.serializeChanges(
+            this._crdtProvider.getHistory(this._document),
+          ),
+        ),
+        readers: checkpointEncode(
+          this._changesSerializer.serializeChanges(this._readers.current()),
+        ),
+        writers: checkpointEncode(
+          this._changesSerializer.serializeChanges(this._writers.current()),
+        ),
+        keychain: checkpointEncode(
+          this._changesSerializer.serializeChanges(this._keychain.history()),
+        ),
+        message: checkpointEncode(
+          this._syncMessageSerializer.serializeSyncMessage(message),
+        ),
+        hashes: [...this._hashes],
+        ancestors: [...this._referencedAncestors],
+        recentTips: this._recentTips.map(({ cid, kind }) => [cid, kind]),
+        documentChangeCount: this._documentChangeCount,
+        changesSinceSnapshot: this._changesSinceSnapshot,
+        historyVisibility: this._historyVisibility,
+        invitationEpoch:
+          this._invitationEpoch === undefined
+            ? null
+            : checkpointEncode(this._invitationEpoch),
+        beekem:
+          beekem === null
+            ? null
+            : {
+                leafPublicKey: checkpointEncode(beekem.leafPublicKey),
+                sealedLeafPrivateKey:
+                  beekem.sealedLeafPrivateKey === null
+                    ? null
+                    : checkpointEncode(beekem.sealedLeafPrivateKey),
+                welcome:
+                  beekem.welcome === null
+                    ? null
+                    : serializeBeeKEMLocalRecovery(beekem.welcome),
+                digest:
+                  beekem.lastAppliedUpdateDigest === null
+                    ? null
+                    : checkpointEncode(beekem.lastAppliedUpdateDigest),
+              },
+        readerLeaves: [...this._readerLeafIndices],
+        readerKemKeys: [...this._readerKemPublicKeys].map(
+          ([authority, key]) => [authority, checkpointEncode(key)],
+        ),
+        welcomes: [...this._beekemWelcomeByLeaf].map(([leaf, welcome]) => [
+          leaf,
+          serializeBeeKEMWelcomeV2ForWire(welcome),
+        ]),
+      });
+      const signature = copyUnsharedUint8Array(
+        await this._authProvider.sign(new Uint8Array(payload), this._userKey),
+        1,
+        8192,
+        'Checkpoint signature',
+      );
+      return { payload, signature };
+    });
+  }
+
+  /**
+   * Restore this identity's authenticated checkpoint on a fresh instance.
+   * All fallible decoding/provider work is staged before any live state changes.
+   * The next open activates the restored local state without a network load.
+   * Authenticated old checkpoints can still be replayed by a storage attacker;
+   * applications that require rollback protection need an independent anchor.
+   */
+  public async restoreCheckpoint(
+    checkpoint: DocumentCheckpoint,
+  ): Promise<void> {
+    const record = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
+      checkpoint,
+      'Document checkpoint',
+    );
+    if (Object.keys(record).sort().join() !== 'payload,signature')
+      throw new TypeError('Invalid checkpoint envelope');
+    const payload = copyUnsharedUint8Array(
+      record.payload,
+      1,
+      MAX_DOCUMENT_CHECKPOINT_BYTES,
+      'Checkpoint payload',
+    );
+    const signature = copyUnsharedUint8Array(
+      record.signature,
+      1,
+      8192,
+      'Checkpoint signature',
+    );
+    return this._runStateMutation(async () => {
+      if (
+        this._activationInProgress ||
+        this._subscribed ||
+        this._createdLocally ||
+        this._localCheckpointReady ||
+        this._hashes.size > 0 ||
+        this._lastSyncMessage !== undefined ||
+        this._latestSnapshot !== undefined ||
+        (await this._readers.users()).length > 0 ||
+        (await this._writers.users()).length > 0 ||
+        (await this._keychain.keys()).length > 0
+      )
+        throw new Error('Checkpoint restoration requires a fresh document');
+      if (
+        (await this._authProvider.verify(
+          new Uint8Array(payload),
+          this._userPublicKey,
+          new Uint8Array(signature),
+        )) !== true
+      ) {
+        throw new Error('Local checkpoint authentication failed');
+      }
+      const state = decodeCheckpointState(payload);
+      if (
+        state.documentPath !== this.documentPath ||
+        state.owner !==
+          (await requireSerializePublicKey(
+            this._authProvider,
+            'Local checkpoint',
+          )(this._userPublicKey))
+      ) {
+        throw new Error(
+          'Local checkpoint belongs to another document or identity',
+        );
+      }
+      const decodeChanges = (encoded: string) =>
+        this._changesSerializer.deserializeChanges(checkpointDecode(encoded));
+      const readers = this._aclProvider.initialize();
+      const writers = this._aclProvider.initialize();
+      readers.merge(decodeChanges(state.readers));
+      writers.merge(decodeChanges(state.writers));
+      if (
+        !(await writers.check(this._userPublicKey)) &&
+        !(await readers.check(this._userPublicKey))
+      )
+        throw new Error('Checkpoint identity has no document access');
+      const keychain = this._keychainProvider.initialize();
+      const preparedKeychain = keychain.prepareMerge(
+        decodeChanges(state.keychain),
+      );
+      await preparedKeychain.hydrateKeys();
+      preparedKeychain.commit();
+      if ((await keychain.keys()).length === 0)
+        throw new Error('Checkpoint has no document keys');
+      const document = this._crdtProvider.remoteChange(
+        this._crdtProvider.newDocument(),
+        decodeChanges(state.document),
+      );
+      const message = snapshotSyncMessageForContext<ChangesType>(
+        this._syncMessageSerializer.deserializeSyncMessage(
+          checkpointDecode(state.message),
+        ),
+        'ordinary-sync-v1',
+      );
+      const hashes = new Set(state.hashes);
+      if (
+        message.documentId !== this.documentPath ||
+        !message.changeId ||
+        !message.changes ||
+        !hashes.has(message.changeId)
+      )
+        throw new Error('Invalid checkpoint change root');
+      const tree = snapshotBoundedChangeTree(
+        message.changeId,
+        message.changes,
+        { canonicalizeNodeId: (value) => CID.parse(value).toString() },
+      );
+      validateRemoteSyncTreeAliases(message.changeId, tree.root);
+      if (
+        tree.entries.some(
+          (entry) => entry.nodeId === undefined || !hashes.has(entry.nodeId),
+        )
+      )
+        throw new Error('Checkpoint has incomplete change history');
+      const beekem = state.beekem === null ? null : new BeeKEM();
+      if (beekem !== null && state.beekem !== null) {
+        if (!this._kemKeyPair)
+          throw new Error(
+            'Restore the persistent KEM identity before the checkpoint',
+          );
+        await beekem.restoreLocalState(
+          {
+            leafPublicKey: checkpointDecode(state.beekem.leafPublicKey),
+            sealedLeafPrivateKey:
+              state.beekem.sealedLeafPrivateKey === null
+                ? null
+                : checkpointDecode(state.beekem.sealedLeafPrivateKey),
+            welcome:
+              state.beekem.welcome === null
+                ? null
+                : deserializeBeeKEMLocalRecovery(state.beekem.welcome),
+            lastAppliedUpdateDigest:
+              state.beekem.digest === null
+                ? null
+                : checkpointDecode(state.beekem.digest),
+          },
+          this._kemKeyPair,
+        );
+      }
+      const readerKemKeys = new Map(
+        state.readerKemKeys.map(([authority, key]) => [
+          authority,
+          checkpointDecode(key),
+        ]),
+      );
+      const welcomes = new Map(
+        state.welcomes.map(([leaf, welcome]) => [
+          leaf,
+          deserializeBeeKEMWelcomeV2FromWire(welcome),
+        ]),
+      );
+      const ancestors = new Set(state.ancestors);
+      const recentTips = state.recentTips.map(([cid, kind]) => ({
+        cid,
+        kind: kind as CRDTChangeNodeKind,
+      }));
+      const readerLeaves = new Map(state.readerLeaves);
+      const invitationEpoch =
+        state.invitationEpoch === null
+          ? undefined
+          : checkpointDecode(state.invitationEpoch);
+      this._document = document;
+      this._readers = readers;
+      this._writers = writers;
+      this._keychain = keychain;
+      this._lastSyncMessage = message;
+      this._hashes = hashes;
+      this._referencedAncestors = ancestors;
+      this._recentTips = recentTips;
+      this._latestSnapshot = message.snapshot;
+      this._documentChangeCount = state.documentChangeCount;
+      this._changesSinceSnapshot = state.changesSinceSnapshot;
+      this._historyVisibility = state.historyVisibility;
+      this._invitationEpoch = invitationEpoch;
+      this._beekem = beekem;
+      this._beekemInitialized = beekem !== null;
+      this._readerLeafIndices = readerLeaves;
+      this._readerKemPublicKeys = readerKemKeys;
+      this._beekemWelcomeByLeaf = welcomes;
+      this._invalidateWriterKeyCache();
+      this._localCheckpointReady = true;
+    });
+  }
 
   /** Create a new document under an application-owned path without querying peers. */
   public async create(): Promise<boolean> {
@@ -6293,7 +6578,9 @@ export class PeerborneDocument<
     // retry after a later failure.
     const bootstrappedFromInvitation = this._invitationBootstrapReady;
     this._invitationBootstrapReady = false;
-    const loadedFromPeer = bootstrappedFromInvitation
+    const restoredLocally = this._localCheckpointReady;
+    this._localCheckpointReady = false;
+    const loadedFromPeer = bootstrappedFromInvitation || restoredLocally
       ? true
       : createLocally ? false : await this.load();
     assertCanOpen();

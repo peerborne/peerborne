@@ -1,4 +1,4 @@
-import { usePeerborneDocumentState } from '@peerborne/react';
+import { useVaultDocumentState as usePeerborneDocumentState } from './vault-session';
 import { Form } from 'react-bootstrap';
 import { PermissionsTable } from './PermissionsTable';
 import { YjsPeerborne } from './utils';
@@ -19,7 +19,7 @@ export function PasswordEditor({
   kemKeyPair: CryptoKeyPair;
 }) {
   const [, changePasswords] = usePeerborneDocumentState(peerborne, indexPath);
-  const [doc, changeDoc] = usePeerborneDocumentState(
+  const [doc, changeDoc, , error] = usePeerborneDocumentState(
     peerborne,
     `/passwords/${passwordId}`,
     'all',
@@ -30,7 +30,13 @@ export function PasswordEditor({
   const name = doc && doc.getText('name').toString();
   const value = doc && doc.getText('value').toString();
 
-  if (!doc) return <p>Waiting for access to this secret.</p>;
+  if (error)
+    return (
+      <p role="alert">
+        Could not open this secret. Its saved data was left unchanged.
+      </p>
+    );
+  if (!doc) return <p>Opening the secret…</p>;
 
   return (
     <Form>

@@ -4,7 +4,6 @@
   "private": true,
   "dependencies": {
     "@peerborne/core": "workspace:packages/core",
-    "@peerborne/react": "workspace:packages/react",
     "@peerborne/yjs": "workspace:packages/yjs",
     "@popperjs/core": "^2.11.8",
     "@types/node": "^26.6.2",
@@ -26,9 +25,13 @@
     "@types/react-bootstrap": "^1.1.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "blockstore-core": "^7.0.1",
+    "fake-indexeddb": "^6.2.5",
+    "tsx": "4.23.12",
     "vite": "^8.3.5"
   },
   "scripts": {
+    "test": "node --import tsx --test src/vault-store.test.ts src/document-checkpoint.test.ts",
     "build": "tsc --noEmit && vite build",
     "build:tsc": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc && yarn workspace @peerborne/react tsc",
     "start": "vite"

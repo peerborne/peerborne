@@ -117,6 +117,14 @@ export interface BeeKEMWelcomeV2 {
   numLeaves: number;
 }
 
+/** Recipient-sealed recovery state for the local member, stored inside an authenticated checkpoint. */
+export interface BeeKEMLocalState {
+  leafPublicKey: Uint8Array;
+  sealedLeafPrivateKey: Uint8Array | null;
+  welcome: BeeKEMWelcomeV2 | null;
+  lastAppliedUpdateDigest: Uint8Array | null;
+}
+
 /**
  * BeeKEM tree leaf bound.
  *

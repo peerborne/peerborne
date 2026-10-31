@@ -77,6 +77,20 @@ export interface SerializedBeeKEMWelcomeV2 {
 export function serializeBeeKEMWelcomeV2ForWire(
   welcome: BeeKEMWelcomeV2,
 ): SerializedBeeKEMWelcomeV2 {
+  return encodeWelcome(welcome, false);
+}
+
+/** @internal Existing-member recovery is accepted only inside an authenticated local checkpoint. */
+export function serializeBeeKEMLocalRecovery(
+  welcome: BeeKEMWelcomeV2,
+): SerializedBeeKEMWelcomeV2 {
+  return encodeWelcome(welcome, true);
+}
+
+function encodeWelcome(
+  welcome: BeeKEMWelcomeV2,
+  localRecovery: boolean,
+): SerializedBeeKEMWelcomeV2 {
   // Snapshot and encode only; `deserializeBeeKEMWelcomeV2FromWire` is the
   // single structural validator for the result.
   const budget = createV2DecodeBudget(WELCOME_V2);
@@ -188,13 +202,22 @@ export function serializeBeeKEMWelcomeV2ForWire(
     treeNodePublicKeys,
     treeHash: raw.treeHash as string,
   };
-  deserializeBeeKEMWelcomeV2FromWire(wire);
+  decodeWelcome(wire, localRecovery);
   return wire;
 }
 
 export function deserializeBeeKEMWelcomeV2FromWire(
   wire: unknown,
 ): BeeKEMWelcomeV2 {
+  return decodeWelcome(wire, false);
+}
+
+/** @internal Not a network decoder; callers authenticate the enclosing local checkpoint first. */
+export function deserializeBeeKEMLocalRecovery(wire: unknown): BeeKEMWelcomeV2 {
+  return decodeWelcome(wire, true);
+}
+
+function decodeWelcome(wire: unknown, localRecovery: boolean): BeeKEMWelcomeV2 {
   const budget = createV2DecodeBudget(WELCOME_V2);
   const raw = snapshotPlainObject(
     wire,
@@ -228,7 +251,11 @@ export function deserializeBeeKEMWelcomeV2FromWire(
     'leafIndex',
     'BeeKEMWelcomeV2',
   );
-  if (leafIndex !== TreeMath.leafToNodeIndex(numLeaves - 1)) {
+  if (
+    leafIndex >= treeWidth ||
+    !TreeMath.isLeaf(leafIndex) ||
+    (!localRecovery && leafIndex !== TreeMath.leafToNodeIndex(numLeaves - 1))
+  ) {
     throw new Error(
       'Invalid BeeKEMWelcomeV2: leafIndex must be the appended rightmost leaf',
     );
@@ -298,8 +325,8 @@ export function deserializeBeeKEMWelcomeV2FromWire(
     throw new Error('Invalid BeeKEMWelcomeV2: pathKeys must end at the root');
   }
 
-  const treeNodePublicKeys: WelcomeNodePublicKey[] =
-    rawTreeNodePublicKeys.map((value, offset) => {
+  const treeNodePublicKeys: WelcomeNodePublicKey[] = rawTreeNodePublicKeys.map(
+    (value, offset) => {
       const node = snapshotPlainObject(
         value,
         ['nodeIndex', 'publicKey'],
@@ -332,7 +359,8 @@ export function deserializeBeeKEMWelcomeV2FromWire(
         );
       }
       return { nodeIndex, publicKey };
-    });
+    },
+  );
 
   // Every index is in [0, treeWidth) and unique, so the count alone proves
   // complete coverage.

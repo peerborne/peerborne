@@ -3,9 +3,9 @@ title: Encrypted shared secrets store
 description: Assess the password-manager source example and the incomplete distinct-identity onboarding flow.
 ---
 
-**Status: Runnable from source for startup smoke; Deferred/incomplete integration for sharing and revocation.**
+**Status: Browser-local vault recovery is tested; sharing and distributed revocation remain incomplete.**
 
-[`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its typechecked production build and strict Chromium startup smoke test pass. It has no acceptance test proving two-user sharing, invitation delivery, restart recovery, or revocation. A vault lasts only for the current browser session; reopening one after a reload is tracked in [issue #534](https://github.com/Peerborne/peerborne/issues/534).
+[`examples/password-manager`](https://github.com/Peerborne/peerborne/tree/main/examples/password-manager) is a Vite, React, and Yjs reference application. Its Chromium suite saves and reopens a vault after reload and after closing and relaunching the browser with the same profile. It also covers offline document reopening after the application loads, damaged checkpoints, failed writes and retry, and the permissions UI. It has no acceptance test proving two-user sharing, invitation delivery, peer-assisted recovery, or distributed revocation.
 
 :::caution
 Do not store real passwords, recovery codes, API tokens, or other credentials in this example. Peerborne is under active development, is not independently audited, and has no assured durability or recovery path.
@@ -27,7 +27,28 @@ To run the Vite development server separately:
 yarn workspace @peerborne/password-manager start
 ```
 
-The smoke test proves startup only, not operational sharing.
+These tests establish the browser-local recovery path, not operational sharing.
+
+## Reopen a saved vault
+
+Login reuses non-extractable signing and KEM key handles from IndexedDB. The
+vault selector lists saved vaults. Each vault index and secret is checkpointed
+with its data, document keys, history, and membership state, signed by the local
+identity, and encrypted with a separate non-extractable AES-GCM storage key.
+Restoration authenticates the identity and document binding before installing
+state, then opens locally without trusting a network response. Network V4 load
+trust configuration is not needed for this local path.
+
+Wait for **Saved in this browser** before closing the tab. Failed writes remain
+visible with a retry action; missing or invalid state never silently creates a
+replacement. Writes are atomic per document, so the vault index and a secret
+are still separate writes. Only one active tab may write this browser's vaults.
+
+This is not a password lock, backup, cross-device identity transfer, or
+peer-assisted recovery. Clearing site data removes access. Authenticated old
+checkpoints can still be replayed by a storage attacker; preventing rollback
+requires an independently protected anchor. Checkpoints are bounded to 16 MiB
+and must not be transmitted or persisted without encryption.
 
 ## Required key material
 
@@ -59,7 +80,13 @@ await ownerDocumentRef.addWriter(recipientIdentityPublicKey);
 
 Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status; `addReader` requires the KEM bytes.
 
-The React wrapper's controls forward `addReader(user, kemRaw)` and `setKemKeyPair(keyPair)`. The password-manager example generates a KEM key pair at login, installs it on each secret's document ref, and shows its public half on the Settings page. Its permissions table requires a new member's signing public key and raw KEM public key, both base64, before any membership change, so the owner sends a recipient-sealed Welcome. Its Chromium test promotes a reader added with a generated KEM key to editor in one browser. The example has no recipient flow that opens the shared secret afterwards, and its KEM key pair does not survive a reload, so no two-browser test proves that a second identity receives the Welcome and decrypts the document.
+The example restores its persistent KEM identity before opening each document
+and shows its public half on the Settings page. Its permissions table requires
+a new member's signing public key and raw KEM public key, both base64, before
+membership changes, so the owner sends a recipient-sealed Welcome. Its Chromium
+test promotes a reader to editor in one browser. The example has no recipient
+flow that opens the shared secret afterwards, so no two-browser test proves
+that a second identity receives the Welcome and decrypts the document.
 
 ## Safer implementation checklist
 
@@ -75,4 +102,11 @@ The React wrapper's controls forward `addReader(user, kemRaw)` and `setKemKeyPai
 - Provide explicit backup, export, recovery, and destructive-loss UX.
 - Reconcile the per-user index and secret document after partial dual-write failure.
 
-BeeKEM reader mappings, tree state, and cached Welcomes have important memory-only paths. PathUpdate delivery is best effort, and restart, missed-update, multiwriter, and complete revocation behavior remain unresolved. Removing a member cannot erase plaintext or old keys they already copied. See [Security](../../concepts/security/) and [Limitations](../../concepts/limitations/).
+Local checkpoints retain BeeKEM reader mappings, tree state, rotated local
+leaf keys, replay metadata, and cached Welcomes. Focused tests reconstruct a
+founder, remove a reader, reconstruct again, and edit. This does not establish
+distributed delivery or crash consistency across membership changes. PathUpdate
+delivery is best effort; missed-update, multiwriter, and complete revocation
+behavior remain unresolved. Removing a member cannot erase plaintext or old
+keys they already copied. See [Security](../../concepts/security/) and
+[Limitations](../../concepts/limitations/).
