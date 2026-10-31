@@ -1,3 +1,8 @@
+import {
+  base64DecodedUpperBound,
+  base64EncodedLength,
+} from './policy/encoded-size.js';
+import { consumeWorkBudget } from './policy/work-budget.js';
 /**
  * @internal Shared strict-decoding helpers for the explicitly-versioned
  * BeeKEM V2 wire codecs (`beekem-welcome-wire.ts`, `path-update-wire.ts`).
@@ -214,12 +219,26 @@ export function reserveV2Work(
   count: number,
   context: string,
 ): void {
-  if (count > budget.codec.maxAggregateWorkItems - budget.workItems) {
+  const used = budget.workItems;
+  const limit = budget.codec.maxAggregateWorkItems;
+  if (
+    !Number.isSafeInteger(count) ||
+    count < 0 ||
+    !Number.isSafeInteger(used) ||
+    used < 0 ||
+    !Number.isSafeInteger(limit) ||
+    used > limit
+  ) {
     throw new Error(
       `Invalid ${budget.codec.typeName}: aggregate work budget exceeded at ${context}`,
     );
   }
-  budget.workItems += count;
+  const next = consumeWorkBudget(used, count, limit);
+  if (next === -1)
+    throw new Error(
+      `Invalid ${budget.codec.typeName}: aggregate work budget exceeded at ${context}`,
+    );
+  budget.workItems = next;
 }
 
 function reserveV2DecodedBytes(
@@ -227,7 +246,7 @@ function reserveV2DecodedBytes(
   encodedLength: number,
   fieldName: string,
 ): void {
-  const decodedUpperBound = Math.ceil(encodedLength / 4) * 3;
+  const decodedUpperBound = base64DecodedUpperBound(encodedLength);
   if (
     decodedUpperBound >
     budget.codec.maxAggregateDecodedBytes - budget.decodedBytes
@@ -263,7 +282,11 @@ function copyRuntimeBytes(
       `Invalid ${typeName}: '${fieldName}' must be an unshared Uint8Array from ${minimumLength} to ${maximumLength} bytes`,
     );
   }
-  reserveV2DecodedBytes(budget, Math.ceil(bytes.byteLength / 3) * 4, fieldName);
+  reserveV2DecodedBytes(
+    budget,
+    base64EncodedLength(bytes.byteLength),
+    fieldName,
+  );
   return bytes;
 }
 

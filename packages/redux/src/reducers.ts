@@ -184,17 +184,17 @@ export function peerborneReducer<
         };
       }
       case OPEN_DOCUMENT: {
-        if (state.documents[action.documentId]) {
+        if (Object.hasOwn(state.documents, action.documentId)) {
           console.warn('Overwriting already open document:', action.documentId);
-          console.warn('Action:', action);
-          console.warn('State:', state);
         }
 
-        const documents = { ...state.documents };
-        documents[action.documentId] = {
-          documentRef: action.documentRef,
-          document: action.documentRef.document,
-          peers: [],
+        const documents = {
+          ...state.documents,
+          [action.documentId]: {
+            documentRef: action.documentRef,
+            document: action.documentRef.document,
+            peers: [],
+          },
         };
 
         return {
@@ -203,13 +203,11 @@ export function peerborneReducer<
         };
       }
       case CLOSE_DOCUMENT: {
-        if (!state.documents[action.documentId]) {
+        if (!Object.hasOwn(state.documents, action.documentId)) {
           console.warn(
             'Trying to close a document that is not currently open:',
             action.documentId,
           );
-          console.warn('Action:', action);
-          console.warn('State:', state);
           return state;
         }
 
@@ -224,18 +222,20 @@ export function peerborneReducer<
       // Document Sync
       case CHANGE_DOCUMENT:
       case SYNC_DOCUMENT: {
-        if (!state.documents[action.documentId]) {
+        if (!Object.hasOwn(state.documents, action.documentId)) {
           console.warn(
             'Trying to sync document that is not open',
-            action,
-            state,
+            action.documentId,
           );
           return state;
         }
-        const documents = { ...state.documents };
-        const documentState = { ...documents[action.documentId] };
-        documentState.document = action.document;
-        documents[action.documentId] = documentState;
+        const documents = {
+          ...state.documents,
+          [action.documentId]: {
+            ...state.documents[action.documentId],
+            document: action.document,
+          },
+        };
         return {
           ...state,
           documents,

@@ -1,3 +1,4 @@
+import { selectDeletableCids } from './policy/retention.js';
 /**
  * Blockstore garbage collection helpers for compaction.
  *
@@ -64,13 +65,7 @@ export function filterDeletableCIDs<ChangesType>(
       ? collectTreeCIDs(retainedRootCID, retainedRoot)
       : new Set<string>();
   const protectedSet = new Set(protectedCIDs);
-  const out = new Set<string>();
-  for (const cid of candidates) {
-    if (reachable.has(cid)) continue;
-    if (protectedSet.has(cid)) continue;
-    out.add(cid);
-  }
-  return out;
+  return selectDeletableCids(Array.from(candidates), reachable, protectedSet);
 }
 
 /**

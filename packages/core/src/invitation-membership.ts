@@ -1,4 +1,8 @@
 import {
+  classifyAcceptedMembership,
+  classifyInitialMembership,
+} from './policy/string-collections.js';
+import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
   type CRDTChangeNode,
@@ -28,36 +32,23 @@ export function assertAcceptedInvitationMembershipTopology(
   state: AcceptedInvitationMembershipState,
   role: InvitationRole,
 ): void {
-  if (state.issuer === state.recipient) {
-    throw new Error('Invitation recipient must use a distinct identity');
-  }
-
-  const readers = new Set(state.readers);
-  const writers = new Set(state.writers);
-  if (
-    readers.size !== state.readers.length ||
-    writers.size !== state.writers.length
-  ) {
-    throw new Error(
+  const disposition = classifyAcceptedMembership(
+    state.issuer,
+    state.recipient,
+    state.readers,
+    state.writers,
+    role === 'editor',
+  );
+  if (disposition === 'valid') return;
+  const messages = {
+    sameIdentity: 'Invitation recipient must use a distinct identity',
+    duplicates:
       'Invitation bootstrap membership contains duplicate canonical identities',
-    );
-  }
-  if (readers.size !== 1 || !readers.has(state.recipient)) {
-    throw new Error(
-      'Invitation bootstrap readers do not match the signed recipient',
-    );
-  }
-
-  const expectedWriters = new Set([state.issuer]);
-  if (role === 'editor') expectedWriters.add(state.recipient);
-  if (
-    writers.size !== expectedWriters.size ||
-    [...expectedWriters].some((identity) => !writers.has(identity))
-  ) {
-    throw new Error(
+    readers: 'Invitation bootstrap readers do not match the signed recipient',
+    writers:
       'Invitation bootstrap writers do not match the signed issuer and role',
-    );
-  }
+  };
+  throw new Error(messages[disposition]);
 }
 
 /** @internal Admit one invitation exactly at its first state mutation. */
@@ -78,50 +69,28 @@ export function assertInitialInvitationMembershipTopology(
   role: InvitationRole,
   phase: InitialInvitationMembershipPhase,
 ): void {
-  if (!state.createdLocally) {
-    throw new Error(
+  const disposition = classifyInitialMembership(
+    state.createdLocally,
+    state.founder,
+    state.recipient,
+    state.readers,
+    state.writers,
+    role === 'editor',
+    phase === 'ready-to-attest',
+  );
+  if (disposition === 'valid') return;
+  const messages = {
+    notFounder:
       'Invitation acceptance is limited to the founder process that created the document',
-    );
-  }
-  if (state.founder === state.recipient) {
-    throw new Error('Invitation recipient must use a distinct identity');
-  }
-
-  const readers = new Set(state.readers);
-  const writers = new Set(state.writers);
-  if (
-    readers.size !== state.readers.length ||
-    writers.size !== state.writers.length
-  ) {
-    throw new Error(
-      'Invitation membership contains duplicate canonical identities',
-    );
-  }
-  if (!writers.has(state.founder)) {
-    throw new Error('Invitation founder is no longer an authorized writer');
-  }
-  if ([...readers].some((identity) => identity !== state.recipient)) {
-    throw new Error('Invitation membership contains an unrelated reader');
-  }
-
-  const allowedWriters = new Set([state.founder]);
-  if (role === 'editor') allowedWriters.add(state.recipient);
-  if ([...writers].some((identity) => !allowedWriters.has(identity))) {
-    throw new Error('Invitation membership contains an unrelated writer');
-  }
-
-  if (phase === 'ready-to-attest') {
-    if (readers.size !== 1 || !readers.has(state.recipient)) {
-      throw new Error('Invitation recipient is not the document reader');
-    }
-    const expectedWriterCount = role === 'editor' ? 2 : 1;
-    if (
-      writers.size !== expectedWriterCount ||
-      (role === 'editor' && !writers.has(state.recipient))
-    ) {
-      throw new Error('Invitation recipient does not have the requested role');
-    }
-  }
+    sameIdentity: 'Invitation recipient must use a distinct identity',
+    duplicates: 'Invitation membership contains duplicate canonical identities',
+    founderMissing: 'Invitation founder is no longer an authorized writer',
+    unrelatedReader: 'Invitation membership contains an unrelated reader',
+    unrelatedWriter: 'Invitation membership contains an unrelated writer',
+    readerMissing: 'Invitation recipient is not the document reader',
+    roleMissing: 'Invitation recipient does not have the requested role',
+  };
+  throw new Error(messages[disposition]);
 }
 
 /** @internal One non-poisoning FIFO for invitation-sensitive state writers. */

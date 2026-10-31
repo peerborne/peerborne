@@ -1,0 +1,172 @@
+{
+  "priority": ["formal", "property", "regression-integration"],
+  "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
+  "propertyGroups": [
+    {
+      "id": "runtime-model-calibration",
+      "formalBoundary": "Native IEEE-754 arithmetic, data views, UTF-16 operations and frozen exports remain trusted runtime boundaries.",
+      "evidence": [
+        "packages/core/src/encoding-properties.test.ts",
+        "packages/core/src/load-quorum.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/internal/canonical-encoding.ts",
+        "packages/core/src/load-quorum.ts",
+        "packages/core/src/wire-v2-validation.ts"
+      ]
+    },
+    {
+      "id": "tree-arithmetic",
+      "formalBoundary": "Exponentiation, integer-domain runtime guards and full tree traversal are outside the pinned emitter; properties retain independent BigInt/binary oracles.",
+      "evidence": ["packages/core/src/beekem/tree-math.test.ts"],
+      "sources": ["packages/core/src/beekem/tree-math.ts"]
+    },
+    {
+      "id": "wire-and-reflection",
+      "formalBoundary": "JSON, regex, object descriptors, typed arrays, aliases and chunked async input require native boundary checks.",
+      "evidence": [
+        "packages/core/src/fuzz-path-update-wire.test.ts",
+        "packages/core/src/fuzz-beekem-welcome-wire.test.ts",
+        "packages/core/src/fuzz-merkle-dag.test.ts",
+        "packages/core/src/fuzz-welcome-sealed-payload.test.ts",
+        "packages/core/src/capabilities.test.ts",
+        "packages/core/src/ownership-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/path-update-wire.ts",
+        "packages/core/src/beekem-welcome-wire.ts",
+        "packages/core/src/merkle-dag-serialization.ts",
+        "packages/core/src/welcome-sealed-payload.ts",
+        "packages/core/src/utils.ts",
+        "packages/core/src/capabilities.ts"
+      ]
+    },
+    {
+      "id": "cache-and-buffer-state",
+      "formalBoundary": "Mutable maps, WeakRef ownership, deferred finalizers and native byte storage are not established by the pure admission proofs.",
+      "evidence": [
+        "packages/core/src/cache-properties.test.ts",
+        "packages/core/src/welcome-buffer-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/lru-cache.ts",
+        "packages/core/src/pending-welcome-buffer.ts"
+      ]
+    },
+    {
+      "id": "asynchronous-lifecycle",
+      "formalBoundary": "Promise scheduling, failures, callback side effects, rollback and detached encrypted envelopes require generated execution histories.",
+      "evidence": [
+        "packages/core/src/queue-properties.test.ts",
+        "packages/core/src/group-store-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/invitation-membership.ts",
+        "packages/core/src/invitation-policy.ts",
+        "packages/core/src/store-lifecycle.ts",
+        "packages/core/src/group-state-store.ts"
+      ]
+    },
+    {
+      "id": "cryptographic-adapters",
+      "formalBoundary": "Native signing/encryption and asynchronous delegation verification are outside the proof; integrity checks do not prove cryptographic secrecy or unforgeability.",
+      "evidence": [
+        "packages/core/src/crypto-properties.test.ts",
+        "packages/core/src/ucan-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/auth-subtlecrypto.ts",
+        "packages/core/src/ucan.ts"
+      ]
+    },
+    {
+      "id": "crdt-replication",
+      "formalBoundary": "Third-party CRDT engines, native serialization and out-of-order delivery are outside the proof model.",
+      "evidence": [
+        "packages/automerge/src/provider-properties.test.ts",
+        "packages/yjs/src/provider-properties.test.ts"
+      ],
+      "sources": [
+        "packages/automerge/src/peerborne-automerge.ts",
+        "packages/yjs/src/peerborne-yjs.ts"
+      ]
+    },
+    {
+      "id": "query-and-index-state",
+      "formalBoundary": "Native floating-point/string order, JSON cursors, index planning and IndexedDB are checked against an independent full-scan oracle; the arithmetic expansion bound alone does not prove query correctness.",
+      "evidence": [
+        "packages/index/src/query-properties.test.ts",
+        "packages/index/src/field-extractor.test.ts"
+      ],
+      "sources": [
+        "packages/index/src/index-manager.ts",
+        "packages/index/src/memory-index-storage.ts",
+        "packages/index/src/idb-index-storage.ts",
+        "packages/index/src/query-planner.ts",
+        "packages/index/src/query-ast.ts",
+        "packages/index/src/query-cursor.ts",
+        "packages/index/src/query-execution.ts",
+        "packages/index/src/field-extractor.ts"
+      ]
+    },
+    {
+      "id": "bloom-algebra",
+      "formalBoundary": "IEEE-754/int32 hashing and bitwise operations are outside the pinned model; generated merge laws and no-false-negative checks do not prove a false-positive probability.",
+      "evidence": ["packages/index/src/bloom-properties.test.ts"],
+      "sources": ["packages/index/src/bloom-filter-crdt.ts"]
+    },
+    {
+      "id": "ui-state-and-identity",
+      "formalBoundary": "JavaScript object identity, WeakMap ownership, prototype semantics and immutable Redux updates require runtime state histories.",
+      "evidence": [
+        "packages/react/src/hooks-cache-properties.test.ts",
+        "packages/redux/src/reducer-properties.test.ts",
+        "packages/redux/src/default-state-selector-properties.test.ts"
+      ],
+      "sources": [
+        "packages/react/src/hooks-cache.ts",
+        "packages/redux/src/reducers.ts",
+        "packages/redux/src/actions.ts",
+        "packages/redux/src/default-state-selector.ts"
+      ]
+    },
+    {
+      "id": "observability",
+      "formalBoundary": "Counter mutation and finite floating-point byte inputs are outside the integer-only functional proof.",
+      "evidence": ["packages/core/src/network-stats-properties.test.ts"],
+      "sources": ["packages/core/src/network-stats.ts"]
+    }
+  ],
+  "integrationBoundaries": [
+    {
+      "boundary": "WebRTC/libp2p, NAT/relay behavior, transport loss and browser limits",
+      "evidence": [
+        ".github/workflows/ci.yml",
+        "verification/advanced/NETWORK.md",
+        "e2e/peerborne-nat.spec.ts"
+      ]
+    },
+    {
+      "boundary": "Real browser storage, restart, eviction and UI scheduling",
+      "evidence": [
+        "verification/README.md",
+        "verification/advanced/EXECUTION.md",
+        "verification/advanced/browser/eviction.spec.ts"
+      ]
+    },
+    {
+      "boundary": "Packed module loading, API declarations and reference applications",
+      "evidence": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
+    },
+    {
+      "boundary": "Malformed-input attacks, proxy/getter behavior, cancellation and cryptographic protocol assumptions not covered by a named contract/property",
+      "evidence": ["docs/feature-audit.md", "docs/formal-verification.md"]
+    }
+  ],
+  "remainingLimits": [
+    "No whole-product proof or semantic coverage percentage is claimed.",
+    "Native cryptographic entropy remains native; generated data and operation schedules have fixed seeds.",
+    "The proofs do not establish caller authentication, cryptographic secrecy, durable storage, arbitrary scheduler liveness or browser resource budgets.",
+    "Known capability gaps reported by diagnostic scenarios remain gaps."
+  ]
+}

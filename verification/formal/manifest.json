@@ -6,7 +6,8 @@
       "witness": "workBudget_domain",
       "consumers": [
         "packages/core/src/change-tree-walk.ts",
-        "packages/core/src/initial-load-auth.ts"
+        "packages/core/src/initial-load-auth.ts",
+        "packages/core/src/wire-v2-validation.ts"
       ],
       "verifiedTargets": ["consumeWorkBudget_ensures"]
     },
@@ -43,6 +44,187 @@
         "classifyAuthorityVote_ensures",
         "classifyAuthorityVote_exact",
         "classifyAuthorityVotes"
+      ]
+    },
+    {
+      "path": "packages/core/src/capabilities.ts",
+      "functions": [
+        "capabilityImplies",
+        "isFieldCapability",
+        "parentGrantsCapability",
+        "findUnauthorizedCapability"
+      ],
+      "witness": "capabilities_domain",
+      "consumers": [
+        "packages/core/src/ucan.ts",
+        "packages/core/src/ucan-acl.ts"
+      ],
+      "verifiedTargets": [
+        "capabilityImplies_ensures",
+        "isFieldCapability_ensures",
+        "parentGrantsCapability_ensures",
+        "findUnauthorizedCapability",
+        "capability_order"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/string-collections.ts",
+      "functions": [
+        "firstDuplicateString",
+        "countMissingStrings",
+        "sameDistinctStringMembers",
+        "classifyAcceptedMembership",
+        "classifyInitialMembership"
+      ],
+      "witness": "stringCollections_domain",
+      "consumers": [
+        "packages/core/src/invitation-membership.ts",
+        "packages/core/src/invitation-catch-up.ts"
+      ],
+      "verifiedTargets": [
+        "firstDuplicateString",
+        "countMissingStrings",
+        "sameDistinctStringMembers",
+        "classifyAcceptedMembership",
+        "classifyInitialMembership"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/keychain-order.ts",
+      "functions": [
+        "sameKeychainEntry",
+        "isKeychainPrefix",
+        "firstKeychainRewrite"
+      ],
+      "witness": "keychainOrder_domain",
+      "consumers": ["packages/core/src/keychain-canonical.ts"],
+      "verifiedTargets": [
+        "sameKeychainEntry_ensures",
+        "isKeychainPrefix",
+        "firstKeychainRewrite",
+        "keychainPrefix_transitive"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/maintenance.ts",
+      "functions": [
+        "shouldCompact",
+        "canReplacePendingWelcome",
+        "firstUnauthenticatedEntry"
+      ],
+      "witness": "maintenance_domain",
+      "consumers": [
+        "packages/core/src/pending-welcome-buffer.ts",
+        "packages/core/src/peerborne-document.ts"
+      ],
+      "verifiedTargets": [
+        "shouldCompact_ensures",
+        "canReplacePendingWelcome_ensures",
+        "firstUnauthenticatedEntry"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/replay-admission.ts",
+      "functions": ["decideJoinReplay", "decideAcceptanceReplay"],
+      "witness": "replayAdmission_domain",
+      "consumers": ["packages/core/src/invitation-replay-guard.ts"],
+      "verifiedTargets": [
+        "decideJoinReplay_ensures",
+        "decideAcceptanceReplay_ensures"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/invitation-time.ts",
+      "functions": [
+        "hasInvitationProcessingWindow",
+        "isExpiredInvitation",
+        "invitationTimeDisposition"
+      ],
+      "witness": "invitationTime_domain",
+      "consumers": [
+        "packages/core/src/invitation-policy.ts",
+        "packages/core/src/invitation-wire.ts"
+      ],
+      "verifiedTargets": [
+        "hasInvitationProcessingWindow_ensures",
+        "isExpiredInvitation_ensures",
+        "invitationTimeDisposition_ensures"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/anchor-advance.ts",
+      "functions": ["classifyAnchorAdvance"],
+      "witness": "anchorAdvance_domain",
+      "consumers": ["packages/core/src/group-security-rollback-anchor.ts"],
+      "verifiedTargets": ["classifyAnchorAdvance_ensures"]
+    },
+    {
+      "path": "packages/core/src/policy/retention.ts",
+      "functions": ["selectDeletableCids"],
+      "witness": "retention_domain",
+      "consumers": ["packages/core/src/blockstore-gc.ts"],
+      "verifiedTargets": ["selectDeletableCids"]
+    },
+    {
+      "path": "packages/core/src/policy/encoded-size.ts",
+      "functions": ["base64EncodedLength", "base64DecodedUpperBound"],
+      "witness": "encodedSize_domain",
+      "consumers": [
+        "packages/core/src/wire-v2-validation.ts",
+        "packages/core/src/invitation-capacity.ts"
+      ],
+      "verifiedTargets": [
+        "base64EncodedLength_ensures",
+        "base64DecodedUpperBound_ensures",
+        "Base64CeilingFacts"
+      ]
+    },
+    {
+      "path": "packages/index/src/query-budget.ts",
+      "functions": ["boundedCartesianSize"],
+      "witness": "queryBudget_domain",
+      "consumers": ["packages/index/src/query-planner.ts"],
+      "verifiedTargets": ["boundedCartesianSize_ensures"]
+    },
+    {
+      "path": "packages/core/src/internal/canonical-encoding.ts",
+      "functions": [
+        "isWellFormedUtf16",
+        "isPairedUtf16Unit",
+        "isHighSurrogate",
+        "isLowSurrogate"
+      ],
+      "witness": "canonicalEncoding_domain",
+      "consumers": [
+        "packages/core/src/peerborne-document.ts",
+        "packages/core/src/ucan-acl.ts"
+      ],
+      "verifiedTargets": [
+        "isWellFormedUtf16",
+        "isPairedUtf16Unit_ensures",
+        "isHighSurrogate_ensures",
+        "isLowSurrogate_ensures",
+        "canonicalUnit_exact"
+      ]
+    },
+    {
+      "path": "packages/core/src/bootstrap-config.ts",
+      "functions": ["hasBootstrapPeers"],
+      "witness": "bootstrapConfig_domain",
+      "consumers": [
+        "packages/core/src/peerborne-config.ts",
+        "packages/core/src/peerborne-node.ts"
+      ],
+      "verifiedTargets": ["hasBootstrapPeers_ensures"]
+    },
+    {
+      "path": "packages/react/src/hooks-cache.ts",
+      "functions": ["getPeerborneDocumentCacheKey"],
+      "witness": "hooksCache_domain",
+      "consumers": ["packages/react/src/hooks.ts"],
+      "verifiedTargets": [
+        "getPeerborneDocumentCacheKey_ensures",
+        "documentCacheKey_injective"
       ]
     }
   ]

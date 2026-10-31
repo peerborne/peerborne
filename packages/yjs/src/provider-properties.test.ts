@@ -2,9 +2,21 @@ import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { YjsJSONSerializer, YjsProvider } from './peerborne-yjs.js';
 
+type GeneratedValue = number | string | { first: string; last: string };
+const generatedValue = fc.oneof(
+  fc.integer(),
+  fc.string({ maxLength: 20 }),
+  fc
+    .record({
+      first: fc.string({ maxLength: 20 }),
+      last: fc.string({ maxLength: 20 }),
+    })
+    .map(({ first, last }) => ({ first, last })),
+);
+
 const edit = fc.record({
   key: fc.integer({ min: 0, max: 5 }).map((index) => `key${index}`),
-  value: fc.integer(),
+  value: generatedValue,
   remove: fc.boolean(),
   priority: fc.integer(),
 });
@@ -35,10 +47,10 @@ describe('Yjs provider generated delivery histories', () => {
               draft.getMap('witness').set(witness, 1);
             });
             packets.push({ changes: first, priority: 0 });
-            const expected: Record<string, number> = {};
+            const expected: Record<string, GeneratedValue> = {};
             for (const operation of edits) {
               const [, changes] = provider.localChange(doc, '', (draft) => {
-                const values = draft.getMap<number>('values');
+                const values = draft.getMap<GeneratedValue>('values');
                 if (operation.remove) values.delete(operation.key);
                 else values.set(operation.key, operation.value);
               });

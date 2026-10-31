@@ -2,3 +2,16 @@ packages/core/src/policy/work-budget.ts
 packages/core/src/policy/beekem-transition.ts
 packages/core/src/policy/quorum.ts
 packages/core/src/policy/authority-votes.ts
+packages/core/src/capabilities.ts
+packages/core/src/policy/string-collections.ts
+packages/core/src/policy/keychain-order.ts
+packages/core/src/policy/maintenance.ts
+packages/core/src/policy/replay-admission.ts
+packages/core/src/policy/invitation-time.ts
+packages/core/src/policy/anchor-advance.ts
+packages/core/src/policy/retention.ts
+packages/core/src/policy/encoded-size.ts
+packages/index/src/query-budget.ts
+packages/core/src/internal/canonical-encoding.ts
+packages/core/src/bootstrap-config.ts
+packages/react/src/hooks-cache.ts

@@ -38,8 +38,16 @@ Run the relevant example or Docker-backed suite for affected behavior. Follow th
 
 Use the [feature and verification audit](docs/feature-audit.md) as the authority for capability claims.
 
-For pure policy changes, follow the [formal verification workflow](verification/formal/README.md).
-Prefer deterministic property tests for unproved algebraic behavior and generated
-delivery histories. A proof replaces tests only for its exact implementation,
+Use formal verification first for supported deterministic behavior, following the
+[formal verification workflow](verification/formal/README.md). Use deterministic,
+shrinking property tests next for behavior outside that model, with independent
+oracles or explicit state-machine specifications. Use example regressions and
+integration tests for the remaining boundaries. A proof replaces tests only for its exact implementation,
 property, input domain and execution model; retain boundary, security regression
 and integration tests as described in the [verification assessment](docs/formal-verification.md).
+
+The [verification strategy catalog](verification/strategy.json) records why each
+property suite remains necessary. The formal inventory checks that every
+property assertion has a fixed seed and positive run count and that every
+selected production contract appears in the proof manifest. These are evidence
+and selection checks, not a whole-product correctness percentage.

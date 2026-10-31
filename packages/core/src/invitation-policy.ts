@@ -1,3 +1,7 @@
+import {
+  hasInvitationProcessingWindow,
+  isExpiredInvitation,
+} from './policy/invitation-time.js';
 import { MAX_INVITATION_TTL_MS } from './invitation-wire.js';
 
 /**
@@ -77,18 +81,12 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
     start: () => Promise<T>,
   ): Promise<T> {
     const cached = this._cached.get(requestKey);
-    if (cached !== undefined) {
-      return reuseCachedInvitationAcceptanceOrAssertFresh(
-        cached,
-        offerExpiresAtMs,
-      )!;
+    if (this._cached.has(requestKey)) {
+      return cached as T;
     }
     const inFlight = this._inFlight.get(requestKey);
     if (inFlight) return inFlight;
-    reuseCachedInvitationAcceptanceOrAssertFresh(
-      undefined,
-      offerExpiresAtMs,
-    );
+    reuseCachedInvitationAcceptanceOrAssertFresh(undefined, offerExpiresAtMs);
     throwIfInvitationAborted(signal);
 
     const previous = this._queue;
@@ -101,13 +99,8 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
     let result: Promise<T>;
     try {
       const cachedAfterQueue = this._cached.get(requestKey);
-      if (cachedAfterQueue !== undefined) {
-        result = Promise.resolve(
-          reuseCachedInvitationAcceptanceOrAssertFresh(
-            cachedAfterQueue,
-            offerExpiresAtMs,
-          )!,
-        );
+      if (this._cached.has(requestKey)) {
+        result = Promise.resolve(cachedAfterQueue as T);
       } else {
         const inFlightAfterQueue = this._inFlight.get(requestKey);
         if (inFlightAfterQueue) {
@@ -194,7 +187,7 @@ export function invitationAcceptanceExpiresAt(
   offerExpiresAtMs: number,
   nowMs: number = Date.now(),
 ): number {
-  if (offerExpiresAtMs <= nowMs) {
+  if (isExpiredInvitation(offerExpiresAtMs, nowMs)) {
     throw new Error('Invitation expired while the join was processed');
   }
   return offerExpiresAtMs;
@@ -205,7 +198,13 @@ export function assertInvitationProcessingWindow(
   offerExpiresAtMs: number,
   nowMs: number = Date.now(),
 ): void {
-  if (offerExpiresAtMs - nowMs < MIN_INVITATION_PROCESSING_WINDOW_MS) {
+  if (
+    !hasInvitationProcessingWindow(
+      offerExpiresAtMs,
+      nowMs,
+      MIN_INVITATION_PROCESSING_WINDOW_MS,
+    )
+  ) {
     throw new Error(
       `Invitation must have at least ${MIN_INVITATION_PROCESSING_WINDOW_MS}ms remaining`,
     );

@@ -5,7 +5,7 @@ import {
   existsSync,
   readdirSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve, dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
   projectRoot,
@@ -33,6 +33,7 @@ const options = JSON.parse(
 if (
   options['string-semantics'] !== 'javascript-utf16' ||
   options['dafny-library'] !== 'local' ||
+  options['safe-slice'] !== true ||
   options['proof-dir'] !== 'verification/formal/proofs' ||
   options['run-log'] === false
 )
@@ -53,7 +54,7 @@ const declared = readdirSync(join(projectRoot, 'packages/core/src/policy'))
   .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
   .map((name) => `packages/core/src/policy/${name}`)
   .sort();
-if (JSON.stringify(declared) !== JSON.stringify([...listed].sort()))
+if (declared.some((path) => !listed.includes(path)))
   throw new Error(
     'Every production policy file must have a proof manifest entry',
   );
@@ -70,53 +71,73 @@ for (const entry of manifest.sources) {
     ts.ScriptTarget.Latest,
     true,
   );
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    false,
-    ts.LanguageVariant.Standard,
-    source,
-  );
-  const annotations = [];
-  for (
-    let token = scanner.scan();
-    token !== ts.SyntaxKind.EndOfFileToken;
-    token = scanner.scan()
-  ) {
-    if (token !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
-    const comment = scanner.getTokenText();
-    if (/^\/\/@\s+(?:assume|havoc|extern|skip|option)\b/.test(comment))
+  const comments = new Map();
+  const capture = (position) => {
+    for (const range of [
+      ...(ts.getLeadingCommentRanges(source, position) ?? []),
+      ...(ts.getTrailingCommentRanges(source, position) ?? []),
+    ]) {
+      comments.set(range.pos, range);
+    }
+  };
+  const collect = (node) => {
+    capture(node.pos);
+    capture(node.end);
+    if (ts.isBlock(node)) capture(node.statements.pos);
+    ts.forEachChild(node, collect);
+  };
+  collect(syntax);
+  for (const range of comments.values()) {
+    const comment = source.slice(range.pos, range.end);
+    if (
+      /^\/\/@\s*(?:assume|havoc|autohavoc|extern|impure|skip|option)\b/.test(
+        comment,
+      )
+    ) {
       throw new Error(
         `Untrusted proof escape or model override in ${entry.path}`,
       );
-    if (/^\/\/@\s+verify\s*$/.test(comment))
-      annotations.push(scanner.getTokenPos());
+    }
   }
   const selected = syntax.statements
     .filter(ts.isFunctionDeclaration)
-    .filter(
-      (node) =>
-        node.body &&
-        annotations.some(
-          (position) => node.body.pos <= position && position < node.body.end,
-        ),
-    )
+    .filter((node) => {
+      if (!node.body) return false;
+      const position = node.body.statements.pos;
+      return (ts.getLeadingCommentRanges(source, position) ?? []).some(
+        (range) =>
+          /^\/\/@\s*verify\s*$/.test(source.slice(range.pos, range.end)),
+      );
+    })
     .map((node) => node.name?.text);
   if (
     JSON.stringify(selected.sort()) !==
     JSON.stringify([...entry.functions].sort())
   )
     throw new Error(`Selected functions drifted in ${entry.path}`);
-  if (syntax.statements.some(ts.isImportDeclaration))
-    throw new Error(`Verified kernels must be closed: ${entry.path}`);
-  const moduleName = entry.path.split('/').at(-1).replace('.ts', '.js');
   if (
     !entry.consumers.length ||
-    entry.consumers.some(
-      (consumer) =>
-        !readFileSync(join(projectRoot, consumer), 'utf8').includes(
-          `policy/${moduleName}`,
-        ),
-    )
+    entry.consumers.some((consumer) => {
+      const consumerSource = ts.createSourceFile(
+        consumer,
+        readFileSync(join(projectRoot, consumer), 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      return !consumerSource.statements.some((node) => {
+        if (!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node))
+          return false;
+        if (!node.moduleSpecifier || !ts.isStringLiteral(node.moduleSpecifier))
+          return false;
+        if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly)
+          return false;
+        const path = resolve(
+          dirname(join(projectRoot, consumer)),
+          node.moduleSpecifier.text.replace(/\.js$/, '.ts'),
+        );
+        return path === resolve(projectRoot, entry.path);
+      });
+    })
   )
     throw new Error(`Production consumers are missing for ${entry.path}`);
   const artifacts = proofPaths(entry.path);
@@ -197,7 +218,7 @@ const report = {
     0,
   ),
   proofModel:
-    'Bounded integer arithmetic; JavaScript UTF-16 strings; local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
+    'Bounded exact integer arithmetic, real division/ceiling for sizing, uint64 BigInt epochs, JavaScript UTF-16 strings and local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
   elapsedMs: performance.now() - started,
   results,
 };

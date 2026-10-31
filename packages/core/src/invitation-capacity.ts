@@ -1,3 +1,4 @@
+import { base64EncodedLength as base64Length } from './policy/encoded-size.js';
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { CRDTSnapshotNode } from './snapshot-node.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
@@ -32,10 +33,8 @@ export interface InitialInvitationCapacityProfileDeclaration {
   readonly initialInvitationCapacityProfile: typeof INITIAL_INVITATION_CAPACITY_PROFILE;
 }
 
-export interface InitialInvitationAuthCapacityDeclaration<
-  PrivateKey,
-  PublicKey,
-> extends InitialInvitationCapacityProfileDeclaration {
+export interface InitialInvitationAuthCapacityDeclaration<PrivateKey, PublicKey>
+  extends InitialInvitationCapacityProfileDeclaration {
   supportsInitialInvitationCapacity(
     privateKey: PrivateKey,
     publicKey: PublicKey,
@@ -60,8 +59,7 @@ function declaresCapacityProfile(
     typeof value === 'object' &&
     value !== null &&
     (value as Partial<InitialInvitationCapacityProfileDeclaration>)
-      .initialInvitationCapacityProfile ===
-      INITIAL_INVITATION_CAPACITY_PROFILE
+      .initialInvitationCapacityProfile === INITIAL_INVITATION_CAPACITY_PROFILE
   );
 }
 
@@ -177,10 +175,6 @@ export interface ProjectInitialInvitationCapacityOptions<ChangesType> {
   readonly serializer: SyncMessageSerializer<ChangesType>;
 }
 
-function base64Length(rawBytes: number): number {
-  return 4 * Math.ceil(rawBytes / 3);
-}
-
 /** Build and size the complete pre-membership bootstrap baseline once. */
 export function projectInitialInvitationBootstrapCapacity<ChangesType>(
   options: ProjectInitialInvitationCapacityOptions<ChangesType>,
@@ -190,9 +184,7 @@ export function projectInitialInvitationBootstrapCapacity<ChangesType>(
     signatureContext: 'invitation-bootstrap-v1',
     keychainChanges: options.keychainChanges,
     tips: Array.from(options.tips),
-    signature: 'A'.repeat(
-      base64Length(INITIAL_INVITATION_MAX_SIGNATURE_BYTES),
-    ),
+    signature: 'A'.repeat(base64Length(INITIAL_INVITATION_MAX_SIGNATURE_BYTES)),
   };
   if (options.snapshot !== undefined) {
     projected.snapshot = options.snapshot;
@@ -210,8 +202,7 @@ export function projectInitialInvitationBootstrapCapacity<ChangesType>(
 
   return {
     serializedBaselineBytes,
-    membershipGrowthBytes:
-      INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
+    membershipGrowthBytes: INITIAL_INVITATION_MAX_MEMBERSHIP_GROWTH_BYTES,
     encryptionOverheadBytes:
       INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES,
     reserveBytes: INITIAL_INVITATION_BOOTSTRAP_RESERVE_BYTES,

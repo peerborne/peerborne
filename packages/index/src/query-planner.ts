@@ -1,3 +1,4 @@
+import { boundedCartesianSize } from './query-budget.js';
 import {
   IndexDefinition,
   IndexScalar,
@@ -93,7 +94,9 @@ function planConjunction(definition: IndexDefinition, query: QueryAst): QueryPla
         const values = equality.operator === 'in'
           ? (equality.value as unknown[]).map((value) => normalizeIndexScalar(value, field)!)
           : [normalizeIndexScalar(equality.value, field)!];
-        if (combinations.length * values.length > 1024) {
+        if (
+          boundedCartesianSize(combinations.length, values.length, 1024) === -1
+        ) {
           unusable = true;
           break;
         }

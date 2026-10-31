@@ -1,3 +1,4 @@
+import { invitationTimeDisposition } from './policy/invitation-time.js';
 import { Base64 } from 'js-base64';
 
 /** Wire-format version shared by the public invitation messages. */
@@ -864,10 +865,16 @@ function assertUsableWindow(
       `clockSkewMs must be an integer from 0 to ${MAX_INVITATION_TTL_MS}`,
     );
   }
-  if (nowMs + clockSkewMs < issuedAtMs) {
+  const disposition = invitationTimeDisposition(
+    issuedAtMs,
+    expiresAtMs,
+    nowMs,
+    clockSkewMs,
+  );
+  if (disposition === 'future') {
     fail('not-yet-valid', 'invitation is not yet valid');
   }
-  if (nowMs >= expiresAtMs) {
+  if (disposition === 'expired') {
     fail('expired', 'invitation has expired');
   }
 }

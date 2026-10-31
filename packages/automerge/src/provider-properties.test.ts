@@ -14,14 +14,26 @@ import {
 } from './peerborne-automerge.js';
 
 type PropertyDocument = {
-  values: Record<string, number>;
+  values: Record<string, GeneratedValue>;
   witnessA?: number;
   witnessB?: number;
 };
 
+type GeneratedValue = number | string | { first: string; last: string };
+const generatedValue = fc.oneof(
+  fc.integer(),
+  fc.string({ maxLength: 20 }),
+  fc
+    .record({
+      first: fc.string({ maxLength: 20 }),
+      last: fc.string({ maxLength: 20 }),
+    })
+    .map(({ first, last }) => ({ first, last })),
+);
+
 const edit = fc.record({
   key: fc.integer({ min: 0, max: 5 }).map((index) => `key${index}`),
-  value: fc.integer(),
+  value: generatedValue,
   remove: fc.boolean(),
   priority: fc.integer(),
 });
@@ -53,7 +65,7 @@ describe('Automerge provider generated delivery histories', () => {
             draft[witness] = 1;
           });
           packets.push({ changes, priority: 0 });
-          const expected: Record<string, number> = {};
+          const expected: Record<string, GeneratedValue> = {};
           for (const operation of edits) {
             [doc, changes] = provider.localChange(doc, '', (draft) => {
               if (operation.remove) delete draft.values[operation.key];
