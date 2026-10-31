@@ -579,3 +579,30 @@ test.each([undefined, 'unknown-purpose-v1', 42])(
     expect(() => jsonSerializer.deserializeSyncMessage(bytes)).toThrow(/signatureContext/);
   },
 );
+
+
+describe('initial-load signed authority wire field', () => {
+  test('preserves the authority in its signed field position', () => {
+    const message = {
+      signerAuthority: 'trusted-writer', documentId: '/doc',
+      signatureContext: 'security-advertisement-v1' as const,
+      loadChallenge: new Uint8Array(32).fill(7), tipsHash: new Uint8Array(32).fill(1),
+      signature: 'signature',
+    };
+    const encoded = jsonSerializer.serializeSyncMessage(message);
+    const decoded = jsonSerializer.deserializeSyncMessage(encoded);
+    expect(decoded.signerAuthority).toBe(message.signerAuthority);
+    expect(Object.keys(decoded)).toEqual(Object.keys(message));
+    expect(jsonSerializer.serializeSyncMessage(decoded)).toEqual(encoded);
+  });
+
+  test.each([null, 1, {}, '', '\ud800', 'x'.repeat(1025), 'é'.repeat(1024)])(
+    'rejects malformed signer authority (%p)', (signerAuthority) => {
+      const message = { documentId: '/doc', signatureContext: 'load-response-v4' as const, signerAuthority };
+      expect(() => jsonSerializer.serializeSyncMessage(message as any)).toThrow();
+      expect(() => jsonSerializer.deserializeSyncMessage(
+        new TextEncoder().encode(JSON.stringify(message)),
+      )).toThrow();
+    },
+  );
+});

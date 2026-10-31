@@ -370,9 +370,24 @@ export type {
 export {
   MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
   MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+  MAX_INITIAL_LOAD_AUTHENTICATION_ATTEMPTS,
+  MAX_INITIAL_LOAD_AUTHENTICATION_WORK_BYTES,
+  InitialLoadAuthenticationBudget,
   identifyInitialLoadSigner,
   verifyInitialLoadAuthentication,
 } from './initial-load-auth.js';
+export {
+  captureInitialLoadSignerAuthorities,
+  createInitialLoadSignerLookup,
+  MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
+  MAX_INITIAL_LOAD_SIGNER_AUTHORITY_ID_BYTES,
+  validateInitialLoadSignerAuthority,
+} from './initial-load-trust.js';
+export type {
+  InitialLoadSignerAuthority,
+  InitialLoadSignerLookup,
+  CaptureInitialLoadSignerAuthoritiesOptions,
+} from './initial-load-trust.js';
 export type {
   IdentifiedInitialLoadSigner,
   InitialLoadAuthenticationOptions,

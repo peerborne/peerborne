@@ -13,6 +13,7 @@ import {
 } from './load-security-state-wire.js';
 import type { LoadSecurityCommitments } from './load-security-state.js';
 import { ChangesSerializer } from './changes-serializer.js';
+import { validateInitialLoadSignerAuthority } from './initial-load-trust.js';
 import { CRDTLoadRequest, snapshotLoadRequest } from './crdt-load-request.js';
 import { CRDTSyncMessage, isSyncMessageSignatureContext } from './crdt-sync-message.js';
 import {
@@ -50,6 +51,10 @@ function syncBinaryFieldBounds(
 
 function serializeSyncBinaryField(field: string, value: unknown): unknown {
   if (value === undefined) return value;
+  if (field === 'signerAuthority') {
+    validateInitialLoadSignerAuthority(value);
+    return value;
+  }
   if (field === 'loadChallenge')
     return serializeInitialLoadChallengeForWire(value as Uint8Array);
   if (field === 'loadSecurityState')
@@ -66,6 +71,10 @@ function serializeSyncBinaryField(field: string, value: unknown): unknown {
 
 function deserializeSyncBinaryField(field: string, value: unknown): unknown {
   if (value === undefined) return value;
+  if (field === 'signerAuthority') {
+    validateInitialLoadSignerAuthority(value);
+    return value;
+  }
   if (field === 'loadChallenge')
     return deserializeInitialLoadChallengeFromWire(value);
   if (field === 'loadSecurityState')

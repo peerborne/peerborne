@@ -25,6 +25,9 @@ import { CRDTSyncMessage } from './crdt-sync-message.js';
  * path rejects a decoded message whose tag is missing or differs from the
  * receiving handler's context, so a serializer that drops the tag rejects
  * all inbound sync, load, invitation, Welcome, and PathUpdate traffic.
+ * V4 load responses and security advertisements also preserve signerAuthority
+ * in its signed field position. Receivers use it only to select a key from
+ * their captured local trust index; the field supplies no remote trust root.
  *
  * @typeParam ChangesType Type describing changes made to a CRDT document. CRDT implementation dependent.
  */

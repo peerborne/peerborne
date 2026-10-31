@@ -1,7 +1,7 @@
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
-import { captureInitialLoadSignerAuthorities } from './initial-load-trust.js';
-import { identifyInitialLoadSigner } from './initial-load-auth.js';
+import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
+import { identifyInitialLoadSigner, verifyInitialLoadAuthentication, InitialLoadAuthenticationBudget } from './initial-load-auth.js';
 import { createInitialLoadChallenge, cloneInitialLoadChallenge, initialLoadChallengeEquals, initialLoadRequestSignaturePayload } from './initial-load-challenge.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
@@ -2987,11 +2987,14 @@ export class PeerborneDocument<
       },
     });
     this._assertLoadWriterVersion(writerVersion);
+    const stableAuthorities = Object.freeze(authorities.map(({ authorityId }) => Object.freeze({
+      authorityId, publicKey: stableKeys.get(authorityId)!,
+    })));
     const captured = {
       challenge: createInitialLoadChallenge(),
-      authorities: Object.freeze(authorities.map(({ authorityId }) => Object.freeze({
-        authorityId, publicKey: stableKeys.get(authorityId)!,
-      }))),
+      authorities: stableAuthorities,
+      trustedSigners: createInitialLoadSignerLookup(stableAuthorities),
+      authenticationBudget: new InitialLoadAuthenticationBudget(),
       writerVersion,
       bootstrap: existingWriterKeys.length === 0,
     };
@@ -3042,6 +3045,11 @@ export class PeerborneDocument<
       message.changeId, message.changes, message.snapshot?.lastChangeNodeCID,
     );
     if (context === 'load-response-v4') {
+      const signerAuthority = await requireSerializePublicKey(
+        this._authProvider, 'Initial-load signer',
+      )(this._userPublicKey);
+      validateInitialLoadSignerAuthority(signerAuthority);
+      message.signerAuthority = signerAuthority;
       message.loadSecurityState = await captureTrustedLoadSecurityCommitments(
         this.documentPath, this.swarm.resolveLoadSecurityCommitments,
       );
@@ -4517,6 +4525,7 @@ export class PeerborneDocument<
       const advertisement: CRDTSyncMessage<ChangesType> = {
         documentId: this.documentPath,
         signatureContext: 'security-advertisement-v1',
+        signerAuthority: responsePlan.signerAuthority,
         tipsHash: hash,
         loadChallenge: responsePlan.loadChallenge,
         loadSecurityState: responsePlan.loadSecurityState,
@@ -4940,28 +4949,32 @@ export class PeerborneDocument<
             return undefined;
           }
         };
-        const verifyOriginalLoadSignature = async (
-          writerKeys: readonly PublicKey[],
-        ): Promise<boolean> => {
+        const selectedSigner = session.context === 'load-response-v4'
+          ? session.trustedSigners(message.signerAuthority ?? '')
+          : undefined;
+        const verifyOriginalLoadSignature = async (): Promise<boolean> => {
           const signatureBytes = getOriginalSignatureBytes();
           if (!originalSignedRaw || !signatureBytes) return false;
-          // A verifier may retain or mutate its arguments, so each attempt
-          // gets detached bytes. Serial attempts bound active payload copies.
-          for (const writerKey of writerKeys) {
-            if (
-              (await this._authProvider.verify(
-                new Uint8Array(originalSignedRaw),
-                writerKey,
-                new Uint8Array(signatureBytes),
-              )) === true
-            ) {
-              return originalUnsigned!.unchanged();
-            }
-          }
-          return false;
+          return await verifyInitialLoadAuthentication({
+            payload: originalSignedRaw,
+            signature: signatureBytes,
+            signerAuthority: message.signerAuthority,
+            trustedSigners: session.trustedSigners,
+            budget: session.authenticationBudget,
+            signal,
+            verify: (payload, key, signature) => this._authProvider.verify(payload, key, signature),
+          }) && originalUnsigned!.unchanged();
+        };
+        const reverifyCurrentLoadSigner = async (): Promise<boolean> => {
+          if (!selectedSigner) return false;
+          const allowed = await this._writers.check(selectedSigner.publicKey);
+          this._assertLoadWriterVersion(loadWriterKeysVersion);
+          if (allowed !== true) return false;
+          const verified = await verifyOriginalLoadSignature();
+          this._assertLoadWriterVersion(loadWriterKeysVersion);
+          return verified;
         };
         {
-          const preLoadWriters = session.authorities.map((entry) => entry.publicKey);
           {
             if (!originalSignature) {
               console.warn(
@@ -4991,7 +5004,7 @@ export class PeerborneDocument<
             const verified =
               requiredResponseSigner === undefined
                 ? await awaitLoadWork(
-                    verifyOriginalLoadSignature(preLoadWriters),
+                    verifyOriginalLoadSignature(),
                     signal,
                   )
                 : await awaitLoadWork(
@@ -5145,13 +5158,9 @@ export class PeerborneDocument<
                 return false;
               }
               assertLoadWriterVersionUnchanged();
-              const currentWriters = await awaitLoadWork(
-                this._getWriterKeys(),
-                signal,
-              );
               if (
                 (await awaitLoadWork(
-                  verifyOriginalLoadSignature(currentWriters),
+                  reverifyCurrentLoadSigner(),
                   signal,
                 )) !== true
               ) {
@@ -5186,7 +5195,7 @@ export class PeerborneDocument<
               if (currentWriters.length > 0) {
                 if (
                   (await awaitLoadWork(
-                  verifyOriginalLoadSignature(currentWriters),
+                  reverifyCurrentLoadSigner(),
                   signal,
                 )) !== true
                 ) {
@@ -5861,16 +5870,13 @@ export class PeerborneDocument<
       );
       if (unsigned === undefined) return null;
       const signer = await identifyInitialLoadSigner({
-        payload: new Uint8Array(unsigned.raw),
+        payload: unsigned.raw,
         signature: this._deserializeSignature(message.signature),
-        existingWriterKeys: session.authorities.map((entry) => entry.publicKey),
-        trustedBootstrapWriterKeys: [],
-        verify: (payload, key, sig) =>
-          this._authProvider.verify(
-            new Uint8Array(payload),
-            key,
-            new Uint8Array(sig),
-          ),
+        signerAuthority: message.signerAuthority,
+        trustedSigners: session.trustedSigners,
+        budget: session.authenticationBudget,
+        signal,
+        verify: (payload, key, sig) => this._authProvider.verify(payload, key, sig),
       });
       this._assertLoadWriterVersion(session.writerVersion);
       if (!signer || !unsigned.unchanged()) return null;

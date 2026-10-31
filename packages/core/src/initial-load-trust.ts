@@ -6,8 +6,8 @@ import { defineEnumerableDataProperty } from './internal/data-property.js';
 
 /**
  * Cap on application-pinned bootstrap writer keys. Existing ACL writers are
- * local trusted state and are not capped; see #498 for the verification-cost
- * trade-off.
+ * local trusted state and are not capped. A captured authority index avoids
+ * trial verification against every writer for each untrusted response.
  */
 export const MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS = 256;
 export const MAX_INITIAL_LOAD_SIGNER_AUTHORITY_ID_BYTES = 1024;
@@ -83,11 +83,14 @@ export interface CaptureInitialLoadSignerAuthoritiesOptions<PublicKey> {
   serializePublicKey: (publicKey: PublicKey) => Promise<string>;
 }
 
-function validateAuthorityId(value: unknown): asserts value is string {
+export function validateInitialLoadSignerAuthority(
+  value: unknown,
+): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new TypeError(
-      'serializePublicKey must return a non-empty string',
-    );
+    throw new TypeError('serializePublicKey must return a non-empty string');
+  }
+  if (value.length > MAX_INITIAL_LOAD_SIGNER_AUTHORITY_ID_BYTES) {
+    throw new RangeError('initial-load signer authority is too long');
   }
   if (!isWellFormedUtf16(value)) {
     throw new TypeError('serializePublicKey must return well-formed UTF-16');
@@ -168,7 +171,7 @@ export async function captureInitialLoadSignerAuthorities<PublicKey>(
       );
     }
     try {
-      validateAuthorityId(authorityId);
+      validateInitialLoadSignerAuthority(authorityId);
     } catch (cause) {
       throw new TypeError(
         `Cannot start security-aware load for ${options.documentPath}: ` +
@@ -181,4 +184,29 @@ export async function captureInitialLoadSignerAuthorities<PublicKey>(
     authorities.push(Object.freeze({ authorityId, publicKey }));
   }
   return Object.freeze(authorities);
+}
+
+export type InitialLoadSignerLookup<PublicKey> = (
+  authorityId: string,
+) =>
+  | (InitialLoadSignerAuthority<PublicKey> & { readonly keyIndex: number })
+  | undefined;
+
+/** Capture an owned authority index once, before any untrusted responses arrive. */
+export function createInitialLoadSignerLookup<PublicKey>(
+  authorities: readonly InitialLoadSignerAuthority<PublicKey>[],
+): InitialLoadSignerLookup<PublicKey> {
+  const index = new Map<
+    string,
+    InitialLoadSignerAuthority<PublicKey> & { readonly keyIndex: number }
+  >();
+  const entries = snapshotTrustKeys(authorities, 'trusted signer authorities');
+  entries.forEach((entry, keyIndex) => {
+    const { authorityId, publicKey } = entry;
+    validateInitialLoadSignerAuthority(authorityId);
+    if (index.has(authorityId))
+      throw new TypeError('Duplicate initial-load signer authority');
+    index.set(authorityId, Object.freeze({ authorityId, publicKey, keyIndex }));
+  });
+  return Object.freeze((authorityId: string) => index.get(authorityId));
 }

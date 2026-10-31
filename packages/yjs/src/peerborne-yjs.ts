@@ -9,6 +9,7 @@ import {
   CRDTProvider,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
+  validateInitialLoadSignerAuthority,
   copyUnsharedUint8Array,
   describeValue,
   deserializeInitialLoadChallengeFromWire,
@@ -82,6 +83,9 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
   serializeSyncMessage(
     message: CRDTSyncMessage<Uint8Array>,
   ): Uint8Array {
+    if (message.signerAuthority !== undefined) {
+      validateInitialLoadSignerAuthority(message.signerAuthority);
+    }
     // Encode snapshot Uint8Array fields (state, signature) as base64 for JSON safety.
     let snapshotForWire: any;
     if (message.snapshot) {
@@ -142,6 +146,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
         // `CRDTSyncMessage.tips`). Plain string[] of CIDs; passes through
         // JSON verbatim. Absent on traffic that does not need binding.
         tips: message.tips,
+        signerAuthority: message.signerAuthority,
         loadSecurityState:
           message.loadSecurityState === undefined
             ? undefined
@@ -191,6 +196,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
       tips?: unknown;
       loadSecurityState?: unknown;
       loadChallenge?: unknown;
+      signerAuthority?: unknown;
       snapshot?: unknown;
       signature?: unknown;
     };
@@ -397,6 +403,9 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
       raw.loadSecurityState === undefined
         ? undefined
         : deserializeLoadSecurityCommitmentsFromWire(raw.loadSecurityState);
+    if (raw.signerAuthority !== undefined) {
+      validateInitialLoadSignerAuthority(raw.signerAuthority);
+    }
     const loadChallenge =
       raw.loadChallenge === undefined
         ? undefined
@@ -421,6 +430,7 @@ export class YjsJSONSerializer extends JSONSerializer<Uint8Array> {
       tips,
       loadSecurityState,
       loadChallenge,
+      signerAuthority: raw.signerAuthority as string | undefined,
       snapshot,
     });
   }

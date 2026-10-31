@@ -152,3 +152,34 @@ describe('AutomergeJSONSerializer load security state', () => {
     expect(second).toEqual(first);
   });
 });
+
+
+describe('initial-load signer authority wire field', () => {
+  test('preserves the signed authority and field order across re-encoding', () => {
+    const serializer = new AutomergeJSONSerializer();
+    const message = {
+      documentId: '/signed-load',
+      signerAuthority: 'canonical-writer-id',
+      signatureContext: 'load-response-v4' as const,
+      loadChallenge: new Uint8Array(32).fill(7),
+      loadSecurityState: commitments,
+      signature: 'signature',
+    };
+    const encoded = serializer.serializeSyncMessage(message);
+    const decoded = serializer.deserializeSyncMessage(encoded);
+    expect(decoded.signerAuthority).toBe(message.signerAuthority);
+    expect(serializer.serializeSyncMessage(decoded)).toEqual(encoded);
+    expect(Object.keys(decoded)).toEqual(Object.keys(message));
+  });
+
+  test.each([null, 1, {}, '', '\ud800', 'x'.repeat(1025), 'é'.repeat(1024)])(
+    'rejects malformed or oversized signer authority (%p)', (signerAuthority) => {
+      const serializer = new AutomergeJSONSerializer();
+      const message = { documentId: '/doc', signatureContext: 'load-response-v4' as const, signerAuthority };
+      expect(() => serializer.serializeSyncMessage(message as any)).toThrow();
+      expect(() => serializer.deserializeSyncMessage(
+        new TextEncoder().encode(JSON.stringify(message)),
+      )).toThrow();
+    },
+  );
+});

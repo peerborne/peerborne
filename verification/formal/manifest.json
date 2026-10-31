@@ -4,7 +4,10 @@
       "path": "packages/core/src/policy/work-budget.ts",
       "functions": ["consumeWorkBudget"],
       "witness": "workBudget_domain",
-      "consumers": ["packages/core/src/change-tree-walk.ts"],
+      "consumers": [
+        "packages/core/src/change-tree-walk.ts",
+        "packages/core/src/initial-load-auth.ts"
+      ],
       "verifiedTargets": ["consumeWorkBudget_ensures"]
     },
     {

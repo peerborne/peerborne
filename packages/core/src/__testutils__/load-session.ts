@@ -1,3 +1,5 @@
+import { createInitialLoadSignerLookup } from '../initial-load-trust.js';
+import { InitialLoadAuthenticationBudget } from '../initial-load-auth.js';
 import type { InitialLoadSession } from '../internal/initial-load-session.js';
 import type { LoadSecurityCommitments } from '../load-security-state.js';
 import { loadAdvertisementHash } from '../load-advertisement-hash.js';
@@ -37,7 +39,7 @@ export function currentLoadResponse(
       ...(context !== 'security-advertisement-v1' ? { tips } : {}),
       ...(context === 'load-response-v4' ||
       context === 'security-advertisement-v1'
-        ? { loadSecurityState: fixtureLoadCommitments() }
+        ? { loadSecurityState: fixtureLoadCommitments(), signerAuthority: 'fixture-writer-0' }
         : {}),
       ...(context !== 'invitation-bootstrap-v1'
         ? { loadChallenge: fixtureLoadChallenge() }
@@ -55,12 +57,16 @@ export function fixedLoadSession(
     challenge: fixtureLoadChallenge(),
     authorities: [
       {
-        authorityId: issuer ?? 'fixture-writer',
+        authorityId: issuer ?? 'fixture-writer-0',
         publicKey: issuer ?? 'writer',
       },
     ],
     writerVersion: document._writerKeysVersion ?? 0,
     bootstrap: false,
+    trustedSigners: createInitialLoadSignerLookup([
+      { authorityId: issuer ?? 'fixture-writer-0', publicKey: issuer ?? 'writer' },
+    ]),
+    authenticationBudget: new InitialLoadAuthenticationBudget(),
   };
   return issuer === undefined
     ? {
@@ -76,6 +82,10 @@ export async function loadSessionFixture(
   issuer?: string,
 ): Promise<InitialLoadSession<any>> {
   const session = fixedLoadSession(document, issuer);
+  const writers = document._writers;
+  if (writers?.users && !writers.check) {
+    writers.check = async (key: unknown) => (await writers.users()).includes(key);
+  }
   const keys =
     issuer === undefined
       ? document._writers || Object.hasOwn(document, '_getWriterKeys')
@@ -86,14 +96,17 @@ export async function loadSessionFixture(
   if (issuer !== undefined && document._fixtureLoadResponse) {
     document._fixtureLoadResponse.signatureContext = 'invitation-catch-up-v1';
     delete document._fixtureLoadResponse.loadSecurityState;
+    delete document._fixtureLoadResponse.signerAuthority;
   }
+  const capturedAuthorities = authorities.map((publicKey: any, index: number) => ({
+    authorityId: `fixture-writer-${index}`,
+    publicKey,
+  }));
   return {
     ...session,
+    trustedSigners: createInitialLoadSignerLookup(capturedAuthorities),
     bootstrap: keys.length === 0,
-    authorities: authorities.map((publicKey: any, index: number) => ({
-      authorityId: `fixture-writer-${index}`,
-      publicKey,
-    })),
+    authorities: capturedAuthorities,
   };
 }
 
