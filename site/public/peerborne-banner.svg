@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" fill="none" shape-rendering="crispEdges" role="img" aria-labelledby="title desc">
+  <title id="title">Peerborne</title>
+  <desc id="desc">Encrypted local-first state, carried by peers. An open-source TypeScript toolkit, illustrated with pixel-art computers and an encrypted document. Alpha software.</desc>
+  <path d="M0 0h1200v420H0z" fill="#171521"/>
+  <path d="M16 8h1168v8h8v388h-8v8H16v-8H8V16h8z" stroke="#756c89" stroke-width="2"/>
+  <g fill="#a3efb8">
+    <path d="M56 44h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8z"/>
+  </g>
+  <g font-family="'Courier New', monospace" font-weight="700">
+    <text x="112" y="54" fill="#a3efb8" font-size="16" letter-spacing="2">OPEN SOURCE / TYPESCRIPT</text>
+    <path d="M56 100h8v8h-8z M64 100h8v8h-8z M72 100h8v8h-8z M80 100h8v8h-8z M56 108h8v8h-8z M88 108h8v8h-8z M56 116h8v8h-8z M88 116h8v8h-8z M56 124h8v8h-8z M64 124h8v8h-8z M72 124h8v8h-8z M80 124h8v8h-8z M56 132h8v8h-8z M56 140h8v8h-8z M56 148h8v8h-8z M104 100h8v8h-8z M112 100h8v8h-8z M120 100h8v8h-8z M128 100h8v8h-8z M136 100h8v8h-8z M104 108h8v8h-8z M104 116h8v8h-8z M104 124h8v8h-8z M112 124h8v8h-8z M120 124h8v8h-8z M128 124h8v8h-8z M104 132h8v8h-8z M104 140h8v8h-8z M104 148h8v8h-8z M112 148h8v8h-8z M120 148h8v8h-8z M128 148h8v8h-8z M136 148h8v8h-8z M152 100h8v8h-8z M160 100h8v8h-8z M168 100h8v8h-8z M176 100h8v8h-8z M184 100h8v8h-8z M152 108h8v8h-8z M152 116h8v8h-8z M152 124h8v8h-8z M160 124h8v8h-8z M168 124h8v8h-8z M176 124h8v8h-8z M152 132h8v8h-8z M152 140h8v8h-8z M152 148h8v8h-8z M160 148h8v8h-8z M168 148h8v8h-8z M176 148h8v8h-8z M184 148h8v8h-8z M200 100h8v8h-8z M208 100h8v8h-8z M216 100h8v8h-8z M224 100h8v8h-8z M200 108h8v8h-8z M232 108h8v8h-8z M200 116h8v8h-8z M232 116h8v8h-8z M200 124h8v8h-8z M208 124h8v8h-8z M216 124h8v8h-8z M224 124h8v8h-8z M200 132h8v8h-8z M216 132h8v8h-8z M200 140h8v8h-8z M224 140h8v8h-8z M200 148h8v8h-8z M232 148h8v8h-8z M248 100h8v8h-8z M256 100h8v8h-8z M264 100h8v8h-8z M272 100h8v8h-8z M248 108h8v8h-8z M280 108h8v8h-8z M248 116h8v8h-8z M280 116h8v8h-8z M248 124h8v8h-8z M256 124h8v8h-8z M264 124h8v8h-8z M272 124h8v8h-8z M248 132h8v8h-8z M280 132h8v8h-8z M248 140h8v8h-8z M280 140h8v8h-8z M248 148h8v8h-8z M256 148h8v8h-8z M264 148h8v8h-8z M272 148h8v8h-8z M304 100h8v8h-8z M312 100h8v8h-8z M320 100h8v8h-8z M296 108h8v8h-8z M328 108h8v8h-8z M296 116h8v8h-8z M328 116h8v8h-8z M296 124h8v8h-8z M328 124h8v8h-8z M296 132h8v8h-8z M328 132h8v8h-8z M296 140h8v8h-8z M328 140h8v8h-8z M304 148h8v8h-8z M312 148h8v8h-8z M320 148h8v8h-8z M344 100h8v8h-8z M352 100h8v8h-8z M360 100h8v8h-8z M368 100h8v8h-8z M344 108h8v8h-8z M376 108h8v8h-8z M344 116h8v8h-8z M376 116h8v8h-8z M344 124h8v8h-8z M352 124h8v8h-8z M360 124h8v8h-8z M368 124h8v8h-8z M344 132h8v8h-8z M360 132h8v8h-8z M344 140h8v8h-8z M368 140h8v8h-8z M344 148h8v8h-8z M376 148h8v8h-8z M392 100h8v8h-8z M424 100h8v8h-8z M392 108h8v8h-8z M400 108h8v8h-8z M424 108h8v8h-8z M392 116h8v8h-8z M400 116h8v8h-8z M424 116h8v8h-8z M392 124h8v8h-8z M408 124h8v8h-8z M424 124h8v8h-8z M392 132h8v8h-8z M416 132h8v8h-8z M424 132h8v8h-8z M392 140h8v8h-8z M416 140h8v8h-8z M424 140h8v8h-8z M392 148h8v8h-8z M424 148h8v8h-8z M440 100h8v8h-8z M448 100h8v8h-8z M456 100h8v8h-8z M464 100h8v8h-8z M472 100h8v8h-8z M440 108h8v8h-8z M440 116h8v8h-8z M440 124h8v8h-8z M448 124h8v8h-8z M456 124h8v8h-8z M464 124h8v8h-8z M440 132h8v8h-8z M440 140h8v8h-8z M440 148h8v8h-8z M448 148h8v8h-8z M456 148h8v8h-8z M464 148h8v8h-8z M472 148h8v8h-8z" fill="#b7a1ff"/>
+    <text x="56" y="212" fill="#f5f0e8" font-size="24">Encrypted local-first state,</text>
+    <text x="56" y="248" fill="#f5f0e8" font-size="24">carried by peers.</text>
+    <text x="56" y="300" fill="#ffb887" font-size="16">[ ALPHA ]</text>
+    <text x="168" y="300" fill="#a7a0b6" font-size="16">For experiments &amp; prototypes.</text>
+    <path d="M56 334h568v2H56z" fill="#40394f"/>
+    <text x="56" y="372" fill="#a3efb8" font-size="15" letter-spacing="1">LOCAL FIRST</text>
+    <text x="226" y="372" fill="#b7a1ff" font-size="15" letter-spacing="1">ENCRYPTED</text>
+    <text x="376" y="372" fill="#f5f0e8" font-size="15" letter-spacing="1">PEER TO PEER</text>
+  </g>
+  <g transform="translate(728 42) scale(.84)">
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#343046"/>
+    </pattern>
+    <g id="peer">
+      <path d="M8 8h88v64H8zM40 72h24v8H40zM24 80h56v8H24z" fill="#0f1018"/>
+      <path d="M0 0h88v64H0z" fill="#f5f0e8"/>
+      <path d="M8 8h72v44H8z" fill="#242136"/>
+      <path d="M16 16h8v8h-8zm12 8h8v8h-8zm-12 8h8v8h-8zm28 4h20v4H44z" fill="#a3efb8"/>
+      <path d="M32 64h24v8H32zM16 72h56v8H16z" fill="#b7a1ff"/>
+    </g>
+  </defs>
+  <path d="M16 0h448v8h8v8h8v368h-8v8h-8v8H16v-8H8v-8H0V16h8V8h8z" fill="#1b1929"/>
+  <path d="M16 16h448v368H16z" fill="url(#grid)"/>
+  <path d="M24 24h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8z" fill="#b7a1ff"/>
+  <path d="M96 112h80v88h128v-88h80M96 288h80v-88m128 0v88h80" stroke="#7964b0" stroke-width="4"/>
+  <path d="M172 144h8v8h-8zm128 100h8v8h-8zm-60-48h8v8h-8z" fill="#a3efb8"/>
+  <use href="#peer" x="48" y="64"/>
+  <use href="#peer" x="336" y="64"/>
+  <use href="#peer" x="48" y="248"/>
+  <use href="#peer" x="336" y="248"/>
+  <path d="M204 140h64l24 24v100h-88z" fill="#0f1018"/>
+  <path d="M196 132h64l24 24v100h-88z" fill="#b7a1ff"/>
+  <path d="M260 132v24h24" fill="#7964b0"/>
+  <path d="M224 168h24v8h8v24h-8v-24h-24v24h-8v-24h8zM212 196h48v36h-48z" fill="#242136"/>
+  <path d="M232 204h8v16h-8z" fill="#a3efb8"/>
+  <path d="M144 48h8v8h8v8h-8v8h-8v-8h-8v-8h8zm176 272h8v8h8v8h-8v8h-8v-8h-8v-8h8z" fill="#ffb887"/>
+  <path d="M56 192h8v8h-8zm360 0h8v8h-8zM208 352h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8z" fill="#7964b0"/>
+  </g>
+</svg>

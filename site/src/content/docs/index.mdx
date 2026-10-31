@@ -8,12 +8,13 @@ head:
       content: website
 template: splash
 hero:
-  title: Encrypted local-first state, carried by peers
+  title: Encrypted.<br />Local first.<br />Peer to peer.
   tagline: >-
     A TypeScript toolkit for encrypted CRDT documents that live on user devices
     and synchronize without a trusted plaintext database.
   image:
-    file: ../../assets/logo.svg
+    file: ../../assets/peer-network.svg
+    alt: Pixel-art computers connected peer to peer around an encrypted document.
   actions:
     - text: Quick start
       link: ./getting-started/quick-start/
@@ -32,6 +33,12 @@ import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
 import SyncDemo from '../../components/SyncDemo.astro';
 
 
+
+<div className="release-note">
+
+**Alpha software.** Built for experiments and prototypes. [Know the limitations →](concepts/limitations/)
+
+</div>
 
 ## What is Peerborne?
 

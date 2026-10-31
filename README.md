@@ -1,10 +1,12 @@
 # Peerborne
 
+![Peerborne — encrypted local-first state, carried by peers. Pixel-art computers connected around an encrypted document.](site/public/peerborne-banner.svg)
+
 [![CI](https://github.com/Peerborne/peerborne/actions/workflows/ci.yml/badge.svg)](https://github.com/Peerborne/peerborne/actions/workflows/ci.yml)
 [![Site](https://github.com/Peerborne/peerborne/actions/workflows/site.yml/badge.svg)](https://github.com/Peerborne/peerborne/actions/workflows/site.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://peerborne.io/community/contributing/)
-[![Docs](https://img.shields.io/badge/docs-peerborne.io-4f46e5)](https://peerborne.io/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-b7a1ff?style=flat-square&labelColor=242136)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-a3efb8?style=flat-square&labelColor=242136)](https://peerborne.io/community/contributing/)
+[![Docs](https://img.shields.io/badge/docs-peerborne.io-b7a1ff?style=flat-square&labelColor=242136)](https://peerborne.io/)
 
 **Encrypted local-first state, carried by peers.**
 

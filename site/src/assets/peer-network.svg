@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="400" viewBox="0 0 480 400" fill="none" shape-rendering="crispEdges" role="img" aria-labelledby="title desc">
+  <title id="title">A little network. Your own documents.</title>
+  <desc id="desc">Four pixel-art computers connect around a locked document, representing encrypted peer-to-peer collaboration.</desc>
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#343046"/>
+    </pattern>
+    <g id="peer">
+      <path d="M8 8h88v64H8zM40 72h24v8H40zM24 80h56v8H24z" fill="#0f1018"/>
+      <path d="M0 0h88v64H0z" fill="#f5f0e8"/>
+      <path d="M8 8h72v44H8z" fill="#242136"/>
+      <path d="M16 16h8v8h-8zm12 8h8v8h-8zm-12 8h8v8h-8zm28 4h20v4H44z" fill="#a3efb8"/>
+      <path d="M32 64h24v8H32zM16 72h56v8H16z" fill="#b7a1ff"/>
+    </g>
+  </defs>
+  <path d="M16 0h448v8h8v8h8v368h-8v8h-8v8H16v-8H8v-8H0V16h8V8h8z" fill="#1b1929"/>
+  <path d="M16 16h448v368H16z" fill="url(#grid)"/>
+  <path d="M24 24h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8z" fill="#b7a1ff"/>
+  <path d="M96 112h80v88h128v-88h80M96 288h80v-88m128 0v88h80" stroke="#7964b0" stroke-width="4"/>
+  <path d="M172 144h8v8h-8zm128 100h8v8h-8zm-60-48h8v8h-8z" fill="#a3efb8"/>
+  <use href="#peer" x="48" y="64"/>
+  <use href="#peer" x="336" y="64"/>
+  <use href="#peer" x="48" y="248"/>
+  <use href="#peer" x="336" y="248"/>
+  <path d="M204 140h64l24 24v100h-88z" fill="#0f1018"/>
+  <path d="M196 132h64l24 24v100h-88z" fill="#b7a1ff"/>
+  <path d="M260 132v24h24" fill="#7964b0"/>
+  <path d="M224 168h24v8h8v24h-8v-24h-24v24h-8v-24h8zM212 196h48v36h-48z" fill="#242136"/>
+  <path d="M232 204h8v16h-8z" fill="#a3efb8"/>
+  <path d="M144 48h8v8h8v8h-8v8h-8v-8h-8v-8h8zm176 272h8v8h8v8h-8v8h-8v-8h-8v-8h8z" fill="#ffb887"/>
+  <path d="M56 192h8v8h-8zm360 0h8v8h-8zM208 352h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8zm16 0h8v8h-8z" fill="#7964b0"/>
+</svg>
