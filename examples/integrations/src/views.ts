@@ -8,4 +8,5 @@ export const views = {
     label: 'TanStack DB',
     load: () => import('./views/tanstack-db'),
   },
+  codemirror: { label: 'CodeMirror', load: () => import('./views/codemirror') },
 };

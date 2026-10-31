@@ -8,7 +8,7 @@ The package API reference is generated from source doc comments on every site bu
 | Package | Supported entry points | What it is |
 | --- | --- | --- |
 | `@peerborne/core` | package root, `/node` | Core documents, networking, storage, encryption, and access control; `/node` provides the Node-only runtime. |
-| `@peerborne/yjs` | package root | Yjs CRDT provider. |
+| `@peerborne/yjs` | package root, `/editor` | Yjs provider and experimental editor bridge. |
 | `@peerborne/automerge` | package root | Automerge CRDT provider. |
 | `@peerborne/react` | package root, `/store` | Context hooks and a lightweight external-store binding. |
 | `@peerborne/redux` | package root | Redux bindings, including actions, reducers, and selectors. |

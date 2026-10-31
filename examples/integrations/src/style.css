@@ -42,3 +42,8 @@ button {
 [role='alert'] {
   color: #9f1d20;
 }
+.editor {
+  min-height: 12rem;
+  border: 1px solid #cbd5df;
+  margin: 1rem 0;
+}

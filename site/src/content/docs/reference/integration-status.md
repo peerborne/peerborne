@@ -15,6 +15,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, and local browser mutation | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | TanStack DB | Experimental collection adapter pinned to 1.0.0-rc.1.1; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 
@@ -35,3 +36,5 @@ no published CDN bundle is claimed.
 Loro snapshots retain full application operation history. Use separate paths for separate engines. The example retains the existing Yjs ACL, keychain, and byte serializers; it does not provide content-history redaction.
 
 TanStack DB currently copies and replaces the complete row snapshot per notification. Query-driven network sync, incremental projection, relational durability, and distributed transactions are not implemented.
+
+Editor awareness/presence is not transported. A failed editor write halts the mirror queue; rebuild the mirror from authoritative state after handling the error.

@@ -1,7 +1,7 @@
 export const packages = [
   { name: '@peerborne/core', directory: 'packages/core', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts', 'dist/esm/src/peerborne-node.js', 'dist/esm/src/peerborne-node.d.ts', 'dist/esm/src/browser-primitives.js', 'dist/esm/src/browser-primitives.d.ts', 'dist/esm/src/wire-protocols.js', 'dist/esm/src/wire-protocols.d.ts'], bins: [] },
   { name: '@peerborne/automerge', directory: 'packages/automerge', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: ['dist/esm/bin/peerborne-automerge-d.js'] },
-  { name: '@peerborne/yjs', directory: 'packages/yjs', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: ['dist/esm/bin/peerborne-yjs-d.js'] },
+  { name: '@peerborne/yjs', directory: 'packages/yjs', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts', 'dist/esm/src/editor.js', 'dist/esm/src/editor.d.ts'], bins: ['dist/esm/bin/peerborne-yjs-d.js'] },
   { name: '@peerborne/store', directory: 'packages/store', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
   { name: '@peerborne/react', directory: 'packages/react', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts', 'dist/esm/src/store.js', 'dist/esm/src/store.d.ts'], bins: [] },
   { name: '@peerborne/redux', directory: 'packages/redux', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
