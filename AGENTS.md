@@ -2,7 +2,7 @@
 
 ## Project
 
-Peerborne is alpha software for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. It is not production-ready. The six `@peerborne/*` library packages are source workspaces and are not published to npm.
+Peerborne is alpha software for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. It is not production-ready. The seven `@peerborne/*` library packages are source workspaces and are not published to npm.
 
 Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architecture, evidence, security, and limitation details. Do not turn isolated primitive tests into end-to-end capability claims.
 
@@ -17,8 +17,8 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 
 ## Repository map
 
-- `packages/`: six library workspaces
-- `examples/`: browser-test, wiki-swarm, password-manager, and peerborne-note Vite workspaces
+- `packages/`: seven library workspaces
+- `examples/`: browser-test, wiki-swarm, password-manager, peerborne-note, and integrations browser workspaces
 - `site/`: Astro Starlight workspace and TypeDoc integration
 - `relay-server/`: separate relay project and lockfile
 - `e2e/test-app/`: separate integration-test project and lockfile
@@ -26,7 +26,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
-The root has eleven workspaces: six libraries, four examples, and the site.
+The root has thirteen workspaces: seven libraries, five examples, and the site.
 
 ## Commands
 
@@ -44,7 +44,7 @@ yarn test:e2e:peerborne-note
 yarn test:e2e:peerborne-note:live # requires PEERBORNE_NOTE_LIVE_URL
 ```
 
-`yarn test:e2e` runs four Vite/Chromium smoke suites and does not require Docker.
+`yarn test:e2e` runs the original smoke suites plus frontend integration acceptance and does not require Docker.
 
 Docker-backed suites require their matching topology and readiness checks. Do not run the test command immediately after `docker compose up -d`; follow the exact bounded wait and teardown sequence in the corresponding `.github/workflows/ci.yml` job. The contributor guide also provides local readiness helpers.
 

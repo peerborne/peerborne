@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "benchmarks:snapshot": "node scripts/collect-benchmark-snapshot.mjs",
-    "build:dependencies": "yarn workspace @peerborne/core tsc && yarn workspace @peerborne/yjs tsc && yarn workspace @peerborne/automerge tsc && yarn workspace @peerborne/react tsc",
+    "build:dependencies": "yarn --cwd .. build",
     "dev": "yarn run build:dependencies && astro dev",
     "build": "yarn sync:check && yarn figures:test && yarn diagrams:check && yarn charts:check && yarn run build:dependencies && yarn run check:snippets && astro build && node scripts/generate-llms-full.mjs",
     "charts:generate": "node scripts/generate-benchmark-charts.mjs",

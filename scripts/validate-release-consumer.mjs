@@ -32,6 +32,7 @@ try {
     '@peerborne/core/wire-protocols',
     '@peerborne/automerge',
     '@peerborne/yjs',
+    '@peerborne/store',
     '@peerborne/react',
     '@peerborne/redux',
     '@peerborne/index',

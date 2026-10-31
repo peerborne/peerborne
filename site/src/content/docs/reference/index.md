@@ -13,6 +13,7 @@ The package API reference is generated from source doc comments on every site bu
 | `@peerborne/react` | package root | React hooks for loading and editing documents. |
 | `@peerborne/redux` | package root | Redux bindings, including actions, reducers, and selectors. |
 | `@peerborne/index` | package root, `/react` | Indexing and querying, with React hooks in `/react`. |
+| `@peerborne/store` | package root | Framework-independent subscriptions, snapshots, and document ownership. |
 
 The core package also exposes `./browser-primitives` as a targeted subpath for light browser consumers that do not import the full libp2p/Helia stack. That subpath is part of the generated API reference on every site build.
 

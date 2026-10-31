@@ -1,6 +1,6 @@
 # Releasing
 
-The initial release is `0.1.0`, promoted to `latest`. It remains alpha software, not production-ready. The six `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
+The initial release is `0.1.0`, promoted to `latest`. It remains alpha software, not production-ready. The seven `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
 
 Packages ship one ESM build. Both `import` and CommonJS `require()` resolve to it through Node.js 22.19.0 or newer's native ESM interoperability. There is no separate CommonJS compilation or compatibility bundle.
 
@@ -62,7 +62,7 @@ Before pushing the first tag:
 4. Require designated reviewers for that environment, restrict deployment branches/tags to the intended `v*` release tags, and disable administrator bypass. These controls are mandatory because a tag push is the publication approval boundary.
 5. Create the repository variable `NPM_PUBLISH_ENABLED` with value `true` only when publication is operationally enabled. Missing or any other value leaves tag runs in validation-only mode.
 
-For the initial bootstrap, the publish job uses `NPM_TOKEN` and runs `npm whoami` before registry changes. When that secret is absent, it uses GitHub Actions OIDC; this requires trusted publishers to have already been configured for all six packages. It has only `contents: read` and `id-token: write`; the latter supports trusted publishing and npm provenance. Validation jobs do not receive that permission.
+For the initial bootstrap, the publish job uses `NPM_TOKEN` and runs `npm whoami` before registry changes. When that secret is absent, it uses GitHub Actions OIDC; this requires trusted publishers to have already been configured for all seven packages. It has only `contents: read` and `id-token: write`; the latter supports trusted publishing and npm provenance. Validation jobs do not receive that permission.
 
 ## Publishing and recovery
 
@@ -72,16 +72,16 @@ The tag workflow always validates first. It then publishes each tarball under a 
 2. Skips an already-published artifact only when its integrity exactly matches the validated tarball.
 3. Fails without promotion when the same version has different integrity.
 4. Publishes missing artifacts under the temporary staging tag.
-5. Verifies all six registry integrities.
-6. Promotes all six to `latest` or `next` only after all versions exist and match.
+5. Verifies all seven registry integrities.
+6. Promotes all seven to `latest` or `next` only after all versions exist and match.
 
 Registry publication and dist-tag updates are not atomic. A failure can leave a subset under the staging tag or a subset of final dist-tags promoted. Rerunning the same tag workflow is safe for matching artifacts and resumes promotion; never replace a published version. Investigate any integrity mismatch rather than retrying around it.
 
-After publication, verify each package/version and final dist-tag with `npm view`, install all six into a fresh consumer, and compare registry integrity with `release-manifest.json`. Remove obsolete temporary staging tags after verification if desired.
+After publication, verify each package/version and final dist-tag with `npm view`, install all seven into a fresh consumer, and compare registry integrity with `release-manifest.json`. Remove obsolete temporary staging tags after verification if desired.
 
 ## Trusted publishing
 
-The bootstrap token is needed for the first publication because trusted publishing can only be configured for existing packages. After all six packages exist, configure each package's npm trusted publisher with:
+The bootstrap token is needed for the first publication because trusted publishing can only be configured for existing packages. After all seven packages exist, configure each package's npm trusted publisher with:
 
 - GitHub organization: `peerborne`
 - Repository: `peerborne`

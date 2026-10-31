@@ -26,7 +26,7 @@ Peerborne wraps **Automerge or Yjs** documents with encryption, local storage, p
 
 ## Run it from source
 
-Requires **Node.js 22.19.0** and **Yarn 4.5.0** through Corepack. The six library packages are not published to npm.
+Requires **Node.js 22.19.0** and **Yarn 4.5.0** through Corepack. The seven library packages are not published to npm.
 
 ```sh
 git clone https://github.com/Peerborne/peerborne.git peerborne
@@ -105,7 +105,9 @@ Keep documents bounded and measure your workload. The [persistence runbook](http
 1. **[Getting Started](https://peerborne.io/getting-started/quick-start/)** — five-minute source tutorial, interactive exercise, and complete React setup.
 2. **[Core Concepts](https://peerborne.io/concepts/documents/)** — documents, identities, epoch transitions, networking, and storage.
 3. **[Production Runbooks](https://peerborne.io/runbooks/)** — evaluation checklists for persistence limits and operating your own encrypted-payload relay. These do not establish production readiness.
-4. **[API Reference](https://peerborne.io/reference/)** — generated TypeScript API documentation for all six libraries.
+4. **[API Reference](https://peerborne.io/reference/)** — generated TypeScript API documentation for all seven libraries.
+
+See the [framework-free browser guide](https://peerborne.io/getting-started/vanilla/) and [integration status](https://peerborne.io/reference/integration-status/) for the new source integrations.
 
 ## Packages and examples
 
@@ -117,6 +119,7 @@ Keep documents bounded and measure your workload. The [persistence runbook](http
 | [`@peerborne/react`](packages/react) | React context and hooks |
 | [`@peerborne/redux`](packages/redux) | Redux actions and reducers |
 | [`@peerborne/index`](packages/index) | Local/blind indexes and query bindings |
+| [`@peerborne/store`](packages/store) | Framework-independent subscriptions, snapshots, and document ownership |
 
 Try [`peerborne-note`](examples/peerborne-note) for the [invitation demo](https://try.peerborne.io/), [`browser-test`](examples/browser-test) for a minimal Automerge/Redux document, [`wiki-swarm`](examples/wiki-swarm) for an editor, or [`password-manager`](examples/password-manager) for Yjs/React access-control UI. `yarn test:e2e` builds and tests all four with Chromium, including local restart recovery for Note and the password manager. The initial invitation path is online-only and founder-plus-one; hostile-peer revocation, automatic reconnect, and relay failover need stronger system-level evidence.
 
@@ -128,4 +131,4 @@ If this is a stack you want to use, [star the repository](https://github.com/Pee
 
 For suspected vulnerabilities, use private vulnerability reporting in the repository's **Security** tab. See the [security policy](site/src/content/docs/community/index.md#security-reports).
 
-Peerborne and all six library packages use the [MIT License](LICENSE).
+Peerborne and all seven library packages use the [MIT License](LICENSE).

@@ -59,6 +59,7 @@ export default defineConfig({
             '../packages/react',
             '../packages/redux',
             '../packages/index',
+            '../packages/store',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },
@@ -124,6 +125,7 @@ export default defineConfig({
           items: [
             { label: 'Five-minute source tutorial', slug: 'getting-started/quick-start' },
             'getting-started/react-workspace',
+            'getting-started/vanilla',
             {
               label: 'Frameworks and examples',
               collapsed: true,
@@ -182,6 +184,7 @@ export default defineConfig({
           items: [
             'reference',
             'reference/comparisons',
+            'reference/integration-status',
             {
               label: 'Security design decisions',
               collapsed: true,
