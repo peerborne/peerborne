@@ -1161,6 +1161,27 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@codemirror/state@npm:^6.7.0, @codemirror/state@npm:^6.7.6":
+  version: 6.7.6
+  resolution: "@codemirror/state@npm:6.7.6"
+  dependencies:
+    "@marijn/find-cluster-break": "npm:^1.0.0"
+  checksum: 10/700b582d4dae6ee71b1fef99eae39025192bbfcd73e3ae65000b1b471ecf0f0d34e1d28c0983af7c374df527a9302ba6e0b63cb45a6d71bda4beec1abb4ca170
+  languageName: node
+  linkType: hard
+
+"@codemirror/view@npm:^6.43.15":
+  version: 6.43.15
+  resolution: "@codemirror/view@npm:6.43.15"
+  dependencies:
+    "@codemirror/state": "npm:^6.7.0"
+    crelt: "npm:^1.0.6"
+    style-mod: "npm:^4.1.0"
+    w3c-keyname: "npm:^2.2.4"
+  checksum: 10/9385747b04f514249f948334aaa02d8a2465bb13d042e6ac61fbeb41eba85f247bff32db465dbf73ae18fa9ec77d5791eef97de16a35e07fbba09d1f7eb08f99
+  languageName: node
+  linkType: hard
+
 "@cspotcode/source-map-support@npm:^0.8.0":
   version: 0.8.1
   resolution: "@cspotcode/source-map-support@npm:0.8.1"
@@ -3823,6 +3844,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@marijn/find-cluster-break@npm:^1.0.0":
+  version: 1.0.4
+  resolution: "@marijn/find-cluster-break@npm:1.0.4"
+  checksum: 10/baacaa9face43ddd76e323d48baf73bd0aa14d97cf45e729dc284baf0673f3563677a8f468413bd356790dae4f76745bfb7850cd767e0eef871f452a6a53d0fe
+  languageName: node
+  linkType: hard
+
 "@mdx-js/mdx@npm:^3.1.1":
   version: 3.1.1
   resolution: "@mdx-js/mdx@npm:3.1.1"
@@ -4655,6 +4683,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/integration-examples@workspace:examples/integrations"
   dependencies:
+    "@codemirror/state": "npm:^6.7.6"
+    "@codemirror/view": "npm:^6.43.15"
     "@peerborne/core": "workspace:^"
     "@peerborne/loro": "workspace:^"
     "@peerborne/react": "workspace:^"
@@ -4677,6 +4707,7 @@ __metadata:
     typescript: "npm:^5.9.3"
     vite: "npm:^8.3.5"
     vue: "npm:^3.5.44"
+    y-codemirror.next: "npm:^0.3.6"
     yjs: "npm:^13.6.33"
   languageName: unknown
   linkType: soft
@@ -7340,6 +7371,13 @@ __metadata:
   version: 1.1.1
   resolution: "create-require@npm:1.1.1"
   checksum: 10/a9a1503d4390d8b59ad86f4607de7870b39cad43d929813599a23714831e81c520bddf61bcdd1f8e30f05fd3a2b71ae8538e946eb2786dc65c2bbc520f692eff
+  languageName: node
+  linkType: hard
+
+"crelt@npm:^1.0.6":
+  version: 1.0.7
+  resolution: "crelt@npm:1.0.7"
+  checksum: 10/eb0f98bfd3f0bc934a2d45bb14f62bc956c790dcb071c179ab9c3968e5d899d7747cadd18d3eee99302838f185017919321cbb4acfb3c055ffe82793c186dc2b
   languageName: node
   linkType: hard
 
@@ -10948,6 +10986,19 @@ __metadata:
     prelude-ls: "npm:^1.2.1"
     type-check: "npm:~0.4.0"
   checksum: 10/2e4720ff79f21ae08d42374b0a5c2f664c5be8b6c8f565bb4e1315c96ed3a8acaa9de788ffed82d7f2378cf36958573de07ef92336cb5255ed74d08b8318c9ee
+  languageName: node
+  linkType: hard
+
+"lib0@npm:^0.2.42":
+  version: 0.2.119
+  resolution: "lib0@npm:0.2.119"
+  dependencies:
+    isomorphic.js: "npm:^0.2.4"
+  bin:
+    0ecdsa-generate-keypair: bin/0ecdsa-generate-keypair.js
+    0gentesthtml: bin/gentesthtml.js
+    0serve: bin/0serve.js
+  checksum: 10/013d67c9083d40ca16d55ea26d193f6dc2ea3e5e9c7f6f7dfa2551575c4bbc76bd466a77a42233ae7c399961d2c23b4e54a2e4e7e5f4785f6b85f72126d524db
   languageName: node
   linkType: hard
 
@@ -14774,6 +14825,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"style-mod@npm:^4.1.0":
+  version: 4.1.4
+  resolution: "style-mod@npm:4.1.4"
+  checksum: 10/17d31878c98bda3082b2bffdd0b0478789686fb83fe57fca8a02db1675460b293f0fd45af8d31a7daa6d7608c8ace24f9cb68be60fcee5265f62770793e4e25e
+  languageName: node
+  linkType: hard
+
 "style-to-js@npm:^1.0.0":
   version: 1.1.21
   resolution: "style-to-js@npm:1.1.21"
@@ -16025,6 +16083,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"w3c-keyname@npm:^2.2.4":
+  version: 2.2.8
+  resolution: "w3c-keyname@npm:2.2.8"
+  checksum: 10/95bafa4c04fa2f685a86ca1000069c1ec43ace1f8776c10f226a73296caeddd83f893db885c2c220ebeb6c52d424e3b54d7c0c1e963bbf204038ff1a944fbb07
+  languageName: node
+  linkType: hard
+
 "w3c-xmlserializer@npm:^5.0.0":
   version: 5.0.0
   resolution: "w3c-xmlserializer@npm:5.0.0"
@@ -16280,6 +16345,19 @@ __metadata:
   version: 1.1.0
   resolution: "xxhash-wasm@npm:1.1.0"
   checksum: 10/cad149dabda4ec4ce7c2edd98815c4cc21eadab72f631c832af110066867850fb86b9430499707358d3e23cafe6d71d0a5c16be8f1864f213e4cd1aa74bd9556
+  languageName: node
+  linkType: hard
+
+"y-codemirror.next@npm:^0.3.6":
+  version: 0.3.6
+  resolution: "y-codemirror.next@npm:0.3.6"
+  dependencies:
+    lib0: "npm:^0.2.42"
+  peerDependencies:
+    "@codemirror/state": ^6.0.0
+    "@codemirror/view": ^6.0.0
+    yjs: ^13.5.6
+  checksum: 10/dfd5c46cd340b12ab843d0bc2e5070b1390018e3da404b37ee6733985043e04488a601ee34beed724cd08c0057571e1a4a00854cebd930985e30222d6ff657ac
   languageName: node
   linkType: hard
 

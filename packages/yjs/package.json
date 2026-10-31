@@ -29,7 +29,13 @@
       "require": "./dist/esm/src/index.js",
       "default": "./dist/esm/src/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./editor": {
+      "types": "./dist/esm/src/editor.d.ts",
+      "import": "./dist/esm/src/editor.js",
+      "require": "./dist/esm/src/editor.js",
+      "default": "./dist/esm/src/editor.js"
+    }
   },
   "files": [
     "dist/esm/**",

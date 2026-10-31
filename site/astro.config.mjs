@@ -136,6 +136,7 @@ export default defineConfig({
               items: [
                 'cookbook/react',
                 'cookbook/redux',
+                'cookbook/editor-integrations',
                 'cookbook/framework-integrations',
                 'cookbook/peerborne-note',
                 'cookbook/invitations',

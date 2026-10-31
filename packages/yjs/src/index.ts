@@ -21,3 +21,6 @@ export {
   serializeKey,
   deserializeKey,
 };
+
+export { createYjsEditorBridge } from './editor.js';
+export type { YjsEditorBridge, YjsEditorSource } from './editor.js';

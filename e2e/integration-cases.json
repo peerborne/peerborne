@@ -1,5 +1,5 @@
 {
   "documents": ["vanilla", "react", "vue", "svelte", "loro", "tanstack-db"],
-  "editors": [],
+  "editors": ["codemirror"],
   "ssr": []
 }

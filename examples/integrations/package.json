@@ -1,6 +1,8 @@
 {
   "name": "@peerborne/integration-examples",
   "dependencies": {
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
     "@peerborne/core": "workspace:^",
     "@peerborne/loro": "workspace:^",
     "@peerborne/react": "workspace:^",
@@ -15,6 +17,7 @@
     "react-dom": "^19.3.0",
     "svelte": "^5.57.3",
     "vue": "^3.5.44",
+    "y-codemirror.next": "^0.3.6",
     "yjs": "^13.6.33"
   },
   "devDependencies": {

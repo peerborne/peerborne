@@ -37,6 +37,7 @@ try {
     '@peerborne/svelte',
     '@peerborne/loro',
     '@peerborne/tanstack-db',
+    '@peerborne/yjs/editor',
     '@peerborne/react',
     '@peerborne/react/store',
     '@peerborne/redux',

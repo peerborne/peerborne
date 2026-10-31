@@ -1,6 +1,6 @@
 # Browser integration examples
 
-Available views: Plain JavaScript, React, Vue, Svelte, Loro, TanStack DB.
+Available views: Plain JavaScript, React, Vue, Svelte, Loro, TanStack DB, CodeMirror.
 
 The default view uses plain DOM APIs. Vite builds and serves the files;
 Peerborne and the document store do not require a frontend framework.
@@ -21,6 +21,6 @@ yarn exec playwright install chromium
 yarn test:e2e:integrations
 ```
 
-The suite asserts actual local mutations.
+The suite asserts actual local mutations, editor typing.
 It does not establish live multi-peer convergence, restart recovery, or production readiness.
 The per-view modules and shared session helper own their teardown explicitly.

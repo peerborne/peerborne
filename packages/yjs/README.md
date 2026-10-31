@@ -8,7 +8,7 @@ Build collaborative applications with Yjs shared types. This package provides th
 
 - **Yjs adapter** — wraps Yjs `Doc`, shared types (Y.Map, Y.Array, Y.Text), and merge semantics with Peerborne's encryption and signing
 - **Deterministic merging** — concurrent edits resolve without conflicts using Yjs's battle-tested CRDT algorithms
-- **Works with any Yjs editor binding** — ProseMirror, Tiptap, CodeMirror, Quill, Monaco
+- **Experimental editor bridge** — route upstream editor mutations through the Peerborne change boundary using a private Yjs mirror; awareness transport is not provided.
 
 ## Choose this package
 
@@ -33,3 +33,11 @@ Use this adapter for Yjs-backed collaborative documents. It works with:
 - [API reference](https://peerborne.io/reference/)
 - [Current limitations](https://peerborne.io/concepts/limitations/)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
+
+## Editor mutation boundary
+
+Use `createYjsEditorBridge` from `@peerborne/yjs/editor` with an already-created
+or opened document. Bind upstream editors to the bridge's private mirror,
+await `flush()` to observe write failures, and drain `destroy()` on teardown.
+Directly binding an editor to the authoritative CRDT bypasses change capture.
+See the [editor guide](https://peerborne.io/cookbook/editor-integrations/).
