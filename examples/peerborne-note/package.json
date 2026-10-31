@@ -10,6 +10,7 @@
     "start": "vite",
     "build": "tsc --noEmit && vite build",
     "build:deployment": "tsc --noEmit && vite build --mode deployment",
+    "deploy": "yarn build:deployment && npx --yes wrangler@4.156.0 pages deploy --branch main",
     "test": "jest --runInBand"
   },
   "dependencies": {

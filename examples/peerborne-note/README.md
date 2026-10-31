@@ -84,13 +84,16 @@ yarn install --immutable
 yarn build
 yarn workspace @peerborne/peerborne-note build:deployment
 npx wrangler@4.156.0 login --scopes account:read user:read pages:write
-npx wrangler@4.156.0 pages deploy --cwd examples/peerborne-note --branch main
+yarn workspace @peerborne/peerborne-note deploy
 ```
 
-The [Wrangler configuration](wrangler.toml) selects only the generated `dist`
-directory. The deployment build renders its existing `_headers` policy, allowing
-connections only to this origin and the configured relay. The homepage is not
-cached; content-hashed assets have an immutable cache policy. No source maps or
+The [Wrangler configuration](wrangler.toml) selects only the generated `dist-deployment`
+directory. Local builds and smoke tests use `dist`, so they cannot replace
+the deployable assets. The `deploy` command rebuilds in deployment mode before
+uploading. The deployment build renders its existing `_headers` policy, allowing
+connections only to this origin and the configured relay. The dial policy also
+rejects other advertised relay addresses, including the server's local listeners.
+The homepage is not cached; content-hashed assets have an immutable cache policy. No source maps or
 private local data are uploaded.
 
 The Pages project already exists. To reproduce it in a different Cloudflare

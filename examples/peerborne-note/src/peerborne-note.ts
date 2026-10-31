@@ -19,6 +19,7 @@ import {
 import {
   assertTrustedRendezvous,
   invitationUrl,
+  isConfiguredRelayAddress,
   rendezvousForCircuitReservation,
 } from './invitation-link.js';
 import {
@@ -166,6 +167,18 @@ export class PeerborneNoteSession {
     );
     const config = defaultConfig(defaultBootstrapConfig([]));
     config.enableTopicValidators = true;
+    const libp2p = config.helia?.libp2p;
+    config.helia = {
+      ...config.helia,
+      libp2p: {
+        ...libp2p,
+        connectionGater: {
+          ...libp2p?.connectionGater,
+          denyDialMultiaddr: async (address) =>
+            !isConfiguredRelayAddress(address.toString(), relayMultiaddr),
+        },
+      },
+    };
     await session.peerborne.initialize(config);
     session.peerborne.subscribeToPeerConnect(PEER_SUBSCRIBER_ID, () => {
       session.emitNetwork();

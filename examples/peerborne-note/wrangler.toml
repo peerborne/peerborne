@@ -1,3 +1,3 @@
 name = "peerborne-note"
-pages_build_output_dir = "./dist"
+pages_build_output_dir = "./dist-deployment"
 compatibility_date = "2026-10-30"
