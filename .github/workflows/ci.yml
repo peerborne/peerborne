@@ -79,6 +79,7 @@ jobs:
           - index
           - store
           - vue
+          - svelte
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion

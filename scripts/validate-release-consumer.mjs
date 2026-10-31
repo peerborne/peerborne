@@ -34,6 +34,7 @@ try {
     '@peerborne/yjs',
     '@peerborne/store',
     '@peerborne/vue',
+    '@peerborne/svelte',
     '@peerborne/react',
     '@peerborne/react/store',
     '@peerborne/redux',

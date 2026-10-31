@@ -2,7 +2,7 @@
 
 ## Project
 
-Peerborne is alpha software for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. It is not production-ready. The eight `@peerborne/*` library packages are source workspaces and are not published to npm.
+Peerborne is alpha software for encrypted, local-first CRDT documents synchronized over peer-to-peer networks. It is not production-ready. The nine `@peerborne/*` library packages are source workspaces and are not published to npm.
 
 Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architecture, evidence, security, and limitation details. Do not turn isolated primitive tests into end-to-end capability claims.
 
@@ -17,7 +17,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 
 ## Repository map
 
-- `packages/`: eight library workspaces
+- `packages/`: nine library workspaces
 - `examples/`: browser-test, wiki-swarm, password-manager, peerborne-note, and integrations browser workspaces
 - `site/`: Astro Starlight workspace and TypeDoc integration
 - `relay-server/`: separate relay project and lockfile
@@ -26,7 +26,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
-The root has fourteen workspaces: eight libraries, five examples, and the site.
+The root has fifteen workspaces: nine libraries, five examples, and the site.
 
 ## Commands
 

@@ -12,6 +12,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | Plain web / document store | Dependency-free document snapshots, lifecycle/error tests, and a plain DOM browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | React | External-store hook, shared ownership, StrictMode test, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Vue | Shallow composable, SSR/lifecycle tests, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 

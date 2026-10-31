@@ -61,6 +61,7 @@ export default defineConfig({
             '../packages/index',
             '../packages/store',
             '../packages/vue',
+            '../packages/svelte',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },
