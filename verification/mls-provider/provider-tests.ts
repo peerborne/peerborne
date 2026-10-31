@@ -66,6 +66,14 @@ export async function runProviderChecks() {
     initial.state.confirmedTranscriptHash.length === 0,
     'genesis must retain the real RFC empty transcript',
   );
+  const encryptedGenesis = await alice.exportEncryptedState(protector);
+  const genesisPeer = await MlsProviderSpike.initialize(ids[0], ids[0], policy);
+  await genesisPeer.importEncryptedState(encryptedGenesis, protector);
+  check(
+    (await genesisPeer.getPublicState()).confirmedTranscriptHash.length === 0,
+    'encrypted genesis restores the real empty transcript',
+  );
+  await genesisPeer.clearGroupState();
   const bobPackage = await originalBob.createKeyPackage({
     groupId: group,
     memberId: ids[1],
@@ -341,6 +349,7 @@ export async function runProviderChecks() {
     ),
   );
   return {
+    encryptedGenesisRecovery: true,
     pendingKeyPackageRecovery: true,
     stablePendingExport: true,
     authenticatedAdds: true,

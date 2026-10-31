@@ -30,6 +30,76 @@ const keyPackage: GroupKeyPackage = {
   payload: new Uint8Array([0xb1, 0xb2, 0xb3, 0xb4]),
 };
 
+describe('RFC 9420 initial confirmed transcript', () => {
+  const genesis = {
+    ...state,
+    epoch: 0n,
+    confirmedTranscriptHash: new Uint8Array(),
+  };
+
+  test('round-trips an encrypted genesis with the real empty transcript', async () => {
+    const protector =
+      await WebCryptoGroupStateProtector.generate('genesis-key');
+    const privateState = new Uint8Array([7, 8, 9]);
+    const sealed = await EncryptedGroupState.seal(
+      genesis,
+      privateState,
+      protector,
+    );
+    const decoded = EncryptedGroupState.deserialize(sealed.serialize());
+    expect(decoded.state.epoch).toBe(0n);
+    expect(decoded.state.confirmedTranscriptHash).toHaveLength(0);
+    expect(await decoded.open(protector)).toEqual(privateState);
+  });
+
+  test('rejects empty confirmed transcripts after genesis', async () => {
+    const protector =
+      await WebCryptoGroupStateProtector.generate('genesis-key');
+    await expect(
+      EncryptedGroupState.seal(
+        { ...genesis, epoch: 1n },
+        new Uint8Array([1]),
+        protector,
+      ),
+    ).rejects.toThrow('confirmedTranscriptHash');
+  });
+
+  test('rejects an empty-transcript envelope relabeled to a later epoch', async () => {
+    const protector =
+      await WebCryptoGroupStateProtector.generate('genesis-key');
+    const sealed = await EncryptedGroupState.seal(
+      genesis,
+      new Uint8Array([1]),
+      protector,
+    );
+    const encoded = sealed.serialize();
+    const epochOffset =
+      8 +
+      2 +
+      2 +
+      new TextEncoder().encode(genesis.protocol.id).length +
+      2 +
+      2 +
+      genesis.groupId.length;
+    new DataView(encoded.buffer).setBigUint64(epochOffset, 1n);
+    expect(() => EncryptedGroupState.deserialize(encoded)).toThrow(
+      'confirmedTranscriptHash',
+    );
+  });
+
+  test('still requires a nonempty public tree hash at genesis', async () => {
+    const protector =
+      await WebCryptoGroupStateProtector.generate('genesis-key');
+    await expect(
+      EncryptedGroupState.seal(
+        { ...genesis, treeHash: new Uint8Array() },
+        new Uint8Array([1]),
+        protector,
+      ),
+    ).rejects.toThrow('treeHash');
+  });
+});
+
 describe('EncryptedKeyPackageState', () => {
   test('round-trips one-time private state and defensively clones public fields', async () => {
     const protector = await WebCryptoGroupStateProtector.generate('kp-key');
@@ -271,9 +341,9 @@ describe('EncryptedGroupState', () => {
     first.groupId[0] = 0xff;
 
     expect(envelope.state.groupId).toEqual(state.groupId);
-    expect(EncryptedGroupState.deserialize(envelope.serialize()).state.epoch).toBe(
-      maximum,
-    );
+    expect(
+      EncryptedGroupState.deserialize(envelope.serialize()).state.epoch,
+    ).toBe(maximum);
     await expect(
       EncryptedGroupState.seal(
         { ...state, epoch: maximum + 1n },
@@ -296,11 +366,7 @@ describe('EncryptedGroupState', () => {
       },
     });
     await expect(
-      EncryptedGroupState.seal(
-        accessorState,
-        new Uint8Array([1]),
-        protector,
-      ),
+      EncryptedGroupState.seal(accessorState, new Uint8Array([1]), protector),
     ).rejects.toThrow(/own data properties/);
     expect(treeHashReads).toBe(0);
 
@@ -330,9 +396,7 @@ describe('EncryptedGroupState', () => {
         EncryptedGroupState.seal(
           {
             ...state,
-            confirmedTranscriptHash: new Uint8Array(
-              new SharedArrayBuffer(32),
-            ),
+            confirmedTranscriptHash: new Uint8Array(new SharedArrayBuffer(32)),
           },
           new Uint8Array([1]),
           protector,
@@ -406,14 +470,12 @@ describe('encrypted envelope provider boundaries', () => {
       (
         privateState: Uint8Array,
         protector: GroupStateProtector,
-      ) => Promise<{ open(protector: GroupStateProtector): Promise<Uint8Array> }>
+      ) => Promise<{
+        open(protector: GroupStateProtector): Promise<Uint8Array>;
+      }>
     > = [
       (privateState, protector) =>
-        EncryptedKeyPackageState.seal(
-          keyPackage,
-          privateState,
-          protector,
-        ),
+        EncryptedKeyPackageState.seal(keyPackage, privateState, protector),
       (privateState, protector) =>
         EncryptedGroupState.seal(state, privateState, protector),
     ];
@@ -440,9 +502,9 @@ describe('encrypted envelope provider boundaries', () => {
 
       const emptyPrivateState = new Uint8Array(0);
       Object.defineProperty(emptyPrivateState, 'byteLength', { value: 1 });
-      await expect(
-        sealEnvelope(emptyPrivateState, protector),
-      ).rejects.toThrow(/invalid length/);
+      await expect(sealEnvelope(emptyPrivateState, protector)).rejects.toThrow(
+        /invalid length/,
+      );
       expect(sealCalls).toBe(0);
 
       let nonceReads = 0;
@@ -532,11 +594,7 @@ describe('encrypted envelope provider boundaries', () => {
           throw new Error('inherited groupId setter must not run');
         },
       });
-      pending = EncryptedGroupState.seal(
-        state,
-        new Uint8Array([1]),
-        protector,
-      );
+      pending = EncryptedGroupState.seal(state, new Uint8Array([1]), protector);
     } finally {
       if (priorGroupId === undefined) {
         delete (Object.prototype as { groupId?: unknown }).groupId;
@@ -564,9 +622,9 @@ describe('applied membership delta commitment', () => {
     canonical.fill(0xff);
 
     expect(await appliedGroupMembershipDeltaHash(delta)).toEqual(firstHash);
-    expect(new TextDecoder().decode(
-      canonicalAppliedGroupMembershipDelta(delta),
-    )).toContain('group-security-applied-membership-delta/v1');
+    expect(
+      new TextDecoder().decode(canonicalAppliedGroupMembershipDelta(delta)),
+    ).toContain('group-security-applied-membership-delta/v1');
     const empty = canonicalAppliedGroupMembershipDelta({ changes: [] });
     expect(new TextDecoder().decode(empty)).toContain(
       'group-security-applied-membership-delta/v1',
@@ -651,9 +709,9 @@ describe('applied membership delta commitment', () => {
         throw new Error('array entries override must not run');
       },
     });
-    expect(() =>
-      canonicalAppliedGroupMembershipDelta({ changes }),
-    ).toThrow(/extra properties/);
+    expect(() => canonicalAppliedGroupMembershipDelta({ changes })).toThrow(
+      /extra properties/,
+    );
     expect(iteratorCalls).toBe(0);
   });
 
@@ -694,9 +752,7 @@ describe('applied membership delta commitment', () => {
       memberId: new Uint8Array([1]),
     });
     const delta = Object.assign(Object.create(null), { changes: [change] });
-    expect(() =>
-      canonicalAppliedGroupMembershipDelta(delta),
-    ).not.toThrow();
+    expect(() => canonicalAppliedGroupMembershipDelta(delta)).not.toThrow();
 
     for (const trap of ['getPrototypeOf', 'ownKeys'] as const) {
       const hostile = new Proxy(
@@ -825,9 +881,7 @@ describe('applied membership delta commitment', () => {
         throw new Error('String#padStart must not run');
       };
       canonical = canonicalAppliedGroupMembershipDelta({
-        changes: [
-          { kind: 'remove', memberId: new Uint8Array([0xab, 0xcd]) },
-        ],
+        changes: [{ kind: 'remove', memberId: new Uint8Array([0xab, 0xcd]) }],
       });
     } finally {
       Number.prototype.toString = numberToString;
@@ -838,7 +892,11 @@ describe('applied membership delta commitment', () => {
 });
 
 function findSubarray(haystack: Uint8Array, needle: Uint8Array): number {
-  outer: for (let start = 0; start <= haystack.length - needle.length; start++) {
+  outer: for (
+    let start = 0;
+    start <= haystack.length - needle.length;
+    start++
+  ) {
     for (let index = 0; index < needle.length; index++) {
       if (haystack[start + index] !== needle[index]) continue outer;
     }

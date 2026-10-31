@@ -152,6 +152,7 @@ export interface GroupSecurityPublicState {
   readonly protocol: GroupSecurityProtocol;
   readonly groupId: Uint8Array;
   readonly epoch: bigint;
+  /** RFC 9420 starts with an empty confirmed transcript at epoch zero. */
   readonly confirmedTranscriptHash: Uint8Array;
   readonly treeHash: Uint8Array;
 }
@@ -726,16 +727,19 @@ export class EncryptedGroupState {
     if (version !== ENCRYPTED_GROUP_STATE_VERSION) {
       throw new Error(`unsupported encrypted group-state version ${version}`);
     }
+    const protocol = {
+      id: reader.string16('protocol.id'),
+      version: reader.u16('protocol.version'),
+    };
+    const groupId = reader.bytes16('groupId', 1, MAX_GROUP_ID_BYTES);
+    const epoch = reader.u64('epoch');
     const state: GroupSecurityPublicState = {
-      protocol: {
-        id: reader.string16('protocol.id'),
-        version: reader.u16('protocol.version'),
-      },
-      groupId: reader.bytes16('groupId', 1, MAX_GROUP_ID_BYTES),
-      epoch: reader.u64('epoch'),
+      protocol,
+      groupId,
+      epoch,
       confirmedTranscriptHash: reader.bytes16(
         'confirmedTranscriptHash',
-        1,
+        epoch === 0n ? 0 : 1,
         MAX_HASH_BYTES,
       ),
       treeHash: reader.bytes16('treeHash', 1, MAX_HASH_BYTES),
@@ -1317,7 +1321,7 @@ function clonePublicState(
     confirmedTranscriptHash: snapshotBoundedBytes(
       raw.confirmedTranscriptHash,
       'confirmedTranscriptHash',
-      1,
+      raw.epoch === 0n ? 0 : 1,
       MAX_HASH_BYTES,
     ),
     treeHash: snapshotBoundedBytes(
@@ -1341,7 +1345,7 @@ function validatePublicState(state: GroupSecurityPublicState): void {
   validateBytes(
     state.confirmedTranscriptHash,
     'confirmedTranscriptHash',
-    1,
+    state.epoch === 0n ? 0 : 1,
     MAX_HASH_BYTES,
   );
   validateBytes(state.treeHash, 'treeHash', 1, MAX_HASH_BYTES);

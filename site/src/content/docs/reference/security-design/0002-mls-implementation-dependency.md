@@ -123,9 +123,10 @@ controller and credential enforcement, verified membership deltas, self-update,
 terminal removal, and malformed/tampered input without changing accepted state.
 
 This is patched experimental evidence, not selection of the stable release.
-The spike preserves RFC 9420's empty initial transcript and explicit terminal
-removal; the generic coordinator/envelope contracts do not yet support those
-states or a zero-membership-delta self-update. Document ACL/control/quorum
+The spike preserves RFC 9420's empty initial transcript through encrypted
+persistence and signed genesis restoration. Post-genesis transcripts and tree
+hashes remain nonempty. The generic coordinator still needs explicit terminal
+removal and zero-membership-delta self-update contracts. Document ACL/control/quorum
 integration, actual durable process/browser recovery with an independent
 rollback anchor, independent live interoperability, resource budgets, and
 security review remain acceptance gates.

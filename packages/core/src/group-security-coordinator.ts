@@ -4253,7 +4253,7 @@ function validateGenesisControlPayload(
       payload,
       offset,
       'genesis confirmedTranscriptHash',
-      1,
+      0,
       128,
     );
     offset = transcript.nextOffset;
@@ -5651,7 +5651,12 @@ function validatePublicState(state: GroupSecurityPublicState): void {
   validateProtocol(state.protocol);
   validateBytes(state.groupId, 'state.groupId', 1, MAX_GROUP_ID_BYTES);
   validateU64(state.epoch, 'state.epoch');
-  validateBytes(state.confirmedTranscriptHash, 'transcript hash', 1, 128);
+  validateBytes(
+    state.confirmedTranscriptHash,
+    'transcript hash',
+    state.epoch === 0n ? 0 : 1,
+    128,
+  );
   validateBytes(state.treeHash, 'tree hash', 1, 128);
 }
 
@@ -6158,7 +6163,7 @@ function clonePublicState(
     confirmedTranscriptHash: copyControlRecordBytes(
       raw.confirmedTranscriptHash,
       'group public state confirmedTranscriptHash',
-      1,
+      raw.epoch === 0n ? 0 : 1,
       128,
     ),
     treeHash: copyControlRecordBytes(
