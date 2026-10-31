@@ -5,6 +5,61 @@ import { join } from 'node:path';
 
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
+test('shows an edit as unsaved while signing is still in progress', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = SubtleCrypto.prototype.sign;
+    const gate = window as unknown as {
+      pauseVaultSigning?: boolean;
+      releaseVaultSigning?: () => void;
+    };
+    SubtleCrypto.prototype.sign = async function (
+      ...args: Parameters<SubtleCrypto['sign']>
+    ) {
+      if (gate.pauseVaultSigning)
+        await new Promise<void>((resolve) => {
+          gate.releaseVaultSigning = resolve;
+        });
+      return Reflect.apply(original, this, args);
+    };
+  });
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await expect(page.getByPlaceholder('Enter a secret here...')).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.evaluate(() => {
+    (window as unknown as { pauseVaultSigning?: boolean }).pauseVaultSigning =
+      true;
+  });
+  await page
+    .getByPlaceholder('Enter a secret here...')
+    .fill('pending signing fixture');
+  await expect(page.getByRole('status')).toHaveText('Saving…');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          typeof (window as unknown as { releaseVaultSigning?: () => void })
+            .releaseVaultSigning,
+      ),
+    )
+    .toBe('function');
+  await page.evaluate(() => {
+    const gate = window as unknown as {
+      pauseVaultSigning?: boolean;
+      releaseVaultSigning?: () => void;
+    };
+    gate.pauseVaultSigning = false;
+    gate.releaseVaultSigning?.();
+  });
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+});
+
 test('another tab cannot write until the active vault tab closes', async ({
   page,
   context,

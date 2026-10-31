@@ -167,8 +167,15 @@ export class VaultSession {
     entry: OpenDocument,
     operation: () => Promise<unknown>,
   ): Promise<void> {
-    await operation();
-    await this.save(entry);
+    this.pendingWrites++;
+    this.notify();
+    try {
+      await operation();
+      await this.save(entry);
+    } finally {
+      this.pendingWrites--;
+      this.notify();
+    }
   }
 }
 
