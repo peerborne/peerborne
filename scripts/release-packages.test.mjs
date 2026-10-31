@@ -12,6 +12,7 @@ test('release package allowlist is exact and ordered', () => {
     '@peerborne/redux',
     '@peerborne/index',
     '@peerborne/vue',
+    '@peerborne/svelte',
   ]);
 });
 

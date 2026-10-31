@@ -65,7 +65,7 @@ What needs to happen:
 
 ### 6. External package publication
 
-**Status: First release pending.** The eight `@peerborne/*` packages are prepared
+**Status: First release pending.** The nine `@peerborne/*` packages are prepared
 as `0.1.0` source workspaces and remain unpublished. Packed-package validation
 covers ESM and native CommonJS loading on Node.js 22.19.0, TypeScript NodeNext
 declarations, and a Vite build. The release workflow validates artifacts before
@@ -76,7 +76,7 @@ for bootstrap authorization and publishing controls.
 What needs to happen:
 - First `0.1.0` release published from a reviewed `v0.1.0` tag
 - External consumer validation (import from npm, build, run)
-- Configure trusted publishing for all eight packages and revoke the bootstrap token after verification
+- Configure trusted publishing for all nine packages and revoke the bootstrap token after verification
 
 ### 7. Documentation and snippet tests
 

@@ -1,5 +1,5 @@
 {
-  "documents": ["vanilla", "react", "vue"],
+  "documents": ["vanilla", "react", "vue", "svelte"],
   "editors": [],
   "ssr": []
 }
