@@ -13,6 +13,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | React | External-store hook, shared ownership, StrictMode test, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Vue | Shallow composable, SSR/lifecycle tests, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, and local browser mutation | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 
@@ -29,3 +30,5 @@ server tests. Tailwind and shadcn/ui need styling recipes rather than Peerborne
 adapters. A dedicated Vite plugin is deferred until recurring configuration
 warrants one. The full runtime still needs browser dependency resolution;
 no published CDN bundle is claimed.
+
+Loro snapshots retain full application operation history. Use separate paths for separate engines. The example retains the existing Yjs ACL, keychain, and byte serializers; it does not provide content-history redaction.

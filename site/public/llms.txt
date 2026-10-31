@@ -14,12 +14,12 @@ Use the feature audit and concept documentation as the authority for capability 
 - [Why Peerborne](https://peerborne.io/concepts/why-peerborne/): Value proposition, when to use/not use.
 - [Architecture](https://peerborne.io/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
 - [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager, peerborne-note).
-- [API reference](https://peerborne.io/reference/): Generated package documentation for all nine @peerborne/* packages.
+- [API reference](https://peerborne.io/reference/): Generated package documentation for all ten @peerborne/* packages.
 - [Comparisons](https://peerborne.io/reference/comparisons/): Peerborne vs Yjs, Automerge, Liveblocks, RxDB, Jazz, ElectricSQL.
 
 ## Packages
 
-The nine libraries are source workspaces and are not yet published to npm. Most applications combine the core package with one CRDT adapter and optional framework bindings.
+The ten libraries are source workspaces and are not yet published to npm. Most applications combine the core package with one CRDT adapter and optional framework bindings.
 
 - [`@peerborne/core`](https://github.com/Peerborne/peerborne/blob/main/packages/core/README.md): Core document and runtime APIs, with dedicated Node and browser-primitives entry points.
 - [`@peerborne/automerge`](https://github.com/Peerborne/peerborne/blob/main/packages/automerge/README.md): Automerge provider, serialization, ACL, and keychain adapters.

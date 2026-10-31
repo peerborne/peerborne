@@ -62,6 +62,7 @@ export default defineConfig({
             '../packages/store',
             '../packages/vue',
             '../packages/svelte',
+            '../packages/loro',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },

@@ -4656,6 +4656,7 @@ __metadata:
   resolution: "@peerborne/integration-examples@workspace:examples/integrations"
   dependencies:
     "@peerborne/core": "workspace:^"
+    "@peerborne/loro": "workspace:^"
     "@peerborne/react": "workspace:^"
     "@peerborne/store": "workspace:^"
     "@peerborne/svelte": "workspace:^"
@@ -4666,6 +4667,7 @@ __metadata:
     "@types/react": "npm:^19.3.0"
     "@types/react-dom": "npm:^19.2.3"
     "@vitejs/plugin-react": "npm:^6.1.2"
+    loro-crdt: "npm:^1.17.1"
     react: "npm:^19.3.0"
     react-dom: "npm:^19.3.0"
     svelte: "npm:^5.57.3"
@@ -4674,6 +4676,21 @@ __metadata:
     vite: "npm:^8.3.5"
     vue: "npm:^3.5.44"
     yjs: "npm:^13.6.33"
+  languageName: unknown
+  linkType: soft
+
+"@peerborne/loro@workspace:^, @peerborne/loro@workspace:packages/loro":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/loro@workspace:packages/loro"
+  dependencies:
+    "@peerborne/core": "workspace:^"
+    "@types/node": "npm:^26.6.2"
+    jest: "npm:^30.5.2"
+    loro-crdt: "npm:^1.17.1"
+    ts-jest: "npm:^29.4.14"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    loro-crdt: ^1.17.1
   languageName: unknown
   linkType: soft
 
@@ -11124,6 +11141,13 @@ __metadata:
   bin:
     loose-envify: cli.js
   checksum: 10/6517e24e0cad87ec9888f500c5b5947032cdfe6ef65e1c1936a0c48a524b81e65542c9c3edc91c97d5bddc806ee2a985dbc79be89215d613b1de5db6d1cfe6f4
+  languageName: node
+  linkType: hard
+
+"loro-crdt@npm:^1.17.1":
+  version: 1.17.1
+  resolution: "loro-crdt@npm:1.17.1"
+  checksum: 10/650933670afbef3e0f328846f31180f0ce7e831a15bc0f44fd52e15ebbfa71d1c0accca2ad2f38db8bd5f2567e36e88a17e0a99e4696bb3bcb2db3c9680c60fb
   languageName: node
   linkType: hard
 

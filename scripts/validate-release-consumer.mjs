@@ -35,6 +35,7 @@ try {
     '@peerborne/store',
     '@peerborne/vue',
     '@peerborne/svelte',
+    '@peerborne/loro',
     '@peerborne/react',
     '@peerborne/react/store',
     '@peerborne/redux',
