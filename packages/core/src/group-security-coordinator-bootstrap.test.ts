@@ -39,6 +39,19 @@ MembershipControlSignatureVerifier
 } from './membership-control-record.js';
 
 describe('GroupSecurityCoordinator bootstrap', () => {
+  test('persists and restores signed genesis with an empty confirmed transcript', async () => {
+    const value = await context();
+    value.provider.initialTranscriptHash = new Uint8Array();
+    const coordinator = await bootstrap(value);
+    expect(coordinator.publicState.confirmedTranscriptHash).toHaveLength(0);
+    const stored = await value.store.load(storeKey);
+    expect(stored?.encryptedState?.state.confirmedTranscriptHash).toHaveLength(0);
+    const restarted = cloneContextWithProvider(value, new ContractTestProvider());
+    const restored = await GroupSecurityCoordinator.restore(config(restarted));
+    expect(restored.publicState.epoch).toBe(0n);
+    expect(restored.publicState.confirmedTranscriptHash).toHaveLength(0);
+  });
+
   test('rejects accessor-backed config without invoking getters', async () => {
     const value = await context();
     let providerGetterCalls = 0;

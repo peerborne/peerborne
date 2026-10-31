@@ -94,7 +94,7 @@ const report = {
   browserResult: chromiumResult.result,
   remaining: [
     'broader RFC suites and independent live interoperability',
-    'provider/coordinator contract gaps: empty genesis transcript, self-update, terminal removal',
+    'provider/coordinator contract gaps: self-update, terminal removal',
     'document ACL/control/quorum integration',
     'durable browser process recovery with independent rollback anchor',
     'resource qualification and independent security review',

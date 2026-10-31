@@ -214,6 +214,7 @@ export class ContractTestProvider implements GroupSecurityProvider {
   authenticatedMemberIdOverride?: Uint8Array;
   authenticatedRequestCommitmentOverride?: Uint8Array;
   authenticatedCreatorMemberIdOverride?: Uint8Array;
+  initialTranscriptHash?: Uint8Array;
   importedStateOverrideAfterOpen?: GroupSecurityPublicState;
   lastExportedKeyPackageState?: EncryptedKeyPackageState;
   lastExportedGroupState?: EncryptedGroupState;
@@ -361,6 +362,12 @@ export class ContractTestProvider implements GroupSecurityProvider {
       );
     }
     this.current = publicState(0n, input.groupId);
+    if (this.initialTranscriptHash !== undefined) {
+      this.current = {
+        ...this.current,
+        confirmedTranscriptHash: this.initialTranscriptHash.slice(),
+      };
+    }
     return {
       state: cloneState(this.current),
       authenticatedCreatorMemberId: new Uint8Array(

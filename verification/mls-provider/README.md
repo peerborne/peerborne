@@ -100,13 +100,14 @@ crash-consistent persistence, a persistent keystore, or rollback resistance.
 The local consumed markers do not replace the coordinator's durable tombstones
 or an independent monotonic anchor, including before the first group join.
 
-Three coordinator contracts need explicit work before this can implement the
+The envelope/coordinator now preserves RFC 9420's empty epoch-zero confirmed
+transcript through encrypted persistence and signed genesis restoration.
+Post-genesis transcripts and every public tree hash remain nonempty. Native
+Node/Chromium checks include fresh-provider reconstruction at epoch zero.
+
+Two coordinator contracts need explicit work before this can implement the
 complete `GroupSecurityProvider` boundary:
 
-- RFC 9420 starts with an empty confirmed transcript hash. The current generic
-  envelope/coordinator requires a nonempty hash. The spike preserves the real
-  empty value rather than inventing one; epoch-zero encrypted export is not
-  yet supported by that envelope.
 - A self-update has no Add/Remove membership delta. The current coordinator
   requires exactly one KeyPackage-bearing update or Add/Remove per control.
 - A removed member cannot derive the next epoch's private secrets. The spike
