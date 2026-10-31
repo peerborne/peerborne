@@ -128,6 +128,9 @@ jobs:
         run: yarn build
       - name: Run CRDT and epoch diagnostics
         run: node --expose-gc verification/run.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
+      - name: Run advanced crypto and adversarial diagnostics
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node --expose-gc verification/advanced/run.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
       - name: Install Chromium
         id: chromium
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -135,6 +138,12 @@ jobs:
       - name: Run Chromium storage and WebRTC diagnostics
         if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
         run: yarn exec playwright test --config=verification/playwright.config.ts
+      - name: Run advanced browser diagnostics
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: yarn exec playwright test --config=verification/advanced/playwright.config.ts
+      - name: Collect advanced observations
+        if: always()
+        run: node verification/advanced/collect.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
       - name: Collect capability gaps
         if: always()
         run: node verification/collect.mjs --profile "$PEERBORNE_VERIFY_PROFILE"

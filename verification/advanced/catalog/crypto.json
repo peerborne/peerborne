@@ -1,0 +1,31 @@
+{
+  "category": "crypto",
+  "scenarios": [
+    {
+      "id": "epoch-fork",
+      "name": "Partitioned revocation and concurrent epoch forks",
+      "runtime": "node",
+      "module": "./node/crypto.mjs",
+      "entry": "epochFork"
+    },
+    {
+      "id": "key-compromise",
+      "name": "Historical ciphertext and compromised member ratchets",
+      "runtime": "node",
+      "module": "./node/crypto.mjs",
+      "entry": "keyCompromise"
+    },
+    {
+      "id": "document-replay",
+      "name": "Cross-document ciphertext and signed-parent replay",
+      "runtime": "node",
+      "module": "./node/crypto.mjs",
+      "entry": "documentReplay"
+    },
+    {
+      "id": "traffic-metadata",
+      "name": "RTC ciphertext, routing labels and signaling metadata",
+      "runtime": "browser"
+    }
+  ]
+}

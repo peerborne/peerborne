@@ -51,7 +51,9 @@
     "benchmark:ci": "tsx --expose-gc scripts/benchmark-ci.mjs",
     "visuals:generate": "node scripts/render-peerborne-hook.mjs",
     "visuals:check": "node scripts/render-peerborne-hook.mjs --check",
-    "visuals:test": "node --test scripts/render-peerborne-hook.test.mjs && yarn visuals:check"
+    "visuals:test": "node --test scripts/render-peerborne-hook.test.mjs && yarn visuals:check",
+    "verify:advanced": "yarn build && node --expose-gc verification/advanced/run.mjs",
+    "verify:advanced:browser": "yarn build && playwright test --config=verification/advanced/playwright.config.ts"
   },
   "packageManager": "yarn@4.5.0"
 }
