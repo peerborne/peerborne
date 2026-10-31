@@ -22,3 +22,6 @@ packages/core/src/policy/replay-window.ts
 packages/core/src/policy/graph-reachability.ts
 packages/core/src/policy/tree-index.ts
 packages/index/src/query-order.ts
+packages/core/src/policy/authentication-budget.ts
+packages/core/src/policy/control-chain.ts
+packages/core/src/policy/frame-layout.ts

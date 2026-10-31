@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 77 production functions in 24 proof units. The runtime calls
+LemmaScript checks 83 production functions in 27 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -55,6 +55,9 @@ consumer, proof obligation and non-vacuity witness.
 | [Graph reachability](../packages/core/src/policy/graph-reachability.ts)     |         2 | Exact least successor-closed set containing the root, including cyclic/disconnected graphs; terminating traversal with at most E+1 queued entries and direct ACL-node pruning exclusion.                  |
 | [BeeKEM tree indices](../packages/core/src/policy/tree-index.ts)            |        17 | Exact levels, roots, leaf-index inverses, parent/child identities including ragged trees, sibling pairs, bounded path links to the root and matching copaths.                                             |
 | [Query order and pages](../packages/index/src/query-order.ts)               |         4 | UTF-16/finite-real scalar order, lazy first-difference/direction/path ordering, symmetry and transitivity under per-field order laws, and exact reconstruction by successive positive-sized prefix pages. |
+| [Authentication budget](../packages/core/src/policy/authentication-budget.ts) | 1 | Attempts and bytes are reserved atomically; either both advance exactly or neither changes. Arbitrary finite reservation histories conserve admitted counts and byte totals within both limits. |
+| [Control-chain admission](../packages/core/src/policy/control-chain.ts) | 3 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection and error priority; valid epoch sequences equal the initial epoch plus their index without wraparound. |
+| [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
 
 The capability tables are frozen to preserve the constant-model assumption.
 Numeric contracts bound arithmetic to domains where JavaScript executes the
@@ -98,6 +101,25 @@ field normalization, cursor decoding/binding and IndexedDB ordering still need
 runtime evidence. Prefix-page reconstruction assumes a fixed ordered input;
 it is not a claim of snapshot isolation while documents change between pages.
 
+Authentication reservation is a sequential arithmetic proof; shared-budget
+execution, authority lookup, abort signals and verification callbacks remain
+runtime boundaries. Control-chain admission assumes already validated uint64
+epochs and a truthful parent-equality result. The proofs do not establish
+signature validity, authorizer correctness or the asynchronous chain's fork
+latch. Signed generated histories check those adapters, including callback
+failures, unauthorized same-slot candidates and concurrent duplicates/forks.
+
+Frame layout uses uint32 field lengths and safe-integer chunk availability.
+The range theorem reserves the following fields before accepting an earlier
+one; it does not validate magic, endianness, canonical bytes or signatures.
+The copy theorem counts logical bytes, not allocations or wall time. Native
+properties check DataView lengths, nonzero byte offsets, hostile length
+prefixes, detached results and asynchronous iterator cleanup. The real
+Uint8ArrayList dependency runs in a native Node/tsx fixture invoked by Jest;
+the inventory audits its fixed seed and run bound along with the TS suites.
+Invitation framing reads one message and checks suffixes in the current chunk;
+it does not wait for transport EOF to reject data in a future chunk.
+
 The [feature audit](feature-audit.md) remains authoritative about product gaps.
 For example, safe epoch-fork rejection is not automatic fork reconciliation;
 capability implication does not establish field-level enforcement on the
@@ -106,7 +128,7 @@ post-compromise security, key erasure or cryptographic unforgeability.
 
 ## Property testing after proofs
 
-The inventory audits 28 property-suite files containing 57 explicit
+The inventory audits 32 property-suite files containing 64 explicit
 `fast-check` assertions across all six library packages. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -123,6 +145,8 @@ properties can invoke the same assertion more than once.
 | Query/index behavior                    | Memory and IndexedDB execution against a separate full-scan oracle, nested predicates, finite numeric ordering, cursor binding, pagination and reopen; generated field traversal and Bloom merge laws.                                      |
 | UI identity and state                   | React instance/cache isolation, Redux histories against a Map oracle, prior-state immutability, prototype-sensitive IDs and state-selector identity.                                                                                        |
 | Mutable statistics                      | Counters, event aggregation and reset against independently calculated totals.                                                                                                                                                              |
+| Authentication and membership controls | Shared-budget verification and abort schedules, strict callback results, native Ed25519-signed hostile histories, non-poisoning unauthorized forks, queued input snapshots and concurrent duplicate/fork delivery. |
+| Binary transition framing | BigInt arithmetic calibration, strict field/trailer limits, malformed lengths, truncation/suffix rejection, byte ownership and actual Uint8ArrayList chunk fragmentation. |
 
 Native cryptographic entropy is not mocked; generated data and schedules have
 fixed seeds. These suites run in the existing `yarn test` CI job. The formal CI
@@ -146,7 +170,7 @@ where they check behavior outside the contracts.
 
 ## Cost and remaining work
 
-The 77-function proof check takes roughly two minutes on the development host,
+The full proof check takes roughly two minutes on the development host,
 including the four additional tree solver-seed checks. The generated report records each run's duration,
 source/proof hashes and tool versions.
 Controls run separately. First-time setup downloads the compiler dependencies

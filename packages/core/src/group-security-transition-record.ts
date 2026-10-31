@@ -6,6 +6,7 @@ import {
   serializeMembershipControlRecord,
 } from './membership-control-record.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import { boundedFieldEnd } from './policy/frame-layout.js';
 
 const reflectApply = Reflect.apply;
 const reflectOwnKeys = Reflect.ownKeys;
@@ -177,36 +178,49 @@ export function deserializeGroupSecurityTransitionRecord(
   }
   const codecIdLength = reflectApply(dataViewGetUint16, view, [offset, false]);
   offset += UINT16_BYTES;
-  if (
-    codecIdLength === 0 ||
-    codecIdLength > MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES ||
-    codecIdLength > inputLength - offset - MIN_REMAINING_AFTER_CODEC_ID_BYTES
-  ) {
+  const codecEnd = boundedFieldEnd(
+    inputLength,
+    offset,
+    codecIdLength,
+    1,
+    MAX_GROUP_SECURITY_TRANSITION_CODEC_ID_BYTES,
+    MIN_REMAINING_AFTER_CODEC_ID_BYTES,
+  );
+  if (codecEnd === -1) {
     throw new Error('invalid group-security transition delivery codec length');
   }
   const codecId = decodeDeliveryCodecId(
     rangeView(input, offset, codecIdLength),
   );
-  offset += codecIdLength;
+  offset = codecEnd;
   const codecVersion = reflectApply(dataViewGetUint16, view, [offset, false]);
   offset += UINT16_BYTES;
   const controlLength = reflectApply(dataViewGetUint32, view, [offset, false]);
   offset += UINT32_BYTES;
-  if (
-    controlLength === 0 ||
-    controlLength > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES ||
-    controlLength > inputLength - offset - UINT32_BYTES
-  ) {
+  const controlEnd = boundedFieldEnd(
+    inputLength,
+    offset,
+    controlLength,
+    1,
+    MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES,
+    UINT32_BYTES,
+  );
+  if (controlEnd === -1) {
     throw new Error('invalid group-security transition control length');
   }
   const serializedControl = rangeView(input, offset, controlLength);
-  offset += controlLength;
+  offset = controlEnd;
   const deliveryLength = reflectApply(dataViewGetUint32, view, [offset, false]);
   offset += UINT32_BYTES;
-  if (
-    deliveryLength > MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES ||
-    deliveryLength !== inputLength - offset
-  ) {
+  const deliveryEnd = boundedFieldEnd(
+    inputLength,
+    offset,
+    deliveryLength,
+    0,
+    MAX_GROUP_SECURITY_TRANSITION_DELIVERY_BYTES,
+    0,
+  );
+  if (deliveryEnd !== inputLength) {
     throw new Error('invalid group-security transition delivery length');
   }
   const controlRecord = deserializeMembershipControlRecord(serializedControl);

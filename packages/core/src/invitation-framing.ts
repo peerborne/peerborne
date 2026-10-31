@@ -1,4 +1,5 @@
 import type { Uint8ArrayList } from 'uint8arraylist';
+import { frameCopyLength } from './policy/frame-layout.js';
 
 const INVITATION_FRAME_HEADER_BYTES = 4;
 
@@ -41,8 +42,9 @@ export async function readInvitationProtocolFrame(
     let offset = 0;
     while (offset < bytes.byteLength) {
       if (headerLength < INVITATION_FRAME_HEADER_BYTES) {
-        const copied = Math.min(
-          INVITATION_FRAME_HEADER_BYTES - headerLength,
+        const copied = frameCopyLength(
+          headerLength,
+          INVITATION_FRAME_HEADER_BYTES,
           bytes.byteLength - offset,
         );
         header.set(bytes.subarray(offset, offset + copied), headerLength);
@@ -66,8 +68,9 @@ export async function readInvitationProtocolFrame(
         payload = new Uint8Array(declaredLength);
       }
 
-      const copied = Math.min(
-        payload!.byteLength - payloadLength,
+      const copied = frameCopyLength(
+        payloadLength,
+        payload!.byteLength,
         bytes.byteLength - offset,
       );
       payload!.set(bytes.subarray(offset, offset + copied), payloadLength);

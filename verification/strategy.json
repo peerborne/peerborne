@@ -150,6 +150,33 @@
         "packages/core/src/change-tree-walk.ts",
         "packages/core/src/peerborne-document.ts"
       ]
+    },
+    {
+      "id": "control-and-authentication-boundaries",
+      "formalBoundary": "Atomic reservation, exact membership append admission and uint64 epoch sequence laws are proved. Native signature verification, authority lookup, shared mutable budgets, asynchronous queues, callback failures, cancellation, fork latching and byte ownership still require generated execution histories.",
+      "evidence": [
+        "packages/core/src/authentication-boundary-properties.test.ts",
+        "packages/core/src/control-chain-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/initial-load-auth.ts",
+        "packages/core/src/initial-load-trust.ts",
+        "packages/core/src/membership-control-record.ts"
+      ]
+    },
+    {
+      "id": "binary-frame-boundaries",
+      "formalBoundary": "Field range/trailer separation and bounded chunk-copy progress are proved. DataView endianness, native safe-integer arithmetic, typed-array offsets, Uint8ArrayList chunks, stream cleanup, canonical decoding and ownership require native malformed-input and model-calibration properties.",
+      "evidence": [
+        "packages/core/src/frame-boundary-properties.test.ts",
+        "packages/core/src/frame-native-properties.fixture.mjs"
+      ],
+      "sources": [
+        "packages/core/src/policy/frame-layout.ts",
+        "packages/core/src/group-security-transition-record.ts",
+        "packages/core/src/membership-control-record.ts",
+        "packages/core/src/invitation-framing.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

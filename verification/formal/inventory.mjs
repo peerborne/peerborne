@@ -172,7 +172,7 @@ function auditTests(directory) {
         auditTests(join(directory, entry.name));
       continue;
     }
-    if (!/\.test\.tsx?$/.test(entry.name)) continue;
+    if (!/\.(?:test\.[cm]?[jt]sx?|fixture\.mjs)$/.test(entry.name)) continue;
     const path = join(directory, entry.name),
       name = relative(projectRoot, path);
     const source = readFileSync(path, 'utf8');

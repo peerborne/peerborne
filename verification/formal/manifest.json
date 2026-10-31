@@ -6,7 +6,6 @@
       "witness": "workBudget_domain",
       "consumers": [
         "packages/core/src/change-tree-walk.ts",
-        "packages/core/src/initial-load-auth.ts",
         "packages/core/src/wire-v2-validation.ts"
       ],
       "verifiedTargets": ["consumeWorkBudget_ensures"]
@@ -389,6 +388,48 @@
         "queryKeyMatches",
         "queryKeyTransitive",
         "AllPages"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/authentication-budget.ts",
+      "functions": ["reserveAuthenticationWork"],
+      "witness": "authenticationBudget_domain",
+      "consumers": ["packages/core/src/initial-load-auth.ts"],
+      "verifiedTargets": [
+        "reserveAuthenticationWork_ensures",
+        "authenticationBudget_history"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/control-chain.ts",
+      "functions": [
+        "isControlActionValid",
+        "controlEpochFollows",
+        "classifyControlAppend"
+      ],
+      "witness": "controlChain_domain",
+      "consumers": ["packages/core/src/membership-control-record.ts"],
+      "verifiedTargets": [
+        "isControlActionValid_ensures",
+        "controlEpochFollows_ensures",
+        "classifyControlAppend_ensures",
+        "controlChain_epoch_history"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/frame-layout.ts",
+      "functions": ["boundedFieldEnd", "frameCopyLength"],
+      "witness": "frameLayout_domain",
+      "consumers": [
+        "packages/core/src/membership-control-record.ts",
+        "packages/core/src/group-security-transition-record.ts",
+        "packages/core/src/invitation-framing.ts"
+      ],
+      "verifiedTargets": [
+        "boundedFieldEnd_ensures",
+        "frameCopyLength_ensures",
+        "frameLayout_disjoint",
+        "frameLayout_chunks"
       ]
     }
   ]

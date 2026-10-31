@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 77 selected production functions in 24 proof units are compiled from their
+The 83 selected production functions in 27 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,7 +60,7 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 74 controls cover 24 accepted originals, 46 semantic/vacuity
+directories. Its 85 controls cover 27 accepted originals, 54 semantic/vacuity
 mutations, stale generated code, `assume false`, body-less lemmas and unproved
 imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
@@ -74,10 +74,14 @@ reproving unchanged arithmetic helpers for each deliberately broken program.
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 28 property-suite files and
-57 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 32 property-suite files and
+64 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
+
+The property audit includes JavaScript test files and native `.fixture.mjs`
+files. The binary chunk fixture runs through Node/tsx from the normal Jest
+suite so the actual ESM Uint8ArrayList dependency is exercised on Node 22.
 
 Reports, source/proof digests, tool versions, per-member verification results,
 assumption audits, fixed solver-seed checks and control results go under `verification/results/formal/`.
@@ -99,6 +103,10 @@ and epoch bounds, claim/recovery decisions, replay/outbox retention, least graph
 reachability with edge-linear queue accounting, bounded BeeKEM tree geometry,
 and scalar/lexicographic ordering and prefix pages. Their exact bounds and
 runtime gaps are listed in the [scope assessment](../../docs/formal-verification.md).
+Authentication work reservation, membership-control epoch/parent admission
+and binary field/copy bounds also have checked history or composition laws.
+Signature verification, authorizers, queue scheduling, fork latching and
+native byte APIs remain explicit property-test boundaries.
 
 Inputs are detached records, arrays and native string sets/maps; property getters,
 proxies and concurrent alias mutation are outside the model. Constant capability
