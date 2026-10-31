@@ -2,6 +2,7 @@ import type {
   CRDTSyncMessage,
   SyncMessageSignatureContext,
 } from './crdt-sync-message.js';
+import { validateInitialLoadSignerAuthority } from './initial-load-trust.js';
 import {
   MAX_CHANGE_TREE_DEPTH,
   MAX_CHANGE_TREE_EDGES,
@@ -55,6 +56,7 @@ const allowedFields: Readonly<
     'tips',
     'loadSecurityState',
     'loadChallenge',
+    'signerAuthority',
     'signature',
   ]),
   'security-advertisement-v1': new Set([
@@ -63,6 +65,7 @@ const allowedFields: Readonly<
     'tipsHash',
     'loadSecurityState',
     'loadChallenge',
+    'signerAuthority',
     'signature',
   ]),
   'invitation-catch-up-v1': new Set([
@@ -140,6 +143,9 @@ export function snapshotSyncMessageForContext<ChangesType>(
     throw new TypeError(
       `${context} message must declare signatureContext '${context}'`,
     );
+  }
+  if (message.signerAuthority !== undefined) {
+    validateInitialLoadSignerAuthority(message.signerAuthority);
   }
 
   return snapshotDeepEnumerableData(

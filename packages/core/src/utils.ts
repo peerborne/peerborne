@@ -692,16 +692,16 @@ export function snapshotDeepEnumerableData<T>(
 }
 
 /**
- * Validate and detach an untrusted byte view without consulting overridable
+ * Validate an untrusted byte view without consulting overridable
  * instance properties. Genuine cross-realm Uint8Arrays are accepted, while
  * SharedArrayBuffer-backed views and typed-array lookalikes are rejected.
  */
-export function copyUnsharedUint8Array(
+export function unsharedUint8ArrayByteLength(
   value: unknown,
   minimumLength: number,
   maximumLength: number,
   field = 'bytes',
-): Uint8Array {
+): number {
   let byteLength: number;
   let buffer: ArrayBufferLike;
   let tag: unknown;
@@ -740,6 +740,18 @@ export function copyUnsharedUint8Array(
     throw new TypeError(`${field} has an invalid length or backing buffer`);
   }
 
+  return byteLength;
+}
+
+export function copyUnsharedUint8Array(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  field = 'bytes',
+): Uint8Array {
+  const byteLength = unsharedUint8ArrayByteLength(
+    value, minimumLength, maximumLength, field,
+  );
   const copy = new uint8ArrayConstructor(byteLength);
   try {
     reflectApply(uint8ArraySet, copy, [value, 0]);

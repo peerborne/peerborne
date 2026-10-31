@@ -1,3 +1,4 @@
+import { createInitialLoadSignerLookup } from './initial-load-trust.js';
 import { beforeAll, describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import { eciesSeal } from './ecies.js';
@@ -93,6 +94,7 @@ async function signedWire(
       : {}),
     ...(deliveredAs === 'load-response-v4'
       ? {
+          signerAuthority: 'writer',
           loadChallenge: fixtureLoadChallenge(),
           loadSecurityState: fixtureLoadCommitments(),
         }
@@ -121,6 +123,7 @@ function loadHarness(plaintext: Uint8Array) {
     },
     _isSigningEnabled: () => true,
     _getWriterKeys: async () => [writer.publicKey],
+    _writers: { check: async (key: CryptoKey) => key === writer.publicKey },
     _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
@@ -266,6 +269,7 @@ describe('context-relabeled signed sync messages', () => {
     const writerSession = (document: unknown) => ({
       ...fixedLoadSession(document),
       authorities: [{ authorityId: 'writer', publicKey: writer.publicKey }],
+      trustedSigners: createInitialLoadSignerLookup([{ authorityId: 'writer', publicKey: writer.publicKey }]),
     });
 
     test('accepts a genuinely signed load response', async () => {
@@ -288,6 +292,24 @@ describe('context-relabeled signed sync messages', () => {
         undefined,
         expect.anything(),
       );
+    });
+
+    test('rejects changing the signed claim to another locally trusted writer', async () => {
+      const other = await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-384' }, false, ['sign', 'verify'],
+      );
+      const message = serializer.deserializeSyncMessage(await signedWire('load-response-v4', 'load-response-v4'));
+      message.signerAuthority = 'other-writer';
+      const { document, stream, sync } = loadHarness(serializer.serializeSyncMessage(message));
+      const authorities = [
+        { authorityId: 'writer', publicKey: writer.publicKey },
+        { authorityId: 'other-writer', publicKey: other.publicKey },
+      ];
+      await expect(document._sendLoadRequestAndSync({
+        ...writerSession(document), authorities,
+        trustedSigners: createInitialLoadSignerLookup(authorities),
+      }, stream, new Uint8Array([1]))).resolves.toBe(false);
+      expect(sync).not.toHaveBeenCalled();
     });
 
     test.each([

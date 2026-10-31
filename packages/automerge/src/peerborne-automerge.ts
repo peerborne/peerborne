@@ -30,6 +30,7 @@ import {
   CRDTProvider,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
+  validateInitialLoadSignerAuthority,
   describeValue,
   deserializeChangeNodeFromJSON,
   deserializeInitialLoadChallengeFromWire,
@@ -1848,6 +1849,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
   serializeSyncMessage(
     message: CRDTSyncMessage<BinaryChange[]>,
   ): Uint8Array {
+    if (message.signerAuthority !== undefined) {
+      validateInitialLoadSignerAuthority(message.signerAuthority);
+    }
     let snapshotForWire: any;
     if (message.snapshot) {
       snapshotForWire = { ...message.snapshot };
@@ -1908,6 +1912,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
         // `CRDTSyncMessage.tips`). Plain string[] of CIDs; passes through
         // JSON verbatim.
         tips: message.tips,
+        signerAuthority: message.signerAuthority,
         loadSecurityState:
           message.loadSecurityState === undefined
             ? undefined
@@ -1961,6 +1966,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
       tips?: unknown;
       loadSecurityState?: unknown;
       loadChallenge?: unknown;
+      signerAuthority?: unknown;
       snapshot?: unknown;
       signature?: unknown;
     };
@@ -2175,6 +2181,9 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
       raw.loadSecurityState === undefined
         ? undefined
         : deserializeLoadSecurityCommitmentsFromWire(raw.loadSecurityState);
+    if (raw.signerAuthority !== undefined) {
+      validateInitialLoadSignerAuthority(raw.signerAuthority);
+    }
     const loadChallenge =
       raw.loadChallenge === undefined
         ? undefined
@@ -2199,6 +2208,7 @@ export class AutomergeJSONSerializer extends JSONSerializer<BinaryChange[]> {
       tips,
       loadSecurityState,
       loadChallenge,
+      signerAuthority: raw.signerAuthority as string | undefined,
       snapshot,
     });
   }

@@ -210,6 +210,9 @@ export type CRDTSyncMessage<ChangesType> = {
    */
   loadChallenge?: Uint8Array;
 
+  /** Canonical locally trusted writer ID, signed on V4 load responses and advertisements. */
+  signerAuthority?: string;
+
   /**
    * Signature of the sync message.
    */

@@ -94,6 +94,7 @@ function loadHarness(message: any, context = 'load-response-v4') {
     _bootstrapLoadApplicationState: 'complete',
     _syncUnlocked: sync,
   });
+  document._writers = { check: async (key: string) => (await document._getWriterKeys()).includes(key) };
   const stream = {
     send: () => true,
     onDrain: async () => undefined,

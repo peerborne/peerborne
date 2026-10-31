@@ -15,6 +15,7 @@ export {
   TIPS_HASH_LENGTH,
   SubtleCrypto,
   copyUnsharedUint8Array,
+  validateInitialLoadSignerAuthority,
   isSyncMessageSignatureContext,
   assertCanonicalP384PublicKeyEncoding,
   computeKeychainStateCommitment,

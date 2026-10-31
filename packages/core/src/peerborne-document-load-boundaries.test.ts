@@ -65,13 +65,23 @@ jest.mock('./peerborne.js', () => ({
 }));
 
 function fakeDocument(fields: Record<string, unknown>): any {
-  return Object.assign(Object.create(PeerborneDocument.prototype), {
+  const document = Object.assign(Object.create(PeerborneDocument.prototype), {
     swarm: { config: {} },
     _keychain: { keys: async () => [] },
     _writerKeysVersion: 0,
     _writerMutationsInFlight: 0,
     ...fields,
   });
+  if ((document._writers || Object.hasOwn(document, '_getWriterKeys')) && !document._writers?.check) {
+    document._writers ??= {};
+    document._writers.check = async (key: unknown) => {
+      const keys = document._writers.users
+        ? await document._writers.users()
+        : await document._getWriterKeys();
+      return keys.includes(key);
+    };
+  }
+  return document;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -147,6 +157,7 @@ function signedLoadHarness(
       serializeSyncMessage: jest.fn(serializeSyncMessage),
     },
     _getWriterKeys: jest.fn(getWriterKeys),
+    _writers: { check: async (key: string) => (await getWriterKeys()).includes(key) },
     _mutationQueue: {
       run: (operation: () => Promise<unknown>) => operation(),
     },
@@ -1310,7 +1321,7 @@ describe('document load response boundaries', () => {
     expect(verify).toHaveBeenCalledTimes(1);
   });
 
-  test('verifies writers serially with isolated payload and signature bytes', async () => {
+  test('verifies the selected writer with isolated payload and signature bytes', async () => {
     let active = 0;
     let peak = 0;
     const payloads: number[][] = [];
@@ -1329,13 +1340,14 @@ describe('document load response boundaries', () => {
         return writer === 'accepting-writer';
       },
     );
+    document._fixtureLoadResponse.signerAuthority = 'fixture-writer-1';
     document._bootstrapLoadApplicationState = 'complete';
     document._syncUnlocked = jest.fn(async () => true);
     await expect(document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])))
       .resolves.toBe(true);
     expect(peak).toBe(1);
-    expect(payloads).toEqual([[8], [8], [8], [8]]);
-    expect(signatures).toEqual(Array.from({ length: 4 }, () => [0, 0, 0]));
+    expect(payloads).toEqual([[8], [8]]);
+    expect(signatures).toEqual(Array.from({ length: 2 }, () => [0, 0, 0]));
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
@@ -1408,7 +1420,7 @@ describe('document load response boundaries', () => {
     ).resolves.toBe(false);
 
     expect(document._getWriterKeys).toHaveBeenCalledTimes(2);
-    expect(document._authProvider.verify).toHaveBeenCalledTimes(2);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
   });
 
   test('rechecks original signed bytes after quorum strips inline changes', async () => {
@@ -4287,6 +4299,7 @@ describe('document load response boundaries', () => {
         },
         _authProvider: {
           nonceBytes: 1,
+          serializePublicKey: async () => 'fixture-writer-0',
           verify: jest.fn(async () => true),
           encrypt: jest.fn(async () => ({
             nonce: new Uint8Array([2]),
@@ -5835,4 +5848,59 @@ test.each([
   }
 });
 
+});
+
+
+describe('load-response indexed signer work', () => {
+  test('does not apply when the selected writer check races an authorization change', async () => {
+    const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
+    document._writers.check = async () => {
+      document._writerKeysVersion++;
+      return true;
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(
+      await loadSessionFixture(document), stream, new Uint8Array([1]),
+    )).rejects.toThrow(/Writer authorization changed/);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test.each([undefined, 'untrusted-authority'])(
+    'rejects a missing or unknown signer authority before crypto (%p)', async (claim) => {
+      const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
+      document._fixtureLoadResponse.signerAuthority = claim;
+      document._syncUnlocked = jest.fn(async () => true);
+      await expect(document._sendLoadRequestAndSync(
+        await loadSessionFixture(document), stream, new Uint8Array([1]),
+      )).resolves.toBe(false);
+      expect(document._authProvider.verify).not.toHaveBeenCalled();
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+    },
+  );
+
+  test('a forged response costs one check for a 4096-writer document', async () => {
+    const writers = Array.from({ length: 4096 }, (_, i) => `writer-${i}`);
+    const { document, stream } = signedLoadHarness(async () => writers, async () => false);
+    document._fixtureLoadResponse.signerAuthority = 'fixture-writer-4095';
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(
+      await loadSessionFixture(document), stream, new Uint8Array([1]),
+    )).resolves.toBe(false);
+    expect(document._authProvider.verify).toHaveBeenCalledTimes(1);
+    expect(document._authProvider.verify.mock.calls[0][1]).toBe('writer-4095');
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+  });
+
+  test('an exhausted session does not verify or apply another response', async () => {
+    const { document, stream } = signedLoadHarness(async () => ['writer'], async () => true);
+    const session = await loadSessionFixture(document);
+    while (session.authenticationBudget.reserve(0)) { /* consume this round's attempts */ }
+    document._syncUnlocked = jest.fn(async () => true);
+    await expect(document._sendLoadRequestAndSync(
+      session, stream, new Uint8Array([1]),
+    )).resolves.toBe(false);
+    expect(document._authProvider.verify).not.toHaveBeenCalled();
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+  });
 });

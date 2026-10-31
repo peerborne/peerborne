@@ -1,19 +1,49 @@
 import {
-  MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
-  snapshotTrustKeys,
+  validateInitialLoadSignerAuthority,
+  type InitialLoadSignerLookup,
 } from './initial-load-trust.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  copyUnsharedUint8Array,
+  unsharedUint8ArrayByteLength,
+} from './utils.js';
+import { consumeWorkBudget } from './policy/work-budget.js';
 
 export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
 export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
+export const MAX_INITIAL_LOAD_AUTHENTICATION_ATTEMPTS = 256;
+export const MAX_INITIAL_LOAD_AUTHENTICATION_WORK_BYTES = 256 * 1024 * 1024;
 
-const reflectApply = Reflect.apply;
+/** Shared by all probes and response verification in one captured load session. */
+export class InitialLoadAuthenticationBudget {
+  #attempts = 0;
+  #bytes = 0;
+
+  reserve(payloadBytes: number): boolean {
+    if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) return false;
+    const attempts = consumeWorkBudget(
+      this.#attempts,
+      1,
+      MAX_INITIAL_LOAD_AUTHENTICATION_ATTEMPTS,
+    );
+    const bytes = consumeWorkBudget(
+      this.#bytes,
+      payloadBytes,
+      MAX_INITIAL_LOAD_AUTHENTICATION_WORK_BYTES,
+    );
+    if (attempts === -1 || bytes === -1) return false;
+    this.#attempts = attempts;
+    this.#bytes = bytes;
+    return true;
+  }
+}
 
 export interface InitialLoadAuthenticationOptions<PublicKey> {
   payload: Uint8Array;
   signature?: Uint8Array;
-  existingWriterKeys: readonly PublicKey[];
-  trustedBootstrapWriterKeys: readonly PublicKey[];
+  signerAuthority?: string;
+  trustedSigners: InitialLoadSignerLookup<PublicKey>;
+  budget: InitialLoadAuthenticationBudget;
+  signal?: AbortSignal;
   verify: (
     payload: Uint8Array,
     publicKey: PublicKey,
@@ -26,153 +56,61 @@ export interface IdentifiedInitialLoadSigner<PublicKey> {
   readonly keyIndex: number;
 }
 
-function selectedTrustKeys<PublicKey>(
-  existingWriterKeysValue: readonly PublicKey[],
-  trustedBootstrapWriterKeysValue: readonly PublicKey[],
-): readonly PublicKey[] {
-  const existingWriterKeys = snapshotTrustKeys(
-    existingWriterKeysValue,
-    'existing writer keys',
-  );
-  return existingWriterKeys.length > 0
-    ? existingWriterKeys
-    : snapshotTrustKeys(
-        trustedBootstrapWriterKeysValue,
-        'trusted bootstrap writer keys',
-        MAX_INITIAL_LOAD_BOOTSTRAP_WRITER_KEYS,
-      );
-}
-
-interface InitialLoadVerificationInputs<PublicKey> {
-  readonly payload: Uint8Array;
-  readonly signature: Uint8Array;
-  readonly verify: InitialLoadAuthenticationOptions<PublicKey>['verify'];
-}
-
-function captureVerificationInputs<PublicKey>(
-  payloadValue: unknown,
-  signatureValue: unknown,
-  verifyValue: unknown,
-): InitialLoadVerificationInputs<PublicKey> | undefined {
-  if (typeof verifyValue !== 'function') return undefined;
-  try {
-    return {
-      payload: copyUnsharedUint8Array(
-        payloadValue,
-        1,
-        MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
-        'initial-load authentication payload',
-      ),
-      signature: copyUnsharedUint8Array(
-        signatureValue,
-        1,
-        MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
-        'initial-load authentication signature',
-      ),
-      verify: verifyValue as InitialLoadAuthenticationOptions<PublicKey>['verify'],
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-async function verifiedSignerIndexes<PublicKey>(
-  keys: readonly PublicKey[],
-  inputs: InitialLoadVerificationInputs<PublicKey>,
-  stopAtFirst: boolean,
-): Promise<number[]> {
-  const indexes: number[] = [];
-  const seenKeys = new Set<PublicKey>();
-  // Verify sequentially with disposable copies. A custom verifier may retain
-  // and later mutate its arguments, so checking for immediate mutation cannot
-  // make shared payload buffers safe for the next authority.
-  for (let index = 0; index < keys.length; index++) {
-    // The same key listed twice must not make its own signature ambiguous.
-    if (seenKeys.has(keys[index])) continue;
-    seenKeys.add(keys[index]);
-    try {
-      const payload = copyUnsharedUint8Array(
-        inputs.payload,
-        inputs.payload.byteLength,
-        inputs.payload.byteLength,
-        'initial-load authentication payload',
-      );
-      const signature = copyUnsharedUint8Array(
-        inputs.signature,
-        inputs.signature.byteLength,
-        inputs.signature.byteLength,
-        'initial-load authentication signature',
-      );
-      const verified = await reflectApply(inputs.verify, undefined, [
-        payload,
-        keys[index],
-        signature,
-      ]);
-      if (verified === true) {
-        indexes.push(index);
-        if (stopAtFirst) break;
-      }
-    } catch {
-      // One malformed key or verifier failure is not evidence about the rest.
-    }
-  }
-  return indexes;
-}
-
 /**
- * Identify the unique trusted signing key that authenticated an envelope.
- * Ambiguous signatures that verify under more than one distinct trust entry
- * fail closed; callers cannot safely attribute such a vote to one authority.
+ * Authenticate one explicitly claimed authority from the captured local trust
+ * index. The envelope signature must cover signerAuthority. An untrusted claim
+ * selects a candidate; it never adds a key to the trust set.
  */
 export async function identifyInitialLoadSigner<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<IdentifiedInitialLoadSigner<PublicKey> | null> {
-  const existingWriterKeys = options.existingWriterKeys;
-  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
-  const keys = selectedTrustKeys(
-    existingWriterKeys,
-    trustedBootstrapWriterKeys,
-  );
-  const payload = options.payload;
-  const signature = options.signature;
-  const verify = options.verify;
-  const inputs = captureVerificationInputs<PublicKey>(
-    payload,
-    signature,
-    verify,
-  );
-  if (inputs === undefined) return null;
-  const indexes = await verifiedSignerIndexes(keys, inputs, false);
-  if (indexes.length !== 1) return null;
-  const keyIndex = indexes[0];
-  return { publicKey: keys[keyIndex], keyIndex };
+  try {
+    const { signerAuthority, trustedSigners, budget, signal, verify } = options;
+    if (signal?.aborted || typeof verify !== 'function') return null;
+    validateInitialLoadSignerAuthority(signerAuthority);
+    const signer = trustedSigners(signerAuthority);
+    if (signer === undefined || signer.authorityId !== signerAuthority)
+      return null;
+    const { publicKey, keyIndex } = signer;
+    const payloadValue = options.payload;
+    const signatureValue = options.signature;
+    const payloadBytes = unsharedUint8ArrayByteLength(
+      payloadValue,
+      1,
+      MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+      'initial-load authentication payload',
+    );
+    unsharedUint8ArrayByteLength(
+      signatureValue,
+      1,
+      MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+      'initial-load authentication signature',
+    );
+    if (!budget.reserve(payloadBytes)) return null;
+    const payload = copyUnsharedUint8Array(
+      payloadValue,
+      payloadBytes,
+      payloadBytes,
+      'initial-load authentication payload',
+    );
+    const signature = copyUnsharedUint8Array(
+      signatureValue,
+      1,
+      MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+      'initial-load authentication signature',
+    );
+    const verified = await verify(payload, publicKey, signature);
+    return verified === true && !signal?.aborted
+      ? { publicKey, keyIndex }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Authenticate a first-load envelope without trusting writer keys carried by
- * that same envelope. Existing ACL writers take precedence; an empty ACL can
- * only bootstrap from application-pinned writer keys.
- */
+/** Verify one writer-bound initial-load envelope using only locally trusted keys. */
 export async function verifyInitialLoadAuthentication<PublicKey>(
   options: InitialLoadAuthenticationOptions<PublicKey>,
 ): Promise<boolean> {
-  const existingWriterKeys = options.existingWriterKeys;
-  const trustedBootstrapWriterKeys = options.trustedBootstrapWriterKeys;
-  const keys = selectedTrustKeys(
-    existingWriterKeys,
-    trustedBootstrapWriterKeys,
-  );
-  if (keys.length === 0) {
-    return false;
-  }
-  const payload = options.payload;
-  const signature = options.signature;
-  const verify = options.verify;
-  const inputs = captureVerificationInputs<PublicKey>(
-    payload,
-    signature,
-    verify,
-  );
-  if (inputs === undefined) return false;
-  return (await verifiedSignerIndexes(keys, inputs, true)).length > 0;
+  return (await identifyInitialLoadSigner(options)) !== null;
 }

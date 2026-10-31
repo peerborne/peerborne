@@ -185,6 +185,20 @@ carries path secrets individually encrypted to the surviving BeeKEM subtrees.
 
 ## Initial-load quorum
 
+V4 responses and security advertisements sign a `signerAuthority` identifier
+using the writer's canonical serialized public key. The loader selects that
+key from its captured local trust index and verifies one candidate; an unknown,
+missing, malformed, or forged identifier cannot add a trusted writer or cause a
+scan of the writer list. Building the local index remains linear in the number
+of trusted writers, and existing ACLs may contain more than 256 writers.
+
+One load session shares a budget of 256 outer-envelope verification attempts
+and 256 MiB of cumulative unsigned payload bytes, reserved before verification
+copies and crypto work. Queued writer rechecks share the same budget. Exhaustion
+rejects responses without reducing the configured quorum or applying state.
+These limits bound outer-signature work for a load, rather than supplying a
+global peer rate limiter or a complete denial-of-service defense.
+
 V4 loading requires a fresh signed request challenge, trusted writer identities,
 and locally resolved control/group commitments. Configure
 `resolveLoadSecurityCommitments(documentPath)` for every load, including the

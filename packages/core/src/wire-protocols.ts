@@ -1,5 +1,6 @@
 // Initial loads bind a fresh signed challenge, a complete response manifest,
-// the served frontier, and locally trusted control/group commitments.
+// the served frontier, a signed signer-authority selector, and locally trusted
+// control/group commitments.
 export const documentLoadV4 = '/peerborne/doc-load/4.0.0';
 export const snapshotLoadV4 = '/peerborne/snapshot-load/4.0.0';
 export const securityAdvertiseV1 = '/peerborne/security-advertise/1.0.0';

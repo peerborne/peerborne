@@ -1,3 +1,4 @@
+import { createInitialLoadSignerLookup } from './initial-load-trust.js';
 import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
@@ -93,7 +94,8 @@ function loadHarness(
     swarm: { config: {} },
     _writerKeysVersion: 4,
     _writerMutationsInFlight: 0,
-    _getWriterKeys: async () => [{}],
+    _getWriterKeys: async () => ['writer'],
+    _writers: { check: async (key: unknown) => key === 'writer' },
     _keychainProvider: { keyIDLength: 32 },
     _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     _authProvider: {
@@ -129,7 +131,8 @@ function tipHarness(
   const document = fakeDocument({
     _writerKeysVersion: 3,
     _writerMutationsInFlight: 0,
-    _getWriterKeys: async () => [{}],
+    _getWriterKeys: async () => ['writer'],
+    _writers: { check: async (key: unknown) => key === 'writer' },
     swarm: {
       heliaNode: {
         libp2p: { dialProtocol: jest.fn(async () => rawStream) },
@@ -490,7 +493,7 @@ describe('security-advertisement V1 confinement', () => {
 
     await expect(
       harness.document._probeSecurityAdvertise(fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1])),
-    ).resolves.toEqual({ hash: expected, signerAuthority: 'fixture-writer' });
+    ).resolves.toEqual({ hash: expected, signerAuthority: 'fixture-writer-0' });
   });
 
   test('rejects a vote whose serializer mutates signed content', async () => {
@@ -599,9 +602,12 @@ function installSetWriterAcl(document: any, initial: string[]) {
       return writers.size !== size;
     }),
     current: jest.fn(() => [...writers].sort()),
+    users: async () => [...writers],
+    check: async (key: string) => writers.has(key),
   };
   document._changesSerializer = new JSONSerializer<any>();
-  document._cachedWriterKeys = [{}];
+  document._cachedWriterKeys = [...writers];
+  document._getWriterKeys = (PeerborneDocument.prototype as any)._getWriterKeys.bind(document);
   return writers;
 }
 
@@ -615,55 +621,55 @@ function writerDocument(initial: string[]) {
 }
 
 function sessionWithAuthorities(document: any, writers: readonly unknown[]) {
+  const authorities = writers.map((publicKey, index) => ({
+    authorityId: `fixture-writer-${index}`, publicKey,
+  }));
   return {
-    ...fixedLoadSession(document),
-    authorities: writers.map((publicKey, index) => ({
-      authorityId: `fixture-writer-${index}`,
-      publicKey,
-    })),
+    ...fixedLoadSession(document), authorities,
+    trustedSigners: createInitialLoadSignerLookup(authorities),
   };
 }
 
 describe('security-advertisement writer verification', () => {
-  test('verifies each authority sequentially with detached copies', async () => {
-    const harness = tipHarness();
-    const writers = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-    harness.verify
-      .mockImplementationOnce(async () => false)
-      .mockImplementationOnce(async () => true)
-      .mockImplementationOnce(async () => false);
-
-    await expect(
-      harness.document._probeSecurityAdvertise(
-        sessionWithAuthorities(harness.document, writers),
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toEqual({
-      hash: new Uint8Array(32).fill(5),
+  test('verifies only the claimed authority with detached copies', async () => {
+    const harness = tipHarness({
+      documentId: documentPath, signatureContext: 'security-advertisement-v1',
+      tipsHash: new Uint8Array(32).fill(5), signature: 'AQ==',
       signerAuthority: 'fixture-writer-1',
     });
-
-    expect(harness.verify.mock.calls.map((call: any[]) => call[1])).toEqual(
-      writers,
-    );
-    const [first, second] = harness.verify.mock.calls as any[];
-    expect(first[0]).not.toBe(second[0]);
-    expect(first[2]).not.toBe(second[2]);
+    const writers = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    harness.verify.mockImplementation(async (data: Uint8Array, key: unknown, signature: Uint8Array) => {
+      data.fill(7);
+      signature.fill(8);
+      return key === writers[1];
+    });
+    await expect(harness.document._probeSecurityAdvertise(
+      sessionWithAuthorities(harness.document, writers),
+      { toString: () => '/peer/one' }, new Uint8Array([1]),
+    )).resolves.toEqual({ hash: new Uint8Array(32).fill(5), signerAuthority: 'fixture-writer-1' });
+    expect(harness.verify).toHaveBeenCalledTimes(1);
+    expect(harness.verify.mock.calls[0][1]).toBe(writers[1]);
   });
 
-  test('rejects the vote when no writer signed it', async () => {
+  test('an invalid signature cannot cause a scan of thousands of trusted writers', async () => {
     const harness = tipHarness();
     harness.verify.mockImplementation(async () => false);
+    await expect(harness.document._probeSecurityAdvertise(
+      sessionWithAuthorities(harness.document, Array.from({ length: 1024 }, (_, id) => ({ id }))),
+      { toString: () => '/peer/one' }, new Uint8Array([1]),
+    )).resolves.toBeNull();
+    expect(harness.verify).toHaveBeenCalledTimes(1);
+  });
 
-    await expect(
-      harness.document._probeSecurityAdvertise(
-        sessionWithAuthorities(harness.document, [{}, {}]),
-        { toString: () => '/peer/one' },
-        new Uint8Array([1]),
-      ),
-    ).resolves.toBeNull();
-    expect(harness.verify).toHaveBeenCalledTimes(2);
+  test('rejects unknown authority claims before invoking crypto', async () => {
+    const harness = tipHarness({
+      documentId: documentPath, signatureContext: 'security-advertisement-v1',
+      tipsHash: new Uint8Array(32).fill(5), signature: 'AQ==', signerAuthority: 'attacker',
+    });
+    await expect(harness.document._probeSecurityAdvertise(
+      fixedLoadSession(harness.document), { toString: () => '/peer/one' }, new Uint8Array([1]),
+    )).resolves.toBeNull();
+    expect(harness.verify).not.toHaveBeenCalled();
   });
 });
 
@@ -749,7 +755,7 @@ describe('writer ACL re-merges', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
-        fixedLoadSession(harness.document),
+        await loadSessionFixture(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -772,7 +778,7 @@ describe('writer ACL re-merges', () => {
 
     await expect(
       harness.document._sendLoadRequestAndSync(
-        fixedLoadSession(harness.document),
+        await loadSessionFixture(harness.document),
         loadStream(),
         new Uint8Array([1]),
       ),
@@ -797,7 +803,7 @@ describe('writer ACL re-merges', () => {
       ),
     ).resolves.toEqual({
       hash: new Uint8Array(32).fill(5),
-      signerAuthority: 'fixture-writer',
+      signerAuthority: 'fixture-writer-0',
     });
   });
 });
