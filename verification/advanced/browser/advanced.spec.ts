@@ -42,6 +42,16 @@ for (const definition of definitions) {
     page.on('pageerror', () => {
       runtimeErrors++;
     });
+    await page.addInitScript(() => {
+      (window as any).advancedWorkerConstructions = 0;
+      const Original = window.Worker;
+      window.Worker = class extends Original {
+        constructor(scriptURL: string | URL, options?: WorkerOptions) {
+          super(scriptURL, options);
+          (window as any).advancedWorkerConstructions++;
+        }
+      };
+    });
     await page.goto('/');
     await page.waitForFunction(() => Boolean((window as any).advanced));
     const observation = await page.evaluate(
