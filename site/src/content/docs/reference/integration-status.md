@@ -18,6 +18,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Tiptap / ProseMirror | Tiptap/ProseMirror collaboration over the shared editor bridge | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Monaco | Monaco binding, worker configuration, module-path alias, and typing acceptance | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Zustand | Vanilla-API snapshot projection recipe with explicit cleanup | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 

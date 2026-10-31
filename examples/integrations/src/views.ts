@@ -14,4 +14,5 @@ export const views = {
     load: () => import('./views/tiptap'),
   },
   monaco: { label: 'Monaco', load: () => import('./views/monaco') },
+  zustand: { label: 'Zustand', load: () => import('./views/zustand') },
 };

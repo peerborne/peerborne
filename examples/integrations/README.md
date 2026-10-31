@@ -1,6 +1,6 @@
 # Browser integration examples
 
-Available views: Plain JavaScript, React, Vue, Svelte, Loro, TanStack DB, CodeMirror, Tiptap / ProseMirror, Monaco.
+Available views: Plain JavaScript, React, Vue, Svelte, Loro, TanStack DB, CodeMirror, Tiptap / ProseMirror, Monaco, Zustand.
 
 The default view uses plain DOM APIs. Vite builds and serves the files;
 Peerborne and the document store do not require a frontend framework.
