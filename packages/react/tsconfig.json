@@ -3,13 +3,22 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ESNext", "DOM"],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "sourceMap": true,
     "downlevelIteration": true,
     "strict": true,
     "declaration": true,
-    "types": ["node"],
-    "typeRoots": ["types", "node_modules/@types", "../../node_modules/@types"],
+    "types": [
+      "node"
+    ],
+    "typeRoots": [
+      "types",
+      "node_modules/@types",
+      "../../node_modules/@types"
+    ],
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -28,7 +37,12 @@
     "types",
     "bin"
   ],
-  "references": [{
-    "path": "../core"
-  }]
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../store"
+    }
+  ]
 }

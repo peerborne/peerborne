@@ -11,3 +11,5 @@ export {
   PeerborneContext,
   PeerborneContextOpenResult,
 };
+
+export { usePeerborneStore } from './store.js';

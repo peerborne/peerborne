@@ -28,3 +28,12 @@ Use these bindings in a React application. It depends on `@peerborne/core`, decl
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
 
 Pass `'create'` as the fourth argument to `usePeerborneDocumentState` when the application explicitly authorizes a new path. The default opens existing state; a failed open never creates a replacement on its own. Concurrent subscribers share one activation for that path. A `'create'` subscriber that joins an in-flight open creates the document only if that open fails, and a failed activation is dropped so the next mount retries it.
+
+## Shared document stores
+
+`@peerborne/react/store` exports `usePeerborneStore` without importing the
+networking runtime. Pass one shared `@peerborne/store` per node/document path;
+the hook needs no context caches and retains ownership after mounting. Await
+`store.change` to handle mutation failures. See the
+[framework guide](https://peerborne.io/cookbook/framework-integrations/) and
+[browser examples](../../examples/integrations/README.md).

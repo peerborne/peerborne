@@ -14,6 +14,7 @@ COPY .yarn/releases /app/.yarn/releases
 RUN mkdir -p /app/packages/core
 RUN mkdir -p /app/packages/automerge
 RUN mkdir -p /app/packages/yjs
+RUN mkdir -p /app/packages/store
 RUN mkdir -p /app/packages/react
 RUN mkdir -p /app/packages/redux
 RUN mkdir -p /app/packages/index
@@ -23,6 +24,7 @@ RUN mkdir -p /app/examples/password-manager
 COPY packages/core/package.json /app/packages/core/package.json
 COPY packages/automerge/package.json /app/packages/automerge/package.json
 COPY packages/yjs/package.json /app/packages/yjs/package.json
+COPY packages/store/package.json /app/packages/store/package.json
 COPY packages/react/package.json /app/packages/react/package.json
 COPY packages/redux/package.json /app/packages/redux/package.json
 COPY packages/index/package.json /app/packages/index/package.json
@@ -49,6 +51,9 @@ COPY packages/yjs/. /app/packages/yjs/
 RUN yarn workspace @peerborne/yjs run tsc
 # RUN yarn workspace @peerborne/yjs link -A
 # RUN chmod +x /usr/local/bin/peerborne-yjs-d
+
+COPY packages/store/. /app/packages/store/
+RUN yarn workspace @peerborne/store run tsc
 
 COPY packages/react/. /app/packages/react/
 RUN yarn workspace @peerborne/react run tsc
