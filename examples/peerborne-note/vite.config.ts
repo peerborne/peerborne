@@ -70,6 +70,7 @@ export default defineConfig(({ mode }) => {
       },
     ],
     build: {
+      outDir: mode === 'deployment' ? 'dist-deployment' : 'dist',
       sourcemap: false,
       target: 'es2022',
     },

@@ -5,9 +5,35 @@ import {
   decodeInvitationToken,
   encodeInvitationToken,
   invitationUrl,
+  isConfiguredRelayAddress,
   MAX_INVITATION_TOKEN_CHARACTERS,
   rendezvousForCircuitReservation,
 } from './invitation-link.js';
+
+describe('relay dial policy', () => {
+  const relay = '/dns4/relay.peerborne.io/tcp/443/wss/p2p/12D3KooWRelay';
+
+  test.each([
+    relay,
+    `${relay}/p2p-circuit/p2p/12D3KooWFounder`,
+    `${relay}/p2p-circuit/webrtc/p2p/12D3KooWFounder`,
+  ])('allows a connection through the configured relay: %s', (address) => {
+    expect(isConfiguredRelayAddress(address, relay)).toBe(true);
+  });
+
+  test.each([
+    '/ip4/127.0.0.1/tcp/9001/ws/p2p/12D3KooWRelay',
+    '/dns4/other.example/tcp/443/wss/p2p/12D3KooWRelay',
+    '/dns4/relay.peerborne.io/tcp/443/wss/p2p/12D3KooWOther',
+    `${relay}Other/p2p-circuit/p2p/12D3KooWFounder`,
+  ])('rejects an advertised address outside the configured relay: %s', (address) => {
+    expect(isConfiguredRelayAddress(address, relay)).toBe(false);
+  });
+
+  test('keeps an offline note from dialing discovered peers', () => {
+    expect(isConfiguredRelayAddress(relay, undefined)).toBe(false);
+  });
+});
 
 describe('invitation fragments', () => {
   test('scrubs the fragment immediately and retains only decoded bytes', () => {

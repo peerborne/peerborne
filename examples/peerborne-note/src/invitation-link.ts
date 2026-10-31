@@ -106,6 +106,17 @@ export function rendezvousForCircuitReservation(
     : undefined;
 }
 
+export function isConfiguredRelayAddress(
+  address: string,
+  relayMultiaddr: string | undefined,
+): boolean {
+  return Boolean(
+    relayMultiaddr &&
+      (address === relayMultiaddr ||
+        address.startsWith(`${relayMultiaddr}/p2p-circuit/`)),
+  );
+}
+
 export function assertTrustedRendezvous(
   rendezvous: readonly string[],
   relayMultiaddr: string,

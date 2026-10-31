@@ -131,6 +131,9 @@ jobs:
       - run: yarn test:peerborne-note
       - run: yarn test:password-manager
       - run: yarn test:e2e
+      - run: node examples/peerborne-note/scripts/check-deployment-build.mjs
+        env:
+          VITE_PEERBORNE_RELAY_MULTIADDR: /dns4/relay.example.invalid/tcp/443/wss/p2p/12D3KooWRqEojevLXwbPxiAvDaK4HbCUXip6rSzrhWurUBdgwFGT
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
