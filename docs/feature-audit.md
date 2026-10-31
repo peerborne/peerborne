@@ -71,7 +71,7 @@ system-level statuses below.
 
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
-| React hooks and lifecycle management | Verified | 42 passing hook/cache/lifecycle tests; password-manager typechecked build and Chromium smoke | StrictMode and real reconnect behavior should be browser-tested. |
+| React hooks and lifecycle management | Verified | Hook/cache/lifecycle and import-safety suites | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
 | Field extraction and local indexes | Verified | Index manager and extractor suites plus planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
 | Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, current-schema rejection, and corrupted-row suites | Persistent schema invalidation should be exercised across actual browser restarts. |
@@ -86,7 +86,7 @@ system-level statuses below.
 | --- | --- | --- | --- |
 | Buildable ESM workspace packages | Verified | Topological TypeScript build and full unit suite; exact packed tarballs are inspected and installed in a clean Node 22.19.0 consumer for ESM and native CommonJS imports, shared export identity, strict NodeNext typechecking for both module styles, and a Vite build | Packages are not yet published; registry installation, browser runtime execution, and packaged daemon execution are not tested. |
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
-| Password-manager reference app | Partial | Vite production build and strict Chromium startup smoke test pass | No two-browser synchronization test; bundle is about 2.0 MB minified. |
+| Password-manager reference app | Partial | Vite production build, authenticated/encrypted checkpoint tests, Chromium reload and persistent-profile relaunch, damaged-storage and failed-write retry checks, and permissions UI tests | Browser-local recovery only: no peer-assisted recovery, backup, password lock, multi-device identity transfer, storage rollback protection, or two-browser synchronization acceptance. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
 | Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only distinct-identity invitation plus live bidirectional mutation pass | This is a test harness rather than a polished demo; restart recovery is not asserted. |
 | Peerborne Note initial-release demo | Partial | Typechecked Vite production build, focused signing-identity/invitation-link/single-tab tests, and a strict single-browser startup smoke test | The source tests do not establish public WSS availability, two-browser behavior in the deployed app, restart recovery, automatic reconnect, revocation UX, delivery, or durability. |

@@ -8,7 +8,10 @@ import {
   Row,
   Form,
 } from 'react-bootstrap';
-import { usePeerborneDocumentState } from '@peerborne/react';
+import {
+  useVaultDocumentState as usePeerborneDocumentState,
+  type VaultSession,
+} from './vault-session';
 import * as uuid from 'uuid';
 import { YjsPeerborne } from './utils';
 import * as Y from 'yjs';
@@ -19,32 +22,56 @@ export function PasswordVault({
   userId,
   peerborne,
   kemKeyPair,
+  session,
 }: {
   userId: string;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
+  session: VaultSession;
 }) {
   const { pathname } = useLocation();
-  const [indexPath, setIndexPath] = React.useState<string>();
+  const [selection, setSelection] = React.useState<{
+    path: string;
+    mode: 'open' | 'create';
+  }>();
   return (
     <div hidden={pathname !== '/secrets'}>
-      {indexPath ? (
+      {selection ? (
         <PasswordList
           peerborne={peerborne}
-          indexPath={indexPath}
+          indexPath={selection.path}
+          initialization={selection.mode}
           kemKeyPair={kemKeyPair}
-          onLeave={() => setIndexPath(undefined)}
+          onLeave={() => setSelection(undefined)}
         />
       ) : (
         <div className="mt-3">
           <Button
-            onClick={() => setIndexPath(`/${userId}/vaults/${uuid.v4()}`)}
+            onClick={() =>
+              setSelection({
+                path: `/${encodeURIComponent(userId)}/vaults/${uuid.v4()}`,
+                mode: 'create',
+              })
+            }
           >
             Create a vault
           </Button>
           <p className="mt-2 text-muted">
-            A vault lasts only for the current session.
+            Vaults are saved in this browser. Clearing site data removes access
+            to them.
           </p>
+          <ListGroup>
+            {session.vaults.map((path, index) => (
+              <ListGroup.Item key={path}>
+                <Button
+                  variant="outline-primary"
+                  onClick={() => setSelection({ path, mode: 'open' })}
+                >
+                  Open vault {index + 1}
+                </Button>
+              </ListGroup.Item>
+            ))}
+          </ListGroup>
         </div>
       )}
     </div>
@@ -56,11 +83,13 @@ export function PasswordList({
   peerborne,
   kemKeyPair,
   onLeave,
+  initialization,
 }: {
   indexPath: string;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
   onLeave: () => void;
+  initialization: 'open' | 'create';
 }) {
   const [currentPasswordId, setCurrentPasswordId] = React.useState<string>();
   const [viewedIds, setViewedIds] = React.useState<string[]>([]);
@@ -70,7 +99,7 @@ export function PasswordList({
     setCurrentPasswordId(id);
   };
   const [passwords, changePasswords, , activationError] =
-    usePeerborneDocumentState(peerborne, indexPath, 'all', 'create');
+    usePeerborneDocumentState(peerborne, indexPath, 'all', initialization);
   const [importingPassword, setImportingPassword] = React.useState(false);
   const [importPasswordId, setImportPasswordId] = React.useState('');
   const [importPasswordName, setImportPasswordName] = React.useState('');
@@ -83,7 +112,8 @@ export function PasswordList({
   if (activationError) {
     return (
       <Alert variant="danger">
-        Could not create this vault.{' '}
+        Could not {initialization === 'create' ? 'create' : 'open'} this vault.
+        Your saved data was left unchanged.{' '}
         <Button size="sm" variant="outline-danger" onClick={onLeave}>
           Choose another vault
         </Button>
@@ -93,6 +123,9 @@ export function PasswordList({
 
   return (
     <Container>
+      <Button className="mt-3" variant="outline-secondary" onClick={onLeave}>
+        Choose another vault
+      </Button>
       <Row>
         <Col xs={6}>
           <Row className="mt-4" />

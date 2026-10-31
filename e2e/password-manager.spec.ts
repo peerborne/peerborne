@@ -1,6 +1,288 @@
-import { expect, test } from '@playwright/test';
+import { chromium, expect, test } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
+
+test('shows an edit as unsaved while signing is still in progress', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = SubtleCrypto.prototype.sign;
+    const gate = window as unknown as {
+      pauseVaultSigning?: boolean;
+      releaseVaultSigning?: () => void;
+    };
+    SubtleCrypto.prototype.sign = async function (
+      ...args: Parameters<SubtleCrypto['sign']>
+    ) {
+      if (gate.pauseVaultSigning)
+        await new Promise<void>((resolve) => {
+          gate.releaseVaultSigning = resolve;
+        });
+      return Reflect.apply(original, this, args);
+    };
+  });
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await expect(page.getByPlaceholder('Enter a secret here...')).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.evaluate(() => {
+    (window as unknown as { pauseVaultSigning?: boolean }).pauseVaultSigning =
+      true;
+  });
+  await page
+    .getByPlaceholder('Enter a secret here...')
+    .fill('pending signing fixture');
+  await expect(page.getByRole('status')).toHaveText('Saving…');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          typeof (window as unknown as { releaseVaultSigning?: () => void })
+            .releaseVaultSigning,
+      ),
+    )
+    .toBe('function');
+  await page.evaluate(() => {
+    const gate = window as unknown as {
+      pauseVaultSigning?: boolean;
+      releaseVaultSigning?: () => void;
+    };
+    gate.pauseVaultSigning = false;
+    gate.releaseVaultSigning?.();
+  });
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+});
+
+test('another tab cannot write until the active vault tab closes', async ({
+  page,
+  context,
+}) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'New Secret', exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  const other = await context.newPage();
+  await other.goto('/login');
+  await other.getByRole('button', { name: 'Login', exact: true }).click();
+  await expect(other.getByRole('alert')).toHaveText(
+    'The password manager is open in another tab',
+  );
+  await expect(
+    other.getByRole('button', { name: 'Create a vault', exact: true }),
+  ).toHaveCount(0);
+  await page.close();
+  await other.getByRole('button', { name: 'Login', exact: true }).click();
+  await other
+    .getByRole('button', { name: 'Open vault 1', exact: true })
+    .click();
+  await expect(
+    other.getByRole('button', { name: 'New Secret', exact: true }),
+  ).toBeEnabled();
+});
+
+test('reopens a saved vault after closing and relaunching Chromium', async ({
+  baseURL,
+}) => {
+  const profile = await mkdtemp(join(tmpdir(), 'peerborne-vault-test-'));
+  let context = await chromium.launchPersistentContext(profile, { baseURL });
+  try {
+    let page = await context.newPage();
+    await page.goto('/login');
+    await expect(
+      page.getByRole('button', { name: 'Login', exact: true }),
+    ).toBeEnabled();
+    const originalIdentity = await page
+      .getByLabel('Public Key', { exact: true })
+      .inputValue();
+    await page.getByRole('button', { name: 'Login', exact: true }).click();
+    await page
+      .getByRole('button', { name: 'Create a vault', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+    await page.getByPlaceholder('Enter a name here...').fill('Restart fixture');
+    await page
+      .getByPlaceholder('Enter a secret here...')
+      .fill('persistent fixture value');
+    await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+    await context.close();
+    context = await chromium.launchPersistentContext(profile, { baseURL });
+    page = await context.newPage();
+    await page.goto('/login');
+    await expect(page.getByLabel('Public Key', { exact: true })).toHaveValue(
+      originalIdentity,
+    );
+    await page.getByRole('button', { name: 'Login', exact: true }).click();
+    await page
+      .getByRole('button', { name: 'Open vault 1', exact: true })
+      .click();
+    await page.getByText('Restart fixture', { exact: true }).click();
+    await expect(page.getByPlaceholder('Enter a secret here...')).toHaveValue(
+      'persistent fixture value',
+    );
+  } finally {
+    await context.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('rejects a damaged saved vault without replacing it', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'New Secret', exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('peerborne-password-manager', 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = database.transaction('documents', 'readwrite');
+        const objects = tx.objectStore('documents');
+        const request = objects.openCursor();
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          const record = cursor.value;
+          new Uint8Array(record.ciphertext)[0] ^= 1;
+          cursor.update(record);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally {
+      database.close();
+    }
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText(
+    'Could not open this vault. Your saved data was left unchanged.',
+  );
+  await expect(
+    page.getByRole('button', { name: 'New Secret', exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Choose another vault', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Open vault 1', exact: true }),
+  ).toBeVisible();
+});
+
+test('reports failed writes and saves the current edits after retry', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      ...args: Parameters<IDBObjectStore['put']>
+    ) {
+      if (
+        this.name === 'documents' &&
+        (window as unknown as { failVaultWrites?: boolean }).failVaultWrites
+      ) {
+        this.transaction.abort();
+        throw new DOMException('Injected write failure', 'QuotaExceededError');
+      }
+      return Reflect.apply(original, this, args);
+    };
+  });
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await page.getByPlaceholder('Enter a name here...').fill('Write fixture');
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.evaluate(() => {
+    (window as unknown as { failVaultWrites?: boolean }).failVaultWrites = true;
+  });
+  await page
+    .getByPlaceholder('Enter a secret here...')
+    .fill('retry fixture value');
+  await expect(page.getByRole('status')).toHaveText(
+    'Vault changes have not been saved.',
+  );
+  await expect(page.getByRole('alert')).toContainText(
+    'Keep this tab open and retry.',
+  );
+  await page.evaluate(() => {
+    (window as unknown as { failVaultWrites?: boolean }).failVaultWrites =
+      false;
+  });
+  await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.reload();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await page.getByText('Write fixture', { exact: true }).click();
+  await expect(page.getByPlaceholder('Enter a secret here...')).toHaveValue(
+    'retry fixture value',
+  );
+});
+
+test('restores the same vault and keys after reload, including another saved edit', async ({
+  page,
+  context,
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/login');
+  const identity = page.getByLabel('Public Key', { exact: true });
+  await expect(identity).not.toHaveValue('');
+  const originalIdentity = await identity.inputValue();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  const name = page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true });
+  const value = page
+    .getByPlaceholder('Enter a secret here...')
+    .filter({ visible: true });
+  await name.fill('Reload fixture');
+  await value.fill('saved fixture value');
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.reload();
+  await expect(identity).toHaveValue(originalIdentity);
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await page.getByText('Reload fixture', { exact: true }).click();
+  await expect(value).toHaveValue('saved fixture value');
+  await value.fill('edited after reload');
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+  await page.reload();
+  await expect(identity).toHaveValue(originalIdentity);
+  await context.setOffline(true);
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await page.getByText('Reload fixture', { exact: true }).click();
+  await expect(value).toHaveValue('edited after reload');
+  expect(errors, 'reload errors').toEqual([]);
+});
 
 test('password-manager loads the packaged Peerborne stack without runtime errors', async ({
   page,
@@ -21,7 +303,9 @@ test('password-manager loads the packaged Peerborne stack without runtime errors
   expect(errors, 'application startup errors').toEqual([]);
 });
 
-test('redirects anonymous visits to protected routes back to login', async ({ page }) => {
+test('redirects anonymous visits to protected routes back to login', async ({
+  page,
+}) => {
   for (const path of ['/', '/secrets', '/settings']) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/login$/);
@@ -46,7 +330,9 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
   );
   await page.getByRole('button', { name: 'Login' }).click();
   await expect(page).toHaveURL(/\/secrets$/);
-  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
 
   await page.getByRole('button', { name: 'New Secret' }).click();
   await page.getByText(/^Unnamed Secret/).click();
@@ -97,7 +383,9 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   );
   await page.getByRole('button', { name: 'Login' }).click();
   await expect(page).toHaveURL(/\/secrets$/);
-  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
 
   await page.getByRole('button', { name: 'New Secret' }).click();
   await page.getByText(/^Unnamed Secret/).click();
@@ -215,13 +503,21 @@ test('sets a new member as a reader and then promotes them to editor', async ({
   expect(errors, 'permission update errors').toEqual([]);
 });
 
-test('creates a vault and preserves a secret across selection and navigation', async ({ page }) => {
+test('creates a vault and preserves a secret across selection and navigation', async ({
+  page,
+}) => {
   await page.goto('/login');
-  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await expect(page.getByLabel('Public Key', { exact: true })).not.toHaveValue(
+    '',
+  );
   await page.getByRole('button', { name: 'Login', exact: true }).click();
-  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
   await page.getByRole('button', { name: 'New Secret', exact: true }).click();
-  const name = page.getByPlaceholder('Enter a name here...').filter({ visible: true });
+  const name = page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true });
   await expect(name).toBeVisible();
   await name.fill('Smoke secret');
   await expect(page.getByText('Smoke secret', { exact: true })).toBeVisible();
@@ -233,7 +529,9 @@ test('creates a vault and preserves a secret across selection and navigation', a
   await expect(name).toHaveValue('Smoke secret');
 });
 
-test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({ page }) => {
+test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   let addedReaders = 0;
@@ -247,9 +545,13 @@ test('requires a KEM public key before adding a new reader and retries existing 
   });
 
   await page.goto('/login');
-  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await expect(page.getByLabel('Public Key', { exact: true })).not.toHaveValue(
+    '',
+  );
   await page.getByRole('button', { name: 'Login', exact: true }).click();
-  await page.getByRole('button', { name: 'Create a vault', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
   await page.getByRole('button', { name: 'New Secret', exact: true }).click();
   await page.getByText(/^Unnamed Secret/).click();
   await expect(
@@ -271,9 +573,13 @@ test('requires a KEM public key before adding a new reader and retries existing 
     const kem = await generateKem();
     const otherKem = await generateKem();
     return {
-      identityKey: encode(await crypto.subtle.exportKey('raw', identity.publicKey)),
+      identityKey: encode(
+        await crypto.subtle.exportKey('raw', identity.publicKey),
+      ),
       kemKey: encode(await crypto.subtle.exportKey('raw', kem.publicKey)),
-      otherKemKey: encode(await crypto.subtle.exportKey('raw', otherKem.publicKey)),
+      otherKemKey: encode(
+        await crypto.subtle.exportKey('raw', otherKem.publicKey),
+      ),
     };
   });
 
@@ -321,7 +627,7 @@ test('requires a KEM public key before adding a new reader and retries existing 
   expect(errors, 'reader onboarding errors').toEqual([]);
 });
 
-test('offers only vault creation and leaves a vault that failed to create', async ({
+test('leaves a vault that failed to create without saving an empty replacement', async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -344,12 +650,6 @@ test('offers only vault creation and leaves a vault that failed to create', asyn
   });
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
-  const failedCreates: string[] = [];
-  page.on('console', (message) => {
-    if (message.text().startsWith('Failed to open/find document: ')) {
-      failedCreates.push(message.text());
-    }
-  });
   const createVault = page.getByRole('button', {
     name: 'Create a vault',
     exact: true,
@@ -364,15 +664,19 @@ test('offers only vault creation and leaves a vault that failed to create', asyn
   });
 
   await page.goto('/login');
-  await expect(page.getByPlaceholder('Enter private key')).not.toHaveValue('');
+  await expect(page.getByLabel('Public Key', { exact: true })).not.toHaveValue(
+    '',
+  );
   await page.getByRole('button', { name: 'Login', exact: true }).click();
   await expect(page).toHaveURL(/\/secrets$/);
   await expect(page.getByRole('button')).toHaveText(['Create a vault']);
-  await expect(page.getByRole('textbox')).toHaveCount(0);
   await expect(
-    page.getByText('A vault lasts only for the current session.', {
-      exact: true,
-    }),
+    page.getByText(
+      'Vaults are saved in this browser. Clearing site data removes access to them.',
+      {
+        exact: true,
+      },
+    ),
   ).toBeVisible();
 
   await page.evaluate(() => {
@@ -381,29 +685,24 @@ test('offers only vault creation and leaves a vault that failed to create', asyn
   });
   await createVault.click();
   await expect(page.getByRole('alert')).toHaveText(
-    'Could not create this vault. Choose another vault',
+    'Could not create this vault. Your saved data was left unchanged. Choose another vault',
   );
-  await expect
-    .poll(() => failedCreates)
-    .toEqual([
-      expect.stringMatching(/^Failed to open\/find document: \/.+\/vaults\//),
-    ]);
+
   await expect(newSecret).toHaveCount(0);
 
   await leaveVault.click();
   await expect(page.getByRole('button')).toHaveText(['Create a vault']);
-  await expect(page.getByRole('textbox')).toHaveCount(0);
   await createVault.click();
   await expect(newSecret).toBeEnabled();
-  await expect(leaveVault).toHaveCount(0);
+  await expect(leaveVault).toBeVisible();
   await newSecret.click();
   const name = page
     .getByPlaceholder('Enter a name here...')
     .filter({ visible: true });
   await name.fill('Kept secret');
   await expect(page.getByText('Kept secret', { exact: true })).toBeVisible();
-  await expect(leaveVault).toHaveCount(0);
+  await expect(leaveVault).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
-  expect(failedCreates).toHaveLength(1);
+
   expect(errors, 'vault creation errors').toEqual([]);
 });

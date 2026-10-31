@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   BrowserRouter as Router,
   Routes,
@@ -6,183 +6,182 @@ import {
   Navigate,
   Link,
 } from 'react-router-dom';
-import { Container, Nav } from 'react-bootstrap';
-import './App.css';
-import 'bootstrap/dist/css/bootstrap.min.css';
+import { Alert, Button, Container, Nav } from 'react-bootstrap';
 import {
-  PeerborneDocument,
+  Peerborne,
   defaultConfig,
   defaultBootstrapConfig,
   SubtleCrypto,
 } from '@peerborne/core';
-import { PeerborneContext, usePeerborne } from '@peerborne/react';
 import {
   YjsProvider,
   YjsJSONSerializer,
   YjsKeychainProvider,
   YjsACLProvider,
+  serializeKey,
 } from '@peerborne/yjs';
 import { Login } from './Login';
 import { PasswordVault } from './PasswordList';
 import { Settings } from './Settings';
+import { VaultSession, useVaultSession } from './vault-session';
+import { VaultStore, type BrowserIdentity } from './vault-store';
+import './App.css';
+import 'bootstrap/dist/css/bootstrap.min.css';
 
-const crdt = new YjsProvider();
-const serializer = new YjsJSONSerializer();
-const auth = new SubtleCrypto();
-const acl = new YjsACLProvider();
-const keychain = new YjsKeychainProvider();
-
-function App() {
-  const [privateKey, setPrivateKey] = React.useState<CryptoKey | undefined>();
-  const [publicKey, setPublicKey] = React.useState<CryptoKey | undefined>();
-  const [kemKeyPair, setKemKeyPair] = React.useState<
-    CryptoKeyPair | undefined
-  >();
-  const [userId, setUserId] = React.useState<string | undefined>();
-  const [bootstrapPeers, setBootstrapPeers] = React.useState<
-    string[] | undefined
-  >();
-  const [docCache, setDocCache] = React.useState<{
-    [docPath: string]: PeerborneDocument<any, any, any, any, any, any>;
-  }>({});
-  const [docDataCache, setDocDataCache] = React.useState<{
-    [docPath: string]: any;
-  }>({});
-  const [docReadersCache, setDocReadersCache] = React.useState<{
-    [docPath: string]: any[];
-  }>({});
-  const [docWritersCache, setDocWritersCache] = React.useState<{
-    [docPath: string]: any[];
-  }>({});
-  // Get relay/bootstrap address from env. The relay multiaddr
-  // (e.g. /ip4/.../tcp/9001/ws/p2p/...) is used as a bootstrap peer
-  // for libp2p peer discovery — NOT as a listen address.
-  const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
-  const relayPeers = relayAddr ? [relayAddr] : [];
-  const config = defaultConfig(defaultBootstrapConfig(relayPeers));
-  const peerborne = usePeerborne(
-    privateKey,
-    publicKey,
-    crdt,
-    serializer,
-    serializer,
-    serializer,
-    auth,
-    acl,
-    keychain,
-    config,
-  );
-  // Calls connect whenever bootstrap peers changes.
-  useEffect(() => {
-    if (peerborne && bootstrapPeers) {
-      console.log(`Connecting to peers: ${bootstrapPeers}`);
-      peerborne.connect(bootstrapPeers);
-    } else {
-      console.warn(`Skipping peerborne.connect(${bootstrapPeers})`);
-    }
-  }, [bootstrapPeers, peerborne]);
-
-  const loggedIn = (privateKey && publicKey && kemKeyPair) !== undefined;
-
+function SignedIn({ session }: { session: VaultSession }) {
+  useVaultSession(session);
   return (
-    <PeerborneContext.Provider
-      value={{
-        docCache,
-        docDataCache,
-        docReadersCache,
-        docWritersCache,
-        setDocCache,
-        setDocDataCache,
-        setDocReadersCache,
-        setDocWritersCache,
-      }}
-    >
-      <Router>
-        <Container>
-          <Nav variant="tabs" defaultActiveKey="/login">
-            <Nav.Item>
-              <Nav.Link as={Link} to="/login">
-                Login
-              </Nav.Link>
-            </Nav.Item>
-            <Nav.Item>
-              <Nav.Link as={Link} to="/secrets">
-                Secrets
-              </Nav.Link>
-            </Nav.Item>
-            <Nav.Item>
-              <Nav.Link as={Link} to="/settings">
-                Settings
-              </Nav.Link>
-            </Nav.Item>
-          </Nav>
-
-          {loggedIn && peerborne && userId && kemKeyPair && (
-            <PasswordVault
-              key={userId}
-              userId={userId}
-              peerborne={peerborne}
-              kemKeyPair={kemKeyPair}
-            />
-          )}
-          <Routes>
-            <Route
-              path="/login"
-              element={
-                <Login
-                  privateKey={privateKey}
-                  setPrivateKey={setPrivateKey}
-                  publicKey={publicKey}
-                  setPublicKey={setPublicKey}
-                  setKemKeyPair={setKemKeyPair}
-                  userId={userId}
-                  setUserId={setUserId}
-                  bootstrapPeers={bootstrapPeers}
-                  setBootstrapPeers={setBootstrapPeers}
-                />
-              }
-            />
-            <Route
-              path="/secrets"
-              element={
-                loggedIn ? (
-                  peerborne && userId && kemKeyPair ? null : (
-                    <i>Loading peerborne...</i>
-                  )
-                ) : (
-                  <Navigate to="/login" replace />
-                )
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                loggedIn ? (
-                  peerborne ? (
-                    <Settings
-                      peerborne={peerborne}
-                      publicKey={publicKey}
-                      kemKeyPair={kemKeyPair}
-                    />
-                  ) : (
-                    <i>Loading peerborne...</i>
-                  )
-                ) : (
-                  <Navigate to="/login" replace />
-                )
-              }
-            />
-            <Route
-              path="/"
-              element={
-                <Navigate to={loggedIn ? '/secrets' : '/login'} replace />
-              }
-            />
-          </Routes>
-        </Container>
-      </Router>
-    </PeerborneContext.Provider>
+    <>
+      <p role="status" className="mt-3">
+        {session.error
+          ? 'Vault changes have not been saved.'
+          : session.saving
+            ? 'Saving…'
+            : 'Saved in this browser.'}
+      </p>
+      {session.error && (
+        <Alert variant="danger">
+          {session.error.message}{' '}
+          <Button
+            size="sm"
+            onClick={() => {
+              void session.retry().catch(() => undefined);
+            }}
+          >
+            Retry saving
+          </Button>
+        </Alert>
+      )}
+      <PasswordVault
+        userId={session.storeOwner}
+        peerborne={session.peerborne}
+        kemKeyPair={session.identity.kem}
+        session={session}
+      />
+    </>
   );
 }
 
+function App() {
+  const [session, setSession] = React.useState<VaultSession>();
+  const login = async (identity: BrowserIdentity, peers: string[]) => {
+    const locks = navigator.locks;
+    if (!locks)
+      throw new Error('This browser does not support exclusive vault sessions');
+    let release!: () => void;
+    const acquired = await new Promise<boolean>((resolve) => {
+      void locks
+        .request(
+          'peerborne-password-manager-active-tab',
+          { ifAvailable: true },
+          async (lock) => {
+            if (!lock) {
+              resolve(false);
+              return;
+            }
+            resolve(true);
+            await new Promise<void>((done) => {
+              release = done;
+            });
+          },
+        )
+        .catch(() => resolve(false));
+    });
+    if (!acquired)
+      throw new Error('The password manager is open in another tab');
+    const provider = new YjsProvider();
+    const serializer = new YjsJSONSerializer();
+    const peerborne = new Peerborne(
+      identity.signing.privateKey,
+      identity.signing.publicKey,
+      provider,
+      serializer,
+      serializer,
+      serializer,
+      new SubtleCrypto(),
+      new YjsACLProvider(),
+      new YjsKeychainProvider(),
+    );
+    try {
+      const relay = import.meta.env.VITE_RELAY_MULTIADDR;
+      const config = defaultConfig(
+        defaultBootstrapConfig(relay ? [relay] : []),
+      );
+      await peerborne.initialize(config);
+      if (peers.length > 0) await peerborne.connect(peers);
+      const owner = await serializeKey(identity.signing.publicKey);
+      const next = new VaultSession(
+        peerborne,
+        identity,
+        new VaultStore(identity, owner),
+      );
+      await next.initialize();
+      setSession(next);
+    } catch (error) {
+      release();
+      try {
+        await peerborne.heliaNode.stop();
+      } catch {}
+      throw error;
+    }
+  };
+  return (
+    <Router>
+      <Container>
+        <Nav variant="tabs">
+          <Nav.Item>
+            <Nav.Link as={Link} to="/login">
+              Login
+            </Nav.Link>
+          </Nav.Item>
+          <Nav.Item>
+            <Nav.Link as={Link} to="/secrets">
+              Secrets
+            </Nav.Link>
+          </Nav.Item>
+          <Nav.Item>
+            <Nav.Link as={Link} to="/settings">
+              Settings
+            </Nav.Link>
+          </Nav.Item>
+        </Nav>
+        {session && <SignedIn session={session} />}
+        <Routes>
+          <Route
+            path="/login"
+            element={
+              session ? (
+                <Navigate to="/secrets" replace />
+              ) : (
+                <Login onLogin={login} />
+              )
+            }
+          />
+          <Route
+            path="/secrets"
+            element={session ? null : <Navigate to="/login" replace />}
+          />
+          <Route
+            path="/settings"
+            element={
+              session ? (
+                <Settings
+                  peerborne={session.peerborne}
+                  publicKey={session.identity.signing.publicKey}
+                  kemKeyPair={session.identity.kem}
+                />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/"
+            element={<Navigate to={session ? '/secrets' : '/login'} replace />}
+          />
+        </Routes>
+      </Container>
+    </Router>
+  );
+}
 export default App;

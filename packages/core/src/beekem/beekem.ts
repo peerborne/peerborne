@@ -6,6 +6,7 @@ import {
   WelcomePathKey,
   PathNodeUpdateV2,
   BeeKEMWelcomeV2,
+  BeeKEMLocalState,
   MAX_BEEKEM_TREE_LEAVES,
   WelcomeNodePublicKey,
 } from './types.js';
@@ -137,6 +138,102 @@ export class BeeKEM {
   private _lastAppliedV2UpdateDigest: Uint8Array | null = null;
   private _transitionTail: Promise<void> = Promise.resolve();
   private _pendingTransitionCount = 0;
+
+  /** Seal the current direct path to the local member's persistent KEM identity. */
+  async exportLocalState(
+    recoveryPublicKey: CryptoKey,
+  ): Promise<BeeKEMLocalState> {
+    return this.clone()._exportLocalState(recoveryPublicKey);
+  }
+
+  private async _exportLocalState(
+    recoveryPublicKey: CryptoKey,
+  ): Promise<BeeKEMLocalState> {
+    if (this._pendingTransitionCount !== 0 || this._generation === null) {
+      throw new Error(
+        'Cannot checkpoint an uninitialized or changing BeeKEM tree',
+      );
+    }
+    const leaf = this._nodes.get(this._myLeafIndex);
+    if (!leaf?.publicKey || !leaf.privateKey)
+      throw new Error('Missing local BeeKEM leaf');
+    const leafPublicKey = new Uint8Array(
+      await crypto.subtle.exportKey('raw', leaf.publicKey),
+    );
+    const recoveryRaw = new Uint8Array(
+      await crypto.subtle.exportKey('raw', recoveryPublicKey),
+    );
+    const sameLeaf =
+      leafPublicKey.length === recoveryRaw.length &&
+      leafPublicKey.every((byte, index) => byte === recoveryRaw[index]);
+    return {
+      leafPublicKey,
+      sealedLeafPrivateKey: sameLeaf
+        ? null
+        : await this._encryptNodeKey(leaf.privateKey, recoveryPublicKey),
+      welcome:
+        this._numLeaves === 1
+          ? null
+          : await this._buildWelcome(this._myLeafIndex, leaf.publicKey),
+      lastAppliedUpdateDigest:
+        this._lastAppliedV2UpdateDigest === null
+          ? null
+          : new Uint8Array(this._lastAppliedV2UpdateDigest),
+    };
+  }
+
+  /** Restore only on a fresh tree after the enclosing checkpoint was authenticated. */
+  async restoreLocalState(
+    state: BeeKEMLocalState,
+    keyPair: CryptoKeyPair,
+  ): Promise<void> {
+    let stable: BeeKEMLocalState;
+    const recoveryPrivateKey = keyPair.privateKey;
+    return this._runTransition(
+      async (staged) => {
+        if (!staged._isFresh())
+          throw new Error('Local recovery requires a fresh BeeKEM tree');
+        const digest =
+          stable.lastAppliedUpdateDigest === null
+            ? null
+            : new Uint8Array(stable.lastAppliedUpdateDigest);
+        if (digest !== null && digest.length !== 32)
+          throw new Error('Invalid BeeKEM replay digest');
+        const publicKey = await crypto.subtle.importKey(
+          'raw',
+          toBuffer(stable.leafPublicKey),
+          ECDH_ALGO,
+          true,
+          [],
+        );
+        const privateKey =
+          stable.sealedLeafPrivateKey === null
+            ? recoveryPrivateKey
+            : await staged._decryptNodeKey(
+                stable.sealedLeafPrivateKey,
+                recoveryPrivateKey,
+              );
+        if (!(await staged._privateKeyMatchesPublicKey(privateKey, publicKey)))
+          throw new Error('Recovery leaf key pair does not match');
+        if (stable.welcome === null) {
+          if (digest !== null)
+            throw new Error('Single-member BeeKEM state has a replay digest');
+          await staged.initialize(privateKey, publicKey);
+        } else {
+          await staged._processWelcome(
+            stable.welcome,
+            privateKey,
+            publicKey,
+            true,
+          );
+        }
+        staged._lastAppliedV2UpdateDigest = digest;
+      },
+      () => {
+        stable = snapshotBeeKEMRuntimeInput(state, 'BeeKEM local recovery');
+      },
+    );
+  }
 
   /** Copy stable tree state for a document membership transaction. */
   clone(): BeeKEM {
@@ -704,13 +801,17 @@ export class BeeKEM {
     privateKey: CryptoKey,
     publicKey: CryptoKey,
   ): Promise<Uint8Array> {
+    return this._processWelcome(welcome, privateKey, publicKey, false);
+  }
+
+  private async _processWelcome(welcome: BeeKEMWelcomeV2, privateKey: CryptoKey, publicKey: CryptoKey, localRecovery: boolean): Promise<Uint8Array> {
     let stableWelcome: BeeKEMWelcomeV2;
     return this._runTransition(
       async (staged) => {
         if (!staged._isFresh()) {
           throw new Error('Cannot process Welcome on a non-fresh BeeKEM tree');
         }
-        staged._validateWelcomeV2(stableWelcome);
+        staged._validateWelcomeV2(stableWelcome, localRecovery);
         if (
           !(await staged._privateKeyMatchesPublicKey(privateKey, publicKey))
         ) {
@@ -1624,7 +1725,7 @@ export class BeeKEM {
     ];
   }
 
-  private _validateWelcomeV2(welcome: BeeKEMWelcomeV2): void {
+  private _validateWelcomeV2(welcome: BeeKEMWelcomeV2, localRecovery = false): void {
     if (
       welcome.version !== 2 ||
       !Number.isSafeInteger(welcome.generation) ||
@@ -1641,7 +1742,8 @@ export class BeeKEM {
       throw new Error('Invalid BeeKEM Welcome v2 numLeaves');
     }
     const treeWidth = 2 * welcome.numLeaves - 1;
-    if (welcome.leafIndex !== TreeMath.leafToNodeIndex(welcome.numLeaves - 1)) {
+    if (!Number.isSafeInteger(welcome.leafIndex) || welcome.leafIndex < 0 || welcome.leafIndex >= treeWidth ||
+        !TreeMath.isLeaf(welcome.leafIndex) || (!localRecovery && welcome.leafIndex !== TreeMath.leafToNodeIndex(welcome.numLeaves - 1))) {
       throw new Error('Invalid BeeKEM Welcome v2 leaf index');
     }
     if (

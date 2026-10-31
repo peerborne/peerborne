@@ -1,7 +1,7 @@
 import { LastWriterRemovalError } from '@peerborne/core';
-import { PeerborneContext, usePeerborneDocumentState } from '@peerborne/react';
+import { useVaultDocumentState as usePeerborneDocumentState } from './vault-session';
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
-import { useContext, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
 import {
   decodeKemPublicKey,
@@ -45,13 +45,16 @@ export function PermissionsTable({
   const [
     ,
     ,
-    { readers, addReader, removeReader, writers, addWriter, removeWriter },
+    {
+      readers,
+      addReader,
+      removeReader,
+      writers,
+      addWriter,
+      removeWriter,
+      docRef,
+    },
   ] = usePeerborneDocumentState(peerborne, documentPath);
-  const { docCache } = useContext(PeerborneContext);
-  const docRef = Object.values(docCache).find(
-    (candidate) =>
-      candidate.swarm === peerborne && candidate.documentPath === documentPath,
-  );
   const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
@@ -116,9 +119,9 @@ export function PermissionsTable({
         Enter the new member's signing public key and the raw P-256 ECDH KEM
         public key from their Settings page, both base64. Adding a member gives
         them a BeeKEM leaf and sends a Welcome sealed to their KEM public key.
-        An existing member's role can change without a KEM key. This example
-        has no flow for the new member to open a shared secret; use the
-        invitation API for that.
+        An existing member's role can change without a KEM key. This example has
+        no flow for the new member to open a shared secret; use the invitation
+        API for that.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -138,9 +141,7 @@ export function PermissionsTable({
                 >
                   {permission.publicKey}
                 </td>
-                <td>
-                  {permission.permissions === 'rw' ? 'Editor' : 'Reader'}
-                </td>
+                <td>{permission.permissions === 'rw' ? 'Editor' : 'Reader'}</td>
                 <td>
                   <Button
                     variant="danger"
