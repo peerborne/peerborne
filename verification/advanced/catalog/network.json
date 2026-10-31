@@ -1,0 +1,24 @@
+{
+  "category": "network",
+  "scenarios": [
+    {
+      "id": "mesh-saturation",
+      "name": "Incremental 5-to-50 native RTC mesh resource profile",
+      "runtime": "browser",
+      "driver": "network"
+    },
+    {
+      "id": "duplicate-echo",
+      "name": "Real GossipSub diamond duplicate suppression",
+      "runtime": "node",
+      "module": "./node/network.mjs",
+      "entry": "echoStorm"
+    },
+    {
+      "id": "slow-peer",
+      "name": "Ordered SCTP loss and healthy-peer progress",
+      "runtime": "browser",
+      "driver": "network"
+    }
+  ]
+}

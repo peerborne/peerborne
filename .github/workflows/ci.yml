@@ -141,6 +141,9 @@ jobs:
       - name: Run advanced browser diagnostics
         if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
         run: yarn exec playwright test --config=verification/advanced/playwright.config.ts
+      - name: Verify native SCTP loss in an isolated Linux namespace
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: bash verification/advanced/run-netem.sh
       - name: Collect advanced observations
         if: always()
         run: node verification/advanced/collect.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
