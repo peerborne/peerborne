@@ -7,6 +7,30 @@ export function isControlActionValid(
   return hasPrevious !== creating;
 }
 
+export function isSelfUpdateTransitionAllowed(
+  updating: boolean,
+  actorIsSubject: boolean,
+  noWelcomes: boolean,
+  priorEpoch: bigint,
+  nextEpoch: bigint,
+  treeChanged: boolean,
+  transcriptChanged: boolean,
+): boolean {
+  //@ verify
+  //@ requires 0n <= priorEpoch && priorEpoch <= 18446744073709551615n
+  //@ requires 0n <= nextEpoch && nextEpoch <= 18446744073709551615n
+  //@ ensures \result <==> updating && actorIsSubject && noWelcomes && priorEpoch < 18446744073709551615n && nextEpoch === priorEpoch + 1n && treeChanged && transcriptChanged
+  return (
+    updating &&
+    actorIsSubject &&
+    noWelcomes &&
+    priorEpoch < 18446744073709551615n &&
+    nextEpoch === priorEpoch + 1n &&
+    treeChanged &&
+    transcriptChanged
+  );
+}
+
 export function controlEpochFollows(
   hasPrevious: boolean,
   previousEpoch: bigint,

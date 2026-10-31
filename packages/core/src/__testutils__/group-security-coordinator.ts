@@ -105,6 +105,14 @@ export function commitPayload(
   appliedMembership: AppliedGroupMembershipDelta,
 ): Uint8Array {
   const [change] = appliedMembership.changes;
+  if (change === undefined)
+    return encoder.encode(
+      JSON.stringify({
+        prior: prior.toString(),
+        epoch: epoch.toString(),
+        kind: 'self-update',
+      }),
+    );
   return encoder.encode(
     JSON.stringify({
       prior: prior.toString(),
@@ -121,10 +129,11 @@ export function deltaFromCommitPayload(
   payload: Uint8Array,
 ): AppliedGroupMembershipDelta {
   const decoded = JSON.parse(decoder.decode(payload)) as {
-    kind: 'add' | 'remove' | 'update';
+    kind: 'add' | 'remove' | 'update' | 'self-update';
     memberId: string;
     keyPackageRef?: string;
   };
+  if (decoded.kind === 'self-update') return { changes: [] };
   const memberId = fromHex(decoded.memberId);
   if (decoded.kind === 'remove') {
     return { changes: [{ kind: 'remove', memberId }] };
@@ -147,7 +156,7 @@ export function deltaFromInput(
   input: CreateGroupCommitInput,
 ): AppliedGroupMembershipDelta {
   const [change] = input.changes;
-  if (change === undefined) throw new Error('test provider needs one change');
+  if (change === undefined) return { changes: [] };
   if (change.kind === 'remove') {
     return {
       changes: [{ kind: 'remove', memberId: new Uint8Array(change.memberId) }],
@@ -436,7 +445,7 @@ export class ContractTestProvider implements GroupSecurityProvider {
       this.current = publicState(epoch, prior.groupId);
       const [change] = appliedMembership.changes;
       const welcomes: GroupWelcome[] =
-        change.kind === 'add'
+        change?.kind === 'add'
           ? [
               {
                 protocol,
@@ -480,7 +489,7 @@ export class ContractTestProvider implements GroupSecurityProvider {
     if (
       commit.priorEpoch !== prior.epoch ||
       commit.epoch !== prior.epoch + 1n ||
-      appliedMembership.changes.length !== 1
+      appliedMembership.changes.length > 1
     ) {
       throw new Error('contract provider rejected commit');
     }

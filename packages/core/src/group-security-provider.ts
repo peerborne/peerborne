@@ -283,6 +283,7 @@ export interface JoinGroupInput {
 }
 
 export interface CreateGroupCommitInput {
+  /** Empty changes request a cryptographic self-update without a roster change. */
   readonly changes: ReadonlyArray<GroupMembershipChange>;
   readonly authenticatedData?: Uint8Array;
 }

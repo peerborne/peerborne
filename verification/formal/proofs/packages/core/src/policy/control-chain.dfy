@@ -11,6 +11,24 @@ lemma isControlActionValid_ensures(hasPrevious: bool, creating: bool)
 {
 }
 
+function isSelfUpdateTransitionAllowed(updating: bool, actorIsSubject: bool, noWelcomes: bool, priorEpoch: int, nextEpoch: int, treeChanged: bool, transcriptChanged: bool): bool
+  requires (0 <= priorEpoch)
+  requires (priorEpoch <= 18446744073709551615)
+  requires (0 <= nextEpoch)
+  requires (nextEpoch <= 18446744073709551615)
+{
+  ((((((updating && actorIsSubject) && noWelcomes) && (priorEpoch < 18446744073709551615)) && (nextEpoch == (priorEpoch + 1))) && treeChanged) && transcriptChanged)
+}
+
+lemma isSelfUpdateTransitionAllowed_ensures(updating: bool, actorIsSubject: bool, noWelcomes: bool, priorEpoch: int, nextEpoch: int, treeChanged: bool, transcriptChanged: bool)
+  requires (0 <= priorEpoch)
+  requires (priorEpoch <= 18446744073709551615)
+  requires (0 <= nextEpoch)
+  requires (nextEpoch <= 18446744073709551615)
+  ensures (isSelfUpdateTransitionAllowed(updating, actorIsSubject, noWelcomes, priorEpoch, nextEpoch, treeChanged, transcriptChanged) <==> ((((((updating && actorIsSubject) && noWelcomes) && (priorEpoch < 18446744073709551615)) && (nextEpoch == (priorEpoch + 1))) && treeChanged) && transcriptChanged))
+{
+}
+
 function controlEpochFollows(hasPrevious: bool, previousEpoch: int, initialEpoch: int, incomingEpoch: int, creating: bool): bool
   requires (0 <= previousEpoch)
   requires (previousEpoch <= 18446744073709551615)
@@ -99,6 +117,10 @@ lemma controlChain_epoch_history(epochs: seq<int>, initial: int)
 
 method controlChain_domain()
 {
+  assert isSelfUpdateTransitionAllowed(true, true, true, 0, 1, true, true);
+  assert !isSelfUpdateTransitionAllowed(true, false, true, 0, 1, true, true);
+  assert !isSelfUpdateTransitionAllowed(true, true, true, 18446744073709551615, 0, true, true);
+  assert !isSelfUpdateTransitionAllowed(true, true, true, 0, 1, false, true);
   assert classifyControlAppend(false, 0, 0, 0, true, false, false, false) == "ready";
   assert classifyControlAppend(true, 18446744073709551614, 0, 18446744073709551615, false, true, true, false) == "ready";
   assert classifyControlAppend(true, 18446744073709551615, 0, 0, false, true, true, false) == "epoch-out-of-order";

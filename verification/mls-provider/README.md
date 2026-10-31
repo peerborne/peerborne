@@ -105,14 +105,20 @@ transcript through encrypted persistence and signed genesis restoration.
 Post-genesis transcripts and every public tree hash remain nonempty. Native
 Node/Chromium checks include fresh-provider reconstruction at epoch zero.
 
-Two coordinator contracts need explicit work before this can implement the
-complete `GroupSecurityProvider` boundary:
+The coordinator accepts an empty membership delta only for an authenticated
+self-update whose actor is its subject, with no Welcome and an advance of one
+epoch plus both public commitments. Its admission predicate has a checked
+formal contract. Node/Chromium integration also exercises signed genesis,
+encrypted pending-package join, Add, self-update, exporter rotation and
+convergence, replay, and encrypted checkpoint restoration through the real
+coordinator. This fixture uses the test JSON codec and in-memory stores/anchors;
+it does not exercise network delivery or durable browser storage.
 
-- A self-update has no Add/Remove membership delta. The current coordinator
-  requires exactly one KeyPackage-bearing update or Add/Remove per control.
-- A removed member cannot derive the next epoch's private secrets. The spike
-  reports terminal removal explicitly; the current coordinator has no durable
-  terminal-removal result/store representation.
+A removed member cannot derive the next epoch's private secrets. The spike
+reports terminal removal explicitly; the coordinator still needs a durable
+terminal-removal result/store representation before the adapter can implement
+the complete `GroupSecurityProvider` boundary. The self-update fixture rejects
+that unsupported transition explicitly.
 
 Runtime ACL/control-chain authority, verified document-load commitments,
 transactional durable delivery/ACKs, independent rollback protection,
