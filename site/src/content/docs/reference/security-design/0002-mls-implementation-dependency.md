@@ -7,6 +7,7 @@ description: Evaluation procedure, findings, and acceptance gates for selecting 
 - Date: 2026-08-21
 - Broader dependency review: 2026-09-10
 - `webcrypto-mls` artifact metadata rechecked: 2026-09-22
+- Stable `ts-mls` native Node/Chromium qualification: 2026-10-31; rejected
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
 - Parent decision: [ADR 0001](../0001-mls-document-security-architecture/)
 
@@ -88,6 +89,26 @@ Chromium, interoperability, the Peerborne adapter contract, or any security
 property. Undocumented internal package paths remain an unacceptable
 integration boundary, and the 2.0.0 release candidate does not remove any
 selection gate below.
+
+The 2026-10-31 revalidation again found stable 1.6.4 and prerelease
+2.0.0-rc.16; the River package still returned 404. A reproducible isolated
+[qualification harness](https://github.com/peerborne/peerborne/tree/main/verification/mls-candidate)
+now exercises the public 1.6.4 root export under native Web Crypto in Node
+22.19.0 and Chromium 145.0.7632.6, with explicitly pinned hash/cipher import
+dependencies and no source patches. Sequential three-member Add, self-update,
+Remove, exporter convergence, application messages, replay/tamper rejection,
+Add credential rejection, and complete state-codec round trips succeeded in
+both environments. This is one implementation in two runtimes, not independent
+RFC interoperability or a Peerborne provider integration.
+
+The same run **failed the zero-retention gate**: with old epoch and generation
+retention both set to zero and returned consumed buffers erased, a withheld
+earlier-epoch application message still decrypted after a later Add and
+self-update. Historical epoch counts were 3, 2, and 1. The pinned helper
+constructs a pruned map/deletion list but returns an unpruned zero-limit slice
+and an empty deletion list. Functional ciphertext opening in both environments
+is the failure evidence. The candidate remains unselected; the harness neither
+patches TreeKEM nor changes Peerborne's runtime dependencies or security claims.
 
 ### `@vanishing.page/webcrypto-mls`
 

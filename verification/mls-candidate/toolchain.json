@@ -1,0 +1,30 @@
+{
+  "reviewedAt": "2026-10-31",
+  "dependencies": {
+    "@hpke/common": {
+      "version": "1.10.1",
+      "integrity": "sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw=="
+    },
+    "@hpke/core": {
+      "version": "1.9.0",
+      "integrity": "sha512-pFxWl1nNJeQCSUFs7+GAblHvXBCjn9EPN65vdKlYQil2aURaRxfGMO6vBKGqm1YHTKwiAxJQNEI70PbSowMP9Q=="
+    },
+    "@noble/ciphers": {
+      "version": "2.1.1",
+      "integrity": "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="
+    },
+    "@noble/hashes": {
+      "version": "2.3.0",
+      "integrity": "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ=="
+    },
+    "ts-mls": {
+      "version": "1.6.4",
+      "integrity": "sha512-BFb9qJ3V1+HIuifC+MtnlROEj3oc6NEzA7Ig1/LAmANDRhNay7UCnwkzijzHH9cav5wf1BoJw8KQ2mXiEhPy1Q=="
+    }
+  },
+  "source": {
+    "repository": "https://github.com/LukaJCB/ts-mls",
+    "tag": "v1.6.4",
+    "commit": "ddff62aa15d3064fff5d77dda35b3cdf2970870d"
+  }
+}

@@ -3,10 +3,11 @@ title: "ADR 0003: Zero-knowledge membership proofs"
 description: Proposal not to add a zero-knowledge proof system to MLS adoption without a concrete privacy statement and threat model.
 ---
 
-- Status: Proposed
-- Proposed decision: Exclude zero-knowledge membership proofs from the current MLS scope
+- Status: Evaluation complete; no proof system selected
+- Decision: Exclude zero-knowledge membership proofs from the current MLS scope
 - Date: 2026-08-21
 - Dependency facts revalidated: 2026-09-10
+- Evaluation and pinned dependency metadata rechecked: 2026-10-31
 - Tracks: [issue #186](https://github.com/Peerborne/peerborne/issues/186)
 - Parent decision: [ADR 0001](../0001-mls-document-security-architecture/)
 
@@ -26,6 +27,12 @@ GPL-3.0. That metadata is not by itself a conclusion about compatibility with a
 particular integration or distribution model. Any future proposal must pass an
 explicit, qualified license review before selecting or distributing the
 dependency.
+
+The 2026-10-31 metadata recheck still reports release 0.7.6 and GPL-3.0.
+The evaluation remains negative for the stated #186 scope: none of its
+authentication, authorization, key-ratcheting, or recovery requirements defines
+a privacy statement that needs a zero-knowledge proof. This completes the
+requested evaluation without adding a proving dependency or a privacy claim.
 
 MLS already requires authenticated credentials and an application-defined
 authorization policy. Peerborne additionally needs a public, hash-linked
