@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-77 production functions checked by LemmaScript/Dafny, their input
+83 production functions checked by LemmaScript/Dafny, their input
 contracts, the assumption audit, and the complementary property tests. These
 proofs establish the specified local policies; they do not change the broader
 system-level statuses below.

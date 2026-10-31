@@ -6,7 +6,7 @@ import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
 } from './utils.js';
-import { consumeWorkBudget } from './policy/work-budget.js';
+import { reserveAuthenticationWork } from './policy/authentication-budget.js';
 
 export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;
 export const MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES = 8192;
@@ -20,19 +20,16 @@ export class InitialLoadAuthenticationBudget {
 
   reserve(payloadBytes: number): boolean {
     if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) return false;
-    const attempts = consumeWorkBudget(
+    const reservation = reserveAuthenticationWork(
       this.#attempts,
-      1,
-      MAX_INITIAL_LOAD_AUTHENTICATION_ATTEMPTS,
-    );
-    const bytes = consumeWorkBudget(
       this.#bytes,
       payloadBytes,
+      MAX_INITIAL_LOAD_AUTHENTICATION_ATTEMPTS,
       MAX_INITIAL_LOAD_AUTHENTICATION_WORK_BYTES,
     );
-    if (attempts === -1 || bytes === -1) return false;
-    this.#attempts = attempts;
-    this.#bytes = bytes;
+    this.#attempts = reservation.attempts;
+    this.#bytes = reservation.bytes;
+    if (!reservation.accepted) return false;
     return true;
   }
 }

@@ -1,4 +1,9 @@
 import type { GroupSecurityProtocol } from './group-security-provider.js';
+import {
+  classifyControlAppend,
+  isControlActionValid,
+} from './policy/control-chain.js';
+import { boundedFieldEnd } from './policy/frame-layout.js';
 
 const MEMBERSHIP_CONTROL_MAGIC = new Uint8Array([
   0x53, 0x57, 0x4d, 0x4d, 0x43, 0x52, 0x30, 0x31,
@@ -377,8 +382,7 @@ export class MembershipControlChain {
       const parent = this.recordsValue[parentIndex];
       const parentId = this.recordIds[parentIndex];
       if (
-        (parent === undefined && record.action !== 'create') ||
-        (parent !== undefined && record.action === 'create')
+        !isControlActionValid(parent !== undefined, record.action === 'create')
       ) {
         return rejected(
           'epoch-out-of-order',
@@ -412,42 +416,34 @@ export class MembershipControlChain {
       );
     }
     const operationHex = toHex(record.operationId);
-    if (this.operationToRecord.has(operationHex)) {
-      return rejected(
-        'operation-id-conflict',
-        'operationId is already bound to another record',
-      );
-    }
     const previous = this.recordsValue[this.recordsValue.length - 1];
     const previousId = this.recordIds[this.recordIds.length - 1];
-    if (previous === undefined) {
-      if (
-        record.action !== 'create' ||
-        record.epoch !== this.initialEpoch
-      ) {
-        return rejected(
-          'epoch-out-of-order',
-          'first record must create the configured initial epoch',
-        );
-      }
-      if (record.parentRecordId !== undefined) {
-        return rejected('parent-mismatch', 'genesis must not have a parent');
-      }
-    } else {
-      if (
-        previous.epoch === MAX_U64 ||
-        record.epoch !== previous.epoch + 1n ||
-        record.action === 'create'
-      ) {
-        return rejected('epoch-out-of-order', 'record epoch is not next');
-      }
-      if (
-        record.parentRecordId === undefined ||
-        previousId === undefined ||
-        !equalBytes(record.parentRecordId, previousId)
-      ) {
-        return rejected('parent-mismatch', 'record parent is not the head');
-      }
+    const admission = classifyControlAppend(
+      previous !== undefined,
+      previous?.epoch ?? 0n,
+      this.initialEpoch,
+      record.epoch,
+      record.action === 'create',
+      record.parentRecordId !== undefined,
+      record.parentRecordId !== undefined &&
+        previousId !== undefined &&
+        equalBytes(record.parentRecordId, previousId),
+      this.operationToRecord.has(operationHex),
+    );
+    if (admission !== 'ready') {
+      const messages = {
+        'operation-id-conflict':
+          'operationId is already bound to another record',
+        'epoch-out-of-order':
+          previous === undefined
+            ? 'first record must create the configured initial epoch'
+            : 'record epoch is not next',
+        'parent-mismatch':
+          previous === undefined
+            ? 'genesis must not have a parent'
+            : 'record parent is not the head',
+      };
+      return rejected(admission, messages[admission]);
     }
 
     let authorized: unknown = false;
@@ -967,11 +963,19 @@ class Reader {
   }
 
   private reserve(length: number, field: string): number {
-    if (length < 0 || this.offset + length > intrinsicByteLength(this.bytes)) {
+    const end = boundedFieldEnd(
+      intrinsicByteLength(this.bytes),
+      this.offset,
+      length,
+      0,
+      0xffffffff,
+      0,
+    );
+    if (end === -1) {
       throw new Error(`membership control record is truncated at ${field}`);
     }
     const start = this.offset;
-    this.offset += length;
+    this.offset = end;
     return start;
   }
 }
