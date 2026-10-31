@@ -15,6 +15,12 @@ Status meanings:
 - **Claim only**: documentation advertises the behavior without sufficiently
   direct executable evidence.
 
+The [formal-verification assessment](formal-verification.md) describes the
+eight production policy functions checked by LemmaScript/Dafny, their input
+contracts, the assumption audit, and the complementary property tests. These
+proofs establish the specified local policies; they do not change the broader
+system-level statuses below.
+
 ## Core document and storage features
 
 | Feature | Status | Current evidence | Missing or adversarial case |

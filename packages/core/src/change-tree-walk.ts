@@ -7,6 +7,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import { snapshotEnumerableOwnDataObject } from './utils.js';
+import { consumeWorkBudget } from './policy/work-budget.js';
 
 /** Aggregate limits for one accepted in-memory change tree. */
 export const MAX_CHANGE_TREE_NODES = 32_768;
@@ -185,12 +186,17 @@ function collectBoundedChangeTreeInternal<ChangesType>(
       Record<string, CRDTChangeNode<ChangesType>>
     >(children, 'change tree children');
     const childEntries = Object.entries(stableChildren);
-    edgeCount += childEntries.length;
-    if (!Number.isSafeInteger(edgeCount) || edgeCount > MAX_CHANGE_TREE_EDGES) {
+    const reservedEdges = consumeWorkBudget(
+      edgeCount,
+      childEntries.length,
+      MAX_CHANGE_TREE_EDGES,
+    );
+    if (reservedEdges === -1) {
       throw new RangeError(
         `change tree exceeds ${MAX_CHANGE_TREE_EDGES} edges`,
       );
     }
+    edgeCount = reservedEdges;
     if (nodeId !== undefined && options.stopBelowNodeIds?.has(nodeId)) {
       if (nodeSnapshot !== undefined) {
         nodeSnapshot.children = crdtChangeNodeDeferred;

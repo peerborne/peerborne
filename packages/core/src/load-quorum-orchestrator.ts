@@ -7,7 +7,6 @@
 import {
   decideLoadQuorum,
   DEFAULT_LOAD_QUORUM_K,
-  defaultQuorumQ,
   effectiveK,
   LoadQuorumFailedError,
   PeerLoadQuorumVote,
@@ -15,6 +14,9 @@ import {
 } from './load-quorum.js';
 import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import { classifyAuthorityVotes } from './policy/authority-votes.js';
+import type { AuthorityVote } from './policy/authority-votes.js';
+import { requiredQuorumQ } from './policy/quorum.js';
 
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -252,7 +254,6 @@ export async function runLoadQuorum<T>(opts: {
   // floor. A network partition must not silently reduce an operator's Q=4
   // policy to Q=2 merely because only two peers remain visible.
   const explicitQ = config?.q;
-  const q = explicitQ ?? defaultQuorumQ(k);
 
   if (k === 0) {
     // No peers can be queried; document creation still requires explicit authorization.
@@ -274,6 +275,8 @@ export async function runLoadQuorum<T>(opts: {
       agreement: new Map(),
     });
   }
+
+  const q = requiredQuorumQ(k, explicitQ ?? 0);
 
   if (k === 1 && !allowSinglePeer) {
     // Only one peer reachable AND the operator did not opt into the
@@ -398,25 +401,28 @@ export async function runLoadQuorum<T>(opts: {
   // different hashes. Normalization rejects anything other than a
   // signer-attributed vote before either tally, including bare digests and
   // unauthenticated sentinels.
-  const signerAuthorityHashes = new Map<string, string>();
-  let equivocatingAuthority = false;
+  const signedVotes: AuthorityVote[] = [];
+  for (const { result } of probeResults) {
+    if (result.kind === 'vote') {
+      signedVotes.push({
+        authority: result.signerAuthority,
+        digest: tipsHashToHex(result.hash),
+      });
+    }
+  }
+  const classification = classifyAuthorityVotes(signedVotes);
+  let voteIndex = 0;
   const advertisements: PeerLoadQuorumVote[] = probeResults.map(
     ({ peer, result }) => {
       let hash: Uint8Array | null = null;
       if (result.kind === 'vote') {
-        const hashHex = tipsHashToHex(result.hash);
-        const seenHashHex = signerAuthorityHashes.get(result.signerAuthority);
-        if (seenHashHex === undefined) {
-          signerAuthorityHashes.set(result.signerAuthority, hashHex);
-          hash = result.hash;
-        } else if (seenHashHex !== hashHex) {
-          equivocatingAuthority = true;
-        }
+        if (classification.firstVotes[voteIndex]) hash = result.hash;
+        voteIndex++;
       }
       return { peerId: peerIdOf(peer), hash };
     },
   );
-  if (equivocatingAuthority) {
+  if (classification.equivocating) {
     console.warn(
       `[${documentPath}] Initial-load quorum FAILED: a signing authority ` +
         `voted for conflicting state digests. Aborting load.`,
@@ -424,7 +430,9 @@ export async function runLoadQuorum<T>(opts: {
     throw new LoadQuorumFailedError({
       documentPath,
       reason: 'equivocating-authority',
-      respondingCount: probeResults.filter(({ result }) => result.kind === 'vote').length,
+      respondingCount: probeResults.filter(
+        ({ result }) => result.kind === 'vote',
+      ).length,
       requiredQ: q,
       agreement: new Map(),
     });

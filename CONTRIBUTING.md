@@ -37,3 +37,9 @@ Run the relevant example or Docker-backed suite for affected behavior. Follow th
 - Run `git diff --check` and confirm unrelated files, generated output, and lockfiles are unchanged unless required.
 
 Use the [feature and verification audit](docs/feature-audit.md) as the authority for capability claims.
+
+For pure policy changes, follow the [formal verification workflow](verification/formal/README.md).
+Prefer deterministic property tests for unproved algebraic behavior and generated
+delivery histories. A proof replaces tests only for its exact implementation,
+property, input domain and execution model; retain boundary, security regression
+and integration tests as described in the [verification assessment](docs/formal-verification.md).

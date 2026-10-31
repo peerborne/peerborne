@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import fc from 'fast-check';
 import {
   constantTimeHexEquals,
   decideLoadQuorum,
@@ -158,9 +159,9 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
   // is loud at the first call site rather than relying on the docstring
   // precondition.
   test('non-positive q is a programming error and throws', () => {
-    expect(() =>
-      decideLoadQuorum([{ peerId: 'p1', hash: HASH_A }], 0),
-    ).toThrow(/q must be a positive integer.*got 0/);
+    expect(() => decideLoadQuorum([{ peerId: 'p1', hash: HASH_A }], 0)).toThrow(
+      /q must be a positive integer.*got 0/,
+    );
     expect(() =>
       decideLoadQuorum([{ peerId: 'p1', hash: HASH_A }], -1),
     ).toThrow(/q must be a positive integer.*got -1/);
@@ -182,10 +183,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
   });
 
   test('single peer with Q=1 (allowSinglePeer path) passes', () => {
-    const decision = decideLoadQuorum(
-      [{ peerId: 'p1', hash: HASH_A }],
-      1,
-    );
+    const decision = decideLoadQuorum([{ peerId: 'p1', hash: HASH_A }], 1);
     expect(decision.ok).toBe(true);
     if (decision.ok) {
       expect(decision.agreeingPeerIds).toEqual(['p1']);
@@ -193,10 +191,7 @@ describe('decideLoadQuorum (initial-load quorum gate, #189 §5.4.2)', () => {
   });
 
   test('single peer with Q=2 (allowSinglePeer false) fails', () => {
-    const decision = decideLoadQuorum(
-      [{ peerId: 'p1', hash: HASH_A }],
-      2,
-    );
+    const decision = decideLoadQuorum([{ peerId: 'p1', hash: HASH_A }], 2);
     expect(decision.ok).toBe(false);
     if (!decision.ok) {
       expect(decision.reason).toBe('insufficient-responses');
@@ -267,7 +262,10 @@ describe('validateLoadQuorumConfig startup input validation', () => {
   test('accepts undefined (no operator override)', () => {
     expect(() => validateLoadQuorumConfig({})).not.toThrow();
     expect(() =>
-      validateLoadQuorumConfig({ loadQuorumK: undefined, loadQuorumQ: undefined }),
+      validateLoadQuorumConfig({
+        loadQuorumK: undefined,
+        loadQuorumQ: undefined,
+      }),
     ).not.toThrow();
   });
 
@@ -291,9 +289,9 @@ describe('validateLoadQuorumConfig startup input validation', () => {
     ['loadQuorumAllowSinglePeer', 'true'],
     ['loadQuorumAllowSinglePeer', null],
   ])('rejects non-boolean %s=%p', (name, value) => {
-    expect(() =>
-      validateLoadQuorumConfig({ [name]: value } as any),
-    ).toThrow(/must be a boolean/);
+    expect(() => validateLoadQuorumConfig({ [name]: value } as any)).toThrow(
+      /must be a boolean/,
+    );
   });
 
   test('disabled quorum still rejects non-boolean policy switches', () => {
@@ -381,9 +379,7 @@ describe('validateLoadQuorumConfig startup input validation', () => {
       /loadQuorumK must be a positive integer; got NaN/,
     );
     // Defence: a misleading `got null` rendering must NOT appear.
-    expect((err as LoadQuorumFailedError).message).not.toMatch(
-      /got null/,
-    );
+    expect((err as LoadQuorumFailedError).message).not.toMatch(/got null/);
   });
 
   test('rejects Infinity loadQuorumK with "got Infinity" in message', () => {
@@ -767,41 +763,25 @@ describe('formatConfigValue renders non-finite numbers literally rather than as 
   });
 });
 
-describe('defaultQuorumQ (strict-majority formula, #189 §5.4.2)', () => {
-  // The default is a strict numerical majority: `Math.floor(K/2) + 1`, not
-  // `Math.ceil(K/2) + 1`. The earlier ceil-based default produced Q=3 at K=3
-  // and required all three peers to vote. This formula is only the default
-  // agreement threshold; it is not a consensus or Sybil-resistance claim,
-  // and callers may explicitly configure a valid non-majority Q.
-  test('K=1 -> Q=1', () => {
-    expect(defaultQuorumQ(1)).toBe(1);
-  });
-  test('K=2 -> Q=2', () => {
-    expect(defaultQuorumQ(2)).toBe(2);
-  });
-  test('K=3 -> Q=2 (NOT three-of-three)', () => {
-    expect(defaultQuorumQ(3)).toBe(2);
-  });
-  test('K=4 -> Q=3', () => {
-    expect(defaultQuorumQ(4)).toBe(3);
-  });
-  test('K=5 -> Q=3', () => {
-    expect(defaultQuorumQ(5)).toBe(3);
-  });
-  test('K=7 -> Q=4', () => {
-    expect(defaultQuorumQ(7)).toBe(4);
-  });
-  test('K=0 -> Q=0 (no peers, no quorum possible)', () => {
-    expect(defaultQuorumQ(0)).toBe(0);
-  });
-  test('K<0 -> Q=0 (clamped)', () => {
-    expect(defaultQuorumQ(-1)).toBe(0);
-  });
-
-  test('does not use a ceil-based formula at K=3', () => {
-    // Math.ceil(3 / 2) + 1 === 3 — would require all three peers to agree,
-    // refusing a single timeout. defaultQuorumQ must NOT return 3 here.
-    expect(defaultQuorumQ(3)).not.toBe(Math.ceil(3 / 2) + 1);
+describe('defaultQuorumQ JavaScript/model calibration', () => {
+  test('matches exact BigInt arithmetic throughout the safe-integer domain', () => {
+    // LemmaScript proves the integer law; this checks its IEEE-754 boundary.
+    fc.assert(
+      fc.property(fc.maxSafeInteger(), (k) => {
+        const expected = k <= 0 ? 0n : BigInt(k) / 2n + 1n;
+        expect(BigInt(defaultQuorumQ(k))).toBe(expected);
+      }),
+      {
+        seed: 9420,
+        numRuns: 1000,
+        examples: [
+          [0],
+          [3],
+          [Number.MAX_SAFE_INTEGER],
+          [Number.MIN_SAFE_INTEGER],
+        ],
+      },
+    );
   });
 });
 
@@ -826,10 +806,36 @@ describe('dedupePeersByPeerId (multi-connection vote inflation, #186)', () => {
     expect(out[1].addr).toBe('/ip4/3.3.3.3/tcp/3/p2p/B');
   });
 
-  test('preserves first-seen order (preferredPeer at index 0 stays first)', () => {
-    const peers = ['preferred', 'a', 'preferred', 'b', 'a'];
-    const out = dedupePeersByPeerId(peers, (s) => s);
-    expect(out).toEqual(['preferred', 'a', 'b']);
+  test('preserves first representatives, order, input ownership and idempotence', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            peerId: fc.integer({ min: 0, max: 8 }),
+            address: fc.string(),
+          }),
+          { maxLength: 80 },
+        ),
+        (peers) => {
+          const input = peers.map((peer) => Object.freeze({ ...peer }));
+          Object.freeze(input);
+          const original = [...input];
+          const identify = (peer: (typeof peers)[number]) =>
+            String(peer.peerId);
+          const result = dedupePeersByPeerId(input, identify);
+          const expected = input.filter(
+            (peer, index) =>
+              input.findIndex((other) => other.peerId === peer.peerId) ===
+              index,
+          );
+          expect(result).toEqual(expected);
+          result.forEach((peer, index) => expect(peer).toBe(expected[index]));
+          expect(input).toEqual(original);
+          expect(dedupePeersByPeerId(result, identify)).toEqual(result);
+        },
+      ),
+      { seed: 9421, numRuns: 500, examples: [[[]]] },
+    );
   });
 
   test('treats relay-circuit + direct multiaddrs of one peer as one vote', () => {
@@ -846,17 +852,6 @@ describe('dedupePeersByPeerId (multi-connection vote inflation, #186)', () => {
       return m.length > 0 ? m[m.length - 1][1] : p.addr;
     });
     expect(out).toHaveLength(1);
-  });
-
-  test('empty input returns empty output', () => {
-    expect(dedupePeersByPeerId([], (s: string) => s)).toEqual([]);
-  });
-
-  test('does not mutate the input array', () => {
-    const input = ['a', 'a', 'b'];
-    const out = dedupePeersByPeerId(input, (s) => s);
-    expect(input).toEqual(['a', 'a', 'b']);
-    expect(out).toEqual(['a', 'b']);
   });
 });
 
@@ -901,24 +896,28 @@ describe('founding-case removal (#186)', () => {
 });
 
 describe('constantTimeHexEquals (hash-binding comparison)', () => {
-  test('equal lowercase hex strings compare equal', () => {
-    expect(constantTimeHexEquals('aa'.repeat(32), 'aa'.repeat(32))).toBe(true);
-  });
-
-  test('different hex strings of the same length compare unequal', () => {
-    expect(constantTimeHexEquals('aa'.repeat(32), 'ab'.repeat(32))).toBe(false);
-  });
-
-  test('strings of different lengths compare unequal', () => {
-    expect(constantTimeHexEquals('aa', 'aabb')).toBe(false);
-  });
-
-  test('empty strings compare equal', () => {
-    expect(constantTimeHexEquals('', '')).toBe(true);
-  });
-
-  test('case-sensitive (matches `tipsHashToHex` lowercase output)', () => {
-    expect(constantTimeHexEquals('aabb', 'AABB')).toBe(false);
+  test('has exact, symmetric equality semantics over JavaScript UTF-16 strings', () => {
+    const utf16 = fc
+      .array(fc.integer({ min: 0, max: 0xffff }), { maxLength: 80 })
+      .map((units) => String.fromCharCode(...units));
+    fc.assert(
+      fc.property(utf16, utf16, (a, b) => {
+        expect(constantTimeHexEquals(a, b)).toBe(a === b);
+        expect(constantTimeHexEquals(b, a)).toBe(a === b);
+        expect(constantTimeHexEquals(a, a)).toBe(true);
+      }),
+      {
+        seed: 9422,
+        numRuns: 1000,
+        examples: [
+          ['', ''],
+          ['aa', 'aabb'],
+          ['aabb', 'AABB'],
+          ['\ud800', '\ud801'],
+          ['\u0000', ''],
+        ],
+      },
+    );
   });
 });
 
@@ -1011,8 +1010,17 @@ describe('LoadQuorumFailedError', () => {
 });
 
 test('unauthenticated absence markers never count as quorum votes', () => {
-  expect(decideLoadQuorum([
-    { peerId: 'a', hash: 'unknown-doc' as any },
-    { peerId: 'b', hash: null },
-  ], 1)).toMatchObject({ ok: false, reason: 'insufficient-responses', respondingCount: 0 });
+  expect(
+    decideLoadQuorum(
+      [
+        { peerId: 'a', hash: 'unknown-doc' as any },
+        { peerId: 'b', hash: null },
+      ],
+      1,
+    ),
+  ).toMatchObject({
+    ok: false,
+    reason: 'insufficient-responses',
+    respondingCount: 0,
+  });
 });

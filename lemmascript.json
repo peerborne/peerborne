@@ -1,0 +1,6 @@
+{
+  "proof-dir": "verification/formal/proofs",
+  "string-semantics": "javascript-utf16",
+  "dafny-library": "local",
+  "safe-slice": true
+}
