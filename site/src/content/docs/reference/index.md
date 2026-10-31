@@ -13,6 +13,7 @@ The package API reference is generated from source doc comments on every site bu
 | `@peerborne/react` | package root, `/store` | Context hooks and a lightweight external-store binding. |
 | `@peerborne/redux` | package root | Redux bindings, including actions, reducers, and selectors. |
 | `@peerborne/index` | package root, `/react` | Indexing and querying, with React hooks in `/react`. |
+| `@peerborne/vue` | package root | Vue 3 composables over shared document stores. |
 | `@peerborne/store` | package root | Framework-independent subscriptions, snapshots, and document ownership. |
 
 The core package also exposes `./browser-primitives` as a targeted subpath for light browser consumers that do not import the full libp2p/Helia stack. That subpath is part of the generated API reference on every site build.

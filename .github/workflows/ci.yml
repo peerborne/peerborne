@@ -78,6 +78,7 @@ jobs:
           - redux
           - index
           - store
+          - vue
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion

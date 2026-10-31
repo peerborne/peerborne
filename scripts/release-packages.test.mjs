@@ -11,6 +11,7 @@ test('release package allowlist is exact and ordered', () => {
     '@peerborne/react',
     '@peerborne/redux',
     '@peerborne/index',
+    '@peerborne/vue',
   ]);
 });
 

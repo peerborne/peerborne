@@ -60,6 +60,7 @@ export default defineConfig({
             '../packages/redux',
             '../packages/index',
             '../packages/store',
+            '../packages/vue',
           ],
           output: 'reference/api',
           sidebar: { label: 'Packages', collapsed: true },

@@ -33,6 +33,7 @@ try {
     '@peerborne/automerge',
     '@peerborne/yjs',
     '@peerborne/store',
+    '@peerborne/vue',
     '@peerborne/react',
     '@peerborne/react/store',
     '@peerborne/redux',
