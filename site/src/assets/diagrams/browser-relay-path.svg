@@ -2,119 +2,111 @@
   <title id="title">Peerborne browser-to-browser initial document load through Circuit Relay</title>
   <desc id="description">Two NAT-isolated Chromium peers exchange an encrypted initial document load through Circuit Relay. The test obtains peer A's circuit address and has peer B dial that relayed address explicitly. An optional direct WebRTC or DCUtR path is shown as not verified in CI. The test uses the same identity on both devices and restores the document key out of band. The relay sees metadata, not document plaintext, and the topology has no database service.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#080d1a" />
-      <stop offset="0.52" stop-color="#10172a" />
-      <stop offset="1" stop-color="#111b31" />
-    </linearGradient>
-    <linearGradient id="relayCard" x1="470" y1="248" x2="730" y2="462" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#1e1b4b" />
-      <stop offset="1" stop-color="#16213b" />
-    </linearGradient>
+
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.045" />
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.045" />
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#020617" flood-opacity="0.48" />
-    </filter>
-    <marker id="tealArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf" />
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="tealArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8" />
     </marker>
-    <marker id="indigoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8" />
+    <marker id="indigoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff" />
     </marker>
   </defs>
 
-  <rect width="1200" height="720" fill="url(#background)" />
+  <rect width="1200" height="720" fill="#171521" />
   <rect width="1200" height="720" fill="url(#grid)" />
-  <circle cx="600" cy="365" r="310" fill="#4f46e5" opacity="0.055" />
-  <circle cx="138" cy="610" r="230" fill="#14b8a6" opacity="0.035" />
 
-  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-    <text x="60" y="55" fill="#f8fafc" font-size="30" font-weight="750">Browser relay path</text>
-    <text x="60" y="86" fill="#94a3b8" font-size="18">Narrow, CI-backed initial document load — not a live-sync claim</text>
-    <rect x="953" y="34" width="187" height="42" rx="21" fill="#172554" stroke="#6366f1" />
-    <text x="1046.5" y="61" fill="#c7d2fe" font-size="16" font-weight="700" text-anchor="middle">EVIDENCE SCOPED</text>
 
-    <rect x="370" y="122" width="460" height="62" rx="31" fill="#0f2b2e" stroke="#2dd4bf" stroke-opacity="0.58" />
-    <text x="600" y="148" fill="#5eead4" font-size="13" font-weight="750" letter-spacing="1.3" text-anchor="middle">TEST ORCHESTRATION</text>
-    <text x="600" y="171" fill="#cbd5e1" font-size="15" font-weight="600" text-anchor="middle">B explicitly dials A’s obtained /p2p-circuit/ address</text>
 
-    <rect x="35" y="205" width="350" height="315" rx="30" fill="#0f1b2e" fill-opacity="0.82" stroke="#334155" stroke-width="2" stroke-dasharray="7 8" />
-    <rect x="815" y="205" width="350" height="315" rx="30" fill="#0f1b2e" fill-opacity="0.82" stroke="#334155" stroke-width="2" stroke-dasharray="7 8" />
-    <rect x="56" y="222" width="104" height="33" rx="16.5" fill="#132e35" stroke="#2dd4bf" stroke-opacity="0.55" />
-    <text x="108" y="244" fill="#99f6e4" font-size="14" font-weight="700" text-anchor="middle">NAT A</text>
-    <rect x="836" y="222" width="104" height="33" rx="16.5" fill="#132e35" stroke="#2dd4bf" stroke-opacity="0.55" />
-    <text x="888" y="244" fill="#99f6e4" font-size="14" font-weight="700" text-anchor="middle">NAT B</text>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace">
+    <g class="pixel-heading" aria-hidden="true"><path d="M60 34h3v3h-3zM63 34h3v3h-3zM66 34h3v3h-3zM69 34h3v3h-3zM60 37h3v3h-3zM72 37h3v3h-3zM60 40h3v3h-3zM72 40h3v3h-3zM60 43h3v3h-3zM63 43h3v3h-3zM66 43h3v3h-3zM69 43h3v3h-3zM60 46h3v3h-3zM72 46h3v3h-3zM60 49h3v3h-3zM72 49h3v3h-3zM60 52h3v3h-3zM63 52h3v3h-3zM66 52h3v3h-3zM69 52h3v3h-3zM78 34h3v3h-3zM81 34h3v3h-3zM84 34h3v3h-3zM87 34h3v3h-3zM78 37h3v3h-3zM90 37h3v3h-3zM78 40h3v3h-3zM90 40h3v3h-3zM78 43h3v3h-3zM81 43h3v3h-3zM84 43h3v3h-3zM87 43h3v3h-3zM78 46h3v3h-3zM84 46h3v3h-3zM78 49h3v3h-3zM87 49h3v3h-3zM78 52h3v3h-3zM90 52h3v3h-3zM99 34h3v3h-3zM102 34h3v3h-3zM105 34h3v3h-3zM96 37h3v3h-3zM108 37h3v3h-3zM96 40h3v3h-3zM108 40h3v3h-3zM96 43h3v3h-3zM108 43h3v3h-3zM96 46h3v3h-3zM108 46h3v3h-3zM96 49h3v3h-3zM108 49h3v3h-3zM99 52h3v3h-3zM102 52h3v3h-3zM105 52h3v3h-3zM114 34h3v3h-3zM126 34h3v3h-3zM114 37h3v3h-3zM126 37h3v3h-3zM114 40h3v3h-3zM126 40h3v3h-3zM114 43h3v3h-3zM120 43h3v3h-3zM126 43h3v3h-3zM114 46h3v3h-3zM120 46h3v3h-3zM126 46h3v3h-3zM114 49h3v3h-3zM117 49h3v3h-3zM123 49h3v3h-3zM126 49h3v3h-3zM114 52h3v3h-3zM126 52h3v3h-3zM135 34h3v3h-3zM138 34h3v3h-3zM141 34h3v3h-3zM144 34h3v3h-3zM132 37h3v3h-3zM132 40h3v3h-3zM135 43h3v3h-3zM138 43h3v3h-3zM141 43h3v3h-3zM144 46h3v3h-3zM144 49h3v3h-3zM132 52h3v3h-3zM135 52h3v3h-3zM138 52h3v3h-3zM141 52h3v3h-3zM150 34h3v3h-3zM153 34h3v3h-3zM156 34h3v3h-3zM159 34h3v3h-3zM162 34h3v3h-3zM150 37h3v3h-3zM150 40h3v3h-3zM150 43h3v3h-3zM153 43h3v3h-3zM156 43h3v3h-3zM159 43h3v3h-3zM150 46h3v3h-3zM150 49h3v3h-3zM150 52h3v3h-3zM153 52h3v3h-3zM156 52h3v3h-3zM159 52h3v3h-3zM162 52h3v3h-3zM168 34h3v3h-3zM171 34h3v3h-3zM174 34h3v3h-3zM177 34h3v3h-3zM168 37h3v3h-3zM180 37h3v3h-3zM168 40h3v3h-3zM180 40h3v3h-3zM168 43h3v3h-3zM171 43h3v3h-3zM174 43h3v3h-3zM177 43h3v3h-3zM168 46h3v3h-3zM174 46h3v3h-3zM168 49h3v3h-3zM177 49h3v3h-3zM168 52h3v3h-3zM180 52h3v3h-3zM204 34h3v3h-3zM207 34h3v3h-3zM210 34h3v3h-3zM213 34h3v3h-3zM204 37h3v3h-3zM216 37h3v3h-3zM204 40h3v3h-3zM216 40h3v3h-3zM204 43h3v3h-3zM207 43h3v3h-3zM210 43h3v3h-3zM213 43h3v3h-3zM204 46h3v3h-3zM210 46h3v3h-3zM204 49h3v3h-3zM213 49h3v3h-3zM204 52h3v3h-3zM216 52h3v3h-3zM222 34h3v3h-3zM225 34h3v3h-3zM228 34h3v3h-3zM231 34h3v3h-3zM234 34h3v3h-3zM222 37h3v3h-3zM222 40h3v3h-3zM222 43h3v3h-3zM225 43h3v3h-3zM228 43h3v3h-3zM231 43h3v3h-3zM222 46h3v3h-3zM222 49h3v3h-3zM222 52h3v3h-3zM225 52h3v3h-3zM228 52h3v3h-3zM231 52h3v3h-3zM234 52h3v3h-3zM240 34h3v3h-3zM240 37h3v3h-3zM240 40h3v3h-3zM240 43h3v3h-3zM240 46h3v3h-3zM240 49h3v3h-3zM240 52h3v3h-3zM243 52h3v3h-3zM246 52h3v3h-3zM249 52h3v3h-3zM252 52h3v3h-3zM261 34h3v3h-3zM264 34h3v3h-3zM267 34h3v3h-3zM258 37h3v3h-3zM270 37h3v3h-3zM258 40h3v3h-3zM270 40h3v3h-3zM258 43h3v3h-3zM261 43h3v3h-3zM264 43h3v3h-3zM267 43h3v3h-3zM270 43h3v3h-3zM258 46h3v3h-3zM270 46h3v3h-3zM258 49h3v3h-3zM270 49h3v3h-3zM258 52h3v3h-3zM270 52h3v3h-3zM276 34h3v3h-3zM288 34h3v3h-3zM276 37h3v3h-3zM288 37h3v3h-3zM279 40h3v3h-3zM285 40h3v3h-3zM282 43h3v3h-3zM282 46h3v3h-3zM282 49h3v3h-3zM282 52h3v3h-3zM312 34h3v3h-3zM315 34h3v3h-3zM318 34h3v3h-3zM321 34h3v3h-3zM312 37h3v3h-3zM324 37h3v3h-3zM312 40h3v3h-3zM324 40h3v3h-3zM312 43h3v3h-3zM315 43h3v3h-3zM318 43h3v3h-3zM321 43h3v3h-3zM312 46h3v3h-3zM312 49h3v3h-3zM312 52h3v3h-3zM333 34h3v3h-3zM336 34h3v3h-3zM339 34h3v3h-3zM330 37h3v3h-3zM342 37h3v3h-3zM330 40h3v3h-3zM342 40h3v3h-3zM330 43h3v3h-3zM333 43h3v3h-3zM336 43h3v3h-3zM339 43h3v3h-3zM342 43h3v3h-3zM330 46h3v3h-3zM342 46h3v3h-3zM330 49h3v3h-3zM342 49h3v3h-3zM330 52h3v3h-3zM342 52h3v3h-3zM348 34h3v3h-3zM351 34h3v3h-3zM354 34h3v3h-3zM357 34h3v3h-3zM360 34h3v3h-3zM354 37h3v3h-3zM354 40h3v3h-3zM354 43h3v3h-3zM354 46h3v3h-3zM354 49h3v3h-3zM354 52h3v3h-3zM366 34h3v3h-3zM378 34h3v3h-3zM366 37h3v3h-3zM378 37h3v3h-3zM366 40h3v3h-3zM378 40h3v3h-3zM366 43h3v3h-3zM369 43h3v3h-3zM372 43h3v3h-3zM375 43h3v3h-3zM378 43h3v3h-3zM366 46h3v3h-3zM378 46h3v3h-3zM366 49h3v3h-3zM378 49h3v3h-3zM366 52h3v3h-3zM378 52h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="60" y="86" fill="#a7a0b6" font-size="18">Narrow, CI-backed initial document load — not a live-sync claim</text>
+    <rect x="953" y="34" width="187" height="42" fill="#30234c" stroke="#b7a1ff" />
+    <text x="1046.5" y="61" fill="#d6c8ff" font-size="16" font-weight="700" text-anchor="middle">EVIDENCE SCOPED</text>
+
+    <rect x="370" y="122" width="460" height="62" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.58" />
+    <text x="600" y="148" fill="#a3efb8" font-size="13" font-weight="750" letter-spacing="1.3" text-anchor="middle">TEST ORCHESTRATION</text>
+    <text x="0" y="0" fill="#cbc5d6" font-size="15" font-weight="600" text-anchor="middle" transform="translate(600 171) scale(0.94340 1)">B explicitly dials A’s obtained /p2p-circuit/ address</text>
+
+    <rect x="35" y="205" width="350" height="315" fill="#242136" fill-opacity="0.82" stroke="#40394f" stroke-width="2" stroke-dasharray="7 8" />
+    <rect x="815" y="205" width="350" height="315" fill="#242136" fill-opacity="0.82" stroke="#40394f" stroke-width="2" stroke-dasharray="7 8" />
+    <rect x="56" y="222" width="104" height="33" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.55" />
+    <text x="108" y="244" fill="#c7f5d3" font-size="14" font-weight="700" text-anchor="middle">NAT A</text>
+    <rect x="836" y="222" width="104" height="33" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.55" />
+    <text x="888" y="244" fill="#c7f5d3" font-size="14" font-weight="700" text-anchor="middle">NAT B</text>
 
     <g filter="url(#shadow)">
-      <rect x="65" y="270" width="290" height="218" rx="24" fill="#142033" stroke="#2dd4bf" stroke-width="2" />
-      <rect x="845" y="270" width="290" height="218" rx="24" fill="#142033" stroke="#2dd4bf" stroke-width="2" />
+      <rect x="65" y="270" width="290" height="218" fill="#242136" stroke="#a3efb8" stroke-width="2" />
+      <rect x="845" y="270" width="290" height="218" fill="#242136" stroke="#a3efb8" stroke-width="2" />
     </g>
 
     <g transform="translate(91 298)">
-      <rect width="58" height="44" rx="7" fill="#0b1220" stroke="#5eead4" stroke-width="2" />
-      <path d="M6 35H52" stroke="#5eead4" stroke-width="2" />
-      <path d="M21 51H37M29 44V51" stroke="#5eead4" stroke-width="3" stroke-linecap="round" />
+      <rect width="58" height="44" fill="#171521" stroke="#a3efb8" stroke-width="2" />
+      <path d="M6 35H52" stroke="#a3efb8" stroke-width="2" />
+      <path d="M21 51H37M29 44V51" stroke="#a3efb8" stroke-width="3" stroke-linecap="square" />
     </g>
-    <text x="169" y="315" fill="#f0fdfa" font-size="22" font-weight="740">Browser peer A</text>
-    <text x="169" y="341" fill="#99f6e4" font-size="15">Chromium process</text>
-    <line x1="91" y1="369" x2="329" y2="369" stroke="#334155" />
-    <circle cx="103" cy="401" r="8" fill="#2dd4bf" />
-    <text x="123" y="407" fill="#cbd5e1" font-size="16">Creates encrypted document</text>
-    <circle cx="103" cy="438" r="8" fill="#2dd4bf" />
-    <text x="123" y="444" fill="#cbd5e1" font-size="16">Serves existing history</text>
-    <rect x="91" y="460" width="213" height="28" rx="14" fill="#0f2b2e" />
-    <text x="197.5" y="479" fill="#5eead4" font-size="13" font-weight="700" text-anchor="middle">LOCAL-FIRST DOCUMENT</text>
+    <text x="0" y="0" fill="#f5f0e8" font-size="22" font-weight="740" transform="translate(169 315) scale(0.91991 1)">Browser peer A</text>
+    <text x="169" y="341" fill="#c7f5d3" font-size="15">Chromium process</text>
+    <line x1="91" y1="369" x2="329" y2="369" stroke="#40394f" />
+    <rect x="95" y="393" width="16" height="16" fill="#a3efb8"/>
+    <text x="0" y="0" fill="#cbc5d6" font-size="16" transform="translate(123 407) scale(0.86538 1)">Creates encrypted document</text>
+    <rect x="95" y="430" width="16" height="16" fill="#a3efb8"/>
+    <text x="0" y="0" fill="#cbc5d6" font-size="16" transform="translate(123 444) scale(0.97826 1)">Serves existing history</text>
+    <rect x="91" y="460" width="213" height="28" fill="#1b382a" />
+    <text x="197.5" y="479" fill="#a3efb8" font-size="13" font-weight="700" text-anchor="middle">LOCAL-FIRST DOCUMENT</text>
 
     <g transform="translate(871 298)">
-      <rect width="58" height="44" rx="7" fill="#0b1220" stroke="#5eead4" stroke-width="2" />
-      <path d="M6 35H52" stroke="#5eead4" stroke-width="2" />
-      <path d="M21 51H37M29 44V51" stroke="#5eead4" stroke-width="3" stroke-linecap="round" />
+      <rect width="58" height="44" fill="#171521" stroke="#a3efb8" stroke-width="2" />
+      <path d="M6 35H52" stroke="#a3efb8" stroke-width="2" />
+      <path d="M21 51H37M29 44V51" stroke="#a3efb8" stroke-width="3" stroke-linecap="square" />
     </g>
-    <text x="949" y="315" fill="#f0fdfa" font-size="22" font-weight="740">Browser peer B</text>
-    <text x="949" y="341" fill="#99f6e4" font-size="15">Separate Chromium process</text>
-    <line x1="871" y1="369" x2="1109" y2="369" stroke="#334155" />
-    <circle cx="883" cy="401" r="8" fill="#2dd4bf" />
-    <text x="903" y="407" fill="#cbd5e1" font-size="16">Dials A via the relay circuit</text>
-    <circle cx="883" cy="438" r="8" fill="#2dd4bf" />
-    <text x="903" y="444" fill="#cbd5e1" font-size="16">Loads and decrypts history</text>
-    <rect x="871" y="460" width="225" height="28" rx="14" fill="#0f2b2e" />
-    <text x="983.5" y="479" fill="#5eead4" font-size="13" font-weight="700" text-anchor="middle">INITIAL LOAD VERIFIED</text>
+    <text x="0" y="0" fill="#f5f0e8" font-size="22" font-weight="740" transform="translate(949 315) scale(0.91991 1)">Browser peer B</text>
+    <text x="0" y="0" fill="#c7f5d3" font-size="15" transform="translate(949 341) scale(0.75556 1)">Separate Chromium process</text>
+    <line x1="871" y1="369" x2="1109" y2="369" stroke="#40394f" />
+    <rect x="875" y="393" width="16" height="16" fill="#a3efb8"/>
+    <text x="0" y="0" fill="#cbc5d6" font-size="16" transform="translate(903 407) scale(0.77586 1)">Dials A via the relay circuit</text>
+    <rect x="875" y="430" width="16" height="16" fill="#a3efb8"/>
+    <text x="0" y="0" fill="#cbc5d6" font-size="16" transform="translate(903 444) scale(0.86538 1)">Loads and decrypts history</text>
+    <rect x="871" y="460" width="225" height="28" fill="#1b382a" />
+    <text x="983.5" y="479" fill="#a3efb8" font-size="13" font-weight="700" text-anchor="middle">INITIAL LOAD VERIFIED</text>
 
     <g filter="url(#shadow)">
-      <rect x="465" y="255" width="270" height="222" rx="28" fill="url(#relayCard)" stroke="#818cf8" stroke-width="2.5" />
+      <rect x="465" y="255" width="270" height="222" fill="#30234c" stroke="#b7a1ff" stroke-width="2.5" />
     </g>
     <g transform="translate(558 282)">
-      <path d="M42 0L77 20V60L42 80L7 60V20Z" fill="#312e81" stroke="#a5b4fc" stroke-width="2" />
-      <circle cx="42" cy="40" r="12" fill="#818cf8" />
-      <circle cx="42" cy="40" r="4" fill="#eef2ff" />
-      <path d="M42 28V11M52 34L68 25M52 47L68 56M32 47L16 56M32 34L16 25" stroke="#c7d2fe" stroke-width="3" stroke-linecap="round" />
+      <path d="M42 0L77 20V60L42 80L7 60V20Z" fill="#30234c" stroke="#b7a1ff" stroke-width="2" />
+      <rect x="30" y="28" width="24" height="24" fill="#b7a1ff"/>
+      <rect x="38" y="36" width="8" height="8" fill="#f5f0e8"/>
+      <path d="M42 28V11M52 34L68 25M52 47L68 56M32 47L16 56M32 34L16 25" stroke="#d6c8ff" stroke-width="3" stroke-linecap="square" />
     </g>
-    <text x="600" y="390" fill="#eef2ff" font-size="24" font-weight="760" text-anchor="middle">Circuit Relay v2</text>
-    <text x="600" y="418" fill="#c7d2fe" font-size="15" text-anchor="middle">Forwards encrypted document traffic</text>
-    <text x="600" y="442" fill="#94a3b8" font-size="14" text-anchor="middle">Sees peer IDs, timing, and volume</text>
-    <text x="600" y="464" fill="#5eead4" font-size="14" font-weight="700" text-anchor="middle">NOT DOCUMENT PLAINTEXT</text>
+    <text x="600" y="390" fill="#f5f0e8" font-size="24" font-weight="760" text-anchor="middle">Circuit Relay v2</text>
+    <text x="0" y="0" fill="#d6c8ff" font-size="15" text-anchor="middle" transform="translate(600 418) scale(0.82540 1)">Forwards encrypted document traffic</text>
+    <text x="0" y="0" fill="#a7a0b6" font-size="14" text-anchor="middle" transform="translate(600 442) scale(0.93795 1)">Sees peer IDs, timing, and volume</text>
+    <text x="600" y="464" fill="#a3efb8" font-size="14" font-weight="700" text-anchor="middle">NOT DOCUMENT PLAINTEXT</text>
 
-    <path d="M355 352H459" fill="none" stroke="#2dd4bf" stroke-width="7" stroke-linecap="round" marker-end="url(#tealArrow)" />
-    <path d="M741 352H845" fill="none" stroke="#2dd4bf" stroke-width="7" stroke-linecap="round" marker-end="url(#tealArrow)" />
-    <rect x="377" y="311" width="446" height="31" rx="15.5" fill="#0b2529" stroke="#2dd4bf" stroke-opacity="0.48" />
-    <text x="600" y="332" fill="#99f6e4" font-size="14" font-weight="700" text-anchor="middle">CI-BACKED ENCRYPTED INITIAL DOCUMENT LOAD</text>
+    <path d="M355 352H459" fill="none" stroke="#a3efb8" stroke-width="7" stroke-linecap="square" marker-end="url(#tealArrow)" />
+    <path d="M741 352H845" fill="none" stroke="#a3efb8" stroke-width="7" stroke-linecap="square" marker-end="url(#tealArrow)" />
+    <rect x="377" y="311" width="446" height="31" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.48" />
+    <text x="600" y="332" fill="#c7f5d3" font-size="14" font-weight="700" text-anchor="middle">CI-BACKED ENCRYPTED INITIAL DOCUMENT LOAD</text>
 
-    <rect x="421" y="500" width="358" height="63" rx="19" fill="#171b35" stroke="#6366f1" stroke-width="1.5" />
-    <circle cx="455" cy="531" r="12" fill="#312e81" stroke="#a5b4fc" />
-    <path d="M451 531H470M465 531V538M461 531V536" stroke="#c7d2fe" stroke-width="3" stroke-linecap="round" />
-    <text x="483" y="526" fill="#e0e7ff" font-size="15" font-weight="700">Same user identity on both devices</text>
-    <text x="483" y="548" fill="#a5b4fc" font-size="14">Document key restored out of band</text>
+    <rect x="421" y="500" width="358" height="63" fill="#30234c" stroke="#b7a1ff" stroke-width="1.5" />
+    <rect x="443" y="519" width="24" height="24" fill="#30234c" stroke="#b7a1ff"/>
+    <path d="M451 531H470M465 531V538M461 531V536" stroke="#d6c8ff" stroke-width="3" stroke-linecap="square" />
+    <text x="0" y="0" fill="#d6c8ff" font-size="15" font-weight="700" transform="translate(483 526) scale(0.91503 1)">Same user identity on both devices</text>
+    <text x="483" y="548" fill="#b7a1ff" font-size="14">Document key restored out of band</text>
 
-    <path d="M338 493C454 624 746 624 862 493" fill="none" stroke="#818cf8" stroke-width="3" stroke-dasharray="12 11" marker-end="url(#indigoArrow)" opacity="0.88" />
-    <rect x="393" y="581" width="414" height="38" rx="19" fill="#171b35" stroke="#6366f1" stroke-opacity="0.75" />
-    <text x="600" y="606" fill="#c7d2fe" font-size="15" font-weight="700" text-anchor="middle">Optional direct WebRTC / DCUtR — not CI-verified</text>
+    <path d="M338 493C454 624 746 624 862 493" fill="none" stroke="#b7a1ff" stroke-width="3" stroke-dasharray="12 11" marker-end="url(#indigoArrow)" opacity="0.88" />
+    <rect x="393" y="581" width="414" height="38" fill="#30234c" stroke="#b7a1ff" stroke-opacity="0.75" />
+    <text x="0" y="0" fill="#d6c8ff" font-size="15" font-weight="700" text-anchor="middle" transform="translate(600 606) scale(0.93519 1)">Optional direct WebRTC / DCUtR — not CI-verified</text>
 
-    <rect x="65" y="646" width="1070" height="44" rx="22" fill="#111d2e" stroke="#334155" />
-    <circle cx="91" cy="668" r="7" fill="#2dd4bf" />
-    <text x="110" y="674" fill="#cbd5e1" font-size="16">Test topology: relay + app servers + two browser peers</text>
-    <rect x="792" y="655" width="318" height="27" rx="13.5" fill="#0f2b2e" />
-    <text x="951" y="674" fill="#5eead4" font-size="14" font-weight="750" text-anchor="middle">NO APPLICATION DATABASE SERVICE</text>
+    <rect x="65" y="646" width="1070" height="44" fill="#242136" stroke="#40394f" />
+    <rect x="84" y="661" width="14" height="14" fill="#a3efb8"/>
+    <text x="110" y="674" fill="#cbc5d6" font-size="16">Test topology: relay + app servers + two browser peers</text>
+    <rect x="792" y="655" width="318" height="27" fill="#1b382a" />
+    <text x="951" y="674" fill="#a3efb8" font-size="14" font-weight="750" text-anchor="middle">NO APPLICATION DATABASE SERVICE</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

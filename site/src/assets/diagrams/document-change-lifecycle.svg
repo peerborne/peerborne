@@ -2,131 +2,126 @@
   <title id="change-lifecycle-title">The document.change() lifecycle</title>
   <desc id="change-lifecycle-description">Nine-step flow. An application calls document.change, write access is checked, and core calls CRDTProvider.localChange with the document and callback. The local replica changes and a provider-specific CRDT delta is returned. Peerborne serializes and encrypts that delta, stores the payload in Helia to obtain a CID, builds a CRDT sync message, signs it when enabled, encrypts it, and publishes the full envelope through GossipSub. A later failure does not automatically roll back the local mutation.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.035"/>
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
-    </filter>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
-      .subtitle { fill: #94a3b8; font-size: 17px; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .title { fill: #f5f0e8; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #a7a0b6; font-size: 17px; }
       .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
-      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
-      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
-      .body { fill: #cbd5e1; font-size: 15px; }
-      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .section { fill: #cbc5d6; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f5f0e8; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbc5d6; font-size: 15px; }
+      .body-strong { fill: #cbc5d6; font-size: 15px; font-weight: 700; }
       .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
-      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
-      .node-detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .node { fill: #f5f0e8; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
     </style>
   </defs>
-  <rect width="1200" height="810" rx="28" fill="url(#background)"/>
-  <rect width="1200" height="810" rx="28" fill="url(#grid)"/>
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <rect width="1200" height="810" fill="#171521"/>
+  <rect width="1200" height="810" fill="url(#grid)"/>
+
   <g>
-    <text x="50" y="69" class="title">The document.change() lifecycle</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M50 48h3v3h-3zM53 48h3v3h-3zM56 48h3v3h-3zM59 48h3v3h-3zM62 48h3v3h-3zM56 51h3v3h-3zM56 54h3v3h-3zM56 57h3v3h-3zM56 60h3v3h-3zM56 63h3v3h-3zM56 66h3v3h-3zM68 48h3v3h-3zM80 48h3v3h-3zM68 51h3v3h-3zM80 51h3v3h-3zM68 54h3v3h-3zM80 54h3v3h-3zM68 57h3v3h-3zM71 57h3v3h-3zM74 57h3v3h-3zM77 57h3v3h-3zM80 57h3v3h-3zM68 60h3v3h-3zM80 60h3v3h-3zM68 63h3v3h-3zM80 63h3v3h-3zM68 66h3v3h-3zM80 66h3v3h-3zM86 48h3v3h-3zM89 48h3v3h-3zM92 48h3v3h-3zM95 48h3v3h-3zM98 48h3v3h-3zM86 51h3v3h-3zM86 54h3v3h-3zM86 57h3v3h-3zM89 57h3v3h-3zM92 57h3v3h-3zM95 57h3v3h-3zM86 60h3v3h-3zM86 63h3v3h-3zM86 66h3v3h-3zM89 66h3v3h-3zM92 66h3v3h-3zM95 66h3v3h-3zM98 66h3v3h-3zM122 48h3v3h-3zM125 48h3v3h-3zM128 48h3v3h-3zM131 48h3v3h-3zM122 51h3v3h-3zM134 51h3v3h-3zM122 54h3v3h-3zM134 54h3v3h-3zM122 57h3v3h-3zM134 57h3v3h-3zM122 60h3v3h-3zM134 60h3v3h-3zM122 63h3v3h-3zM134 63h3v3h-3zM122 66h3v3h-3zM125 66h3v3h-3zM128 66h3v3h-3zM131 66h3v3h-3zM143 48h3v3h-3zM146 48h3v3h-3zM149 48h3v3h-3zM140 51h3v3h-3zM152 51h3v3h-3zM140 54h3v3h-3zM152 54h3v3h-3zM140 57h3v3h-3zM152 57h3v3h-3zM140 60h3v3h-3zM152 60h3v3h-3zM140 63h3v3h-3zM152 63h3v3h-3zM143 66h3v3h-3zM146 66h3v3h-3zM149 66h3v3h-3zM161 48h3v3h-3zM164 48h3v3h-3zM167 48h3v3h-3zM170 48h3v3h-3zM158 51h3v3h-3zM158 54h3v3h-3zM158 57h3v3h-3zM158 60h3v3h-3zM158 63h3v3h-3zM161 66h3v3h-3zM164 66h3v3h-3zM167 66h3v3h-3zM170 66h3v3h-3zM176 48h3v3h-3zM188 48h3v3h-3zM176 51h3v3h-3zM188 51h3v3h-3zM176 54h3v3h-3zM188 54h3v3h-3zM176 57h3v3h-3zM188 57h3v3h-3zM176 60h3v3h-3zM188 60h3v3h-3zM176 63h3v3h-3zM188 63h3v3h-3zM179 66h3v3h-3zM182 66h3v3h-3zM185 66h3v3h-3zM194 48h3v3h-3zM206 48h3v3h-3zM194 51h3v3h-3zM197 51h3v3h-3zM203 51h3v3h-3zM206 51h3v3h-3zM194 54h3v3h-3zM200 54h3v3h-3zM206 54h3v3h-3zM194 57h3v3h-3zM200 57h3v3h-3zM206 57h3v3h-3zM194 60h3v3h-3zM206 60h3v3h-3zM194 63h3v3h-3zM206 63h3v3h-3zM194 66h3v3h-3zM206 66h3v3h-3zM212 48h3v3h-3zM215 48h3v3h-3zM218 48h3v3h-3zM221 48h3v3h-3zM224 48h3v3h-3zM212 51h3v3h-3zM212 54h3v3h-3zM212 57h3v3h-3zM215 57h3v3h-3zM218 57h3v3h-3zM221 57h3v3h-3zM212 60h3v3h-3zM212 63h3v3h-3zM212 66h3v3h-3zM215 66h3v3h-3zM218 66h3v3h-3zM221 66h3v3h-3zM224 66h3v3h-3zM230 48h3v3h-3zM242 48h3v3h-3zM230 51h3v3h-3zM233 51h3v3h-3zM242 51h3v3h-3zM230 54h3v3h-3zM236 54h3v3h-3zM242 54h3v3h-3zM230 57h3v3h-3zM239 57h3v3h-3zM242 57h3v3h-3zM230 60h3v3h-3zM242 60h3v3h-3zM230 63h3v3h-3zM242 63h3v3h-3zM230 66h3v3h-3zM242 66h3v3h-3zM248 48h3v3h-3zM251 48h3v3h-3zM254 48h3v3h-3zM257 48h3v3h-3zM260 48h3v3h-3zM254 51h3v3h-3zM254 54h3v3h-3zM254 57h3v3h-3zM254 60h3v3h-3zM254 63h3v3h-3zM254 66h3v3h-3zM272 63h3v3h-3zM275 63h3v3h-3zM272 66h3v3h-3zM275 66h3v3h-3zM287 48h3v3h-3zM290 48h3v3h-3zM293 48h3v3h-3zM296 48h3v3h-3zM284 51h3v3h-3zM284 54h3v3h-3zM284 57h3v3h-3zM284 60h3v3h-3zM284 63h3v3h-3zM287 66h3v3h-3zM290 66h3v3h-3zM293 66h3v3h-3zM296 66h3v3h-3zM302 48h3v3h-3zM314 48h3v3h-3zM302 51h3v3h-3zM314 51h3v3h-3zM302 54h3v3h-3zM314 54h3v3h-3zM302 57h3v3h-3zM305 57h3v3h-3zM308 57h3v3h-3zM311 57h3v3h-3zM314 57h3v3h-3zM302 60h3v3h-3zM314 60h3v3h-3zM302 63h3v3h-3zM314 63h3v3h-3zM302 66h3v3h-3zM314 66h3v3h-3zM323 48h3v3h-3zM326 48h3v3h-3zM329 48h3v3h-3zM320 51h3v3h-3zM332 51h3v3h-3zM320 54h3v3h-3zM332 54h3v3h-3zM320 57h3v3h-3zM323 57h3v3h-3zM326 57h3v3h-3zM329 57h3v3h-3zM332 57h3v3h-3zM320 60h3v3h-3zM332 60h3v3h-3zM320 63h3v3h-3zM332 63h3v3h-3zM320 66h3v3h-3zM332 66h3v3h-3zM338 48h3v3h-3zM350 48h3v3h-3zM338 51h3v3h-3zM341 51h3v3h-3zM350 51h3v3h-3zM338 54h3v3h-3zM344 54h3v3h-3zM350 54h3v3h-3zM338 57h3v3h-3zM347 57h3v3h-3zM350 57h3v3h-3zM338 60h3v3h-3zM350 60h3v3h-3zM338 63h3v3h-3zM350 63h3v3h-3zM338 66h3v3h-3zM350 66h3v3h-3zM359 48h3v3h-3zM362 48h3v3h-3zM365 48h3v3h-3zM368 48h3v3h-3zM356 51h3v3h-3zM356 54h3v3h-3zM356 57h3v3h-3zM362 57h3v3h-3zM365 57h3v3h-3zM368 57h3v3h-3zM356 60h3v3h-3zM368 60h3v3h-3zM356 63h3v3h-3zM368 63h3v3h-3zM359 66h3v3h-3zM362 66h3v3h-3zM365 66h3v3h-3zM368 66h3v3h-3zM374 48h3v3h-3zM377 48h3v3h-3zM380 48h3v3h-3zM383 48h3v3h-3zM386 48h3v3h-3zM374 51h3v3h-3zM374 54h3v3h-3zM374 57h3v3h-3zM377 57h3v3h-3zM380 57h3v3h-3zM383 57h3v3h-3zM374 60h3v3h-3zM374 63h3v3h-3zM374 66h3v3h-3zM377 66h3v3h-3zM380 66h3v3h-3zM383 66h3v3h-3zM386 66h3v3h-3zM401 48h3v3h-3zM398 51h3v3h-3zM395 54h3v3h-3zM395 57h3v3h-3zM395 60h3v3h-3zM398 63h3v3h-3zM401 66h3v3h-3zM413 48h3v3h-3zM416 51h3v3h-3zM419 54h3v3h-3zM419 57h3v3h-3zM419 60h3v3h-3zM416 63h3v3h-3zM413 66h3v3h-3zM446 48h3v3h-3zM446 51h3v3h-3zM446 54h3v3h-3zM446 57h3v3h-3zM446 60h3v3h-3zM446 63h3v3h-3zM446 66h3v3h-3zM449 66h3v3h-3zM452 66h3v3h-3zM455 66h3v3h-3zM458 66h3v3h-3zM464 48h3v3h-3zM467 48h3v3h-3zM470 48h3v3h-3zM473 48h3v3h-3zM476 48h3v3h-3zM470 51h3v3h-3zM470 54h3v3h-3zM470 57h3v3h-3zM470 60h3v3h-3zM470 63h3v3h-3zM464 66h3v3h-3zM467 66h3v3h-3zM470 66h3v3h-3zM473 66h3v3h-3zM476 66h3v3h-3zM482 48h3v3h-3zM485 48h3v3h-3zM488 48h3v3h-3zM491 48h3v3h-3zM494 48h3v3h-3zM482 51h3v3h-3zM482 54h3v3h-3zM482 57h3v3h-3zM485 57h3v3h-3zM488 57h3v3h-3zM491 57h3v3h-3zM482 60h3v3h-3zM482 63h3v3h-3zM482 66h3v3h-3zM500 48h3v3h-3zM503 48h3v3h-3zM506 48h3v3h-3zM509 48h3v3h-3zM512 48h3v3h-3zM500 51h3v3h-3zM500 54h3v3h-3zM500 57h3v3h-3zM503 57h3v3h-3zM506 57h3v3h-3zM509 57h3v3h-3zM500 60h3v3h-3zM500 63h3v3h-3zM500 66h3v3h-3zM503 66h3v3h-3zM506 66h3v3h-3zM509 66h3v3h-3zM512 66h3v3h-3zM521 48h3v3h-3zM524 48h3v3h-3zM527 48h3v3h-3zM530 48h3v3h-3zM518 51h3v3h-3zM518 54h3v3h-3zM518 57h3v3h-3zM518 60h3v3h-3zM518 63h3v3h-3zM521 66h3v3h-3zM524 66h3v3h-3zM527 66h3v3h-3zM530 66h3v3h-3zM536 48h3v3h-3zM548 48h3v3h-3zM536 51h3v3h-3zM548 51h3v3h-3zM539 54h3v3h-3zM545 54h3v3h-3zM542 57h3v3h-3zM542 60h3v3h-3zM542 63h3v3h-3zM542 66h3v3h-3zM557 48h3v3h-3zM560 48h3v3h-3zM563 48h3v3h-3zM566 48h3v3h-3zM554 51h3v3h-3zM554 54h3v3h-3zM554 57h3v3h-3zM554 60h3v3h-3zM554 63h3v3h-3zM557 66h3v3h-3zM560 66h3v3h-3zM563 66h3v3h-3zM566 66h3v3h-3zM572 48h3v3h-3zM572 51h3v3h-3zM572 54h3v3h-3zM572 57h3v3h-3zM572 60h3v3h-3zM572 63h3v3h-3zM572 66h3v3h-3zM575 66h3v3h-3zM578 66h3v3h-3zM581 66h3v3h-3zM584 66h3v3h-3zM590 48h3v3h-3zM593 48h3v3h-3zM596 48h3v3h-3zM599 48h3v3h-3zM602 48h3v3h-3zM590 51h3v3h-3zM590 54h3v3h-3zM590 57h3v3h-3zM593 57h3v3h-3zM596 57h3v3h-3zM599 57h3v3h-3zM590 60h3v3h-3zM590 63h3v3h-3zM590 66h3v3h-3zM593 66h3v3h-3zM596 66h3v3h-3zM599 66h3v3h-3zM602 66h3v3h-3z" fill="#f5f0e8"/></g>
     <text x="50" y="99" class="subtitle">Core delegates the local mutation to CRDTProvider.localChange before creating storage and wire artifacts.</text>
 
-    <rect x="916" y="51" width="234" height="34" rx="17" fill="#301f2c" stroke="#f472b6" stroke-width="1.5"/>
-    <text x="1033" y="74" class="badge" text-anchor="middle" fill="#fbcfe8">LOCAL MUTATION FIRST</text>
+    <rect x="916" y="51" width="234" height="34" fill="#382237" stroke="#f0a5cf" stroke-width="1.5"/>
+    <text x="1033" y="74" class="badge" text-anchor="middle" fill="#f0a5cf">LOCAL MUTATION FIRST</text>
     <g filter="url(#shadow)">
-      <rect x="50" y="145" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+      <rect x="50" y="145" width="300" height="116" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     </g>
-    <circle cx="77" cy="174" r="16" fill="#818cf8"/>
+    <rect x="61" y="158" width="32" height="32" fill="#b7a1ff"/>
     <text x="77" y="175" class="number">1</text>
     <text x="102" y="179" class="card-title">document.change(fn)</text>
-    <text x="72" y="214" class="body">Application supplies a change callback.</text>
+    <text x="0" y="0" class="body" transform="translate(72 214) scale(0.74644 1)">Application supplies a change callback.</text>
     <g filter="url(#shadow)">
-      <rect x="450" y="145" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+      <rect x="450" y="145" width="300" height="116" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     </g>
-    <circle cx="477" cy="174" r="16" fill="#818cf8"/>
+    <rect x="461" y="158" width="32" height="32" fill="#b7a1ff"/>
     <text x="477" y="175" class="number">2</text>
     <text x="502" y="179" class="card-title">Authorize the write</text>
-    <text x="472" y="214" class="body">Current writer access is checked.</text>
+    <text x="0" y="0" class="body" transform="translate(472 214) scale(0.88215 1)">Current writer access is checked.</text>
     <g filter="url(#shadow)">
-      <rect x="850" y="145" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+      <rect x="850" y="145" width="300" height="116" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     </g>
-    <circle cx="877" cy="174" r="16" fill="#2dd4bf"/>
+    <rect x="861" y="158" width="32" height="32" fill="#a3efb8"/>
     <text x="877" y="175" class="number">3</text>
     <text x="902" y="179" class="card-title">CRDTProvider</text>
-    <text x="872" y="214" class="body">localChange(document, message, fn)</text>
-<text x="872" y="237" class="body">runs the callback at the adapter boundary.</text>
-    <path d="M350 203H442" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M750 203H842" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <text x="0" y="0" class="body" transform="translate(872 214) scale(0.85621 1)">localChange(document, message, fn)</text>
+<text x="0" y="0" class="body" transform="translate(872 237) scale(0.69312 1)">runs the callback at the adapter boundary.</text>
+    <path d="M350 203H442" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M750 203H842" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
     <g filter="url(#shadow)">
-      <rect x="850" y="320" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+      <rect x="850" y="320" width="300" height="116" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     </g>
-    <circle cx="877" cy="349" r="16" fill="#2dd4bf"/>
+    <rect x="861" y="333" width="32" height="32" fill="#a3efb8"/>
     <text x="877" y="350" class="number">4</text>
-    <text x="902" y="354" class="card-title">Local replica changes</text>
-    <text x="872" y="389" class="body">Provider returns the updated document</text>
-<text x="872" y="412" class="body">and a provider-specific CRDT delta.</text>
+    <text x="0" y="0" class="card-title" transform="translate(902 354) scale(0.96909 1)">Local replica changes</text>
+    <text x="0" y="0" class="body" transform="translate(872 389) scale(0.78679 1)">Provider returns the updated document</text>
+<text x="0" y="0" class="body" transform="translate(872 412) scale(0.83175 1)">and a provider-specific CRDT delta.</text>
     <g filter="url(#shadow)">
-      <rect x="450" y="320" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+      <rect x="450" y="320" width="300" height="116" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     </g>
-    <circle cx="477" cy="349" r="16" fill="#818cf8"/>
+    <rect x="461" y="333" width="32" height="32" fill="#b7a1ff"/>
     <text x="477" y="350" class="number">5</text>
     <text x="502" y="354" class="card-title">Serialize + encrypt</text>
-    <text x="472" y="389" class="body">Serialize the provider delta, then</text>
-<text x="472" y="412" class="body">encrypt with the document key.</text>
+    <text x="0" y="0" class="body" transform="translate(472 389) scale(0.85621 1)">Serialize the provider delta, then</text>
+<text x="0" y="0" class="body" transform="translate(472 412) scale(0.97037 1)">encrypt with the document key.</text>
     <g filter="url(#shadow)">
-      <rect x="50" y="320" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+      <rect x="50" y="320" width="300" height="116" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     </g>
-    <circle cx="77" cy="349" r="16" fill="#818cf8"/>
+    <rect x="61" y="333" width="32" height="32" fill="#b7a1ff"/>
     <text x="77" y="350" class="number">6</text>
     <text x="102" y="354" class="card-title">Store bytes in Helia</text>
-    <text x="72" y="389" class="body">Content addressing returns a CID.</text>
-    <path d="M1000 261V312" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M850 378H758" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M450 378H358" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <text x="0" y="0" class="body" transform="translate(72 389) scale(0.88215 1)">Content addressing returns a CID.</text>
+    <path d="M1000 261V312" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M850 378H758" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M450 378H358" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
     <g filter="url(#shadow)">
-      <rect x="50" y="495" width="300" height="116" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+      <rect x="50" y="495" width="300" height="116" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     </g>
-    <circle cx="77" cy="524" r="16" fill="#818cf8"/>
+    <rect x="61" y="508" width="32" height="32" fill="#b7a1ff"/>
     <text x="77" y="525" class="number">7</text>
-    <text x="102" y="529" class="card-title">Build CRDTSyncMessage</text>
-    <text x="72" y="564" class="body">Name the CID; include inline history</text>
+    <text x="0" y="0" class="card-title" transform="translate(102 529) scale(0.96909 1)">Build CRDTSyncMessage</text>
+    <text x="0" y="0" class="body" transform="translate(72 564) scale(0.80864 1)">Name the CID; include inline history</text>
 <text x="72" y="587" class="body">and deferred CID references.</text>
     <g filter="url(#shadow)">
-      <rect x="450" y="495" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+      <rect x="450" y="495" width="300" height="116" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     </g>
-    <circle cx="477" cy="524" r="16" fill="#2dd4bf"/>
+    <rect x="461" y="508" width="32" height="32" fill="#a3efb8"/>
     <text x="477" y="525" class="number">8</text>
     <text x="502" y="529" class="card-title">Protect wire message</text>
-    <text x="472" y="564" class="body">Sign when enabled, serialize, then</text>
-<text x="472" y="587" class="body">encrypt with the document key.</text>
+    <text x="0" y="0" class="body" transform="translate(472 564) scale(0.85621 1)">Sign when enabled, serialize, then</text>
+<text x="0" y="0" class="body" transform="translate(472 587) scale(0.97037 1)">encrypt with the document key.</text>
     <g filter="url(#shadow)">
-      <rect x="850" y="495" width="300" height="116" rx="18" fill="#123038" stroke="#2dd4bf" stroke-width="2"/>
+      <rect x="850" y="495" width="300" height="116" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     </g>
-    <circle cx="877" cy="524" r="16" fill="#2dd4bf"/>
+    <rect x="861" y="508" width="32" height="32" fill="#a3efb8"/>
     <text x="877" y="525" class="number">9</text>
-    <text x="902" y="529" class="card-title">Publish full envelope</text>
-    <text x="872" y="564" class="body">Send to the document GossipSub topic;</text>
-<text x="872" y="587" class="body">this is not a CID-only announcement.</text>
-    <path d="M200 436V487" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M350 553H442" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M750 553H842" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <text x="0" y="0" class="card-title" transform="translate(902 529) scale(0.96909 1)">Publish full envelope</text>
+    <text x="0" y="0" class="body" transform="translate(872 564) scale(0.78679 1)">Send to the document GossipSub topic;</text>
+<text x="0" y="0" class="body" transform="translate(872 587) scale(0.80864 1)">this is not a CID-only announcement.</text>
+    <path d="M200 436V487" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M350 553H442" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M750 553H842" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
 
-    <rect x="50" y="670" width="1100" height="107" rx="18" fill="#301f2c" stroke="#f472b6" stroke-width="2"/>
-    <text x="76" y="705" class="eyebrow" fill="#f9a8d4">FAILURE BOUNDARY</text>
-    <text x="270" y="705" class="body-strong">The local replica changes during CRDTProvider.localChange, before storage and publication finish.</text>
+    <rect x="50" y="670" width="1100" height="107" fill="#382237" stroke="#f0a5cf" stroke-width="2"/>
+    <text x="76" y="705" class="eyebrow" fill="#f0a5cf">FAILURE BOUNDARY</text>
+    <text x="0" y="0" class="body-strong" transform="translate(270 705) scale(0.98969 1)">The local replica changes during CRDTProvider.localChange, before storage and publication finish.</text>
     <text x="76" y="737" class="body">A later storage or publication error can reject change() while the mutation remains visible locally.</text>
     <text x="76" y="762" class="body">There is no automatic rollback, durable outbox, or remote delivery receipt.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

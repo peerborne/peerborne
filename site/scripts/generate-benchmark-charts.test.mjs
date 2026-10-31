@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   chartDefinitions,
   generateCharts,
+  renderChart,
 } from './generate-benchmark-charts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -46,4 +47,33 @@ test('missing metrics fail generation instead of becoming zero', () => {
   ).results = [];
 
   assert.throws(() => chartDefinitions(incomplete), /has no results/);
+});
+
+test('pixel styling preserves every measurement and category position', () => {
+  for (const chart of chartDefinitions(snapshot)) {
+    const svg = renderChart(chart, snapshot);
+    const marks = [...svg.matchAll(/<rect\b[^>]*class="mean-marker"[^>]*>/g)].map(
+      (match) => match[0],
+    );
+    const points = chart.series.flatMap((series) => series.points);
+    assert.equal(marks.length, points.length, chart.filename);
+    marks.forEach((mark, index) => {
+      assert.equal(Number(/data-mean="([^"]+)"/.exec(mark)[1]), points[index].mean);
+      assert.equal(Number(/data-p99="([^"]+)"/.exec(mark)[1]), points[index].p99);
+      const x =
+        Number(/\bx="([^"]+)"/.exec(mark)[1]) +
+        Number(/\bwidth="([^"]+)"/.exec(mark)[1]) / 2;
+      const expected = {
+        3: [92, 581, 1070],
+        4: [92, 418, 744, 1070],
+        5: [92, 336.5, 581, 825.5, 1070],
+      }[chart.xLabels.length];
+      assert.equal(x, expected[index % chart.xLabels.length]);
+    });
+    assert.match(svg, /class="pixel-heading"/);
+    assert.match(svg, /Squares show means and capped whiskers show p99/);
+    assert.ok(svg.includes(snapshot.sourceCommit.slice(0, 8)));
+    assert.ok(svg.includes(snapshot.system.cpu));
+    assert.doesNotMatch(svg, /<circle|linearGradient|r[xy]="[1-9]/);
+  }
 });

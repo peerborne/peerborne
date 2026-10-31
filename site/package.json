@@ -14,7 +14,7 @@
     "diagrams:generate": "node scripts/generate-doc-diagrams.mjs",
     "diagrams:check": "node scripts/generate-doc-diagrams.mjs --check",
     "diagrams:test": "node --test scripts/generate-doc-diagrams.test.mjs && yarn diagrams:check",
-    "figures:test": "node --test scripts/rehype-docs-figures.test.mjs",
+    "figures:test": "node --test scripts/rehype-docs-figures.test.mjs scripts/figure-theme.test.mjs",
     "preview": "astro preview",
     "check:snippets": "node scripts/check-doc-snippets.mjs",
     "sync:check": "node scripts/generate-sync-assets.mjs --check",

@@ -2,96 +2,91 @@
   <title id="single-relay-topology-title">Minimal single-relay topology</title>
   <desc id="single-relay-topology-description">A DNS name and TLS endpoint lead to one relay and bootstrap process. It exposes WebSocket service, commonly behind a port 443 WSS reverse proxy, and a TCP listener for node-to-node connections. Three browsers use a configured relay multiaddress; dashed connections to public STUN represent optional WebRTC ICE candidate gathering. The relay is a single point of coordination, has no high-availability or concurrent-peer guarantee, and does not provide durable document storage.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.035"/>
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
-    </filter>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
-      .subtitle { fill: #94a3b8; font-size: 17px; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .title { fill: #f5f0e8; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #a7a0b6; font-size: 17px; }
       .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
-      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
-      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
-      .body { fill: #cbd5e1; font-size: 15px; }
-      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .section { fill: #cbc5d6; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f5f0e8; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbc5d6; font-size: 15px; }
+      .body-strong { fill: #cbc5d6; font-size: 15px; font-weight: 700; }
       .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
-      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
-      .node-detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .node { fill: #f5f0e8; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
     </style>
   </defs>
-  <rect width="1200" height="820" rx="28" fill="url(#background)"/>
-  <rect width="1200" height="820" rx="28" fill="url(#grid)"/>
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <rect width="1200" height="820" fill="#171521"/>
+  <rect width="1200" height="820" fill="url(#grid)"/>
+
   <g>
-    <text x="50" y="69" class="title">Minimal single-relay topology</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M50 48h3v3h-3zM62 48h3v3h-3zM50 51h3v3h-3zM53 51h3v3h-3zM59 51h3v3h-3zM62 51h3v3h-3zM50 54h3v3h-3zM56 54h3v3h-3zM62 54h3v3h-3zM50 57h3v3h-3zM56 57h3v3h-3zM62 57h3v3h-3zM50 60h3v3h-3zM62 60h3v3h-3zM50 63h3v3h-3zM62 63h3v3h-3zM50 66h3v3h-3zM62 66h3v3h-3zM68 48h3v3h-3zM71 48h3v3h-3zM74 48h3v3h-3zM77 48h3v3h-3zM80 48h3v3h-3zM74 51h3v3h-3zM74 54h3v3h-3zM74 57h3v3h-3zM74 60h3v3h-3zM74 63h3v3h-3zM68 66h3v3h-3zM71 66h3v3h-3zM74 66h3v3h-3zM77 66h3v3h-3zM80 66h3v3h-3zM86 48h3v3h-3zM98 48h3v3h-3zM86 51h3v3h-3zM89 51h3v3h-3zM98 51h3v3h-3zM86 54h3v3h-3zM92 54h3v3h-3zM98 54h3v3h-3zM86 57h3v3h-3zM95 57h3v3h-3zM98 57h3v3h-3zM86 60h3v3h-3zM98 60h3v3h-3zM86 63h3v3h-3zM98 63h3v3h-3zM86 66h3v3h-3zM98 66h3v3h-3zM104 48h3v3h-3zM107 48h3v3h-3zM110 48h3v3h-3zM113 48h3v3h-3zM116 48h3v3h-3zM110 51h3v3h-3zM110 54h3v3h-3zM110 57h3v3h-3zM110 60h3v3h-3zM110 63h3v3h-3zM104 66h3v3h-3zM107 66h3v3h-3zM110 66h3v3h-3zM113 66h3v3h-3zM116 66h3v3h-3zM122 48h3v3h-3zM134 48h3v3h-3zM122 51h3v3h-3zM125 51h3v3h-3zM131 51h3v3h-3zM134 51h3v3h-3zM122 54h3v3h-3zM128 54h3v3h-3zM134 54h3v3h-3zM122 57h3v3h-3zM128 57h3v3h-3zM134 57h3v3h-3zM122 60h3v3h-3zM134 60h3v3h-3zM122 63h3v3h-3zM134 63h3v3h-3zM122 66h3v3h-3zM134 66h3v3h-3zM143 48h3v3h-3zM146 48h3v3h-3zM149 48h3v3h-3zM140 51h3v3h-3zM152 51h3v3h-3zM140 54h3v3h-3zM152 54h3v3h-3zM140 57h3v3h-3zM143 57h3v3h-3zM146 57h3v3h-3zM149 57h3v3h-3zM152 57h3v3h-3zM140 60h3v3h-3zM152 60h3v3h-3zM140 63h3v3h-3zM152 63h3v3h-3zM140 66h3v3h-3zM152 66h3v3h-3zM158 48h3v3h-3zM158 51h3v3h-3zM158 54h3v3h-3zM158 57h3v3h-3zM158 60h3v3h-3zM158 63h3v3h-3zM158 66h3v3h-3zM161 66h3v3h-3zM164 66h3v3h-3zM167 66h3v3h-3zM170 66h3v3h-3zM197 48h3v3h-3zM200 48h3v3h-3zM203 48h3v3h-3zM206 48h3v3h-3zM194 51h3v3h-3zM194 54h3v3h-3zM197 57h3v3h-3zM200 57h3v3h-3zM203 57h3v3h-3zM206 60h3v3h-3zM206 63h3v3h-3zM194 66h3v3h-3zM197 66h3v3h-3zM200 66h3v3h-3zM203 66h3v3h-3zM212 48h3v3h-3zM215 48h3v3h-3zM218 48h3v3h-3zM221 48h3v3h-3zM224 48h3v3h-3zM218 51h3v3h-3zM218 54h3v3h-3zM218 57h3v3h-3zM218 60h3v3h-3zM218 63h3v3h-3zM212 66h3v3h-3zM215 66h3v3h-3zM218 66h3v3h-3zM221 66h3v3h-3zM224 66h3v3h-3zM230 48h3v3h-3zM242 48h3v3h-3zM230 51h3v3h-3zM233 51h3v3h-3zM242 51h3v3h-3zM230 54h3v3h-3zM236 54h3v3h-3zM242 54h3v3h-3zM230 57h3v3h-3zM239 57h3v3h-3zM242 57h3v3h-3zM230 60h3v3h-3zM242 60h3v3h-3zM230 63h3v3h-3zM242 63h3v3h-3zM230 66h3v3h-3zM242 66h3v3h-3zM251 48h3v3h-3zM254 48h3v3h-3zM257 48h3v3h-3zM260 48h3v3h-3zM248 51h3v3h-3zM248 54h3v3h-3zM248 57h3v3h-3zM254 57h3v3h-3zM257 57h3v3h-3zM260 57h3v3h-3zM248 60h3v3h-3zM260 60h3v3h-3zM248 63h3v3h-3zM260 63h3v3h-3zM251 66h3v3h-3zM254 66h3v3h-3zM257 66h3v3h-3zM260 66h3v3h-3zM266 48h3v3h-3zM266 51h3v3h-3zM266 54h3v3h-3zM266 57h3v3h-3zM266 60h3v3h-3zM266 63h3v3h-3zM266 66h3v3h-3zM269 66h3v3h-3zM272 66h3v3h-3zM275 66h3v3h-3zM278 66h3v3h-3zM284 48h3v3h-3zM287 48h3v3h-3zM290 48h3v3h-3zM293 48h3v3h-3zM296 48h3v3h-3zM284 51h3v3h-3zM284 54h3v3h-3zM284 57h3v3h-3zM287 57h3v3h-3zM290 57h3v3h-3zM293 57h3v3h-3zM284 60h3v3h-3zM284 63h3v3h-3zM284 66h3v3h-3zM287 66h3v3h-3zM290 66h3v3h-3zM293 66h3v3h-3zM296 66h3v3h-3zM302 57h3v3h-3zM305 57h3v3h-3zM308 57h3v3h-3zM311 57h3v3h-3zM314 57h3v3h-3zM320 48h3v3h-3zM323 48h3v3h-3zM326 48h3v3h-3zM329 48h3v3h-3zM320 51h3v3h-3zM332 51h3v3h-3zM320 54h3v3h-3zM332 54h3v3h-3zM320 57h3v3h-3zM323 57h3v3h-3zM326 57h3v3h-3zM329 57h3v3h-3zM320 60h3v3h-3zM326 60h3v3h-3zM320 63h3v3h-3zM329 63h3v3h-3zM320 66h3v3h-3zM332 66h3v3h-3zM338 48h3v3h-3zM341 48h3v3h-3zM344 48h3v3h-3zM347 48h3v3h-3zM350 48h3v3h-3zM338 51h3v3h-3zM338 54h3v3h-3zM338 57h3v3h-3zM341 57h3v3h-3zM344 57h3v3h-3zM347 57h3v3h-3zM338 60h3v3h-3zM338 63h3v3h-3zM338 66h3v3h-3zM341 66h3v3h-3zM344 66h3v3h-3zM347 66h3v3h-3zM350 66h3v3h-3zM356 48h3v3h-3zM356 51h3v3h-3zM356 54h3v3h-3zM356 57h3v3h-3zM356 60h3v3h-3zM356 63h3v3h-3zM356 66h3v3h-3zM359 66h3v3h-3zM362 66h3v3h-3zM365 66h3v3h-3zM368 66h3v3h-3zM377 48h3v3h-3zM380 48h3v3h-3zM383 48h3v3h-3zM374 51h3v3h-3zM386 51h3v3h-3zM374 54h3v3h-3zM386 54h3v3h-3zM374 57h3v3h-3zM377 57h3v3h-3zM380 57h3v3h-3zM383 57h3v3h-3zM386 57h3v3h-3zM374 60h3v3h-3zM386 60h3v3h-3zM374 63h3v3h-3zM386 63h3v3h-3zM374 66h3v3h-3zM386 66h3v3h-3zM392 48h3v3h-3zM404 48h3v3h-3zM392 51h3v3h-3zM404 51h3v3h-3zM395 54h3v3h-3zM401 54h3v3h-3zM398 57h3v3h-3zM398 60h3v3h-3zM398 63h3v3h-3zM398 66h3v3h-3zM428 48h3v3h-3zM431 48h3v3h-3zM434 48h3v3h-3zM437 48h3v3h-3zM440 48h3v3h-3zM434 51h3v3h-3zM434 54h3v3h-3zM434 57h3v3h-3zM434 60h3v3h-3zM434 63h3v3h-3zM434 66h3v3h-3zM449 48h3v3h-3zM452 48h3v3h-3zM455 48h3v3h-3zM446 51h3v3h-3zM458 51h3v3h-3zM446 54h3v3h-3zM458 54h3v3h-3zM446 57h3v3h-3zM458 57h3v3h-3zM446 60h3v3h-3zM458 60h3v3h-3zM446 63h3v3h-3zM458 63h3v3h-3zM449 66h3v3h-3zM452 66h3v3h-3zM455 66h3v3h-3zM464 48h3v3h-3zM467 48h3v3h-3zM470 48h3v3h-3zM473 48h3v3h-3zM464 51h3v3h-3zM476 51h3v3h-3zM464 54h3v3h-3zM476 54h3v3h-3zM464 57h3v3h-3zM467 57h3v3h-3zM470 57h3v3h-3zM473 57h3v3h-3zM464 60h3v3h-3zM464 63h3v3h-3zM464 66h3v3h-3zM485 48h3v3h-3zM488 48h3v3h-3zM491 48h3v3h-3zM482 51h3v3h-3zM494 51h3v3h-3zM482 54h3v3h-3zM494 54h3v3h-3zM482 57h3v3h-3zM494 57h3v3h-3zM482 60h3v3h-3zM494 60h3v3h-3zM482 63h3v3h-3zM494 63h3v3h-3zM485 66h3v3h-3zM488 66h3v3h-3zM491 66h3v3h-3zM500 48h3v3h-3zM500 51h3v3h-3zM500 54h3v3h-3zM500 57h3v3h-3zM500 60h3v3h-3zM500 63h3v3h-3zM500 66h3v3h-3zM503 66h3v3h-3zM506 66h3v3h-3zM509 66h3v3h-3zM512 66h3v3h-3zM521 48h3v3h-3zM524 48h3v3h-3zM527 48h3v3h-3zM518 51h3v3h-3zM530 51h3v3h-3zM518 54h3v3h-3zM530 54h3v3h-3zM518 57h3v3h-3zM530 57h3v3h-3zM518 60h3v3h-3zM530 60h3v3h-3zM518 63h3v3h-3zM530 63h3v3h-3zM521 66h3v3h-3zM524 66h3v3h-3zM527 66h3v3h-3zM539 48h3v3h-3zM542 48h3v3h-3zM545 48h3v3h-3zM548 48h3v3h-3zM536 51h3v3h-3zM536 54h3v3h-3zM536 57h3v3h-3zM542 57h3v3h-3zM545 57h3v3h-3zM548 57h3v3h-3zM536 60h3v3h-3zM548 60h3v3h-3zM536 63h3v3h-3zM548 63h3v3h-3zM539 66h3v3h-3zM542 66h3v3h-3zM545 66h3v3h-3zM548 66h3v3h-3zM554 48h3v3h-3zM566 48h3v3h-3zM554 51h3v3h-3zM566 51h3v3h-3zM557 54h3v3h-3zM563 54h3v3h-3zM560 57h3v3h-3zM560 60h3v3h-3zM560 63h3v3h-3zM560 66h3v3h-3z" fill="#f5f0e8"/></g>
     <text x="50" y="99" class="subtitle">One reachable process combines bootstrap discovery, Circuit Relay v2, and GossipSub peer discovery.</text>
 
-    <rect x="881" y="51" width="269" height="34" rx="17" fill="#3b2b13" stroke="#f59e0b" stroke-width="1.5"/>
-    <text x="1015.5" y="74" class="badge" text-anchor="middle" fill="#fde68a">DEVELOPMENT / LIMITED TRIAL</text>
+    <rect x="881" y="51" width="269" height="34" fill="#382819" stroke="#ffb887" stroke-width="1.5"/>
+    <text x="1015.5" y="74" class="badge" text-anchor="middle" fill="#ffd5b5">DEVELOPMENT / LIMITED TRIAL</text>
 
-    <rect x="50" y="145" width="245" height="106" rx="18" fill="#151f35" stroke="#6366f1" stroke-width="2"/>
+    <rect x="50" y="145" width="245" height="106" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="172.5" y="181" class="card-title" text-anchor="middle">DNS + TLS</text>
     <text x="172.5" y="210" class="body-strong" text-anchor="middle">relay.example.com</text>
     <text x="172.5" y="234" class="body" text-anchor="middle">HTTPS origin requires WSS</text>
-    <path d="M295 198H402" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M295 198H402" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
     <g filter="url(#shadow)">
-      <rect x="410" y="132" width="380" height="248" rx="24" fill="#123038" stroke="#14b8a6" stroke-width="2.5"/>
+      <rect x="410" y="132" width="380" height="248" fill="#1b382a" stroke="#a3efb8" stroke-width="2.5"/>
     </g>
-    <text x="600" y="172" class="card-title" text-anchor="middle" fill="#99f6e4">One relay / bootstrap process</text>
+    <text x="600" y="172" class="card-title" text-anchor="middle" fill="#c7f5d3">One relay / bootstrap process</text>
     <text x="600" y="207" class="body-strong" text-anchor="middle">Bootstrap + identify</text>
 <text x="600" y="235" class="body-strong" text-anchor="middle">Circuit Relay v2</text>
 <text x="600" y="263" class="body-strong" text-anchor="middle">GossipSub peer discovery</text>
-    <rect x="453" y="300" width="294" height="52" rx="18" fill="#0f2b2e" stroke="#2dd4bf" stroke-width="1.5"/>
+    <rect x="453" y="300" width="294" height="52" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
     <text x="600" y="322" class="body-strong" text-anchor="middle">9001 WebSocket · 9002 TCP</text>
-    <text x="600" y="342" class="body" text-anchor="middle">often 443/WSS through a reverse proxy</text>
+    <text x="0" y="0" class="body" text-anchor="middle" transform="translate(600 342) scale(0.85285 1)">often 443/WSS through a reverse proxy</text>
 
-    <rect x="905" y="145" width="245" height="106" rx="18" fill="#302441" stroke="#a78bfa" stroke-width="2"/>
+    <rect x="905" y="145" width="245" height="106" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="1027.5" y="181" class="card-title" text-anchor="middle">Public STUN</text>
     <text x="1027.5" y="210" class="body-strong" text-anchor="middle">ICE candidate gathering</text>
     <text x="1027.5" y="234" class="body" text-anchor="middle">for optional direct WebRTC</text>
 
-    <rect x="80" y="510" width="260" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="80" y="510" width="260" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="210" y="552" class="card-title" text-anchor="middle">Browser A</text>
     <text x="210" y="583" class="body" text-anchor="middle">configured relay multiaddr</text>
-    <rect x="125" y="590" width="170" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
-    <text x="210" y="613" class="badge" text-anchor="middle" fill="#c7d2fe">WSS CLIENT</text>
-    <rect x="470" y="510" width="260" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="125" y="590" width="170" height="34" fill="#30234c" stroke="#b7a1ff" stroke-width="1.5"/>
+    <text x="210" y="613" class="badge" text-anchor="middle" fill="#d6c8ff">WSS CLIENT</text>
+    <rect x="470" y="510" width="260" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="600" y="552" class="card-title" text-anchor="middle">Browser B</text>
     <text x="600" y="583" class="body" text-anchor="middle">configured relay multiaddr</text>
-    <rect x="515" y="590" width="170" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
-    <text x="600" y="613" class="badge" text-anchor="middle" fill="#c7d2fe">WSS CLIENT</text>
-    <rect x="860" y="510" width="260" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="515" y="590" width="170" height="34" fill="#30234c" stroke="#b7a1ff" stroke-width="1.5"/>
+    <text x="600" y="613" class="badge" text-anchor="middle" fill="#d6c8ff">WSS CLIENT</text>
+    <rect x="860" y="510" width="260" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="990" y="552" class="card-title" text-anchor="middle">Browser C</text>
     <text x="990" y="583" class="body" text-anchor="middle">configured relay multiaddr</text>
-    <rect x="905" y="590" width="170" height="34" rx="17" fill="#172554" stroke="#6366f1" stroke-width="1.5"/>
-    <text x="990" y="613" class="badge" text-anchor="middle" fill="#c7d2fe">WSS CLIENT</text>
+    <rect x="905" y="590" width="170" height="34" fill="#30234c" stroke="#b7a1ff" stroke-width="1.5"/>
+    <text x="990" y="613" class="badge" text-anchor="middle" fill="#d6c8ff">WSS CLIENT</text>
 
-    <path d="M520 380V432H210V502" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M600 380V502" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M680 380V432H990V502" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M1027 251V446H990V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
-    <path d="M990 446H600V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
-    <path d="M600 446H210V502" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M520 380V432H210V502" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M600 380V502" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M680 380V432H990V502" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M1027 251V446H990V502" fill="none" stroke="#b7a1ff" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M990 446H600V502" fill="none" stroke="#b7a1ff" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
+    <path d="M600 446H210V502" fill="none" stroke="#b7a1ff" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#arrowIndigo)"/>
 
-    <rect x="50" y="672" width="1100" height="112" rx="18" fill="#301f2c" stroke="#f472b6" stroke-width="2"/>
-    <text x="76" y="707" class="eyebrow" fill="#f9a8d4">SINGLE POINT OF COORDINATION</text>
+    <rect x="50" y="672" width="1100" height="112" fill="#382237" stroke="#f0a5cf" stroke-width="2"/>
+    <text x="76" y="707" class="eyebrow" fill="#f0a5cf">SINGLE POINT OF COORDINATION</text>
     <text x="76" y="739" class="body-strong">If this process or host is unreachable, new peers lose the configured bootstrap and relay path.</text>
     <text x="76" y="766" class="body">This topology has no high-availability or concurrent-peer guarantee and does not provide durable document storage.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

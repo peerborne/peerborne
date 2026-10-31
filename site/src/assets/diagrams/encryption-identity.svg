@@ -2,101 +2,96 @@
   <title id="encryption-identity-title">Encryption and identity roles</title>
   <desc id="encryption-identity-description">Diagram separating an application-supplied ECDSA P-384 writer signing key, an application-supplied ECDH P-256 onboarding KEM key, and the libp2p Peer ID transport identity. Peerborne does not map signing keys to Peer IDs. Document state includes encryption keys and an ACL bound to signing public keys. Each change produces a CID-addressed encrypted stored payload without a block signature and a separate signed-when-enabled encrypted GossipSub message.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.035"/>
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
-    </filter>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
-      .subtitle { fill: #94a3b8; font-size: 17px; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .title { fill: #f5f0e8; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #a7a0b6; font-size: 17px; }
       .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
-      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
-      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
-      .body { fill: #cbd5e1; font-size: 15px; }
-      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .section { fill: #cbc5d6; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f5f0e8; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbc5d6; font-size: 15px; }
+      .body-strong { fill: #cbc5d6; font-size: 15px; font-weight: 700; }
       .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
-      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
-      .node-detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .node { fill: #f5f0e8; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
     </style>
   </defs>
-  <rect width="1200" height="900" rx="28" fill="url(#background)"/>
-  <rect width="1200" height="900" rx="28" fill="url(#grid)"/>
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <rect width="1200" height="900" fill="#171521"/>
+  <rect width="1200" height="900" fill="url(#grid)"/>
+
   <g>
-    <text x="50" y="69" class="title">Encryption and identity roles</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M50 48h3v3h-3zM53 48h3v3h-3zM56 48h3v3h-3zM59 48h3v3h-3zM62 48h3v3h-3zM50 51h3v3h-3zM50 54h3v3h-3zM50 57h3v3h-3zM53 57h3v3h-3zM56 57h3v3h-3zM59 57h3v3h-3zM50 60h3v3h-3zM50 63h3v3h-3zM50 66h3v3h-3zM53 66h3v3h-3zM56 66h3v3h-3zM59 66h3v3h-3zM62 66h3v3h-3zM68 48h3v3h-3zM80 48h3v3h-3zM68 51h3v3h-3zM71 51h3v3h-3zM80 51h3v3h-3zM68 54h3v3h-3zM74 54h3v3h-3zM80 54h3v3h-3zM68 57h3v3h-3zM77 57h3v3h-3zM80 57h3v3h-3zM68 60h3v3h-3zM80 60h3v3h-3zM68 63h3v3h-3zM80 63h3v3h-3zM68 66h3v3h-3zM80 66h3v3h-3zM89 48h3v3h-3zM92 48h3v3h-3zM95 48h3v3h-3zM98 48h3v3h-3zM86 51h3v3h-3zM86 54h3v3h-3zM86 57h3v3h-3zM86 60h3v3h-3zM86 63h3v3h-3zM89 66h3v3h-3zM92 66h3v3h-3zM95 66h3v3h-3zM98 66h3v3h-3zM104 48h3v3h-3zM107 48h3v3h-3zM110 48h3v3h-3zM113 48h3v3h-3zM104 51h3v3h-3zM116 51h3v3h-3zM104 54h3v3h-3zM116 54h3v3h-3zM104 57h3v3h-3zM107 57h3v3h-3zM110 57h3v3h-3zM113 57h3v3h-3zM104 60h3v3h-3zM110 60h3v3h-3zM104 63h3v3h-3zM113 63h3v3h-3zM104 66h3v3h-3zM116 66h3v3h-3zM122 48h3v3h-3zM134 48h3v3h-3zM122 51h3v3h-3zM134 51h3v3h-3zM125 54h3v3h-3zM131 54h3v3h-3zM128 57h3v3h-3zM128 60h3v3h-3zM128 63h3v3h-3zM128 66h3v3h-3zM140 48h3v3h-3zM143 48h3v3h-3zM146 48h3v3h-3zM149 48h3v3h-3zM140 51h3v3h-3zM152 51h3v3h-3zM140 54h3v3h-3zM152 54h3v3h-3zM140 57h3v3h-3zM143 57h3v3h-3zM146 57h3v3h-3zM149 57h3v3h-3zM140 60h3v3h-3zM140 63h3v3h-3zM140 66h3v3h-3zM158 48h3v3h-3zM161 48h3v3h-3zM164 48h3v3h-3zM167 48h3v3h-3zM170 48h3v3h-3zM164 51h3v3h-3zM164 54h3v3h-3zM164 57h3v3h-3zM164 60h3v3h-3zM164 63h3v3h-3zM164 66h3v3h-3zM176 48h3v3h-3zM179 48h3v3h-3zM182 48h3v3h-3zM185 48h3v3h-3zM188 48h3v3h-3zM182 51h3v3h-3zM182 54h3v3h-3zM182 57h3v3h-3zM182 60h3v3h-3zM182 63h3v3h-3zM176 66h3v3h-3zM179 66h3v3h-3zM182 66h3v3h-3zM185 66h3v3h-3zM188 66h3v3h-3zM197 48h3v3h-3zM200 48h3v3h-3zM203 48h3v3h-3zM194 51h3v3h-3zM206 51h3v3h-3zM194 54h3v3h-3zM206 54h3v3h-3zM194 57h3v3h-3zM206 57h3v3h-3zM194 60h3v3h-3zM206 60h3v3h-3zM194 63h3v3h-3zM206 63h3v3h-3zM197 66h3v3h-3zM200 66h3v3h-3zM203 66h3v3h-3zM212 48h3v3h-3zM224 48h3v3h-3zM212 51h3v3h-3zM215 51h3v3h-3zM224 51h3v3h-3zM212 54h3v3h-3zM218 54h3v3h-3zM224 54h3v3h-3zM212 57h3v3h-3zM221 57h3v3h-3zM224 57h3v3h-3zM212 60h3v3h-3zM224 60h3v3h-3zM212 63h3v3h-3zM224 63h3v3h-3zM212 66h3v3h-3zM224 66h3v3h-3zM251 48h3v3h-3zM254 48h3v3h-3zM257 48h3v3h-3zM248 51h3v3h-3zM260 51h3v3h-3zM248 54h3v3h-3zM260 54h3v3h-3zM248 57h3v3h-3zM251 57h3v3h-3zM254 57h3v3h-3zM257 57h3v3h-3zM260 57h3v3h-3zM248 60h3v3h-3zM260 60h3v3h-3zM248 63h3v3h-3zM260 63h3v3h-3zM248 66h3v3h-3zM260 66h3v3h-3zM266 48h3v3h-3zM278 48h3v3h-3zM266 51h3v3h-3zM269 51h3v3h-3zM278 51h3v3h-3zM266 54h3v3h-3zM272 54h3v3h-3zM278 54h3v3h-3zM266 57h3v3h-3zM275 57h3v3h-3zM278 57h3v3h-3zM266 60h3v3h-3zM278 60h3v3h-3zM266 63h3v3h-3zM278 63h3v3h-3zM266 66h3v3h-3zM278 66h3v3h-3zM284 48h3v3h-3zM287 48h3v3h-3zM290 48h3v3h-3zM293 48h3v3h-3zM284 51h3v3h-3zM296 51h3v3h-3zM284 54h3v3h-3zM296 54h3v3h-3zM284 57h3v3h-3zM296 57h3v3h-3zM284 60h3v3h-3zM296 60h3v3h-3zM284 63h3v3h-3zM296 63h3v3h-3zM284 66h3v3h-3zM287 66h3v3h-3zM290 66h3v3h-3zM293 66h3v3h-3zM320 48h3v3h-3zM323 48h3v3h-3zM326 48h3v3h-3zM329 48h3v3h-3zM332 48h3v3h-3zM326 51h3v3h-3zM326 54h3v3h-3zM326 57h3v3h-3zM326 60h3v3h-3zM326 63h3v3h-3zM320 66h3v3h-3zM323 66h3v3h-3zM326 66h3v3h-3zM329 66h3v3h-3zM332 66h3v3h-3zM338 48h3v3h-3zM341 48h3v3h-3zM344 48h3v3h-3zM347 48h3v3h-3zM338 51h3v3h-3zM350 51h3v3h-3zM338 54h3v3h-3zM350 54h3v3h-3zM338 57h3v3h-3zM350 57h3v3h-3zM338 60h3v3h-3zM350 60h3v3h-3zM338 63h3v3h-3zM350 63h3v3h-3zM338 66h3v3h-3zM341 66h3v3h-3zM344 66h3v3h-3zM347 66h3v3h-3zM356 48h3v3h-3zM359 48h3v3h-3zM362 48h3v3h-3zM365 48h3v3h-3zM368 48h3v3h-3zM356 51h3v3h-3zM356 54h3v3h-3zM356 57h3v3h-3zM359 57h3v3h-3zM362 57h3v3h-3zM365 57h3v3h-3zM356 60h3v3h-3zM356 63h3v3h-3zM356 66h3v3h-3zM359 66h3v3h-3zM362 66h3v3h-3zM365 66h3v3h-3zM368 66h3v3h-3zM374 48h3v3h-3zM386 48h3v3h-3zM374 51h3v3h-3zM377 51h3v3h-3zM386 51h3v3h-3zM374 54h3v3h-3zM380 54h3v3h-3zM386 54h3v3h-3zM374 57h3v3h-3zM383 57h3v3h-3zM386 57h3v3h-3zM374 60h3v3h-3zM386 60h3v3h-3zM374 63h3v3h-3zM386 63h3v3h-3zM374 66h3v3h-3zM386 66h3v3h-3zM392 48h3v3h-3zM395 48h3v3h-3zM398 48h3v3h-3zM401 48h3v3h-3zM404 48h3v3h-3zM398 51h3v3h-3zM398 54h3v3h-3zM398 57h3v3h-3zM398 60h3v3h-3zM398 63h3v3h-3zM398 66h3v3h-3zM410 48h3v3h-3zM413 48h3v3h-3zM416 48h3v3h-3zM419 48h3v3h-3zM422 48h3v3h-3zM416 51h3v3h-3zM416 54h3v3h-3zM416 57h3v3h-3zM416 60h3v3h-3zM416 63h3v3h-3zM410 66h3v3h-3zM413 66h3v3h-3zM416 66h3v3h-3zM419 66h3v3h-3zM422 66h3v3h-3zM428 48h3v3h-3zM431 48h3v3h-3zM434 48h3v3h-3zM437 48h3v3h-3zM440 48h3v3h-3zM434 51h3v3h-3zM434 54h3v3h-3zM434 57h3v3h-3zM434 60h3v3h-3zM434 63h3v3h-3zM434 66h3v3h-3zM446 48h3v3h-3zM458 48h3v3h-3zM446 51h3v3h-3zM458 51h3v3h-3zM449 54h3v3h-3zM455 54h3v3h-3zM452 57h3v3h-3zM452 60h3v3h-3zM452 63h3v3h-3zM452 66h3v3h-3zM482 48h3v3h-3zM485 48h3v3h-3zM488 48h3v3h-3zM491 48h3v3h-3zM482 51h3v3h-3zM494 51h3v3h-3zM482 54h3v3h-3zM494 54h3v3h-3zM482 57h3v3h-3zM485 57h3v3h-3zM488 57h3v3h-3zM491 57h3v3h-3zM482 60h3v3h-3zM488 60h3v3h-3zM482 63h3v3h-3zM491 63h3v3h-3zM482 66h3v3h-3zM494 66h3v3h-3zM503 48h3v3h-3zM506 48h3v3h-3zM509 48h3v3h-3zM500 51h3v3h-3zM512 51h3v3h-3zM500 54h3v3h-3zM512 54h3v3h-3zM500 57h3v3h-3zM512 57h3v3h-3zM500 60h3v3h-3zM512 60h3v3h-3zM500 63h3v3h-3zM512 63h3v3h-3zM503 66h3v3h-3zM506 66h3v3h-3zM509 66h3v3h-3zM518 48h3v3h-3zM518 51h3v3h-3zM518 54h3v3h-3zM518 57h3v3h-3zM518 60h3v3h-3zM518 63h3v3h-3zM518 66h3v3h-3zM521 66h3v3h-3zM524 66h3v3h-3zM527 66h3v3h-3zM530 66h3v3h-3zM536 48h3v3h-3zM539 48h3v3h-3zM542 48h3v3h-3zM545 48h3v3h-3zM548 48h3v3h-3zM536 51h3v3h-3zM536 54h3v3h-3zM536 57h3v3h-3zM539 57h3v3h-3zM542 57h3v3h-3zM545 57h3v3h-3zM536 60h3v3h-3zM536 63h3v3h-3zM536 66h3v3h-3zM539 66h3v3h-3zM542 66h3v3h-3zM545 66h3v3h-3zM548 66h3v3h-3zM557 48h3v3h-3zM560 48h3v3h-3zM563 48h3v3h-3zM566 48h3v3h-3zM554 51h3v3h-3zM554 54h3v3h-3zM557 57h3v3h-3zM560 57h3v3h-3zM563 57h3v3h-3zM566 60h3v3h-3zM566 63h3v3h-3zM554 66h3v3h-3zM557 66h3v3h-3zM560 66h3v3h-3zM563 66h3v3h-3z" fill="#f5f0e8"/></g>
     <text x="50" y="99" class="subtitle">Signing identity, KEM identity, and libp2p transport identity are separate concerns.</text>
 
-    <text x="50" y="143" class="eyebrow" fill="#5eead4">THREE SEPARATE KEY OR IDENTITY ROLES</text>
-    <rect x="50" y="163" width="340" height="138" rx="18" fill="#16213a" stroke="#6366f1" stroke-width="2"/>
+    <text x="50" y="143" class="eyebrow" fill="#a3efb8">THREE SEPARATE KEY OR IDENTITY ROLES</text>
+    <rect x="50" y="163" width="340" height="138" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="74" y="198" class="card-title">Writer signing identity</text>
     <text x="74" y="225" class="body-strong">ECDSA P-384 key pair</text>
     <text x="74" y="251" class="body">Application supplied and stored</text>
-<text x="74" y="274" class="body">Authenticates signed document messages</text>
-    <rect x="430" y="163" width="340" height="138" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+<text x="0" y="0" class="body" transform="translate(74 274) scale(0.87719 1)">Authenticates signed document messages</text>
+    <rect x="430" y="163" width="340" height="138" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     <text x="454" y="198" class="card-title">Reader onboarding identity</text>
     <text x="454" y="225" class="body-strong">ECDH P-256 KEM key pair</text>
     <text x="454" y="251" class="body">Application supplied and stored</text>
-<text x="454" y="274" class="body">Opens recipient-sealed Welcome data</text>
-    <rect x="810" y="163" width="340" height="138" rx="18" fill="#302441" stroke="#8b5cf6" stroke-width="2"/>
+<text x="0" y="0" class="body" transform="translate(454 274) scale(0.95238 1)">Opens recipient-sealed Welcome data</text>
+    <rect x="810" y="163" width="340" height="138" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="834" y="198" class="card-title">Transport identity</text>
     <text x="834" y="225" class="body-strong">libp2p Peer ID</text>
     <text x="834" y="251" class="body">Owned by the libp2p transport</text>
-<text x="834" y="274" class="body">Separate from application signing keys</text>
+<text x="0" y="0" class="body" transform="translate(834 274) scale(0.87719 1)">Separate from application signing keys</text>
 
-    <rect x="50" y="329" width="1100" height="132" rx="18" fill="#111f34" stroke="#475569" stroke-width="2"/>
-    <text x="74" y="363" class="eyebrow" fill="#93c5fd">DOCUMENT-SCOPED STATE</text>
-    <text x="74" y="397" class="card-title">Document encryption keys</text>
+    <rect x="50" y="329" width="1100" height="132" fill="#242136" stroke="#756c89" stroke-width="2"/>
+    <text x="74" y="363" class="eyebrow" fill="#b7a1ff">DOCUMENT-SCOPED STATE</text>
+    <text x="0" y="0" class="card-title" transform="translate(74 397) scale(0.91009 1)">Document encryption keys</text>
     <text x="333" y="397" class="body">AES-GCM by default</text>
-    <text x="590" y="397" class="card-title">Reader / writer ACL</text>
+    <text x="0" y="0" class="card-title" transform="translate(590 397) scale(0.95106 1)">Reader / writer ACL</text>
     <text x="806" y="397" class="body">Bound to signing public keys</text>
-    <rect x="74" y="414" width="442" height="34" rx="17" fill="#301f2c" stroke="#f472b6" stroke-width="1.5"/>
-    <text x="295" y="437" class="badge" text-anchor="middle" fill="#fbcfe8">NO SIGNING-KEY → PEER-ID MAP</text>
-    <text x="540" y="438" class="body">Applications own enrollment, private-key persistence, backup, and recovery.</text>
-    <path d="M220 301V321" fill="none" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M600 301V321" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M980 301V321" fill="none" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <rect x="74" y="414" width="442" height="34" fill="#382237" stroke="#f0a5cf" stroke-width="1.5"/>
+    <text x="295" y="437" class="badge" text-anchor="middle" fill="#f0a5cf">NO SIGNING-KEY → PEER-ID MAP</text>
+    <text x="0" y="0" class="body" transform="translate(540 438) scale(0.88000 1)">Applications own enrollment, private-key persistence, backup, and recovery.</text>
+    <path d="M220 301V321" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M600 301V321" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M980 301V321" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
-    <text x="50" y="508" class="eyebrow" fill="#fbbf24">PER-CHANGE ARTIFACTS</text>
-    <rect x="50" y="530" width="520" height="222" rx="18" fill="#1b2140" stroke="#6366f1" stroke-width="2"/>
+    <text x="50" y="508" class="eyebrow" fill="#ffb887">PER-CHANGE ARTIFACTS</text>
+    <rect x="50" y="530" width="520" height="222" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="76" y="565" class="card-title">CID-addressed stored payload</text>
     <text x="76" y="595" class="body">Serialized CRDT change</text>
 <text x="76" y="621" class="body">→ encrypted with the document key</text>
 <text x="76" y="647" class="body">→ stored as opaque bytes in Helia</text>
 <text x="76" y="673" class="body">→ CID addresses the complete byte frame</text>
-    <rect x="76" y="696" width="412" height="34" rx="17" fill="#301f2c" stroke="#f472b6" stroke-width="1.5"/>
-    <text x="282" y="719" class="badge" text-anchor="middle" fill="#fbcfe8">NO BLOCK SIGNATURE OR ACL DECISION</text>
+    <rect x="76" y="696" width="412" height="34" fill="#382237" stroke="#f0a5cf" stroke-width="1.5"/>
+    <text x="282" y="719" class="badge" text-anchor="middle" fill="#f0a5cf">NO BLOCK SIGNATURE OR ACL DECISION</text>
 
-    <rect x="630" y="530" width="520" height="222" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+    <rect x="630" y="530" width="520" height="222" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     <text x="656" y="565" class="card-title">Separate GossipSub envelope</text>
     <text x="656" y="595" class="body">CRDTSyncMessage names the new CID</text>
 <text x="656" y="621" class="body">→ signed with P-384 when signing is enabled</text>
 <text x="656" y="647" class="body">→ serialized and encrypted with document key</text>
 <text x="656" y="673" class="body">→ full encrypted envelope is published</text>
-    <rect x="656" y="696" width="362" height="34" rx="17" fill="#0f3b3b" stroke="#2dd4bf" stroke-width="1.5"/>
-    <text x="837" y="719" class="badge" text-anchor="middle" fill="#99f6e4">SIGNATURE COVERS WIRE MESSAGE</text>
+    <rect x="656" y="696" width="362" height="34" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
+    <text x="837" y="719" class="badge" text-anchor="middle" fill="#c7f5d3">SIGNATURE COVERS WIRE MESSAGE</text>
 
-    <rect x="50" y="781" width="1100" height="89" rx="18" fill="#111d2e" stroke="#475569" stroke-width="2"/>
-    <text x="74" y="815" class="eyebrow" fill="#93c5fd">RECEIVER ORDER</text>
-    <text x="240" y="815" class="body-strong">decrypt + deserialize envelope</text>
+    <rect x="50" y="781" width="1100" height="89" fill="#242136" stroke="#756c89" stroke-width="2"/>
+    <text x="74" y="815" class="eyebrow" fill="#b7a1ff">RECEIVER ORDER</text>
+    <text x="0" y="0" class="body-strong" transform="translate(240 815) scale(0.83333 1)">decrypt + deserialize envelope</text>
     <text x="475" y="815" class="body-strong">→</text>
-    <text x="507" y="815" class="body-strong">verify known writer when applicable</text>
+    <text x="0" y="0" class="body-strong" transform="translate(507 815) scale(0.85714 1)">verify known writer when applicable</text>
     <text x="787" y="815" class="body-strong">→</text>
     <text x="819" y="815" class="body-strong">apply inline / fetch CIDs</text>
     <text x="240" y="842" class="body">Fetched stored blocks: CID validation → decrypt → deserialize; no per-block writer authentication.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

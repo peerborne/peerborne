@@ -2,111 +2,106 @@
   <title id="package-dependencies-title">Package and runtime dependencies</title>
   <desc id="package-dependencies-description">Dependency diagram with Peerborne core at the center. The Yjs and Automerge adapter packages, and the React, Redux, and index integration packages, depend on core. Core composes libp2p and Helia, has limited IPNS DHT validator and selector support, and contains BeeKEM membership code. An optional UCAN ACL provider can participate in authorization when selected by the application; it is not enabled automatically. Core does not depend on the CRDT adapter packages.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.035"/>
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
-    </filter>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
-      .subtitle { fill: #94a3b8; font-size: 17px; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .title { fill: #f5f0e8; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #a7a0b6; font-size: 17px; }
       .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
-      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
-      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
-      .body { fill: #cbd5e1; font-size: 15px; }
-      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .section { fill: #cbc5d6; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f5f0e8; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbc5d6; font-size: 15px; }
+      .body-strong { fill: #cbc5d6; font-size: 15px; font-weight: 700; }
       .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
-      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
-      .node-detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .node { fill: #f5f0e8; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
     </style>
   </defs>
-  <rect width="1200" height="750" rx="28" fill="url(#background)"/>
-  <rect width="1200" height="750" rx="28" fill="url(#grid)"/>
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
+  <rect width="1200" height="750" fill="#171521"/>
+  <rect width="1200" height="750" fill="url(#grid)"/>
+
   <g>
-    <text x="50" y="69" class="title">Package and runtime dependencies</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M50 48h3v3h-3zM53 48h3v3h-3zM56 48h3v3h-3zM59 48h3v3h-3zM50 51h3v3h-3zM62 51h3v3h-3zM50 54h3v3h-3zM62 54h3v3h-3zM50 57h3v3h-3zM53 57h3v3h-3zM56 57h3v3h-3zM59 57h3v3h-3zM50 60h3v3h-3zM50 63h3v3h-3zM50 66h3v3h-3zM71 48h3v3h-3zM74 48h3v3h-3zM77 48h3v3h-3zM68 51h3v3h-3zM80 51h3v3h-3zM68 54h3v3h-3zM80 54h3v3h-3zM68 57h3v3h-3zM71 57h3v3h-3zM74 57h3v3h-3zM77 57h3v3h-3zM80 57h3v3h-3zM68 60h3v3h-3zM80 60h3v3h-3zM68 63h3v3h-3zM80 63h3v3h-3zM68 66h3v3h-3zM80 66h3v3h-3zM89 48h3v3h-3zM92 48h3v3h-3zM95 48h3v3h-3zM98 48h3v3h-3zM86 51h3v3h-3zM86 54h3v3h-3zM86 57h3v3h-3zM86 60h3v3h-3zM86 63h3v3h-3zM89 66h3v3h-3zM92 66h3v3h-3zM95 66h3v3h-3zM98 66h3v3h-3zM104 48h3v3h-3zM116 48h3v3h-3zM104 51h3v3h-3zM113 51h3v3h-3zM104 54h3v3h-3zM110 54h3v3h-3zM104 57h3v3h-3zM107 57h3v3h-3zM104 60h3v3h-3zM110 60h3v3h-3zM104 63h3v3h-3zM113 63h3v3h-3zM104 66h3v3h-3zM116 66h3v3h-3zM125 48h3v3h-3zM128 48h3v3h-3zM131 48h3v3h-3zM122 51h3v3h-3zM134 51h3v3h-3zM122 54h3v3h-3zM134 54h3v3h-3zM122 57h3v3h-3zM125 57h3v3h-3zM128 57h3v3h-3zM131 57h3v3h-3zM134 57h3v3h-3zM122 60h3v3h-3zM134 60h3v3h-3zM122 63h3v3h-3zM134 63h3v3h-3zM122 66h3v3h-3zM134 66h3v3h-3zM143 48h3v3h-3zM146 48h3v3h-3zM149 48h3v3h-3zM152 48h3v3h-3zM140 51h3v3h-3zM140 54h3v3h-3zM140 57h3v3h-3zM146 57h3v3h-3zM149 57h3v3h-3zM152 57h3v3h-3zM140 60h3v3h-3zM152 60h3v3h-3zM140 63h3v3h-3zM152 63h3v3h-3zM143 66h3v3h-3zM146 66h3v3h-3zM149 66h3v3h-3zM152 66h3v3h-3zM158 48h3v3h-3zM161 48h3v3h-3zM164 48h3v3h-3zM167 48h3v3h-3zM170 48h3v3h-3zM158 51h3v3h-3zM158 54h3v3h-3zM158 57h3v3h-3zM161 57h3v3h-3zM164 57h3v3h-3zM167 57h3v3h-3zM158 60h3v3h-3zM158 63h3v3h-3zM158 66h3v3h-3zM161 66h3v3h-3zM164 66h3v3h-3zM167 66h3v3h-3zM170 66h3v3h-3zM197 48h3v3h-3zM200 48h3v3h-3zM203 48h3v3h-3zM194 51h3v3h-3zM206 51h3v3h-3zM194 54h3v3h-3zM206 54h3v3h-3zM194 57h3v3h-3zM197 57h3v3h-3zM200 57h3v3h-3zM203 57h3v3h-3zM206 57h3v3h-3zM194 60h3v3h-3zM206 60h3v3h-3zM194 63h3v3h-3zM206 63h3v3h-3zM194 66h3v3h-3zM206 66h3v3h-3zM212 48h3v3h-3zM224 48h3v3h-3zM212 51h3v3h-3zM215 51h3v3h-3zM224 51h3v3h-3zM212 54h3v3h-3zM218 54h3v3h-3zM224 54h3v3h-3zM212 57h3v3h-3zM221 57h3v3h-3zM224 57h3v3h-3zM212 60h3v3h-3zM224 60h3v3h-3zM212 63h3v3h-3zM224 63h3v3h-3zM212 66h3v3h-3zM224 66h3v3h-3zM230 48h3v3h-3zM233 48h3v3h-3zM236 48h3v3h-3zM239 48h3v3h-3zM230 51h3v3h-3zM242 51h3v3h-3zM230 54h3v3h-3zM242 54h3v3h-3zM230 57h3v3h-3zM242 57h3v3h-3zM230 60h3v3h-3zM242 60h3v3h-3zM230 63h3v3h-3zM242 63h3v3h-3zM230 66h3v3h-3zM233 66h3v3h-3zM236 66h3v3h-3zM239 66h3v3h-3zM266 48h3v3h-3zM269 48h3v3h-3zM272 48h3v3h-3zM275 48h3v3h-3zM266 51h3v3h-3zM278 51h3v3h-3zM266 54h3v3h-3zM278 54h3v3h-3zM266 57h3v3h-3zM269 57h3v3h-3zM272 57h3v3h-3zM275 57h3v3h-3zM266 60h3v3h-3zM272 60h3v3h-3zM266 63h3v3h-3zM275 63h3v3h-3zM266 66h3v3h-3zM278 66h3v3h-3zM284 48h3v3h-3zM296 48h3v3h-3zM284 51h3v3h-3zM296 51h3v3h-3zM284 54h3v3h-3zM296 54h3v3h-3zM284 57h3v3h-3zM296 57h3v3h-3zM284 60h3v3h-3zM296 60h3v3h-3zM284 63h3v3h-3zM296 63h3v3h-3zM287 66h3v3h-3zM290 66h3v3h-3zM293 66h3v3h-3zM302 48h3v3h-3zM314 48h3v3h-3zM302 51h3v3h-3zM305 51h3v3h-3zM314 51h3v3h-3zM302 54h3v3h-3zM308 54h3v3h-3zM314 54h3v3h-3zM302 57h3v3h-3zM311 57h3v3h-3zM314 57h3v3h-3zM302 60h3v3h-3zM314 60h3v3h-3zM302 63h3v3h-3zM314 63h3v3h-3zM302 66h3v3h-3zM314 66h3v3h-3zM320 48h3v3h-3zM323 48h3v3h-3zM326 48h3v3h-3zM329 48h3v3h-3zM332 48h3v3h-3zM326 51h3v3h-3zM326 54h3v3h-3zM326 57h3v3h-3zM326 60h3v3h-3zM326 63h3v3h-3zM326 66h3v3h-3zM338 48h3v3h-3zM341 48h3v3h-3zM344 48h3v3h-3zM347 48h3v3h-3zM350 48h3v3h-3zM344 51h3v3h-3zM344 54h3v3h-3zM344 57h3v3h-3zM344 60h3v3h-3zM344 63h3v3h-3zM338 66h3v3h-3zM341 66h3v3h-3zM344 66h3v3h-3zM347 66h3v3h-3zM350 66h3v3h-3zM356 48h3v3h-3zM368 48h3v3h-3zM356 51h3v3h-3zM359 51h3v3h-3zM365 51h3v3h-3zM368 51h3v3h-3zM356 54h3v3h-3zM362 54h3v3h-3zM368 54h3v3h-3zM356 57h3v3h-3zM362 57h3v3h-3zM368 57h3v3h-3zM356 60h3v3h-3zM368 60h3v3h-3zM356 63h3v3h-3zM368 63h3v3h-3zM356 66h3v3h-3zM368 66h3v3h-3zM374 48h3v3h-3zM377 48h3v3h-3zM380 48h3v3h-3zM383 48h3v3h-3zM386 48h3v3h-3zM374 51h3v3h-3zM374 54h3v3h-3zM374 57h3v3h-3zM377 57h3v3h-3zM380 57h3v3h-3zM383 57h3v3h-3zM374 60h3v3h-3zM374 63h3v3h-3zM374 66h3v3h-3zM377 66h3v3h-3zM380 66h3v3h-3zM383 66h3v3h-3zM386 66h3v3h-3zM410 48h3v3h-3zM413 48h3v3h-3zM416 48h3v3h-3zM419 48h3v3h-3zM410 51h3v3h-3zM422 51h3v3h-3zM410 54h3v3h-3zM422 54h3v3h-3zM410 57h3v3h-3zM422 57h3v3h-3zM410 60h3v3h-3zM422 60h3v3h-3zM410 63h3v3h-3zM422 63h3v3h-3zM410 66h3v3h-3zM413 66h3v3h-3zM416 66h3v3h-3zM419 66h3v3h-3zM428 48h3v3h-3zM431 48h3v3h-3zM434 48h3v3h-3zM437 48h3v3h-3zM440 48h3v3h-3zM428 51h3v3h-3zM428 54h3v3h-3zM428 57h3v3h-3zM431 57h3v3h-3zM434 57h3v3h-3zM437 57h3v3h-3zM428 60h3v3h-3zM428 63h3v3h-3zM428 66h3v3h-3zM431 66h3v3h-3zM434 66h3v3h-3zM437 66h3v3h-3zM440 66h3v3h-3zM446 48h3v3h-3zM449 48h3v3h-3zM452 48h3v3h-3zM455 48h3v3h-3zM446 51h3v3h-3zM458 51h3v3h-3zM446 54h3v3h-3zM458 54h3v3h-3zM446 57h3v3h-3zM449 57h3v3h-3zM452 57h3v3h-3zM455 57h3v3h-3zM446 60h3v3h-3zM446 63h3v3h-3zM446 66h3v3h-3zM464 48h3v3h-3zM467 48h3v3h-3zM470 48h3v3h-3zM473 48h3v3h-3zM476 48h3v3h-3zM464 51h3v3h-3zM464 54h3v3h-3zM464 57h3v3h-3zM467 57h3v3h-3zM470 57h3v3h-3zM473 57h3v3h-3zM464 60h3v3h-3zM464 63h3v3h-3zM464 66h3v3h-3zM467 66h3v3h-3zM470 66h3v3h-3zM473 66h3v3h-3zM476 66h3v3h-3zM482 48h3v3h-3zM494 48h3v3h-3zM482 51h3v3h-3zM485 51h3v3h-3zM494 51h3v3h-3zM482 54h3v3h-3zM488 54h3v3h-3zM494 54h3v3h-3zM482 57h3v3h-3zM491 57h3v3h-3zM494 57h3v3h-3zM482 60h3v3h-3zM494 60h3v3h-3zM482 63h3v3h-3zM494 63h3v3h-3zM482 66h3v3h-3zM494 66h3v3h-3zM500 48h3v3h-3zM503 48h3v3h-3zM506 48h3v3h-3zM509 48h3v3h-3zM500 51h3v3h-3zM512 51h3v3h-3zM500 54h3v3h-3zM512 54h3v3h-3zM500 57h3v3h-3zM512 57h3v3h-3zM500 60h3v3h-3zM512 60h3v3h-3zM500 63h3v3h-3zM512 63h3v3h-3zM500 66h3v3h-3zM503 66h3v3h-3zM506 66h3v3h-3zM509 66h3v3h-3zM518 48h3v3h-3zM521 48h3v3h-3zM524 48h3v3h-3zM527 48h3v3h-3zM530 48h3v3h-3zM518 51h3v3h-3zM518 54h3v3h-3zM518 57h3v3h-3zM521 57h3v3h-3zM524 57h3v3h-3zM527 57h3v3h-3zM518 60h3v3h-3zM518 63h3v3h-3zM518 66h3v3h-3zM521 66h3v3h-3zM524 66h3v3h-3zM527 66h3v3h-3zM530 66h3v3h-3zM536 48h3v3h-3zM548 48h3v3h-3zM536 51h3v3h-3zM539 51h3v3h-3zM548 51h3v3h-3zM536 54h3v3h-3zM542 54h3v3h-3zM548 54h3v3h-3zM536 57h3v3h-3zM545 57h3v3h-3zM548 57h3v3h-3zM536 60h3v3h-3zM548 60h3v3h-3zM536 63h3v3h-3zM548 63h3v3h-3zM536 66h3v3h-3zM548 66h3v3h-3zM557 48h3v3h-3zM560 48h3v3h-3zM563 48h3v3h-3zM566 48h3v3h-3zM554 51h3v3h-3zM554 54h3v3h-3zM554 57h3v3h-3zM554 60h3v3h-3zM554 63h3v3h-3zM557 66h3v3h-3zM560 66h3v3h-3zM563 66h3v3h-3zM566 66h3v3h-3zM572 48h3v3h-3zM575 48h3v3h-3zM578 48h3v3h-3zM581 48h3v3h-3zM584 48h3v3h-3zM578 51h3v3h-3zM578 54h3v3h-3zM578 57h3v3h-3zM578 60h3v3h-3zM578 63h3v3h-3zM572 66h3v3h-3zM575 66h3v3h-3zM578 66h3v3h-3zM581 66h3v3h-3zM584 66h3v3h-3zM590 48h3v3h-3zM593 48h3v3h-3zM596 48h3v3h-3zM599 48h3v3h-3zM602 48h3v3h-3zM590 51h3v3h-3zM590 54h3v3h-3zM590 57h3v3h-3zM593 57h3v3h-3zM596 57h3v3h-3zM599 57h3v3h-3zM590 60h3v3h-3zM590 63h3v3h-3zM590 66h3v3h-3zM593 66h3v3h-3zM596 66h3v3h-3zM599 66h3v3h-3zM602 66h3v3h-3zM611 48h3v3h-3zM614 48h3v3h-3zM617 48h3v3h-3zM620 48h3v3h-3zM608 51h3v3h-3zM608 54h3v3h-3zM611 57h3v3h-3zM614 57h3v3h-3zM617 57h3v3h-3zM620 60h3v3h-3zM620 63h3v3h-3zM608 66h3v3h-3zM611 66h3v3h-3zM614 66h3v3h-3zM617 66h3v3h-3z" fill="#f5f0e8"/></g>
     <text x="50" y="99" class="subtitle">Adapters and integrations depend on core; core composes networking, storage, and security primitives.</text>
 
-    <rect x="934" y="51" width="216" height="34" rx="17" fill="#0f2b2e" stroke="#2dd4bf" stroke-width="1.5"/>
-    <text x="1042" y="74" class="badge" text-anchor="middle" fill="#99f6e4">ARROW = DEPENDS ON</text>
+    <rect x="934" y="51" width="216" height="34" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
+    <text x="1042" y="74" class="badge" text-anchor="middle" fill="#c7f5d3">ARROW = DEPENDS ON</text>
 
-    <text x="50" y="151" class="eyebrow" fill="#a5b4fc">CRDT ADAPTER WORKSPACES</text>
-    <rect x="50" y="170" width="270" height="76" rx="18" fill="#142033" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="50" y="151" class="eyebrow" fill="#b7a1ff">CRDT ADAPTER WORKSPACES</text>
+    <rect x="50" y="170" width="270" height="76" fill="#242136" stroke="#b7a1ff" stroke-width="1.5"/>
     <text x="72" y="202" class="card-title">@peerborne/yjs</text>
     <text x="72" y="228" class="body">Yjs CRDTProvider adapter</text>
-    <rect x="50" y="264" width="270" height="76" rx="18" fill="#142033" stroke="#6366f1" stroke-width="1.5"/>
+    <rect x="50" y="264" width="270" height="76" fill="#242136" stroke="#b7a1ff" stroke-width="1.5"/>
     <text x="72" y="296" class="card-title">@peerborne/automerge</text>
-    <text x="72" y="322" class="body">Automerge CRDTProvider adapter</text>
+    <text x="0" y="0" class="body" transform="translate(72 322) scale(0.85926 1)">Automerge CRDTProvider adapter</text>
 
-    <text x="880" y="151" class="eyebrow" fill="#5eead4">INTEGRATION WORKSPACES</text>
-    <rect x="880" y="170" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <text x="880" y="151" class="eyebrow" fill="#a3efb8">INTEGRATION WORKSPACES</text>
+    <rect x="880" y="170" width="270" height="68" fill="#242136" stroke="#a3efb8" stroke-width="1.5"/>
     <text x="902" y="200" class="card-title">@peerborne/react</text>
     <text x="902" y="223" class="body">React lifecycle bindings</text>
-    <rect x="880" y="252" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <rect x="880" y="252" width="270" height="68" fill="#242136" stroke="#a3efb8" stroke-width="1.5"/>
     <text x="902" y="282" class="card-title">@peerborne/redux</text>
     <text x="902" y="305" class="body">Redux bindings</text>
-    <rect x="880" y="334" width="270" height="68" rx="18" fill="#142033" stroke="#14b8a6" stroke-width="1.5"/>
+    <rect x="880" y="334" width="270" height="68" fill="#242136" stroke="#a3efb8" stroke-width="1.5"/>
     <text x="902" y="364" class="card-title">@peerborne/index</text>
     <text x="902" y="387" class="body">Indexing and query layer</text>
 
     <g filter="url(#shadow)">
-      <rect x="368" y="164" width="464" height="242" rx="24" fill="#18213c" stroke="#818cf8" stroke-width="2.5"/>
+      <rect x="368" y="164" width="464" height="242" fill="#30234c" stroke="#b7a1ff" stroke-width="2.5"/>
     </g>
-    <text x="600" y="211" class="card-title" text-anchor="middle" fill="#eef2ff">@peerborne/core</text>
+    <text x="600" y="211" class="card-title" text-anchor="middle" fill="#f5f0e8">@peerborne/core</text>
     <text x="600" y="239" class="body" text-anchor="middle">Document lifecycle and synchronization</text>
-    <line x1="402" y1="258" x2="798" y2="258" stroke="#334155"/>
+    <line x1="402" y1="258" x2="798" y2="258" stroke="#40394f"/>
     <text x="408" y="291" class="body-strong">CRDTProvider boundary</text>
-<text x="408" y="322" class="body-strong">Encryption + authorization</text>
+<text x="0" y="0" class="body-strong" transform="translate(408 322) scale(0.94872 1)">Encryption + authorization</text>
 <text x="408" y="353" class="body-strong">Shadow graph + storage</text>
-    <text x="640" y="291" class="body-strong">libp2p orchestration</text>
-<text x="640" y="322" class="body-strong">Membership + invitations</text>
+    <text x="0" y="0" class="body-strong" transform="translate(640 291) scale(0.97778 1)">libp2p orchestration</text>
+<text x="0" y="0" class="body-strong" transform="translate(640 322) scale(0.81481 1)">Membership + invitations</text>
 <text x="640" y="353" class="body-strong">Document API</text>
-    <path d="M320 208H360" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M320 302H360" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M880 204H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M880 286H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M880 368H840" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M320 208H360" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M320 302H360" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M880 204H840" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M880 286H840" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M880 368H840" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
 
-    <text x="50" y="448" class="eyebrow" fill="#fbbf24">CORE RUNTIME AND INTERNAL PRIMITIVES</text>
-    <rect x="50" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <text x="50" y="448" class="eyebrow" fill="#ffb887">CORE RUNTIME AND INTERNAL PRIMITIVES</text>
+    <rect x="50" y="490" width="260" height="126" fill="#242136" stroke="#756c89" stroke-width="1.5"/>
     <text x="72" y="523" class="card-title">libp2p</text>
     <text x="72" y="550" class="body">Networking, discovery,</text>
 <text x="72" y="572" class="body">GossipSub, NAT traversal</text>
-    <rect x="330" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
+    <rect x="330" y="490" width="260" height="126" fill="#242136" stroke="#756c89" stroke-width="1.5"/>
     <text x="352" y="523" class="card-title">Helia + Bitswap</text>
     <text x="352" y="550" class="body">Content-addressed blocks</text>
 <text x="352" y="572" class="body">and block exchange</text>
-    <rect x="610" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
-    <text x="632" y="523" class="card-title">IPNS support (limited)</text>
+    <rect x="610" y="490" width="260" height="126" fill="#242136" stroke="#756c89" stroke-width="1.5"/>
+    <text x="0" y="0" class="card-title" transform="translate(632 523) scale(0.88517 1)">IPNS support (limited)</text>
     <text x="632" y="550" class="body">DHT record validator</text>
 <text x="632" y="572" class="body">and selector only</text>
-    <rect x="890" y="490" width="260" height="126" rx="18" fill="#142033" stroke="#475569" stroke-width="1.5"/>
-    <text x="912" y="523" class="card-title">Core security modules</text>
+    <rect x="890" y="490" width="260" height="126" fill="#242136" stroke="#756c89" stroke-width="1.5"/>
+    <text x="0" y="0" class="card-title" transform="translate(912 523) scale(0.92732 1)">Core security modules</text>
     <text x="912" y="550" class="body">BeeKEM membership</text>
-<text x="912" y="572" class="body">Optional UCAN ACL provider</text>
-<text x="912" y="594" class="body">selected by the application</text>
-    <path d="M470 406V457H180V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M550 406V458H460V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M650 406V458H740V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
-    <path d="M730 406V457H1020V482" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+<text x="0" y="0" class="body" transform="translate(912 572) scale(0.94872 1)">Optional UCAN ACL provider</text>
+<text x="0" y="0" class="body" transform="translate(912 594) scale(0.91358 1)">selected by the application</text>
+    <path d="M470 406V457H180V482" fill="none" stroke="#ffb887" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M550 406V458H460V482" fill="none" stroke="#ffb887" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M650 406V458H740V482" fill="none" stroke="#ffb887" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+    <path d="M730 406V457H1020V482" fill="none" stroke="#ffb887" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
-    <rect x="50" y="647" width="1100" height="67" rx="18" fill="#101c2d" stroke="#334155" stroke-width="1.5"/>
-    <text x="74" y="675" class="body-strong">Dependency direction matters:</text>
+    <rect x="50" y="647" width="1100" height="67" fill="#242136" stroke="#40394f" stroke-width="1.5"/>
+    <text x="0" y="0" class="body-strong" transform="translate(74 675) scale(0.86590 1)">Dependency direction matters:</text>
     <text x="310" y="675" class="body">Yjs and Automerge adapters depend on core; core does not import either adapter.</text>
     <text x="74" y="699" class="body">Applications choose and inject a CRDTProvider implementation at the package boundary.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

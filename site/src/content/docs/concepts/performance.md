@@ -105,7 +105,7 @@ intentionally reduce the requested count for their more expensive cases.
 
 Treat the values as a directional, single-machine snapshot—not a performance
 guarantee or a comparison with other systems. The convergence chart is a local
-simulation, not a browser, relay, or wide-area network measurement. Dots show
+simulation, not a browser, relay, or wide-area network measurement. Square markers show
 means and capped whiskers show p99. No chart establishes a pass/fail budget.
 
 ### Core benchmarks

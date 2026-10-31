@@ -2,100 +2,95 @@
   <title id="multi-relay-topology-title">Multi-relay deployment boundary</title>
   <desc id="multi-relay-topology-description">Three independent relay processes use separate DNS names: relay-us, relay-eu, and relay-ap. Each provides WSS for configured browser clients and a TCP listener, but Peerborne does not ship relay-to-relay startup dialing, a supported mesh, shared relay discovery, or automatic client failover. Browser A is configured for the US relay, Browser B for the EU relay, and Browser C for the AP relay. Each process forwards traffic only for its own established connections and does not provide durable document storage. High availability, routing, peering, and durability require application-specific integration and verification.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.035"/>
     </pattern>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.38"/>
-    </filter>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8"/>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .title { fill: #f8fafc; font-size: 30px; font-weight: 760; }
-      .subtitle { fill: #94a3b8; font-size: 17px; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .title { fill: #f5f0e8; font-size: 30px; font-weight: 760; }
+      .subtitle { fill: #a7a0b6; font-size: 17px; }
       .eyebrow { font-size: 15px; font-weight: 760; letter-spacing: 1.25px; }
-      .section { fill: #e2e8f0; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
-      .card-title { fill: #f8fafc; font-size: 19px; font-weight: 740; }
-      .body { fill: #cbd5e1; font-size: 15px; }
-      .body-strong { fill: #e2e8f0; font-size: 15px; font-weight: 700; }
+      .section { fill: #cbc5d6; font-size: 16px; font-weight: 740; letter-spacing: .5px; }
+      .card-title { fill: #f5f0e8; font-size: 19px; font-weight: 740; }
+      .body { fill: #cbc5d6; font-size: 15px; }
+      .body-strong { fill: #cbc5d6; font-size: 15px; font-weight: 700; }
       .badge { font-size: 15px; font-weight: 760; letter-spacing: .35px; }
-      .node { fill: #f8fafc; font-size: 18px; font-weight: 760; }
-      .node-detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .node { fill: #f5f0e8; font-size: 18px; font-weight: 760; }
+      .node-detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 15px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
     </style>
   </defs>
-  <rect width="1200" height="990" rx="28" fill="url(#background)"/>
-  <rect width="1200" height="990" rx="28" fill="url(#grid)"/>
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf"/>
-  <g>
-    <text x="50" y="69" class="title">Multi-relay deployment boundary</text>
-    <text x="50" y="99" class="subtitle">Each relay has its own DNS and TLS endpoint; Peerborne does not provide a mesh or automatic failover between them.</text>
+  <rect width="1200" height="990" fill="#171521"/>
+  <rect width="1200" height="990" fill="url(#grid)"/>
 
-    <rect x="844" y="51" width="306" height="34" rx="17" fill="#3b2b13" stroke="#f59e0b" stroke-width="1.5"/>
-    <text x="997" y="74" class="badge" text-anchor="middle" fill="#fde68a">NO BUILT-IN MESH OR FAILOVER</text>
-    <text x="50" y="142" class="eyebrow" fill="#5eead4">INDEPENDENT RELAY ENDPOINTS</text>
-    <rect x="50" y="170" width="300" height="174" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+  <g>
+    <g class="pixel-heading" aria-hidden="true"><path d="M50 48h3v3h-3zM62 48h3v3h-3zM50 51h3v3h-3zM53 51h3v3h-3zM59 51h3v3h-3zM62 51h3v3h-3zM50 54h3v3h-3zM56 54h3v3h-3zM62 54h3v3h-3zM50 57h3v3h-3zM56 57h3v3h-3zM62 57h3v3h-3zM50 60h3v3h-3zM62 60h3v3h-3zM50 63h3v3h-3zM62 63h3v3h-3zM50 66h3v3h-3zM62 66h3v3h-3zM68 48h3v3h-3zM80 48h3v3h-3zM68 51h3v3h-3zM80 51h3v3h-3zM68 54h3v3h-3zM80 54h3v3h-3zM68 57h3v3h-3zM80 57h3v3h-3zM68 60h3v3h-3zM80 60h3v3h-3zM68 63h3v3h-3zM80 63h3v3h-3zM71 66h3v3h-3zM74 66h3v3h-3zM77 66h3v3h-3zM86 48h3v3h-3zM86 51h3v3h-3zM86 54h3v3h-3zM86 57h3v3h-3zM86 60h3v3h-3zM86 63h3v3h-3zM86 66h3v3h-3zM89 66h3v3h-3zM92 66h3v3h-3zM95 66h3v3h-3zM98 66h3v3h-3zM104 48h3v3h-3zM107 48h3v3h-3zM110 48h3v3h-3zM113 48h3v3h-3zM116 48h3v3h-3zM110 51h3v3h-3zM110 54h3v3h-3zM110 57h3v3h-3zM110 60h3v3h-3zM110 63h3v3h-3zM110 66h3v3h-3zM122 48h3v3h-3zM125 48h3v3h-3zM128 48h3v3h-3zM131 48h3v3h-3zM134 48h3v3h-3zM128 51h3v3h-3zM128 54h3v3h-3zM128 57h3v3h-3zM128 60h3v3h-3zM128 63h3v3h-3zM122 66h3v3h-3zM125 66h3v3h-3zM128 66h3v3h-3zM131 66h3v3h-3zM134 66h3v3h-3zM140 57h3v3h-3zM143 57h3v3h-3zM146 57h3v3h-3zM149 57h3v3h-3zM152 57h3v3h-3zM158 48h3v3h-3zM161 48h3v3h-3zM164 48h3v3h-3zM167 48h3v3h-3zM158 51h3v3h-3zM170 51h3v3h-3zM158 54h3v3h-3zM170 54h3v3h-3zM158 57h3v3h-3zM161 57h3v3h-3zM164 57h3v3h-3zM167 57h3v3h-3zM158 60h3v3h-3zM164 60h3v3h-3zM158 63h3v3h-3zM167 63h3v3h-3zM158 66h3v3h-3zM170 66h3v3h-3zM176 48h3v3h-3zM179 48h3v3h-3zM182 48h3v3h-3zM185 48h3v3h-3zM188 48h3v3h-3zM176 51h3v3h-3zM176 54h3v3h-3zM176 57h3v3h-3zM179 57h3v3h-3zM182 57h3v3h-3zM185 57h3v3h-3zM176 60h3v3h-3zM176 63h3v3h-3zM176 66h3v3h-3zM179 66h3v3h-3zM182 66h3v3h-3zM185 66h3v3h-3zM188 66h3v3h-3zM194 48h3v3h-3zM194 51h3v3h-3zM194 54h3v3h-3zM194 57h3v3h-3zM194 60h3v3h-3zM194 63h3v3h-3zM194 66h3v3h-3zM197 66h3v3h-3zM200 66h3v3h-3zM203 66h3v3h-3zM206 66h3v3h-3zM215 48h3v3h-3zM218 48h3v3h-3zM221 48h3v3h-3zM212 51h3v3h-3zM224 51h3v3h-3zM212 54h3v3h-3zM224 54h3v3h-3zM212 57h3v3h-3zM215 57h3v3h-3zM218 57h3v3h-3zM221 57h3v3h-3zM224 57h3v3h-3zM212 60h3v3h-3zM224 60h3v3h-3zM212 63h3v3h-3zM224 63h3v3h-3zM212 66h3v3h-3zM224 66h3v3h-3zM230 48h3v3h-3zM242 48h3v3h-3zM230 51h3v3h-3zM242 51h3v3h-3zM233 54h3v3h-3zM239 54h3v3h-3zM236 57h3v3h-3zM236 60h3v3h-3zM236 63h3v3h-3zM236 66h3v3h-3zM266 48h3v3h-3zM269 48h3v3h-3zM272 48h3v3h-3zM275 48h3v3h-3zM266 51h3v3h-3zM278 51h3v3h-3zM266 54h3v3h-3zM278 54h3v3h-3zM266 57h3v3h-3zM278 57h3v3h-3zM266 60h3v3h-3zM278 60h3v3h-3zM266 63h3v3h-3zM278 63h3v3h-3zM266 66h3v3h-3zM269 66h3v3h-3zM272 66h3v3h-3zM275 66h3v3h-3zM284 48h3v3h-3zM287 48h3v3h-3zM290 48h3v3h-3zM293 48h3v3h-3zM296 48h3v3h-3zM284 51h3v3h-3zM284 54h3v3h-3zM284 57h3v3h-3zM287 57h3v3h-3zM290 57h3v3h-3zM293 57h3v3h-3zM284 60h3v3h-3zM284 63h3v3h-3zM284 66h3v3h-3zM287 66h3v3h-3zM290 66h3v3h-3zM293 66h3v3h-3zM296 66h3v3h-3zM302 48h3v3h-3zM305 48h3v3h-3zM308 48h3v3h-3zM311 48h3v3h-3zM302 51h3v3h-3zM314 51h3v3h-3zM302 54h3v3h-3zM314 54h3v3h-3zM302 57h3v3h-3zM305 57h3v3h-3zM308 57h3v3h-3zM311 57h3v3h-3zM302 60h3v3h-3zM302 63h3v3h-3zM302 66h3v3h-3zM320 48h3v3h-3zM320 51h3v3h-3zM320 54h3v3h-3zM320 57h3v3h-3zM320 60h3v3h-3zM320 63h3v3h-3zM320 66h3v3h-3zM323 66h3v3h-3zM326 66h3v3h-3zM329 66h3v3h-3zM332 66h3v3h-3zM341 48h3v3h-3zM344 48h3v3h-3zM347 48h3v3h-3zM338 51h3v3h-3zM350 51h3v3h-3zM338 54h3v3h-3zM350 54h3v3h-3zM338 57h3v3h-3zM350 57h3v3h-3zM338 60h3v3h-3zM350 60h3v3h-3zM338 63h3v3h-3zM350 63h3v3h-3zM341 66h3v3h-3zM344 66h3v3h-3zM347 66h3v3h-3zM356 48h3v3h-3zM368 48h3v3h-3zM356 51h3v3h-3zM368 51h3v3h-3zM359 54h3v3h-3zM365 54h3v3h-3zM362 57h3v3h-3zM362 60h3v3h-3zM362 63h3v3h-3zM362 66h3v3h-3zM374 48h3v3h-3zM386 48h3v3h-3zM374 51h3v3h-3zM377 51h3v3h-3zM383 51h3v3h-3zM386 51h3v3h-3zM374 54h3v3h-3zM380 54h3v3h-3zM386 54h3v3h-3zM374 57h3v3h-3zM380 57h3v3h-3zM386 57h3v3h-3zM374 60h3v3h-3zM386 60h3v3h-3zM374 63h3v3h-3zM386 63h3v3h-3zM374 66h3v3h-3zM386 66h3v3h-3zM392 48h3v3h-3zM395 48h3v3h-3zM398 48h3v3h-3zM401 48h3v3h-3zM404 48h3v3h-3zM392 51h3v3h-3zM392 54h3v3h-3zM392 57h3v3h-3zM395 57h3v3h-3zM398 57h3v3h-3zM401 57h3v3h-3zM392 60h3v3h-3zM392 63h3v3h-3zM392 66h3v3h-3zM395 66h3v3h-3zM398 66h3v3h-3zM401 66h3v3h-3zM404 66h3v3h-3zM410 48h3v3h-3zM422 48h3v3h-3zM410 51h3v3h-3zM413 51h3v3h-3zM422 51h3v3h-3zM410 54h3v3h-3zM416 54h3v3h-3zM422 54h3v3h-3zM410 57h3v3h-3zM419 57h3v3h-3zM422 57h3v3h-3zM410 60h3v3h-3zM422 60h3v3h-3zM410 63h3v3h-3zM422 63h3v3h-3zM410 66h3v3h-3zM422 66h3v3h-3zM428 48h3v3h-3zM431 48h3v3h-3zM434 48h3v3h-3zM437 48h3v3h-3zM440 48h3v3h-3zM434 51h3v3h-3zM434 54h3v3h-3zM434 57h3v3h-3zM434 60h3v3h-3zM434 63h3v3h-3zM434 66h3v3h-3zM464 48h3v3h-3zM467 48h3v3h-3zM470 48h3v3h-3zM473 48h3v3h-3zM464 51h3v3h-3zM476 51h3v3h-3zM464 54h3v3h-3zM476 54h3v3h-3zM464 57h3v3h-3zM467 57h3v3h-3zM470 57h3v3h-3zM473 57h3v3h-3zM464 60h3v3h-3zM476 60h3v3h-3zM464 63h3v3h-3zM476 63h3v3h-3zM464 66h3v3h-3zM467 66h3v3h-3zM470 66h3v3h-3zM473 66h3v3h-3zM485 48h3v3h-3zM488 48h3v3h-3zM491 48h3v3h-3zM482 51h3v3h-3zM494 51h3v3h-3zM482 54h3v3h-3zM494 54h3v3h-3zM482 57h3v3h-3zM494 57h3v3h-3zM482 60h3v3h-3zM494 60h3v3h-3zM482 63h3v3h-3zM494 63h3v3h-3zM485 66h3v3h-3zM488 66h3v3h-3zM491 66h3v3h-3zM500 48h3v3h-3zM512 48h3v3h-3zM500 51h3v3h-3zM512 51h3v3h-3zM500 54h3v3h-3zM512 54h3v3h-3zM500 57h3v3h-3zM512 57h3v3h-3zM500 60h3v3h-3zM512 60h3v3h-3zM500 63h3v3h-3zM512 63h3v3h-3zM503 66h3v3h-3zM506 66h3v3h-3zM509 66h3v3h-3zM518 48h3v3h-3zM530 48h3v3h-3zM518 51h3v3h-3zM521 51h3v3h-3zM530 51h3v3h-3zM518 54h3v3h-3zM524 54h3v3h-3zM530 54h3v3h-3zM518 57h3v3h-3zM527 57h3v3h-3zM530 57h3v3h-3zM518 60h3v3h-3zM530 60h3v3h-3zM518 63h3v3h-3zM530 63h3v3h-3zM518 66h3v3h-3zM530 66h3v3h-3zM536 48h3v3h-3zM539 48h3v3h-3zM542 48h3v3h-3zM545 48h3v3h-3zM536 51h3v3h-3zM548 51h3v3h-3zM536 54h3v3h-3zM548 54h3v3h-3zM536 57h3v3h-3zM548 57h3v3h-3zM536 60h3v3h-3zM548 60h3v3h-3zM536 63h3v3h-3zM548 63h3v3h-3zM536 66h3v3h-3zM539 66h3v3h-3zM542 66h3v3h-3zM545 66h3v3h-3zM557 48h3v3h-3zM560 48h3v3h-3zM563 48h3v3h-3zM554 51h3v3h-3zM566 51h3v3h-3zM554 54h3v3h-3zM566 54h3v3h-3zM554 57h3v3h-3zM557 57h3v3h-3zM560 57h3v3h-3zM563 57h3v3h-3zM566 57h3v3h-3zM554 60h3v3h-3zM566 60h3v3h-3zM554 63h3v3h-3zM566 63h3v3h-3zM554 66h3v3h-3zM566 66h3v3h-3zM572 48h3v3h-3zM575 48h3v3h-3zM578 48h3v3h-3zM581 48h3v3h-3zM572 51h3v3h-3zM584 51h3v3h-3zM572 54h3v3h-3zM584 54h3v3h-3zM572 57h3v3h-3zM575 57h3v3h-3zM578 57h3v3h-3zM581 57h3v3h-3zM572 60h3v3h-3zM578 60h3v3h-3zM572 63h3v3h-3zM581 63h3v3h-3zM572 66h3v3h-3zM584 66h3v3h-3zM590 48h3v3h-3zM602 48h3v3h-3zM590 51h3v3h-3zM602 51h3v3h-3zM593 54h3v3h-3zM599 54h3v3h-3zM596 57h3v3h-3zM596 60h3v3h-3zM596 63h3v3h-3zM596 66h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="0" y="0" class="subtitle" transform="translate(50 99) scale(0.97523 1)">Each relay has its own DNS and TLS endpoint; Peerborne does not provide a mesh or automatic failover between them.</text>
+
+    <rect x="844" y="51" width="306" height="34" fill="#382819" stroke="#ffb887" stroke-width="1.5"/>
+    <text x="997" y="74" class="badge" text-anchor="middle" fill="#ffd5b5">NO BUILT-IN MESH OR FAILOVER</text>
+    <text x="50" y="142" class="eyebrow" fill="#a3efb8">INDEPENDENT RELAY ENDPOINTS</text>
+    <rect x="50" y="170" width="300" height="174" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     <text x="200" y="208" class="card-title" text-anchor="middle">Relay US</text>
     <text x="200" y="238" class="body-strong" text-anchor="middle">relay-us.example.com</text>
     <text x="200" y="266" class="body" text-anchor="middle">US region</text>
-    <text x="200" y="294" class="body" text-anchor="middle">WSS for browsers · TCP for relay peers</text>
-    <rect x="107" y="307" width="186" height="34" rx="17" fill="#0f3b3b" stroke="#2dd4bf" stroke-width="1.5"/>
-    <text x="200" y="330" class="badge" text-anchor="middle" fill="#99f6e4">OWN DNS + TLS</text>
-    <rect x="450" y="170" width="300" height="174" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+    <text x="0" y="0" class="body" text-anchor="middle" transform="translate(200 294) scale(0.84795 1)">WSS for browsers · TCP for relay peers</text>
+    <rect x="107" y="307" width="186" height="34" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
+    <text x="200" y="330" class="badge" text-anchor="middle" fill="#c7f5d3">OWN DNS + TLS</text>
+    <rect x="450" y="170" width="300" height="174" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     <text x="600" y="208" class="card-title" text-anchor="middle">Relay EU</text>
     <text x="600" y="238" class="body-strong" text-anchor="middle">relay-eu.example.com</text>
     <text x="600" y="266" class="body" text-anchor="middle">EU region</text>
-    <text x="600" y="294" class="body" text-anchor="middle">WSS for browsers · TCP for relay peers</text>
-    <rect x="507" y="307" width="186" height="34" rx="17" fill="#0f3b3b" stroke="#2dd4bf" stroke-width="1.5"/>
-    <text x="600" y="330" class="badge" text-anchor="middle" fill="#99f6e4">OWN DNS + TLS</text>
-    <rect x="850" y="170" width="300" height="174" rx="18" fill="#123038" stroke="#14b8a6" stroke-width="2"/>
+    <text x="0" y="0" class="body" text-anchor="middle" transform="translate(600 294) scale(0.84795 1)">WSS for browsers · TCP for relay peers</text>
+    <rect x="507" y="307" width="186" height="34" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
+    <text x="600" y="330" class="badge" text-anchor="middle" fill="#c7f5d3">OWN DNS + TLS</text>
+    <rect x="850" y="170" width="300" height="174" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
     <text x="1000" y="208" class="card-title" text-anchor="middle">Relay AP</text>
     <text x="1000" y="238" class="body-strong" text-anchor="middle">relay-ap.example.com</text>
     <text x="1000" y="266" class="body" text-anchor="middle">Asia-Pacific region</text>
-    <text x="1000" y="294" class="body" text-anchor="middle">WSS for browsers · TCP for relay peers</text>
-    <rect x="907" y="307" width="186" height="34" rx="17" fill="#0f3b3b" stroke="#2dd4bf" stroke-width="1.5"/>
-    <text x="1000" y="330" class="badge" text-anchor="middle" fill="#99f6e4">OWN DNS + TLS</text>
+    <text x="0" y="0" class="body" text-anchor="middle" transform="translate(1000 294) scale(0.84795 1)">WSS for browsers · TCP for relay peers</text>
+    <rect x="907" y="307" width="186" height="34" fill="#1b382a" stroke="#a3efb8" stroke-width="1.5"/>
+    <text x="1000" y="330" class="badge" text-anchor="middle" fill="#c7f5d3">OWN DNS + TLS</text>
 
-    <rect x="50" y="548" width="1100" height="102" rx="18" fill="#2d2518" stroke="#f59e0b" stroke-width="2"/>
-    <text x="76" y="582" class="eyebrow" fill="#fde68a">INDEPENDENT PROCESSES</text>
+    <rect x="50" y="548" width="1100" height="102" fill="#382819" stroke="#ffb887" stroke-width="2"/>
+    <text x="76" y="582" class="eyebrow" fill="#ffd5b5">INDEPENDENT PROCESSES</text>
     <text x="76" y="614" class="body-strong">Peerborne does not ship relay-to-relay startup dialing, a supported TCP mesh, shared discovery, or client failover.</text>
     <text x="76" y="639" class="body">Any routing or peering across these processes is custom deployment code that must be implemented and verified.</text>
 
-    <rect x="50" y="400" width="300" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="50" y="400" width="300" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="200" y="440" class="card-title" text-anchor="middle">Browser A</text>
     <text x="200" y="470" class="body" text-anchor="middle">chooses Relay US</text>
     <text x="200" y="494" class="body" text-anchor="middle">from application configuration</text>
-    <rect x="450" y="400" width="300" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="450" y="400" width="300" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="600" y="440" class="card-title" text-anchor="middle">Browser B</text>
     <text x="600" y="470" class="body" text-anchor="middle">chooses Relay EU</text>
     <text x="600" y="494" class="body" text-anchor="middle">from application configuration</text>
-    <rect x="850" y="400" width="300" height="112" rx="18" fill="#18213c" stroke="#818cf8" stroke-width="2"/>
+    <rect x="850" y="400" width="300" height="112" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
     <text x="1000" y="440" class="card-title" text-anchor="middle">Browser C</text>
     <text x="1000" y="470" class="body" text-anchor="middle">chooses Relay AP</text>
     <text x="1000" y="494" class="body" text-anchor="middle">from application configuration</text>
 
-    <path d="M200 392V352" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M600 392V352" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
-    <path d="M1000 392V352" fill="none" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M200 392V352" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M600 392V352" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+    <path d="M1000 392V352" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
 
-    <rect x="50" y="730" width="1100" height="132" rx="18" fill="#301f2c" stroke="#f472b6" stroke-width="2"/>
-    <text x="76" y="767" class="eyebrow" fill="#f9a8d4">WHAT MULTIPLE RELAYS DO NOT AUTOMATE</text>
-    <text x="76" y="799" class="body-strong">Clients do not discover a global relay pool or fail over automatically; applications supply explicit relay multiaddresses.</text>
+    <rect x="50" y="730" width="1100" height="132" fill="#382237" stroke="#f0a5cf" stroke-width="2"/>
+    <text x="76" y="767" class="eyebrow" fill="#f0a5cf">WHAT MULTIPLE RELAYS DO NOT AUTOMATE</text>
+    <text x="0" y="0" class="body-strong" transform="translate(76 799) scale(0.96357 1)">Clients do not discover a global relay pool or fail over automatically; applications supply explicit relay multiaddresses.</text>
     <text x="76" y="826" class="body">Each relay forwards traffic only for its own established connections. Relays do not provide durable document storage.</text>
     <text x="76" y="850" class="body">Durability requires separate, application-specific publication, persistence, and recovery integration.</text>
 
-    <rect x="50" y="890" width="1100" height="66" rx="18" fill="#111d2e" stroke="#475569" stroke-width="2"/>
-    <text x="600" y="917" class="eyebrow" text-anchor="middle" fill="#93c5fd">DEPLOYMENT BOUNDARY</text>
-    <text x="600" y="941" class="body" text-anchor="middle">Multiple processes become a high-availability design only after custom routing, connection policy, and failover are implemented and tested.</text>
+    <rect x="50" y="890" width="1100" height="66" fill="#242136" stroke="#756c89" stroke-width="2"/>
+    <text x="600" y="917" class="eyebrow" text-anchor="middle" fill="#b7a1ff">DEPLOYMENT BOUNDARY</text>
+    <text x="0" y="0" class="body" text-anchor="middle" transform="translate(600 941) scale(0.87130 1)">Multiple processes become a high-availability design only after custom routing, connection policy, and failover are implemented and tested.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

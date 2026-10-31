@@ -2,78 +2,77 @@
   <title id="title">Peerborne durability and recovery boundaries</title>
   <desc id="desc">Two browser origins have separate local IndexedDB stores containing only payloads written or fetched there, while request and response traffic crosses a relay that does not retain document blocks. A broken line marks the incomplete remote-pinning integration. A tiered recovery chart lists the material needed to reconstruct, write, or manage reader membership.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0 10 5 0 10z" fill="#818cf8"/>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0 10 5 0 10z" fill="#fbbf24"/>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#ffb887"/>
     </marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#020617" flood-opacity="0.35"/>
-    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
   </defs>
 
-  <rect width="1200" height="820" rx="28" fill="#0f172a"/>
-  <text x="56" y="62" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="700">A local copy is not a durability guarantee</text>
-  <text x="56" y="98" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="19">A recoverable document needs more than surviving encrypted bytes.</text>
+  <rect width="1200" height="820" fill="#171521"/>
+  <g class="pixel-heading" aria-hidden="true"><path d="M59 41h3v3h-3zM62 41h3v3h-3zM65 41h3v3h-3zM56 44h3v3h-3zM68 44h3v3h-3zM56 47h3v3h-3zM68 47h3v3h-3zM56 50h3v3h-3zM59 50h3v3h-3zM62 50h3v3h-3zM65 50h3v3h-3zM68 50h3v3h-3zM56 53h3v3h-3zM68 53h3v3h-3zM56 56h3v3h-3zM68 56h3v3h-3zM56 59h3v3h-3zM68 59h3v3h-3zM92 41h3v3h-3zM92 44h3v3h-3zM92 47h3v3h-3zM92 50h3v3h-3zM92 53h3v3h-3zM92 56h3v3h-3zM92 59h3v3h-3zM95 59h3v3h-3zM98 59h3v3h-3zM101 59h3v3h-3zM104 59h3v3h-3zM113 41h3v3h-3zM116 41h3v3h-3zM119 41h3v3h-3zM110 44h3v3h-3zM122 44h3v3h-3zM110 47h3v3h-3zM122 47h3v3h-3zM110 50h3v3h-3zM122 50h3v3h-3zM110 53h3v3h-3zM122 53h3v3h-3zM110 56h3v3h-3zM122 56h3v3h-3zM113 59h3v3h-3zM116 59h3v3h-3zM119 59h3v3h-3zM131 41h3v3h-3zM134 41h3v3h-3zM137 41h3v3h-3zM140 41h3v3h-3zM128 44h3v3h-3zM128 47h3v3h-3zM128 50h3v3h-3zM128 53h3v3h-3zM128 56h3v3h-3zM131 59h3v3h-3zM134 59h3v3h-3zM137 59h3v3h-3zM140 59h3v3h-3zM149 41h3v3h-3zM152 41h3v3h-3zM155 41h3v3h-3zM146 44h3v3h-3zM158 44h3v3h-3zM146 47h3v3h-3zM158 47h3v3h-3zM146 50h3v3h-3zM149 50h3v3h-3zM152 50h3v3h-3zM155 50h3v3h-3zM158 50h3v3h-3zM146 53h3v3h-3zM158 53h3v3h-3zM146 56h3v3h-3zM158 56h3v3h-3zM146 59h3v3h-3zM158 59h3v3h-3zM164 41h3v3h-3zM164 44h3v3h-3zM164 47h3v3h-3zM164 50h3v3h-3zM164 53h3v3h-3zM164 56h3v3h-3zM164 59h3v3h-3zM167 59h3v3h-3zM170 59h3v3h-3zM173 59h3v3h-3zM176 59h3v3h-3zM203 41h3v3h-3zM206 41h3v3h-3zM209 41h3v3h-3zM212 41h3v3h-3zM200 44h3v3h-3zM200 47h3v3h-3zM200 50h3v3h-3zM200 53h3v3h-3zM200 56h3v3h-3zM203 59h3v3h-3zM206 59h3v3h-3zM209 59h3v3h-3zM212 59h3v3h-3zM221 41h3v3h-3zM224 41h3v3h-3zM227 41h3v3h-3zM218 44h3v3h-3zM230 44h3v3h-3zM218 47h3v3h-3zM230 47h3v3h-3zM218 50h3v3h-3zM230 50h3v3h-3zM218 53h3v3h-3zM230 53h3v3h-3zM218 56h3v3h-3zM230 56h3v3h-3zM221 59h3v3h-3zM224 59h3v3h-3zM227 59h3v3h-3zM236 41h3v3h-3zM239 41h3v3h-3zM242 41h3v3h-3zM245 41h3v3h-3zM236 44h3v3h-3zM248 44h3v3h-3zM236 47h3v3h-3zM248 47h3v3h-3zM236 50h3v3h-3zM239 50h3v3h-3zM242 50h3v3h-3zM245 50h3v3h-3zM236 53h3v3h-3zM236 56h3v3h-3zM236 59h3v3h-3zM254 41h3v3h-3zM266 41h3v3h-3zM254 44h3v3h-3zM266 44h3v3h-3zM257 47h3v3h-3zM263 47h3v3h-3zM260 50h3v3h-3zM260 53h3v3h-3zM260 56h3v3h-3zM260 59h3v3h-3zM290 41h3v3h-3zM293 41h3v3h-3zM296 41h3v3h-3zM299 41h3v3h-3zM302 41h3v3h-3zM296 44h3v3h-3zM296 47h3v3h-3zM296 50h3v3h-3zM296 53h3v3h-3zM296 56h3v3h-3zM290 59h3v3h-3zM293 59h3v3h-3zM296 59h3v3h-3zM299 59h3v3h-3zM302 59h3v3h-3zM311 41h3v3h-3zM314 41h3v3h-3zM317 41h3v3h-3zM320 41h3v3h-3zM308 44h3v3h-3zM308 47h3v3h-3zM311 50h3v3h-3zM314 50h3v3h-3zM317 50h3v3h-3zM320 53h3v3h-3zM320 56h3v3h-3zM308 59h3v3h-3zM311 59h3v3h-3zM314 59h3v3h-3zM317 59h3v3h-3zM344 41h3v3h-3zM356 41h3v3h-3zM344 44h3v3h-3zM347 44h3v3h-3zM356 44h3v3h-3zM344 47h3v3h-3zM350 47h3v3h-3zM356 47h3v3h-3zM344 50h3v3h-3zM353 50h3v3h-3zM356 50h3v3h-3zM344 53h3v3h-3zM356 53h3v3h-3zM344 56h3v3h-3zM356 56h3v3h-3zM344 59h3v3h-3zM356 59h3v3h-3zM365 41h3v3h-3zM368 41h3v3h-3zM371 41h3v3h-3zM362 44h3v3h-3zM374 44h3v3h-3zM362 47h3v3h-3zM374 47h3v3h-3zM362 50h3v3h-3zM374 50h3v3h-3zM362 53h3v3h-3zM374 53h3v3h-3zM362 56h3v3h-3zM374 56h3v3h-3zM365 59h3v3h-3zM368 59h3v3h-3zM371 59h3v3h-3zM380 41h3v3h-3zM383 41h3v3h-3zM386 41h3v3h-3zM389 41h3v3h-3zM392 41h3v3h-3zM386 44h3v3h-3zM386 47h3v3h-3zM386 50h3v3h-3zM386 53h3v3h-3zM386 56h3v3h-3zM386 59h3v3h-3zM419 41h3v3h-3zM422 41h3v3h-3zM425 41h3v3h-3zM416 44h3v3h-3zM428 44h3v3h-3zM416 47h3v3h-3zM428 47h3v3h-3zM416 50h3v3h-3zM419 50h3v3h-3zM422 50h3v3h-3zM425 50h3v3h-3zM428 50h3v3h-3zM416 53h3v3h-3zM428 53h3v3h-3zM416 56h3v3h-3zM428 56h3v3h-3zM416 59h3v3h-3zM428 59h3v3h-3zM452 41h3v3h-3zM455 41h3v3h-3zM458 41h3v3h-3zM461 41h3v3h-3zM452 44h3v3h-3zM464 44h3v3h-3zM452 47h3v3h-3zM464 47h3v3h-3zM452 50h3v3h-3zM464 50h3v3h-3zM452 53h3v3h-3zM464 53h3v3h-3zM452 56h3v3h-3zM464 56h3v3h-3zM452 59h3v3h-3zM455 59h3v3h-3zM458 59h3v3h-3zM461 59h3v3h-3zM470 41h3v3h-3zM482 41h3v3h-3zM470 44h3v3h-3zM482 44h3v3h-3zM470 47h3v3h-3zM482 47h3v3h-3zM470 50h3v3h-3zM482 50h3v3h-3zM470 53h3v3h-3zM482 53h3v3h-3zM470 56h3v3h-3zM482 56h3v3h-3zM473 59h3v3h-3zM476 59h3v3h-3zM479 59h3v3h-3zM488 41h3v3h-3zM491 41h3v3h-3zM494 41h3v3h-3zM497 41h3v3h-3zM488 44h3v3h-3zM500 44h3v3h-3zM488 47h3v3h-3zM500 47h3v3h-3zM488 50h3v3h-3zM491 50h3v3h-3zM494 50h3v3h-3zM497 50h3v3h-3zM488 53h3v3h-3zM494 53h3v3h-3zM488 56h3v3h-3zM497 56h3v3h-3zM488 59h3v3h-3zM500 59h3v3h-3zM509 41h3v3h-3zM512 41h3v3h-3zM515 41h3v3h-3zM506 44h3v3h-3zM518 44h3v3h-3zM506 47h3v3h-3zM518 47h3v3h-3zM506 50h3v3h-3zM509 50h3v3h-3zM512 50h3v3h-3zM515 50h3v3h-3zM518 50h3v3h-3zM506 53h3v3h-3zM518 53h3v3h-3zM506 56h3v3h-3zM518 56h3v3h-3zM506 59h3v3h-3zM518 59h3v3h-3zM524 41h3v3h-3zM527 41h3v3h-3zM530 41h3v3h-3zM533 41h3v3h-3zM524 44h3v3h-3zM536 44h3v3h-3zM524 47h3v3h-3zM536 47h3v3h-3zM524 50h3v3h-3zM527 50h3v3h-3zM530 50h3v3h-3zM533 50h3v3h-3zM524 53h3v3h-3zM536 53h3v3h-3zM524 56h3v3h-3zM536 56h3v3h-3zM524 59h3v3h-3zM527 59h3v3h-3zM530 59h3v3h-3zM533 59h3v3h-3zM542 41h3v3h-3zM545 41h3v3h-3zM548 41h3v3h-3zM551 41h3v3h-3zM554 41h3v3h-3zM548 44h3v3h-3zM548 47h3v3h-3zM548 50h3v3h-3zM548 53h3v3h-3zM548 56h3v3h-3zM542 59h3v3h-3zM545 59h3v3h-3zM548 59h3v3h-3zM551 59h3v3h-3zM554 59h3v3h-3zM560 41h3v3h-3zM560 44h3v3h-3zM560 47h3v3h-3zM560 50h3v3h-3zM560 53h3v3h-3zM560 56h3v3h-3zM560 59h3v3h-3zM563 59h3v3h-3zM566 59h3v3h-3zM569 59h3v3h-3zM572 59h3v3h-3zM578 41h3v3h-3zM581 41h3v3h-3zM584 41h3v3h-3zM587 41h3v3h-3zM590 41h3v3h-3zM584 44h3v3h-3zM584 47h3v3h-3zM584 50h3v3h-3zM584 53h3v3h-3zM584 56h3v3h-3zM578 59h3v3h-3zM581 59h3v3h-3zM584 59h3v3h-3zM587 59h3v3h-3zM590 59h3v3h-3zM596 41h3v3h-3zM599 41h3v3h-3zM602 41h3v3h-3zM605 41h3v3h-3zM608 41h3v3h-3zM602 44h3v3h-3zM602 47h3v3h-3zM602 50h3v3h-3zM602 53h3v3h-3zM602 56h3v3h-3zM602 59h3v3h-3zM614 41h3v3h-3zM626 41h3v3h-3zM614 44h3v3h-3zM626 44h3v3h-3zM617 47h3v3h-3zM623 47h3v3h-3zM620 50h3v3h-3zM620 53h3v3h-3zM620 56h3v3h-3zM620 59h3v3h-3zM653 41h3v3h-3zM656 41h3v3h-3zM659 41h3v3h-3zM662 41h3v3h-3zM650 44h3v3h-3zM650 47h3v3h-3zM650 50h3v3h-3zM656 50h3v3h-3zM659 50h3v3h-3zM662 50h3v3h-3zM650 53h3v3h-3zM662 53h3v3h-3zM650 56h3v3h-3zM662 56h3v3h-3zM653 59h3v3h-3zM656 59h3v3h-3zM659 59h3v3h-3zM662 59h3v3h-3zM668 41h3v3h-3zM680 41h3v3h-3zM668 44h3v3h-3zM680 44h3v3h-3zM668 47h3v3h-3zM680 47h3v3h-3zM668 50h3v3h-3zM680 50h3v3h-3zM668 53h3v3h-3zM680 53h3v3h-3zM668 56h3v3h-3zM680 56h3v3h-3zM671 59h3v3h-3zM674 59h3v3h-3zM677 59h3v3h-3zM689 41h3v3h-3zM692 41h3v3h-3zM695 41h3v3h-3zM686 44h3v3h-3zM698 44h3v3h-3zM686 47h3v3h-3zM698 47h3v3h-3zM686 50h3v3h-3zM689 50h3v3h-3zM692 50h3v3h-3zM695 50h3v3h-3zM698 50h3v3h-3zM686 53h3v3h-3zM698 53h3v3h-3zM686 56h3v3h-3zM698 56h3v3h-3zM686 59h3v3h-3zM698 59h3v3h-3zM704 41h3v3h-3zM707 41h3v3h-3zM710 41h3v3h-3zM713 41h3v3h-3zM704 44h3v3h-3zM716 44h3v3h-3zM704 47h3v3h-3zM716 47h3v3h-3zM704 50h3v3h-3zM707 50h3v3h-3zM710 50h3v3h-3zM713 50h3v3h-3zM704 53h3v3h-3zM710 53h3v3h-3zM704 56h3v3h-3zM713 56h3v3h-3zM704 59h3v3h-3zM716 59h3v3h-3zM725 41h3v3h-3zM728 41h3v3h-3zM731 41h3v3h-3zM722 44h3v3h-3zM734 44h3v3h-3zM722 47h3v3h-3zM734 47h3v3h-3zM722 50h3v3h-3zM725 50h3v3h-3zM728 50h3v3h-3zM731 50h3v3h-3zM734 50h3v3h-3zM722 53h3v3h-3zM734 53h3v3h-3zM722 56h3v3h-3zM734 56h3v3h-3zM722 59h3v3h-3zM734 59h3v3h-3zM740 41h3v3h-3zM752 41h3v3h-3zM740 44h3v3h-3zM743 44h3v3h-3zM752 44h3v3h-3zM740 47h3v3h-3zM746 47h3v3h-3zM752 47h3v3h-3zM740 50h3v3h-3zM749 50h3v3h-3zM752 50h3v3h-3zM740 53h3v3h-3zM752 53h3v3h-3zM740 56h3v3h-3zM752 56h3v3h-3zM740 59h3v3h-3zM752 59h3v3h-3zM758 41h3v3h-3zM761 41h3v3h-3zM764 41h3v3h-3zM767 41h3v3h-3zM770 41h3v3h-3zM764 44h3v3h-3zM764 47h3v3h-3zM764 50h3v3h-3zM764 53h3v3h-3zM764 56h3v3h-3zM764 59h3v3h-3zM776 41h3v3h-3zM779 41h3v3h-3zM782 41h3v3h-3zM785 41h3v3h-3zM788 41h3v3h-3zM776 44h3v3h-3zM776 47h3v3h-3zM776 50h3v3h-3zM779 50h3v3h-3zM782 50h3v3h-3zM785 50h3v3h-3zM776 53h3v3h-3zM776 56h3v3h-3zM776 59h3v3h-3zM779 59h3v3h-3zM782 59h3v3h-3zM785 59h3v3h-3zM788 59h3v3h-3zM794 41h3v3h-3zM797 41h3v3h-3zM800 41h3v3h-3zM803 41h3v3h-3zM806 41h3v3h-3zM794 44h3v3h-3zM794 47h3v3h-3zM794 50h3v3h-3zM797 50h3v3h-3zM800 50h3v3h-3zM803 50h3v3h-3zM794 53h3v3h-3zM794 56h3v3h-3zM794 59h3v3h-3zM797 59h3v3h-3zM800 59h3v3h-3zM803 59h3v3h-3zM806 59h3v3h-3z" fill="#f5f0e8"/></g>
+  <text x="56" y="98" fill="#a7a0b6" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="19">A recoverable document needs more than surviving encrypted bytes.</text>
 
-  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
-    <rect x="55" y="142" width="286" height="174" rx="20" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
-    <text x="83" y="182" fill="#5eead4" font-size="16" font-weight="700">PEER A · BROWSER ORIGIN</text>
-    <text x="83" y="221" fill="#f8fafc" font-size="24" font-weight="700">Local IndexedDB</text>
-    <text x="83" y="253" fill="#cbd5e1" font-size="17">Payloads written or fetched here</text>
-    <rect x="83" y="273" width="177" height="26" rx="13" fill="#134e4a"/>
-    <text x="171" y="291" text-anchor="middle" fill="#99f6e4" font-size="14" font-weight="700">origin-scoped store</text>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" filter="url(#shadow)">
+    <rect x="55" y="142" width="286" height="174" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+    <text x="83" y="182" fill="#a3efb8" font-size="16" font-weight="700">PEER A · BROWSER ORIGIN</text>
+    <text x="83" y="221" fill="#f5f0e8" font-size="24" font-weight="700">Local IndexedDB</text>
+    <text x="0" y="0" fill="#cbc5d6" font-size="17" transform="translate(83 253) scale(0.74142 1)">Payloads written or fetched here</text>
+    <rect x="83" y="273" width="177" height="26" fill="#1b382a"/>
+    <text x="171" y="291" text-anchor="middle" fill="#c7f5d3" font-size="14" font-weight="700">origin-scoped store</text>
 
-    <rect x="457" y="142" width="286" height="174" rx="20" fill="#1e1b4b" stroke="#818cf8" stroke-width="2"/>
-    <text x="485" y="182" fill="#a5b4fc" font-size="16" font-weight="700">CIRCUIT RELAY</text>
-    <text x="485" y="221" fill="#f8fafc" font-size="24" font-weight="700">Forwards traffic</text>
-    <text x="485" y="253" fill="#cbd5e1" font-size="17">Can drop, delay, or observe</text>
-    <rect x="485" y="273" width="207" height="26" rx="13" fill="#312e81"/>
-    <text x="589" y="291" text-anchor="middle" fill="#c7d2fe" font-size="14" font-weight="700">no durable document copy</text>
+    <rect x="457" y="142" width="286" height="174" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
+    <text x="485" y="182" fill="#b7a1ff" font-size="16" font-weight="700">CIRCUIT RELAY</text>
+    <text x="485" y="221" fill="#f5f0e8" font-size="24" font-weight="700">Forwards traffic</text>
+    <text x="0" y="0" fill="#cbc5d6" font-size="17" transform="translate(485 253) scale(0.87872 1)">Can drop, delay, or observe</text>
+    <rect x="485" y="273" width="207" height="26" fill="#30234c"/>
+    <text x="0" y="0" text-anchor="middle" fill="#d6c8ff" font-size="14" font-weight="700" transform="translate(589 291) scale(0.97222 1)">no durable document copy</text>
 
-    <rect x="859" y="142" width="286" height="174" rx="20" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
-    <text x="887" y="182" fill="#5eead4" font-size="16" font-weight="700">PEER B · BROWSER ORIGIN</text>
-    <text x="887" y="221" fill="#f8fafc" font-size="24" font-weight="700">Local IndexedDB</text>
-    <text x="887" y="253" fill="#cbd5e1" font-size="17">Payloads written or fetched here</text>
-    <rect x="887" y="273" width="177" height="26" rx="13" fill="#134e4a"/>
-    <text x="975" y="291" text-anchor="middle" fill="#99f6e4" font-size="14" font-weight="700">origin-scoped store</text>
+    <rect x="859" y="142" width="286" height="174" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+    <text x="887" y="182" fill="#a3efb8" font-size="16" font-weight="700">PEER B · BROWSER ORIGIN</text>
+    <text x="887" y="221" fill="#f5f0e8" font-size="24" font-weight="700">Local IndexedDB</text>
+    <text x="0" y="0" fill="#cbc5d6" font-size="17" transform="translate(887 253) scale(0.74142 1)">Payloads written or fetched here</text>
+    <rect x="887" y="273" width="177" height="26" fill="#1b382a"/>
+    <text x="975" y="291" text-anchor="middle" fill="#c7f5d3" font-size="14" font-weight="700">origin-scoped store</text>
   </g>
 
-  <g fill="none" stroke="#818cf8" stroke-width="3" marker-start="url(#arrow)" marker-end="url(#arrow)">
+  <g fill="none" stroke="#b7a1ff" stroke-width="3" marker-start="url(#arrow)" marker-end="url(#arrow)">
     <path d="M341 214 H457"/>
     <path d="M743 244 H859"/>
   </g>
-  <text x="399" y="199" text-anchor="middle" fill="#c7d2fe" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">request / response</text>
-  <text x="801" y="229" text-anchor="middle" fill="#c7d2fe" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">request / response</text>
+  <text x="399" y="199" text-anchor="middle" fill="#d6c8ff" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="14">request / response</text>
+  <text x="801" y="229" text-anchor="middle" fill="#d6c8ff" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="14">request / response</text>
 
-  <rect x="395" y="346" width="410" height="84" rx="18" fill="#2b2112" stroke="#fbbf24" stroke-width="2" stroke-dasharray="9 7"/>
-  <text x="423" y="380" fill="#fde68a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">Remote pinning integration: incomplete</text>
-  <text x="423" y="407" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">The listener exists; the normal commit path does not invoke it.</text>
-  <path d="M198 316 V388 H395" fill="none" stroke="#fbbf24" stroke-width="3" stroke-dasharray="7 7" marker-end="url(#arrow-amber)"/>
-  <text x="224" y="374" fill="#fde68a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">missing publisher edge</text>
+  <rect x="395" y="346" width="410" height="84" fill="#382819" stroke="#ffb887" stroke-width="2" stroke-dasharray="9 7"/>
+  <text x="0" y="0" fill="#ffd5b5" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" font-weight="700" transform="translate(423 380) scale(0.89181 1)">Remote pinning integration: incomplete</text>
+  <text x="0" y="0" fill="#cbc5d6" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="15" transform="translate(423 407) scale(0.64550 1)">The listener exists; the normal commit path does not invoke it.</text>
+  <path d="M198 316 V388 H395" fill="none" stroke="#ffb887" stroke-width="3" stroke-dasharray="7 7" marker-end="url(#arrow-amber)"/>
+  <text x="224" y="374" fill="#ffd5b5" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="15">missing publisher edge</text>
 
-  <text x="56" y="487" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="27" font-weight="700">Recovery is a stack, not a block download</text>
-  <text x="56" y="518" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">Each higher capability requires everything below it.</text>
+  <text x="56" y="487" fill="#f5f0e8" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="27" font-weight="700">Recovery is a stack, not a block download</text>
+  <text x="56" y="518" fill="#a7a0b6" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="17">Each higher capability requires everything below it.</text>
 
-  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif">
-    <rect x="55" y="553" width="1090" height="86" rx="18" fill="#172033" stroke="#475569" stroke-width="2"/>
-    <rect x="55" y="553" width="151" height="86" rx="18" fill="#334155"/>
-    <text x="130" y="588" text-anchor="middle" fill="#f8fafc" font-size="19" font-weight="800">READ</text>
-    <text x="130" y="614" text-anchor="middle" fill="#cbd5e1" font-size="14">reconstruct</text>
-    <text x="234" y="582" fill="#f8fafc" font-size="18" font-weight="700">Blocks + keys + frontier/graph data</text>
-    <text x="234" y="607" fill="#cbd5e1" font-size="15">Authenticated envelope, snapshot, and ACL context when available;</text>
-    <text x="234" y="630" fill="#cbd5e1" font-size="15">reachable providers and configured connected-peer quorum may also be required.</text>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace">
+    <rect x="55" y="553" width="1090" height="86" fill="#242136" stroke="#756c89" stroke-width="2"/>
+    <rect x="55" y="553" width="151" height="86" fill="#40394f"/>
+    <text x="130" y="588" text-anchor="middle" fill="#f5f0e8" font-size="19" font-weight="800">READ</text>
+    <text x="130" y="614" text-anchor="middle" fill="#cbc5d6" font-size="14">reconstruct</text>
+    <text x="234" y="582" fill="#f5f0e8" font-size="18" font-weight="700">Blocks + keys + frontier/graph data</text>
+    <text x="234" y="607" fill="#cbc5d6" font-size="15">Authenticated envelope, snapshot, and ACL context when available;</text>
+    <text x="234" y="630" fill="#cbc5d6" font-size="15">reachable providers and configured connected-peer quorum may also be required.</text>
 
-    <rect x="165" y="655" width="980" height="66" rx="18" fill="#1e1b4b" stroke="#818cf8" stroke-width="2"/>
-    <rect x="165" y="655" width="151" height="66" rx="18" fill="#312e81"/>
-    <text x="240" y="695" text-anchor="middle" fill="#f8fafc" font-size="19" font-weight="800">WRITE</text>
-    <text x="344" y="695" fill="#f8fafc" font-size="18" font-weight="700">Everything above + current writer authorization + signing key if enabled</text>
+    <rect x="165" y="655" width="980" height="66" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
+    <rect x="165" y="655" width="151" height="66" fill="#30234c"/>
+    <text x="240" y="695" text-anchor="middle" fill="#f5f0e8" font-size="19" font-weight="800">WRITE</text>
+    <text x="344" y="695" fill="#f5f0e8" font-size="18" font-weight="700">Everything above + current writer authorization + signing key if enabled</text>
 
-    <rect x="275" y="737" width="870" height="58" rx="18" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
-    <rect x="275" y="737" width="189" height="58" rx="18" fill="#134e4a"/>
-    <text x="369" y="765" text-anchor="middle" fill="#f8fafc" font-size="16" font-weight="800">READER MEMBERSHIP</text>
-    <text x="369" y="784" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="700">AND REVOCATION</text>
-    <text x="492" y="773" fill="#f8fafc" font-size="18" font-weight="700">Everything above + BeeKEM state</text>
+    <rect x="275" y="737" width="870" height="58" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+    <rect x="275" y="737" width="189" height="58" fill="#1b382a"/>
+    <text x="369" y="765" text-anchor="middle" fill="#f5f0e8" font-size="16" font-weight="800">READER MEMBERSHIP</text>
+    <text x="369" y="784" text-anchor="middle" fill="#cbc5d6" font-size="13" font-weight="700">AND REVOCATION</text>
+    <text x="492" y="773" fill="#f5f0e8" font-size="18" font-weight="700">Everything above + BeeKEM state</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>
