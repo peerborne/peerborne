@@ -18,8 +18,10 @@ PEERBORNE_VERIFY_PROFILE=full yarn verify:advanced:browser --grep tombstone-bomb
 - `causal-poisoning` admits 32/1,024 independent signed orphans, measures the
   actual pending CRDT bytes and releases them with their real ancestors. It
   tries a nonexistent deferred parent, checks depth/cycle/CID bounds, and in
-  full mode checks both sides of the 32,768-node walker boundary. Yjs and
-  Automerge wire counters include `Number.MAX_SAFE_INTEGER`; a benign writer
+  full mode checks both sides of the 32,768-node walker boundary. Counter
+  candidates include `Number.MAX_SAFE_INTEGER`; reports distinguish an
+  adapter encoder refusing that value from a receiver rejecting actual wire
+  bytes. Yjs's inflated wire counter is decoded and checked; a benign writer
   must continue after inflation. Walker limits are per tree, not a global
   resource budget or peer quarantine.
 - `tombstone-bomb` sends 400/100,000 total alternating insert/delete mutations
