@@ -16,6 +16,7 @@ test('release ordered packages list is exact', () => {
     '@peerborne/core',
     '@peerborne/automerge',
     '@peerborne/yjs',
+    '@peerborne/store',
     '@peerborne/react',
     '@peerborne/redux',
     '@peerborne/index',

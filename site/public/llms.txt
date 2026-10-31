@@ -14,12 +14,12 @@ Use the feature audit and concept documentation as the authority for capability 
 - [Why Peerborne](https://peerborne.io/concepts/why-peerborne/): Value proposition, when to use/not use.
 - [Architecture](https://peerborne.io/concepts/architecture/): System overview, data flow, networking stack, encryption model with ASCII diagrams.
 - [Examples](https://github.com/Peerborne/peerborne/tree/main/examples): Runnable browser applications (browser-test, wiki-swarm, password-manager, peerborne-note).
-- [API reference](https://peerborne.io/reference/): Generated package documentation for all six @peerborne/* packages.
+- [API reference](https://peerborne.io/reference/): Generated package documentation for all seven @peerborne/* packages.
 - [Comparisons](https://peerborne.io/reference/comparisons/): Peerborne vs Yjs, Automerge, Liveblocks, RxDB, Jazz, ElectricSQL.
 
 ## Packages
 
-The six libraries are source workspaces and are not yet published to npm. Most applications combine the core package with one CRDT adapter and optional framework bindings.
+The seven libraries are source workspaces and are not yet published to npm. Most applications combine the core package with one CRDT adapter and optional framework bindings.
 
 - [`@peerborne/core`](https://github.com/Peerborne/peerborne/blob/main/packages/core/README.md): Core document and runtime APIs, with dedicated Node and browser-primitives entry points.
 - [`@peerborne/automerge`](https://github.com/Peerborne/peerborne/blob/main/packages/automerge/README.md): Automerge provider, serialization, ACL, and keychain adapters.
@@ -66,3 +66,6 @@ The six libraries are source workspaces and are not yet published to npm. Most a
 - [Feature and verification audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md): Capability-to-evidence map — the authoritative reference for what works and what doesn't.
 - [Repository](https://github.com/Peerborne/peerborne): Source, issues, and discussions.
 - [AGENTS.md](https://github.com/Peerborne/peerborne/blob/main/AGENTS.md): Repository map, toolchain setup, commands, engineering rules for contributors and agents.
+
+- [Framework-free web projects](https://peerborne.io/getting-started/vanilla/): Plain JavaScript document stores.
+- [Integration status](https://peerborne.io/reference/integration-status/): Current integration scope and remaining acceptance work.

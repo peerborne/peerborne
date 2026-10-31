@@ -7,6 +7,7 @@ test('release package allowlist is exact and ordered', () => {
     '@peerborne/core',
     '@peerborne/automerge',
     '@peerborne/yjs',
+    '@peerborne/store',
     '@peerborne/react',
     '@peerborne/redux',
     '@peerborne/index',

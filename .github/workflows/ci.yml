@@ -77,6 +77,7 @@ jobs:
           - automerge
           - redux
           - index
+          - store
     steps:
       - uses: actions/checkout@v7
       - id: nodeversion
@@ -352,3 +353,22 @@ jobs:
           name: benchmark-results
           path: benchmark-results.json
           retention-days: 30
+
+  frontend-integrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19.0'
+          cache: 'yarn'
+      - run: yarn install --immutable
+      - run: yarn exec playwright install chromium --with-deps
+      - run: yarn test:e2e:integrations
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: frontend-integration-traces
+          path: test-results/

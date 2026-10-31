@@ -7,10 +7,12 @@
     "packages/react",
     "packages/redux",
     "packages/index",
+    "packages/store",
     "examples/browser-test",
     "examples/wiki-swarm",
     "examples/password-manager",
     "examples/peerborne-note",
+    "examples/integrations",
     "site"
   ],
   "resolutions": {
@@ -25,11 +27,11 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' run tsc",
-    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' --include '@peerborne/peerborne-note' run build",
-    "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' run test",
+    "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' run tsc",
+    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' --include '@peerborne/peerborne-note' --include '@peerborne/integration-examples' run build",
+    "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' run test",
     "test:e2e": "yarn test:e2e:examples",
-    "test:e2e:examples": "yarn test:e2e:password-manager && yarn test:e2e:wiki-swarm && yarn test:e2e:browser-test && yarn test:e2e:peerborne-note",
+    "test:e2e:examples": "yarn test:e2e:password-manager && yarn test:e2e:wiki-swarm && yarn test:e2e:browser-test && yarn test:e2e:peerborne-note && yarn test:e2e:integrations",
     "test:e2e:password-manager": "yarn workspace @peerborne/password-manager build && playwright test --config=playwright.password-manager.config.ts",
     "test:e2e:wiki-swarm": "yarn workspace @peerborne/wiki-swarm build && playwright test --config=playwright.wiki-swarm.config.ts",
     "test:e2e:browser-test": "yarn workspace @peerborne/browser-test build && playwright test --config=playwright.browser-test.config.ts",
@@ -62,6 +64,8 @@
     "verify:formal:inventory": "node verification/formal/inventory.mjs",
     "verify:mls-candidate:setup": "yarn --cwd verification/mls-candidate install --immutable",
     "verify:mls-candidate": "node verification/mls-candidate/run.mjs",
+    "build:integrations": "yarn build && yarn workspace @peerborne/integration-examples build",
+    "test:e2e:integrations": "yarn build:integrations && playwright test --config=playwright.integrations.config.ts",
     "verify:mls-provider:setup": "yarn --cwd verification/mls-provider install --immutable && node verification/mls-provider/setup-vectors.mjs",
     "verify:mls-provider:typecheck": "yarn workspace @peerborne/core exec tsc -p ../../verification/mls-provider/tsconfig.json",
     "verify:mls-provider": "node --import tsx verification/mls-provider/run.mjs"

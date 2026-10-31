@@ -4616,6 +4616,20 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@peerborne/integration-examples@workspace:examples/integrations":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/integration-examples@workspace:examples/integrations"
+  dependencies:
+    "@peerborne/core": "workspace:^"
+    "@peerborne/store": "workspace:^"
+    "@peerborne/yjs": "workspace:^"
+    "@types/node": "npm:^22.12.0"
+    typescript: "npm:^5.9.3"
+    vite: "npm:^8.3.5"
+    yjs: "npm:^13.6.32"
+  languageName: unknown
+  linkType: soft
+
 "@peerborne/password-manager@workspace:examples/password-manager":
   version: 0.0.0-use.local
   resolution: "@peerborne/password-manager@workspace:examples/password-manager"
@@ -4730,6 +4744,17 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@peerborne/store@workspace:^, @peerborne/store@workspace:packages/store":
+  version: 0.0.0-use.local
+  resolution: "@peerborne/store@workspace:packages/store"
+  dependencies:
+    "@types/node": "npm:^26.6.2"
+    jest: "npm:^30.5.2"
+    ts-jest: "npm:^29.4.14"
+    typescript: "npm:^5.9.3"
+  languageName: unknown
+  linkType: soft
+
 "@peerborne/wiki-swarm@workspace:examples/wiki-swarm":
   version: 0.0.0-use.local
   resolution: "@peerborne/wiki-swarm@workspace:examples/wiki-swarm"
@@ -4766,7 +4791,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@peerborne/yjs@workspace:*, @peerborne/yjs@workspace:packages/yjs":
+"@peerborne/yjs@workspace:*, @peerborne/yjs@workspace:^, @peerborne/yjs@workspace:packages/yjs":
   version: 0.0.0-use.local
   resolution: "@peerborne/yjs@workspace:packages/yjs"
   dependencies:
@@ -5586,6 +5611,15 @@ __metadata:
   dependencies:
     undici-types: "npm:~6.19.2"
   checksum: 10/e8ba102f8c1aa7623787d625389be68d64e54fcbb76d41f6c2c64e8cf4c9f4a2370e7ef5e5f1732f3c57529d3d26afdcb2edc0101c5e413a79081449825c57ac
+  languageName: node
+  linkType: hard
+
+"@types/node@npm:^22.12.0":
+  version: 22.20.5
+  resolution: "@types/node@npm:22.20.5"
+  dependencies:
+    undici-types: "npm:~6.21.0"
+  checksum: 10/a223a73e00e948b751b00144523674ecc73e7a3f14f48a0f3a6fca40745ff548a8b0ff5baca090d45ae8b61481cc56c1158db4df312970baeb6fc1b81fc511a1
   languageName: node
   linkType: hard
 
@@ -14898,6 +14932,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"undici-types@npm:~6.21.0":
+  version: 6.21.0
+  resolution: "undici-types@npm:6.21.0"
+  checksum: 10/ec8f41aa4359d50f9b59fa61fe3efce3477cc681908c8f84354d8567bb3701fafdddf36ef6bff307024d3feb42c837cf6f670314ba37fc8145e219560e473d14
+  languageName: node
+  linkType: hard
+
 "undici-types@npm:~7.18.0":
   version: 7.18.2
   resolution: "undici-types@npm:7.18.2"
@@ -15811,7 +15852,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yjs@npm:^13.6.33":
+"yjs@npm:^13.6.32, yjs@npm:^13.6.33":
   version: 13.6.33
   resolution: "yjs@npm:13.6.33"
   dependencies:

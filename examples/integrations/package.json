@@ -1,0 +1,25 @@
+{
+  "name": "@peerborne/integration-examples",
+  "dependencies": {
+    "@peerborne/core": "workspace:^",
+    "@peerborne/store": "workspace:^",
+    "@peerborne/yjs": "workspace:^",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  },
+  "scripts": {
+    "start": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

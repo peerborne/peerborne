@@ -1,0 +1,44 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #182737;
+  background: #f6f8fa;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 64rem;
+  margin: 3rem auto;
+  padding: 0 1.5rem;
+}
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+a {
+  color: #2155a3;
+}
+section {
+  padding: 1.5rem;
+  background: white;
+  border: 1px solid #cbd5df;
+  border-radius: 0.5rem;
+}
+label,
+output {
+  display: block;
+  margin: 1rem 0;
+}
+input,
+button {
+  font: inherit;
+  padding: 0.5rem;
+}
+button {
+  cursor: pointer;
+}
+[role='alert'] {
+  color: #9f1d20;
+}

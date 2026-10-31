@@ -1,0 +1,78 @@
+{
+  "name": "@peerborne/store",
+  "description": "Framework-independent document subscriptions and lifecycle for Peerborne",
+  "version": "0.1.0",
+  "homepage": "https://peerborne.io/",
+  "bugs": {
+    "url": "https://github.com/Peerborne/peerborne/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "directory": "packages/store"
+  },
+  "scripts": {
+    "tsc": "tsc -b",
+    "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
+    "prepublishOnly": "yarn tsc"
+  },
+  "main": "dist/esm/src/index.js",
+  "module": "dist/esm/src/index.js",
+  "types": "dist/esm/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/src/index.d.ts",
+      "import": "./dist/esm/src/index.js",
+      "require": "./dist/esm/src/index.js",
+      "default": "./dist/esm/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/esm/**",
+    "!dist/**/*.test.*",
+    "!dist/**/*.spec.*",
+    "!dist/**/*.map",
+    "!dist/**/*.tsbuildinfo",
+    "!dist/**/test-utils.*"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "jest": "^30.5.2",
+    "ts-jest": "^29.4.14",
+    "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "jest": {
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "testEnvironment": "node",
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": {
+            "module": "ESNext",
+            "moduleResolution": "Bundler"
+          }
+        }
+      ]
+    },
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^@peerborne/store$": "<rootDir>/../store/src/index.ts"
+    }
+  }
+}
