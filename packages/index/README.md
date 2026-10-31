@@ -1,5 +1,7 @@
 # `@peerborne/index`
 
+Version 0.1.0 is alpha software, not production-ready. Packages ship one ESM build, with native CommonJS `require()` interoperability on Node.js 22.19.0 or newer.
+
 Client-side indexing and distributed-search protocol primitives for Peerborne documents. Local indexes are rebuildable projections of decrypted, authorized snapshots; remote index data is never authoritative.
 
 ## What you get

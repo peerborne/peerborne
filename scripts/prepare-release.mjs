@@ -15,7 +15,7 @@ await mkdir(output, { recursive: true });
 
 let releaseVersion;
 const artifacts = [];
-const forbiddenPath = /(?:^|\/)(?:__tests__|__benchmarks__|__mocks__|test|tests|benchmarks?|mocks?)(?:\/|$)|(?:\.test|\.spec)\.[^/]+$|\.map$|\.tsbuildinfo$/i;
+const forbiddenPath = /(?:^|\/)(?:__tests__|__benchmarks__|__mocks__|test|tests|benchmarks?|mocks?|cjs)(?:\/|$)|(?:\.test|\.spec)\.[^/]+$|\.map$|\.tsbuildinfo$/i;
 const secretPath = /(?:^|\/)(?:\.env(?:\..*)?|id_rsa|id_ed25519|.*\.(?:pem|key|p12|pfx))(?:$|\/)/i;
 
 for (const entry of packages) {
