@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: peerborne-relay
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerContext: ./relay-server
+    dockerfilePath: ./relay-server/Dockerfile
+    dockerCommand: node dist/render.js
+    autoDeployTrigger: checksPass
+    healthCheckPath: /readyz
+    domains:
+      - relay.peerborne.io
+    renderSubdomainPolicy: disabled
+    buildFilter:
+      paths:
+        - relay-server/**
+        - render.yaml
+    envVars:
+      - key: PORT
+        value: '10000'
+      - key: RELAY_IDENTITY_SEED
+        generateValue: true
+      - key: RELAY_GATEWAY_SECRET
+        sync: false
+      - key: MAX_CONNECTIONS
+        value: '16'
+      - key: MAX_AUTO_TOPICS
+        value: '64'
+      - key: MAX_AUTO_TOPICS_PER_PEER
+        value: '4'
+      - key: GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER
+        value: '4096'
+      - key: RELAY_MAX_RESERVATIONS
+        value: '16'
+      - key: RELAY_MAX_CIRCUIT_BYTES
+        value: '1048576'
+      - key: RELAY_MAX_CIRCUIT_DURATION_MS
+        value: '300000'
+      - key: RELAY_RESERVATION_TTL_MS
+        value: '300000'
+      - key: RELAY_MAX_INBOUND_HOP_STREAMS
+        value: '2'
+      - key: RELAY_MAX_OUTBOUND_HOP_STREAMS
+        value: '2'
+      - key: RELAY_MAX_OUTBOUND_STOP_STREAMS
+        value: '2'

@@ -199,6 +199,93 @@ Keep this volume-backed configuration at one Fly Machine. Higher availability
 requires a separate volume, key, peer ID, and hostname per relay; never mount
 or copy one private identity into concurrently running processes.
 
+## Render Free: bounded public demo behind Cloudflare
+
+The root [`render.yaml`](../render.yaml) deploys one Free Docker web service for
+`relay.peerborne.io`. It runs `node dist/render.js`, which puts a small HTTP and
+WebSocket gateway in front of loopback-only libp2p listeners. The ordinary Docker
+and Fly entry points retain their existing behavior.
+
+Render Free has no persistent disk. The Blueprint generates a private
+`RELAY_IDENTITY_SEED` once; the entry point reconstructs the same Ed25519 identity
+after each restart. Preserve this environment variable and never print or commit
+it. Changing it changes the public peer ID and invalidates existing multiaddrs.
+
+The gateway's public `/readyz` returns the public peer ID after libp2p is ready.
+Browser clients use:
+
+```text
+/dns4/relay.peerborne.io/tcp/443/wss/p2p/<peerId>
+```
+
+### Origin protection and Cloudflare
+
+1. Create the Blueprint using the **Free** service plan. Set
+   `RELAY_GATEWAY_SECRET` to a random secret of at least 32 ASCII characters.
+   Keep the Render workspace without a payment method if service suspension at
+   the free bandwidth allowance is required; a paid workspace can incur
+   bandwidth overages even when its compute instance is Free.
+2. Add `relay.peerborne.io` as the Render custom domain. Create a CNAME pointing
+   `relay` to the actual assigned `onrender.com` hostname. Initially use DNS-only
+   mode so Render can verify the domain and issue its certificate.
+3. In Cloudflare, create a Request Header Transform Rule matching only
+   `http.host eq "relay.peerborne.io"`. **Set**, rather than append, the request
+   header `X-Peerborne-Origin` to the same private `RELAY_GATEWAY_SECRET`.
+   Never send this secret to the browser or put it in a response header.
+4. Add a custom Block rule scoped to the relay hostname that permits only
+   WebSocket upgrades at `/`, GET/HEAD requests at `/readyz` and `/livez`, and
+   GET/HEAD certificate challenges under `/.well-known/acme-challenge/`.
+   The certificate exception allows Render to renew TLS while proxying is on.
+   Use Block rather than an interactive challenge on the WebSocket endpoint;
+   a browser's WebSocket API cannot complete that challenge.
+5. After Render has issued its certificate, enable Cloudflare proxying and use
+   Full (strict) TLS for this hostname. The Blueprint disables access through
+   the default Render subdomain; the gateway independently rejects upgrades
+   without the secret. Only then publish the client multiaddr.
+
+Cloudflare's WAF inspects the upgrade request, not subsequent WebSocket frames.
+The gateway therefore enforces limits on the opaque encrypted byte stream in
+both directions, including traffic outside document GossipSub topics:
+
+| Limit | Demo value |
+| --- | --- |
+| Simultaneous WebSocket connections | 16 total, 4 per client IP |
+| Upgrade attempts | 30/minute total, 6/minute and 3/10 seconds per IP |
+| Tracked IP rate-limit records | 512, expiring after the minute window |
+| Session lifetime / inactivity | 10 minutes / 60 seconds |
+| Total bytes per session | 2 MiB across both directions |
+| Session throughput | 64 KiB/second with a 128 KiB burst |
+| Aggregate tunnel traffic per gateway process | 32 MiB, then close sessions and reject upgrades |
+| Circuit Relay reservations / individual circuit bytes | 16 / 1 MiB |
+| Individual circuit lifetime | 5 minutes |
+
+IP headers are trusted only after checking the origin secret. The gateway never
+forwards that credential to libp2p or logs credentials, IP addresses, or payloads.
+The byte allowance covers traffic passing through the gateway's tunnels, not
+every HTTP header, rejection response, or byte billed by Render. It is a
+**per-process cutoff**, not a durable daily or monthly quota: Render restarts and
+idle spin-down reset the counters. Render's workspace allowance and suspension
+policy remain the billing boundary.
+
+Cloudflare Free currently has one rate-limit rule with restricted expression
+fields and 10-second windows. Do not apply a broad path-only rule that also
+limits the documentation site. The relay-specific origin limits above work
+without a paid Cloudflare plan. Keep unrelated zone rules and DNS records intact.
+
+Before publishing, verify a successful WebSocket through Cloudflare, rejection
+of a direct origin upgrade, `429` responses after repeated attempts, and stable
+peer identity after a Render restart. Then run the Peerborne Note live browser
+suite against the separately deployed frontend. Render Free sleeps after 15
+minutes without inbound traffic and can take roughly a minute to wake; clients
+must allow for cold starts. Short demo sessions can be disconnected by the
+aggressive limits. These controls do not establish production readiness.
+
+Provider references: [Render Free](https://render.com/docs/free),
+[Blueprints](https://render.com/docs/blueprint-spec),
+[Cloudflare DNS setup](https://render.com/docs/configure-cloudflare-dns),
+[WebSocket WAF behavior](https://developers.cloudflare.com/network/websockets/),
+and [rate-limit plan availability](https://developers.cloudflare.com/waf/rate-limiting-rules/).
+
 ## Production Multi-Server Deployment
 
 For reliability, run two or more relay servers with TLS. The `guides/docker/`
