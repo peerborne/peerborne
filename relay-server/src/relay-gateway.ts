@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage } from 'node:http'
 import { connect, isIP, type Socket } from 'node:net'
 import { Transform } from 'node:stream'
 import { GatewayLimiter, type GatewayLimits } from './gateway-limits.js'
+import { IntervalGate } from './interval-gate.js'
 
 export interface GatewayConfig {
   port: number
@@ -40,6 +41,7 @@ export async function startRelayGateway(config: GatewayConfig) {
     throw new Error('RELAY_GATEWAY_SECRET must contain at least 32 random ASCII characters')
   }
   const limiter = new GatewayLimiter(config.limits)
+  const originWarning = new IntervalGate(60_000)
   const tunnels = new Set<() => void>()
   const sockets = new Set<Socket>()
   const server = createServer({ maxHeaderSize: 8192 }, async (request, response) => {
@@ -81,7 +83,16 @@ export async function startRelayGateway(config: GatewayConfig) {
   server.on('upgrade', (request, stream, head) => {
     const client = stream as Socket
     client.pause()
-    if (!authenticated(request, config)) return reject(client, 403)
+    if (!authenticated(request, config)) {
+      if (originWarning.open()) {
+        console.warn('Relay gateway rejected origin authentication', {
+          originHeaderCount: request.rawHeaders.filter(
+            (value, index) => index % 2 === 0 && value.toLowerCase() === 'x-peerborne-origin',
+          ).length,
+        })
+      }
+      return reject(client, 403)
+    }
     const host = singleHeader(request, 'host')
     const ip = singleHeader(request, 'cf-connecting-ip')
     const key = singleHeader(request, 'sec-websocket-key')
