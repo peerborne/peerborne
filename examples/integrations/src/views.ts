@@ -9,4 +9,8 @@ export const views = {
     load: () => import('./views/tanstack-db'),
   },
   codemirror: { label: 'CodeMirror', load: () => import('./views/codemirror') },
+  tiptap: {
+    label: 'Tiptap / ProseMirror',
+    load: () => import('./views/tiptap'),
+  },
 };

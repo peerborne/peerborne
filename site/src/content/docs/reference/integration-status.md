@@ -16,6 +16,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, and local browser mutation | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | TanStack DB | Experimental collection adapter pinned to 1.0.0-rc.1.1; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Tiptap / ProseMirror | Tiptap/ProseMirror collaboration over the shared editor bridge | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 
