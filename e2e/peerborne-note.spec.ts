@@ -256,10 +256,18 @@ test('reports a failed note write and saves it after retry', async ({
   await expect(
     page.getByText('Unsaved changes', { exact: true }),
   ).toBeVisible();
-  await page.evaluate(() => {
-    (window as unknown as { failNoteWrites?: boolean }).failNoteWrites = false;
+  const retry = page.getByRole('button', { name: 'Retry saving', exact: true });
+  await retry.evaluate((button) => {
+    button.addEventListener(
+      'click',
+      () => {
+        (window as unknown as { failNoteWrites?: boolean }).failNoteWrites =
+          false;
+      },
+      { capture: true, once: true },
+    );
   });
-  await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
+  await retry.click();
   await expect(
     page.getByText('Saved in this browser', { exact: true }),
   ).toBeVisible();
