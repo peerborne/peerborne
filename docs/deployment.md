@@ -233,7 +233,9 @@ Browser clients use:
    header `X-Peerborne-Origin` to the same private `RELAY_GATEWAY_SECRET`.
    Never send this secret to the browser or put it in a response header.
 4. Add a custom Block rule scoped to the relay hostname that permits only
-   WebSocket upgrades at `/` and GET/HEAD requests at `/readyz` and `/livez`.
+   WebSocket upgrades at `/`, GET/HEAD requests at `/readyz` and `/livez`, and
+   GET/HEAD certificate challenges under `/.well-known/acme-challenge/`.
+   The certificate exception allows Render to renew TLS while proxying is on.
    Use Block rather than an interactive challenge on the WebSocket endpoint;
    a browser's WebSocket API cannot complete that challenge.
 5. After Render has issued its certificate, enable Cloudflare proxying and use
