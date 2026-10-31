@@ -360,7 +360,8 @@
         "tree_left_parent",
         "tree_right_parent",
         "tree_sibling_children"
-      ]
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/index/src/query-order.ts",

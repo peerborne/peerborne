@@ -30,7 +30,9 @@ each unit; unrelated imports elsewhere in the file do not become proof evidence.
 
 The runner rejects missing proof files, generated-file drift, unverified
 declarations, partial verification, proof escape annotations, a missing domain
-witness, and incorrect number/string/slicing configuration. Dafny's assumption
+witness, and incorrect number/string/slicing configuration. The tree unit also
+runs complete verification under fixed solver seeds 1, 2, 7 and 19 with a
+10-second per-obligation limit; this changes solver search, not the contracts. Dafny's assumption
 audit must report zero findings, including no body-less declarations or
 unproved imported contracts.
 
@@ -73,7 +75,7 @@ than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
 Reports, source/proof digests, tool versions, per-member verification results,
-assumption audits and control results go under `verification/results/formal/`.
+assumption audits, fixed solver-seed checks and control results go under `verification/results/formal/`.
 The `Formal policy verification` CI job uploads them. These reports contain
 source metadata and synthetic proof cases, never live keys or document data.
 

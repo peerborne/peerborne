@@ -75,6 +75,9 @@ Tree exponentiation uses a frozen 32-entry exact power table. Local arithmetic
 lemmas split the 31 supported levels into finite cases while quantifying over
 all valid indices and bounds; these are proofs, not sampled tree tests. All
 helper lemmas have checked bodies and pass the same zero-assumption audit.
+Scalar arithmetic is isolated in a proof module with a checked bridge to the
+emitted arithmetic. CI also verifies the complete tree unit under four fixed
+solver seeds to catch sensitivity to solver heuristics.
 The recursion measure establishes at most 30 path steps, so the runtime no
 longer allocates defensive visited sets for supported BeeKEM traversals.
 
@@ -143,8 +146,8 @@ where they check behavior outside the contracts.
 
 ## Cost and remaining work
 
-The 77-function proof check takes about 60–80 seconds in the measured
-development-host runs. The generated report records each run's duration,
+The 77-function proof check takes roughly two minutes on the development host,
+including the four additional tree solver-seed checks. The generated report records each run's duration,
 source/proof hashes and tool versions.
 Controls run separately. First-time setup downloads the compiler dependencies
 and a roughly 55–65 MB Dafny distribution. Specification review, proof authoring
