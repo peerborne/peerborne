@@ -18,6 +18,9 @@ export default defineConfig({
       args: [
         '--disable-features=WebRtcHideLocalIpsWithMdns',
         '--enable-precise-memory-info',
+        ...(process.env.PEERBORNE_VERIFY_KERNEL_LOSS === 'isolated'
+          ? ['--allow-loopback-in-peer-connection']
+          : []),
       ],
     },
   },

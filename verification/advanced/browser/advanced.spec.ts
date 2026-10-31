@@ -5,7 +5,7 @@ import { catalog, options } from '../catalog.mjs';
 
 const settings = options();
 const definitions = (await catalog()).filter(
-  ({ runtime }) => runtime === 'browser',
+  ({ runtime, driver }) => runtime === 'browser' && !driver,
 );
 const reported = new Set<string>();
 const pathFor = (info: TestInfo, id: string) =>
