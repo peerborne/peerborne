@@ -1,5 +1,7 @@
 import { tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
+import { selectQuorumBucket } from './policy/quorum.js';
+export { defaultQuorumQ } from './policy/quorum.js';
 
 /** One vote after the caller has authenticated and deduplicated its authority. */
 export interface PeerLoadQuorumVote {
@@ -65,17 +67,13 @@ export function decideLoadQuorum(
     bucket.push(advertisement.peerId);
     agreement.set(hex, bucket);
   }
-  let winningHashHex = '';
-  let agreeingPeerIds: string[] = [];
-  let bucketsMeetingQ = 0;
-  for (const [hex, peers] of agreement) {
-    if (peers.length >= q) bucketsMeetingQ++;
-    if (peers.length > agreeingPeerIds.length) {
-      winningHashHex = hex;
-      agreeingPeerIds = peers;
-    }
-  }
-  if (agreeingPeerIds.length >= q && bucketsMeetingQ === 1) {
+  const buckets = [...agreement];
+  const winner = selectQuorumBucket(
+    buckets.map(([, peers]) => peers.length),
+    q,
+  );
+  if (winner >= 0) {
+    const [winningHashHex, agreeingPeerIds] = buckets[winner];
     return {
       ok: true,
       winningHashHex,
@@ -89,7 +87,7 @@ export function decideLoadQuorum(
     reason:
       advertisements.length === 0
         ? 'no-peers-queried'
-        : bucketsMeetingQ > 1
+        : winner === -2
           ? 'conflicting-quorum'
           : respondingCount < q
             ? 'insufficient-responses'
@@ -100,31 +98,6 @@ export function decideLoadQuorum(
       [...agreement].map(([hex, peers]) => [hex, peers.length]),
     ),
   };
-}
-
-/**
- * Compute the default quorum threshold `Q` for a given `K` using the
- * strict-majority rule `Math.floor(K / 2) + 1`. This is only the default
- * configured agreement threshold; callers may explicitly configure a valid
- * non-majority Q. The formula alone supplies neither a consensus protocol nor
- * Sybil resistance, and any fault analysis assumes the counted identities are
- * independently controlled. This is the formula `PeerborneConfig.loadQuorumQ`
- * defaults to when the user does not override it.
- *
- * Worked examples:
- *   - K=1 → Q=1
- *   - K=2 → Q=2
- *   - K=3 → Q=2
- *   - K=4 → Q=3
- *   - K=5 → Q=3
- *   - K=7 → Q=4
- *
- * Pulled out so the loader, the config docstring, and the test matrix all
- * reference one canonical formula.
- */
-export function defaultQuorumQ(k: number): number {
-  if (k <= 0) return 0;
-  return Math.floor(k / 2) + 1;
 }
 
 /**

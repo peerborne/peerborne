@@ -20,6 +20,10 @@ import {
   copyUnsharedUint8Array,
 } from '../utils.js';
 import type { DeepDataSnapshotLimits } from '../utils.js';
+import {
+  classifyBeeKEMGeneration,
+  isAppendOnlyLeafCount,
+} from '../policy/beekem-transition.js';
 
 /** ECDH curve used for tree key pairs. */
 const isArrayBufferView = ArrayBuffer.isView;
@@ -447,40 +451,45 @@ export class BeeKEM {
       throw new Error('Cannot process our own BeeKEM path update');
     }
 
-    if (this._generation !== null) {
-      if (update.generation < this._generation) {
-        throw new Error(
-          `Cannot process stale BeeKEM generation ${update.generation}; current generation is ${this._generation}`,
-        );
-      }
-      if (update.generation === this._generation) {
-        if (
-          this._lastAppliedV2UpdateDigest &&
-          bytesEqual(this._lastAppliedV2UpdateDigest, updateDigest)
-        ) {
-          return {
-            rootSecret: await this.getRootSecret(),
-            disposition: 'duplicate',
-          };
-        }
-        throw new Error(
-          `Conflicting BeeKEM update at generation ${update.generation}`,
-        );
-      }
-    } else {
+    if (this._generation === null) {
       throw new Error(
         'Cannot apply a v2 BeeKEM PathUpdate without generation-bearing parent state',
       );
     }
-
-    if (update.generation !== this._generation + 1) {
+    const disposition = classifyBeeKEMGeneration(
+      this._generation,
+      update.generation,
+      update.generation === this._generation &&
+        !!this._lastAppliedV2UpdateDigest &&
+        bytesEqual(this._lastAppliedV2UpdateDigest, updateDigest),
+    );
+    if (disposition === 'stale') {
+      throw new Error(
+        `Cannot process stale BeeKEM generation ${update.generation}; current generation is ${this._generation}`,
+      );
+    }
+    if (disposition === 'duplicate') {
+      return {
+        rootSecret: await this.getRootSecret(),
+        disposition: 'duplicate',
+      };
+    }
+    if (disposition === 'fork') {
+      throw new Error(
+        `Conflicting BeeKEM update at generation ${update.generation}`,
+      );
+    }
+    if (disposition === 'gap') {
       throw new Error(
         `Cannot skip BeeKEM generations: expected ${this._generation + 1}, got ${update.generation}`,
       );
     }
     if (
-      update.numLeaves !== this._numLeaves &&
-      update.numLeaves !== this._numLeaves + 1
+      !isAppendOnlyLeafCount(
+        this._numLeaves,
+        update.numLeaves,
+        MAX_BEEKEM_TREE_LEAVES,
+      )
     ) {
       throw new Error(
         `BeeKEM v2 update leaf count must remain ${this._numLeaves} or append exactly one leaf`,

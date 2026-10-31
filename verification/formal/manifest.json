@@ -1,0 +1,46 @@
+{
+  "sources": [
+    {
+      "path": "packages/core/src/policy/work-budget.ts",
+      "functions": ["consumeWorkBudget"],
+      "witness": "workBudget_domain",
+      "consumers": ["packages/core/src/change-tree-walk.ts"],
+      "verifiedTargets": ["consumeWorkBudget_ensures"]
+    },
+    {
+      "path": "packages/core/src/policy/beekem-transition.ts",
+      "functions": ["classifyBeeKEMGeneration", "isAppendOnlyLeafCount"],
+      "witness": "beekemTransition_domain",
+      "consumers": ["packages/core/src/beekem/beekem.ts"],
+      "verifiedTargets": [
+        "classifyBeeKEMGeneration_ensures",
+        "isAppendOnlyLeafCount_ensures"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/quorum.ts",
+      "functions": ["selectQuorumBucket", "defaultQuorumQ", "requiredQuorumQ"],
+      "witness": "quorum_domain",
+      "consumers": [
+        "packages/core/src/load-quorum.ts",
+        "packages/core/src/load-quorum-orchestrator.ts"
+      ],
+      "verifiedTargets": [
+        "selectQuorumBucket",
+        "defaultQuorumQ_ensures",
+        "requiredQuorumQ_ensures"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/authority-votes.ts",
+      "functions": ["classifyAuthorityVote", "classifyAuthorityVotes"],
+      "witness": "authorityVotes_domain",
+      "consumers": ["packages/core/src/load-quorum-orchestrator.ts"],
+      "verifiedTargets": [
+        "classifyAuthorityVote_ensures",
+        "classifyAuthorityVote_exact",
+        "classifyAuthorityVotes"
+      ]
+    }
+  ]
+}

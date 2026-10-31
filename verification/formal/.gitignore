@@ -1,0 +1,3 @@
+.tools/
+proofs/**/*.dfy.base
+proofs/**/*.dfy.merged

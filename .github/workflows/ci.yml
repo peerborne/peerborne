@@ -21,6 +21,35 @@ permissions:
   contents: read
 
 jobs:
+  formal-verification:
+    name: Formal policy verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+      - name: Install pinned proof tools
+        run: node verification/formal/setup.mjs
+      - name: Verify production policies and audit proof assumptions
+        run: node verification/formal/run.mjs
+      - name: Check counterexamples and proof escape controls
+        run: node verification/formal/controls.mjs
+      - name: Inventory first-party verification scope
+        run: node verification/formal/inventory.mjs
+      - name: Upload formal verification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: formal-verification
+          path: verification/results/formal/
+          retention-days: 30
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

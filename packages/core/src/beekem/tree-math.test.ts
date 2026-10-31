@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import fc from 'fast-check';
 import {
   isLeaf,
   isInternal,
@@ -14,27 +15,21 @@ import {
   copath,
 } from './tree-math.js';
 
-describe('isLeaf / isInternal', () => {
-  test.each([
-    [0, true],
-    [2, true],
-    [4, true],
-    [6, true],
-    [14, true],
-  ])('isLeaf(%i) = %s', (index, expected) => {
-    expect(isLeaf(index)).toBe(expected);
-    expect(isInternal(index)).toBe(!expected);
-  });
+const supportedNode = fc.integer({ min: 0, max: 2 ** 31 - 2 });
+const supportedLeafCount = fc.oneof(
+  fc.integer({ min: 1, max: 2 ** 30 }),
+  fc.constantFrom(1, 2, 3, 5, 8191, 8192, 8193, 2 ** 30 - 1, 2 ** 30),
+);
 
-  test.each([
-    [1, true],
-    [3, true],
-    [5, true],
-    [7, true],
-    [13, true],
-  ])('isInternal(%i) = %s', (index, expected) => {
-    expect(isInternal(index)).toBe(expected);
-    expect(isLeaf(index)).toBe(!expected);
+describe('isLeaf / isInternal', () => {
+  test('partitions the supported node domain by parity', () => {
+    fc.assert(
+      fc.property(supportedNode, (index) => {
+        expect(isLeaf(index)).toBe(BigInt(index) % 2n === 0n);
+        expect(isInternal(index)).toBe(!isLeaf(index));
+      }),
+      { seed: 9423, numRuns: 1000, examples: [[0], [2 ** 31 - 2]] },
+    );
   });
 
   test('returns false outside the supported node domain', () => {
@@ -46,19 +41,18 @@ describe('isLeaf / isInternal', () => {
 });
 
 describe('level', () => {
-  test.each([
-    [0, 0],
-    [2, 0],
-    [4, 0],
-    [6, 0],
-    [1, 1],
-    [5, 1],
-    [3, 2],
-    [7, 3],
-    [15, 4],
-    [2 ** 30 - 1, 30],
-  ])('level(%i) = %i', (index, expected) => {
-    expect(level(index)).toBe(expected);
+  test('equals the number of trailing one bits without int32 truncation', () => {
+    fc.assert(
+      fc.property(supportedNode, (index) => {
+        const trailingOnes = index.toString(2).match(/1*$/)![0].length;
+        expect(level(index)).toBe(trailingOnes);
+      }),
+      {
+        seed: 9424,
+        numRuns: 1000,
+        examples: [[0], [2 ** 30 - 1], [2 ** 31 - 2]],
+      },
+    );
   });
 
   test('rejects nodes outside the supported arithmetic domain', () => {
@@ -69,14 +63,20 @@ describe('level', () => {
 });
 
 describe('left / right', () => {
-  test.each([
-    [1, 0, 2],
-    [3, 1, 5],
-    [5, 4, 6],
-    [7, 3, 11],
-  ])('left(%i) = %i, right(%i) = %i', (index, expectedLeft, expectedRight) => {
-    expect(left(index)).toBe(expectedLeft);
-    expect(right(index)).toBe(expectedRight);
+  test('children straddle each internal node at the preceding level', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 2 ** 30 - 2 }), (position) => {
+        const node = 2 * position + 1;
+        const lower = left(node);
+        const upper = right(node);
+        expect(BigInt(lower) + BigInt(upper)).toBe(2n * BigInt(node));
+        expect(lower).toBeLessThan(node);
+        expect(upper).toBeGreaterThan(node);
+        expect(level(lower)).toBe(level(node) - 1);
+        expect(level(upper)).toBe(level(node) - 1);
+      }),
+      { seed: 9425, numRuns: 1000 },
+    );
   });
 
   test('throws for leaf nodes', () => {
@@ -103,13 +103,15 @@ describe('left / right', () => {
 });
 
 describe('root', () => {
-  test.each([
-    [1, 0],
-    [2, 1],
-    [4, 3],
-    [8, 7],
-  ])('root(%i) = %i', (numLeaves, expected) => {
-    expect(root(numLeaves)).toBe(expected);
+  test('is one below the greatest power of two within the node width', () => {
+    fc.assert(
+      fc.property(supportedLeafCount, (numLeaves) => {
+        const width = 2n * BigInt(numLeaves) - 1n;
+        const exponent = BigInt(width.toString(2).length - 1);
+        expect(BigInt(root(numLeaves))).toBe((1n << exponent) - 1n);
+      }),
+      { seed: 9426, numRuns: 1000 },
+    );
   });
 
   test('throws for 0 leaves', () => {
@@ -184,19 +186,49 @@ describe('directPath', () => {
     expect(directPath(8, 5)).toEqual([7]);
   });
 
-  test('all protocol-sized representative paths terminate within 13 steps', () => {
-    for (let numLeaves = 2; numLeaves <= 8192; numLeaves++) {
-      const leafPositions = new Set([
-        0,
-        Math.floor(numLeaves / 2),
-        numLeaves - 1,
-      ]);
-      for (const leafPosition of leafPositions) {
-        const path = directPath(leafToNodeIndex(leafPosition), numLeaves);
-        expect(path.length).toBeLessThanOrEqual(13);
-        expect(path.at(-1)).toBe(root(numLeaves));
-      }
-    }
+  test('paths and copaths stay bounded, acyclic and connected across the supported domain', () => {
+    const leaf = supportedLeafCount.chain((numLeaves) =>
+      fc
+        .integer({ min: 0, max: numLeaves - 1 })
+        .map((position) => ({ numLeaves, position })),
+    );
+    fc.assert(
+      fc.property(leaf, ({ numLeaves, position }) => {
+        const node = leafToNodeIndex(position);
+        const path = directPath(node, numLeaves);
+        const branch = [node, ...path];
+        expect(branch.at(-1)).toBe(root(numLeaves));
+        expect(new Set(branch).size).toBe(branch.length);
+        expect(path.length).toBeLessThanOrEqual(numLeaves <= 8192 ? 13 : 30);
+        branch.forEach((current, index) => {
+          expect(current).toBeGreaterThanOrEqual(0);
+          expect(current).toBeLessThan(2 * numLeaves - 1);
+          if (index > 0) {
+            expect(parent(branch[index - 1], numLeaves)).toBe(current);
+            expect(level(current)).toBeGreaterThan(level(branch[index - 1]));
+          }
+        });
+        const co = copath(node, numLeaves);
+        expect(co).toHaveLength(path.length);
+        co.forEach((other, index) => {
+          const current = branch[index];
+          expect(other).toBeGreaterThanOrEqual(0);
+          expect(other).toBeLessThan(2 * numLeaves - 1);
+          expect(sibling(current, numLeaves)).toBe(other);
+          expect(sibling(other, numLeaves)).toBe(current);
+          expect(parent(other, numLeaves)).toBe(path[index]);
+        });
+      }),
+      {
+        seed: 9427,
+        numRuns: 1000,
+        examples: [
+          [{ numLeaves: 1, position: 0 }],
+          [{ numLeaves: 5, position: 4 }],
+          [{ numLeaves: 2 ** 30, position: 2 ** 30 - 1 }],
+        ],
+      },
+    );
   });
 
   test('rejects invalid leaves before direct-path traversal', () => {
@@ -222,22 +254,15 @@ describe('copath', () => {
 });
 
 describe('leafToNodeIndex / nodeToLeafIndex', () => {
-  test.each([
-    [0, 0],
-    [1, 2],
-    [2, 4],
-    [3, 6],
-  ])('leafToNodeIndex(%i) = %i', (leafPos, nodeIdx) => {
-    expect(leafToNodeIndex(leafPos)).toBe(nodeIdx);
-  });
-
-  test.each([
-    [0, 0],
-    [2, 1],
-    [4, 2],
-    [6, 3],
-  ])('nodeToLeafIndex(%i) = %i', (nodeIdx, leafPos) => {
-    expect(nodeToLeafIndex(nodeIdx)).toBe(leafPos);
+  test('are exact inverses throughout the supported leaf domain', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 2 ** 30 - 1 }), (position) => {
+        const node = leafToNodeIndex(position);
+        expect(BigInt(node)).toBe(2n * BigInt(position));
+        expect(nodeToLeafIndex(node)).toBe(position);
+      }),
+      { seed: 9428, numRuns: 1000, examples: [[0], [2 ** 30 - 1]] },
+    );
   });
 
   test('nodeToLeafIndex throws for internal nodes', () => {

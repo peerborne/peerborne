@@ -53,7 +53,12 @@
     "visuals:check": "node scripts/render-peerborne-hook.mjs --check",
     "visuals:test": "node --test scripts/render-peerborne-hook.test.mjs && yarn visuals:check",
     "verify:advanced": "yarn build && node --expose-gc verification/advanced/run.mjs",
-    "verify:advanced:browser": "yarn build && playwright test --config=verification/advanced/playwright.config.ts"
+    "verify:advanced:browser": "yarn build && playwright test --config=verification/advanced/playwright.config.ts",
+    "verify:formal:setup": "node verification/formal/setup.mjs",
+    "verify:formal": "node verification/formal/run.mjs",
+    "verify:formal:regen": "node verification/formal/run.mjs --regen",
+    "verify:formal:controls": "node verification/formal/controls.mjs",
+    "verify:formal:inventory": "node verification/formal/inventory.mjs"
   },
   "packageManager": "yarn@4.5.0"
 }

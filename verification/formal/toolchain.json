@@ -1,0 +1,24 @@
+{
+  "lemmaScript": {
+    "repository": "https://github.com/midspiral/LemmaScript.git",
+    "revision": "f245e9878aa23a3c4a2d3f75ade4a44cebd545dc",
+    "version": "0.6.5"
+  },
+  "dafny": {
+    "version": "4.11.0",
+    "archives": {
+      "darwin-arm64": {
+        "name": "dafny-4.11.0-arm64-macos-13.zip",
+        "sha256": "c90c75e7d5db9c6ccbb7127840dfe43f0ac938b039a7ebed146d8ead383a572f"
+      },
+      "darwin-x64": {
+        "name": "dafny-4.11.0-x64-macos-13.zip",
+        "sha256": "5fc0de946c5b2fad33f16bd22a5b06f4fd0dfa7f6d770284237e3f1f3ca9f73d"
+      },
+      "linux-x64": {
+        "name": "dafny-4.11.0-x64-ubuntu-22.04.zip",
+        "sha256": "a46a9ff7cdd720f7955854c78e95df13f4cfe6b80691b05f8654fe19e8267179"
+      }
+    }
+  }
+}
