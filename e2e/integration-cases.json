@@ -10,5 +10,11 @@
     "jotai"
   ],
   "editors": ["codemirror", "tiptap", "monaco"],
-  "ssr": []
+  "ssr": [
+    {
+      "framework": "Next.js",
+      "port": 4191,
+      "workspace": "@peerborne/nextjs-starter"
+    }
+  ]
 }
