@@ -1,0 +1,91 @@
+{
+  "name": "@peerborne/vue",
+  "description": "Vue composables for Peerborne document stores",
+  "version": "0.1.0",
+  "homepage": "https://peerborne.io/",
+  "bugs": {
+    "url": "https://github.com/Peerborne/peerborne/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Peerborne/peerborne.git",
+    "directory": "packages/vue"
+  },
+  "scripts": {
+    "tsc": "tsc -b",
+    "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
+    "prepublishOnly": "yarn tsc"
+  },
+  "main": "dist/esm/src/index.js",
+  "module": "dist/esm/src/index.js",
+  "types": "dist/esm/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/src/index.d.ts",
+      "import": "./dist/esm/src/index.js",
+      "require": "./dist/esm/src/index.js",
+      "default": "./dist/esm/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/esm/**",
+    "!dist/**/*.test.*",
+    "!dist/**/*.spec.*",
+    "!dist/**/*.map",
+    "!dist/**/*.tsbuildinfo"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@peerborne/store": "workspace:^"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2",
+    "ts-jest": "^29.4.14",
+    "typescript": "^5.9.3",
+    "vue": "^3.5.44"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "jest": {
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "testEnvironment": "node",
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": {
+            "module": "ESNext",
+            "moduleResolution": "Bundler"
+          }
+        }
+      ]
+    },
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^@peerborne/store$": "<rootDir>/../store/src/index.ts"
+    },
+    "testEnvironmentOptions": {
+      "customExportConditions": [
+        "node",
+        "node-addons"
+      ]
+    }
+  }
+}

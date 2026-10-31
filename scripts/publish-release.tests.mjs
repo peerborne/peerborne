@@ -20,6 +20,7 @@ test('release ordered packages list is exact', () => {
     '@peerborne/react',
     '@peerborne/redux',
     '@peerborne/index',
+    '@peerborne/vue',
   ]);
 });
 

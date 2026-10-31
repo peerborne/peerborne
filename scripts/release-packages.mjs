@@ -6,6 +6,7 @@ export const packages = [
   { name: '@peerborne/react', directory: 'packages/react', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts', 'dist/esm/src/store.js', 'dist/esm/src/store.d.ts'], bins: [] },
   { name: '@peerborne/redux', directory: 'packages/redux', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
   { name: '@peerborne/index', directory: 'packages/index', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts', 'dist/esm/src/react.js', 'dist/esm/src/react.d.ts'], bins: [] },
+  { name: '@peerborne/vue', directory: 'packages/vue', entries: ['dist/esm/src/index.js', 'dist/esm/src/index.d.ts'], bins: [] },
 ];
 
 export const strictSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;

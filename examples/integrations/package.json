@@ -4,9 +4,11 @@
     "@peerborne/core": "workspace:^",
     "@peerborne/react": "workspace:^",
     "@peerborne/store": "workspace:^",
+    "@peerborne/vue": "workspace:^",
     "@peerborne/yjs": "workspace:^",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "vue": "^3.5.44",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
