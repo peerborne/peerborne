@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pixelFigure } from './figure-theme.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), '../..');
@@ -1070,13 +1071,36 @@ export function diagramDefinitions() {
     ['multi-relay-topology.svg', multiRelayTopology],
     ['history-compaction.svg', historyCompaction],
     ['sync-envelope-lifecycle.svg', syncEnvelopeLifecycle],
+    ...[
+      'browser-relay-path.svg',
+      'change-pipeline.svg',
+      'durability-recovery.svg',
+      'initial-load.svg',
+      'key-roles.svg',
+      'offline-boundary.svg',
+      'search-architecture.svg',
+      'trust-boundary.svg',
+      'runtime.svg',
+    ].map((name) => [
+      name,
+      () => readFileSync(new URL(`./diagram-sources/${name}`, import.meta.url), 'utf8'),
+    ]),
   ];
 }
 
 export function generateDiagrams() {
   return new Map(
-    diagramDefinitions().map(([filename, render]) => [filename, render()]),
+    diagramDefinitions().map(([filename, render]) => [
+      filename,
+      pixelFigure(render(), { minimumFontSize: 13 }),
+    ]),
   );
+}
+
+export function diagramOutputPath(filename) {
+  return filename === 'runtime.svg'
+    ? resolve(root, 'site/public/diagrams/runtime.svg')
+    : resolve(outputDirectory, filename);
 }
 
 function run() {
@@ -1085,7 +1109,7 @@ function run() {
   if (!checking) mkdirSync(outputDirectory, { recursive: true });
 
   for (const [filename, svg] of diagrams) {
-    const path = resolve(outputDirectory, filename);
+    const path = diagramOutputPath(filename);
     if (checking) {
       let current;
       try {

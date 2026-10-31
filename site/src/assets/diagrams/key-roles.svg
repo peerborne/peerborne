@@ -2,113 +2,105 @@
   <title id="title">Peerborne key roles</title>
   <desc id="description">Four cards distinguish the application-supplied ECDSA signing identity, the application-supplied ECDH KEM identity used for recipient-sealed Welcome onboarding, the per-document content key using AES-GCM by default, and the libp2p peer ID, whose transport key uses an upstream-generated default unless configured. Ordinary document sync signing is configurable, BeeKEM membership-control messages remain writer-signed, content encryption is always on, and one signing identity can be used across multiple peer nodes.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f172a" />
-      <stop offset="1" stop-color="#111827" />
-    </linearGradient>
-    <linearGradient id="identityCard" x1="0" y1="0" x2="530" y2="172" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#172554" />
-      <stop offset="1" stop-color="#1e1b4b" />
-    </linearGradient>
-    <linearGradient id="cryptoCard" x1="0" y1="0" x2="530" y2="172" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f2f35" />
-      <stop offset="1" stop-color="#102a43" />
-    </linearGradient>
+
+
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity="0.045" />
+      <path d="M40 0H0V40" fill="none" stroke="#a7a0b6" stroke-opacity="0.045" />
     </pattern>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf" />
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8" />
     </marker>
     <style>
-      .system { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .system { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
       .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 2.2px; }
-      .card-title { font-size: 27px; font-weight: 750; fill: #f8fafc; }
-      .algorithm { font-size: 18px; font-weight: 650; fill: #c7d2fe; }
-      .purpose { font-size: 19px; font-weight: 500; fill: #cbd5e1; }
-      .owner { font-size: 16px; font-weight: 650; fill: #94a3b8; }
+      .card-title { font-size: 27px; font-weight: 750; fill: #f5f0e8; }
+      .algorithm { font-size: 18px; font-weight: 650; fill: #d6c8ff; }
+      .purpose { font-size: 19px; font-weight: 500; fill: #cbc5d6; }
+      .owner { font-size: 16px; font-weight: 650; fill: #a7a0b6; }
       .chip { font-size: 15px; font-weight: 750; letter-spacing: 1.2px; }
     </style>
   </defs>
 
-  <rect width="1200" height="720" rx="28" fill="url(#background)" />
-  <rect width="1200" height="720" rx="28" fill="url(#grid)" />
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf" />
+  <rect width="1200" height="720" fill="#171521" />
+  <rect width="1200" height="720" fill="url(#grid)" />
+
 
   <g class="system">
-    <text x="52" y="78" font-size="34" font-weight="760" fill="#f8fafc">Four keys, four distinct jobs</text>
-    <text x="52" y="109" font-size="18" font-weight="500" fill="#94a3b8">Document cryptography stays separate from transport identity.</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M52 57h3v3h-3zM55 57h3v3h-3zM58 57h3v3h-3zM61 57h3v3h-3zM64 57h3v3h-3zM52 60h3v3h-3zM52 63h3v3h-3zM52 66h3v3h-3zM55 66h3v3h-3zM58 66h3v3h-3zM61 66h3v3h-3zM52 69h3v3h-3zM52 72h3v3h-3zM52 75h3v3h-3zM73 57h3v3h-3zM76 57h3v3h-3zM79 57h3v3h-3zM70 60h3v3h-3zM82 60h3v3h-3zM70 63h3v3h-3zM82 63h3v3h-3zM70 66h3v3h-3zM82 66h3v3h-3zM70 69h3v3h-3zM82 69h3v3h-3zM70 72h3v3h-3zM82 72h3v3h-3zM73 75h3v3h-3zM76 75h3v3h-3zM79 75h3v3h-3zM88 57h3v3h-3zM100 57h3v3h-3zM88 60h3v3h-3zM100 60h3v3h-3zM88 63h3v3h-3zM100 63h3v3h-3zM88 66h3v3h-3zM100 66h3v3h-3zM88 69h3v3h-3zM100 69h3v3h-3zM88 72h3v3h-3zM100 72h3v3h-3zM91 75h3v3h-3zM94 75h3v3h-3zM97 75h3v3h-3zM106 57h3v3h-3zM109 57h3v3h-3zM112 57h3v3h-3zM115 57h3v3h-3zM106 60h3v3h-3zM118 60h3v3h-3zM106 63h3v3h-3zM118 63h3v3h-3zM106 66h3v3h-3zM109 66h3v3h-3zM112 66h3v3h-3zM115 66h3v3h-3zM106 69h3v3h-3zM112 69h3v3h-3zM106 72h3v3h-3zM115 72h3v3h-3zM106 75h3v3h-3zM118 75h3v3h-3zM142 57h3v3h-3zM154 57h3v3h-3zM142 60h3v3h-3zM151 60h3v3h-3zM142 63h3v3h-3zM148 63h3v3h-3zM142 66h3v3h-3zM145 66h3v3h-3zM142 69h3v3h-3zM148 69h3v3h-3zM142 72h3v3h-3zM151 72h3v3h-3zM142 75h3v3h-3zM154 75h3v3h-3zM160 57h3v3h-3zM163 57h3v3h-3zM166 57h3v3h-3zM169 57h3v3h-3zM172 57h3v3h-3zM160 60h3v3h-3zM160 63h3v3h-3zM160 66h3v3h-3zM163 66h3v3h-3zM166 66h3v3h-3zM169 66h3v3h-3zM160 69h3v3h-3zM160 72h3v3h-3zM160 75h3v3h-3zM163 75h3v3h-3zM166 75h3v3h-3zM169 75h3v3h-3zM172 75h3v3h-3zM178 57h3v3h-3zM190 57h3v3h-3zM178 60h3v3h-3zM190 60h3v3h-3zM181 63h3v3h-3zM187 63h3v3h-3zM184 66h3v3h-3zM184 69h3v3h-3zM184 72h3v3h-3zM184 75h3v3h-3zM199 57h3v3h-3zM202 57h3v3h-3zM205 57h3v3h-3zM208 57h3v3h-3zM196 60h3v3h-3zM196 63h3v3h-3zM199 66h3v3h-3zM202 66h3v3h-3zM205 66h3v3h-3zM208 69h3v3h-3zM208 72h3v3h-3zM196 75h3v3h-3zM199 75h3v3h-3zM202 75h3v3h-3zM205 75h3v3h-3zM220 69h3v3h-3zM223 69h3v3h-3zM220 72h3v3h-3zM217 75h3v3h-3zM250 57h3v3h-3zM253 57h3v3h-3zM256 57h3v3h-3zM259 57h3v3h-3zM262 57h3v3h-3zM250 60h3v3h-3zM250 63h3v3h-3zM250 66h3v3h-3zM253 66h3v3h-3zM256 66h3v3h-3zM259 66h3v3h-3zM250 69h3v3h-3zM250 72h3v3h-3zM250 75h3v3h-3zM271 57h3v3h-3zM274 57h3v3h-3zM277 57h3v3h-3zM268 60h3v3h-3zM280 60h3v3h-3zM268 63h3v3h-3zM280 63h3v3h-3zM268 66h3v3h-3zM280 66h3v3h-3zM268 69h3v3h-3zM280 69h3v3h-3zM268 72h3v3h-3zM280 72h3v3h-3zM271 75h3v3h-3zM274 75h3v3h-3zM277 75h3v3h-3zM286 57h3v3h-3zM298 57h3v3h-3zM286 60h3v3h-3zM298 60h3v3h-3zM286 63h3v3h-3zM298 63h3v3h-3zM286 66h3v3h-3zM298 66h3v3h-3zM286 69h3v3h-3zM298 69h3v3h-3zM286 72h3v3h-3zM298 72h3v3h-3zM289 75h3v3h-3zM292 75h3v3h-3zM295 75h3v3h-3zM304 57h3v3h-3zM307 57h3v3h-3zM310 57h3v3h-3zM313 57h3v3h-3zM304 60h3v3h-3zM316 60h3v3h-3zM304 63h3v3h-3zM316 63h3v3h-3zM304 66h3v3h-3zM307 66h3v3h-3zM310 66h3v3h-3zM313 66h3v3h-3zM304 69h3v3h-3zM310 69h3v3h-3zM304 72h3v3h-3zM313 72h3v3h-3zM304 75h3v3h-3zM316 75h3v3h-3zM340 57h3v3h-3zM343 57h3v3h-3zM346 57h3v3h-3zM349 57h3v3h-3zM340 60h3v3h-3zM352 60h3v3h-3zM340 63h3v3h-3zM352 63h3v3h-3zM340 66h3v3h-3zM352 66h3v3h-3zM340 69h3v3h-3zM352 69h3v3h-3zM340 72h3v3h-3zM352 72h3v3h-3zM340 75h3v3h-3zM343 75h3v3h-3zM346 75h3v3h-3zM349 75h3v3h-3zM358 57h3v3h-3zM361 57h3v3h-3zM364 57h3v3h-3zM367 57h3v3h-3zM370 57h3v3h-3zM364 60h3v3h-3zM364 63h3v3h-3zM364 66h3v3h-3zM364 69h3v3h-3zM364 72h3v3h-3zM358 75h3v3h-3zM361 75h3v3h-3zM364 75h3v3h-3zM367 75h3v3h-3zM370 75h3v3h-3zM379 57h3v3h-3zM382 57h3v3h-3zM385 57h3v3h-3zM388 57h3v3h-3zM376 60h3v3h-3zM376 63h3v3h-3zM379 66h3v3h-3zM382 66h3v3h-3zM385 66h3v3h-3zM388 69h3v3h-3zM388 72h3v3h-3zM376 75h3v3h-3zM379 75h3v3h-3zM382 75h3v3h-3zM385 75h3v3h-3zM394 57h3v3h-3zM397 57h3v3h-3zM400 57h3v3h-3zM403 57h3v3h-3zM406 57h3v3h-3zM400 60h3v3h-3zM400 63h3v3h-3zM400 66h3v3h-3zM400 69h3v3h-3zM400 72h3v3h-3zM400 75h3v3h-3zM412 57h3v3h-3zM415 57h3v3h-3zM418 57h3v3h-3zM421 57h3v3h-3zM424 57h3v3h-3zM418 60h3v3h-3zM418 63h3v3h-3zM418 66h3v3h-3zM418 69h3v3h-3zM418 72h3v3h-3zM412 75h3v3h-3zM415 75h3v3h-3zM418 75h3v3h-3zM421 75h3v3h-3zM424 75h3v3h-3zM430 57h3v3h-3zM442 57h3v3h-3zM430 60h3v3h-3zM433 60h3v3h-3zM442 60h3v3h-3zM430 63h3v3h-3zM436 63h3v3h-3zM442 63h3v3h-3zM430 66h3v3h-3zM439 66h3v3h-3zM442 66h3v3h-3zM430 69h3v3h-3zM442 69h3v3h-3zM430 72h3v3h-3zM442 72h3v3h-3zM430 75h3v3h-3zM442 75h3v3h-3zM451 57h3v3h-3zM454 57h3v3h-3zM457 57h3v3h-3zM460 57h3v3h-3zM448 60h3v3h-3zM448 63h3v3h-3zM448 66h3v3h-3zM448 69h3v3h-3zM448 72h3v3h-3zM451 75h3v3h-3zM454 75h3v3h-3zM457 75h3v3h-3zM460 75h3v3h-3zM466 57h3v3h-3zM469 57h3v3h-3zM472 57h3v3h-3zM475 57h3v3h-3zM478 57h3v3h-3zM472 60h3v3h-3zM472 63h3v3h-3zM472 66h3v3h-3zM472 69h3v3h-3zM472 72h3v3h-3zM472 75h3v3h-3zM508 57h3v3h-3zM511 57h3v3h-3zM514 57h3v3h-3zM511 60h3v3h-3zM511 63h3v3h-3zM511 66h3v3h-3zM502 69h3v3h-3zM511 69h3v3h-3zM502 72h3v3h-3zM511 72h3v3h-3zM505 75h3v3h-3zM508 75h3v3h-3zM523 57h3v3h-3zM526 57h3v3h-3zM529 57h3v3h-3zM520 60h3v3h-3zM532 60h3v3h-3zM520 63h3v3h-3zM532 63h3v3h-3zM520 66h3v3h-3zM532 66h3v3h-3zM520 69h3v3h-3zM532 69h3v3h-3zM520 72h3v3h-3zM532 72h3v3h-3zM523 75h3v3h-3zM526 75h3v3h-3zM529 75h3v3h-3zM538 57h3v3h-3zM541 57h3v3h-3zM544 57h3v3h-3zM547 57h3v3h-3zM538 60h3v3h-3zM550 60h3v3h-3zM538 63h3v3h-3zM550 63h3v3h-3zM538 66h3v3h-3zM541 66h3v3h-3zM544 66h3v3h-3zM547 66h3v3h-3zM538 69h3v3h-3zM550 69h3v3h-3zM538 72h3v3h-3zM550 72h3v3h-3zM538 75h3v3h-3zM541 75h3v3h-3zM544 75h3v3h-3zM547 75h3v3h-3zM559 57h3v3h-3zM562 57h3v3h-3zM565 57h3v3h-3zM568 57h3v3h-3zM556 60h3v3h-3zM556 63h3v3h-3zM559 66h3v3h-3zM562 66h3v3h-3zM565 66h3v3h-3zM568 69h3v3h-3zM568 72h3v3h-3zM556 75h3v3h-3zM559 75h3v3h-3zM562 75h3v3h-3zM565 75h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="52" y="109" font-size="18" font-weight="500" fill="#a7a0b6">Document cryptography stays separate from transport identity.</text>
 
     <g transform="translate(52 132)">
-      <rect width="282" height="42" rx="21" fill="#0f3b3d" stroke="#2dd4bf" stroke-opacity="0.72" />
-      <circle cx="22" cy="21" r="6" fill="#2dd4bf" />
-      <text class="chip" x="40" y="27" fill="#99f6e4">ENCRYPTION · ALWAYS ON</text>
+      <rect width="282" height="42" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.72" />
+      <rect x="16" y="15" width="12" height="12" fill="#a3efb8"/>
+      <text class="chip" x="40" y="27" fill="#c7f5d3">ENCRYPTION · ALWAYS ON</text>
     </g>
     <g transform="translate(354 132)">
-      <rect width="420" height="42" rx="21" fill="#25245c" stroke="#818cf8" stroke-opacity="0.72" />
-      <circle cx="22" cy="21" r="6" fill="#818cf8" />
-      <text class="chip" x="40" y="27" fill="#e0e7ff">DOCUMENT SIGNING · CONFIGURABLE</text>
+      <rect width="420" height="42" fill="#30234c" stroke="#b7a1ff" stroke-opacity="0.72" />
+      <rect x="16" y="15" width="12" height="12" fill="#b7a1ff"/>
+      <text class="chip" x="40" y="27" fill="#d6c8ff">DOCUMENT SIGNING · CONFIGURABLE</text>
     </g>
     <g transform="translate(794 132)">
-      <rect width="354" height="42" rx="21" fill="#3b2613" stroke="#fbbf24" stroke-opacity="0.72" />
-      <circle cx="22" cy="21" r="6" fill="#fbbf24" />
-      <text x="40" y="27" fill="#fde68a" font-size="13" font-weight="750" letter-spacing="0.8px">BEEKEM CONTROL · WRITER-SIGNED</text>
+      <rect width="354" height="42" fill="#382819" stroke="#ffb887" stroke-opacity="0.72" />
+      <rect x="16" y="15" width="12" height="12" fill="#ffb887"/>
+      <text x="40" y="27" fill="#ffd5b5" font-size="13" font-weight="750" letter-spacing="0.8px">BEEKEM CONTROL · WRITER-SIGNED</text>
     </g>
 
     <g transform="translate(52 198)">
-      <rect width="530" height="166" rx="22" fill="url(#identityCard)" stroke="#6366f1" stroke-width="2" />
-      <text class="eyebrow" x="26" y="34" fill="#a5b4fc">SIGNER AUTHENTICATION</text>
+      <rect width="530" height="166" fill="#30234c" stroke="#b7a1ff" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#b7a1ff">SIGNER AUTHENTICATION</text>
       <text class="card-title" x="26" y="72">Signing identity</text>
       <text class="algorithm" x="26" y="101">ECDSA P-384</text>
-      <text class="purpose" x="26" y="132">Authenticates an authorized document-message signer</text>
+      <text class="purpose" x="0" y="0" transform="translate(26 132) scale(0.83935 1)">Authenticates an authorized document-message signer</text>
       <text class="owner" x="504" y="34" text-anchor="end">APPLICATION-SUPPLIED</text>
     </g>
 
     <g transform="translate(618 198)">
-      <rect width="530" height="166" rx="22" fill="#172033" stroke="#64748b" stroke-width="2" />
-      <text class="eyebrow" x="26" y="34" fill="#94a3b8">TRANSPORT IDENTITY</text>
+      <rect width="530" height="166" fill="#242136" stroke="#756c89" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#a7a0b6">TRANSPORT IDENTITY</text>
       <text class="card-title" x="26" y="72">libp2p peer ID</text>
-      <text class="algorithm" x="26" y="101" fill="#99f6e4">Upstream default</text>
+      <text class="algorithm" x="26" y="101" fill="#c7f5d3">Upstream default</text>
       <text class="purpose" x="26" y="132">Identifies a node on the libp2p network</text>
       <text class="owner" x="504" y="34" text-anchor="end">DEFAULT-GENERATED</text>
     </g>
 
     <g transform="translate(600 281)">
-      <circle r="25" fill="#0f172a" stroke="#818cf8" stroke-width="2" />
-      <text x="0" y="9" text-anchor="middle" font-size="31" font-weight="800" fill="#e0e7ff">≠</text>
+      <rect x="-25" y="-25" width="50" height="50" fill="#171521" stroke="#b7a1ff" stroke-width="2"/>
+      <text x="0" y="9" text-anchor="middle" font-size="31" font-weight="800" fill="#d6c8ff">≠</text>
     </g>
-    <text x="600" y="382" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.4" fill="#a5b4fc">SEPARATE IDENTITIES</text>
+    <text x="600" y="382" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.4" fill="#b7a1ff">SEPARATE IDENTITIES</text>
 
     <g transform="translate(52 402)">
-      <rect width="530" height="166" rx="22" fill="url(#cryptoCard)" stroke="#2dd4bf" stroke-width="2" />
-      <text class="eyebrow" x="26" y="34" fill="#5eead4">KEY SHARING</text>
+      <rect width="530" height="166" fill="#1b382a" stroke="#a3efb8" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#a3efb8">KEY SHARING</text>
       <text class="card-title" x="26" y="72">KEM identity</text>
-      <text class="algorithm" x="26" y="101" fill="#99f6e4">ECDH P-256</text>
-      <text class="purpose" x="26" y="132">Opens recipient-sealed Welcome onboarding payloads</text>
+      <text class="algorithm" x="26" y="101" fill="#c7f5d3">ECDH P-256</text>
+      <text class="purpose" x="0" y="0" transform="translate(26 132) scale(0.85614 1)">Opens recipient-sealed Welcome onboarding payloads</text>
       <text class="owner" x="504" y="34" text-anchor="end">APPLICATION-SUPPLIED</text>
     </g>
 
     <g transform="translate(618 402)">
-      <rect width="530" height="166" rx="22" fill="url(#cryptoCard)" stroke="#2dd4bf" stroke-width="2" />
-      <text class="eyebrow" x="26" y="34" fill="#5eead4">CONTENT ENCRYPTION</text>
+      <rect width="530" height="166" fill="#1b382a" stroke="#a3efb8" stroke-width="2" />
+      <text class="eyebrow" x="26" y="34" fill="#a3efb8">CONTENT ENCRYPTION</text>
       <text class="card-title" x="26" y="72">Document key</text>
-      <text class="algorithm" x="26" y="101" fill="#99f6e4">AES-GCM · 256-bit default</text>
-      <text class="purpose" x="26" y="132">Encrypts and decrypts one document’s content</text>
+      <text class="algorithm" x="26" y="101" fill="#c7f5d3">AES-GCM · 256-bit default</text>
+      <text class="purpose" x="0" y="0" transform="translate(26 132) scale(0.97289 1)">Encrypts and decrypts one document’s content</text>
       <text class="owner" x="504" y="34" text-anchor="end">PER DOCUMENT</text>
     </g>
-    <line x1="582" y1="485" x2="614" y2="485" stroke="#2dd4bf" stroke-width="3" marker-end="url(#arrow)" />
+    <line x1="582" y1="485" x2="614" y2="485" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrow)" />
 
     <g transform="translate(52 596)">
-      <rect width="1096" height="86" rx="20" fill="#111c30" stroke="#334155" stroke-width="2" />
-      <rect x="24" y="21" width="240" height="44" rx="22" fill="#312e81" stroke="#818cf8" />
-      <text x="144" y="49" text-anchor="middle" font-size="17" font-weight="700" fill="#e0e7ff">ECDSA signing identity</text>
-      <path d="M264 43H326M326 43V27H382M326 43V59H382" fill="none" stroke="#818cf8" stroke-width="2.5" />
-      <rect x="382" y="10" width="116" height="34" rx="17" fill="#172033" stroke="#64748b" />
-      <rect x="382" y="48" width="116" height="34" rx="17" fill="#172033" stroke="#64748b" />
-      <text x="440" y="33" text-anchor="middle" font-size="16" font-weight="700" fill="#cbd5e1">Peer node A</text>
-      <text x="440" y="71" text-anchor="middle" font-size="16" font-weight="700" fill="#cbd5e1">Peer node B</text>
-      <text x="540" y="38" font-size="20" font-weight="700" fill="#f8fafc">One signing identity may span nodes</text>
-      <text x="540" y="62" font-size="16" font-weight="500" fill="#94a3b8">Each node still has its own libp2p transport identity.</text>
+      <rect width="1096" height="86" fill="#242136" stroke="#40394f" stroke-width="2" />
+      <rect x="24" y="21" width="240" height="44" fill="#30234c" stroke="#b7a1ff" />
+      <text x="144" y="49" text-anchor="middle" font-size="17" font-weight="700" fill="#d6c8ff">ECDSA signing identity</text>
+      <path d="M264 43H326M326 43V27H382M326 43V59H382" fill="none" stroke="#b7a1ff" stroke-width="2.5" />
+      <rect x="382" y="10" width="116" height="34" fill="#242136" stroke="#756c89" />
+      <rect x="382" y="48" width="116" height="34" fill="#242136" stroke="#756c89" />
+      <text x="440" y="33" text-anchor="middle" font-size="16" font-weight="700" fill="#cbc5d6">Peer node A</text>
+      <text x="440" y="71" text-anchor="middle" font-size="16" font-weight="700" fill="#cbc5d6">Peer node B</text>
+      <text x="540" y="38" font-size="20" font-weight="700" fill="#f5f0e8">One signing identity may span nodes</text>
+      <text x="540" y="62" font-size="16" font-weight="500" fill="#a7a0b6">Each node still has its own libp2p transport identity.</text>
     </g>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

@@ -2,109 +2,105 @@
   <title id="title">Peerborne remote initial document load</title>
   <desc id="desc">V4 loads capture locally trusted writers, control/group commitments, and a fresh challenge. Authenticated authorities agree on a complete response digest. The selected signed response must match that challenge, tuple, and digest before application. Disabling quorum permits one authenticated V4 source. Creating a document always requires an explicit application decision.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a7a0b6"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#020617" flood-opacity="0.35"/>
-    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
       .eyebrow { font-size: 15px; font-weight: 750; letter-spacing: 1.4px; }
-      .heading { fill: #f8fafc; font-size: 31px; font-weight: 750; }
-      .subheading { fill: #cbd5e1; font-size: 17px; }
-      .step { fill: #f8fafc; font-size: 18px; font-weight: 700; }
-      .detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .heading { fill: #f5f0e8; font-size: 31px; font-weight: 750; }
+      .subheading { fill: #cbc5d6; font-size: 17px; }
+      .step { fill: #f5f0e8; font-size: 18px; font-weight: 700; }
+      .detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
       .result { font-size: 17px; font-weight: 700; }
     </style>
   </defs>
 
-  <rect width="1200" height="840" rx="28" fill="url(#background)"/>
-  <text x="54" y="58" class="eyebrow" fill="#818cf8">REMOTE EXISTING DOCUMENT</text>
-  <text x="54" y="98" class="heading">Quorum-bound load checks before mutation</text>
+  <rect width="1200" height="840" fill="#171521"/>
+  <text x="54" y="58" class="eyebrow" fill="#b7a1ff">REMOTE EXISTING DOCUMENT</text>
+  <g class="pixel-heading" aria-hidden="true"><path d="M57 77h3v3h-3zM60 77h3v3h-3zM63 77h3v3h-3zM54 80h3v3h-3zM66 80h3v3h-3zM54 83h3v3h-3zM66 83h3v3h-3zM54 86h3v3h-3zM66 86h3v3h-3zM54 89h3v3h-3zM60 89h3v3h-3zM66 89h3v3h-3zM54 92h3v3h-3zM63 92h3v3h-3zM57 95h3v3h-3zM60 95h3v3h-3zM66 95h3v3h-3zM72 77h3v3h-3zM84 77h3v3h-3zM72 80h3v3h-3zM84 80h3v3h-3zM72 83h3v3h-3zM84 83h3v3h-3zM72 86h3v3h-3zM84 86h3v3h-3zM72 89h3v3h-3zM84 89h3v3h-3zM72 92h3v3h-3zM84 92h3v3h-3zM75 95h3v3h-3zM78 95h3v3h-3zM81 95h3v3h-3zM93 77h3v3h-3zM96 77h3v3h-3zM99 77h3v3h-3zM90 80h3v3h-3zM102 80h3v3h-3zM90 83h3v3h-3zM102 83h3v3h-3zM90 86h3v3h-3zM102 86h3v3h-3zM90 89h3v3h-3zM102 89h3v3h-3zM90 92h3v3h-3zM102 92h3v3h-3zM93 95h3v3h-3zM96 95h3v3h-3zM99 95h3v3h-3zM108 77h3v3h-3zM111 77h3v3h-3zM114 77h3v3h-3zM117 77h3v3h-3zM108 80h3v3h-3zM120 80h3v3h-3zM108 83h3v3h-3zM120 83h3v3h-3zM108 86h3v3h-3zM111 86h3v3h-3zM114 86h3v3h-3zM117 86h3v3h-3zM108 89h3v3h-3zM114 89h3v3h-3zM108 92h3v3h-3zM117 92h3v3h-3zM108 95h3v3h-3zM120 95h3v3h-3zM126 77h3v3h-3zM138 77h3v3h-3zM126 80h3v3h-3zM138 80h3v3h-3zM126 83h3v3h-3zM138 83h3v3h-3zM126 86h3v3h-3zM138 86h3v3h-3zM126 89h3v3h-3zM138 89h3v3h-3zM126 92h3v3h-3zM138 92h3v3h-3zM129 95h3v3h-3zM132 95h3v3h-3zM135 95h3v3h-3zM144 77h3v3h-3zM156 77h3v3h-3zM144 80h3v3h-3zM147 80h3v3h-3zM153 80h3v3h-3zM156 80h3v3h-3zM144 83h3v3h-3zM150 83h3v3h-3zM156 83h3v3h-3zM144 86h3v3h-3zM150 86h3v3h-3zM156 86h3v3h-3zM144 89h3v3h-3zM156 89h3v3h-3zM144 92h3v3h-3zM156 92h3v3h-3zM144 95h3v3h-3zM156 95h3v3h-3zM162 86h3v3h-3zM165 86h3v3h-3zM168 86h3v3h-3zM171 86h3v3h-3zM174 86h3v3h-3zM180 77h3v3h-3zM183 77h3v3h-3zM186 77h3v3h-3zM189 77h3v3h-3zM180 80h3v3h-3zM192 80h3v3h-3zM180 83h3v3h-3zM192 83h3v3h-3zM180 86h3v3h-3zM183 86h3v3h-3zM186 86h3v3h-3zM189 86h3v3h-3zM180 89h3v3h-3zM192 89h3v3h-3zM180 92h3v3h-3zM192 92h3v3h-3zM180 95h3v3h-3zM183 95h3v3h-3zM186 95h3v3h-3zM189 95h3v3h-3zM201 77h3v3h-3zM204 77h3v3h-3zM207 77h3v3h-3zM198 80h3v3h-3zM210 80h3v3h-3zM198 83h3v3h-3zM210 83h3v3h-3zM198 86h3v3h-3zM210 86h3v3h-3zM198 89h3v3h-3zM210 89h3v3h-3zM198 92h3v3h-3zM210 92h3v3h-3zM201 95h3v3h-3zM204 95h3v3h-3zM207 95h3v3h-3zM216 77h3v3h-3zM228 77h3v3h-3zM216 80h3v3h-3zM228 80h3v3h-3zM216 83h3v3h-3zM228 83h3v3h-3zM216 86h3v3h-3zM228 86h3v3h-3zM216 89h3v3h-3zM228 89h3v3h-3zM216 92h3v3h-3zM228 92h3v3h-3zM219 95h3v3h-3zM222 95h3v3h-3zM225 95h3v3h-3zM234 77h3v3h-3zM246 77h3v3h-3zM234 80h3v3h-3zM237 80h3v3h-3zM246 80h3v3h-3zM234 83h3v3h-3zM240 83h3v3h-3zM246 83h3v3h-3zM234 86h3v3h-3zM243 86h3v3h-3zM246 86h3v3h-3zM234 89h3v3h-3zM246 89h3v3h-3zM234 92h3v3h-3zM246 92h3v3h-3zM234 95h3v3h-3zM246 95h3v3h-3zM252 77h3v3h-3zM255 77h3v3h-3zM258 77h3v3h-3zM261 77h3v3h-3zM252 80h3v3h-3zM264 80h3v3h-3zM252 83h3v3h-3zM264 83h3v3h-3zM252 86h3v3h-3zM264 86h3v3h-3zM252 89h3v3h-3zM264 89h3v3h-3zM252 92h3v3h-3zM264 92h3v3h-3zM252 95h3v3h-3zM255 95h3v3h-3zM258 95h3v3h-3zM261 95h3v3h-3zM288 77h3v3h-3zM288 80h3v3h-3zM288 83h3v3h-3zM288 86h3v3h-3zM288 89h3v3h-3zM288 92h3v3h-3zM288 95h3v3h-3zM291 95h3v3h-3zM294 95h3v3h-3zM297 95h3v3h-3zM300 95h3v3h-3zM309 77h3v3h-3zM312 77h3v3h-3zM315 77h3v3h-3zM306 80h3v3h-3zM318 80h3v3h-3zM306 83h3v3h-3zM318 83h3v3h-3zM306 86h3v3h-3zM318 86h3v3h-3zM306 89h3v3h-3zM318 89h3v3h-3zM306 92h3v3h-3zM318 92h3v3h-3zM309 95h3v3h-3zM312 95h3v3h-3zM315 95h3v3h-3zM327 77h3v3h-3zM330 77h3v3h-3zM333 77h3v3h-3zM324 80h3v3h-3zM336 80h3v3h-3zM324 83h3v3h-3zM336 83h3v3h-3zM324 86h3v3h-3zM327 86h3v3h-3zM330 86h3v3h-3zM333 86h3v3h-3zM336 86h3v3h-3zM324 89h3v3h-3zM336 89h3v3h-3zM324 92h3v3h-3zM336 92h3v3h-3zM324 95h3v3h-3zM336 95h3v3h-3zM342 77h3v3h-3zM345 77h3v3h-3zM348 77h3v3h-3zM351 77h3v3h-3zM342 80h3v3h-3zM354 80h3v3h-3zM342 83h3v3h-3zM354 83h3v3h-3zM342 86h3v3h-3zM354 86h3v3h-3zM342 89h3v3h-3zM354 89h3v3h-3zM342 92h3v3h-3zM354 92h3v3h-3zM342 95h3v3h-3zM345 95h3v3h-3zM348 95h3v3h-3zM351 95h3v3h-3zM381 77h3v3h-3zM384 77h3v3h-3zM387 77h3v3h-3zM390 77h3v3h-3zM378 80h3v3h-3zM378 83h3v3h-3zM378 86h3v3h-3zM378 89h3v3h-3zM378 92h3v3h-3zM381 95h3v3h-3zM384 95h3v3h-3zM387 95h3v3h-3zM390 95h3v3h-3zM396 77h3v3h-3zM408 77h3v3h-3zM396 80h3v3h-3zM408 80h3v3h-3zM396 83h3v3h-3zM408 83h3v3h-3zM396 86h3v3h-3zM399 86h3v3h-3zM402 86h3v3h-3zM405 86h3v3h-3zM408 86h3v3h-3zM396 89h3v3h-3zM408 89h3v3h-3zM396 92h3v3h-3zM408 92h3v3h-3zM396 95h3v3h-3zM408 95h3v3h-3zM414 77h3v3h-3zM417 77h3v3h-3zM420 77h3v3h-3zM423 77h3v3h-3zM426 77h3v3h-3zM414 80h3v3h-3zM414 83h3v3h-3zM414 86h3v3h-3zM417 86h3v3h-3zM420 86h3v3h-3zM423 86h3v3h-3zM414 89h3v3h-3zM414 92h3v3h-3zM414 95h3v3h-3zM417 95h3v3h-3zM420 95h3v3h-3zM423 95h3v3h-3zM426 95h3v3h-3zM435 77h3v3h-3zM438 77h3v3h-3zM441 77h3v3h-3zM444 77h3v3h-3zM432 80h3v3h-3zM432 83h3v3h-3zM432 86h3v3h-3zM432 89h3v3h-3zM432 92h3v3h-3zM435 95h3v3h-3zM438 95h3v3h-3zM441 95h3v3h-3zM444 95h3v3h-3zM450 77h3v3h-3zM462 77h3v3h-3zM450 80h3v3h-3zM459 80h3v3h-3zM450 83h3v3h-3zM456 83h3v3h-3zM450 86h3v3h-3zM453 86h3v3h-3zM450 89h3v3h-3zM456 89h3v3h-3zM450 92h3v3h-3zM459 92h3v3h-3zM450 95h3v3h-3zM462 95h3v3h-3zM471 77h3v3h-3zM474 77h3v3h-3zM477 77h3v3h-3zM480 77h3v3h-3zM468 80h3v3h-3zM468 83h3v3h-3zM471 86h3v3h-3zM474 86h3v3h-3zM477 86h3v3h-3zM480 89h3v3h-3zM480 92h3v3h-3zM468 95h3v3h-3zM471 95h3v3h-3zM474 95h3v3h-3zM477 95h3v3h-3zM504 77h3v3h-3zM507 77h3v3h-3zM510 77h3v3h-3zM513 77h3v3h-3zM504 80h3v3h-3zM516 80h3v3h-3zM504 83h3v3h-3zM516 83h3v3h-3zM504 86h3v3h-3zM507 86h3v3h-3zM510 86h3v3h-3zM513 86h3v3h-3zM504 89h3v3h-3zM516 89h3v3h-3zM504 92h3v3h-3zM516 92h3v3h-3zM504 95h3v3h-3zM507 95h3v3h-3zM510 95h3v3h-3zM513 95h3v3h-3zM522 77h3v3h-3zM525 77h3v3h-3zM528 77h3v3h-3zM531 77h3v3h-3zM534 77h3v3h-3zM522 80h3v3h-3zM522 83h3v3h-3zM522 86h3v3h-3zM525 86h3v3h-3zM528 86h3v3h-3zM531 86h3v3h-3zM522 89h3v3h-3zM522 92h3v3h-3zM522 95h3v3h-3zM525 95h3v3h-3zM528 95h3v3h-3zM531 95h3v3h-3zM534 95h3v3h-3zM540 77h3v3h-3zM543 77h3v3h-3zM546 77h3v3h-3zM549 77h3v3h-3zM552 77h3v3h-3zM540 80h3v3h-3zM540 83h3v3h-3zM540 86h3v3h-3zM543 86h3v3h-3zM546 86h3v3h-3zM549 86h3v3h-3zM540 89h3v3h-3zM540 92h3v3h-3zM540 95h3v3h-3zM561 77h3v3h-3zM564 77h3v3h-3zM567 77h3v3h-3zM558 80h3v3h-3zM570 80h3v3h-3zM558 83h3v3h-3zM570 83h3v3h-3zM558 86h3v3h-3zM570 86h3v3h-3zM558 89h3v3h-3zM570 89h3v3h-3zM558 92h3v3h-3zM570 92h3v3h-3zM561 95h3v3h-3zM564 95h3v3h-3zM567 95h3v3h-3zM576 77h3v3h-3zM579 77h3v3h-3zM582 77h3v3h-3zM585 77h3v3h-3zM576 80h3v3h-3zM588 80h3v3h-3zM576 83h3v3h-3zM588 83h3v3h-3zM576 86h3v3h-3zM579 86h3v3h-3zM582 86h3v3h-3zM585 86h3v3h-3zM576 89h3v3h-3zM582 89h3v3h-3zM576 92h3v3h-3zM585 92h3v3h-3zM576 95h3v3h-3zM588 95h3v3h-3zM594 77h3v3h-3zM597 77h3v3h-3zM600 77h3v3h-3zM603 77h3v3h-3zM606 77h3v3h-3zM594 80h3v3h-3zM594 83h3v3h-3zM594 86h3v3h-3zM597 86h3v3h-3zM600 86h3v3h-3zM603 86h3v3h-3zM594 89h3v3h-3zM594 92h3v3h-3zM594 95h3v3h-3zM597 95h3v3h-3zM600 95h3v3h-3zM603 95h3v3h-3zM606 95h3v3h-3zM630 77h3v3h-3zM642 77h3v3h-3zM630 80h3v3h-3zM633 80h3v3h-3zM639 80h3v3h-3zM642 80h3v3h-3zM630 83h3v3h-3zM636 83h3v3h-3zM642 83h3v3h-3zM630 86h3v3h-3zM636 86h3v3h-3zM642 86h3v3h-3zM630 89h3v3h-3zM642 89h3v3h-3zM630 92h3v3h-3zM642 92h3v3h-3zM630 95h3v3h-3zM642 95h3v3h-3zM648 77h3v3h-3zM660 77h3v3h-3zM648 80h3v3h-3zM660 80h3v3h-3zM648 83h3v3h-3zM660 83h3v3h-3zM648 86h3v3h-3zM660 86h3v3h-3zM648 89h3v3h-3zM660 89h3v3h-3zM648 92h3v3h-3zM660 92h3v3h-3zM651 95h3v3h-3zM654 95h3v3h-3zM657 95h3v3h-3zM666 77h3v3h-3zM669 77h3v3h-3zM672 77h3v3h-3zM675 77h3v3h-3zM678 77h3v3h-3zM672 80h3v3h-3zM672 83h3v3h-3zM672 86h3v3h-3zM672 89h3v3h-3zM672 92h3v3h-3zM672 95h3v3h-3zM687 77h3v3h-3zM690 77h3v3h-3zM693 77h3v3h-3zM684 80h3v3h-3zM696 80h3v3h-3zM684 83h3v3h-3zM696 83h3v3h-3zM684 86h3v3h-3zM687 86h3v3h-3zM690 86h3v3h-3zM693 86h3v3h-3zM696 86h3v3h-3zM684 89h3v3h-3zM696 89h3v3h-3zM684 92h3v3h-3zM696 92h3v3h-3zM684 95h3v3h-3zM696 95h3v3h-3zM702 77h3v3h-3zM705 77h3v3h-3zM708 77h3v3h-3zM711 77h3v3h-3zM714 77h3v3h-3zM708 80h3v3h-3zM708 83h3v3h-3zM708 86h3v3h-3zM708 89h3v3h-3zM708 92h3v3h-3zM708 95h3v3h-3zM720 77h3v3h-3zM723 77h3v3h-3zM726 77h3v3h-3zM729 77h3v3h-3zM732 77h3v3h-3zM726 80h3v3h-3zM726 83h3v3h-3zM726 86h3v3h-3zM726 89h3v3h-3zM726 92h3v3h-3zM720 95h3v3h-3zM723 95h3v3h-3zM726 95h3v3h-3zM729 95h3v3h-3zM732 95h3v3h-3zM741 77h3v3h-3zM744 77h3v3h-3zM747 77h3v3h-3zM738 80h3v3h-3zM750 80h3v3h-3zM738 83h3v3h-3zM750 83h3v3h-3zM738 86h3v3h-3zM750 86h3v3h-3zM738 89h3v3h-3zM750 89h3v3h-3zM738 92h3v3h-3zM750 92h3v3h-3zM741 95h3v3h-3zM744 95h3v3h-3zM747 95h3v3h-3zM756 77h3v3h-3zM768 77h3v3h-3zM756 80h3v3h-3zM759 80h3v3h-3zM768 80h3v3h-3zM756 83h3v3h-3zM762 83h3v3h-3zM768 83h3v3h-3zM756 86h3v3h-3zM765 86h3v3h-3zM768 86h3v3h-3zM756 89h3v3h-3zM768 89h3v3h-3zM756 92h3v3h-3zM768 92h3v3h-3zM756 95h3v3h-3zM768 95h3v3h-3z" fill="#f5f0e8"/></g>
   <text x="54" y="128" class="subheading">Capture trusted writers, security commitments, and a fresh challenge before probing.</text>
 
   <g filter="url(#shadow)">
-    <rect x="46" y="158" width="220" height="112" rx="18" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
-    <circle cx="71" cy="185" r="15" fill="#5eead4"/><text x="71" y="186" class="number">1</text>
-    <text x="96" y="191" class="step">document.open()</text>
+    <rect x="46" y="158" width="220" height="112" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+    <rect x="56" y="170" width="30" height="30" fill="#a3efb8"/><text x="71" y="186" class="number">1</text>
+    <text x="0" y="0" class="step" transform="translate(96 191) scale(0.95062 1)">document.open()</text>
     <text x="68" y="218" class="detail">Attempts a remote</text>
     <text x="68" y="239" class="detail">load from currently</text>
     <text x="68" y="260" class="detail">connected peers.</text>
 
-    <rect x="318" y="158" width="250" height="112" rx="18" fill="#172033" stroke="#64748b" stroke-width="2"/>
-    <circle cx="343" cy="185" r="15" fill="#cbd5e1"/><text x="343" y="186" class="number">2</text>
-    <text x="368" y="191" class="step">If enabled: probe peers</text>
-    <text x="340" y="226" class="detail">Up to effective K distinct peers</text>
-    <text x="340" y="249" class="detail">sign complete response digests.</text>
+    <rect x="318" y="158" width="250" height="112" fill="#242136" stroke="#756c89" stroke-width="2"/>
+    <rect x="328" y="170" width="30" height="30" fill="#cbc5d6"/><text x="343" y="186" class="number">2</text>
+    <text x="0" y="0" class="step" transform="translate(368 191) scale(0.74074 1)">If enabled: probe peers</text>
+    <text x="0" y="0" class="detail" transform="translate(340 226) scale(0.73611 1)">Up to effective K distinct peers</text>
+    <text x="0" y="0" class="detail" transform="translate(340 249) scale(0.75986 1)">sign complete response digests.</text>
 
-    <rect x="620" y="146" width="534" height="136" rx="18" fill="#1e1b4b" stroke="#818cf8" stroke-width="2"/>
-    <circle cx="647" cy="175" r="15" fill="#a5b4fc"/><text x="647" y="176" class="number">3</text>
+    <rect x="620" y="146" width="534" height="136" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
+    <rect x="632" y="160" width="30" height="30" fill="#b7a1ff"/><text x="647" y="176" class="number">3</text>
     <text x="674" y="181" class="step">Configured remote-load mode</text>
-    <text x="646" y="216" class="detail">Enabled: Q trusted signing authorities must agree on one digest.</text>
+    <text x="0" y="0" class="detail" transform="translate(646 216) scale(0.85417 1)">Enabled: Q trusted signing authorities must agree on one digest.</text>
     <text x="646" y="242" class="detail">Disabled: select one authenticated V4 response.</text>
-    <text x="646" y="265" class="detail">Each signing authority counts once across transport PeerIds.</text>
+    <text x="0" y="0" class="detail" transform="translate(646 265) scale(0.91111 1)">Each signing authority counts once across transport PeerIds.</text>
   </g>
-  <path d="M 266 214 H 312 M 568 214 H 614" fill="none" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 266 214 H 312 M 568 214 H 614" fill="none" stroke="#a7a0b6" stroke-width="3" marker-end="url(#arrow)"/>
 
-  <rect x="44" y="312" width="1112" height="242" rx="22" fill="#111f34" stroke="#475569" stroke-width="2"/>
-  <text x="68" y="343" class="eyebrow" fill="#93c5fd">QUORUM PATH · ORDER BEFORE STATE MUTATION</text>
+  <rect x="44" y="312" width="1112" height="242" fill="#242136" stroke="#756c89" stroke-width="2"/>
+  <text x="68" y="343" class="eyebrow" fill="#b7a1ff">QUORUM PATH · ORDER BEFORE STATE MUTATION</text>
   <g filter="url(#shadow)">
-    <rect x="68" y="365" width="290" height="114" rx="16" fill="#172033" stroke="#64748b"/>
-    <circle cx="93" cy="392" r="15" fill="#93c5fd"/><text x="93" y="393" class="number">4</text>
-    <text x="118" y="398" class="step">Decrypt response first</text>
+    <rect x="68" y="365" width="290" height="114" fill="#242136" stroke="#756c89"/>
+    <rect x="78" y="377" width="30" height="30" fill="#b7a1ff"/><text x="93" y="393" class="number">4</text>
+    <text x="0" y="0" class="step" transform="translate(118 398) scale(0.94276 1)">Decrypt response first</text>
     <text x="90" y="425" class="detail">Select held/restored key,</text>
     <text x="90" y="446" class="detail">decrypt, then deserialize</text>
     <text x="90" y="467" class="detail">the sync message.</text>
 
-    <rect x="399" y="365" width="344" height="114" rx="16" fill="#172033" stroke="#64748b"/>
-    <circle cx="424" cy="392" r="15" fill="#93c5fd"/><text x="424" y="393" class="number">5</text>
+    <rect x="399" y="365" width="344" height="114" fill="#242136" stroke="#756c89"/>
+    <rect x="409" y="377" width="30" height="30" fill="#b7a1ff"/><text x="424" y="393" class="number">5</text>
     <text x="449" y="398" class="step">Authenticate every load</text>
     <text x="421" y="433" class="detail">Verify a captured trusted writer;</text>
-    <text x="421" y="456" class="detail">check the fresh challenge and local tuple.</text>
+    <text x="0" y="0" class="detail" transform="translate(421 456) scale(0.80952 1)">check the fresh challenge and local tuple.</text>
 
-    <rect x="784" y="365" width="348" height="114" rx="16" fill="#172033" stroke="#818cf8"/>
-    <circle cx="809" cy="392" r="15" fill="#a5b4fc"/><text x="809" y="393" class="number">6</text>
+    <rect x="784" y="365" width="348" height="114" fill="#242136" stroke="#b7a1ff"/>
+    <rect x="794" y="377" width="30" height="30" fill="#b7a1ff"/><text x="809" y="393" class="number">6</text>
     <text x="834" y="398" class="step">Bind the response manifest</text>
-    <text x="806" y="433" class="detail">Derive the graph, state, and frontier;</text>
-    <text x="806" y="456" class="detail">compare the complete agreed digest.</text>
+    <text x="0" y="0" class="detail" transform="translate(806 433) scale(0.90643 1)">Derive the graph, state, and frontier;</text>
+    <text x="0" y="0" class="detail" transform="translate(806 456) scale(0.98413 1)">compare the complete agreed digest.</text>
   </g>
-  <path d="M 358 422 H 393 M 743 422 H 778" fill="none" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
-  <rect x="68" y="498" width="1064" height="38" rx="19" fill="#31243b" stroke="#fb7185" stroke-opacity="0.65"/>
-  <text x="600" y="523" fill="#fecdd3" font-size="15" text-anchor="middle">First load: independently pin trusted writers; quorum replay still requires available change history.</text>
+  <path d="M 358 422 H 393 M 743 422 H 778" fill="none" stroke="#a7a0b6" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect x="68" y="498" width="1064" height="38" fill="#382237" stroke="#f0a5cf" stroke-opacity="0.65"/>
+  <text x="600" y="523" fill="#f0a5cf" font-size="15" text-anchor="middle">First load: independently pin trusted writers; quorum replay still requires available change history.</text>
 
-  <rect x="44" y="578" width="1112" height="160" rx="22" fill="#0f3539" stroke="#2dd4bf" stroke-width="2"/>
-  <text x="68" y="609" class="eyebrow" fill="#5eead4">QUORUM-BOUND HISTORY FETCH + MATERIALIZATION</text>
+  <rect x="44" y="578" width="1112" height="160" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+  <text x="68" y="609" class="eyebrow" fill="#a3efb8">QUORUM-BOUND HISTORY FETCH + MATERIALIZATION</text>
   <g>
-    <circle cx="92" cy="652" r="16" fill="#5eead4"/><text x="92" y="653" class="number">7</text>
+    <rect x="76" y="636" width="32" height="32" fill="#a3efb8"/><text x="92" y="653" class="number">7</text>
     <text x="119" y="646" class="step">Prefetch changes-tree CIDs</text>
-    <text x="119" y="672" class="detail">Strip inline changes, then fetch each CID</text>
+    <text x="0" y="0" class="detail" transform="translate(119 672) scale(0.95664 1)">Strip inline changes, then fetch each CID</text>
     <text x="119" y="694" class="detail">enumerated by the served changes tree.</text>
 
-    <circle cx="455" cy="652" r="16" fill="#5eead4"/><text x="455" y="653" class="number">8</text>
+    <rect x="439" y="636" width="32" height="32" fill="#a3efb8"/><text x="455" y="653" class="number">8</text>
     <text x="482" y="646" class="step">CID-validate fetched bytes</text>
-    <text x="482" y="672" class="detail">Helia validates ciphertext during prefetch;</text>
+    <text x="0" y="0" class="detail" transform="translate(482 672) scale(0.99483 1)">Helia validates ciphertext during prefetch;</text>
     <text x="482" y="694" class="detail">decryption happens later inside sync.</text>
 
-    <circle cx="850" cy="652" r="16" fill="#5eead4"/><text x="850" y="653" class="number">9</text>
+    <rect x="834" y="636" width="32" height="32" fill="#a3efb8"/><text x="850" y="653" class="number">9</text>
     <text x="877" y="646" class="step">Decrypt + apply history</text>
-    <text x="877" y="672" class="detail">sync builds from cached blocks;</text>
-    <text x="877" y="694" class="detail">a later failure has no rollback.</text>
+    <text x="0" y="0" class="detail" transform="translate(877 672) scale(0.94265 1)">sync builds from cached blocks;</text>
+    <text x="0" y="0" class="detail" transform="translate(877 694) scale(0.91319 1)">a later failure has no rollback.</text>
   </g>
-  <path d="M 395 652 H 429 M 790 652 H 824" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
-  <text x="600" y="723" fill="#99f6e4" font-size="13" text-anchor="middle">CID checks bind ciphertext; the signed manifest binds graph and state. Control-log replay is not integrated.</text>
+  <path d="M 395 652 H 429 M 790 652 H 824" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
+  <text x="600" y="723" fill="#c7f5d3" font-size="13" text-anchor="middle">CID checks bind ciphertext; the signed manifest binds graph and state. Control-log replay is not integrated.</text>
 
-  <rect x="44" y="762" width="420" height="54" rx="27" fill="#102a2a" stroke="#2dd4bf" stroke-width="2"/>
-  <text x="254" y="796" class="result" fill="#99f6e4" text-anchor="middle">Ready · local mutations may begin</text>
-  <rect x="488" y="762" width="668" height="54" rx="27" fill="#301821" stroke="#fb7185" stroke-width="2"/>
-  <text x="822" y="786" class="result" fill="#fda4af" text-anchor="middle">Fail · trust, challenge, signature, digest, or history error</text>
-  <text x="822" y="806" fill="#fecdd3" font-size="14" text-anchor="middle">failure never creates a document; later application failure may leave partial state</text>
+  <rect x="44" y="762" width="420" height="54" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+  <text x="254" y="796" class="result" fill="#c7f5d3" text-anchor="middle">Ready · local mutations may begin</text>
+  <rect x="488" y="762" width="668" height="54" fill="#382237" stroke="#f0a5cf" stroke-width="2"/>
+  <text x="822" y="786" class="result" fill="#f0a5cf" text-anchor="middle">Fail · trust, challenge, signature, digest, or history error</text>
+  <text x="0" y="0" fill="#f0a5cf" font-size="14" text-anchor="middle" transform="translate(822 806) scale(0.94378 1)">failure never creates a document; later application failure may leave partial state</text>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

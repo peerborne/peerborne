@@ -1,72 +1,70 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title description">
   <title id="title">Simulated convergence scaling</title>
-  <desc id="description">Line chart of simulated convergence latency from two to 32 peers on a logarithmic latency axis. Dots show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
+  <desc id="description">Line chart of simulated convergence latency from two to 32 peers on a logarithmic latency axis. Squares show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity=".035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#a7a0b6" stroke-opacity=".035"/>
     </pattern>
-    <style>text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }</style>
+    <style>text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }</style>
   </defs>
-  <rect width="1120" height="620" rx="26" fill="url(#background)"/>
-  <rect width="1120" height="620" rx="26" fill="url(#grid)"/>
-  <path d="M0 26A26 26 0 0 1 26 0H1094A26 26 0 0 1 1120 26V32H0Z" fill="#2dd4bf"/>
+  <rect width="1120" height="620" fill="#171521"/>
+  <rect width="1120" height="620" fill="url(#grid)"/>
+
   <g>
-    <text x="42" y="59" fill="#f8fafc" font-size="29" font-weight="780">Simulated convergence scaling</text>
-    <text x="42" y="84" fill="#94a3b8" font-size="15">Full local sign/encrypt/broadcast/decrypt/verify simulation; log latency axis</text>
-    <line x1="92" y1="107" x2="120" y2="107" stroke="#2dd4bf" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="106" cy="107" r="5" fill="#0f172a" stroke="#2dd4bf" stroke-width="2"/>
-    <text x="130" y="112" fill="#e2e8f0" font-size="14" font-weight="650">Convergence</text>
-    <line x1="92" y1="485.00" x2="1070" y2="485.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="490.00" fill="#94a3b8" font-size="13" text-anchor="end">10</text>
-    <line x1="92" y1="368.33" x2="1070" y2="368.33" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="373.33" fill="#94a3b8" font-size="13" text-anchor="end">100</text>
-    <line x1="92" y1="251.67" x2="1070" y2="251.67" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="256.67" fill="#94a3b8" font-size="13" text-anchor="end">1k</text>
-    <line x1="92" y1="135.00" x2="1070" y2="135.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="140.00" fill="#94a3b8" font-size="13" text-anchor="end">10k</text>
-    <line x1="92" y1="135" x2="92" y2="485" stroke="#64748b" stroke-width="1.5"/>
-    <line x1="92" y1="485" x2="1070" y2="485" stroke="#64748b" stroke-width="1.5"/>
-    <line x1="92.00" y1="485" x2="92.00" y2="492" stroke="#64748b"/>
-    <text x="92.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">2</text>
-    <line x1="336.50" y1="485" x2="336.50" y2="492" stroke="#64748b"/>
-    <text x="336.50" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">4</text>
-    <line x1="581.00" y1="485" x2="581.00" y2="492" stroke="#64748b"/>
-    <text x="581.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">8</text>
-    <line x1="825.50" y1="485" x2="825.50" y2="492" stroke="#64748b"/>
-    <text x="825.50" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">16</text>
-    <line x1="1070.00" y1="485" x2="1070.00" y2="492" stroke="#64748b"/>
-    <text x="1070.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">32</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M45 38h3v3h-3zM48 38h3v3h-3zM51 38h3v3h-3zM54 38h3v3h-3zM42 41h3v3h-3zM42 44h3v3h-3zM45 47h3v3h-3zM48 47h3v3h-3zM51 47h3v3h-3zM54 50h3v3h-3zM54 53h3v3h-3zM42 56h3v3h-3zM45 56h3v3h-3zM48 56h3v3h-3zM51 56h3v3h-3zM60 38h3v3h-3zM63 38h3v3h-3zM66 38h3v3h-3zM69 38h3v3h-3zM72 38h3v3h-3zM66 41h3v3h-3zM66 44h3v3h-3zM66 47h3v3h-3zM66 50h3v3h-3zM66 53h3v3h-3zM60 56h3v3h-3zM63 56h3v3h-3zM66 56h3v3h-3zM69 56h3v3h-3zM72 56h3v3h-3zM78 38h3v3h-3zM90 38h3v3h-3zM78 41h3v3h-3zM81 41h3v3h-3zM87 41h3v3h-3zM90 41h3v3h-3zM78 44h3v3h-3zM84 44h3v3h-3zM90 44h3v3h-3zM78 47h3v3h-3zM84 47h3v3h-3zM90 47h3v3h-3zM78 50h3v3h-3zM90 50h3v3h-3zM78 53h3v3h-3zM90 53h3v3h-3zM78 56h3v3h-3zM90 56h3v3h-3zM96 38h3v3h-3zM108 38h3v3h-3zM96 41h3v3h-3zM108 41h3v3h-3zM96 44h3v3h-3zM108 44h3v3h-3zM96 47h3v3h-3zM108 47h3v3h-3zM96 50h3v3h-3zM108 50h3v3h-3zM96 53h3v3h-3zM108 53h3v3h-3zM99 56h3v3h-3zM102 56h3v3h-3zM105 56h3v3h-3zM114 38h3v3h-3zM114 41h3v3h-3zM114 44h3v3h-3zM114 47h3v3h-3zM114 50h3v3h-3zM114 53h3v3h-3zM114 56h3v3h-3zM117 56h3v3h-3zM120 56h3v3h-3zM123 56h3v3h-3zM126 56h3v3h-3zM135 38h3v3h-3zM138 38h3v3h-3zM141 38h3v3h-3zM132 41h3v3h-3zM144 41h3v3h-3zM132 44h3v3h-3zM144 44h3v3h-3zM132 47h3v3h-3zM135 47h3v3h-3zM138 47h3v3h-3zM141 47h3v3h-3zM144 47h3v3h-3zM132 50h3v3h-3zM144 50h3v3h-3zM132 53h3v3h-3zM144 53h3v3h-3zM132 56h3v3h-3zM144 56h3v3h-3zM150 38h3v3h-3zM153 38h3v3h-3zM156 38h3v3h-3zM159 38h3v3h-3zM162 38h3v3h-3zM156 41h3v3h-3zM156 44h3v3h-3zM156 47h3v3h-3zM156 50h3v3h-3zM156 53h3v3h-3zM156 56h3v3h-3zM168 38h3v3h-3zM171 38h3v3h-3zM174 38h3v3h-3zM177 38h3v3h-3zM180 38h3v3h-3zM168 41h3v3h-3zM168 44h3v3h-3zM168 47h3v3h-3zM171 47h3v3h-3zM174 47h3v3h-3zM177 47h3v3h-3zM168 50h3v3h-3zM168 53h3v3h-3zM168 56h3v3h-3zM171 56h3v3h-3zM174 56h3v3h-3zM177 56h3v3h-3zM180 56h3v3h-3zM186 38h3v3h-3zM189 38h3v3h-3zM192 38h3v3h-3zM195 38h3v3h-3zM186 41h3v3h-3zM198 41h3v3h-3zM186 44h3v3h-3zM198 44h3v3h-3zM186 47h3v3h-3zM198 47h3v3h-3zM186 50h3v3h-3zM198 50h3v3h-3zM186 53h3v3h-3zM198 53h3v3h-3zM186 56h3v3h-3zM189 56h3v3h-3zM192 56h3v3h-3zM195 56h3v3h-3zM225 38h3v3h-3zM228 38h3v3h-3zM231 38h3v3h-3zM234 38h3v3h-3zM222 41h3v3h-3zM222 44h3v3h-3zM222 47h3v3h-3zM222 50h3v3h-3zM222 53h3v3h-3zM225 56h3v3h-3zM228 56h3v3h-3zM231 56h3v3h-3zM234 56h3v3h-3zM243 38h3v3h-3zM246 38h3v3h-3zM249 38h3v3h-3zM240 41h3v3h-3zM252 41h3v3h-3zM240 44h3v3h-3zM252 44h3v3h-3zM240 47h3v3h-3zM252 47h3v3h-3zM240 50h3v3h-3zM252 50h3v3h-3zM240 53h3v3h-3zM252 53h3v3h-3zM243 56h3v3h-3zM246 56h3v3h-3zM249 56h3v3h-3zM258 38h3v3h-3zM270 38h3v3h-3zM258 41h3v3h-3zM261 41h3v3h-3zM270 41h3v3h-3zM258 44h3v3h-3zM264 44h3v3h-3zM270 44h3v3h-3zM258 47h3v3h-3zM267 47h3v3h-3zM270 47h3v3h-3zM258 50h3v3h-3zM270 50h3v3h-3zM258 53h3v3h-3zM270 53h3v3h-3zM258 56h3v3h-3zM270 56h3v3h-3zM276 38h3v3h-3zM288 38h3v3h-3zM276 41h3v3h-3zM288 41h3v3h-3zM276 44h3v3h-3zM288 44h3v3h-3zM276 47h3v3h-3zM288 47h3v3h-3zM276 50h3v3h-3zM288 50h3v3h-3zM279 53h3v3h-3zM285 53h3v3h-3zM282 56h3v3h-3zM294 38h3v3h-3zM297 38h3v3h-3zM300 38h3v3h-3zM303 38h3v3h-3zM306 38h3v3h-3zM294 41h3v3h-3zM294 44h3v3h-3zM294 47h3v3h-3zM297 47h3v3h-3zM300 47h3v3h-3zM303 47h3v3h-3zM294 50h3v3h-3zM294 53h3v3h-3zM294 56h3v3h-3zM297 56h3v3h-3zM300 56h3v3h-3zM303 56h3v3h-3zM306 56h3v3h-3zM312 38h3v3h-3zM315 38h3v3h-3zM318 38h3v3h-3zM321 38h3v3h-3zM312 41h3v3h-3zM324 41h3v3h-3zM312 44h3v3h-3zM324 44h3v3h-3zM312 47h3v3h-3zM315 47h3v3h-3zM318 47h3v3h-3zM321 47h3v3h-3zM312 50h3v3h-3zM318 50h3v3h-3zM312 53h3v3h-3zM321 53h3v3h-3zM312 56h3v3h-3zM324 56h3v3h-3zM333 38h3v3h-3zM336 38h3v3h-3zM339 38h3v3h-3zM342 38h3v3h-3zM330 41h3v3h-3zM330 44h3v3h-3zM330 47h3v3h-3zM336 47h3v3h-3zM339 47h3v3h-3zM342 47h3v3h-3zM330 50h3v3h-3zM342 50h3v3h-3zM330 53h3v3h-3zM342 53h3v3h-3zM333 56h3v3h-3zM336 56h3v3h-3zM339 56h3v3h-3zM342 56h3v3h-3zM348 38h3v3h-3zM351 38h3v3h-3zM354 38h3v3h-3zM357 38h3v3h-3zM360 38h3v3h-3zM348 41h3v3h-3zM348 44h3v3h-3zM348 47h3v3h-3zM351 47h3v3h-3zM354 47h3v3h-3zM357 47h3v3h-3zM348 50h3v3h-3zM348 53h3v3h-3zM348 56h3v3h-3zM351 56h3v3h-3zM354 56h3v3h-3zM357 56h3v3h-3zM360 56h3v3h-3zM366 38h3v3h-3zM378 38h3v3h-3zM366 41h3v3h-3zM369 41h3v3h-3zM378 41h3v3h-3zM366 44h3v3h-3zM372 44h3v3h-3zM378 44h3v3h-3zM366 47h3v3h-3zM375 47h3v3h-3zM378 47h3v3h-3zM366 50h3v3h-3zM378 50h3v3h-3zM366 53h3v3h-3zM378 53h3v3h-3zM366 56h3v3h-3zM378 56h3v3h-3zM387 38h3v3h-3zM390 38h3v3h-3zM393 38h3v3h-3zM396 38h3v3h-3zM384 41h3v3h-3zM384 44h3v3h-3zM384 47h3v3h-3zM384 50h3v3h-3zM384 53h3v3h-3zM387 56h3v3h-3zM390 56h3v3h-3zM393 56h3v3h-3zM396 56h3v3h-3zM402 38h3v3h-3zM405 38h3v3h-3zM408 38h3v3h-3zM411 38h3v3h-3zM414 38h3v3h-3zM402 41h3v3h-3zM402 44h3v3h-3zM402 47h3v3h-3zM405 47h3v3h-3zM408 47h3v3h-3zM411 47h3v3h-3zM402 50h3v3h-3zM402 53h3v3h-3zM402 56h3v3h-3zM405 56h3v3h-3zM408 56h3v3h-3zM411 56h3v3h-3zM414 56h3v3h-3zM441 38h3v3h-3zM444 38h3v3h-3zM447 38h3v3h-3zM450 38h3v3h-3zM438 41h3v3h-3zM438 44h3v3h-3zM441 47h3v3h-3zM444 47h3v3h-3zM447 47h3v3h-3zM450 50h3v3h-3zM450 53h3v3h-3zM438 56h3v3h-3zM441 56h3v3h-3zM444 56h3v3h-3zM447 56h3v3h-3zM459 38h3v3h-3zM462 38h3v3h-3zM465 38h3v3h-3zM468 38h3v3h-3zM456 41h3v3h-3zM456 44h3v3h-3zM456 47h3v3h-3zM456 50h3v3h-3zM456 53h3v3h-3zM459 56h3v3h-3zM462 56h3v3h-3zM465 56h3v3h-3zM468 56h3v3h-3zM477 38h3v3h-3zM480 38h3v3h-3zM483 38h3v3h-3zM474 41h3v3h-3zM486 41h3v3h-3zM474 44h3v3h-3zM486 44h3v3h-3zM474 47h3v3h-3zM477 47h3v3h-3zM480 47h3v3h-3zM483 47h3v3h-3zM486 47h3v3h-3zM474 50h3v3h-3zM486 50h3v3h-3zM474 53h3v3h-3zM486 53h3v3h-3zM474 56h3v3h-3zM486 56h3v3h-3zM492 38h3v3h-3zM492 41h3v3h-3zM492 44h3v3h-3zM492 47h3v3h-3zM492 50h3v3h-3zM492 53h3v3h-3zM492 56h3v3h-3zM495 56h3v3h-3zM498 56h3v3h-3zM501 56h3v3h-3zM504 56h3v3h-3zM510 38h3v3h-3zM513 38h3v3h-3zM516 38h3v3h-3zM519 38h3v3h-3zM522 38h3v3h-3zM516 41h3v3h-3zM516 44h3v3h-3zM516 47h3v3h-3zM516 50h3v3h-3zM516 53h3v3h-3zM510 56h3v3h-3zM513 56h3v3h-3zM516 56h3v3h-3zM519 56h3v3h-3zM522 56h3v3h-3zM528 38h3v3h-3zM540 38h3v3h-3zM528 41h3v3h-3zM531 41h3v3h-3zM540 41h3v3h-3zM528 44h3v3h-3zM534 44h3v3h-3zM540 44h3v3h-3zM528 47h3v3h-3zM537 47h3v3h-3zM540 47h3v3h-3zM528 50h3v3h-3zM540 50h3v3h-3zM528 53h3v3h-3zM540 53h3v3h-3zM528 56h3v3h-3zM540 56h3v3h-3zM549 38h3v3h-3zM552 38h3v3h-3zM555 38h3v3h-3zM558 38h3v3h-3zM546 41h3v3h-3zM546 44h3v3h-3zM546 47h3v3h-3zM552 47h3v3h-3zM555 47h3v3h-3zM558 47h3v3h-3zM546 50h3v3h-3zM558 50h3v3h-3zM546 53h3v3h-3zM558 53h3v3h-3zM549 56h3v3h-3zM552 56h3v3h-3zM555 56h3v3h-3zM558 56h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="42" y="84" fill="#a7a0b6" font-size="15">Full local sign/encrypt/broadcast/decrypt/verify simulation; log latency axis</text>
+    <line x1="92" y1="107" x2="120" y2="107" stroke="#a3efb8" stroke-width="4" stroke-linecap="square"/>
+    <rect x="101" y="102" width="10" height="10" fill="#171521" stroke="#a3efb8" stroke-width="2"/>
+    <text x="130" y="112" fill="#cbc5d6" font-size="14" font-weight="650">Convergence</text>
+    <line x1="92" y1="485.00" x2="1070" y2="485.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="490.00" fill="#a7a0b6" font-size="13" text-anchor="end">10</text>
+    <line x1="92" y1="368.33" x2="1070" y2="368.33" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="373.33" fill="#a7a0b6" font-size="13" text-anchor="end">100</text>
+    <line x1="92" y1="251.67" x2="1070" y2="251.67" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="256.67" fill="#a7a0b6" font-size="13" text-anchor="end">1k</text>
+    <line x1="92" y1="135.00" x2="1070" y2="135.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="140.00" fill="#a7a0b6" font-size="13" text-anchor="end">10k</text>
+    <line x1="92" y1="135" x2="92" y2="485" stroke="#756c89" stroke-width="1.5"/>
+    <line x1="92" y1="485" x2="1070" y2="485" stroke="#756c89" stroke-width="1.5"/>
+    <line x1="92.00" y1="485" x2="92.00" y2="492" stroke="#756c89"/>
+    <text x="92.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">2</text>
+    <line x1="336.50" y1="485" x2="336.50" y2="492" stroke="#756c89"/>
+    <text x="336.50" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">4</text>
+    <line x1="581.00" y1="485" x2="581.00" y2="492" stroke="#756c89"/>
+    <text x="581.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">8</text>
+    <line x1="825.50" y1="485" x2="825.50" y2="492" stroke="#756c89"/>
+    <text x="825.50" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">16</text>
+    <line x1="1070.00" y1="485" x2="1070.00" y2="492" stroke="#756c89"/>
+    <text x="1070.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">32</text>
     <g aria-label="Convergence">
-      <path d="M92.00 466.78 L336.50 398.55 L581.00 328.54 L825.50 259.42 L1070.00 186.95" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <line x1="92.00" y1="466.78" x2="92.00" y2="465.52" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="86.00" y1="465.52" x2="98.00" y2="465.52" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="92.00" cy="466.78" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="92.00" y="454.78" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">14.3</text>
-      <line x1="336.50" y1="398.55" x2="336.50" y2="396.70" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="330.50" y1="396.70" x2="342.50" y2="396.70" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="336.50" cy="398.55" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="336.50" y="386.55" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">55.1</text>
-      <line x1="581.00" y1="328.54" x2="581.00" y2="327.25" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="575.00" y1="327.25" x2="587.00" y2="327.25" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="581.00" cy="328.54" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="581.00" y="316.54" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">219</text>
-      <line x1="825.50" y1="259.42" x2="825.50" y2="256.44" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="819.50" y1="256.44" x2="831.50" y2="256.44" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="825.50" cy="259.42" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="825.50" y="247.42" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">858</text>
-      <line x1="1070.00" y1="186.95" x2="1070.00" y2="182.83" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="1064.00" y1="182.83" x2="1076.00" y2="182.83" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="1070.00" cy="186.95" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="1070.00" y="174.95" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">3.59k</text>
+      <path d="M92.00 466.78 L336.50 398.55 L581.00 328.54 L825.50 259.42 L1070.00 186.95" fill="none" stroke="#a3efb8" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter"/>
+      <line x1="92.00" y1="466.78" x2="92.00" y2="465.52" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="86.00" y1="465.52" x2="98.00" y2="465.52" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="86" y="460.78" width="12" height="12" class="mean-marker" data-mean="14.327301749999975" data-p99="14.6875" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="92.00" y="454.78" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">14.3</text>
+      <line x1="336.50" y1="398.55" x2="336.50" y2="396.70" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="330.50" y1="396.70" x2="342.50" y2="396.70" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="330.5" y="392.55" width="12" height="12" class="mean-marker" data-mean="55.076739249999974" data-p99="57.126249999999914" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="336.50" y="386.55" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">55.1</text>
+      <line x1="581.00" y1="328.54" x2="581.00" y2="327.25" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="575.00" y1="327.25" x2="587.00" y2="327.25" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="575" y="322.54" width="12" height="12" class="mean-marker" data-mean="219.33636474999986" data-p99="224.99312499999996" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="581.00" y="316.54" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">219</text>
+      <line x1="825.50" y1="259.42" x2="825.50" y2="256.44" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="819.50" y1="256.44" x2="831.50" y2="256.44" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="819.5" y="253.42000000000002" width="12" height="12" class="mean-marker" data-mean="858.1773750000001" data-p99="910.1468750000004" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="825.50" y="247.42" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">858</text>
+      <line x1="1070.00" y1="186.95" x2="1070.00" y2="182.83" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="1064.00" y1="182.83" x2="1076.00" y2="182.83" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="1064" y="180.95" width="12" height="12" class="mean-marker" data-mean="3586.584552000001" data-p99="3890.380583000002" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="1070.00" y="174.95" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">3.59k</text>
     </g>
-    <text x="581" y="538" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">Simulated peers</text>
-    <text x="24" y="310" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 310)">Latency (ms, log scale)</text>
-    <rect x="42" y="557" width="1036" height="43" rx="12" fill="#0b1524" stroke="#334155"/>
-    <text x="560" y="575" fill="#94a3b8" font-size="11.5" text-anchor="middle">Directional snapshot · Apple M5 · v22.19.0 · darwin/arm64 · commit 414d4bf7 · 2026-08-29</text>
-    <text x="560" y="591" fill="#94a3b8" font-size="11.5" text-anchor="middle">Mean dots + p99 whiskers · 4 timed iterations per point · no pass/fail budget</text>
+    <text x="581" y="538" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">Simulated peers</text>
+    <text x="24" y="310" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 310)">Latency (ms, log scale)</text>
+    <rect x="42" y="557" width="1036" height="43" fill="#242136" stroke="#40394f"/>
+    <text x="560" y="575" fill="#a7a0b6" font-size="11.5" text-anchor="middle">Directional snapshot · Apple M5 · v22.19.0 · darwin/arm64 · commit 414d4bf7 · 2026-08-29</text>
+    <text x="560" y="591" fill="#a7a0b6" font-size="11.5" text-anchor="middle">Mean squares + p99 whiskers · 4 timed iterations per point · no pass/fail budget</text>
   </g>
+<path d="M0 0H1120V8H0Z" fill="#a3efb8"/>
 </svg>

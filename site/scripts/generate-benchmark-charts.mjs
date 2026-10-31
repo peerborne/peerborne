@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pixelFigure } from './figure-theme.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), '../..');
@@ -280,7 +281,7 @@ export function renderChart(chart, snapshot) {
               : point.meanY + preferredOffset;
           return `      <line x1="${point.x.toFixed(2)}" y1="${point.meanY.toFixed(2)}" x2="${point.x.toFixed(2)}" y2="${point.p99Y.toFixed(2)}" stroke="${color}" stroke-width="2" stroke-opacity=".65"/>
       <line x1="${(point.x - 6).toFixed(2)}" y1="${point.p99Y.toFixed(2)}" x2="${(point.x + 6).toFixed(2)}" y2="${point.p99Y.toFixed(2)}" stroke="${color}" stroke-width="2"/>
-      <circle cx="${point.x.toFixed(2)}" cy="${point.meanY.toFixed(2)}" r="6" fill="#0f172a" stroke="${color}" stroke-width="3"/>
+      <circle class="mean-marker" data-mean="${point.mean}" data-p99="${point.p99}" cx="${point.x.toFixed(2)}" cy="${point.meanY.toFixed(2)}" r="6" fill="#0f172a" stroke="${color}" stroke-width="3"/>
       <text x="${point.x.toFixed(2)}" y="${labelY.toFixed(2)}" fill="${color}" font-size="11.5" font-weight="750" text-anchor="middle">${escapeXml(formatNumber(point.mean))}</text>`;
         })
         .join('\n');
@@ -301,9 +302,9 @@ ${marks}
   const commit = snapshot.sourceCommit.slice(0, 8);
   const date = snapshot.collectedAt.slice(0, 10);
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${chartWidth}" height="${chartHeight}" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-labelledby="title description">
+  return pixelFigure(`<svg xmlns="http://www.w3.org/2000/svg" width="${chartWidth}" height="${chartHeight}" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-labelledby="title description">
   <title id="title">${escapeXml(chart.title)}</title>
-  <desc id="description">${escapeXml(chart.description)} Dots show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
+  <desc id="description">${escapeXml(chart.description)} Squares show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0f172a"/>
@@ -330,10 +331,10 @@ ${renderedSeries}
     <text x="24" y="${plot.y + plot.height / 2}" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 ${plot.y + plot.height / 2})">${escapeXml(chart.yLabel)}</text>
     <rect x="42" y="557" width="1036" height="43" rx="12" fill="#0b1524" stroke="#334155"/>
     <text x="560" y="575" fill="#94a3b8" font-size="11.5" text-anchor="middle">Directional snapshot · ${escapeXml(snapshot.system.cpu)} · ${escapeXml(snapshot.system.node)} · ${escapeXml(snapshot.system.platform)}/${escapeXml(snapshot.system.arch)} · commit ${commit} · ${date}</text>
-    <text x="560" y="591" fill="#94a3b8" font-size="11.5" text-anchor="middle">Mean dots + p99 whiskers · ${escapeXml(iterationSummary(chart))} · no pass/fail budget</text>
+    <text x="560" y="591" fill="#94a3b8" font-size="11.5" text-anchor="middle">Mean squares + p99 whiskers · ${escapeXml(iterationSummary(chart))} · no pass/fail budget</text>
   </g>
 </svg>
-`;
+`);
 }
 
 export function generateCharts(snapshot) {

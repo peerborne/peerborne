@@ -2,10 +2,10 @@
   <title id="title">Peerborne runtime architecture</title>
   <desc id="desc">The UI uses a reactive React hook to edit an in-memory CRDT. The crypto layer signs and encrypts payloads before persistence to the Helia blockstore or transport over libp2p. Epoch keys and ACLs feed the crypto layer. No separate durable write-ahead log is implemented.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#9aaacf"/></marker>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/></marker>
   </defs>
-  <rect width="1080" height="420"  fill="#1b1929"/>
-  <g fill="none" stroke="#9aaacf" stroke-width="2" marker-end="url(#arrow)">
+  <rect width="1080" height="420"  fill="#171521"/>
+  <g fill="none" stroke="#b7a1ff" stroke-width="2" marker-end="url(#arrow)">
     <path d="M187 166H230" marker-start="url(#arrow)"/>
     <path d="M404 166H447" marker-start="url(#arrow)"/>
     <path d="M657 166H700" marker-start="url(#arrow)"/>
@@ -13,7 +13,7 @@
     <path d="M784 207V256H588V288" marker-start="url(#arrow)"/>
     <path d="M923 207V288" marker-start="url(#arrow)"/>
   </g>
-  <g stroke="#3a4860" fill="#192332">
+  <g stroke="#756c89" fill="#242136">
     <rect x="24" y="125" width="160" height="82" />
     <rect x="233" y="125" width="168" height="82" />
     <rect x="450" y="125" width="204" height="82" />
@@ -22,15 +22,16 @@
     <rect x="450" y="291" width="276" height="82" />
     <rect x="780" y="291" width="276" height="82" />
   </g>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle" fill="#f5f0e8" font-size="20">
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" text-anchor="middle" fill="#f5f0e8" font-size="20">
     <text x="104" y="173">UI layer</text>
-    <text x="317" y="160">Reactive hook</text><text x="317" y="185" fill="#a7a0b6" font-size="15">React document state</text>
+    <text x="317" y="160">Reactive hook</text><text x="0" y="0" fill="#a7a0b6" font-size="15" transform="translate(317 185) scale(0.87778 1)">React document state</text>
     <text x="552" y="160">In-memory CRDT</text><text x="552" y="185" fill="#a7a0b6" font-size="15">Automerge or Yjs</text>
     <text x="857" y="160">Sign / encrypt</text><text x="857" y="185" fill="#a7a0b6" font-size="15">Decrypt / verify on receipt</text>
     <text x="857" y="65">Epoch keys + ACLs</text>
     <text x="588" y="326">Helia blockstore</text><text x="588" y="351" fill="#a7a0b6" font-size="15">IndexedDB in the browser</text>
-    <text x="918" y="326">libp2p transport</text><text x="918" y="351" fill="#a7a0b6" font-size="15">WebRTC / Circuit Relay → peers</text>
+    <text x="918" y="326">libp2p transport</text><text x="0" y="0" fill="#a7a0b6" font-size="15" transform="translate(918 351) scale(0.98519 1)">WebRTC / Circuit Relay → peers</text>
     <text x="690" y="244" fill="#a3efb8" font-size="15">Encrypted payloads</text>
     <text x="540" y="402" fill="#a7a0b6" font-size="14">Runtime map · change transactions are not a separate durable batching WAL</text>
   </g>
+<path d="M0 0H1080V8H0Z" fill="#a3efb8"/>
 </svg>

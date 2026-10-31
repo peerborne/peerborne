@@ -1,92 +1,90 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title description">
   <title id="title">Signed and encrypted change pipeline</title>
-  <desc id="description">Line chart of mean sign-and-encrypt and decrypt-and-verify latency from one kilobyte to one megabyte, with p99 whiskers. Dots show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
+  <desc id="description">Line chart of mean sign-and-encrypt and decrypt-and-verify latency from one kilobyte to one megabyte, with p99 whiskers. Squares show means and capped whiskers show p99. This is a directional single-machine snapshot, not a performance guarantee.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity=".035"/>
+      <path d="M40 0H0V40" fill="none" stroke="#a7a0b6" stroke-opacity=".035"/>
     </pattern>
-    <style>text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }</style>
+    <style>text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }</style>
   </defs>
-  <rect width="1120" height="620" rx="26" fill="url(#background)"/>
-  <rect width="1120" height="620" rx="26" fill="url(#grid)"/>
-  <path d="M0 26A26 26 0 0 1 26 0H1094A26 26 0 0 1 1120 26V32H0Z" fill="#2dd4bf"/>
+  <rect width="1120" height="620" fill="#171521"/>
+  <rect width="1120" height="620" fill="url(#grid)"/>
+
   <g>
-    <text x="42" y="59" fill="#f8fafc" font-size="29" font-weight="780">Signed and encrypted change pipeline</text>
-    <text x="42" y="84" fill="#94a3b8" font-size="15">Mean local operation latency by payload size; whiskers show p99</text>
-    <line x1="92" y1="107" x2="120" y2="107" stroke="#2dd4bf" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="106" cy="107" r="5" fill="#0f172a" stroke="#2dd4bf" stroke-width="2"/>
-    <text x="130" y="112" fill="#e2e8f0" font-size="14" font-weight="650">Sign + encrypt</text>
-    <line x1="337" y1="107" x2="365" y2="107" stroke="#818cf8" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="351" cy="107" r="5" fill="#0f172a" stroke="#818cf8" stroke-width="2"/>
-    <text x="375" y="112" fill="#e2e8f0" font-size="14" font-weight="650">Decrypt + verify</text>
-    <line x1="92" y1="485.00" x2="1070" y2="485.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="490.00" fill="#94a3b8" font-size="13" text-anchor="end">0</text>
-    <line x1="92" y1="415.00" x2="1070" y2="415.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="420.00" fill="#94a3b8" font-size="13" text-anchor="end">1</text>
-    <line x1="92" y1="345.00" x2="1070" y2="345.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="350.00" fill="#94a3b8" font-size="13" text-anchor="end">2</text>
-    <line x1="92" y1="275.00" x2="1070" y2="275.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="280.00" fill="#94a3b8" font-size="13" text-anchor="end">3</text>
-    <line x1="92" y1="205.00" x2="1070" y2="205.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="210.00" fill="#94a3b8" font-size="13" text-anchor="end">4</text>
-    <line x1="92" y1="135.00" x2="1070" y2="135.00" stroke="#334155" stroke-width="1"/>
-    <text x="78" y="140.00" fill="#94a3b8" font-size="13" text-anchor="end">5</text>
-    <line x1="92" y1="135" x2="92" y2="485" stroke="#64748b" stroke-width="1.5"/>
-    <line x1="92" y1="485" x2="1070" y2="485" stroke="#64748b" stroke-width="1.5"/>
-    <line x1="92.00" y1="485" x2="92.00" y2="492" stroke="#64748b"/>
-    <text x="92.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">1 KB</text>
-    <line x1="418.00" y1="485" x2="418.00" y2="492" stroke="#64748b"/>
-    <text x="418.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">10 KB</text>
-    <line x1="744.00" y1="485" x2="744.00" y2="492" stroke="#64748b"/>
-    <text x="744.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">100 KB</text>
-    <line x1="1070.00" y1="485" x2="1070.00" y2="492" stroke="#64748b"/>
-    <text x="1070.00" y="512" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">1 MB</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M45 38h3v3h-3zM48 38h3v3h-3zM51 38h3v3h-3zM54 38h3v3h-3zM42 41h3v3h-3zM42 44h3v3h-3zM45 47h3v3h-3zM48 47h3v3h-3zM51 47h3v3h-3zM54 50h3v3h-3zM54 53h3v3h-3zM42 56h3v3h-3zM45 56h3v3h-3zM48 56h3v3h-3zM51 56h3v3h-3zM60 38h3v3h-3zM63 38h3v3h-3zM66 38h3v3h-3zM69 38h3v3h-3zM72 38h3v3h-3zM66 41h3v3h-3zM66 44h3v3h-3zM66 47h3v3h-3zM66 50h3v3h-3zM66 53h3v3h-3zM60 56h3v3h-3zM63 56h3v3h-3zM66 56h3v3h-3zM69 56h3v3h-3zM72 56h3v3h-3zM81 38h3v3h-3zM84 38h3v3h-3zM87 38h3v3h-3zM90 38h3v3h-3zM78 41h3v3h-3zM78 44h3v3h-3zM78 47h3v3h-3zM84 47h3v3h-3zM87 47h3v3h-3zM90 47h3v3h-3zM78 50h3v3h-3zM90 50h3v3h-3zM78 53h3v3h-3zM90 53h3v3h-3zM81 56h3v3h-3zM84 56h3v3h-3zM87 56h3v3h-3zM90 56h3v3h-3zM96 38h3v3h-3zM108 38h3v3h-3zM96 41h3v3h-3zM99 41h3v3h-3zM108 41h3v3h-3zM96 44h3v3h-3zM102 44h3v3h-3zM108 44h3v3h-3zM96 47h3v3h-3zM105 47h3v3h-3zM108 47h3v3h-3zM96 50h3v3h-3zM108 50h3v3h-3zM96 53h3v3h-3zM108 53h3v3h-3zM96 56h3v3h-3zM108 56h3v3h-3zM114 38h3v3h-3zM117 38h3v3h-3zM120 38h3v3h-3zM123 38h3v3h-3zM126 38h3v3h-3zM114 41h3v3h-3zM114 44h3v3h-3zM114 47h3v3h-3zM117 47h3v3h-3zM120 47h3v3h-3zM123 47h3v3h-3zM114 50h3v3h-3zM114 53h3v3h-3zM114 56h3v3h-3zM117 56h3v3h-3zM120 56h3v3h-3zM123 56h3v3h-3zM126 56h3v3h-3zM132 38h3v3h-3zM135 38h3v3h-3zM138 38h3v3h-3zM141 38h3v3h-3zM132 41h3v3h-3zM144 41h3v3h-3zM132 44h3v3h-3zM144 44h3v3h-3zM132 47h3v3h-3zM144 47h3v3h-3zM132 50h3v3h-3zM144 50h3v3h-3zM132 53h3v3h-3zM144 53h3v3h-3zM132 56h3v3h-3zM135 56h3v3h-3zM138 56h3v3h-3zM141 56h3v3h-3zM171 38h3v3h-3zM174 38h3v3h-3zM177 38h3v3h-3zM168 41h3v3h-3zM180 41h3v3h-3zM168 44h3v3h-3zM180 44h3v3h-3zM168 47h3v3h-3zM171 47h3v3h-3zM174 47h3v3h-3zM177 47h3v3h-3zM180 47h3v3h-3zM168 50h3v3h-3zM180 50h3v3h-3zM168 53h3v3h-3zM180 53h3v3h-3zM168 56h3v3h-3zM180 56h3v3h-3zM186 38h3v3h-3zM198 38h3v3h-3zM186 41h3v3h-3zM189 41h3v3h-3zM198 41h3v3h-3zM186 44h3v3h-3zM192 44h3v3h-3zM198 44h3v3h-3zM186 47h3v3h-3zM195 47h3v3h-3zM198 47h3v3h-3zM186 50h3v3h-3zM198 50h3v3h-3zM186 53h3v3h-3zM198 53h3v3h-3zM186 56h3v3h-3zM198 56h3v3h-3zM204 38h3v3h-3zM207 38h3v3h-3zM210 38h3v3h-3zM213 38h3v3h-3zM204 41h3v3h-3zM216 41h3v3h-3zM204 44h3v3h-3zM216 44h3v3h-3zM204 47h3v3h-3zM216 47h3v3h-3zM204 50h3v3h-3zM216 50h3v3h-3zM204 53h3v3h-3zM216 53h3v3h-3zM204 56h3v3h-3zM207 56h3v3h-3zM210 56h3v3h-3zM213 56h3v3h-3zM240 38h3v3h-3zM243 38h3v3h-3zM246 38h3v3h-3zM249 38h3v3h-3zM252 38h3v3h-3zM240 41h3v3h-3zM240 44h3v3h-3zM240 47h3v3h-3zM243 47h3v3h-3zM246 47h3v3h-3zM249 47h3v3h-3zM240 50h3v3h-3zM240 53h3v3h-3zM240 56h3v3h-3zM243 56h3v3h-3zM246 56h3v3h-3zM249 56h3v3h-3zM252 56h3v3h-3zM258 38h3v3h-3zM270 38h3v3h-3zM258 41h3v3h-3zM261 41h3v3h-3zM270 41h3v3h-3zM258 44h3v3h-3zM264 44h3v3h-3zM270 44h3v3h-3zM258 47h3v3h-3zM267 47h3v3h-3zM270 47h3v3h-3zM258 50h3v3h-3zM270 50h3v3h-3zM258 53h3v3h-3zM270 53h3v3h-3zM258 56h3v3h-3zM270 56h3v3h-3zM279 38h3v3h-3zM282 38h3v3h-3zM285 38h3v3h-3zM288 38h3v3h-3zM276 41h3v3h-3zM276 44h3v3h-3zM276 47h3v3h-3zM276 50h3v3h-3zM276 53h3v3h-3zM279 56h3v3h-3zM282 56h3v3h-3zM285 56h3v3h-3zM288 56h3v3h-3zM294 38h3v3h-3zM297 38h3v3h-3zM300 38h3v3h-3zM303 38h3v3h-3zM294 41h3v3h-3zM306 41h3v3h-3zM294 44h3v3h-3zM306 44h3v3h-3zM294 47h3v3h-3zM297 47h3v3h-3zM300 47h3v3h-3zM303 47h3v3h-3zM294 50h3v3h-3zM300 50h3v3h-3zM294 53h3v3h-3zM303 53h3v3h-3zM294 56h3v3h-3zM306 56h3v3h-3zM312 38h3v3h-3zM324 38h3v3h-3zM312 41h3v3h-3zM324 41h3v3h-3zM315 44h3v3h-3zM321 44h3v3h-3zM318 47h3v3h-3zM318 50h3v3h-3zM318 53h3v3h-3zM318 56h3v3h-3zM330 38h3v3h-3zM333 38h3v3h-3zM336 38h3v3h-3zM339 38h3v3h-3zM330 41h3v3h-3zM342 41h3v3h-3zM330 44h3v3h-3zM342 44h3v3h-3zM330 47h3v3h-3zM333 47h3v3h-3zM336 47h3v3h-3zM339 47h3v3h-3zM330 50h3v3h-3zM330 53h3v3h-3zM330 56h3v3h-3zM348 38h3v3h-3zM351 38h3v3h-3zM354 38h3v3h-3zM357 38h3v3h-3zM360 38h3v3h-3zM354 41h3v3h-3zM354 44h3v3h-3zM354 47h3v3h-3zM354 50h3v3h-3zM354 53h3v3h-3zM354 56h3v3h-3zM366 38h3v3h-3zM369 38h3v3h-3zM372 38h3v3h-3zM375 38h3v3h-3zM378 38h3v3h-3zM366 41h3v3h-3zM366 44h3v3h-3zM366 47h3v3h-3zM369 47h3v3h-3zM372 47h3v3h-3zM375 47h3v3h-3zM366 50h3v3h-3zM366 53h3v3h-3zM366 56h3v3h-3zM369 56h3v3h-3zM372 56h3v3h-3zM375 56h3v3h-3zM378 56h3v3h-3zM384 38h3v3h-3zM387 38h3v3h-3zM390 38h3v3h-3zM393 38h3v3h-3zM384 41h3v3h-3zM396 41h3v3h-3zM384 44h3v3h-3zM396 44h3v3h-3zM384 47h3v3h-3zM396 47h3v3h-3zM384 50h3v3h-3zM396 50h3v3h-3zM384 53h3v3h-3zM396 53h3v3h-3zM384 56h3v3h-3zM387 56h3v3h-3zM390 56h3v3h-3zM393 56h3v3h-3zM423 38h3v3h-3zM426 38h3v3h-3zM429 38h3v3h-3zM432 38h3v3h-3zM420 41h3v3h-3zM420 44h3v3h-3zM420 47h3v3h-3zM420 50h3v3h-3zM420 53h3v3h-3zM423 56h3v3h-3zM426 56h3v3h-3zM429 56h3v3h-3zM432 56h3v3h-3zM438 38h3v3h-3zM450 38h3v3h-3zM438 41h3v3h-3zM450 41h3v3h-3zM438 44h3v3h-3zM450 44h3v3h-3zM438 47h3v3h-3zM441 47h3v3h-3zM444 47h3v3h-3zM447 47h3v3h-3zM450 47h3v3h-3zM438 50h3v3h-3zM450 50h3v3h-3zM438 53h3v3h-3zM450 53h3v3h-3zM438 56h3v3h-3zM450 56h3v3h-3zM459 38h3v3h-3zM462 38h3v3h-3zM465 38h3v3h-3zM456 41h3v3h-3zM468 41h3v3h-3zM456 44h3v3h-3zM468 44h3v3h-3zM456 47h3v3h-3zM459 47h3v3h-3zM462 47h3v3h-3zM465 47h3v3h-3zM468 47h3v3h-3zM456 50h3v3h-3zM468 50h3v3h-3zM456 53h3v3h-3zM468 53h3v3h-3zM456 56h3v3h-3zM468 56h3v3h-3zM474 38h3v3h-3zM486 38h3v3h-3zM474 41h3v3h-3zM477 41h3v3h-3zM486 41h3v3h-3zM474 44h3v3h-3zM480 44h3v3h-3zM486 44h3v3h-3zM474 47h3v3h-3zM483 47h3v3h-3zM486 47h3v3h-3zM474 50h3v3h-3zM486 50h3v3h-3zM474 53h3v3h-3zM486 53h3v3h-3zM474 56h3v3h-3zM486 56h3v3h-3zM495 38h3v3h-3zM498 38h3v3h-3zM501 38h3v3h-3zM504 38h3v3h-3zM492 41h3v3h-3zM492 44h3v3h-3zM492 47h3v3h-3zM498 47h3v3h-3zM501 47h3v3h-3zM504 47h3v3h-3zM492 50h3v3h-3zM504 50h3v3h-3zM492 53h3v3h-3zM504 53h3v3h-3zM495 56h3v3h-3zM498 56h3v3h-3zM501 56h3v3h-3zM504 56h3v3h-3zM510 38h3v3h-3zM513 38h3v3h-3zM516 38h3v3h-3zM519 38h3v3h-3zM522 38h3v3h-3zM510 41h3v3h-3zM510 44h3v3h-3zM510 47h3v3h-3zM513 47h3v3h-3zM516 47h3v3h-3zM519 47h3v3h-3zM510 50h3v3h-3zM510 53h3v3h-3zM510 56h3v3h-3zM513 56h3v3h-3zM516 56h3v3h-3zM519 56h3v3h-3zM522 56h3v3h-3zM546 38h3v3h-3zM549 38h3v3h-3zM552 38h3v3h-3zM555 38h3v3h-3zM546 41h3v3h-3zM558 41h3v3h-3zM546 44h3v3h-3zM558 44h3v3h-3zM546 47h3v3h-3zM549 47h3v3h-3zM552 47h3v3h-3zM555 47h3v3h-3zM546 50h3v3h-3zM546 53h3v3h-3zM546 56h3v3h-3zM564 38h3v3h-3zM567 38h3v3h-3zM570 38h3v3h-3zM573 38h3v3h-3zM576 38h3v3h-3zM570 41h3v3h-3zM570 44h3v3h-3zM570 47h3v3h-3zM570 50h3v3h-3zM570 53h3v3h-3zM564 56h3v3h-3zM567 56h3v3h-3zM570 56h3v3h-3zM573 56h3v3h-3zM576 56h3v3h-3zM582 38h3v3h-3zM585 38h3v3h-3zM588 38h3v3h-3zM591 38h3v3h-3zM582 41h3v3h-3zM594 41h3v3h-3zM582 44h3v3h-3zM594 44h3v3h-3zM582 47h3v3h-3zM585 47h3v3h-3zM588 47h3v3h-3zM591 47h3v3h-3zM582 50h3v3h-3zM582 53h3v3h-3zM582 56h3v3h-3zM600 38h3v3h-3zM603 38h3v3h-3zM606 38h3v3h-3zM609 38h3v3h-3zM612 38h3v3h-3zM600 41h3v3h-3zM600 44h3v3h-3zM600 47h3v3h-3zM603 47h3v3h-3zM606 47h3v3h-3zM609 47h3v3h-3zM600 50h3v3h-3zM600 53h3v3h-3zM600 56h3v3h-3zM603 56h3v3h-3zM606 56h3v3h-3zM609 56h3v3h-3zM612 56h3v3h-3zM618 38h3v3h-3zM618 41h3v3h-3zM618 44h3v3h-3zM618 47h3v3h-3zM618 50h3v3h-3zM618 53h3v3h-3zM618 56h3v3h-3zM621 56h3v3h-3zM624 56h3v3h-3zM627 56h3v3h-3zM630 56h3v3h-3zM636 38h3v3h-3zM639 38h3v3h-3zM642 38h3v3h-3zM645 38h3v3h-3zM648 38h3v3h-3zM642 41h3v3h-3zM642 44h3v3h-3zM642 47h3v3h-3zM642 50h3v3h-3zM642 53h3v3h-3zM636 56h3v3h-3zM639 56h3v3h-3zM642 56h3v3h-3zM645 56h3v3h-3zM648 56h3v3h-3zM654 38h3v3h-3zM666 38h3v3h-3zM654 41h3v3h-3zM657 41h3v3h-3zM666 41h3v3h-3zM654 44h3v3h-3zM660 44h3v3h-3zM666 44h3v3h-3zM654 47h3v3h-3zM663 47h3v3h-3zM666 47h3v3h-3zM654 50h3v3h-3zM666 50h3v3h-3zM654 53h3v3h-3zM666 53h3v3h-3zM654 56h3v3h-3zM666 56h3v3h-3zM672 38h3v3h-3zM675 38h3v3h-3zM678 38h3v3h-3zM681 38h3v3h-3zM684 38h3v3h-3zM672 41h3v3h-3zM672 44h3v3h-3zM672 47h3v3h-3zM675 47h3v3h-3zM678 47h3v3h-3zM681 47h3v3h-3zM672 50h3v3h-3zM672 53h3v3h-3zM672 56h3v3h-3zM675 56h3v3h-3zM678 56h3v3h-3zM681 56h3v3h-3zM684 56h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="42" y="84" fill="#a7a0b6" font-size="15">Mean local operation latency by payload size; whiskers show p99</text>
+    <line x1="92" y1="107" x2="120" y2="107" stroke="#a3efb8" stroke-width="4" stroke-linecap="square"/>
+    <rect x="101" y="102" width="10" height="10" fill="#171521" stroke="#a3efb8" stroke-width="2"/>
+    <text x="130" y="112" fill="#cbc5d6" font-size="14" font-weight="650">Sign + encrypt</text>
+    <line x1="337" y1="107" x2="365" y2="107" stroke="#b7a1ff" stroke-width="4" stroke-linecap="square"/>
+    <rect x="346" y="102" width="10" height="10" fill="#171521" stroke="#b7a1ff" stroke-width="2"/>
+    <text x="375" y="112" fill="#cbc5d6" font-size="14" font-weight="650">Decrypt + verify</text>
+    <line x1="92" y1="485.00" x2="1070" y2="485.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="490.00" fill="#a7a0b6" font-size="13" text-anchor="end">0</text>
+    <line x1="92" y1="415.00" x2="1070" y2="415.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="420.00" fill="#a7a0b6" font-size="13" text-anchor="end">1</text>
+    <line x1="92" y1="345.00" x2="1070" y2="345.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="350.00" fill="#a7a0b6" font-size="13" text-anchor="end">2</text>
+    <line x1="92" y1="275.00" x2="1070" y2="275.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="280.00" fill="#a7a0b6" font-size="13" text-anchor="end">3</text>
+    <line x1="92" y1="205.00" x2="1070" y2="205.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="210.00" fill="#a7a0b6" font-size="13" text-anchor="end">4</text>
+    <line x1="92" y1="135.00" x2="1070" y2="135.00" stroke="#40394f" stroke-width="1"/>
+    <text x="78" y="140.00" fill="#a7a0b6" font-size="13" text-anchor="end">5</text>
+    <line x1="92" y1="135" x2="92" y2="485" stroke="#756c89" stroke-width="1.5"/>
+    <line x1="92" y1="485" x2="1070" y2="485" stroke="#756c89" stroke-width="1.5"/>
+    <line x1="92.00" y1="485" x2="92.00" y2="492" stroke="#756c89"/>
+    <text x="92.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">1 KB</text>
+    <line x1="418.00" y1="485" x2="418.00" y2="492" stroke="#756c89"/>
+    <text x="418.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">10 KB</text>
+    <line x1="744.00" y1="485" x2="744.00" y2="492" stroke="#756c89"/>
+    <text x="744.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">100 KB</text>
+    <line x1="1070.00" y1="485" x2="1070.00" y2="492" stroke="#756c89"/>
+    <text x="1070.00" y="512" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">1 MB</text>
     <g aria-label="Sign + encrypt">
-      <path d="M92.00 457.72 L418.00 451.81 L744.00 452.28 L1070.00 405.54" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <line x1="92.00" y1="457.72" x2="92.00" y2="456.53" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="86.00" y1="456.53" x2="98.00" y2="456.53" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="92.00" cy="457.72" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="92.00" y="445.72" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">0.39</text>
-      <line x1="418.00" y1="451.81" x2="418.00" y2="364.60" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="412.00" y1="364.60" x2="424.00" y2="364.60" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="418.00" cy="451.81" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="418.00" y="439.81" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">0.47</text>
-      <line x1="744.00" y1="452.28" x2="744.00" y2="450.27" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="738.00" y1="450.27" x2="750.00" y2="450.27" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="744.00" cy="452.28" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="744.00" y="440.28" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">0.47</text>
-      <line x1="1070.00" y1="405.54" x2="1070.00" y2="402.39" stroke="#2dd4bf" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="1064.00" y1="402.39" x2="1076.00" y2="402.39" stroke="#2dd4bf" stroke-width="2"/>
-      <circle cx="1070.00" cy="405.54" r="6" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-      <text x="1070.00" y="393.54" fill="#2dd4bf" font-size="11.5" font-weight="750" text-anchor="middle">1.1</text>
+      <path d="M92.00 457.72 L418.00 451.81 L744.00 452.28 L1070.00 405.54" fill="none" stroke="#a3efb8" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter"/>
+      <line x1="92.00" y1="457.72" x2="92.00" y2="456.53" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="86.00" y1="456.53" x2="98.00" y2="456.53" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="86" y="451.72" width="12" height="12" class="mean-marker" data-mean="0.38974369999999825" data-p99="0.4067090000000064" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="92.00" y="445.72" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">0.39</text>
+      <line x1="418.00" y1="451.81" x2="418.00" y2="364.60" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="412.00" y1="364.60" x2="424.00" y2="364.60" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="412" y="445.81" width="12" height="12" class="mean-marker" data-mean="0.47411250000000393" data-p99="1.7199999999999989" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="418.00" y="439.81" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">0.47</text>
+      <line x1="744.00" y1="452.28" x2="744.00" y2="450.27" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="738.00" y1="450.27" x2="750.00" y2="450.27" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="738" y="446.28" width="12" height="12" class="mean-marker" data-mean="0.4674790499999972" data-p99="0.4960829999999987" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="744.00" y="440.28" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">0.47</text>
+      <line x1="1070.00" y1="405.54" x2="1070.00" y2="402.39" stroke="#a3efb8" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="1064.00" y1="402.39" x2="1076.00" y2="402.39" stroke="#a3efb8" stroke-width="2"/>
+      <rect x="1064" y="399.54" width="12" height="12" class="mean-marker" data-mean="1.135191600000013" data-p99="1.1802090000000476" fill="#171521" stroke="#a3efb8" stroke-width="3"/>
+      <text x="1070.00" y="393.54" fill="#a3efb8" font-size="11.5" font-weight="750" text-anchor="middle">1.1</text>
     </g>
     <g aria-label="Decrypt + verify">
-      <path d="M92.00 461.58 L418.00 461.48 L744.00 455.50 L1070.00 401.09" fill="none" stroke="#818cf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <line x1="92.00" y1="461.58" x2="92.00" y2="459.62" stroke="#818cf8" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="86.00" y1="459.62" x2="98.00" y2="459.62" stroke="#818cf8" stroke-width="2"/>
-      <circle cx="92.00" cy="461.58" r="6" fill="#0f172a" stroke="#818cf8" stroke-width="3"/>
-      <text x="92.00" y="434.58" fill="#818cf8" font-size="11.5" font-weight="750" text-anchor="middle">0.33</text>
-      <line x1="418.00" y1="461.48" x2="418.00" y2="460.33" stroke="#818cf8" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="412.00" y1="460.33" x2="424.00" y2="460.33" stroke="#818cf8" stroke-width="2"/>
-      <circle cx="418.00" cy="461.48" r="6" fill="#0f172a" stroke="#818cf8" stroke-width="3"/>
-      <text x="418.00" y="434.48" fill="#818cf8" font-size="11.5" font-weight="750" text-anchor="middle">0.34</text>
-      <line x1="744.00" y1="455.50" x2="744.00" y2="454.09" stroke="#818cf8" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="738.00" y1="454.09" x2="750.00" y2="454.09" stroke="#818cf8" stroke-width="2"/>
-      <circle cx="744.00" cy="455.50" r="6" fill="#0f172a" stroke="#818cf8" stroke-width="3"/>
-      <text x="744.00" y="428.50" fill="#818cf8" font-size="11.5" font-weight="750" text-anchor="middle">0.42</text>
-      <line x1="1070.00" y1="401.09" x2="1070.00" y2="269.18" stroke="#818cf8" stroke-width="2" stroke-opacity=".65"/>
-      <line x1="1064.00" y1="269.18" x2="1076.00" y2="269.18" stroke="#818cf8" stroke-width="2"/>
-      <circle cx="1070.00" cy="401.09" r="6" fill="#0f172a" stroke="#818cf8" stroke-width="3"/>
-      <text x="1070.00" y="435.09" fill="#818cf8" font-size="11.5" font-weight="750" text-anchor="middle">1.2</text>
+      <path d="M92.00 461.58 L418.00 461.48 L744.00 455.50 L1070.00 401.09" fill="none" stroke="#b7a1ff" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter"/>
+      <line x1="92.00" y1="461.58" x2="92.00" y2="459.62" stroke="#b7a1ff" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="86.00" y1="459.62" x2="98.00" y2="459.62" stroke="#b7a1ff" stroke-width="2"/>
+      <rect x="86" y="455.58" width="12" height="12" class="mean-marker" data-mean="0.3346123999999989" data-p99="0.3626250000000084" fill="#171521" stroke="#b7a1ff" stroke-width="3"/>
+      <text x="92.00" y="434.58" fill="#b7a1ff" font-size="11.5" font-weight="750" text-anchor="middle">0.33</text>
+      <line x1="418.00" y1="461.48" x2="418.00" y2="460.33" stroke="#b7a1ff" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="412.00" y1="460.33" x2="424.00" y2="460.33" stroke="#b7a1ff" stroke-width="2"/>
+      <rect x="412" y="455.48" width="12" height="12" class="mean-marker" data-mean="0.33596249999999656" data-p99="0.35249999999999204" fill="#171521" stroke="#b7a1ff" stroke-width="3"/>
+      <text x="418.00" y="434.48" fill="#b7a1ff" font-size="11.5" font-weight="750" text-anchor="middle">0.34</text>
+      <line x1="744.00" y1="455.50" x2="744.00" y2="454.09" stroke="#b7a1ff" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="738.00" y1="454.09" x2="750.00" y2="454.09" stroke="#b7a1ff" stroke-width="2"/>
+      <rect x="738" y="449.5" width="12" height="12" class="mean-marker" data-mean="0.42148749999999924" data-p99="0.4415830000000369" fill="#171521" stroke="#b7a1ff" stroke-width="3"/>
+      <text x="744.00" y="428.50" fill="#b7a1ff" font-size="11.5" font-weight="750" text-anchor="middle">0.42</text>
+      <line x1="1070.00" y1="401.09" x2="1070.00" y2="269.18" stroke="#b7a1ff" stroke-width="2" stroke-opacity=".65"/>
+      <line x1="1064.00" y1="269.18" x2="1076.00" y2="269.18" stroke="#b7a1ff" stroke-width="2"/>
+      <rect x="1064" y="395.09" width="12" height="12" class="mean-marker" data-mean="1.1987229000000041" data-p99="3.0831249999999955" fill="#171521" stroke="#b7a1ff" stroke-width="3"/>
+      <text x="1070.00" y="435.09" fill="#b7a1ff" font-size="11.5" font-weight="750" text-anchor="middle">1.2</text>
     </g>
-    <text x="581" y="538" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle">Payload size (log-spaced categories)</text>
-    <text x="24" y="310" fill="#cbd5e1" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 310)">Latency (ms)</text>
-    <rect x="42" y="557" width="1036" height="43" rx="12" fill="#0b1524" stroke="#334155"/>
-    <text x="560" y="575" fill="#94a3b8" font-size="11.5" text-anchor="middle">Directional snapshot · Apple M5 · v22.19.0 · darwin/arm64 · commit 414d4bf7 · 2026-08-29</text>
-    <text x="560" y="591" fill="#94a3b8" font-size="11.5" text-anchor="middle">Mean dots + p99 whiskers · 20 timed iterations per point · no pass/fail budget</text>
+    <text x="581" y="538" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle">Payload size (log-spaced categories)</text>
+    <text x="24" y="310" fill="#cbc5d6" font-size="14" font-weight="650" text-anchor="middle" transform="rotate(-90 24 310)">Latency (ms)</text>
+    <rect x="42" y="557" width="1036" height="43" fill="#242136" stroke="#40394f"/>
+    <text x="560" y="575" fill="#a7a0b6" font-size="11.5" text-anchor="middle">Directional snapshot · Apple M5 · v22.19.0 · darwin/arm64 · commit 414d4bf7 · 2026-08-29</text>
+    <text x="560" y="591" fill="#a7a0b6" font-size="11.5" text-anchor="middle">Mean squares + p99 whiskers · 20 timed iterations per point · no pass/fail budget</text>
   </g>
+<path d="M0 0H1120V8H0Z" fill="#a3efb8"/>
 </svg>

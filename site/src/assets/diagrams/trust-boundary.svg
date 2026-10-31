@@ -2,92 +2,86 @@
   <title id="title">How Peerborne changes the document trust boundary</title>
   <desc id="description">A centralized application routes plaintext through a trusted application server and database. Peerborne keeps plaintext and keys on authorized devices while infrastructure forwards bidirectional encrypted document traffic. Sync envelopes are signed when enabled and encrypted; separately fetched change blocks are encrypted and CID-addressed. Infrastructure can observe metadata and disrupt delivery but lacks document plaintext without the document key.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#090d1a" />
-      <stop offset="0.55" stop-color="#111936" />
-      <stop offset="1" stop-color="#172554" />
-    </linearGradient>
-    <linearGradient id="peerPanel" x1="620" y1="128" x2="1150" y2="594" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#1e1b4b" stop-opacity="0.62" />
-      <stop offset="1" stop-color="#0f2f35" stop-opacity="0.58" />
-    </linearGradient>
-    <marker id="arrowSlate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M1 1L9 5L1 9Z" fill="#94a3b8" />
+
+
+    <marker id="arrowSlate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a7a0b6" />
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M1 1L9 5L1 9Z" fill="#2dd4bf" />
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8" />
     </marker>
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#c7d2fe" stroke-opacity="0.045" />
+      <path d="M40 0H0V40" fill="none" stroke="#d6c8ff" stroke-opacity="0.045" />
     </pattern>
   </defs>
 
-  <rect width="1200" height="720" rx="24" fill="url(#background)" />
-  <rect width="1200" height="720" rx="24" fill="url(#grid)" />
+  <rect width="1200" height="720" fill="#171521" />
+  <rect width="1200" height="720" fill="url(#grid)" />
 
-  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-    <text x="60" y="64" fill="#f8fafc" font-size="34" font-weight="750">Where document plaintext lives</text>
-    <text x="60" y="98" fill="#94a3b8" font-size="19">The collaboration goal is similar. The trust boundary is not.</text>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace">
+    <g class="pixel-heading" aria-hidden="true"><path d="M60 43h3v3h-3zM72 43h3v3h-3zM60 46h3v3h-3zM72 46h3v3h-3zM60 49h3v3h-3zM72 49h3v3h-3zM60 52h3v3h-3zM66 52h3v3h-3zM72 52h3v3h-3zM60 55h3v3h-3zM66 55h3v3h-3zM72 55h3v3h-3zM60 58h3v3h-3zM63 58h3v3h-3zM69 58h3v3h-3zM72 58h3v3h-3zM60 61h3v3h-3zM72 61h3v3h-3zM78 43h3v3h-3zM90 43h3v3h-3zM78 46h3v3h-3zM90 46h3v3h-3zM78 49h3v3h-3zM90 49h3v3h-3zM78 52h3v3h-3zM81 52h3v3h-3zM84 52h3v3h-3zM87 52h3v3h-3zM90 52h3v3h-3zM78 55h3v3h-3zM90 55h3v3h-3zM78 58h3v3h-3zM90 58h3v3h-3zM78 61h3v3h-3zM90 61h3v3h-3zM96 43h3v3h-3zM99 43h3v3h-3zM102 43h3v3h-3zM105 43h3v3h-3zM108 43h3v3h-3zM96 46h3v3h-3zM96 49h3v3h-3zM96 52h3v3h-3zM99 52h3v3h-3zM102 52h3v3h-3zM105 52h3v3h-3zM96 55h3v3h-3zM96 58h3v3h-3zM96 61h3v3h-3zM99 61h3v3h-3zM102 61h3v3h-3zM105 61h3v3h-3zM108 61h3v3h-3zM114 43h3v3h-3zM117 43h3v3h-3zM120 43h3v3h-3zM123 43h3v3h-3zM114 46h3v3h-3zM126 46h3v3h-3zM114 49h3v3h-3zM126 49h3v3h-3zM114 52h3v3h-3zM117 52h3v3h-3zM120 52h3v3h-3zM123 52h3v3h-3zM114 55h3v3h-3zM120 55h3v3h-3zM114 58h3v3h-3zM123 58h3v3h-3zM114 61h3v3h-3zM126 61h3v3h-3zM132 43h3v3h-3zM135 43h3v3h-3zM138 43h3v3h-3zM141 43h3v3h-3zM144 43h3v3h-3zM132 46h3v3h-3zM132 49h3v3h-3zM132 52h3v3h-3zM135 52h3v3h-3zM138 52h3v3h-3zM141 52h3v3h-3zM132 55h3v3h-3zM132 58h3v3h-3zM132 61h3v3h-3zM135 61h3v3h-3zM138 61h3v3h-3zM141 61h3v3h-3zM144 61h3v3h-3zM168 43h3v3h-3zM171 43h3v3h-3zM174 43h3v3h-3zM177 43h3v3h-3zM168 46h3v3h-3zM180 46h3v3h-3zM168 49h3v3h-3zM180 49h3v3h-3zM168 52h3v3h-3zM180 52h3v3h-3zM168 55h3v3h-3zM180 55h3v3h-3zM168 58h3v3h-3zM180 58h3v3h-3zM168 61h3v3h-3zM171 61h3v3h-3zM174 61h3v3h-3zM177 61h3v3h-3zM189 43h3v3h-3zM192 43h3v3h-3zM195 43h3v3h-3zM186 46h3v3h-3zM198 46h3v3h-3zM186 49h3v3h-3zM198 49h3v3h-3zM186 52h3v3h-3zM198 52h3v3h-3zM186 55h3v3h-3zM198 55h3v3h-3zM186 58h3v3h-3zM198 58h3v3h-3zM189 61h3v3h-3zM192 61h3v3h-3zM195 61h3v3h-3zM207 43h3v3h-3zM210 43h3v3h-3zM213 43h3v3h-3zM216 43h3v3h-3zM204 46h3v3h-3zM204 49h3v3h-3zM204 52h3v3h-3zM204 55h3v3h-3zM204 58h3v3h-3zM207 61h3v3h-3zM210 61h3v3h-3zM213 61h3v3h-3zM216 61h3v3h-3zM222 43h3v3h-3zM234 43h3v3h-3zM222 46h3v3h-3zM234 46h3v3h-3zM222 49h3v3h-3zM234 49h3v3h-3zM222 52h3v3h-3zM234 52h3v3h-3zM222 55h3v3h-3zM234 55h3v3h-3zM222 58h3v3h-3zM234 58h3v3h-3zM225 61h3v3h-3zM228 61h3v3h-3zM231 61h3v3h-3zM240 43h3v3h-3zM252 43h3v3h-3zM240 46h3v3h-3zM243 46h3v3h-3zM249 46h3v3h-3zM252 46h3v3h-3zM240 49h3v3h-3zM246 49h3v3h-3zM252 49h3v3h-3zM240 52h3v3h-3zM246 52h3v3h-3zM252 52h3v3h-3zM240 55h3v3h-3zM252 55h3v3h-3zM240 58h3v3h-3zM252 58h3v3h-3zM240 61h3v3h-3zM252 61h3v3h-3zM258 43h3v3h-3zM261 43h3v3h-3zM264 43h3v3h-3zM267 43h3v3h-3zM270 43h3v3h-3zM258 46h3v3h-3zM258 49h3v3h-3zM258 52h3v3h-3zM261 52h3v3h-3zM264 52h3v3h-3zM267 52h3v3h-3zM258 55h3v3h-3zM258 58h3v3h-3zM258 61h3v3h-3zM261 61h3v3h-3zM264 61h3v3h-3zM267 61h3v3h-3zM270 61h3v3h-3zM276 43h3v3h-3zM288 43h3v3h-3zM276 46h3v3h-3zM279 46h3v3h-3zM288 46h3v3h-3zM276 49h3v3h-3zM282 49h3v3h-3zM288 49h3v3h-3zM276 52h3v3h-3zM285 52h3v3h-3zM288 52h3v3h-3zM276 55h3v3h-3zM288 55h3v3h-3zM276 58h3v3h-3zM288 58h3v3h-3zM276 61h3v3h-3zM288 61h3v3h-3zM294 43h3v3h-3zM297 43h3v3h-3zM300 43h3v3h-3zM303 43h3v3h-3zM306 43h3v3h-3zM300 46h3v3h-3zM300 49h3v3h-3zM300 52h3v3h-3zM300 55h3v3h-3zM300 58h3v3h-3zM300 61h3v3h-3zM330 43h3v3h-3zM333 43h3v3h-3zM336 43h3v3h-3zM339 43h3v3h-3zM330 46h3v3h-3zM342 46h3v3h-3zM330 49h3v3h-3zM342 49h3v3h-3zM330 52h3v3h-3zM333 52h3v3h-3zM336 52h3v3h-3zM339 52h3v3h-3zM330 55h3v3h-3zM330 58h3v3h-3zM330 61h3v3h-3zM348 43h3v3h-3zM348 46h3v3h-3zM348 49h3v3h-3zM348 52h3v3h-3zM348 55h3v3h-3zM348 58h3v3h-3zM348 61h3v3h-3zM351 61h3v3h-3zM354 61h3v3h-3zM357 61h3v3h-3zM360 61h3v3h-3zM369 43h3v3h-3zM372 43h3v3h-3zM375 43h3v3h-3zM366 46h3v3h-3zM378 46h3v3h-3zM366 49h3v3h-3zM378 49h3v3h-3zM366 52h3v3h-3zM369 52h3v3h-3zM372 52h3v3h-3zM375 52h3v3h-3zM378 52h3v3h-3zM366 55h3v3h-3zM378 55h3v3h-3zM366 58h3v3h-3zM378 58h3v3h-3zM366 61h3v3h-3zM378 61h3v3h-3zM384 43h3v3h-3zM387 43h3v3h-3zM390 43h3v3h-3zM393 43h3v3h-3zM396 43h3v3h-3zM390 46h3v3h-3zM390 49h3v3h-3zM390 52h3v3h-3zM390 55h3v3h-3zM390 58h3v3h-3zM384 61h3v3h-3zM387 61h3v3h-3zM390 61h3v3h-3zM393 61h3v3h-3zM396 61h3v3h-3zM402 43h3v3h-3zM414 43h3v3h-3zM402 46h3v3h-3zM405 46h3v3h-3zM414 46h3v3h-3zM402 49h3v3h-3zM408 49h3v3h-3zM414 49h3v3h-3zM402 52h3v3h-3zM411 52h3v3h-3zM414 52h3v3h-3zM402 55h3v3h-3zM414 55h3v3h-3zM402 58h3v3h-3zM414 58h3v3h-3zM402 61h3v3h-3zM414 61h3v3h-3zM420 43h3v3h-3zM423 43h3v3h-3zM426 43h3v3h-3zM429 43h3v3h-3zM432 43h3v3h-3zM426 46h3v3h-3zM426 49h3v3h-3zM426 52h3v3h-3zM426 55h3v3h-3zM426 58h3v3h-3zM426 61h3v3h-3zM438 43h3v3h-3zM441 43h3v3h-3zM444 43h3v3h-3zM447 43h3v3h-3zM450 43h3v3h-3zM438 46h3v3h-3zM438 49h3v3h-3zM438 52h3v3h-3zM441 52h3v3h-3zM444 52h3v3h-3zM447 52h3v3h-3zM438 55h3v3h-3zM438 58h3v3h-3zM438 61h3v3h-3zM441 61h3v3h-3zM444 61h3v3h-3zM447 61h3v3h-3zM450 61h3v3h-3zM456 43h3v3h-3zM468 43h3v3h-3zM456 46h3v3h-3zM468 46h3v3h-3zM459 49h3v3h-3zM465 49h3v3h-3zM462 52h3v3h-3zM459 55h3v3h-3zM465 55h3v3h-3zM456 58h3v3h-3zM468 58h3v3h-3zM456 61h3v3h-3zM468 61h3v3h-3zM474 43h3v3h-3zM477 43h3v3h-3zM480 43h3v3h-3zM483 43h3v3h-3zM486 43h3v3h-3zM480 46h3v3h-3zM480 49h3v3h-3zM480 52h3v3h-3zM480 55h3v3h-3zM480 58h3v3h-3zM480 61h3v3h-3zM510 43h3v3h-3zM510 46h3v3h-3zM510 49h3v3h-3zM510 52h3v3h-3zM510 55h3v3h-3zM510 58h3v3h-3zM510 61h3v3h-3zM513 61h3v3h-3zM516 61h3v3h-3zM519 61h3v3h-3zM522 61h3v3h-3zM528 43h3v3h-3zM531 43h3v3h-3zM534 43h3v3h-3zM537 43h3v3h-3zM540 43h3v3h-3zM534 46h3v3h-3zM534 49h3v3h-3zM534 52h3v3h-3zM534 55h3v3h-3zM534 58h3v3h-3zM528 61h3v3h-3zM531 61h3v3h-3zM534 61h3v3h-3zM537 61h3v3h-3zM540 61h3v3h-3zM546 43h3v3h-3zM558 43h3v3h-3zM546 46h3v3h-3zM558 46h3v3h-3zM546 49h3v3h-3zM558 49h3v3h-3zM546 52h3v3h-3zM558 52h3v3h-3zM546 55h3v3h-3zM558 55h3v3h-3zM549 58h3v3h-3zM555 58h3v3h-3zM552 61h3v3h-3zM564 43h3v3h-3zM567 43h3v3h-3zM570 43h3v3h-3zM573 43h3v3h-3zM576 43h3v3h-3zM564 46h3v3h-3zM564 49h3v3h-3zM564 52h3v3h-3zM567 52h3v3h-3zM570 52h3v3h-3zM573 52h3v3h-3zM564 55h3v3h-3zM564 58h3v3h-3zM564 61h3v3h-3zM567 61h3v3h-3zM570 61h3v3h-3zM573 61h3v3h-3zM576 61h3v3h-3zM585 43h3v3h-3zM588 43h3v3h-3zM591 43h3v3h-3zM594 43h3v3h-3zM582 46h3v3h-3zM582 49h3v3h-3zM585 52h3v3h-3zM588 52h3v3h-3zM591 52h3v3h-3zM594 55h3v3h-3zM594 58h3v3h-3zM582 61h3v3h-3zM585 61h3v3h-3zM588 61h3v3h-3zM591 61h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="60" y="98" fill="#a7a0b6" font-size="19">The collaboration goal is similar. The trust boundary is not.</text>
 
-    <rect x="50" y="128" width="520" height="466" rx="22" fill="#111827" fill-opacity="0.86" stroke="#475569" />
-    <rect x="630" y="128" width="520" height="466" rx="22" fill="url(#peerPanel)" stroke="#6366f1" stroke-opacity="0.82" />
+    <rect x="50" y="128" width="520" height="466" fill="#171521" fill-opacity="0.86" stroke="#756c89" />
+    <rect x="630" y="128" width="520" height="466" fill="#30234c" stroke="#b7a1ff" stroke-opacity="0.82" />
 
-    <circle cx="82" cy="169" r="8" fill="#94a3b8" />
-    <text x="102" y="178" fill="#e2e8f0" font-size="25" font-weight="700">Centralized application</text>
-    <text x="80" y="211" fill="#94a3b8" font-size="17">One custodian sits on the document path</text>
+    <rect x="74" y="161" width="16" height="16" fill="#a7a0b6"/>
+    <text x="102" y="178" fill="#cbc5d6" font-size="25" font-weight="700">Centralized application</text>
+    <text x="80" y="211" fill="#a7a0b6" font-size="17">One custodian sits on the document path</text>
 
-    <circle cx="662" cy="169" r="8" fill="#2dd4bf" />
-    <text x="682" y="178" fill="#f8fafc" font-size="25" font-weight="700">Peerborne</text>
-    <text x="660" y="211" fill="#99f6e4" font-size="17">Plaintext stays at authorized endpoints</text>
+    <rect x="654" y="161" width="16" height="16" fill="#a3efb8"/>
+    <text x="682" y="178" fill="#f5f0e8" font-size="25" font-weight="700">Peerborne</text>
+    <text x="660" y="211" fill="#c7f5d3" font-size="17">Plaintext stays at authorized endpoints</text>
 
-    <rect x="82" y="248" width="184" height="82" rx="14" fill="#1e293b" stroke="#64748b" />
-    <text x="174" y="280" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Participant A</text>
-    <text x="174" y="307" fill="#cbd5e1" font-size="16" text-anchor="middle">reads and writes</text>
+    <rect x="82" y="248" width="184" height="82" fill="#242136" stroke="#756c89" />
+    <text x="174" y="280" fill="#f5f0e8" font-size="19" font-weight="700" text-anchor="middle">Participant A</text>
+    <text x="174" y="307" fill="#cbc5d6" font-size="16" text-anchor="middle">reads and writes</text>
 
-    <rect x="354" y="248" width="184" height="82" rx="14" fill="#1e293b" stroke="#64748b" />
-    <text x="446" y="280" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Participant B</text>
-    <text x="446" y="307" fill="#cbd5e1" font-size="16" text-anchor="middle">reads and writes</text>
+    <rect x="354" y="248" width="184" height="82" fill="#242136" stroke="#756c89" />
+    <text x="446" y="280" fill="#f5f0e8" font-size="19" font-weight="700" text-anchor="middle">Participant B</text>
+    <text x="446" y="307" fill="#cbc5d6" font-size="16" text-anchor="middle">reads and writes</text>
 
-    <path d="M174 338V386" fill="none" stroke="#94a3b8" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
-    <path d="M446 338V386" fill="none" stroke="#94a3b8" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
-    <text x="310" y="365" fill="#cbd5e1" font-size="16" text-anchor="middle">plaintext reads and writes</text>
+    <path d="M174 338V386" fill="none" stroke="#a7a0b6" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
+    <path d="M446 338V386" fill="none" stroke="#a7a0b6" stroke-width="3" marker-start="url(#arrowSlate)" marker-end="url(#arrowSlate)" />
+    <text x="310" y="365" fill="#cbc5d6" font-size="16" text-anchor="middle">plaintext reads and writes</text>
 
-    <rect x="130" y="395" width="360" height="116" rx="16" fill="#31243b" stroke="#fb7185" stroke-opacity="0.72" />
-    <text x="310" y="431" fill="#fecdd3" font-size="21" font-weight="700" text-anchor="middle">Application server + database</text>
-    <text x="310" y="463" fill="#f8fafc" font-size="18" text-anchor="middle">stores document plaintext</text>
-    <text x="310" y="490" fill="#cbd5e1" font-size="15" text-anchor="middle">trusted for content and availability</text>
+    <rect x="130" y="395" width="360" height="116" fill="#382237" stroke="#f0a5cf" stroke-opacity="0.72" />
+    <text x="0" y="0" fill="#f0a5cf" font-size="21" font-weight="700" text-anchor="middle" transform="translate(310 431) scale(0.95785 1)">Application server + database</text>
+    <text x="310" y="463" fill="#f5f0e8" font-size="18" text-anchor="middle">stores document plaintext</text>
+    <text x="310" y="490" fill="#cbc5d6" font-size="15" text-anchor="middle">trusted for content and availability</text>
 
-    <rect x="80" y="535" width="460" height="38" rx="19" fill="#1e293b" />
-    <text x="310" y="560" fill="#cbd5e1" font-size="15" text-anchor="middle">Central service can read and govern access to content</text>
+    <rect x="80" y="535" width="460" height="38" fill="#242136" />
+    <text x="0" y="0" fill="#cbc5d6" font-size="15" text-anchor="middle" transform="translate(310 560) scale(0.94340 1)">Central service can read and govern access to content</text>
 
-    <rect x="662" y="247" width="205" height="96" rx="16" fill="#172554" stroke="#818cf8" />
-    <text x="764.5" y="279" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Authorized device A</text>
-    <text x="764.5" y="307" fill="#c7d2fe" font-size="16" text-anchor="middle">plaintext + local keys</text>
-    <text x="764.5" y="329" fill="#94a3b8" font-size="13" text-anchor="middle">local CRDT replica</text>
+    <rect x="662" y="247" width="205" height="96" fill="#30234c" stroke="#b7a1ff" />
+    <text x="0" y="0" fill="#f5f0e8" font-size="19" font-weight="700" text-anchor="middle" transform="translate(764.5 279) scale(0.90028 1)">Authorized device A</text>
+    <text x="0" y="0" fill="#d6c8ff" font-size="16" text-anchor="middle" transform="translate(764.5 307) scale(0.92330 1)">plaintext + local keys</text>
+    <text x="764.5" y="329" fill="#a7a0b6" font-size="13" text-anchor="middle">local CRDT replica</text>
 
-    <rect x="913" y="247" width="205" height="96" rx="16" fill="#0f3638" stroke="#2dd4bf" />
-    <text x="1015.5" y="279" fill="#f8fafc" font-size="19" font-weight="700" text-anchor="middle">Authorized device B</text>
-    <text x="1015.5" y="307" fill="#99f6e4" font-size="16" text-anchor="middle">plaintext + local keys</text>
-    <text x="1015.5" y="329" fill="#94a3b8" font-size="13" text-anchor="middle">local CRDT replica</text>
+    <rect x="913" y="247" width="205" height="96" fill="#1b382a" stroke="#a3efb8" />
+    <text x="0" y="0" fill="#f5f0e8" font-size="19" font-weight="700" text-anchor="middle" transform="translate(1015.5 279) scale(0.90028 1)">Authorized device B</text>
+    <text x="0" y="0" fill="#c7f5d3" font-size="16" text-anchor="middle" transform="translate(1015.5 307) scale(0.92330 1)">plaintext + local keys</text>
+    <text x="1015.5" y="329" fill="#a7a0b6" font-size="13" text-anchor="middle">local CRDT replica</text>
 
-    <path d="M765 352C765 374 813 382 835 395" fill="none" stroke="#2dd4bf" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
-    <path d="M1016 352C1016 374 968 382 946 395" fill="none" stroke="#2dd4bf" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
-    <rect x="706" y="401" width="388" height="125" rx="16" fill="#172033" stroke="#6366f1" />
-    <text x="900" y="427" fill="#e0e7ff" font-size="19" font-weight="700" text-anchor="middle">Relay / network infrastructure</text>
-    <text x="900" y="451" fill="#99f6e4" font-size="15" text-anchor="middle">forwards bidirectional encrypted traffic</text>
-    <text x="900" y="475" fill="#c7d2fe" font-size="14" text-anchor="middle">Sync envelope: signed if enabled + encrypted</text>
-    <text x="900" y="498" fill="#c7d2fe" font-size="14" text-anchor="middle">Fetched change block: encrypted + CID-addressed</text>
-    <text x="900" y="518" fill="#cbd5e1" font-size="13" text-anchor="middle">sees peer IDs, topics, timing, and volume</text>
+    <path d="M765 352C765 374 813 382 835 395" fill="none" stroke="#a3efb8" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
+    <path d="M1016 352C1016 374 968 382 946 395" fill="none" stroke="#a3efb8" stroke-width="3" marker-start="url(#arrowTeal)" marker-end="url(#arrowTeal)" />
+    <rect x="706" y="401" width="388" height="125" fill="#242136" stroke="#b7a1ff" />
+    <text x="900" y="427" fill="#d6c8ff" font-size="19" font-weight="700" text-anchor="middle">Relay / network infrastructure</text>
+    <text x="900" y="451" fill="#c7f5d3" font-size="15" text-anchor="middle">forwards bidirectional encrypted traffic</text>
+    <text x="900" y="475" fill="#d6c8ff" font-size="14" text-anchor="middle">Sync envelope: signed if enabled + encrypted</text>
+    <text x="0" y="0" fill="#d6c8ff" font-size="14" text-anchor="middle" transform="translate(900 498) scale(0.95745 1)">Fetched change block: encrypted + CID-addressed</text>
+    <text x="900" y="518" fill="#cbc5d6" font-size="13" text-anchor="middle">sees peer IDs, topics, timing, and volume</text>
 
-    <rect x="660" y="535" width="458" height="38" rx="19" fill="#0f2f35" stroke="#2dd4bf" stroke-opacity="0.45" />
-    <text x="889" y="560" fill="#99f6e4" font-size="15" text-anchor="middle">Cannot read document plaintext without its key</text>
+    <rect x="660" y="535" width="458" height="38" fill="#1b382a" stroke="#a3efb8" stroke-opacity="0.45" />
+    <text x="889" y="560" fill="#c7f5d3" font-size="15" text-anchor="middle">Cannot read document plaintext without its key</text>
 
-    <rect x="50" y="620" width="1100" height="64" rx="18" fill="#111827" stroke="#475569" />
-    <circle cx="82" cy="652" r="7" fill="#818cf8" />
-    <text x="102" y="646" fill="#e2e8f0" font-size="17" font-weight="700">Application responsibility</text>
-    <text x="102" y="670" fill="#94a3b8" font-size="15">Identity, key backup, and recovery remain app-owned.</text>
-    <circle cx="641" cy="652" r="7" fill="#2dd4bf" />
-    <text x="661" y="646" fill="#e2e8f0" font-size="17" font-weight="700">Availability still matters</text>
-    <text x="661" y="670" fill="#94a3b8" font-size="15">Peers and infrastructure may be unavailable or disrupt delivery.</text>
+    <rect x="50" y="620" width="1100" height="64" fill="#171521" stroke="#756c89" />
+    <rect x="75" y="645" width="14" height="14" fill="#b7a1ff"/>
+    <text x="102" y="646" fill="#cbc5d6" font-size="17" font-weight="700">Application responsibility</text>
+    <text x="102" y="670" fill="#a7a0b6" font-size="15">Identity, key backup, and recovery remain app-owned.</text>
+    <rect x="634" y="645" width="14" height="14" fill="#a3efb8"/>
+    <text x="661" y="646" fill="#cbc5d6" font-size="17" font-weight="700">Availability still matters</text>
+    <text x="0" y="0" fill="#a7a0b6" font-size="15" transform="translate(661 670) scale(0.82118 1)">Peers and infrastructure may be unavailable or disrupt delivery.</text>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

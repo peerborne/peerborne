@@ -2,144 +2,136 @@
   <title id="title">Peerborne local and distributed search architecture</title>
   <desc id="description">Two separate lanes show verified local indexing over authorized decrypted documents and distributed candidate-search foundations. Remote peers return untrusted document references, which become results only after the requester uses the normal signature, ACL, history, and decryption path and rechecks the complete predicate locally. Production networking and membership integrations remain incomplete.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="720" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f172a" />
-      <stop offset="1" stop-color="#111827" />
-    </linearGradient>
-    <linearGradient id="localPanel" x1="38" y1="130" x2="1162" y2="335" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f2f35" />
-      <stop offset="1" stop-color="#10233a" />
-    </linearGradient>
-    <linearGradient id="distributedPanel" x1="38" y1="355" x2="1162" y2="605" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#172554" />
-      <stop offset="1" stop-color="#1e1b4b" />
-    </linearGradient>
+
+
+
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity="0.045" />
+      <path d="M40 0H0V40" fill="none" stroke="#a7a0b6" stroke-opacity="0.045" />
     </pattern>
-    <marker id="tealArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#2dd4bf" />
+    <marker id="tealArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8" />
     </marker>
-    <marker id="indigoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#818cf8" />
+    <marker id="indigoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff" />
     </marker>
     <style>
-      .system { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .system { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
       .lane-number { font-size: 36px; font-weight: 800; }
       .lane-title { font-size: 21px; font-weight: 760; letter-spacing: 0.5px; }
       .lane-note { font-size: 15px; font-weight: 500; }
       .card-label { font-size: 13px; font-weight: 750; letter-spacing: 1.4px; }
-      .card-title { font-size: 19px; font-weight: 730; fill: #f8fafc; }
-      .card-note { font-size: 15px; font-weight: 500; fill: #cbd5e1; }
+      .card-title { font-size: 19px; font-weight: 730; fill: #f5f0e8; }
+      .card-note { font-size: 15px; font-weight: 500; fill: #cbc5d6; }
       .footer-label { font-size: 14px; font-weight: 750; letter-spacing: 1.2px; }
     </style>
   </defs>
 
-  <rect width="1200" height="720" rx="28" fill="url(#background)" />
-  <rect width="1200" height="720" rx="28" fill="url(#grid)" />
-  <path d="M0 28A28 28 0 0 1 28 0H1172A28 28 0 0 1 1200 28V34H0Z" fill="#2dd4bf" />
+  <rect width="1200" height="720" fill="#171521" />
+  <rect width="1200" height="720" fill="url(#grid)" />
+
 
   <g class="system">
-    <text x="48" y="77" font-size="34" font-weight="770" fill="#f8fafc">Search has two separate trust lanes</text>
-    <text x="48" y="108" font-size="18" font-weight="500" fill="#94a3b8">Local results are verified here. Remote search can nominate candidates, never establish truth.</text>
+    <g class="pixel-heading" aria-hidden="true"><path d="M51 56h3v3h-3zM54 56h3v3h-3zM57 56h3v3h-3zM60 56h3v3h-3zM48 59h3v3h-3zM48 62h3v3h-3zM51 65h3v3h-3zM54 65h3v3h-3zM57 65h3v3h-3zM60 68h3v3h-3zM60 71h3v3h-3zM48 74h3v3h-3zM51 74h3v3h-3zM54 74h3v3h-3zM57 74h3v3h-3zM66 56h3v3h-3zM69 56h3v3h-3zM72 56h3v3h-3zM75 56h3v3h-3zM78 56h3v3h-3zM66 59h3v3h-3zM66 62h3v3h-3zM66 65h3v3h-3zM69 65h3v3h-3zM72 65h3v3h-3zM75 65h3v3h-3zM66 68h3v3h-3zM66 71h3v3h-3zM66 74h3v3h-3zM69 74h3v3h-3zM72 74h3v3h-3zM75 74h3v3h-3zM78 74h3v3h-3zM87 56h3v3h-3zM90 56h3v3h-3zM93 56h3v3h-3zM84 59h3v3h-3zM96 59h3v3h-3zM84 62h3v3h-3zM96 62h3v3h-3zM84 65h3v3h-3zM87 65h3v3h-3zM90 65h3v3h-3zM93 65h3v3h-3zM96 65h3v3h-3zM84 68h3v3h-3zM96 68h3v3h-3zM84 71h3v3h-3zM96 71h3v3h-3zM84 74h3v3h-3zM96 74h3v3h-3zM102 56h3v3h-3zM105 56h3v3h-3zM108 56h3v3h-3zM111 56h3v3h-3zM102 59h3v3h-3zM114 59h3v3h-3zM102 62h3v3h-3zM114 62h3v3h-3zM102 65h3v3h-3zM105 65h3v3h-3zM108 65h3v3h-3zM111 65h3v3h-3zM102 68h3v3h-3zM108 68h3v3h-3zM102 71h3v3h-3zM111 71h3v3h-3zM102 74h3v3h-3zM114 74h3v3h-3zM123 56h3v3h-3zM126 56h3v3h-3zM129 56h3v3h-3zM132 56h3v3h-3zM120 59h3v3h-3zM120 62h3v3h-3zM120 65h3v3h-3zM120 68h3v3h-3zM120 71h3v3h-3zM123 74h3v3h-3zM126 74h3v3h-3zM129 74h3v3h-3zM132 74h3v3h-3zM138 56h3v3h-3zM150 56h3v3h-3zM138 59h3v3h-3zM150 59h3v3h-3zM138 62h3v3h-3zM150 62h3v3h-3zM138 65h3v3h-3zM141 65h3v3h-3zM144 65h3v3h-3zM147 65h3v3h-3zM150 65h3v3h-3zM138 68h3v3h-3zM150 68h3v3h-3zM138 71h3v3h-3zM150 71h3v3h-3zM138 74h3v3h-3zM150 74h3v3h-3zM174 56h3v3h-3zM186 56h3v3h-3zM174 59h3v3h-3zM186 59h3v3h-3zM174 62h3v3h-3zM186 62h3v3h-3zM174 65h3v3h-3zM177 65h3v3h-3zM180 65h3v3h-3zM183 65h3v3h-3zM186 65h3v3h-3zM174 68h3v3h-3zM186 68h3v3h-3zM174 71h3v3h-3zM186 71h3v3h-3zM174 74h3v3h-3zM186 74h3v3h-3zM195 56h3v3h-3zM198 56h3v3h-3zM201 56h3v3h-3zM192 59h3v3h-3zM204 59h3v3h-3zM192 62h3v3h-3zM204 62h3v3h-3zM192 65h3v3h-3zM195 65h3v3h-3zM198 65h3v3h-3zM201 65h3v3h-3zM204 65h3v3h-3zM192 68h3v3h-3zM204 68h3v3h-3zM192 71h3v3h-3zM204 71h3v3h-3zM192 74h3v3h-3zM204 74h3v3h-3zM213 56h3v3h-3zM216 56h3v3h-3zM219 56h3v3h-3zM222 56h3v3h-3zM210 59h3v3h-3zM210 62h3v3h-3zM213 65h3v3h-3zM216 65h3v3h-3zM219 65h3v3h-3zM222 68h3v3h-3zM222 71h3v3h-3zM210 74h3v3h-3zM213 74h3v3h-3zM216 74h3v3h-3zM219 74h3v3h-3zM246 56h3v3h-3zM249 56h3v3h-3zM252 56h3v3h-3zM255 56h3v3h-3zM258 56h3v3h-3zM252 59h3v3h-3zM252 62h3v3h-3zM252 65h3v3h-3zM252 68h3v3h-3zM252 71h3v3h-3zM252 74h3v3h-3zM264 56h3v3h-3zM276 56h3v3h-3zM264 59h3v3h-3zM276 59h3v3h-3zM264 62h3v3h-3zM276 62h3v3h-3zM264 65h3v3h-3zM270 65h3v3h-3zM276 65h3v3h-3zM264 68h3v3h-3zM270 68h3v3h-3zM276 68h3v3h-3zM264 71h3v3h-3zM267 71h3v3h-3zM273 71h3v3h-3zM276 71h3v3h-3zM264 74h3v3h-3zM276 74h3v3h-3zM285 56h3v3h-3zM288 56h3v3h-3zM291 56h3v3h-3zM282 59h3v3h-3zM294 59h3v3h-3zM282 62h3v3h-3zM294 62h3v3h-3zM282 65h3v3h-3zM294 65h3v3h-3zM282 68h3v3h-3zM294 68h3v3h-3zM282 71h3v3h-3zM294 71h3v3h-3zM285 74h3v3h-3zM288 74h3v3h-3zM291 74h3v3h-3zM321 56h3v3h-3zM324 56h3v3h-3zM327 56h3v3h-3zM330 56h3v3h-3zM318 59h3v3h-3zM318 62h3v3h-3zM321 65h3v3h-3zM324 65h3v3h-3zM327 65h3v3h-3zM330 68h3v3h-3zM330 71h3v3h-3zM318 74h3v3h-3zM321 74h3v3h-3zM324 74h3v3h-3zM327 74h3v3h-3zM336 56h3v3h-3zM339 56h3v3h-3zM342 56h3v3h-3zM345 56h3v3h-3zM348 56h3v3h-3zM336 59h3v3h-3zM336 62h3v3h-3zM336 65h3v3h-3zM339 65h3v3h-3zM342 65h3v3h-3zM345 65h3v3h-3zM336 68h3v3h-3zM336 71h3v3h-3zM336 74h3v3h-3zM339 74h3v3h-3zM342 74h3v3h-3zM345 74h3v3h-3zM348 74h3v3h-3zM354 56h3v3h-3zM357 56h3v3h-3zM360 56h3v3h-3zM363 56h3v3h-3zM354 59h3v3h-3zM366 59h3v3h-3zM354 62h3v3h-3zM366 62h3v3h-3zM354 65h3v3h-3zM357 65h3v3h-3zM360 65h3v3h-3zM363 65h3v3h-3zM354 68h3v3h-3zM354 71h3v3h-3zM354 74h3v3h-3zM375 56h3v3h-3zM378 56h3v3h-3zM381 56h3v3h-3zM372 59h3v3h-3zM384 59h3v3h-3zM372 62h3v3h-3zM384 62h3v3h-3zM372 65h3v3h-3zM375 65h3v3h-3zM378 65h3v3h-3zM381 65h3v3h-3zM384 65h3v3h-3zM372 68h3v3h-3zM384 68h3v3h-3zM372 71h3v3h-3zM384 71h3v3h-3zM372 74h3v3h-3zM384 74h3v3h-3zM390 56h3v3h-3zM393 56h3v3h-3zM396 56h3v3h-3zM399 56h3v3h-3zM390 59h3v3h-3zM402 59h3v3h-3zM390 62h3v3h-3zM402 62h3v3h-3zM390 65h3v3h-3zM393 65h3v3h-3zM396 65h3v3h-3zM399 65h3v3h-3zM390 68h3v3h-3zM396 68h3v3h-3zM390 71h3v3h-3zM399 71h3v3h-3zM390 74h3v3h-3zM402 74h3v3h-3zM411 56h3v3h-3zM414 56h3v3h-3zM417 56h3v3h-3zM408 59h3v3h-3zM420 59h3v3h-3zM408 62h3v3h-3zM420 62h3v3h-3zM408 65h3v3h-3zM411 65h3v3h-3zM414 65h3v3h-3zM417 65h3v3h-3zM420 65h3v3h-3zM408 68h3v3h-3zM420 68h3v3h-3zM408 71h3v3h-3zM420 71h3v3h-3zM408 74h3v3h-3zM420 74h3v3h-3zM426 56h3v3h-3zM429 56h3v3h-3zM432 56h3v3h-3zM435 56h3v3h-3zM438 56h3v3h-3zM432 59h3v3h-3zM432 62h3v3h-3zM432 65h3v3h-3zM432 68h3v3h-3zM432 71h3v3h-3zM432 74h3v3h-3zM444 56h3v3h-3zM447 56h3v3h-3zM450 56h3v3h-3zM453 56h3v3h-3zM456 56h3v3h-3zM444 59h3v3h-3zM444 62h3v3h-3zM444 65h3v3h-3zM447 65h3v3h-3zM450 65h3v3h-3zM453 65h3v3h-3zM444 68h3v3h-3zM444 71h3v3h-3zM444 74h3v3h-3zM447 74h3v3h-3zM450 74h3v3h-3zM453 74h3v3h-3zM456 74h3v3h-3zM480 56h3v3h-3zM483 56h3v3h-3zM486 56h3v3h-3zM489 56h3v3h-3zM492 56h3v3h-3zM486 59h3v3h-3zM486 62h3v3h-3zM486 65h3v3h-3zM486 68h3v3h-3zM486 71h3v3h-3zM486 74h3v3h-3zM498 56h3v3h-3zM501 56h3v3h-3zM504 56h3v3h-3zM507 56h3v3h-3zM498 59h3v3h-3zM510 59h3v3h-3zM498 62h3v3h-3zM510 62h3v3h-3zM498 65h3v3h-3zM501 65h3v3h-3zM504 65h3v3h-3zM507 65h3v3h-3zM498 68h3v3h-3zM504 68h3v3h-3zM498 71h3v3h-3zM507 71h3v3h-3zM498 74h3v3h-3zM510 74h3v3h-3zM516 56h3v3h-3zM528 56h3v3h-3zM516 59h3v3h-3zM528 59h3v3h-3zM516 62h3v3h-3zM528 62h3v3h-3zM516 65h3v3h-3zM528 65h3v3h-3zM516 68h3v3h-3zM528 68h3v3h-3zM516 71h3v3h-3zM528 71h3v3h-3zM519 74h3v3h-3zM522 74h3v3h-3zM525 74h3v3h-3zM537 56h3v3h-3zM540 56h3v3h-3zM543 56h3v3h-3zM546 56h3v3h-3zM534 59h3v3h-3zM534 62h3v3h-3zM537 65h3v3h-3zM540 65h3v3h-3zM543 65h3v3h-3zM546 68h3v3h-3zM546 71h3v3h-3zM534 74h3v3h-3zM537 74h3v3h-3zM540 74h3v3h-3zM543 74h3v3h-3zM552 56h3v3h-3zM555 56h3v3h-3zM558 56h3v3h-3zM561 56h3v3h-3zM564 56h3v3h-3zM558 59h3v3h-3zM558 62h3v3h-3zM558 65h3v3h-3zM558 68h3v3h-3zM558 71h3v3h-3zM558 74h3v3h-3zM588 56h3v3h-3zM588 59h3v3h-3zM588 62h3v3h-3zM588 65h3v3h-3zM588 68h3v3h-3zM588 71h3v3h-3zM588 74h3v3h-3zM591 74h3v3h-3zM594 74h3v3h-3zM597 74h3v3h-3zM600 74h3v3h-3zM609 56h3v3h-3zM612 56h3v3h-3zM615 56h3v3h-3zM606 59h3v3h-3zM618 59h3v3h-3zM606 62h3v3h-3zM618 62h3v3h-3zM606 65h3v3h-3zM609 65h3v3h-3zM612 65h3v3h-3zM615 65h3v3h-3zM618 65h3v3h-3zM606 68h3v3h-3zM618 68h3v3h-3zM606 71h3v3h-3zM618 71h3v3h-3zM606 74h3v3h-3zM618 74h3v3h-3zM624 56h3v3h-3zM636 56h3v3h-3zM624 59h3v3h-3zM627 59h3v3h-3zM636 59h3v3h-3zM624 62h3v3h-3zM630 62h3v3h-3zM636 62h3v3h-3zM624 65h3v3h-3zM633 65h3v3h-3zM636 65h3v3h-3zM624 68h3v3h-3zM636 68h3v3h-3zM624 71h3v3h-3zM636 71h3v3h-3zM624 74h3v3h-3zM636 74h3v3h-3zM642 56h3v3h-3zM645 56h3v3h-3zM648 56h3v3h-3zM651 56h3v3h-3zM654 56h3v3h-3zM642 59h3v3h-3zM642 62h3v3h-3zM642 65h3v3h-3zM645 65h3v3h-3zM648 65h3v3h-3zM651 65h3v3h-3zM642 68h3v3h-3zM642 71h3v3h-3zM642 74h3v3h-3zM645 74h3v3h-3zM648 74h3v3h-3zM651 74h3v3h-3zM654 74h3v3h-3zM663 56h3v3h-3zM666 56h3v3h-3zM669 56h3v3h-3zM672 56h3v3h-3zM660 59h3v3h-3zM660 62h3v3h-3zM663 65h3v3h-3zM666 65h3v3h-3zM669 65h3v3h-3zM672 68h3v3h-3zM672 71h3v3h-3zM660 74h3v3h-3zM663 74h3v3h-3zM666 74h3v3h-3zM669 74h3v3h-3z" fill="#f5f0e8"/></g>
+    <text x="48" y="108" font-size="18" font-weight="500" fill="#a7a0b6">Local results are verified here. Remote search can nominate candidates, never establish truth.</text>
 
-    <rect x="38" y="130" width="1124" height="205" rx="24" fill="url(#localPanel)" stroke="#2dd4bf" stroke-width="2" />
-    <text class="lane-number" x="64" y="184" fill="#5eead4">1</text>
-    <text class="lane-title" x="105" y="174" fill="#f0fdfa">VERIFIED LOCAL INDEX</text>
-    <text class="lane-note" x="105" y="198" fill="#99f6e4">Encrypted CRDT history remains source data.</text>
+    <rect x="38" y="130" width="1124" height="205" fill="#1b382a" stroke="#a3efb8" stroke-width="2" />
+    <text class="lane-number" x="64" y="184" fill="#a3efb8">1</text>
+    <text class="lane-title" x="105" y="174" fill="#f5f0e8">VERIFIED LOCAL INDEX</text>
+    <text class="lane-note" x="105" y="198" fill="#c7f5d3">Encrypted CRDT history remains source data.</text>
 
     <g transform="translate(250 214)">
-      <rect width="226" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
-      <text class="card-label" x="18" y="25" fill="#5eead4">AUTHORIZED INPUT</text>
-      <text class="card-title" x="18" y="52">Decrypted documents</text>
+      <rect width="226" height="92" fill="#1b382a" stroke="#a3efb8" />
+      <text class="card-label" x="18" y="25" fill="#a3efb8">AUTHORIZED INPUT</text>
+      <text class="card-title" x="0" y="0" transform="translate(18 52) scale(0.88643 1)">Decrypted documents</text>
       <text class="card-note" x="18" y="75">held by this peer</text>
     </g>
-    <line x1="476" y1="260" x2="501" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+    <line x1="476" y1="260" x2="501" y2="260" stroke="#a3efb8" stroke-width="3" marker-end="url(#tealArrow)" />
 
     <g transform="translate(508 214)">
-      <rect width="226" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
-      <text class="card-label" x="18" y="25" fill="#5eead4">REBUILDABLE PROJECTION</text>
-      <text class="card-title" x="18" y="52">Memory or IDB index</text>
-      <text class="card-note" x="18" y="75">memory default · IDB opt-in</text>
+      <rect width="226" height="92" fill="#1b382a" stroke="#a3efb8" />
+      <text class="card-label" x="0" y="0" fill="#a3efb8" transform="translate(18 25) scale(0.95522 1)">REBUILDABLE PROJECTION</text>
+      <text class="card-title" x="0" y="0" transform="translate(18 52) scale(0.88643 1)">Memory or IDB index</text>
+      <text class="card-note" x="0" y="0" transform="translate(18 75) scale(0.79012 1)">memory default · IDB opt-in</text>
     </g>
-    <line x1="734" y1="260" x2="759" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+    <line x1="734" y1="260" x2="759" y2="260" stroke="#a3efb8" stroke-width="3" marker-end="url(#tealArrow)" />
 
     <g transform="translate(766 214)">
-      <rect width="200" height="92" rx="18" fill="#102a35" stroke="#2dd4bf" />
-      <text class="card-label" x="18" y="25" fill="#5eead4">QUERY EXECUTION</text>
-      <text class="card-title" x="18" y="52" style="font-size: 17px">Local planner + query</text>
-      <text class="card-note" x="18" y="75">full predicate recheck</text>
+      <rect width="200" height="92" fill="#1b382a" stroke="#a3efb8" />
+      <text class="card-label" x="18" y="25" fill="#a3efb8">QUERY EXECUTION</text>
+      <text class="card-title" x="0" y="0" style="font-size: 17px" transform="translate(18 52) scale(0.77498 1)">Local planner + query</text>
+      <text class="card-note" x="0" y="0" transform="translate(18 75) scale(0.83838 1)">full predicate recheck</text>
     </g>
-    <line x1="966" y1="260" x2="991" y2="260" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+    <line x1="966" y1="260" x2="991" y2="260" stroke="#a3efb8" stroke-width="3" marker-end="url(#tealArrow)" />
 
     <g transform="translate(998 214)">
-      <rect width="132" height="92" rx="18" fill="#0f3b3d" stroke="#5eead4" stroke-width="2" />
-      <circle cx="66" cy="28" r="9" fill="#2dd4bf" />
-      <path d="M61 28L65 32L72 23" fill="none" stroke="#0f172a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-      <text x="66" y="57" text-anchor="middle" font-size="16" font-weight="760" fill="#f0fdfa">VERIFIED</text>
-      <text x="66" y="77" text-anchor="middle" font-size="15" font-weight="650" fill="#99f6e4">local result</text>
+      <rect width="132" height="92" fill="#1b382a" stroke="#a3efb8" stroke-width="2" />
+      <rect x="57" y="19" width="18" height="18" fill="#a3efb8"/>
+      <path d="M61 28L65 32L72 23" fill="none" stroke="#171521" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter" />
+      <text x="66" y="57" text-anchor="middle" font-size="16" font-weight="760" fill="#f5f0e8">VERIFIED</text>
+      <text x="66" y="77" text-anchor="middle" font-size="15" font-weight="650" fill="#c7f5d3">local result</text>
     </g>
 
-    <rect x="38" y="355" width="1124" height="250" rx="24" fill="url(#distributedPanel)" stroke="#818cf8" stroke-width="2" />
-    <text class="lane-number" x="64" y="409" fill="#a5b4fc">2</text>
-    <text class="lane-title" x="105" y="399" fill="#eef2ff">DISTRIBUTED CANDIDATE SEARCH</text>
-    <text class="lane-note" x="105" y="423" fill="#c7d2fe">Implemented protocol and orchestration foundations.</text>
+    <rect x="38" y="355" width="1124" height="250" fill="#30234c" stroke="#b7a1ff" stroke-width="2" />
+    <text class="lane-number" x="64" y="409" fill="#b7a1ff">2</text>
+    <text class="lane-title" x="105" y="399" fill="#f5f0e8">DISTRIBUTED CANDIDATE SEARCH</text>
+    <text class="lane-note" x="105" y="423" fill="#d6c8ff">Implemented protocol and orchestration foundations.</text>
 
     <g transform="translate(235 443)">
-      <rect width="210" height="104" rx="18" fill="#202454" stroke="#818cf8" />
-      <text class="card-label" x="16" y="23" fill="#a5b4fc">SIGNED CONTROL PLANE</text>
-      <text class="card-title" x="16" y="50">Versioned manifest</text>
-      <line x1="16" y1="61" x2="194" y2="61" stroke="#6366f1" stroke-opacity="0.62" />
-      <text class="card-note" x="16" y="83">Expiring routing ads</text>
+      <rect width="210" height="104" fill="#30234c" stroke="#b7a1ff" />
+      <text class="card-label" x="0" y="0" fill="#b7a1ff" transform="translate(16 23) scale(0.97481 1)">SIGNED CONTROL PLANE</text>
+      <text class="card-title" x="0" y="0" transform="translate(16 50) scale(0.86745 1)">Versioned manifest</text>
+      <line x1="16" y1="61" x2="194" y2="61" stroke="#b7a1ff" stroke-opacity="0.62" />
+      <text class="card-note" x="0" y="0" transform="translate(16 83) scale(0.98889 1)">Expiring routing ads</text>
     </g>
-    <line x1="445" y1="495" x2="468" y2="495" stroke="#818cf8" stroke-width="3" marker-end="url(#indigoArrow)" />
+    <line x1="445" y1="495" x2="468" y2="495" stroke="#b7a1ff" stroke-width="3" marker-end="url(#indigoArrow)" />
 
     <g transform="translate(475 443)">
-      <rect width="190" height="104" rx="18" fill="#202454" stroke="#818cf8" />
-      <text class="card-label" x="16" y="23" fill="#a5b4fc">BOUNDED + DIRECT</text>
-      <text class="card-title" x="16" y="52">Candidate query</text>
-      <text class="card-note" x="16" y="77">plain AST or blind</text>
+      <rect width="190" height="104" fill="#30234c" stroke="#b7a1ff" />
+      <text class="card-label" x="16" y="23" fill="#b7a1ff">BOUNDED + DIRECT</text>
+      <text class="card-title" x="0" y="0" transform="translate(16 52) scale(0.92398 1)">Candidate query</text>
+      <text class="card-note" x="0" y="0" transform="translate(16 77) scale(0.97531 1)">plain AST or blind</text>
     </g>
-    <line x1="665" y1="495" x2="688" y2="495" stroke="#818cf8" stroke-width="3" marker-end="url(#indigoArrow)" />
+    <line x1="665" y1="495" x2="688" y2="495" stroke="#b7a1ff" stroke-width="3" marker-end="url(#indigoArrow)" />
 
     <g transform="translate(695 443)">
-      <rect width="195" height="104" rx="18" fill="#24213f" stroke="#a5b4fc" stroke-dasharray="6 5" />
-      <text class="card-label" x="16" y="23" fill="#c4b5fd">REMOTE RESPONSE</text>
-      <text class="card-title" x="16" y="52" style="font-size: 17px">Document references</text>
-      <rect x="16" y="68" width="105" height="24" rx="12" fill="#312e81" />
-      <text x="68.5" y="85" text-anchor="middle" font-size="13" font-weight="780" letter-spacing="1.1" fill="#e0e7ff">UNTRUSTED</text>
+      <rect width="195" height="104" fill="#30234c" stroke="#b7a1ff" stroke-dasharray="6 5" />
+      <text class="card-label" x="16" y="23" fill="#d6c8ff">REMOTE RESPONSE</text>
+      <text class="card-title" x="0" y="0" style="font-size: 17px" transform="translate(16 52) scale(0.84107 1)">Document references</text>
+      <rect x="16" y="68" width="105" height="24" fill="#30234c" />
+      <text x="68.5" y="85" text-anchor="middle" font-size="13" font-weight="780" letter-spacing="1.1" fill="#d6c8ff">UNTRUSTED</text>
     </g>
-    <line x1="890" y1="495" x2="913" y2="495" stroke="#2dd4bf" stroke-width="3" marker-end="url(#tealArrow)" />
+    <line x1="890" y1="495" x2="913" y2="495" stroke="#a3efb8" stroke-width="3" marker-end="url(#tealArrow)" />
 
     <g transform="translate(920 433)">
-      <rect width="210" height="124" rx="18" fill="#10323a" stroke="#2dd4bf" stroke-width="2" />
-      <text class="card-label" x="16" y="23" fill="#5eead4">REQUESTER VERIFIES</text>
-      <text class="card-title" x="16" y="50">Normal secure load</text>
-      <text class="card-note" x="16" y="74" style="font-size: 14px">signature · ACL · history</text>
-      <text class="card-note" x="16" y="94" style="font-size: 14px">decrypt · predicate recheck</text>
-      <text x="16" y="115" font-size="11.5" font-weight="700" fill="#99f6e4">ONLY THEN: VERIFIED RESULT</text>
+      <rect width="210" height="124" fill="#1b382a" stroke="#a3efb8" stroke-width="2" />
+      <text class="card-label" x="16" y="23" fill="#a3efb8">REQUESTER VERIFIES</text>
+      <text class="card-title" x="0" y="0" transform="translate(16 50) scale(0.86745 1)">Normal secure load</text>
+      <text class="card-note" x="0" y="0" style="font-size: 14px" transform="translate(16 74) scale(0.84762 1)">signature · ACL · history</text>
+      <text class="card-note" x="0" y="0" style="font-size: 14px" transform="translate(16 94) scale(0.78483 1)">decrypt · predicate recheck</text>
+      <text x="0" y="0" font-size="13" font-weight="700" fill="#c7f5d3" transform="translate(16 115) scale(0.87771 1)">ONLY THEN: VERIFIED RESULT</text>
     </g>
 
     <g transform="translate(235 565)">
-      <rect width="405" height="26" rx="13" fill="#251f4b" stroke="#6366f1" />
-      <text x="202.5" y="18" text-anchor="middle" font-size="14" font-weight="650" fill="#c7d2fe">Blind equality still leaks equality/frequency to key holders</text>
+      <rect width="405" height="26" fill="#30234c" stroke="#b7a1ff" />
+      <text x="0" y="0" text-anchor="middle" font-size="14" font-weight="650" fill="#d6c8ff" transform="translate(202.5 18) scale(0.78373 1)">Blind equality still leaks equality/frequency to key holders</text>
     </g>
     <g transform="translate(655 565)">
-      <rect width="475" height="26" rx="13" fill="#251f4b" stroke="#6366f1" />
-      <text x="237.5" y="18" text-anchor="middle" font-size="14" font-weight="650" fill="#c7d2fe">Partial coverage · no global completeness or exact-count claim</text>
+      <rect width="475" height="26" fill="#30234c" stroke="#b7a1ff" />
+      <text x="0" y="0" text-anchor="middle" font-size="14" font-weight="650" fill="#d6c8ff" transform="translate(237.5 18) scale(0.89286 1)">Partial coverage · no global completeness or exact-count claim</text>
     </g>
 
-    <rect x="38" y="625" width="1124" height="68" rx="20" fill="#131b2c" stroke="#475569" stroke-width="2" stroke-dasharray="7 6" />
-    <text class="footer-label" x="64" y="653" fill="#94a3b8" style="font-size: 12px; letter-spacing: 0.8px">NOT INTEGRATED END TO END</text>
-    <g font-size="14" font-weight="650" fill="#cbd5e1">
-      <rect x="294" y="641" width="180" height="35" rx="17.5" fill="#1e293b" />
-      <text x="384" y="663" text-anchor="middle">production libp2p handlers</text>
-      <rect x="486" y="641" width="207" height="35" rx="17.5" fill="#1e293b" />
-      <text x="589.5" y="663" text-anchor="middle">membership + key distribution</text>
-      <rect x="705" y="641" width="215" height="35" rx="17.5" fill="#1e293b" />
-      <text x="812.5" y="663" text-anchor="middle">authorized document resolver</text>
-      <rect x="932" y="641" width="202" height="35" rx="17.5" fill="#1e293b" />
+    <rect x="38" y="625" width="1124" height="68" fill="#242136" stroke="#756c89" stroke-width="2" stroke-dasharray="7 6" />
+    <text class="footer-label" x="64" y="653" fill="#a7a0b6" style="font-size: 13px; letter-spacing: 0.8px">NOT INTEGRATED END TO END</text>
+    <g font-size="14" font-weight="650" fill="#cbc5d6">
+      <rect x="294" y="641" width="180" height="35" fill="#242136" />
+      <text x="0" y="0" text-anchor="middle" transform="translate(384 663) scale(0.77839 1)">production libp2p handlers</text>
+      <rect x="486" y="641" width="207" height="35" fill="#242136" />
+      <text x="0" y="0" text-anchor="middle" transform="translate(589.5 663) scale(0.80870 1)">membership + key distribution</text>
+      <rect x="705" y="641" width="215" height="35" fill="#242136" />
+      <text x="0" y="0" text-anchor="middle" transform="translate(812.5 663) scale(0.87160 1)">authorized document resolver</text>
+      <rect x="932" y="641" width="202" height="35" fill="#242136" />
       <text x="1033" y="663" text-anchor="middle">multi-peer acceptance</text>
     </g>
   </g>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>

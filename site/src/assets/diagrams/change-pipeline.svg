@@ -2,120 +2,110 @@
   <title id="title">A Peerborne change creates separate storage and wire artifacts</title>
   <desc id="desc">A local mutation is serialized and encrypted into a CID-addressed stored change payload. Its CID, inline history, and deferred CID references are assembled into a separate CRDT sync message, signed when enabled, encrypted, and published as a full GossipSub envelope. A receiver decrypts that envelope before known-writer authorization, applies inline history, and fetches only missing or deferred CID blocks for CID integrity validation and decryption.</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#111827"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
-    <linearGradient id="storagePanel" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#1e1b4b"/>
-      <stop offset="1" stop-color="#172554"/>
-    </linearGradient>
-    <linearGradient id="wirePanel" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#0f3f46"/>
-      <stop offset="1" stop-color="#164e63"/>
-    </linearGradient>
-    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a5b4fc"/>
+
+
+
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#b7a1ff"/>
     </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="#a3efb8"/>
     </marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#020617" flood-opacity="0.35"/>
-    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-color="#0c0b13" flood-opacity="1"/></filter>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
       .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 1.6px; }
-      .heading { fill: #f8fafc; font-size: 31px; font-weight: 750; }
-      .subheading { fill: #cbd5e1; font-size: 17px; }
-      .step { fill: #f8fafc; font-size: 18px; font-weight: 700; }
-      .detail { fill: #cbd5e1; font-size: 15px; }
-      .number { fill: #0f172a; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
-      .footer { fill: #cbd5e1; font-size: 15px; }
+      .heading { fill: #f5f0e8; font-size: 31px; font-weight: 750; }
+      .subheading { fill: #cbc5d6; font-size: 17px; }
+      .step { fill: #f5f0e8; font-size: 18px; font-weight: 700; }
+      .detail { fill: #cbc5d6; font-size: 15px; }
+      .number { fill: #171521; font-size: 16px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+      .footer { fill: #cbc5d6; font-size: 15px; }
     </style>
   </defs>
 
-  <rect width="1200" height="760" rx="28" fill="url(#background)"/>
-  <text x="54" y="58" class="eyebrow" fill="#818cf8">PEERBORNE CHANGE PIPELINE</text>
-  <text x="54" y="98" class="heading">One change, two related artifacts</text>
+  <rect width="1200" height="760" fill="#171521"/>
+  <text x="54" y="58" class="eyebrow" fill="#b7a1ff">PEERBORNE CHANGE PIPELINE</text>
+  <g class="pixel-heading" aria-hidden="true"><path d="M57 77h3v3h-3zM60 77h3v3h-3zM63 77h3v3h-3zM54 80h3v3h-3zM66 80h3v3h-3zM54 83h3v3h-3zM66 83h3v3h-3zM54 86h3v3h-3zM66 86h3v3h-3zM54 89h3v3h-3zM66 89h3v3h-3zM54 92h3v3h-3zM66 92h3v3h-3zM57 95h3v3h-3zM60 95h3v3h-3zM63 95h3v3h-3zM72 77h3v3h-3zM84 77h3v3h-3zM72 80h3v3h-3zM75 80h3v3h-3zM84 80h3v3h-3zM72 83h3v3h-3zM78 83h3v3h-3zM84 83h3v3h-3zM72 86h3v3h-3zM81 86h3v3h-3zM84 86h3v3h-3zM72 89h3v3h-3zM84 89h3v3h-3zM72 92h3v3h-3zM84 92h3v3h-3zM72 95h3v3h-3zM84 95h3v3h-3zM90 77h3v3h-3zM93 77h3v3h-3zM96 77h3v3h-3zM99 77h3v3h-3zM102 77h3v3h-3zM90 80h3v3h-3zM90 83h3v3h-3zM90 86h3v3h-3zM93 86h3v3h-3zM96 86h3v3h-3zM99 86h3v3h-3zM90 89h3v3h-3zM90 92h3v3h-3zM90 95h3v3h-3zM93 95h3v3h-3zM96 95h3v3h-3zM99 95h3v3h-3zM102 95h3v3h-3zM129 77h3v3h-3zM132 77h3v3h-3zM135 77h3v3h-3zM138 77h3v3h-3zM126 80h3v3h-3zM126 83h3v3h-3zM126 86h3v3h-3zM126 89h3v3h-3zM126 92h3v3h-3zM129 95h3v3h-3zM132 95h3v3h-3zM135 95h3v3h-3zM138 95h3v3h-3zM144 77h3v3h-3zM156 77h3v3h-3zM144 80h3v3h-3zM156 80h3v3h-3zM144 83h3v3h-3zM156 83h3v3h-3zM144 86h3v3h-3zM147 86h3v3h-3zM150 86h3v3h-3zM153 86h3v3h-3zM156 86h3v3h-3zM144 89h3v3h-3zM156 89h3v3h-3zM144 92h3v3h-3zM156 92h3v3h-3zM144 95h3v3h-3zM156 95h3v3h-3zM165 77h3v3h-3zM168 77h3v3h-3zM171 77h3v3h-3zM162 80h3v3h-3zM174 80h3v3h-3zM162 83h3v3h-3zM174 83h3v3h-3zM162 86h3v3h-3zM165 86h3v3h-3zM168 86h3v3h-3zM171 86h3v3h-3zM174 86h3v3h-3zM162 89h3v3h-3zM174 89h3v3h-3zM162 92h3v3h-3zM174 92h3v3h-3zM162 95h3v3h-3zM174 95h3v3h-3zM180 77h3v3h-3zM192 77h3v3h-3zM180 80h3v3h-3zM183 80h3v3h-3zM192 80h3v3h-3zM180 83h3v3h-3zM186 83h3v3h-3zM192 83h3v3h-3zM180 86h3v3h-3zM189 86h3v3h-3zM192 86h3v3h-3zM180 89h3v3h-3zM192 89h3v3h-3zM180 92h3v3h-3zM192 92h3v3h-3zM180 95h3v3h-3zM192 95h3v3h-3zM201 77h3v3h-3zM204 77h3v3h-3zM207 77h3v3h-3zM210 77h3v3h-3zM198 80h3v3h-3zM198 83h3v3h-3zM198 86h3v3h-3zM204 86h3v3h-3zM207 86h3v3h-3zM210 86h3v3h-3zM198 89h3v3h-3zM210 89h3v3h-3zM198 92h3v3h-3zM210 92h3v3h-3zM201 95h3v3h-3zM204 95h3v3h-3zM207 95h3v3h-3zM210 95h3v3h-3zM216 77h3v3h-3zM219 77h3v3h-3zM222 77h3v3h-3zM225 77h3v3h-3zM228 77h3v3h-3zM216 80h3v3h-3zM216 83h3v3h-3zM216 86h3v3h-3zM219 86h3v3h-3zM222 86h3v3h-3zM225 86h3v3h-3zM216 89h3v3h-3zM216 92h3v3h-3zM216 95h3v3h-3zM219 95h3v3h-3zM222 95h3v3h-3zM225 95h3v3h-3zM228 95h3v3h-3zM240 89h3v3h-3zM243 89h3v3h-3zM240 92h3v3h-3zM237 95h3v3h-3zM270 77h3v3h-3zM273 77h3v3h-3zM276 77h3v3h-3zM279 77h3v3h-3zM282 77h3v3h-3zM276 80h3v3h-3zM276 83h3v3h-3zM276 86h3v3h-3zM276 89h3v3h-3zM276 92h3v3h-3zM276 95h3v3h-3zM288 77h3v3h-3zM300 77h3v3h-3zM288 80h3v3h-3zM300 80h3v3h-3zM288 83h3v3h-3zM300 83h3v3h-3zM288 86h3v3h-3zM294 86h3v3h-3zM300 86h3v3h-3zM288 89h3v3h-3zM294 89h3v3h-3zM300 89h3v3h-3zM288 92h3v3h-3zM291 92h3v3h-3zM297 92h3v3h-3zM300 92h3v3h-3zM288 95h3v3h-3zM300 95h3v3h-3zM309 77h3v3h-3zM312 77h3v3h-3zM315 77h3v3h-3zM306 80h3v3h-3zM318 80h3v3h-3zM306 83h3v3h-3zM318 83h3v3h-3zM306 86h3v3h-3zM318 86h3v3h-3zM306 89h3v3h-3zM318 89h3v3h-3zM306 92h3v3h-3zM318 92h3v3h-3zM309 95h3v3h-3zM312 95h3v3h-3zM315 95h3v3h-3zM342 77h3v3h-3zM345 77h3v3h-3zM348 77h3v3h-3zM351 77h3v3h-3zM342 80h3v3h-3zM354 80h3v3h-3zM342 83h3v3h-3zM354 83h3v3h-3zM342 86h3v3h-3zM345 86h3v3h-3zM348 86h3v3h-3zM351 86h3v3h-3zM342 89h3v3h-3zM348 89h3v3h-3zM342 92h3v3h-3zM351 92h3v3h-3zM342 95h3v3h-3zM354 95h3v3h-3zM360 77h3v3h-3zM363 77h3v3h-3zM366 77h3v3h-3zM369 77h3v3h-3zM372 77h3v3h-3zM360 80h3v3h-3zM360 83h3v3h-3zM360 86h3v3h-3zM363 86h3v3h-3zM366 86h3v3h-3zM369 86h3v3h-3zM360 89h3v3h-3zM360 92h3v3h-3zM360 95h3v3h-3zM363 95h3v3h-3zM366 95h3v3h-3zM369 95h3v3h-3zM372 95h3v3h-3zM378 77h3v3h-3zM378 80h3v3h-3zM378 83h3v3h-3zM378 86h3v3h-3zM378 89h3v3h-3zM378 92h3v3h-3zM378 95h3v3h-3zM381 95h3v3h-3zM384 95h3v3h-3zM387 95h3v3h-3zM390 95h3v3h-3zM399 77h3v3h-3zM402 77h3v3h-3zM405 77h3v3h-3zM396 80h3v3h-3zM408 80h3v3h-3zM396 83h3v3h-3zM408 83h3v3h-3zM396 86h3v3h-3zM399 86h3v3h-3zM402 86h3v3h-3zM405 86h3v3h-3zM408 86h3v3h-3zM396 89h3v3h-3zM408 89h3v3h-3zM396 92h3v3h-3zM408 92h3v3h-3zM396 95h3v3h-3zM408 95h3v3h-3zM414 77h3v3h-3zM417 77h3v3h-3zM420 77h3v3h-3zM423 77h3v3h-3zM426 77h3v3h-3zM420 80h3v3h-3zM420 83h3v3h-3zM420 86h3v3h-3zM420 89h3v3h-3zM420 92h3v3h-3zM420 95h3v3h-3zM432 77h3v3h-3zM435 77h3v3h-3zM438 77h3v3h-3zM441 77h3v3h-3zM444 77h3v3h-3zM432 80h3v3h-3zM432 83h3v3h-3zM432 86h3v3h-3zM435 86h3v3h-3zM438 86h3v3h-3zM441 86h3v3h-3zM432 89h3v3h-3zM432 92h3v3h-3zM432 95h3v3h-3zM435 95h3v3h-3zM438 95h3v3h-3zM441 95h3v3h-3zM444 95h3v3h-3zM450 77h3v3h-3zM453 77h3v3h-3zM456 77h3v3h-3zM459 77h3v3h-3zM450 80h3v3h-3zM462 80h3v3h-3zM450 83h3v3h-3zM462 83h3v3h-3zM450 86h3v3h-3zM462 86h3v3h-3zM450 89h3v3h-3zM462 89h3v3h-3zM450 92h3v3h-3zM462 92h3v3h-3zM450 95h3v3h-3zM453 95h3v3h-3zM456 95h3v3h-3zM459 95h3v3h-3zM489 77h3v3h-3zM492 77h3v3h-3zM495 77h3v3h-3zM486 80h3v3h-3zM498 80h3v3h-3zM486 83h3v3h-3zM498 83h3v3h-3zM486 86h3v3h-3zM489 86h3v3h-3zM492 86h3v3h-3zM495 86h3v3h-3zM498 86h3v3h-3zM486 89h3v3h-3zM498 89h3v3h-3zM486 92h3v3h-3zM498 92h3v3h-3zM486 95h3v3h-3zM498 95h3v3h-3zM504 77h3v3h-3zM507 77h3v3h-3zM510 77h3v3h-3zM513 77h3v3h-3zM504 80h3v3h-3zM516 80h3v3h-3zM504 83h3v3h-3zM516 83h3v3h-3zM504 86h3v3h-3zM507 86h3v3h-3zM510 86h3v3h-3zM513 86h3v3h-3zM504 89h3v3h-3zM510 89h3v3h-3zM504 92h3v3h-3zM513 92h3v3h-3zM504 95h3v3h-3zM516 95h3v3h-3zM522 77h3v3h-3zM525 77h3v3h-3zM528 77h3v3h-3zM531 77h3v3h-3zM534 77h3v3h-3zM528 80h3v3h-3zM528 83h3v3h-3zM528 86h3v3h-3zM528 89h3v3h-3zM528 92h3v3h-3zM528 95h3v3h-3zM540 77h3v3h-3zM543 77h3v3h-3zM546 77h3v3h-3zM549 77h3v3h-3zM552 77h3v3h-3zM546 80h3v3h-3zM546 83h3v3h-3zM546 86h3v3h-3zM546 89h3v3h-3zM546 92h3v3h-3zM540 95h3v3h-3zM543 95h3v3h-3zM546 95h3v3h-3zM549 95h3v3h-3zM552 95h3v3h-3zM558 77h3v3h-3zM561 77h3v3h-3zM564 77h3v3h-3zM567 77h3v3h-3zM570 77h3v3h-3zM558 80h3v3h-3zM558 83h3v3h-3zM558 86h3v3h-3zM561 86h3v3h-3zM564 86h3v3h-3zM567 86h3v3h-3zM558 89h3v3h-3zM558 92h3v3h-3zM558 95h3v3h-3zM579 77h3v3h-3zM582 77h3v3h-3zM585 77h3v3h-3zM576 80h3v3h-3zM588 80h3v3h-3zM576 83h3v3h-3zM588 83h3v3h-3zM576 86h3v3h-3zM579 86h3v3h-3zM582 86h3v3h-3zM585 86h3v3h-3zM588 86h3v3h-3zM576 89h3v3h-3zM588 89h3v3h-3zM576 92h3v3h-3zM588 92h3v3h-3zM576 95h3v3h-3zM588 95h3v3h-3zM597 77h3v3h-3zM600 77h3v3h-3zM603 77h3v3h-3zM606 77h3v3h-3zM594 80h3v3h-3zM594 83h3v3h-3zM594 86h3v3h-3zM594 89h3v3h-3zM594 92h3v3h-3zM597 95h3v3h-3zM600 95h3v3h-3zM603 95h3v3h-3zM606 95h3v3h-3zM612 77h3v3h-3zM615 77h3v3h-3zM618 77h3v3h-3zM621 77h3v3h-3zM624 77h3v3h-3zM618 80h3v3h-3zM618 83h3v3h-3zM618 86h3v3h-3zM618 89h3v3h-3zM618 92h3v3h-3zM618 95h3v3h-3zM633 77h3v3h-3zM636 77h3v3h-3zM639 77h3v3h-3zM642 77h3v3h-3zM630 80h3v3h-3zM630 83h3v3h-3zM633 86h3v3h-3zM636 86h3v3h-3zM639 86h3v3h-3zM642 89h3v3h-3zM642 92h3v3h-3zM630 95h3v3h-3zM633 95h3v3h-3zM636 95h3v3h-3zM639 95h3v3h-3z" fill="#f5f0e8"/></g>
   <text x="54" y="128" class="subheading">The stored block and the GossipSub envelope have different integrity and authorization checks.</text>
 
-  <rect x="44" y="154" width="1112" height="174" rx="22" fill="url(#storagePanel)" stroke="#6366f1" stroke-width="2"/>
-  <text x="68" y="183" class="eyebrow" fill="#a5b4fc">A · ENCRYPTED, CID-ADDRESSED STORAGE ARTIFACT</text>
+  <rect x="44" y="154" width="1112" height="174" fill="#30234c" stroke="#b7a1ff" stroke-width="2"/>
+  <text x="68" y="183" class="eyebrow" fill="#b7a1ff">A · ENCRYPTED, CID-ADDRESSED STORAGE ARTIFACT</text>
 
   <g filter="url(#shadow)">
-    <rect x="68" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
-    <circle cx="91" cy="225" r="15" fill="#a5b4fc"/><text x="91" y="226" class="number">1</text>
-    <text x="114" y="230" class="step">Local CRDT mutation</text>
+    <rect x="68" y="202" width="226" height="98" fill="#242136" stroke="#756c89"/>
+    <rect x="76" y="210" width="30" height="30" fill="#b7a1ff"/><text x="91" y="226" class="number">1</text>
+    <text x="0" y="0" class="step" transform="translate(114 230) scale(0.79922 1)">Local CRDT mutation</text>
     <text x="88" y="263" class="detail">produces change bytes</text>
 
-    <rect x="336" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
-    <circle cx="359" cy="225" r="15" fill="#a5b4fc"/><text x="359" y="226" class="number">2</text>
-    <text x="382" y="230" class="step">Serialize payload</text>
-    <text x="356" y="263" class="detail">change data, not sync envelope</text>
+    <rect x="336" y="202" width="226" height="98" fill="#242136" stroke="#756c89"/>
+    <rect x="344" y="210" width="30" height="30" fill="#b7a1ff"/><text x="359" y="226" class="number">2</text>
+    <text x="0" y="0" class="step" transform="translate(382 230) scale(0.89325 1)">Serialize payload</text>
+    <text x="0" y="0" class="detail" transform="translate(356 263) scale(0.70370 1)">change data, not sync envelope</text>
 
-    <rect x="604" y="202" width="226" height="98" rx="16" fill="#1e293b" stroke="#475569"/>
-    <circle cx="627" cy="225" r="15" fill="#a5b4fc"/><text x="627" y="226" class="number">3</text>
+    <rect x="604" y="202" width="226" height="98" fill="#242136" stroke="#756c89"/>
+    <rect x="612" y="210" width="30" height="30" fill="#b7a1ff"/><text x="627" y="226" class="number">3</text>
     <text x="650" y="230" class="step">Encrypt payload</text>
     <text x="624" y="263" class="detail">with the document key</text>
 
-    <rect x="872" y="202" width="260" height="98" rx="16" fill="#1e293b" stroke="#818cf8"/>
-    <circle cx="895" cy="225" r="15" fill="#a5b4fc"/><text x="895" y="226" class="number">4</text>
+    <rect x="872" y="202" width="260" height="98" fill="#242136" stroke="#b7a1ff"/>
+    <rect x="880" y="210" width="30" height="30" fill="#b7a1ff"/><text x="895" y="226" class="number">4</text>
     <text x="918" y="230" class="step">Store ciphertext</text>
-    <text x="892" y="259" class="detail">Helia returns its content ID (CID)</text>
-    <text x="892" y="280" class="detail">for later references and retrieval</text>
+    <text x="0" y="0" class="detail" transform="translate(892 259) scale(0.73203 1)">Helia returns its content ID (CID)</text>
+    <text x="0" y="0" class="detail" transform="translate(892 280) scale(0.73203 1)">for later references and retrieval</text>
   </g>
-  <path d="M 294 251 H 330 M 562 251 H 598 M 830 251 H 866" fill="none" stroke="#a5b4fc" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+  <path d="M 294 251 H 330 M 562 251 H 598 M 830 251 H 866" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
-  <rect x="44" y="350" width="1112" height="180" rx="22" fill="url(#wirePanel)" stroke="#14b8a6" stroke-width="2"/>
-  <text x="68" y="379" class="eyebrow" fill="#5eead4">B · SEPARATE GOSSIPSUB WIRE ARTIFACT</text>
+  <rect x="44" y="350" width="1112" height="180" fill="#1b382a" stroke="#a3efb8" stroke-width="2"/>
+  <text x="68" y="379" class="eyebrow" fill="#a3efb8">B · SEPARATE GOSSIPSUB WIRE ARTIFACT</text>
 
   <g filter="url(#shadow)">
-    <rect x="68" y="398" width="294" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
-    <circle cx="91" cy="421" r="15" fill="#5eead4"/><text x="91" y="422" class="number">5</text>
+    <rect x="68" y="398" width="294" height="104" fill="#1b382a" stroke="#a3efb8"/>
+    <rect x="76" y="406" width="30" height="30" fill="#a3efb8"/><text x="91" y="422" class="number">5</text>
     <text x="114" y="426" class="step">Build CRDTSyncMessage</text>
     <text x="88" y="455" class="detail">new CID + inline change tree</text>
     <text x="88" y="477" class="detail">+ deferred CID references</text>
 
-    <rect x="405" y="398" width="212" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
-    <circle cx="428" cy="421" r="15" fill="#5eead4"/><text x="428" y="422" class="number">6</text>
-    <text x="451" y="426" class="step">Sign if enabled</text>
-    <text x="425" y="455" class="detail">signature covers the</text>
+    <rect x="405" y="398" width="212" height="104" fill="#1b382a" stroke="#a3efb8"/>
+    <rect x="413" y="406" width="30" height="30" fill="#a3efb8"/><text x="428" y="422" class="number">6</text>
+    <text x="0" y="0" class="step" transform="translate(451 426) scale(0.92593 1)">Sign if enabled</text>
+    <text x="0" y="0" class="detail" transform="translate(425 455) scale(0.97778 1)">signature covers the</text>
     <text x="425" y="477" class="detail">entire sync message</text>
 
-    <rect x="660" y="398" width="214" height="104" rx="16" fill="#15343b" stroke="#2dd4bf"/>
-    <circle cx="683" cy="421" r="15" fill="#5eead4"/><text x="683" y="422" class="number">7</text>
-    <text x="706" y="426" class="step">Serialize + encrypt</text>
-    <text x="680" y="455" class="detail">document-key envelope</text>
+    <rect x="660" y="398" width="214" height="104" fill="#1b382a" stroke="#a3efb8"/>
+    <rect x="668" y="406" width="30" height="30" fill="#a3efb8"/><text x="683" y="422" class="number">7</text>
+    <text x="0" y="0" class="step" transform="translate(706 426) scale(0.74074 1)">Serialize + encrypt</text>
+    <text x="0" y="0" class="detail" transform="translate(680 455) scale(0.94180 1)">document-key envelope</text>
     <text x="680" y="477" class="detail">AES-GCM by default</text>
 
-    <rect x="917" y="398" width="215" height="104" rx="16" fill="#15343b" stroke="#5eead4"/>
-    <circle cx="940" cy="421" r="15" fill="#5eead4"/><text x="940" y="422" class="number">8</text>
-    <text x="963" y="426" class="step">Publish envelope</text>
-    <text x="937" y="455" class="detail">full encrypted message</text>
-    <text x="937" y="477" class="detail">over GossipSub—not CID-only</text>
+    <rect x="917" y="398" width="215" height="104" fill="#1b382a" stroke="#a3efb8"/>
+    <rect x="925" y="406" width="30" height="30" fill="#a3efb8"/><text x="940" y="422" class="number">8</text>
+    <text x="0" y="0" class="step" transform="translate(963 426) scale(0.88542 1)">Publish envelope</text>
+    <text x="0" y="0" class="detail" transform="translate(937 455) scale(0.90404 1)">full encrypted message</text>
+    <text x="0" y="0" class="detail" transform="translate(937 477) scale(0.73663 1)">over GossipSub—not CID-only</text>
   </g>
-  <path d="M 362 450 H 399 M 617 450 H 654 M 874 450 H 911" fill="none" stroke="#5eead4" stroke-width="3" marker-end="url(#arrowTeal)"/>
+  <path d="M 362 450 H 399 M 617 450 H 654 M 874 450 H 911" fill="none" stroke="#a3efb8" stroke-width="3" marker-end="url(#arrowTeal)"/>
 
-  <rect x="44" y="552" width="1112" height="140" rx="22" fill="#111f34" stroke="#475569" stroke-width="2"/>
-  <text x="68" y="581" class="eyebrow" fill="#93c5fd">REMOTE DEVICE · ORDERED CHECKS</text>
+  <rect x="44" y="552" width="1112" height="140" fill="#242136" stroke="#756c89" stroke-width="2"/>
+  <text x="68" y="581" class="eyebrow" fill="#b7a1ff">REMOTE DEVICE · ORDERED CHECKS</text>
   <g>
-    <circle cx="92" cy="620" r="16" fill="#93c5fd"/><text x="92" y="621" class="number">9</text>
+    <rect x="76" y="604" width="32" height="32" fill="#b7a1ff"/><text x="92" y="621" class="number">9</text>
     <text x="119" y="616" class="step">Decrypt envelope first</text>
     <text x="119" y="640" class="detail">then deserialize the sync message</text>
 
-    <circle cx="430" cy="620" r="16" fill="#93c5fd"/><text x="430" y="621" class="number">10</text>
+    <rect x="414" y="604" width="32" height="32" fill="#b7a1ff"/><text x="430" y="621" class="number">10</text>
     <text x="457" y="610" class="step">Authorize known writer</text>
     <text x="457" y="634" class="detail">verify outer signature + writer ACL</text>
-    <text x="457" y="655" class="detail">when signing is enabled and writers are known</text>
+    <text x="0" y="0" class="detail" transform="translate(457 655) scale(0.92346 1)">when signing is enabled and writers are known</text>
 
-    <circle cx="814" cy="620" r="16" fill="#93c5fd"/><text x="814" y="621" class="number">11</text>
+    <rect x="798" y="604" width="32" height="32" fill="#b7a1ff"/><text x="814" y="621" class="number">11</text>
     <text x="841" y="610" class="step">Apply inline history</text>
-    <text x="841" y="634" class="detail">Fetch only missing or deferred CIDs.</text>
-    <text x="841" y="655" class="detail">CID check → decrypt → deserialize and apply.</text>
+    <text x="0" y="0" class="detail" transform="translate(841 634) scale(0.92284 1)">Fetch only missing or deferred CIDs.</text>
+    <text x="0" y="0" class="detail" transform="translate(841 655) scale(0.75505 1)">CID check → decrypt → deserialize and apply.</text>
   </g>
-  <path d="M 374 620 H 404 M 758 620 H 788" fill="none" stroke="#93c5fd" stroke-width="3" marker-end="url(#arrowIndigo)"/>
+  <path d="M 374 620 H 404 M 758 620 H 788" fill="none" stroke="#b7a1ff" stroke-width="3" marker-end="url(#arrowIndigo)"/>
 
-  <rect x="44" y="710" width="1112" height="30" rx="15" fill="#332742"/>
-  <text x="600" y="731" class="footer" text-anchor="middle">Failure boundary: a local mutation can remain visible if later storage or publish fails; there is no rollback, durable outbox, or delivery receipt.</text>
+  <rect x="44" y="710" width="1112" height="30" fill="#382237"/>
+  <text x="0" y="0" class="footer" text-anchor="middle" transform="translate(600 731) scale(0.83296 1)">Failure boundary: a local mutation can remain visible if later storage or publish fails; there is no rollback, durable outbox, or delivery receipt.</text>
+<path d="M0 0H1200V8H0Z" fill="#a3efb8"/>
 </svg>
