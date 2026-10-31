@@ -9,7 +9,6 @@ if (args.length !== 3) throw new Error('Usage: node scripts/publish-release.mjs 
 const [artifactDirectory, stagingTag, targetTag] = args;
 if (!stagingPattern.test(stagingTag) || RESERVED_TAGS.includes(stagingTag)) throw new Error('Invalid staging dist-tag');
 if (!RESERVED_TAGS.includes(targetTag)) throw new Error('Target dist-tag must be latest or next');
-if (!process.env.NODE_AUTH_TOKEN) throw new Error('NODE_AUTH_TOKEN is required');
 
 const release = JSON.parse(await readFile(resolve(artifactDirectory, 'release-manifest.json'), 'utf8'));
 if (JSON.stringify(release.packageOrder) !== JSON.stringify(packages.map(({ name }) => name))) throw new Error('Unexpected package order');

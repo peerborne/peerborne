@@ -25,22 +25,39 @@ try {
   await writeFile(resolve(consumer, 'package.json'), `${JSON.stringify({ name: 'peerborne-release-consumer', private: true, type: 'module' }, null, 2)}\n`);
   run('npm', ['install', '--no-audit', '--no-fund', ...tarballs, 'typescript@5.9.3', 'vite@6.4.3', '@types/react@19.2.3', 'vite-plugin-wasm@3.6.0'], consumer);
 
-  const imports = [
-    "import '@peerborne/core';",
-    "import '@peerborne/core/node';",
-    "import '@peerborne/core/browser-primitives';",
-    "import '@peerborne/automerge';",
-    "import '@peerborne/yjs';",
-    "import '@peerborne/react';",
-    "import '@peerborne/redux';",
-    "import '@peerborne/index';",
-    "import '@peerborne/index/react';",
-  ].join('\n');
+  const specifiers = [
+    '@peerborne/core',
+    '@peerborne/core/node',
+    '@peerborne/core/browser-primitives',
+    '@peerborne/core/wire-protocols',
+    '@peerborne/automerge',
+    '@peerborne/yjs',
+    '@peerborne/react',
+    '@peerborne/redux',
+    '@peerborne/index',
+    '@peerborne/index/react',
+  ];
+  const imports = specifiers.map((specifier) => `import '${specifier}';`).join('\n');
   await writeFile(resolve(consumer, 'imports.mjs'), `${imports}\n`);
   run('node', ['imports.mjs'], consumer);
 
+  await writeFile(resolve(consumer, 'requires.mjs'), `
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+for (const specifier of ${JSON.stringify(specifiers)}) {
+  const required = require(specifier);
+  const imported = await import(specifier);
+  for (const name of Object.keys(imported)) {
+    assert.equal(required[name], imported[name], specifier + ': ' + name);
+  }
+}
+`);
+  run('node', ['requires.mjs'], consumer);
+
   await writeFile(resolve(consumer, 'src', 'index.ts'), `${imports}\nexport const loaded: true = true;\n`);
-  await writeFile(resolve(consumer, 'tsconfig.json'), `${JSON.stringify({ compilerOptions: { target: 'ES2024', lib: ['ES2024', 'DOM'], module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true, skipLibCheck: false }, include: ['src/index.ts'] }, null, 2)}\n`);
+  await writeFile(resolve(consumer, 'src', 'commonjs.cts'), `${imports}\nexport const loaded: true = true;\n`);
+  await writeFile(resolve(consumer, 'tsconfig.json'), `${JSON.stringify({ compilerOptions: { target: 'ES2024', lib: ['ES2024', 'DOM'], module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true, skipLibCheck: false }, include: ['src/index.ts', 'src/commonjs.cts'] }, null, 2)}\n`);
   run(resolve(consumer, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], consumer);
 
   const browserImports = imports.split('\n').filter((line) => !line.includes('/node')).join('\n');
