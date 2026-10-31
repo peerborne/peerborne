@@ -1492,6 +1492,21 @@ lemma ParentNumeral_0(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 1)+1, 2), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 1);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 4);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*1;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*4;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 2), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 2), 2) == 1;
+  }
+  assert ParentNumeral(index, 1) == (4*block+2)*1-1;
+
 }
 
 lemma ParentNumeral_1(index: int, bound: int)
@@ -1505,6 +1520,21 @@ lemma ParentNumeral_1(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 2)+1, 4), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 2);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 8);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*2;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*8;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 4), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 4), 2) == 1;
+  }
+  assert ParentNumeral(index, 2) == (4*block+2)*2-1;
+
 }
 
 lemma ParentNumeral_2(index: int, bound: int)
@@ -1518,6 +1548,21 @@ lemma ParentNumeral_2(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 4)+1, 8), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 4);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 16);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*4;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*16;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 8), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 8), 2) == 1;
+  }
+  assert ParentNumeral(index, 4) == (4*block+2)*4-1;
+
 }
 
 lemma ParentNumeral_3(index: int, bound: int)
@@ -1531,6 +1576,21 @@ lemma ParentNumeral_3(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 8)+1, 16), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 8);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 32);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*8;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*32;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 16), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 16), 2) == 1;
+  }
+  assert ParentNumeral(index, 8) == (4*block+2)*8-1;
+
 }
 
 lemma ParentNumeral_4(index: int, bound: int)
@@ -1544,6 +1604,21 @@ lemma ParentNumeral_4(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 16)+1, 32), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 16);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 64);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*16;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*64;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 32), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 32), 2) == 1;
+  }
+  assert ParentNumeral(index, 16) == (4*block+2)*16-1;
+
 }
 
 lemma ParentNumeral_5(index: int, bound: int)
@@ -1557,6 +1632,21 @@ lemma ParentNumeral_5(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 32)+1, 64), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 32);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 128);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*32;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*128;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 64), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 64), 2) == 1;
+  }
+  assert ParentNumeral(index, 32) == (4*block+2)*32-1;
+
 }
 
 lemma ParentNumeral_6(index: int, bound: int)
@@ -1570,6 +1660,21 @@ lemma ParentNumeral_6(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 64)+1, 128), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 64);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 256);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*64;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*256;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 128), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 128), 2) == 1;
+  }
+  assert ParentNumeral(index, 64) == (4*block+2)*64-1;
+
 }
 
 lemma ParentNumeral_7(index: int, bound: int)
@@ -1583,6 +1688,21 @@ lemma ParentNumeral_7(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 128)+1, 256), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 128);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 512);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*128;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*512;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 256), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 256), 2) == 1;
+  }
+  assert ParentNumeral(index, 128) == (4*block+2)*128-1;
+
 }
 
 lemma ParentNumeral_8(index: int, bound: int)
@@ -1596,6 +1716,21 @@ lemma ParentNumeral_8(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 256)+1, 512), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 256);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 1024);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*256;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*1024;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 512), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 512), 2) == 1;
+  }
+  assert ParentNumeral(index, 256) == (4*block+2)*256-1;
+
 }
 
 lemma ParentNumeral_9(index: int, bound: int)
@@ -1609,6 +1744,21 @@ lemma ParentNumeral_9(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 512)+1, 1024), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 512);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 2048);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*512;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*2048;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 1024), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 1024), 2) == 1;
+  }
+  assert ParentNumeral(index, 512) == (4*block+2)*512-1;
+
 }
 
 lemma ParentNumeral_10(index: int, bound: int)
@@ -1622,6 +1772,21 @@ lemma ParentNumeral_10(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 1024)+1, 2048), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 1024);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 4096);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*1024;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*4096;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 2048), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 2048), 2) == 1;
+  }
+  assert ParentNumeral(index, 1024) == (4*block+2)*1024-1;
+
 }
 
 lemma ParentNumeral_11(index: int, bound: int)
@@ -1635,6 +1800,21 @@ lemma ParentNumeral_11(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 2048)+1, 4096), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 2048);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 8192);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*2048;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*8192;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 4096), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 4096), 2) == 1;
+  }
+  assert ParentNumeral(index, 2048) == (4*block+2)*2048-1;
+
 }
 
 lemma ParentNumeral_12(index: int, bound: int)
@@ -1648,6 +1828,21 @@ lemma ParentNumeral_12(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 4096)+1, 8192), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 4096);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 16384);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*4096;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*16384;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 8192), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 8192), 2) == 1;
+  }
+  assert ParentNumeral(index, 4096) == (4*block+2)*4096-1;
+
 }
 
 lemma ParentNumeral_13(index: int, bound: int)
@@ -1661,6 +1856,21 @@ lemma ParentNumeral_13(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 8192)+1, 16384), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 8192);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 32768);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*8192;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*32768;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 16384), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 16384), 2) == 1;
+  }
+  assert ParentNumeral(index, 8192) == (4*block+2)*8192-1;
+
 }
 
 lemma ParentNumeral_14(index: int, bound: int)
@@ -1674,6 +1884,21 @@ lemma ParentNumeral_14(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 16384)+1, 32768), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 16384);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 65536);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*16384;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*65536;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 32768), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 32768), 2) == 1;
+  }
+  assert ParentNumeral(index, 16384) == (4*block+2)*16384-1;
+
 }
 
 lemma ParentNumeral_15(index: int, bound: int)
@@ -1687,6 +1912,21 @@ lemma ParentNumeral_15(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 32768)+1, 65536), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 32768);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 131072);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*32768;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*131072;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 65536), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 65536), 2) == 1;
+  }
+  assert ParentNumeral(index, 32768) == (4*block+2)*32768-1;
+
 }
 
 lemma ParentNumeral_16(index: int, bound: int)
@@ -1700,6 +1940,21 @@ lemma ParentNumeral_16(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 65536)+1, 131072), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 65536);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 262144);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*65536;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*262144;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 131072), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 131072), 2) == 1;
+  }
+  assert ParentNumeral(index, 65536) == (4*block+2)*65536-1;
+
 }
 
 lemma ParentNumeral_17(index: int, bound: int)
@@ -1713,6 +1968,21 @@ lemma ParentNumeral_17(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 131072)+1, 262144), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 131072);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 524288);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*131072;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*524288;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 262144), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 262144), 2) == 1;
+  }
+  assert ParentNumeral(index, 131072) == (4*block+2)*131072-1;
+
 }
 
 lemma ParentNumeral_18(index: int, bound: int)
@@ -1726,6 +1996,21 @@ lemma ParentNumeral_18(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 262144)+1, 524288), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 262144);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 1048576);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*262144;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*1048576;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 524288), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 524288), 2) == 1;
+  }
+  assert ParentNumeral(index, 262144) == (4*block+2)*262144-1;
+
 }
 
 lemma ParentNumeral_19(index: int, bound: int)
@@ -1739,6 +2024,21 @@ lemma ParentNumeral_19(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 524288)+1, 1048576), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 524288);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 2097152);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*524288;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*2097152;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 1048576), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 1048576), 2) == 1;
+  }
+  assert ParentNumeral(index, 524288) == (4*block+2)*524288-1;
+
 }
 
 lemma ParentNumeral_20(index: int, bound: int)
@@ -1752,6 +2052,21 @@ lemma ParentNumeral_20(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 1048576)+1, 2097152), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 1048576);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 4194304);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*1048576;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*4194304;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 2097152), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 2097152), 2) == 1;
+  }
+  assert ParentNumeral(index, 1048576) == (4*block+2)*1048576-1;
+
 }
 
 lemma ParentNumeral_21(index: int, bound: int)
@@ -1765,6 +2080,21 @@ lemma ParentNumeral_21(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 2097152)+1, 4194304), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 2097152);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 8388608);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*2097152;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*8388608;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 4194304), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 4194304), 2) == 1;
+  }
+  assert ParentNumeral(index, 2097152) == (4*block+2)*2097152-1;
+
 }
 
 lemma ParentNumeral_22(index: int, bound: int)
@@ -1778,6 +2108,21 @@ lemma ParentNumeral_22(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 4194304)+1, 8388608), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 4194304);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 16777216);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*4194304;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*16777216;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 8388608), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 8388608), 2) == 1;
+  }
+  assert ParentNumeral(index, 4194304) == (4*block+2)*4194304-1;
+
 }
 
 lemma ParentNumeral_23(index: int, bound: int)
@@ -1791,6 +2136,21 @@ lemma ParentNumeral_23(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 8388608)+1, 16777216), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 8388608);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 33554432);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*8388608;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*33554432;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 16777216), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 16777216), 2) == 1;
+  }
+  assert ParentNumeral(index, 8388608) == (4*block+2)*8388608-1;
+
 }
 
 lemma ParentNumeral_24(index: int, bound: int)
@@ -1804,6 +2164,21 @@ lemma ParentNumeral_24(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 16777216)+1, 33554432), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 16777216);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 67108864);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*16777216;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*67108864;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 33554432), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 33554432), 2) == 1;
+  }
+  assert ParentNumeral(index, 16777216) == (4*block+2)*16777216-1;
+
 }
 
 lemma ParentNumeral_25(index: int, bound: int)
@@ -1817,6 +2192,21 @@ lemma ParentNumeral_25(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 33554432)+1, 67108864), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 33554432);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 134217728);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*33554432;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*134217728;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 67108864), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 67108864), 2) == 1;
+  }
+  assert ParentNumeral(index, 33554432) == (4*block+2)*33554432-1;
+
 }
 
 lemma ParentNumeral_26(index: int, bound: int)
@@ -1830,6 +2220,21 @@ lemma ParentNumeral_26(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 67108864)+1, 134217728), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 67108864);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 268435456);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*67108864;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*268435456;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 134217728), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 134217728), 2) == 1;
+  }
+  assert ParentNumeral(index, 67108864) == (4*block+2)*67108864-1;
+
 }
 
 lemma ParentNumeral_27(index: int, bound: int)
@@ -1843,6 +2248,21 @@ lemma ParentNumeral_27(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 134217728)+1, 268435456), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 134217728);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 536870912);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*134217728;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*536870912;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 268435456), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 268435456), 2) == 1;
+  }
+  assert ParentNumeral(index, 134217728) == (4*block+2)*134217728-1;
+
 }
 
 lemma ParentNumeral_28(index: int, bound: int)
@@ -1856,6 +2276,21 @@ lemma ParentNumeral_28(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 268435456)+1, 536870912), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 268435456);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 1073741824);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*268435456;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*1073741824;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 536870912), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 536870912), 2) == 1;
+  }
+  assert ParentNumeral(index, 268435456) == (4*block+2)*268435456-1;
+
 }
 
 lemma ParentNumeral_29(index: int, bound: int)
@@ -1869,6 +2304,21 @@ lemma ParentNumeral_29(index: int, bound: int)
   ensures JSRem(JSFloorDiv(ParentNumeral(index, 536870912)+1, 1073741824), 2) == 1
 {
   reveal ParentNumeral();
+  var quotient := JSFloorDiv(index+1, 536870912);
+  var block := JSFloorDiv(quotient, 4);
+  var blocks := JSFloorDiv(bound, 2147483648);
+  assert quotient >= 1 && JSRem(quotient, 2) == 1;
+  assert index+1 == quotient*536870912;
+  assert quotient == 4*block+1 || quotient == 4*block+3;
+  assert bound == blocks*2147483648;
+  assert 0 <= block < blocks;
+  if quotient == 4*block+1 {
+    assert JSRem(JSFloorDiv(index, 1073741824), 2) == 0;
+  } else {
+    assert JSRem(JSFloorDiv(index, 1073741824), 2) == 1;
+  }
+  assert ParentNumeral(index, 536870912) == (4*block+2)*536870912-1;
+
 }
 
 lemma RightBound_1(index: int)
