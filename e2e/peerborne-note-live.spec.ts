@@ -11,15 +11,15 @@ test.beforeEach(async () => {
   if (lastTestFinishedAt === undefined) return;
   // Separate independent sessions to respect the public demo relay's burst cap.
   const cooldown = Math.max(0, 15_000 - (Date.now() - lastTestFinishedAt));
-  if (cooldown > 0) await new Promise((resolve) => setTimeout(resolve, cooldown));
+  if (cooldown > 0)
+    await new Promise((resolve) => setTimeout(resolve, cooldown));
 });
 
 test.afterEach(() => {
   lastTestFinishedAt = Date.now();
 });
 
-function failOnRuntimeErrors(page: Page): string[] {
-  const errors: string[] = [];
+function failOnRuntimeErrors(page: Page, errors: string[] = []): string[] {
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (message) => {
     if (message.type() === 'error') {
@@ -142,6 +142,7 @@ test('deployed reader invitation receives edits and remains read-only after a br
     await recipientContext.close();
     recipientContext = await chromium.launchPersistentContext(profile);
     recipient = await recipientContext.newPage();
+    failOnRuntimeErrors(recipient, recipientErrors);
     await recipient.goto(new URL(shared.invitationUrl).origin);
     await recipient
       .getByRole('button', { name: 'Open saved note 1', exact: true })
