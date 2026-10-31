@@ -7,9 +7,10 @@ Peerborne remains alpha software. The new integrations are source workspaces;
 they are not published to npm. Local mutation tests and isolated provider tests
 do not establish end-to-end peer convergence, durable recovery, or production readiness.
 
-| Integration                | Current scope                                                                              | Remaining acceptance                                                  |
-| -------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Integration | Current scope | Remaining acceptance |
+| --- | --- | --- |
 | Plain web / document store | Dependency-free document snapshots, lifecycle/error tests, and a plain DOM browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| React | External-store hook, shared ownership, StrictMode test, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 

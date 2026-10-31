@@ -116,7 +116,7 @@ See the [framework-free browser guide](https://peerborne.io/getting-started/vani
 | [`@peerborne/core`](packages/core) | Documents, storage, networking, crypto, ACLs, and keys |
 | [`@peerborne/automerge`](packages/automerge) | Automerge adapter and headless daemon |
 | [`@peerborne/yjs`](packages/yjs) | Yjs adapter and headless daemon |
-| [`@peerborne/react`](packages/react) | React context and hooks |
+| [`@peerborne/react`](packages/react) | React context and external-store hooks |
 | [`@peerborne/redux`](packages/redux) | Redux actions and reducers |
 | [`@peerborne/index`](packages/index) | Local/blind indexes and query bindings |
 | [`@peerborne/store`](packages/store) | Framework-independent subscriptions, snapshots, and document ownership |

@@ -34,6 +34,7 @@ try {
     '@peerborne/yjs',
     '@peerborne/store',
     '@peerborne/react',
+    '@peerborne/react/store',
     '@peerborne/redux',
     '@peerborne/index',
     '@peerborne/index/react',

@@ -2,12 +2,18 @@
   "name": "@peerborne/integration-examples",
   "dependencies": {
     "@peerborne/core": "workspace:^",
+    "@peerborne/react": "workspace:^",
     "@peerborne/store": "workspace:^",
     "@peerborne/yjs": "workspace:^",
-    "yjs": "^13.6.32"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^5.9.3",
     "vite": "^8.3.5"
   },
