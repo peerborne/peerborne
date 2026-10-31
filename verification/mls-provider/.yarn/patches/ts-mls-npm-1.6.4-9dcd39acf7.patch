@@ -1,0 +1,33 @@
+diff --git a/dist/src/clientState.js b/dist/src/clientState.js
+index 45af97faf0d8094090fe5fdca57ef40bb90480b2..9314c3ec8d112f2f2252a6242bab36f5dc479c34 100644
+--- a/dist/src/clientState.js
++++ b/dist/src/clientState.js
+@@ -715,12 +715,12 @@ function removeOldHistoricalReceiverData(historicalReceiverData, max) {
+     for (const [n, epoch] of sortedEpochs.entries()) {
+         const data = historicalReceiverData.get(epoch);
+         if (n < cutoff) {
+-            toBeDeleted.push(...allSecretTreeValues(data.secretTree));
++            toBeDeleted.push(...allSecretTreeValues(data.secretTree), data.senderDataSecret, data.resumptionPsk);
+         }
+         else {
+             map.set(epoch, data);
+         }
+     }
+-    return [new Map(sortedEpochs.slice(-max).map((epoch) => [epoch, historicalReceiverData.get(epoch)])), []];
++    return [map, toBeDeleted];
+ }
+ //# sourceMappingURL=clientState.js.map
+\ No newline at end of file
+diff --git a/dist/src/secretTree.js b/dist/src/secretTree.js
+index 1271db84cbe67f8fd38fbeb3ca3b4b51786249a2..90b6cdd2583919d02b7f4a463fb45d6d0e648aee 100644
+--- a/dist/src/secretTree.js
++++ b/dist/src/secretTree.js
+@@ -19,7 +19,7 @@ export const decodeSecretTreeNode = mapDecoders([decodeGenerationSecret, decodeG
+ export const secretTreeEncoder = varLenTypeEncoder(secretTreeNodeEncoder);
+ export const decodeSecretTree = decodeVarLenType(decodeSecretTreeNode);
+ export function allSecretTreeValues(tree) {
+-    const arr = new Array(tree.length * 2);
++    const arr = [];
+     for (const node of tree) {
+         arr.push(node.application.secret);
+         arr.push(node.handshake.secret);
