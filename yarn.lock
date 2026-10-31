@@ -4705,6 +4705,7 @@ __metadata:
     "@types/react-dom": "npm:^19.2.3"
     "@vitejs/plugin-react": "npm:^6.1.2"
     loro-crdt: "npm:^1.17.1"
+    monaco-editor: "npm:^0.57.0"
     prosemirror-model: "npm:^1.25.12"
     prosemirror-state: "npm:^1.4.4"
     prosemirror-view: "npm:^1.42.6"
@@ -4716,6 +4717,7 @@ __metadata:
     vite: "npm:^8.3.5"
     vue: "npm:^3.5.44"
     y-codemirror.next: "npm:^0.3.6"
+    y-monaco: "npm:^0.1.6"
     y-protocols: "npm:^1.0.6"
     yjs: "npm:^13.6.33"
   languageName: unknown
@@ -6261,6 +6263,13 @@ __metadata:
   version: 4.0.5
   resolution: "@types/tough-cookie@npm:4.0.5"
   checksum: 10/01fd82efc8202670865928629697b62fe9bf0c0dcbc5b1c115831caeb073a2c0abb871ff393d7df1ae94ea41e256cb87d2a5a91fd03cdb1b0b4384e08d4ee482
+  languageName: node
+  linkType: hard
+
+"@types/trusted-types@npm:^2.0.7":
+  version: 2.0.7
+  resolution: "@types/trusted-types@npm:2.0.7"
+  checksum: 10/8e4202766a65877efcf5d5a41b7dd458480b36195e580a3b1085ad21e948bc417d55d6f8af1fd2a7ad008015d4117d5fdfe432731157da3c68678487174e4ba3
   languageName: node
   linkType: hard
 
@@ -8093,6 +8102,18 @@ __metadata:
   dependencies:
     domelementtype: "npm:^2.3.0"
   checksum: 10/809b805a50a9c6884a29f38aec0a4e1b4537f40e1c861950ed47d10b049febe6b79ab72adaeeebb3cc8fc1cd33f34e97048a72a9265103426d93efafa78d3e96
+  languageName: node
+  linkType: hard
+
+"dompurify@npm:3.4.15":
+  version: 3.4.15
+  resolution: "dompurify@npm:3.4.15"
+  dependencies:
+    "@types/trusted-types": "npm:^2.0.7"
+  dependenciesMeta:
+    "@types/trusted-types":
+      optional: true
+  checksum: 10/159f592307578405c5217ba40ab467d4ac35f23eb20abc7f32b85698b8c1aff92f71b00c80779f891a8e463edafab05d9a4db53052d5c67005240ac4fff7fc72
   languageName: node
   linkType: hard
 
@@ -11294,7 +11315,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lib0@npm:^0.2.100, lib0@npm:^0.2.42, lib0@npm:^0.2.85":
+"lib0@npm:^0.2.100, lib0@npm:^0.2.42, lib0@npm:^0.2.43, lib0@npm:^0.2.85":
   version: 0.2.119
   resolution: "lib0@npm:0.2.119"
   dependencies:
@@ -11721,6 +11742,15 @@ __metadata:
   version: 3.0.4
   resolution: "markdown-table@npm:3.0.4"
   checksum: 10/bc699819e6a15607e5def0f21aa862aa061cf1f49877baa93b0185574f6ab143591afe0e18b94d9b15ea80c6a693894150dbccfacf4f6767160dc32ae393dfe0
+  languageName: node
+  linkType: hard
+
+"marked@npm:14.0.0":
+  version: 14.0.0
+  resolution: "marked@npm:14.0.0"
+  bin:
+    marked: bin/marked.js
+  checksum: 10/5f69e58e177bde75fb6145127c939c096d05494c5dff92d73af8a550097d6631c82e919f8a375e3743379a2623418151086b925a902a2be123590b887716f2bb
   languageName: node
   linkType: hard
 
@@ -12647,6 +12677,16 @@ __metadata:
   bin:
     mkdirp: bin/cmd.js
   checksum: 10/d71b8dcd4b5af2fe13ecf3bd24070263489404fe216488c5ba7e38ece1f54daf219e72a833a3a2dc404331e870e9f44963a33399589490956bff003a3404d3b2
+  languageName: node
+  linkType: hard
+
+"monaco-editor@npm:^0.57.0":
+  version: 0.57.0
+  resolution: "monaco-editor@npm:0.57.0"
+  dependencies:
+    dompurify: "npm:3.4.15"
+    marked: "npm:14.0.0"
+  checksum: 10/190a681cb01c8b862875803ca4fedcd6a945c90c09dad3c8c8932d37b9510ccb82991cab0177b8c98be7deb74d49e4727fb6d43c2fc6ed94f712beb9fb1ccec3
   languageName: node
   linkType: hard
 
@@ -16823,6 +16863,18 @@ __metadata:
     "@codemirror/view": ^6.0.0
     yjs: ^13.5.6
   checksum: 10/dfd5c46cd340b12ab843d0bc2e5070b1390018e3da404b37ee6733985043e04488a601ee34beed724cd08c0057571e1a4a00854cebd930985e30222d6ff657ac
+  languageName: node
+  linkType: hard
+
+"y-monaco@npm:^0.1.6":
+  version: 0.1.6
+  resolution: "y-monaco@npm:0.1.6"
+  dependencies:
+    lib0: "npm:^0.2.43"
+  peerDependencies:
+    monaco-editor: ">=0.20.0"
+    yjs: ^13.3.1
+  checksum: 10/0dbe9038e7795f2ffc6aaf878ed50eac108af3786ebc7c296d98d0288a10c31c028af6c026474728c378adce5c2049f0ea629ab226b312091a35b50ded2c3340
   languageName: node
   linkType: hard
 
