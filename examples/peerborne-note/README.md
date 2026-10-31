@@ -5,9 +5,17 @@ Peerborne invitation flow. It creates an encrypted Automerge document locally,
 then uses a configured Circuit Relay rendezvous to invite one distinct browser
 identity as an editor or reader.
 
-This is early-stage software and is not production-ready. Do not enter sensitive
-or durable information. Both browsers must remain open and online; delivery,
-automatic reconnect, and restart recovery are not guaranteed.
+Alpha source demo. See the [current limitations](https://peerborne.io/concepts/limitations/).
+
+Notes are saved as encrypted, self-signed checkpoints in this browser. After a
+refresh or browser restart, choose a saved note on the home screen. Signing,
+KEM, and storage keys remain non-extractable browser key handles. Wait for
+**Saved in this browser** before closing the tab. A failed write shows a retry
+action, and damaged data is retained without an empty replacement.
+
+This verifies local reopening with the saved reader/editor permissions.
+Invitations still originate in the session that creates a note. Reconnecting to peers after restart, recovering
+missed group-key changes, and backup across devices remain separate work.
 
 ## Run locally
 
@@ -28,10 +36,13 @@ pages served over HTTPS require a `/wss/` relay address.
 ```sh
 yarn workspace @peerborne/peerborne-note test
 yarn workspace @peerborne/peerborne-note build
+yarn test:e2e:peerborne-note
 ```
 
 The focused tests cover canonical invitation fragments and the versioned
-IndexedDB identity boundary. The repository's separate NAT-isolated Playwright
+IndexedDB identity and encrypted checkpoint boundaries. Chromium tests verify
+note contents after reload, edit/reopen, full browser-process relaunch, damaged
+storage, failed-write retry, and single-tab ownership. The repository's separate NAT-isolated Playwright
 suite is the end-to-end evidence for distinct-identity invitation acceptance
 and bidirectional encrypted convergence; these utility tests do not replace it.
 

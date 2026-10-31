@@ -11,6 +11,8 @@
     "src/deployment-config.test.ts",
     "src/identity-store.ts",
     "src/identity-store.test.ts",
+    "src/note-store.ts",
+    "src/note-store.test.ts",
     "src/invitation-link.ts",
     "src/invitation-link.test.ts"
   ],

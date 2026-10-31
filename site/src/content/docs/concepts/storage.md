@@ -61,7 +61,7 @@ complete Peerborne reconstruction from that persisted state is not yet an
 end-to-end guarantee.
 
 **Current status**: Local block storage works in single-session tests. The
-[password-manager example](../../cookbook/password-manager/) explicitly saves
+[password-manager example](../../cookbook/password-manager/) and Peerborne Note explicitly save
 encrypted, self-signed document checkpoints and tests reopening after Chromium
 relaunch with the same profile. This application-managed path restores keys,
 CRDT state, and membership before opening locally. Retaining blocks alone does
@@ -171,7 +171,7 @@ Verified in CI:
 - Block creation, storage, and retrieval in a single browser session
 - Encrypted existing history loaded through Circuit Relay
 - IndexedDB blockstore initialization and basic read/write
-- Password-manager identity and encrypted checkpoint restoration after browser relaunch
+- Password-manager and Peerborne Note identity and encrypted checkpoint restoration after browser relaunch
 
 Not verified:
 

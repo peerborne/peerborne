@@ -5,26 +5,18 @@ import {
   type InvitationOfferV1,
   type InvitationRole,
 } from '@peerborne/core';
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getOrCreateIdentity, identityFingerprint } from './identity-store.js';
 import {
   assertRelayMultiaddrForOrigin,
   assertTrustedRendezvous,
   type ConsumedInvitationFragment,
 } from './invitation-link.js';
-import {
-  MAX_NOTE_CHARACTERS,
-  PeerborneNoteSession,
-} from './peerborne-note.js';
+import { MAX_NOTE_CHARACTERS, PeerborneNoteSession } from './peerborne-note.js';
 import { acquireSingleTabLease, type SingleTabLease } from './single-tab.js';
 
 type Screen = 'booting' | 'blocked' | 'ready' | 'review' | 'note' | 'fatal';
-type SaveState = 'idle' | 'pending' | 'saved';
+type SaveState = 'idle' | 'pending' | 'saved' | 'error';
 
 interface PendingInvitation {
   readonly bytes: Uint8Array;
@@ -76,25 +68,15 @@ function PageHeader({ fingerprint }: { readonly fingerprint?: string }) {
   );
 }
 
-function SafetyNotice() {
-  return (
-    <aside className="safety-notice" aria-label="Initial release limitations">
-      <strong>Initial release demo</strong>
-      <span>
-        Early-stage and not production-ready. Do not use it for sensitive or
-        durable information.
-      </span>
-    </aside>
-  );
-}
-
 function Footer() {
   return (
     <footer>
-      <span>Encrypted local-first state, carried by peers.</span>
+      <span>Alpha · Encrypted notes, carried by peers.</span>
       <nav aria-label="Project links">
-        <a href="https://peerborne.io/concepts/limitations/">Limitations</a>
-        <a href="https://peerborne.io/cookbook/invitations/">How invitations work</a>
+        <a href="https://peerborne.io/concepts/limitations/">About this demo</a>
+        <a href="https://peerborne.io/cookbook/invitations/">
+          How invitations work
+        </a>
         <a href="https://github.com/Peerborne/peerborne">Source</a>
       </nav>
     </footer>
@@ -103,18 +85,22 @@ function Footer() {
 
 export default function App({ initialFragment }: AppProps) {
   const [screen, setScreen] = useState<Screen>('booting');
-  const [bootMessage, setBootMessage] = useState('Preparing a browser identity…');
+  const [bootMessage, setBootMessage] = useState(
+    'Preparing a browser identity…',
+  );
   const [errorMessage, setErrorMessage] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [identityId, setIdentityId] = useState<string>();
   const [session, setSession] = useState<PeerborneNoteSession>();
-  const [pendingInvitation, setPendingInvitation] = useState<PendingInvitation>();
+  const [savedNotes, setSavedNotes] = useState<string[]>([]);
+  const [storageError, setStorageError] = useState(false);
+  const [pendingInvitation, setPendingInvitation] =
+    useState<PendingInvitation>();
   const pendingBytesRef = useRef<Uint8Array | undefined>(undefined);
   const leaseRef = useRef<SingleTabLease | undefined>(undefined);
 
   const [body, setBody] = useState('');
   const bodyRef = useRef('');
-  const [peerCount, setPeerCount] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const saveTimerRef = useRef<number | undefined>(undefined);
   const editVersionRef = useRef(0);
@@ -135,8 +121,14 @@ export default function App({ initialFragment }: AppProps) {
     void (async () => {
       let unclaimedInvitationBytes: Uint8Array | undefined;
       try {
-        if (!window.isSecureContext || !window.crypto?.subtle || !window.indexedDB) {
-          throw new Error('Peerborne Note requires HTTPS or localhost with Web Crypto and IndexedDB');
+        if (
+          !window.isSecureContext ||
+          !window.crypto?.subtle ||
+          !window.indexedDB
+        ) {
+          throw new Error(
+            'Peerborne Note requires HTTPS or localhost with Web Crypto and IndexedDB',
+          );
         }
         const lease = await acquireSingleTabLease();
         if (cancelled) {
@@ -149,7 +141,9 @@ export default function App({ initialFragment }: AppProps) {
           return;
         }
         if (!lease.supported) {
-          setNotice('This browser cannot enforce the single-tab safety check. Keep only one Peerborne Note tab open.');
+          setNotice(
+            'This browser cannot enforce the single-tab safety check. Keep only one Peerborne Note tab open.',
+          );
         }
 
         setBootMessage('Restoring this browser’s signing identity…');
@@ -172,9 +166,12 @@ export default function App({ initialFragment }: AppProps) {
           return;
         }
         setSession(createdSession);
+        setSavedNotes(await createdSession.listSavedNotes());
 
         if (initialFragment.kind === 'invalid') {
-          setErrorMessage('This invitation link is malformed. No network connection was attempted.');
+          setErrorMessage(
+            'This invitation link is malformed. No network connection was attempted.',
+          );
           setScreen('ready');
           return;
         }
@@ -237,7 +234,12 @@ export default function App({ initialFragment }: AppProps) {
 
   useEffect(() => {
     if (!session) return;
-    return session.onNetwork(setPeerCount);
+    return session.onStorage((state) => {
+      setStorageError(state === 'error');
+      if (state === 'error') setSaveState('error');
+      else if (!editingRef.current)
+        setSaveState(state === 'saving' ? 'pending' : 'saved');
+    });
   }, [session]);
 
   useEffect(() => {
@@ -280,34 +282,40 @@ export default function App({ initialFragment }: AppProps) {
     }
   }, [nowMs, pendingInvitation, shareExpiresAtMs, shareHref]);
 
-  useEffect(() => () => {
-    if (saveTimerRef.current !== undefined) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current !== undefined) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    },
+    [],
+  );
 
-  const persistBody = useCallback(async (
-    nextBody: string,
-    version: number,
-  ) => {
-    if (!session) return;
-    try {
-      await session.updateBody(nextBody);
-      if (editVersionRef.current === version) {
-        editingRef.current = false;
-        const current = session.currentNote?.body ?? nextBody;
-        bodyRef.current = current;
-        setBody(current);
-        setSaveState('saved');
+  const persistBody = useCallback(
+    async (nextBody: string, version: number) => {
+      if (!session) return;
+      try {
+        await session.updateBody(nextBody);
+        if (editVersionRef.current === version) {
+          editingRef.current = false;
+          const current = session.currentNote?.body ?? nextBody;
+          bodyRef.current = current;
+          setBody(current);
+          setSaveState('saved');
+        }
+      } catch {
+        if (editVersionRef.current === version) {
+          editingRef.current = false;
+          setSaveState('error');
+          if (session.storageStatus !== 'error')
+            setErrorMessage(
+              'The latest edit could not be saved. Keep this tab open and try again.',
+            );
+        }
       }
-    } catch {
-      if (editVersionRef.current === version) {
-        editingRef.current = false;
-        setSaveState('idle');
-        setErrorMessage('The latest edit could not be applied locally.');
-      }
-    }
-  }, [session]);
+    },
+    [session],
+  );
 
   const scheduleBodyUpdate = (nextBody: string) => {
     bodyRef.current = nextBody;
@@ -343,7 +351,31 @@ export default function App({ initialFragment }: AppProps) {
       setSaveState('saved');
       setScreen('note');
     } catch {
-      setErrorMessage('A new local note could not be created.');
+      if (session.currentNote) {
+        bodyRef.current = session.currentNote.body;
+        setBody(session.currentNote.body);
+        setSaveState('error');
+        setScreen('note');
+      } else setErrorMessage('A new local note could not be created.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openSavedNote = async (path: string) => {
+    if (!session) return;
+    setBusy(true);
+    setErrorMessage(undefined);
+    try {
+      const note = await session.openSavedNote(path);
+      bodyRef.current = note.body;
+      setBody(note.body);
+      setSaveState('saved');
+      setScreen('note');
+    } catch {
+      setErrorMessage(
+        'This saved note could not be opened. Its stored data was left unchanged.',
+      );
     } finally {
       setBusy(false);
     }
@@ -363,9 +395,18 @@ export default function App({ initialFragment }: AppProps) {
       setSaveState('saved');
       setScreen('note');
     } catch {
-      setErrorMessage(
-        'The invitation could not be accepted. It may be expired or claimed, or the founding browser may be offline.',
-      );
+      if (session.currentNote) {
+        pendingInvitation.bytes.fill(0);
+        pendingBytesRef.current = undefined;
+        setPendingInvitation(undefined);
+        bodyRef.current = session.currentNote.body;
+        setBody(session.currentNote.body);
+        setSaveState('error');
+        setScreen('note');
+      } else
+        setErrorMessage(
+          'The invitation could not be accepted. It may be expired or claimed, or the founding browser may be offline.',
+        );
     } finally {
       setBusy(false);
     }
@@ -383,7 +424,9 @@ export default function App({ initialFragment }: AppProps) {
     if (!session) return;
     setBusy(true);
     setErrorMessage(undefined);
-    setNotice('Connecting to the coordination relay and waiting for a reservation…');
+    setNotice(
+      'Connecting to the coordination relay and waiting for a reservation…',
+    );
     try {
       assertRelayMultiaddrForOrigin(
         relayMultiaddr,
@@ -438,10 +481,29 @@ export default function App({ initialFragment }: AppProps) {
     <div className="page-shell">
       <PageHeader fingerprint={identityId} />
       <main>
-        <SafetyNotice />
-
-        {errorMessage ? <div className="message error" role="alert">{errorMessage}</div> : null}
-        {notice ? <div className="message notice" role="status" aria-live="polite">{notice}</div> : null}
+        {errorMessage ? (
+          <div className="message error" role="alert">
+            {errorMessage}
+          </div>
+        ) : null}
+        {storageError ? (
+          <div className="message error" role="alert">
+            This note could not be saved. Keep this tab open.{' '}
+            <button
+              onClick={() => {
+                if (editingRef.current) flushBodyUpdate();
+                else void session?.retrySave().catch(() => undefined);
+              }}
+            >
+              Retry saving
+            </button>
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="message notice" role="status" aria-live="polite">
+            {notice}
+          </div>
+        ) : null}
 
         {screen === 'booting' ? (
           <section className="panel centered" aria-live="polite">
@@ -469,8 +531,8 @@ export default function App({ initialFragment }: AppProps) {
             <p className="eyebrow">Initialization stopped safely</p>
             <h1>Your existing browser identity was not replaced.</h1>
             <p>
-              Check that site storage is allowed and that this page is running on
-              HTTPS or localhost, then reload.
+              Check that site storage is allowed and that this page is running
+              on HTTPS or localhost, then reload.
             </p>
           </section>
         ) : null}
@@ -482,23 +544,37 @@ export default function App({ initialFragment }: AppProps) {
               <h1>A shared note without a plaintext database.</h1>
               <p className="lede">
                 Peerborne applies edits locally, encrypts document updates in
-                this browser, and lets two browser identities meet through a
-                coordination relay.
+                this browser, and shares them directly with your collaborators.
               </p>
-              <button className="primary large" disabled={busy} onClick={() => void createNote()}>
+              <button
+                className="primary large"
+                disabled={busy}
+                onClick={() => void createNote()}
+              >
                 {busy ? 'Creating locally…' : 'Create a note'}
               </button>
             </div>
             <div className="boundary-card">
-              <h2>Know the boundary</h2>
-              <ul>
-                <li>One founder and one active collaborator.</li>
-                <li>Both browsers must remain open and online.</li>
-                <li>Invitation links are one-person bearer links.</li>
-                <li>The collaborator receives retained note history.</li>
-                <li>The relay sees network metadata and can deny service.</li>
-                <li>Refresh and browser-restart recovery are not verified.</li>
-              </ul>
+              <h2>Your notes</h2>
+              {savedNotes.length > 0 ? (
+                <ul>
+                  {savedNotes.map((path, index) => (
+                    <li key={path}>
+                      <button
+                        disabled={busy}
+                        onClick={() => void openSavedNote(path)}
+                      >
+                        Open saved note {index + 1}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>
+                  Create a note to start writing. Your notes will be saved in
+                  this browser.
+                </p>
+              )}
             </div>
           </section>
         ) : null}
@@ -510,7 +586,11 @@ export default function App({ initialFragment }: AppProps) {
             <div className="invitation-facts">
               <div>
                 <span>Access</span>
-                <strong>{pendingInvitation.offer.role === 'editor' ? 'Can edit' : 'Read only'}</strong>
+                <strong>
+                  {pendingInvitation.offer.role === 'editor'
+                    ? 'Can edit'
+                    : 'Read only'}
+                </strong>
               </div>
               <div>
                 <span>Expires in</span>
@@ -525,7 +605,8 @@ export default function App({ initialFragment }: AppProps) {
               <strong>Only continue if you trust who sent this link.</strong>
               <p>
                 The first valid claimant receives the selected role and retained
-                note history. The issuer signature is verified during acceptance.
+                note history. The issuer signature is verified during
+                acceptance.
               </p>
             </div>
             <div className="button-row">
@@ -536,7 +617,11 @@ export default function App({ initialFragment }: AppProps) {
               >
                 {busy ? 'Accepting securely…' : 'Accept invitation'}
               </button>
-              <button className="secondary" disabled={busy} onClick={dismissInvitation}>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={dismissInvitation}
+              >
                 Decline
               </button>
             </div>
@@ -549,22 +634,26 @@ export default function App({ initialFragment }: AppProps) {
               <div className="editor-heading">
                 <div>
                   <p className="eyebrow">Encrypted note</p>
-                  <h1>{role === 'reader' ? 'Shared with you' : 'Write locally'}</h1>
+                  <h1>
+                    {role === 'reader' ? 'Shared with you' : 'Write locally'}
+                  </h1>
                 </div>
                 <div className="editor-status" aria-live="polite">
-                  <span>{peerCount} network peer{peerCount === 1 ? '' : 's'}</span>
+                  <span>{role === 'reader' ? 'Read only' : 'Editor'}</span>
                   <span>
-                    {role === 'reader'
-                      ? 'Read only'
-                      : saveState === 'pending'
-                        ? 'Applying locally…'
-                        : saveState === 'saved'
-                          ? 'Applied locally'
+                    {saveState === 'pending'
+                      ? 'Saving…'
+                      : saveState === 'saved'
+                        ? 'Saved in this browser'
+                        : saveState === 'error'
+                          ? 'Unsaved changes'
                           : 'Ready'}
                   </span>
                 </div>
               </div>
-              <label htmlFor="note-body" className="visually-hidden">Note text</label>
+              <label htmlFor="note-body" className="visually-hidden">
+                Note text
+              </label>
               <textarea
                 id="note-body"
                 value={body}
@@ -573,25 +662,39 @@ export default function App({ initialFragment }: AppProps) {
                 spellCheck={false}
                 autoCapitalize="off"
                 autoCorrect="off"
-                placeholder={role === 'reader' ? 'Waiting for note content…' : 'Start with what matters…'}
-                onChange={(event) => scheduleBodyUpdate(event.currentTarget.value)}
+                placeholder={
+                  role === 'reader'
+                    ? 'Waiting for note content…'
+                    : 'Start with what matters…'
+                }
+                onChange={(event) =>
+                  scheduleBodyUpdate(event.currentTarget.value)
+                }
                 onBlur={flushBodyUpdate}
               />
               <div className="editor-meta">
-                <span>{body.length.toLocaleString()} / {MAX_NOTE_CHARACTERS.toLocaleString()} characters</span>
-                <span>No delivery acknowledgement or restart guarantee</span>
+                <span>
+                  {body.length.toLocaleString()} /{' '}
+                  {MAX_NOTE_CHARACTERS.toLocaleString()} characters
+                </span>
               </div>
             </div>
 
             {session.isFounder ? (
               <aside className="share-panel">
-                <p className="eyebrow">Invite one collaborator</p>
+                <p className="eyebrow">Share this note</p>
                 <h2>Share while this tab stays open.</h2>
                 {!shareHref ? (
                   <>
                     <fieldset>
                       <legend>Choose the least access they need</legend>
-                      <label className={shareRole === 'editor' ? 'role-option selected' : 'role-option'}>
+                      <label
+                        className={
+                          shareRole === 'editor'
+                            ? 'role-option selected'
+                            : 'role-option'
+                        }
+                      >
                         <input
                           type="radio"
                           name="share-role"
@@ -600,9 +703,18 @@ export default function App({ initialFragment }: AppProps) {
                           disabled={busy}
                           onChange={() => setShareRole('editor')}
                         />
-                        <span><strong>Editor</strong><small>Can read and publish changes</small></span>
+                        <span>
+                          <strong>Editor</strong>
+                          <small>Can read and publish changes</small>
+                        </span>
                       </label>
-                      <label className={shareRole === 'reader' ? 'role-option selected' : 'role-option'}>
+                      <label
+                        className={
+                          shareRole === 'reader'
+                            ? 'role-option selected'
+                            : 'role-option'
+                        }
+                      >
                         <input
                           type="radio"
                           name="share-role"
@@ -611,18 +723,26 @@ export default function App({ initialFragment }: AppProps) {
                           disabled={busy}
                           onChange={() => setShareRole('reader')}
                         />
-                        <span><strong>Reader</strong><small>Can read but cannot publish changes</small></span>
+                        <span>
+                          <strong>Reader</strong>
+                          <small>Can read but cannot publish changes</small>
+                        </span>
                       </label>
                     </fieldset>
-                    <button className="primary full" disabled={busy} onClick={() => void createShareLink()}>
+                    <button
+                      className="primary full"
+                      disabled={busy}
+                      onClick={() => void createShareLink()}
+                    >
                       {busy ? 'Preparing invitation…' : 'Create 15-minute link'}
                     </button>
                   </>
                 ) : (
                   <div className="share-link">
-                    <label htmlFor="share-link">One-person bearer link</label>
+                    <label htmlFor="share-link">Invitation link</label>
                     <p>
-                      Grants {sharedRole === 'reader' ? 'read-only' : 'editing'} access.
+                      Grants {sharedRole === 'reader' ? 'read-only' : 'editing'}{' '}
+                      access.
                     </p>
                     <input
                       ref={shareInputRef}
@@ -631,7 +751,10 @@ export default function App({ initialFragment }: AppProps) {
                       readOnly
                       aria-describedby="share-expiry"
                     />
-                    <button className="primary full" onClick={() => void copyShareLink()}>
+                    <button
+                      className="primary full"
+                      onClick={() => void copyShareLink()}
+                    >
                       Copy invitation
                     </button>
                     <p id="share-expiry">
@@ -642,21 +765,23 @@ export default function App({ initialFragment }: AppProps) {
                   </div>
                 )}
                 <div className="privacy-note">
-                  <strong>Send it through a channel you trust.</strong>
                   <span>
-                    The fragment is not sent in the page request, but browser
-                    history, extensions, screenshots, and recipients can expose it.
+                    Anyone with this link can claim the selected access until it
+                    expires.
                   </span>
                 </div>
               </aside>
             ) : (
               <aside className="share-panel boundary-only">
-                <p className="eyebrow">Session boundary</p>
-                <h2>{role === 'reader' ? 'You can read this note.' : 'You can edit this note.'}</h2>
+                <p className="eyebrow">Saved note</p>
+                <h2>
+                  {role === 'reader'
+                    ? 'You can read this note.'
+                    : 'You can edit this note.'}
+                </h2>
                 <p>
-                  Keep this browser open. Peerborne has no delivery acknowledgement,
-                  automatic reconnect guarantee, or verified restart recovery in
-                  this initial release.
+                  This note is saved in this browser. Return here to open it
+                  again.
                 </p>
               </aside>
             )}

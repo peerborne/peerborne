@@ -44,7 +44,7 @@ yarn exec playwright install chromium
 yarn test:e2e:browser-test
 ```
 
-This checks one browser's document initialization. The [five-minute source tutorial](https://peerborne.io/getting-started/quick-start/) explains what it verifies and includes an interactive Yjs exercise. A separate cross-NAT suite verifies a signed invitation between distinct identities and live bidirectional updates through Circuit Relay. Partition/rejoin and restart recovery remain unverified.
+This checks one browser's document initialization. The [five-minute source tutorial](https://peerborne.io/getting-started/quick-start/) explains what it verifies and includes an interactive Yjs exercise. A separate cross-NAT suite verifies a signed invitation between distinct identities and live bidirectional updates through Circuit Relay. Peerborne Note and the password-manager example separately test local checkpoint recovery across browser restart. Partition/rejoin and distributed recovery remain unverified.
 
 ## A React component in ten lines
 
@@ -118,7 +118,7 @@ Keep documents bounded and measure your workload. The [persistence runbook](http
 | [`@peerborne/redux`](packages/redux) | Redux actions and reducers |
 | [`@peerborne/index`](packages/index) | Local/blind indexes and query bindings |
 
-Try [`peerborne-note`](examples/peerborne-note) for the bounded [initial-release invitation demo](https://try.peerborne.io/), [`browser-test`](examples/browser-test) for a minimal Automerge/Redux document, [`wiki-swarm`](examples/wiki-swarm) for an editor, or [`password-manager`](examples/password-manager) for Yjs/React access-control UI. `yarn test:e2e` builds and smoke-tests all four with Chromium. The initial invitation path is online-only and founder-plus-one; hostile-peer revocation, restart recovery, automatic reconnect, and relay failover need stronger system-level evidence.
+Try [`peerborne-note`](examples/peerborne-note) for the [invitation demo](https://try.peerborne.io/), [`browser-test`](examples/browser-test) for a minimal Automerge/Redux document, [`wiki-swarm`](examples/wiki-swarm) for an editor, or [`password-manager`](examples/password-manager) for Yjs/React access-control UI. `yarn test:e2e` builds and tests all four with Chromium, including local restart recovery for Note and the password manager. The initial invitation path is online-only and founder-plus-one; hostile-peer revocation, automatic reconnect, and relay failover need stronger system-level evidence.
 
 ## Build with us
 
