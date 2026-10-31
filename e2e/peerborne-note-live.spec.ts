@@ -1,4 +1,9 @@
-import { expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 function failOnRuntimeErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -13,20 +18,28 @@ function failOnRuntimeErrors(page: Page): string[] {
 
 async function createSharedNote(page: Page, role: 'Editor' | 'Reader') {
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Create a note' })).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Create a note' }),
+  ).toBeEnabled();
   await page.getByRole('button', { name: 'Create a note' }).click();
   const editor = page.getByRole('textbox', { name: 'Note text' });
   await expect(editor).toBeEditable();
   const initial = `Founder ${crypto.randomUUID()}`;
   await editor.fill(initial);
-  await expect(page.getByText('Applied locally', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Saved in this browser', { exact: true }),
+  ).toBeVisible();
   if (role === 'Reader') {
     await page.getByRole('radio', { name: /Reader/u }).check();
   }
   await page.getByRole('button', { name: 'Create 15-minute link' }).click();
-  const link = page.getByRole('textbox', { name: 'One-person bearer link' });
+  const link = page.getByRole('textbox', { name: 'Invitation link' });
   await expect(link).toBeVisible();
-  await expect(page.getByText(`Grants ${role === 'Reader' ? 'read-only' : 'editing'} access.`)).toBeVisible();
+  await expect(
+    page.getByText(
+      `Grants ${role === 'Reader' ? 'read-only' : 'editing'} access.`,
+    ),
+  ).toBeVisible();
   return { editor, initial, invitationUrl: await link.inputValue() };
 }
 
@@ -42,23 +55,33 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
 
   try {
     const shared = await createSharedNote(founder, 'Editor');
-    expect(new URL(shared.invitationUrl).hash).toMatch(/^#invite=/u);
+    expect(new URL(shared.invitationUrl).hash.startsWith('#invite=')).toBe(
+      true,
+    );
 
     await recipient.goto(shared.invitationUrl);
     await expect.poll(() => new URL(recipient.url()).hash).toBe('');
-    await expect(recipient.getByText('Can edit', { exact: true })).toBeVisible();
+    await expect(
+      recipient.getByText('Can edit', { exact: true }),
+    ).toBeVisible();
     await recipient.getByRole('button', { name: 'Accept invitation' }).click();
-    const recipientEditor = recipient.getByRole('textbox', { name: 'Note text' });
+    const recipientEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
     await expect(recipientEditor).toHaveValue(shared.initial);
 
     const recipientEdit = `Recipient ${crypto.randomUUID()}`;
     await recipientEditor.fill(recipientEdit);
-    await expect(recipient.getByText('Applied locally', { exact: true })).toBeVisible();
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
     await expect(shared.editor).toHaveValue(recipientEdit);
 
     const founderEdit = `Founder again ${crypto.randomUUID()}`;
     await shared.editor.fill(founderEdit);
-    await expect(founder.getByText('Applied locally', { exact: true })).toBeVisible();
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
     await expect(recipientEditor).toHaveValue(founderEdit);
 
     expect(founderErrors, 'founder runtime errors').toEqual([]);
@@ -69,13 +92,14 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
   }
 });
 
-test('deployed reader invitation stays read-only and receives later edits', async ({
+test('deployed reader invitation receives edits and remains read-only after a browser restart', async ({
   browser,
 }) => {
   const founderContext = await browser.newContext();
-  const recipientContext = await browser.newContext();
+  const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-reader-'));
+  let recipientContext = await chromium.launchPersistentContext(profile);
   const founder = await founderContext.newPage();
-  const recipient = await recipientContext.newPage();
+  let recipient = await recipientContext.newPage();
   const founderErrors = failOnRuntimeErrors(founder);
   const recipientErrors = failOnRuntimeErrors(recipient);
 
@@ -83,21 +107,50 @@ test('deployed reader invitation stays read-only and receives later edits', asyn
     const shared = await createSharedNote(founder, 'Reader');
     await recipient.goto(shared.invitationUrl);
     await expect.poll(() => new URL(recipient.url()).hash).toBe('');
-    await expect(recipient.getByText('Read only', { exact: true })).toBeVisible();
+    await expect(
+      recipient.getByText('Read only', { exact: true }),
+    ).toBeVisible();
     await recipient.getByRole('button', { name: 'Accept invitation' }).click();
-    const recipientEditor = recipient.getByRole('textbox', { name: 'Note text' });
+    const recipientEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
     await expect(recipientEditor).toHaveValue(shared.initial);
     await expect(recipientEditor).not.toBeEditable();
 
     const laterEdit = `Founder update ${crypto.randomUUID()}`;
     await shared.editor.fill(laterEdit);
-    await expect(founder.getByText('Applied locally', { exact: true })).toBeVisible();
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
     await expect(recipientEditor).toHaveValue(laterEdit);
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    await recipientContext.close();
+    recipientContext = await chromium.launchPersistentContext(profile);
+    recipient = await recipientContext.newPage();
+    await recipient.goto(new URL(shared.invitationUrl).origin);
+    await recipient
+      .getByRole('button', { name: 'Open saved note 1', exact: true })
+      .click();
+    await expect(
+      recipient.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue(laterEdit);
+    await expect(
+      recipient.getByRole('textbox', { name: 'Note text' }),
+    ).not.toBeEditable();
+    await expect(
+      recipient.getByRole('button', {
+        name: 'Create 15-minute link',
+        exact: true,
+      }),
+    ).toHaveCount(0);
 
     expect(founderErrors, 'founder runtime errors').toEqual([]);
     expect(recipientErrors, 'recipient runtime errors').toEqual([]);
   } finally {
     await recipientContext.close();
+    await rm(profile, { recursive: true, force: true });
     await founderContext.close();
   }
 });
