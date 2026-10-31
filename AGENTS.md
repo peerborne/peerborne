@@ -56,6 +56,8 @@ The Site build generates API Markdown with Starlight TypeDoc under `site/src/con
 
 ## Engineering rules
 
+- Prefer formal contracts for supported deterministic behavior, property tests for behavior outside the proof model, and example or integration tests for remaining boundaries. Keep runtime model-calibration and integration checks when a proof does not establish their actual assumptions.
+
 - Preserve established TypeScript, Jest, Playwright, Prettier, and workspace patterns.
 - Do not add unnecessary comments.
 - Never expose or log credentials, signing keys, KEM keys, document keys, private payloads, or other secrets.

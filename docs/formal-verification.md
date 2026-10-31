@@ -1,137 +1,154 @@
-# LemmaScript feasibility and verification boundaries
+# Formal verification and testing boundaries
 
-LemmaScript is economical for small, stable, security-relevant policy kernels
-in Peerborne. A whole-product or "most of Peerborne is verified" claim is not
-currently justified. The application depends on asynchronous browser behavior,
-cryptography, CRDT engines, storage and libp2p, and much of its own orchestration
-combines those effects with mutable state. Counting verified source lines would
-hide those trust boundaries.
+Peerborne uses formal verification first, deterministic property testing where
+the proof boundary ends, and focused regression/integration tests for behavior
+that needs platform execution or a particular attack reproducer. The
+[machine-readable strategy](../verification/strategy.json) records why each
+property suite is still necessary. This is not a whole-product proof.
 
-The practical refactor is to separate runtime validation and I/O from pure
-decisions over detached data. This change implements that separation for
-quorum selection, authority deduplication/equivocation, BeeKEM generation
-admission, leaf-count transitions and traversal resource accounting. The
-existing runtime calls the proved functions. It does not replace them with
-an independently maintained proof model.
+LemmaScript checks 39 production functions in 17 proof units. The runtime calls
+the actual verified TypeScript; there is no separate executable policy model.
+Pure decisions are separated from parsing, authentication, asynchronous commits
+and I/O. This makes proof authoring tractable without rewriting the application.
 
 ```mermaid
 flowchart LR
-    A[Network, config and storage input] --> B[Runtime validation and authentication]
+    A[Network, config and storage input] --> B[Validation and authentication]
     B --> C[Detached scalar and record data]
-    C --> D[Proved TypeScript policy kernels]
-    D --> E[Existing staged state mutation and I/O]
-    F[Property and regression tests] -. boundary checks .-> B
-    F -. integration checks .-> E
+    C --> D[Proved TypeScript policies]
+    D --> E[Staged state mutation and I/O]
+    F[Property tests] -. runtime boundary .-> B
+    F -. generated execution histories .-> E
+    G[Integration and stress tests] -. platform behavior .-> E
 ```
 
 ## What is proved
 
-| Production policy                                                     | Universal property under its input contract                                                                                                                              | Runtime use                                                   |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| [Work budget](../packages/core/src/policy/work-budget.ts)             | A reservation succeeds exactly when it fits; accepted addition stays within the budget and the safe-integer domain.                                                      | Change-tree edge admission before pending children are added. |
-| [BeeKEM transition](../packages/core/src/policy/beekem-transition.ts) | Exact classification of stale, duplicate, conflicting, next and skipped generations; a leaf count can stay unchanged or append one within capacity.                      | The real staged BeeKEM PathUpdate handler.                    |
-| [Quorum policy](../packages/core/src/policy/quorum.ts)                | Strict-majority default; preservation of an explicit trust floor; success only for the unique qualifying digest bucket, with complete rejection of ambiguity or absence. | Initial-load decision and orchestration.                      |
-| [Authority votes](../packages/core/src/policy/authority-votes.ts)     | Exactly the first vote from each authority is eligible; equivocation is detected iff that authority supplied different digests.                                          | Authenticated probe results before transport-peer tallying.   |
+Each claim below is universal within the function's stated input contract and
+the pinned toolchain's model. The
+[manifest](../verification/formal/manifest.json) names every function, production
+consumer, proof obligation and non-vacuity witness.
 
-These are eight functions in four closed proof units. The proofs do not
-establish that an arbitrary peer is an authenticated authority, that signatures
-are unforgeable, or that networked replicas eventually resolve an epoch fork.
-The [feature audit](feature-audit.md) and existing security limitations still
-apply. In particular, a proof of safe fork rejection is not a proof of automatic
-fork reconciliation or post-compromise security.
+| Production source                                                           | Functions | Proved behavior                                                                                                                                                                      |
+| --------------------------------------------------------------------------- | --------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                 |
+| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                        |
+| [Quorum](../packages/core/src/policy/quorum.ts)                             |         3 | Strict-majority default, explicit trust floor, and exactly one qualifying digest bucket; ambiguous or absent winners are rejected.                                                   |
+| [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                          |
+| [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability. |
+| [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                             |
+| [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                           |
+| [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                            |
+| [Invitation replay](../packages/core/src/policy/replay-admission.ts)        |         2 | Complete conflict/replay/fresh-admission classification; an identical replay does not consume fresh capacity.                                                                        |
+| [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                        |
+| [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)            |         1 | Exact valid-advance conditions: revision +1, epoch unchanged or +1, same-epoch control-head binding and terminal poison.                                                             |
+| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                       |
+| [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                              |
+| [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                         |
+| [UTF-16 scanner](../packages/core/src/internal/canonical-encoding.ts)       |         4 | A string is accepted iff every surrogate code unit has its matching adjacent partner.                                                                                                |
+| [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                             |
+| [React cache key](../packages/react/src/hooks-cache.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                            |
 
-## Cost and tractability
+The capability tables are frozen to preserve the constant-model assumption.
+Numeric contracts bound arithmetic to domains where JavaScript executes the
+proved integer arithmetic exactly. Callers still have to supply validated,
+detached values. A proof of a pure decision does not authenticate its inputs,
+make its commit atomic, establish storage durability or prove eventual progress.
+The cache-key proof does not prove WeakMap identity or namespace allocation.
 
-The completed pilot checks in roughly eight seconds on the development host;
-the measured duration is recorded with source/proof hashes and tool versions
-in the generated report. First-time setup downloads the compiler dependencies
-and a roughly 55–65 MB Dafny distribution. Proof authoring, specification review
-and validating the JavaScript/model boundary dominate cost; repeated CI checks
-are comparatively cheap. Timing is an observation, not a cross-machine budget.
+The [feature audit](feature-audit.md) remains authoritative about product gaps.
+For example, safe epoch-fork rejection is not automatic fork reconciliation;
+capability implication does not establish field-level enforcement on the
+document mutation path. None of these proofs establishes forward secrecy,
+post-compromise security, key erasure or cryptographic unforgeability.
 
-The current inventory finds roughly 58,000 physical first-party TypeScript
-lines, about 2,500 function bodies including callbacks, and about 1,000 await
-expressions. Re-run `yarn verify:formal:inventory` for the exact current values.
-Those structural counts do not measure correctness or purity. They do show why
-annotating the whole repository is a different project from proving a policy
-kernel.
+## Property testing after proofs
 
-| Surface                                                   | Practical approach                                                                                       | Remaining work                                                                                      |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Pure policy, arithmetic and bounded collection algorithms | High-value LemmaScript candidates; keep implementations and contracts together.                          | Add loop invariants and explicit domains incrementally.                                             |
-| Membership and ACL admission                              | Extract deterministic state/effect planning from asynchronous execution.                                 | State invariants and authorization provenance need review before expanding the proof boundary.      |
-| Parsers, wire guards, proxies and typed-array ownership   | Keep the defensive runtime boundary and test malformed inputs; prove a canonical-data core where useful. | A proof over a decoded record does not prove the decoder accepted only safe records.                |
-| Async commit, cancellation, retries and crash recovery    | Make captured inputs, staged state, commit points and failure states explicit.                           | Sequential function proofs alone do not cover arbitrary schedules, durability or eventual progress. |
-| Cryptographic protocol secrecy and compromise             | Use explicit cryptographic assumptions and protocol analysis.                                            | LemmaScript is not a proof of Web Crypto, entropy, key erasure or protocol secrecy.                 |
-| CRDT engines, WebRTC, libp2p and IndexedDB                | Retain algebraic properties, integration tests and browser stress measurements.                          | Dependency and platform behavior remain outside this proof.                                         |
+The inventory audits 24 property-suite files containing 50 explicit
+`fast-check` assertions across all six library packages. Seeds and workload
+bounds are checked in; generated operation histories shrink on failure. Counts
+are declarations, not code coverage or a security percentage. Parameterized
+properties can invoke the same assertion more than once.
 
-A wholesale rewrite would increase risk without removing those last trust
-boundaries. Continue extracting cohesive policy modules when a concrete
-invariant needs proof. Avoid rewriting clear production algorithms solely to
-fit an immature emitter, weakening contracts, or replacing every unsupported
-operation with an assumed contract.
+| Unproved boundary                       | Generated evidence                                                                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| JavaScript number/string/byte semantics | Native UTF-16 calibration, BigInt sizing/quorum oracles, byte ownership, chunked framing, invalid work-counter rollback and bounded tree arithmetic.                                                   |
+| Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection and detached snapshots.                                                                                                                                         |
+| Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                              |
+| Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback and outbox ownership.                                                         |
+| Cryptographic adapters                  | AES round trips and tampering, signed UCAN delegation chains and signed resource/privilege/lifetime escalation attempts. These are integrity checks, not secrecy proofs.                               |
+| CRDT dependencies                       | Automerge/Yjs concurrent set/delete and string/object schema changes, reordered and duplicate deltas, missing ancestry, late replicas, snapshot recovery and per-actor witnesses.                      |
+| Query/index behavior                    | Memory and IndexedDB execution against a separate full-scan oracle, nested predicates, finite numeric ordering, cursor binding, pagination and reopen; generated field traversal and Bloom merge laws. |
+| UI identity and state                   | React instance/cache isolation, Redux histories against a Map oracle, prior-state immutability, prototype-sensitive IDs and state-selector identity.                                                   |
+| Mutable statistics                      | Counters, event aggregation and reset against independently calculated totals.                                                                                                                         |
 
-## Important toolchain findings
+Native cryptographic entropy is not mocked; generated data and schedules have
+fixed seeds. These suites run in the existing `yarn test` CI job. The formal CI
+job also audits selection registration, property seeds/run bounds and the
+strategy catalog. Reports contain source metadata and synthetic workloads,
+never live keys or document data.
 
-The tool is a tech preview with a supported subset, not a verifier for arbitrary
-JavaScript. Its [numeric model](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/SPEC.md)
-does not model IEEE-754 rounding, NaN, Infinity or JavaScript int32 wraparound.
-The bounded arithmetic here stays exact at runtime; runtime model-calibration
-tests remain useful. UTF-16 strings are selected explicitly, including lone
-surrogates. The Unicode-scalar default would be the wrong model for general
-JavaScript string keys.
+Generated histories exposed two runtime bugs during this expansion:
 
-An imported helper can be emitted as a body-less assumed contract. The initial
-experiment exposed that boundary directly. The production kernels are therefore
-closed proof units, and every completed proof must pass Dafny's assumption audit
-with zero findings. Proof additions may not replace generated implementation
-lines. Domain witnesses and deliberate semantic mutations guard against vacuous
-or disconnected green checks.
+- An onboarding result of `undefined` was treated as a cache miss, repeating
+  a completed request. Cache presence is now checked independently of its value.
+- A Redux document ID of `__proto__` changed the document table's prototype,
+  while inherited names could be mistaken for open documents. Own-property
+  checks and computed-property writes preserve them as ordinary document IDs.
 
-Protocol-level adversarial interleavings need a complementary model. For
-example, [Tamarin](https://tamarin-prover.com/manual/master/book/001_introduction.html)
-models security-protocol traces and adversary knowledge. Such a model would be
-additional evidence with its own assumptions and implementation correspondence,
-not proof coverage supplied by the current LemmaScript kernels.
+The smallest reproductions remain explicit examples in the corresponding
+property suites. Bootstrap example tests and capability-hierarchy example
+tables were removed because their laws are now proved. Regex parsing,
+signature, rollback, serialization, browser and attack regressions remain
+where they check behavior outside the contracts.
 
-## When proofs replace tests
+## Cost and remaining work
 
-A completed proof can replace example tests of the exact property, on the
-exact verified implementation, inside its stated model and preconditions.
-It does not discharge the runtime adapter, JavaScript semantics, dependency,
-compiler or integration assumptions automatically. Specifications also require
-review: proving the wrong requirement does not protect the product.
+The 39-function proof check takes roughly 40–55 seconds on the development host;
+the report records actual duration, source/proof hashes and tool versions.
+Controls run separately. First-time setup downloads the compiler dependencies
+and a roughly 55–65 MB Dafny distribution. Specification review, proof authoring
+and JavaScript/model correspondence dominate cost; repeated checks are cheap.
+Host timing is an observation, not a cross-machine performance guarantee.
 
-Use formal CI for the universal kernel laws, property tests for unproved
-algebraic behavior and model/implementation calibration, targeted regressions
-for particular attacks, and integration/stress tests for asynchronous and
-platform behavior. Keep existing parser, signature, rollback, serialization
-and browser tests unless their actual behavior has been proved. See the
-[formal workflow](../verification/formal/README.md) for reproduction and scope.
+The source inventory contains roughly 59,000 physical first-party TypeScript
+lines, 2,500 function bodies including callbacks, and 1,000 await expressions.
+Run `yarn verify:formal:inventory` for current counts and remaining top-level
+functions. These structural measurements do not identify pure code or measure
+semantic coverage.
 
-The property-test changes following this proof pilot are deliberately outside
-the universal policy laws:
+| Surface                                                      | Appropriate next step                                                                                                                                                                                            |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supported pure policies and bounded algorithms               | Extend contracts and loop invariants on production functions; retain closed call graphs and non-vacuity witnesses.                                                                                               |
+| Native reflection, bitwise hashing and third-party engines   | Keep independent generated oracles and malformed-input checks until those semantics can be modeled faithfully.                                                                                                   |
+| Async commits, cancellation, retries and recovery            | Property-test controlled schedules and failures; use integration tests for actual persistence/transport. Sequential function proofs do not establish arbitrary-schedule liveness.                                |
+| Cryptographic protocol traces and compromise                 | An explicit protocol model, for example [Tamarin](https://tamarin-prover.com/manual/master/book/001_introduction.html), would add different evidence with its own assumptions and implementation correspondence. |
+| WebRTC/libp2p, real IndexedDB, NAT/relay and browser budgets | Retain browser/integration/stress CI and measured diagnostic scenarios. Fake IndexedDB is not browser durability evidence.                                                                                       |
 
-- [Tree arithmetic](../packages/core/src/beekem/tree-math.test.ts) generates
-  supported indices and leaf counts through the maximum arithmetic domain.
-  BigInt and binary-string oracles check roots, parity and levels; inverse,
-  child, parent, path and copath relationships check bounded traversal.
-- [Load-boundary helpers](../packages/core/src/load-quorum.test.ts) generate
-  duplicate transport identities and arbitrary UTF-16 strings. They check
-  stable representatives, input ownership, idempotence and equality semantics.
-  They make no timing-side-channel claim.
-- [Automerge](../packages/automerge/src/provider-properties.test.ts) and
-  [Yjs](../packages/yjs/src/provider-properties.test.ts) generate concurrent
-  set/delete histories and delivery priorities. Opposite delivery orders,
-  duplicates, missing ancestry, serialized deltas, late replicas and snapshot
-  recovery must converge; independent local map oracles and per-actor witnesses
-  prevent a vacuous "everyone dropped the changes" success.
-- The old majority-formula example table is replaced by one BigInt calibration
-  property across JavaScript safe integers. The mathematical majority law is
-  proved; this remaining test checks the runtime number-model assumption.
+A wholesale rewrite would add risk without removing the dependency and platform
+boundaries. Continue extracting cohesive decisions when a concrete invariant
+justifies it; do not weaken contracts or replace unsupported operations with
+assumed helpers to increase a proof count.
 
-All new generated checks use fixed seeds, bounded workloads and shrinking.
-Jest discovers them through the existing `yarn test` CI job. Keep the seed,
-counterexample and shrink path reported by fast-check when reproducing a
-failure. Fixed malformed-input, maximum-domain and security regression cases
-remain where they exercise an unproved boundary or pin a known failure.
+## Toolchain and trust
+
+LemmaScript is a tech preview with a
+[supported subset](https://docs.lemmascript.org/subset/), not a verifier for
+arbitrary JavaScript. Its pinned
+[numeric model](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/SPEC.md)
+does not model IEEE-754 rounding, NaN, Infinity or int32 wraparound. UTF-16
+strings and safe slicing are explicitly selected; Unicode-scalar semantics
+would be wrong for general JavaScript keys.
+
+Imported helpers can become body-less assumed contracts in emitted Dafny.
+Selected call graphs are therefore closed within each proof unit, and Dafny's
+assumption audit must find zero escapes. Generated implementation lines cannot
+be edited in proof additions. Domain witnesses guard against contradictory
+preconditions. Deliberate semantic mutations must reach the verifier and fail
+an obligation; a parser or generated-drift failure is insufficient.
+
+A proof replaces tests only for the same property, implementation, model and
+preconditions. Runtime adapters, compiler behavior, native APIs, dependencies
+and integration assumptions still need evidence, and specifications still need
+review. See the [formal workflow](../verification/formal/README.md) to reproduce
+the checks and inspect their exact scope.

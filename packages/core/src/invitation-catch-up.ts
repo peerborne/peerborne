@@ -1,3 +1,4 @@
+import { countMissingStrings } from './policy/string-collections.js';
 import {
   INVITATION_STREAM_TIMEOUT_MS,
   withInvitationDeadline,
@@ -18,16 +19,14 @@ export function assertInvitationCidsInstalled(
   installedCids: ReadonlySet<string>,
   phase: 'bootstrap' | 'catch-up',
 ): void {
-  let missingCount = 0;
-  for (const cid of expectedCids) {
-    if (!installedCids.has(cid)) missingCount += 1;
-  }
-  if (missingCount > 0) {
+  const missingCount = countMissingStrings(
+    expectedCids,
+    installedCids as Set<string>,
+  );
+  if (missingCount > 0)
     throw new Error(
-      `Invitation ${phase} state is incomplete: ${missingCount} of ` +
-        `${expectedCids.length} advertised CIDs were not installed`,
+      `Invitation ${phase} state is incomplete: ${missingCount} of ${expectedCids.length} advertised CIDs were not installed`,
     );
-  }
 }
 
 /** @internal Apply one invitation sync and require its full advertised tree. */
@@ -41,9 +40,7 @@ export async function syncInvitationMessageCompletely<ChangesType>(
     readonly isSnapshotApplied?: () => boolean;
   } = {},
 ): Promise<boolean> {
-  const provenBeforeSync = new Set(
-    options.provenSnapshotBoundariesBeforeSync,
-  );
+  const provenBeforeSync = new Set(options.provenSnapshotBoundariesBeforeSync);
   const expectedWithoutNewSnapshot = new Set(
     collectInvitationCidsToInstall(
       message.changeId,
@@ -70,8 +67,7 @@ export async function syncInvitationMessageCompletely<ChangesType>(
   const synced = await sync();
   if (synced !== true) return false;
   const snapshotCoversHistory =
-    snapshotBoundary !== undefined &&
-    options.isSnapshotApplied?.() === true;
+    snapshotBoundary !== undefined && options.isSnapshotApplied?.() === true;
   const expectedCids = snapshotCoversHistory
     ? expectedWithNewSnapshot
     : expectedWithoutNewSnapshot;

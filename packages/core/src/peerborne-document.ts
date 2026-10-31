@@ -1,3 +1,4 @@
+import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
@@ -4041,23 +4042,18 @@ export class PeerborneDocument<
    * Check if automatic compaction should be triggered based on the config.
    */
   private async _maybeCompact(signal?: AbortSignal) {
-    if (!this._compactionConfig.enabled || this._snapshotUnsupported) {
+    if (
+      !shouldCompact(
+        this._compactionConfig.enabled,
+        this._snapshotUnsupported,
+        this._compactionInProgress,
+        this._documentChangeCount,
+        this._changesSinceSnapshot,
+        this._compactionConfig.minChangesBeforeSnapshot,
+        this._compactionConfig.snapshotInterval,
+      )
+    )
       return;
-    }
-
-    // Prevent overlapping snapshot() calls from concurrent async paths.
-    if (this._compactionInProgress) {
-      return;
-    }
-
-    // Check cheap thresholds before the async writer ACL check to avoid
-    // repeated crypto/ACL work on every change.
-    if (this._documentChangeCount < this._compactionConfig.minChangesBeforeSnapshot) {
-      return;
-    }
-    if (this._changesSinceSnapshot < this._compactionConfig.snapshotInterval) {
-      return;
-    }
 
     // Only writers can create snapshots; read-only peers must not attempt compaction.
     if (

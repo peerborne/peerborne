@@ -17,9 +17,11 @@ import {
   proofPaths,
   requireTools,
   proverEnvironment,
+  typescript,
 } from './support.mjs';
 
 requireTools();
+const ts = typescript();
 const staging = mkdtempSync(join(tmpdir(), 'peerborne-formal-controls-'));
 const results = [];
 function copyProject(label) {
@@ -95,6 +97,92 @@ try {
   }
   const mutations = [
     [
+      'unpaired-surrogate',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (!isPairedUtf16Unit(value, index)) return false;',
+      'if (false) return false;',
+    ],
+    [
+      'empty-bootstrap-list',
+      'packages/core/src/bootstrap-config.ts',
+      'return config.list.length > 0;',
+      'return config.list.length >= 0;',
+    ],
+    [
+      'document-cache-collision',
+      'packages/react/src/hooks-cache.ts',
+      'return `${caches.contextKeyPrefix}${documentPath}`;',
+      'return `${caches.contextKeyPrefix}`;',
+    ],
+
+    [
+      'resource-confusion',
+      'packages/core/src/capabilities.ts',
+      'candidate.resource === resource &&',
+      '',
+    ],
+    [
+      'duplicate-identity',
+      'string-collections.ts',
+      'if (seen.has(values[index])) return index;',
+      'if (false) return index;',
+    ],
+    [
+      'editor-attenuation',
+      'string-collections.ts',
+      'const expectedWriters = editor ? [issuer, recipient] : [issuer];',
+      'const expectedWriters = [issuer];',
+    ],
+    [
+      'keychain-rewrite',
+      'keychain-order.ts',
+      'if (!sameKeychainEntry(before[index], after[index])) return index;',
+      'if (false) return index;',
+    ],
+    ['overlapping-compaction', 'maintenance.ts', '!inProgress &&', 'true &&'],
+    [
+      'unauthenticated-replacement',
+      'maintenance.ts',
+      'return !existing || authenticated;',
+      'return true;',
+    ],
+    [
+      'replay-capacity',
+      'replay-admission.ts',
+      "if (size >= capacity) return 'capacity-exceeded';",
+      "if (size > capacity) return 'capacity-exceeded';",
+    ],
+    [
+      'expiry-boundary',
+      'invitation-time.ts',
+      'return expiresAt <= now;',
+      'return expiresAt < now;',
+    ],
+    [
+      'terminal-anchor-poison',
+      'anchor-advance.ts',
+      "if (previous.poisoned) return 'terminalPoison';",
+      "if (false) return 'terminalPoison';",
+    ],
+    [
+      'protected-gc-cid',
+      'retention.ts',
+      'if (!retained.has(cid) && !protectedCids.has(cid)) result.add(cid);',
+      'if (!retained.has(cid)) result.add(cid);',
+    ],
+    [
+      'encoded-underestimate',
+      'encoded-size.ts',
+      'return 4 * Math.ceil(rawBytes / 3);',
+      'return 4 * Math.floor(rawBytes / 3);',
+    ],
+    [
+      'query-expansion-limit',
+      'packages/index/src/query-budget.ts',
+      'return count > limit ? -1 : count;',
+      'return count;',
+    ],
+    [
       'budget-overrun',
       'work-budget.ts',
       'if (amount > limit - used) return -1;',
@@ -127,12 +215,62 @@ try {
   ];
   for (const [name, file, before, after] of mutations) {
     const root = copyProject(name);
-    const source = `packages/core/src/policy/${file}`;
+    const source = file.startsWith('packages/')
+      ? file
+      : `packages/core/src/policy/${file}`;
     const path = join(root, source);
     const text = readFileSync(path, 'utf8');
-    if (text.split(before).length !== 2)
-      throw new Error(`Mutation target drifted: ${name}`);
-    writeFileSync(path, text.replace(before, after));
+    const tokens = (value) => {
+      const ast = ts.createSourceFile(
+        'mutation.ts',
+        value,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const result = [];
+      const collect = (node) => {
+        if (
+          node.kind >= ts.SyntaxKind.FirstJSDocNode &&
+          node.kind <= ts.SyntaxKind.LastJSDocNode
+        )
+          return;
+        const children = node.getChildren(ast);
+        if (children.length) children.forEach(collect);
+        else if (
+          node.kind !== ts.SyntaxKind.EndOfFileToken &&
+          node.kind !== ts.SyntaxKind.SyntaxList &&
+          node.getWidth(ast) > 0
+        ) {
+          result.push({
+            text: node.getText(ast),
+            start: node.getStart(ast),
+            end: node.end,
+          });
+        }
+      };
+      collect(ast);
+      return result;
+    };
+    const target = tokens(before);
+    if (target.length === 0 || before.includes('`')) {
+      if (text.split(before).length !== 2)
+        throw new Error(`Mutation target drifted: ${name}`);
+      writeFileSync(path, text.replace(before, after));
+    } else {
+      const sourceTokens = tokens(text);
+      const matches = sourceTokens.flatMap((_, index) =>
+        target.every(
+          (token, offset) => sourceTokens[index + offset]?.text === token.text,
+        )
+          ? [index]
+          : [],
+      );
+      if (matches.length !== 1)
+        throw new Error(`Mutation target drifted: ${name}`);
+      const begin = sourceTokens[matches[0]].start;
+      const end = sourceTokens[matches[0] + target.length - 1].end;
+      writeFileSync(path, text.slice(0, begin) + after + text.slice(end));
+    }
     const result = verify(root, source, true);
     requireResult(
       result.status !== 0 &&

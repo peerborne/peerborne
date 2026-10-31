@@ -1,4 +1,8 @@
 import {
+  decideJoinReplay,
+  decideAcceptanceReplay,
+} from './policy/replay-admission.js';
+import {
   InvitationAcceptanceV1,
   InvitationJoinRequestV1,
   InvitationOfferV1,
@@ -115,9 +119,7 @@ export class InMemoryInvitationReplayGuard {
     request: InvitationJoinRequestV1,
     nowMs = Date.now(),
   ): Promise<InvitationReplayDecision> {
-    const offerSnapshot = decodeInvitationOffer(
-      encodeInvitationOffer(offer),
-    );
+    const offerSnapshot = decodeInvitationOffer(encodeInvitationOffer(offer));
     const requestSnapshot = decodeInvitationJoinRequest(
       encodeInvitationJoinRequest(request),
     );
@@ -151,9 +153,7 @@ export class InMemoryInvitationReplayGuard {
     acceptance: InvitationAcceptanceV1,
     nowMs = Date.now(),
   ): Promise<InvitationReplayDecision> {
-    const offerSnapshot = decodeInvitationOffer(
-      encodeInvitationOffer(offer),
-    );
+    const offerSnapshot = decodeInvitationOffer(encodeInvitationOffer(offer));
     const requestSnapshot = decodeInvitationJoinRequest(
       encodeInvitationJoinRequest(request),
     );
@@ -190,30 +190,30 @@ export class InMemoryInvitationReplayGuard {
     );
 
     const idRecord = this._acceptancesById.get(acceptanceId);
-    if (
-      idRecord !== undefined &&
-      (idRecord.offerDigest !== offerDigest ||
-        idRecord.envelopeDigest !== acceptanceDigest)
-    ) {
+    const existingClaim = this._claimsByOffer.get(offerDigest);
+    const acceptanceDecision = decideAcceptanceReplay(
+      {
+        known: idRecord !== undefined,
+        offerDigest: idRecord?.offerDigest ?? '',
+        envelopeDigest: idRecord?.envelopeDigest ?? '',
+      },
+      offerDigest,
+      acceptanceDigest,
+      existingClaim?.acceptanceDigest !== undefined,
+      existingClaim?.acceptanceId === acceptanceId &&
+        existingClaim?.acceptanceDigest === acceptanceDigest,
+    );
+    if (acceptanceDecision === 'replay') return 'replay';
+    if (acceptanceDecision === 'acceptance-id-conflict')
       throw new InvitationReplayError(
         'acceptance-id-conflict',
         'acceptance ID was already used by different signed bytes',
       );
-    }
-
-    const existingClaim = this._claimsByOffer.get(offerDigest);
-    if (existingClaim?.acceptanceDigest !== undefined) {
-      if (
-        existingClaim.acceptanceId === acceptanceId &&
-        existingClaim.acceptanceDigest === acceptanceDigest
-      ) {
-        return 'replay';
-      }
+    if (acceptanceDecision === 'offer-already-consumed')
       throw new InvitationReplayError(
         'offer-already-consumed',
         'offer already has a different acceptance',
       );
-    }
 
     if (joinDecision === 'accepted') {
       this._commitJoin(
@@ -265,51 +265,38 @@ export class InMemoryInvitationReplayGuard {
     requestId: string,
     requestDigest: string,
   ): InvitationReplayDecision {
-    const existingOfferDigest = this._offersById.get(invitationId);
-    if (
-      existingOfferDigest !== undefined &&
-      existingOfferDigest !== offerDigest
-    ) {
-      throw new InvitationReplayError(
-        'invitation-id-conflict',
+    const offer = this._offersById.get(invitationId);
+    const request = this._requestsById.get(requestId);
+    const claim = this._claimsByOffer.get(offerDigest);
+    const decision = decideJoinReplay(
+      { known: offer !== undefined, digest: offer ?? '' },
+      {
+        known: request !== undefined,
+        offerDigest: request?.offerDigest ?? '',
+        envelopeDigest: request?.envelopeDigest ?? '',
+      },
+      {
+        known: claim !== undefined,
+        requestId: claim?.requestId ?? '',
+        requestDigest: claim?.requestDigest ?? '',
+      },
+      offerDigest,
+      requestId,
+      requestDigest,
+      this._claimsByOffer.size,
+      this.maxEntries,
+    );
+    if (decision === 'accepted' || decision === 'replay') return decision;
+    const messages = {
+      'invitation-id-conflict':
         'invitation ID was already used by a different signed offer',
-      );
-    }
-
-    const idRecord = this._requestsById.get(requestId);
-    if (
-      idRecord !== undefined &&
-      (idRecord.offerDigest !== offerDigest ||
-        idRecord.envelopeDigest !== requestDigest)
-    ) {
-      throw new InvitationReplayError(
-        'request-id-conflict',
+      'request-id-conflict':
         'request ID was already used by different signed bytes',
-      );
-    }
-
-    const existing = this._claimsByOffer.get(offerDigest);
-    if (existing !== undefined) {
-      if (
-        existing.requestId === requestId &&
-        existing.requestDigest === requestDigest
-      ) {
-        return 'replay';
-      }
-      throw new InvitationReplayError(
-        'offer-already-claimed',
+      'offer-already-claimed':
         'offer was already claimed by a different join request',
-      );
-    }
-
-    if (this._claimsByOffer.size >= this.maxEntries) {
-      throw new InvitationReplayError(
-        'capacity-exceeded',
-        'invitation replay guard is at capacity',
-      );
-    }
-
-    return 'accepted';
+      'capacity-exceeded': 'invitation replay guard is at capacity',
+    };
+    throw new InvitationReplayError(decision, messages[decision]);
   }
 
   private _commitJoin(
@@ -340,7 +327,9 @@ export class InMemoryInvitationReplayGuard {
       if (this._offersById.get(claim.invitationId) === offerDigest) {
         this._offersById.delete(claim.invitationId);
       }
-      if (this._requestsById.get(claim.requestId)?.offerDigest === offerDigest) {
+      if (
+        this._requestsById.get(claim.requestId)?.offerDigest === offerDigest
+      ) {
         this._requestsById.delete(claim.requestId);
       }
       if (

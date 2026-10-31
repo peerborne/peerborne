@@ -1,8 +1,9 @@
 # Formal policy verification
 
-The production policy functions in `packages/core/src/policy/` are compiled
-from their actual TypeScript implementations to Dafny by LemmaScript. The
-runtime imports those same functions; there is no parallel executable model.
+The 39 selected production functions in 17 proof units are compiled from their
+actual TypeScript implementations to Dafny by LemmaScript. These include the
+core policy directory and selected functions in core, index and React modules.
+The runtime calls those same functions; there is no parallel executable model.
 See the [assessment and scope](../../docs/formal-verification.md).
 
 ```sh
@@ -20,11 +21,18 @@ directory. Setup requires network access, Git, npm and unzip. Normal verificatio
 uses the installed tools without downloads. CI can run the Node commands
 directly without installing Peerborne's browser/transport dependencies.
 
-`verify:formal` requires every manifest function to be selected and every
-policy file to be registered. It rejects missing proof files, generated-file
-drift, unverified declarations, partial verification, proof escape annotations,
-and a missing domain witness. Dafny's assumption audit must report zero
-findings, including no body-less declarations or unproved imported contracts.
+`verify:formal` requires every manifest function to be selected and every core
+policy file to be registered. AST checks find real selection comments even
+after template literals, reject selections absent from the manifest and verify
+the named consumers' actual relative imports/re-exports. Unselected functions
+in the same file are outside the proof. Selected call graphs stay closed within
+each unit; unrelated imports elsewhere in the file do not become proof evidence.
+
+The runner rejects missing proof files, generated-file drift, unverified
+declarations, partial verification, proof escape annotations, a missing domain
+witness, and incorrect number/string/slicing configuration. Dafny's assumption
+audit must report zero findings, including no body-less declarations or
+unproved imported contracts.
 
 The manifest names the actual verified obligations because Dafny need not
 emit a separate verification task for a straight-line function whose body has
@@ -49,11 +57,20 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 `.dfy.merged` are ignored and should be handled using the pinned tool's
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
-The control runner copies only policy sources and proofs into temporary
-directories. It checks accepted originals, semantic mutations, stale generated
-code, contradictory preconditions, `assume false`, body-less lemmas and
-unproved imports. Semantic mutations must reach the verifier and fail an
-obligation; a parser error or a drift-only rejection is insufficient.
+The control runner copies selected sources and proofs into temporary
+directories. Its 41 controls cover 17 accepted originals, 20 semantic/vacuity
+mutations, stale generated code, `assume false`, body-less lemmas and unproved
+imports. Semantic mutations must reach the verifier and fail an obligation;
+a parser error or a drift-only rejection is insufficient.
+
+`verify:formal:inventory` audits all library selections against the manifest.
+It also audits all fast-check imports/assertions for explicit fixed seeds and
+bounded run counts, and requires every property suite to have evidence paths
+and a formal-boundary explanation in the
+[fallback catalog](../strategy.json). It reports 24 property-suite files and
+50 assertion declarations; parameterized suites can execute declarations more
+than once. Remaining named top-level functions are listed for future
+specification work. These are structural counts, not semantic coverage.
 
 Reports, source/proof digests, tool versions, per-member verification results,
 assumption audits and control results go under `verification/results/formal/`.
@@ -62,11 +79,18 @@ source metadata and synthetic proof cases, never live keys or document data.
 
 ## Proof domain
 
-Numbers are mathematical integers in this toolchain. Contracts bound production
-arithmetic to safe integer ranges; runtime adapters supply counts, validated
-uint32 generations and capacities. Strings explicitly use JavaScript UTF-16
-semantics. Local maps contain opaque strings and do not escape through aliased
-input mutations. Runtime parsing, callback authentication, scheduling, I/O,
-cryptographic primitives, side channels and browser resource limits are outside
-these proofs. The generated inventory is a scope inventory, not a security
-coverage percentage or an end-to-end verification claim.
+The default number domain is mathematical integers; the base64 helpers also use
+the supported real division/ceiling model. Contracts bound production arithmetic
+to exact safe-integer ranges; runtime adapters supply validated counters,
+timestamps, uint32 generations, uint64 BigInt epochs and capacities. Native
+IEEE-754 behavior is calibrated with independent BigInt properties. Strings
+explicitly use JavaScript UTF-16 semantics and safe slicing.
+
+Inputs are detached records, arrays and native string sets; property getters,
+proxies and concurrent alias mutation are outside the model. Constant capability
+tables are frozen. Local collections do not escape through input mutation.
+Runtime parsing, callback authentication, scheduling, I/O, cryptographic
+primitives, side channels and browser resource limits are outside these proofs.
+The generated inventory is a scope inventory, not a security coverage
+percentage or an end-to-end verification claim. Keep the fallback evidence
+listed in the catalog for those boundaries.

@@ -1,3 +1,8 @@
+import {
+  sameKeychainEntry,
+  isKeychainPrefix,
+  firstKeychainRewrite,
+} from './policy/keychain-order.js';
 import { Base64 } from 'js-base64';
 import { copyUnsharedUint8Array } from './utils.js';
 import {
@@ -124,35 +129,14 @@ function validateCanonicalKeychainEntries(
   return result;
 }
 
-function sameKeychainEntry(
-  left: CanonicalKeychainEntry,
-  right: CanonicalKeychainEntry,
-): boolean {
-  return left[0] === right[0] && left[1] === right[1];
-}
-
 function assertAppendOnlyTransition(
   before: readonly CanonicalKeychainEntry[],
   after: readonly CanonicalKeychainEntry[],
 ): void {
-  if (after.length < before.length) {
+  if (after.length < before.length)
     throw new Error('Keychain merge must preserve existing entries');
-  }
-  for (let index = 0; index < before.length; index++) {
-    if (!sameKeychainEntry(before[index], after[index])) {
-      throw new Error('Keychain merge must append without rewriting entries');
-    }
-  }
-}
-
-function isKeychainPrefix(
-  prefix: readonly CanonicalKeychainEntry[],
-  entries: readonly CanonicalKeychainEntry[],
-): boolean {
-  return (
-    prefix.length <= entries.length &&
-    prefix.every((entry, index) => sameKeychainEntry(entry, entries[index]))
-  );
+  if (firstKeychainRewrite(before, after) !== -1)
+    throw new Error('Keychain merge must append without rewriting entries');
 }
 
 function snapshotAppendIntent(

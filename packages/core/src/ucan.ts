@@ -9,7 +9,7 @@
  * - Revocation: revoking a token invalidates all downstream delegations
  */
 
-import { capabilityImplies } from './capabilities.js';
+import { findUnauthorizedCapability } from './capabilities.js';
 
 /**
  * A UCAN token for Peerborne document authorization.
@@ -182,13 +182,16 @@ export async function validateUCANChain(
     }
 
     // Check attenuation: this UCAN's capabilities must be subset of proof's
-    for (const cap of ucan.capabilities) {
-      const proofHasCap = proof.capabilities.some(
-        proofCap => proofCap.resource === cap.resource && capabilityImplies(proofCap.ability, cap.ability)
-      );
-      if (!proofHasCap) {
-        return { valid: false, error: `Capability ${cap.ability} on ${cap.resource} not authorized by proof` };
-      }
+    const unauthorized = findUnauthorizedCapability(
+      ucan.capabilities,
+      proof.capabilities,
+    );
+    if (unauthorized !== -1) {
+      const cap = ucan.capabilities[unauthorized];
+      return {
+        valid: false,
+        error: `Capability ${cap.ability} on ${cap.resource} not authorized by proof`,
+      };
     }
 
     // Recursively validate proof with decremented depth and shared visited set

@@ -1,7 +1,11 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { deserializeChangeNodeFromJSON } from './merkle-dag-serialization';
-import { crdtDocumentChangeNode, crdtWriterChangeNode, crdtChangeNodeDeferred } from './crdt-change-node';
+import {
+  crdtDocumentChangeNode,
+  crdtWriterChangeNode,
+  crdtChangeNodeDeferred,
+} from './crdt-change-node';
 
 const id = <T>(x: T): T => x;
 
@@ -12,6 +16,7 @@ describe('merkle-dag-serialization fuzz', () => {
         try {
           deserializeChangeNodeFromJSON(obj as any, id);
         } catch (err) {
+          expect(err).toBeInstanceOf(Error);
           if (err instanceof Error) {
             expect(err.message).toMatch(
               /expected a plain object|"kind"|"keyID"|"children"|child at key/i,
@@ -19,7 +24,7 @@ describe('merkle-dag-serialization fuzz', () => {
           }
         }
       }),
-      { numRuns: 2000 },
+      { seed: 9556, numRuns: 2000 },
     );
   });
 
@@ -34,23 +39,25 @@ describe('merkle-dag-serialization fuzz', () => {
           fc.array(fc.string()),
         ),
         (value) => {
-          expect(() => deserializeChangeNodeFromJSON(value as any, id)).toThrow(/expected a plain object/);
+          expect(() => deserializeChangeNodeFromJSON(value as any, id)).toThrow(
+            /expected a plain object/,
+          );
         },
       ),
-      { numRuns: 500 },
+      { seed: 9557, numRuns: 500 },
     );
   });
 
   test('round-trip for any valid leaf node', () => {
     fc.assert(
       fc.property(
-        fc.oneof(fc.constant(crdtDocumentChangeNode), fc.constant(crdtWriterChangeNode)),
+        fc.oneof(
+          fc.constant(crdtDocumentChangeNode),
+          fc.constant(crdtWriterChangeNode),
+        ),
         fc.option(fc.string(), { nil: undefined }),
         fc.option(
-          fc.oneof(
-            fc.constant(crdtChangeNodeDeferred),
-            fc.constant(undefined),
-          ),
+          fc.oneof(fc.constant(crdtChangeNodeDeferred), fc.constant(undefined)),
           { nil: undefined },
         ),
         (kind, change, children) => {
@@ -60,26 +67,38 @@ describe('merkle-dag-serialization fuzz', () => {
 
           const result = deserializeChangeNodeFromJSON(node, id);
           expect(result.kind).toBe(kind);
-          expect(Object.prototype.hasOwnProperty.call(result, 'keyID')).toBe(false);
+          expect(Object.prototype.hasOwnProperty.call(result, 'keyID')).toBe(
+            false,
+          );
           expect(result.change).toBe(change);
         },
       ),
-      { numRuns: 500, examples: [[crdtDocumentChangeNode, '', undefined]] },
+      {
+        seed: 9558,
+        numRuns: 500,
+        examples: [[crdtDocumentChangeNode, '', undefined]],
+      },
     );
   });
 
   test('rejects a keyID field of any value', () => {
     fc.assert(
       fc.property(
-        fc.oneof(fc.constant(crdtDocumentChangeNode), fc.constant(crdtWriterChangeNode)),
+        fc.oneof(
+          fc.constant(crdtDocumentChangeNode),
+          fc.constant(crdtWriterChangeNode),
+        ),
         fc.anything(),
         (kind, keyID) => {
           expect(() =>
-            deserializeChangeNodeFromJSON({ kind, keyID, change: 'leaf' } as any, id),
+            deserializeChangeNodeFromJSON(
+              { kind, keyID, change: 'leaf' } as any,
+              id,
+            ),
           ).toThrow(/"keyID" is not a change-node field/);
         },
       ),
-      { numRuns: 500 },
+      { seed: 9559, numRuns: 500 },
     );
   });
 });

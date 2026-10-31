@@ -1,7 +1,10 @@
 import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { encodeWelcomeSealedPayloadV2, decodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload';
+import {
+  encodeWelcomeSealedPayloadV2,
+  decodeWelcomeSealedPayloadV2,
+} from './welcome-sealed-payload';
 
 describe('welcome-sealed-payload fuzz', () => {
   test('decode never throws unexpectedly on random bytes', () => {
@@ -10,12 +13,14 @@ describe('welcome-sealed-payload fuzz', () => {
         try {
           decodeWelcomeSealedPayloadV2(bytes);
         } catch (err) {
+          expect(err).toBeInstanceOf(Error);
           if (err instanceof Error) {
             expect(err.message).toMatch(/^welcome-sealed-payload v2: /);
           }
         }
       }),
       {
+        seed: 9554,
         numRuns: 1000,
         examples: [
           [new TextEncoder().encode('{}')],
@@ -42,7 +47,7 @@ describe('welcome-sealed-payload fuzz', () => {
           expect(decoded.beekemWelcome).toEqual(payload.beekemWelcome);
         },
       ),
-      { numRuns: 500 },
+      { seed: 9555, numRuns: 500 },
     );
   });
 
@@ -55,7 +60,9 @@ describe('welcome-sealed-payload fuzz', () => {
       new Uint8Array(1024).fill(0xff),
     ];
     for (const bytes of boundaries) {
-      try { decodeWelcomeSealedPayloadV2(bytes); } catch {}
+      try {
+        decodeWelcomeSealedPayloadV2(bytes);
+      } catch {}
     }
   });
 });

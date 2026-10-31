@@ -1,3 +1,7 @@
+import {
+  canReplacePendingWelcome,
+  firstUnauthenticatedEntry,
+} from './policy/maintenance.js';
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
@@ -19,11 +23,14 @@ export const PENDING_WELCOMES_MAX_ENTRIES = 16;
 export const PENDING_WELCOMES_TTL_MS = 5 * 60 * 1000;
 
 if (PENDING_WELCOMES_MAX_RETAINED_BYTES < PENDING_WELCOME_MAX_BODY_BYTES) {
-  throw new Error('Pending Welcome aggregate limit must admit one maximum-size body');
+  throw new Error(
+    'Pending Welcome aggregate limit must admit one maximum-size body',
+  );
 }
 
 const typedArrayByteLength = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype), 'byteLength',
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'byteLength',
 )?.get;
 if (typeof typedArrayByteLength !== 'function') {
   throw new Error('PendingWelcomeBuffer requires TypedArray.byteLength');
@@ -32,7 +39,9 @@ const getByteLength = typedArrayByteLength;
 
 export class PendingWelcomeBodyLimitError extends RangeError {
   constructor() {
-    super(`Pending BeeKEM Welcome body exceeds ${PENDING_WELCOME_MAX_BODY_BYTES} bytes`);
+    super(
+      `Pending BeeKEM Welcome body exceeds ${PENDING_WELCOME_MAX_BODY_BYTES} bytes`,
+    );
     this.name = 'PendingWelcomeBodyLimitError';
   }
 }
@@ -95,7 +104,7 @@ export class PendingWelcomeBuffer {
     bufferedAtMs: number,
     authenticated: boolean,
   ): PendingWelcomeStoreResult {
-    if (this._entries.has(key) && !authenticated) {
+    if (!canReplacePendingWelcome(this._entries.has(key), authenticated)) {
       return { stored: false, replaced: false, evictedKeys: [] };
     }
     const detached = snapshotSyncMessageForContext<ChangesType>(
@@ -148,7 +157,7 @@ export class PendingWelcomeBuffer {
       'Pending BeeKEM Welcome body',
     );
 
-    if (this._entries.has(key) && !authenticated) {
+    if (!canReplacePendingWelcome(this._entries.has(key), authenticated)) {
       return { stored: false, replaced: false, evictedKeys: [] };
     }
 
@@ -173,10 +182,11 @@ export class PendingWelcomeBuffer {
   }
 
   private _evictionCandidate(): string | undefined {
-    for (const [key, entry] of this._entries) {
-      if (!entry.authenticated) return key;
-    }
-    return this._entries.keys().next().value;
+    const entries = [...this._entries];
+    const index = firstUnauthenticatedEntry(
+      entries.map(([, entry]) => entry.authenticated),
+    );
+    return entries[index === -1 ? 0 : index]?.[0];
   }
 
   /** Delete exactly one entry and subtract exactly the bytes it owned. */

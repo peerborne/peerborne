@@ -1,3 +1,4 @@
+import { classifyAnchorAdvance } from './policy/anchor-advance.js';
 import { trackQueuedOperation } from './queued-operation.js';
 import type { GroupSecurityProtocol } from './group-security-provider.js';
 import type { GroupStateStoreKey } from './group-state-store.js';
@@ -226,36 +227,33 @@ function validateAdvance(
   expected: GroupSecurityRollbackAnchorValue | undefined,
   next: GroupSecurityRollbackAnchorValue,
 ): void {
-  if (expected === undefined) {
-    if (next.forkPoison !== undefined) {
-      throw new Error('rollback anchor cannot begin poisoned');
-    }
-    return;
-  }
-  if (expected.forkPoison !== undefined) {
-    throw new Error('poisoned rollback anchor is terminal');
-  }
-  if (next.forkPoison !== undefined) {
-    throw new Error(
-      'rollback anchor poisoning requires the atomic poison method',
-    );
-  }
-  if (next.revision !== expected.revision + 1) {
-    throw new Error('rollback anchor revision must advance by exactly one');
-  }
-  if (next.epoch < expected.epoch || next.epoch > expected.epoch + 1n) {
-    throw new Error(
-      'rollback anchor epoch must stay constant or advance by exactly one',
-    );
-  }
-  if (
-    next.epoch === expected.epoch &&
-    !equalBytes(next.controlHead, expected.controlHead)
-  ) {
-    throw new Error(
+  const previous = expected ?? next;
+  const disposition = classifyAnchorAdvance(
+    expected !== undefined,
+    {
+      revision: previous.revision,
+      epoch: previous.epoch,
+      poisoned: previous.forkPoison !== undefined,
+    },
+    {
+      revision: next.revision,
+      epoch: next.epoch,
+      poisoned: next.forkPoison !== undefined,
+    },
+    expected === undefined ||
+      equalBytes(next.controlHead, expected.controlHead),
+  );
+  if (disposition === 'valid') return;
+  const messages = {
+    initialPoison: 'rollback anchor cannot begin poisoned',
+    terminalPoison: 'poisoned rollback anchor is terminal',
+    poisonMethod: 'rollback anchor poisoning requires the atomic poison method',
+    revision: 'rollback anchor revision must advance by exactly one',
+    epoch: 'rollback anchor epoch must stay constant or advance by exactly one',
+    controlHead:
       'rollback anchor control head cannot change without an epoch advance',
-    );
-  }
+  };
+  throw new Error(messages[disposition]);
 }
 
 function cloneAndValidateAnchor(
