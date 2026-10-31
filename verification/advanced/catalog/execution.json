@@ -1,0 +1,16 @@
+{
+  "category": "execution",
+  "scenarios": [
+    {
+      "id": "crypto-jitter",
+      "name": "Encrypted ingress, worker observation and render-frame jitter",
+      "runtime": "browser"
+    },
+    {
+      "id": "storage-eviction",
+      "name": "Persistent-profile identity eviction and encrypted snapshot recovery",
+      "runtime": "browser",
+      "driver": "eviction"
+    }
+  ]
+}
