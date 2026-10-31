@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@noble/ciphers": "2.1.1",
+    "@noble/hashes": "2.3.0",
+    "ts-mls": "1.6.4"
+  },
+  "name": "peerborne-mls-candidate-verification",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "yarn@4.5.0",
+  "resolutions": {
+    "@hpke/common": "1.10.1"
+  }
+}

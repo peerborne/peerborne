@@ -1,0 +1,35 @@
+name: MLS candidate qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+          cache: yarn
+          cache-dependency-path: |
+            yarn.lock
+            verification/mls-candidate/yarn.lock
+      - run: yarn install --immutable
+      - run: yarn verify:mls-candidate:setup
+      - run: yarn exec playwright install chromium --with-deps
+      - run: yarn verify:mls-candidate
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mls-candidate-report
+          path: verification/mls-candidate/report.json
+          if-no-files-found: ignore
+          retention-days: 30

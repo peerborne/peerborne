@@ -59,7 +59,9 @@
     "verify:formal": "node verification/formal/run.mjs",
     "verify:formal:regen": "node verification/formal/run.mjs --regen",
     "verify:formal:controls": "node verification/formal/controls.mjs",
-    "verify:formal:inventory": "node verification/formal/inventory.mjs"
+    "verify:formal:inventory": "node verification/formal/inventory.mjs",
+    "verify:mls-candidate:setup": "yarn --cwd verification/mls-candidate install --immutable",
+    "verify:mls-candidate": "node verification/mls-candidate/run.mjs"
   },
   "packageManager": "yarn@4.5.0"
 }

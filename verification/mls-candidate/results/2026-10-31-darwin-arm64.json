@@ -1,0 +1,179 @@
+{
+  "status": "rejected",
+  "recordedAt": "2026-10-31T09:18:52.673Z",
+  "node": "v22.19.0",
+  "chromium": "145.0.7632.6",
+  "platform": "darwin-arm64",
+  "cpu": "Apple M5",
+  "sourcePatches": false,
+  "privatePackageImports": false,
+  "source": {
+    "repository": "https://github.com/LukaJCB/ts-mls",
+    "tag": "v1.6.4",
+    "commit": "ddff62aa15d3064fff5d77dda35b3cdf2970870d"
+  },
+  "toolchain": {
+    "@hpke/common": {
+      "version": "1.10.1",
+      "integrity": "sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw=="
+    },
+    "@hpke/core": {
+      "version": "1.9.0",
+      "integrity": "sha512-pFxWl1nNJeQCSUFs7+GAblHvXBCjn9EPN65vdKlYQil2aURaRxfGMO6vBKGqm1YHTKwiAxJQNEI70PbSowMP9Q=="
+    },
+    "@noble/ciphers": {
+      "version": "2.1.1",
+      "integrity": "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="
+    },
+    "@noble/hashes": {
+      "version": "2.3.0",
+      "integrity": "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ=="
+    },
+    "ts-mls": {
+      "version": "1.6.4",
+      "integrity": "sha512-BFb9qJ3V1+HIuifC+MtnlROEj3oc6NEzA7Ig1/LAmANDRhNay7UCnwkzijzHH9cav5wf1BoJw8KQ2mXiEhPy1Q=="
+    }
+  },
+  "nodeResult": {
+    "result": {
+      "suite": "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      "members": 3,
+      "epoch": 4,
+      "sequentialAdds": true,
+      "selfUpdate": true,
+      "removalExclusion": true,
+      "removedExporterDiffers": true,
+      "applicationReplayRejected": true,
+      "commitReplayRejected": true,
+      "tamperedCommitRejected": true,
+      "credentialRejections": {
+        "unknown": true,
+        "substituted": true,
+        "expired": true,
+        "revoked": true
+      },
+      "authorizedAddControl": true,
+      "stateRoundTrip": true,
+      "retentionObservation": {
+        "requestedEpochRetention": 0,
+        "retainedEpochCounts": [
+          3,
+          2,
+          1
+        ],
+        "delayedEpochReadable": true
+      },
+      "zeroEpochRetentionHonored": false,
+      "sizes": {
+        "commits": [
+          521,
+          511,
+          658,
+          548
+        ],
+        "welcomes": [
+          818,
+          1038
+        ],
+        "states": [
+          5554,
+          5099
+        ]
+      }
+    },
+    "nativeCrypto": {
+      "generateKey:Ed25519": 8,
+      "generateKey:X25519": 22,
+      "importKey:Ed25519": 68,
+      "sign:Ed25519": 32,
+      "digest:SHA-256": 157,
+      "importKey:HMAC": 565,
+      "sign:HMAC": 552,
+      "verify:Ed25519": 36,
+      "importKey:AES-GCM": 40,
+      "encrypt:AES-GCM": 21,
+      "importKey:X25519": 48,
+      "deriveBits:X25519": 12,
+      "importKey:HKDF": 48,
+      "deriveBits:HKDF": 48,
+      "decrypt:AES-GCM": 19,
+      "verify:HMAC": 13
+    }
+  },
+  "browserResult": {
+    "result": {
+      "suite": "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      "members": 3,
+      "epoch": 4,
+      "sequentialAdds": true,
+      "selfUpdate": true,
+      "removalExclusion": true,
+      "removedExporterDiffers": true,
+      "applicationReplayRejected": true,
+      "commitReplayRejected": true,
+      "tamperedCommitRejected": true,
+      "credentialRejections": {
+        "unknown": true,
+        "substituted": true,
+        "expired": true,
+        "revoked": true
+      },
+      "authorizedAddControl": true,
+      "stateRoundTrip": true,
+      "retentionObservation": {
+        "requestedEpochRetention": 0,
+        "retainedEpochCounts": [
+          3,
+          2,
+          1
+        ],
+        "delayedEpochReadable": true
+      },
+      "zeroEpochRetentionHonored": false,
+      "sizes": {
+        "commits": [
+          509,
+          517,
+          656,
+          546
+        ],
+        "welcomes": [
+          804,
+          1030
+        ],
+        "states": [
+          5508,
+          5055
+        ]
+      }
+    },
+    "nativeCrypto": {
+      "generateKey:Ed25519": 8,
+      "generateKey:X25519": 22,
+      "importKey:Ed25519": 68,
+      "sign:Ed25519": 32,
+      "digest:SHA-256": 157,
+      "importKey:HMAC": 565,
+      "sign:HMAC": 552,
+      "verify:Ed25519": 36,
+      "importKey:AES-GCM": 40,
+      "encrypt:AES-GCM": 21,
+      "importKey:X25519": 48,
+      "deriveBits:X25519": 12,
+      "importKey:HKDF": 48,
+      "deriveBits:HKDF": 48,
+      "decrypt:AES-GCM": 19,
+      "verify:HMAC": 13
+    }
+  },
+  "untested": [
+    "independent MLS interoperability",
+    "Peerborne provider/coordinator integration",
+    "durable crash recovery",
+    "persistent keystore and independent rollback anchor",
+    "full malformed-input and credential-policy matrix",
+    "partition/fork handling",
+    "resource budgets",
+    "independent security review"
+  ]
+}
