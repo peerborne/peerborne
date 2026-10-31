@@ -1,5 +1,18 @@
 import { expect, test, type Page } from '@playwright/test';
 
+let lastTestFinishedAt: number | undefined;
+
+test.beforeEach(async () => {
+  if (lastTestFinishedAt === undefined) return;
+  // Separate independent sessions to respect the public demo relay's burst cap.
+  const cooldown = Math.max(0, 15_000 - (Date.now() - lastTestFinishedAt));
+  if (cooldown > 0) await new Promise((resolve) => setTimeout(resolve, cooldown));
+});
+
+test.afterEach(() => {
+  lastTestFinishedAt = Date.now();
+});
+
 function failOnRuntimeErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
