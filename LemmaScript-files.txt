@@ -15,3 +15,10 @@ packages/index/src/query-budget.ts
 packages/core/src/internal/canonical-encoding.ts
 packages/core/src/bootstrap-config.ts
 packages/react/src/hooks-cache.ts
+packages/core/src/policy/package-partition.ts
+packages/core/src/policy/store-budget.ts
+packages/core/src/policy/commit-lifecycle.ts
+packages/core/src/policy/replay-window.ts
+packages/core/src/policy/graph-reachability.ts
+packages/core/src/policy/tree-index.ts
+packages/index/src/query-order.ts

@@ -11,7 +11,9 @@ import { selectDeletableCids } from './policy/retention.js';
  */
 
 import { CRDTChangeNode } from './crdt-change-node.js';
-import { collectBoundedChangeTree } from './change-tree-walk.js';
+import { snapshotBoundedChangeTree } from './change-tree-walk.js';
+import { crdtChangeNodeDeferred } from './crdt-change-node.js';
+import { reachableCids, type CidEdge } from './policy/graph-reachability.js';
 
 /**
  * Walk a CRDTChangeNode tree and collect the CID strings of every
@@ -29,11 +31,25 @@ export function collectTreeCIDs<ChangesType>(
   rootCID: string,
   root: CRDTChangeNode<ChangesType>,
 ): Set<string> {
-  const cids = new Set<string>();
-  for (const { nodeId } of collectBoundedChangeTree(rootCID, root)) {
-    if (nodeId !== undefined) cids.add(nodeId);
+  const { root: stable } = snapshotBoundedChangeTree(rootCID, root);
+  const nodes: string[] = [];
+  const edges: CidEdge[] = [];
+  const pending: Array<readonly [string, CRDTChangeNode<ChangesType>]> = [
+    [rootCID, stable],
+  ];
+  while (pending.length > 0) {
+    const [from, node] = pending.pop()!;
+    nodes.push(from);
+    if (node.children === undefined || node.children === crdtChangeNodeDeferred)
+      continue;
+    const children = Object.entries(node.children);
+    for (let index = children.length - 1; index >= 0; index--) {
+      const [to, child] = children[index];
+      edges.push({ from, to });
+      pending.push([to, child]);
+    }
   }
-  return cids;
+  return reachableCids(nodes, edges, rootCID);
 }
 
 /**

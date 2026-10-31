@@ -4,6 +4,10 @@ import {
   firstKeychainRewrite,
 } from './policy/keychain-order.js';
 import { Base64 } from 'js-base64';
+import {
+  claimPreparedCommit,
+  completePreparedCommit,
+} from './policy/commit-lifecycle.js';
 import { copyUnsharedUint8Array } from './utils.js';
 import {
   computeKeychainStateCommitment,
@@ -235,15 +239,21 @@ function createMergeClaim({
     ]);
   };
   const claimCommit = (): PreparedCommitClaim => {
-    assertPrepared();
-    if (!isBaseCurrent()) {
+    const decision = claimPreparedCommit(
+      state,
+      state === 'prepared' && isBaseCurrent(),
+      hydrationInProgress,
+    );
+    if (decision === 'notPrepared')
+      throw new Error(
+        'Prepared keychain merge was already committed or claimed',
+      );
+    if (decision === 'stale')
       throw new Error('Keychain changed while merge was staged');
-    }
-    if (hydrationInProgress) {
+    if (decision === 'hydrating')
       throw new Error(
         'Prepared keychain merge cannot be claimed while key hydration is in progress',
       );
-    }
     const finalizeCache = prepareCacheSet(stagedKeyCache);
     const claim = {
       finalize: () => {
@@ -253,10 +263,10 @@ function createMergeClaim({
         if (state === 'committed') return;
         finalizeCache();
         publish();
-        state = 'committed';
+        state = completePreparedCommit(state);
       },
     };
-    state = 'claimed';
+    state = decision;
     return claim;
   };
   return {

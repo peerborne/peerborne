@@ -226,6 +226,169 @@
         "getPeerborneDocumentCacheKey_ensures",
         "documentCacheKey_injective"
       ]
+    },
+    {
+      "path": "packages/core/src/policy/package-partition.ts",
+      "functions": [
+        "insertPendingPackage",
+        "removePendingPackage",
+        "insertConsumptionMarker",
+        "bindOperationToRecord"
+      ],
+      "witness": "packagePartition_domain",
+      "consumers": ["packages/core/src/group-state-store.ts"],
+      "verifiedTargets": [
+        "insertPendingPackage",
+        "removePendingPackage",
+        "insertConsumptionMarker",
+        "bindOperationToRecord",
+        "packagePartition_transfer"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/store-budget.ts",
+      "functions": [
+        "adjustStoreBytes",
+        "nextStoreRevision",
+        "classifyStoreCommitBaseline"
+      ],
+      "witness": "storeBudget_domain",
+      "consumers": ["packages/core/src/group-state-store.ts"],
+      "verifiedTargets": [
+        "adjustStoreBytes_ensures",
+        "nextStoreRevision_ensures",
+        "classifyStoreCommitBaseline_ensures",
+        "storeBudget_commit_chain",
+        "ApplyByteDeltas"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/commit-lifecycle.ts",
+      "functions": [
+        "claimPreparedCommit",
+        "completePreparedCommit",
+        "coordinatorAdmission",
+        "failedCommitRecovery"
+      ],
+      "witness": "commitLifecycle_domain",
+      "consumers": [
+        "packages/core/src/keychain-canonical.ts",
+        "packages/core/src/group-security-coordinator.ts"
+      ],
+      "verifiedTargets": [
+        "claimPreparedCommit_ensures",
+        "completePreparedCommit_ensures",
+        "coordinatorAdmission_ensures",
+        "failedCommitRecovery_ensures",
+        "commitLifecycle_claim_then_finish",
+        "FinalizeRepeated"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/replay-window.ts",
+      "functions": [
+        "replayWindowFloor",
+        "authorizationAnchorFloor",
+        "firstMissingRetainedEpoch",
+        "shouldPruneReplay"
+      ],
+      "witness": "replayWindow_domain",
+      "consumers": ["packages/core/src/group-security-coordinator.ts"],
+      "verifiedTargets": [
+        "replayWindowFloor_ensures",
+        "authorizationAnchorFloor_ensures",
+        "firstMissingRetainedEpoch",
+        "shouldPruneReplay_ensures",
+        "replayWindow_monotone"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/graph-reachability.ts",
+      "functions": ["reachableCids", "shouldPruneDocumentChildren"],
+      "witness": "graphReachability_domain",
+      "consumers": [
+        "packages/core/src/blockstore-gc.ts",
+        "packages/core/src/peerborne-document.ts"
+      ],
+      "verifiedTargets": [
+        "reachableCids",
+        "shouldPruneDocumentChildren_ensures"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/tree-index.ts",
+      "functions": [
+        "powerOfTwo",
+        "nodeLevel",
+        "floorLog2",
+        "treeWidth",
+        "treeRoot",
+        "leafNodeIndex",
+        "leafPosition",
+        "leftChild",
+        "rightChild",
+        "clampRightChild",
+        "parentStep",
+        "parentInWidth",
+        "treeParent",
+        "treeRight",
+        "treeSibling",
+        "treeDirectPath",
+        "treeCopath"
+      ],
+      "witness": "treeIndex_domain",
+      "consumers": ["packages/core/src/beekem/tree-math.ts"],
+      "verifiedTargets": [
+        "powerOfTwo_ensures",
+        "nodeLevel_ensures",
+        "floorLog2_ensures",
+        "treeWidth_ensures",
+        "treeRoot_ensures",
+        "leafNodeIndex_ensures",
+        "leafPosition_ensures",
+        "leftChild_ensures",
+        "rightChild_ensures",
+        "clampRightChild_ensures",
+        "parentStep_ensures",
+        "parentInWidth_ensures",
+        "treeParent_ensures",
+        "treeRight_ensures",
+        "treeSibling_ensures",
+        "treeDirectPath_ensures",
+        "treeCopath_ensures",
+        "tree_child_parent",
+        "tree_left_parent",
+        "tree_right_parent",
+        "tree_sibling_children"
+      ]
+    },
+    {
+      "path": "packages/index/src/query-order.ts",
+      "functions": [
+        "compareCodeUnits",
+        "compareFiniteNumbers",
+        "compareQueryKeys",
+        "takeQueryPage"
+      ],
+      "witness": "queryOrder_domain",
+      "consumers": [
+        "packages/index/src/query-ast.ts",
+        "packages/index/src/query-cursor.ts",
+        "packages/index/src/index-manager.ts"
+      ],
+      "verifiedTargets": [
+        "compareCodeUnits_ensures",
+        "compareFiniteNumbers_ensures",
+        "compareQueryKeys",
+        "takeQueryPage_ensures",
+        "codeUnitInverse",
+        "codeUnitTransitive",
+        "numericOrder",
+        "queryKeyInverse",
+        "queryKeyMatches",
+        "queryKeyTransitive",
+        "AllPages"
+      ]
     }
   ]
 }

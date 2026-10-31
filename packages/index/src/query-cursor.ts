@@ -1,5 +1,6 @@
+import { compareQueryKeys } from './query-order.js';
 import { IndexDefinition, IndexFieldType, IndexScalar, QueryAst, SortClause } from './types.js';
-import { compareCodeUnits, compareIndexScalars, normalizeIndexScalar } from './query-ast.js';
+import { compareIndexScalars, normalizeIndexScalar } from './query-ast.js';
 import { extractField } from './field-extractor.js';
 
 const MAX_CURSOR_BYTES = 16_384;
@@ -97,14 +98,26 @@ export function compareEntriesForQuery(
   orderBy: SortClause[],
   definition: IndexDefinition,
 ): number {
-  for (const clause of orderBy) {
-    const field = definition.fields.find((candidate) => candidate.path === clause.path)!;
-    const left = normalizeIndexScalar(extractField(a.fields, clause.path), field);
-    const right = normalizeIndexScalar(extractField(b.fields, clause.path), field);
-    const compared = compareIndexScalars(left, right);
-    if (compared !== 0) return clause.direction === 'desc' ? -compared : compared;
-  }
-  return compareCodeUnits(a.documentPath, b.documentPath);
+  return compareQueryKeys(
+    orderBy,
+    (index) => {
+      const clause = orderBy[index];
+      const field = definition.fields.find(
+        (candidate) => candidate.path === clause.path,
+      )!;
+      const left = normalizeIndexScalar(
+        extractField(a.fields, clause.path),
+        field,
+      );
+      const right = normalizeIndexScalar(
+        extractField(b.fields, clause.path),
+        field,
+      );
+      return compareIndexScalars(left, right);
+    },
+    a.documentPath,
+    b.documentPath,
+  );
 }
 
 export function isAfterQueryCursor(
@@ -113,16 +126,25 @@ export function isAfterQueryCursor(
   orderBy: SortClause[],
   definition: IndexDefinition,
 ): boolean {
-  for (let i = 0; i < orderBy.length; i++) {
-    const clause = orderBy[i];
-    const field = definition.fields.find((candidate) => candidate.path === clause.path)!;
-    const value = normalizeIndexScalar(extractField(entry.fields, clause.path), field);
-    const rawCursorValue = position.sort[i];
-    const cursorValue = rawCursorValue === null ? undefined : rawCursorValue;
-    const compared = compareIndexScalars(value, cursorValue);
-    if (compared !== 0) return clause.direction === 'desc' ? compared < 0 : compared > 0;
-  }
-  return compareCodeUnits(entry.documentPath, position.documentPath) > 0;
+  return (
+    compareQueryKeys(
+      orderBy,
+      (index) => {
+        const clause = orderBy[index];
+        const field = definition.fields.find(
+          (candidate) => candidate.path === clause.path,
+        )!;
+        const value = normalizeIndexScalar(
+          extractField(entry.fields, clause.path),
+          field,
+        );
+        const raw = position.sort[index];
+        return compareIndexScalars(value, raw === null ? undefined : raw);
+      },
+      entry.documentPath,
+      position.documentPath,
+    ) > 0
+  );
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {

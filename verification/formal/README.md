@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 39 selected production functions in 17 proof units are compiled from their
+The 77 selected production functions in 24 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -58,17 +58,17 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 41 controls cover 17 accepted originals, 20 semantic/vacuity
+directories. Its 74 controls cover 24 accepted originals, 46 semantic/vacuity
 mutations, stale generated code, `assume false`, body-less lemmas and unproved
 imports. Semantic mutations must reach the verifier and fail an obligation;
-a parser error or a drift-only rejection is insufficient.
+a parser error, a timeout alone or a drift-only rejection is insufficient.
 
 `verify:formal:inventory` audits all library selections against the manifest.
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 24 property-suite files and
-50 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 28 property-suite files and
+57 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -80,13 +80,20 @@ source metadata and synthetic proof cases, never live keys or document data.
 ## Proof domain
 
 The default number domain is mathematical integers; the base64 helpers also use
-the supported real division/ceiling model. Contracts bound production arithmetic
+the supported real division/ceiling model, and finite-number ordering uses
+real comparisons without real arithmetic on the values. Contracts bound production arithmetic
 to exact safe-integer ranges; runtime adapters supply validated counters,
 timestamps, uint32 generations, uint64 BigInt epochs and capacities. Native
 IEEE-754 behavior is calibrated with independent BigInt properties. Strings
 explicitly use JavaScript UTF-16 semantics and safe slicing.
 
-Inputs are detached records, arrays and native string sets; property getters,
+The additional units cover partition-preserving package maps, committed byte
+and epoch bounds, claim/recovery decisions, replay/outbox retention, least graph
+reachability with edge-linear queue accounting, bounded BeeKEM tree geometry,
+and scalar/lexicographic ordering and prefix pages. Their exact bounds and
+runtime gaps are listed in the [scope assessment](../../docs/formal-verification.md).
+
+Inputs are detached records, arrays and native string sets/maps; property getters,
 proxies and concurrent alias mutation are outside the model. Constant capability
 tables are frozen. Local collections do not escape through input mutation.
 Runtime parsing, callback authentication, scheduling, I/O, cryptographic

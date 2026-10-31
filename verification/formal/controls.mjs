@@ -207,6 +207,162 @@ try {
       "if (disposition === 'equivocation') equivocating = false;",
     ],
     [
+      'pending-reference-confusion',
+      'package-partition.ts',
+      'result.set(reference, value);',
+      'result.set("different", value);',
+    ],
+    [
+      'consumption-history-loss',
+      'package-partition.ts',
+      'const result = new Map(consumed);',
+      'const result = new Map<string, Marker>();',
+    ],
+    [
+      'pending-map-truncation',
+      'package-partition.ts',
+      'const result = new Map(pending); result.delete(reference);',
+      'const result = new Map<string, Pending>(); result.delete(reference);',
+    ],
+    [
+      'operation-binding-rewrite',
+      'package-partition.ts',
+      'result.set(operation, record);',
+      'result.set(operation, "different");',
+    ],
+    [
+      'committed-byte-overflow',
+      'store-budget.ts',
+      'return next < minimum || next > maximum ? -1 : next;',
+      'return next < minimum ? -1 : next;',
+    ],
+    [
+      'revision-overflow',
+      'store-budget.ts',
+      'return revision === 9007199254740991 ? -1 : revision + 1;',
+      'return revision > 9007199254740991 ? -1 : revision + 1;',
+    ],
+    [
+      'store-epoch-rollback',
+      'store-budget.ts',
+      "return hadEpoch && (!hasEpoch || nextEpoch < baseEpoch) ? 'rollback' : 'ready';",
+      "return hadEpoch && !hasEpoch ? 'rollback' : 'ready';",
+    ],
+    [
+      'stale-prepared-claim',
+      'commit-lifecycle.ts',
+      "if (!baseCurrent) return 'stale';",
+      "if (false) return 'stale';",
+    ],
+    [
+      'hydrating-prepared-claim',
+      'commit-lifecycle.ts',
+      "if (hydrating) return 'hydrating';",
+      "if (false) return 'hydrating';",
+    ],
+    [
+      'uncommitted-finalization',
+      'commit-lifecycle.ts',
+      "return 'committed';",
+      'return phase;',
+    ],
+    [
+      'poisoned-coordinator-admission',
+      'commit-lifecycle.ts',
+      "if (poisoned) return 'poisoned';",
+      "if (false) return 'poisoned';",
+    ],
+    [
+      'ambiguous-recovery-poison',
+      'commit-lifecycle.ts',
+      "return ambiguousStoreFailure ? 'propagate' : 'poison';",
+      "return 'poison';",
+    ],
+    [
+      'replay-authorization-anchor-loss',
+      'replay-window.ts',
+      'return floor === 0n ? 0n : floor - 1n;',
+      'return floor;',
+    ],
+    [
+      'pending-delivery-pruning',
+      'replay-window.ts',
+      'epoch < authorizationAnchorFloor(currentEpoch, window) && !pendingDelivery',
+      'epoch < authorizationAnchorFloor(currentEpoch, window)',
+    ],
+    [
+      'missing-retained-epoch',
+      'replay-window.ts',
+      'if (!byEpoch.has(epoch)) return epoch;',
+      'if (false) return epoch;',
+    ],
+    [
+      'reachable-edge-loss',
+      'graph-reachability.ts',
+      'children.push(edge.to);',
+      'children.push(edge.from);',
+    ],
+    [
+      'duplicate-edge-flood',
+      'graph-reachability.ts',
+      'children.push(edge.to);',
+      'children.push(edge.to); children.push(edge.to);',
+    ],
+    [
+      'acl-boundary-pruning',
+      'graph-reachability.ts',
+      'return !isAcl && documentNodesVisited >= keepCount;',
+      'return documentNodesVisited >= keepCount;',
+    ],
+    [
+      'wrong-tree-power',
+      'tree-index.ts',
+      'return POWERS_OF_TWO[exponent];',
+      'return POWERS_OF_TWO[0];',
+    ],
+    [
+      'wrong-tree-parent-direction',
+      'tree-index.ts',
+      'return higherBit === 0 ? index + step : index - step;',
+      'return higherBit === 0 ? index - step : index + step;',
+    ],
+    [
+      'ragged-child-width-overflow',
+      'tree-index.ts',
+      'index < width ? index : clampRightChild(leftChild(index), width)',
+      'index < width ? index : clampRightChild(leftChild(index), width + 1)',
+    ],
+    [
+      'missing-path-parent',
+      'tree-index.ts',
+      'return [parent, ...treeDirectPath(parent, leaves)];',
+      'return treeDirectPath(parent, leaves);',
+    ],
+    [
+      'query-descending-direction',
+      'packages/index/src/query-order.ts',
+      "directions[index].direction === 'desc' ? -compared : compared",
+      'compared',
+    ],
+    [
+      'query-path-tie-loss',
+      'packages/index/src/query-order.ts',
+      'return compareCodeUnits(leftPath, rightPath);',
+      'return 0;',
+    ],
+    [
+      'finite-numeric-reversal',
+      'packages/index/src/query-order.ts',
+      'return left < right ? -1 : 1;',
+      'return left > right ? -1 : 1;',
+    ],
+    [
+      'query-page-overrun',
+      'packages/index/src/query-order.ts',
+      'return entries.slice(0, first);',
+      'return entries.slice(0, first + 1);',
+    ],
+    [
       'vacuous-precondition',
       'work-budget.ts',
       '//@ verify',
@@ -275,7 +431,10 @@ try {
     requireResult(
       result.status !== 0 &&
         result.record?.stage === 'verify' &&
-        result.record.failed.length > 0,
+        result.record.failed.length > 0 &&
+        /Dafny program verifier finished with \d+ verified, [1-9]\d* errors?/.test(
+          result.stdout ?? '',
+        ),
       name,
       result,
     );

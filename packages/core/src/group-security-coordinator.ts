@@ -1,4 +1,14 @@
 import {
+  coordinatorAdmission,
+  failedCommitRecovery,
+} from './policy/commit-lifecycle.js';
+import {
+  replayWindowFloor,
+  authorizationAnchorFloor,
+  firstMissingRetainedEpoch,
+  shouldPruneReplay,
+} from './policy/replay-window.js';
+import {
   AppliedGroupMembershipChange,
   AppliedGroupMembershipDelta,
   CreateGroupCommitInput,
@@ -2733,7 +2743,7 @@ export class GroupSecurityCoordinator {
     const recordsById = new Map<string, MembershipControlRecord>();
     const commitmentsById = new Map<string, GroupSecurityStateCommitment>();
     const recordIds = new Set<string>();
-    const byEpoch = new Map<string, GroupStateReplayEntry>();
+    const byEpoch = new Map<bigint, GroupStateReplayEntry>();
     const pending = new Set(outbox.map((entry) => toHex(entry.id)));
 
     for (const entry of replay) {
@@ -2786,7 +2796,7 @@ export class GroupSecurityCoordinator {
 
       const recordHex = toHex(entry.recordId);
       const operationHex = toHex(record.operationId);
-      const epochKey = entry.epoch.toString();
+      const epochKey = entry.epoch;
       if (
         recordIds.has(recordHex) ||
         operationToRecord.has(operationHex) ||
@@ -2808,11 +2818,16 @@ export class GroupSecurityCoordinator {
       publicState.epoch,
       this.replayWindowEpochs,
     );
-    for (let epoch = retainedFloor; epoch <= publicState.epoch; epoch += 1n) {
-      if (!byEpoch.has(epoch.toString())) {
-        fail('malformed-state', `missing replay metadata for epoch ${epoch}`);
-      }
-    }
+    const missingEpoch = firstMissingRetainedEpoch(
+      byEpoch,
+      publicState.epoch,
+      this.replayWindowEpochs,
+    );
+    if (missingEpoch !== -1n)
+      fail(
+        'malformed-state',
+        `missing replay metadata for epoch ${missingEpoch}`,
+      );
     for (const entry of replay) {
       if (entry.epoch > publicState.epoch) {
         fail('malformed-state', 'replay metadata is newer than provider state');
@@ -2858,7 +2873,7 @@ export class GroupSecurityCoordinator {
           );
           continue;
         }
-        const previousEntry = byEpoch.get((entry.epoch - 1n).toString());
+        const previousEntry = byEpoch.get(entry.epoch - 1n);
         if (previousEntry === undefined) {
           fail(
             'malformed-state',
@@ -2878,7 +2893,7 @@ export class GroupSecurityCoordinator {
       }
     }
 
-    const head = byEpoch.get(publicState.epoch.toString());
+    const head = byEpoch.get(publicState.epoch);
     if (head === undefined) {
       fail('malformed-state', 'replay metadata has no current head');
     }
@@ -3929,8 +3944,10 @@ export class GroupSecurityCoordinator {
     } catch (error) {
       cause = error;
     }
-    if (ambiguousStoreFailure !== undefined) {
-      throw ambiguousStoreFailure.cause;
+    if (
+      failedCommitRecovery(ambiguousStoreFailure !== undefined) === 'propagate'
+    ) {
+      throw ambiguousStoreFailure!.cause;
     }
     const reason = normalizeFailure(
       cause,
@@ -4052,15 +4069,20 @@ export class GroupSecurityCoordinator {
   }
 
   private assertUsable(): void {
-    if (this.forkReason !== undefined) throw this.forkReason;
-    if (this.poisonedReason !== undefined) {
+    const admission = coordinatorAdmission(
+      this.forkReason !== undefined,
+      this.poisonedReason !== undefined,
+      this.view !== undefined,
+    );
+    if (admission === 'forked') throw this.forkReason;
+    if (admission === 'poisoned') {
       throw new GroupSecurityCoordinatorError(
         'poisoned',
         'coordinator is poisoned after rollback failure',
         { cause: this.poisonedReason },
       );
     }
-    if (this.view === undefined) {
+    if (admission === 'uninitialized') {
       fail('not-initialized', 'group security coordinator is not initialized');
     }
   }
@@ -4468,10 +4490,16 @@ function pruneReplayTransaction(
   currentEpoch: bigint,
   window: bigint,
 ): void {
-  const floor = authorizationAnchorFloor(currentEpoch, window);
   const pending = new Set(transaction.outbox.map((entry) => toHex(entry.id)));
   for (const entry of transaction.replay) {
-    if (entry.epoch < floor && !pending.has(toHex(entry.recordId))) {
+    if (
+      shouldPruneReplay(
+        entry.epoch,
+        currentEpoch,
+        window,
+        pending.has(toHex(entry.recordId)),
+      )
+    ) {
       if (transaction.removeReplay(entry.recordId) !== true) {
         fail('store-conflict', 'replay record disappeared during pruning');
       }
@@ -4485,23 +4513,17 @@ function replayIdsToPrune(
   currentEpoch: bigint,
   window: bigint,
 ): Uint8Array[] {
-  const floor = authorizationAnchorFloor(currentEpoch, window);
   const pending = new Set(outbox.map((entry) => toHex(entry.id)));
   return replay
-    .filter(
-      (entry) =>
-        entry.epoch < floor && !pending.has(toHex(entry.recordId)),
+    .filter((entry) =>
+      shouldPruneReplay(
+        entry.epoch,
+        currentEpoch,
+        window,
+        pending.has(toHex(entry.recordId)),
+      ),
     )
     .map((entry) => new Uint8Array(entry.recordId));
-}
-
-function replayWindowFloor(currentEpoch: bigint, window: bigint): bigint {
-  return currentEpoch + 1n > window ? currentEpoch - window + 1n : 0n;
-}
-
-function authorizationAnchorFloor(currentEpoch: bigint, window: bigint): bigint {
-  const floor = replayWindowFloor(currentEpoch, window);
-  return floor === 0n ? 0n : floor - 1n;
 }
 
 function snapshotCoordinatorConfig(

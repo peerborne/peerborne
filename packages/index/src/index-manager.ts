@@ -1,3 +1,4 @@
+import { takeQueryPage } from "./query-order.js";
 import {
   IndexDefinition,
   IndexDiagnostic,
@@ -361,7 +362,7 @@ export class IndexManager<DocType> {
         isAfterQueryCursor(entry, cursor, orderBy, definition))
       : executed.entries;
     const first = query.first ?? remaining.length;
-    const pageEntries = remaining.slice(0, first);
+    const pageEntries = takeQueryPage(remaining, first);
     const hasMore = remaining.length > first;
     const last = pageEntries[pageEntries.length - 1];
     return {

@@ -218,7 +218,7 @@ const report = {
     0,
   ),
   proofModel:
-    'Bounded exact integer arithmetic, real division/ceiling for sizing, uint64 BigInt epochs, JavaScript UTF-16 strings and local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
+    'Bounded exact integer arithmetic, real division/ceiling for sizing and finite-real scalar order, uint64 BigInt epochs, JavaScript UTF-16 strings and local collections. Runtime adapters, cryptography, JavaScript engine, scheduling and I/O remain outside the proof.',
   elapsedMs: performance.now() - started,
   results,
 };
