@@ -110,6 +110,20 @@ describe('relay gateway', () => {
     expect((await received)[0]).toEqual(payload)
   })
 
+  it('accepts authenticated upgrades with the extra headers added by edge proxies', async () => {
+    const { gateway } = await fixture()
+    const proxyHeaders = Array.from({ length: 25 }, (_, index) => `X-Proxy-${index}: present`)
+    expect((await upgrade(gateway.port, [...proxyHeaders, ...trusted()])).response).toContain('101')
+  })
+
+  it('rejects duplicate credentials beyond the parsed header limit', async () => {
+    const { gateway } = await fixture()
+    const padding = Array.from({ length: 64 }, (_, index) => `X-Padding-${index}: present`)
+    expect((await upgrade(gateway.port, [
+      ...trusted(), ...padding, `X-Peerborne-Origin: ${secret}`,
+    ])).response).toContain('403')
+  })
+
   it('rejects repeated connection attempts from one IP', async () => {
     const { gateway } = await fixture({ ...demoGatewayLimits, attemptsPerIpPerTenSeconds: 1 })
     const first = await upgrade(gateway.port, trusted())

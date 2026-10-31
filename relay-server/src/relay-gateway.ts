@@ -69,7 +69,7 @@ export async function startRelayGateway(config: GatewayConfig) {
     response.end()
   })
   server.maxConnections = 64
-  server.maxHeadersCount = 20
+  server.maxHeadersCount = 64
   server.headersTimeout = 5000
   server.requestTimeout = 5000
   server.keepAliveTimeout = 1000
