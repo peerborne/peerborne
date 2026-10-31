@@ -47,3 +47,7 @@ button {
   border: 1px solid #cbd5df;
   margin: 1rem 0;
 }
+.tiptap {
+  min-height: 10rem;
+  padding: 1rem;
+}

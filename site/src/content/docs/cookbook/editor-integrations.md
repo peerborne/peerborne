@@ -44,6 +44,7 @@ contains the following editor integrations:
 | Editor | Binding |
 | --- | --- |
 | CodeMirror 6 | `y-codemirror.next`, using the mirror's `Y.Text` |
+| Tiptap / ProseMirror | Collaboration extension, with StarterKit undo/redo disabled |
 
 From a built source checkout, start
 `yarn workspace @peerborne/integration-examples start` and choose the editor.
