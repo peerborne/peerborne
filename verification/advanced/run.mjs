@@ -48,6 +48,8 @@ const selected = available.filter(
     (!values.scenario || values.scenario.includes(scenario.id)) &&
     (!values.category || values.category.includes(scenario.category)),
 );
+if (selected.length === 0)
+  throw new Error('No scenarios match the requested filters');
 const output = resolve(
   root,
   values.output ??

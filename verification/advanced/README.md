@@ -57,3 +57,7 @@ document signing, encryption and ingress. Document fixtures substitute peer
 discovery/transport and share a synthetic signing authority where stated.
 Do not promote a fixture's delivery policy, key restoration or error handling
 into a product guarantee.
+
+Ciphertext corruption and truncation run against the intended document, with
+an accepted unmodified-frame control. A cross-document routing mismatch cannot
+mask an authentication failure in that fuzz corpus.

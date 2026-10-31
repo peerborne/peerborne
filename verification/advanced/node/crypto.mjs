@@ -330,6 +330,12 @@ export async function documentReplay({ full, seed }) {
       false,
       'parent graph mutation must invalidate the original signature',
     );
+    assert.equal(
+      await receiveEncrypted(a, original),
+      true,
+      'uncorrupted control must authenticate in its intended document',
+    );
+    const originalSourceState = project(a);
     const random = seededRandom(seed);
     const count = full ? 512 : 32;
     for (let i = 0; i < count; i++) {
@@ -337,14 +343,14 @@ export async function documentReplay({ full, seed }) {
       const index = Math.floor(random() * corrupt.length);
       corrupt[index] ^= 1 << i % 8;
       assert.equal(
-        await receiveEncrypted(b, corrupt),
+        await receiveEncrypted(a, corrupt),
         false,
         'tampered key ID, nonce or ciphertext must never apply',
       );
     }
     for (const length of [0, 1, 11, 12, 31, 32, 43, 44, 45])
       assert.equal(
-        await receiveEncrypted(b, original.slice(0, length)),
+        await receiveEncrypted(a, original.slice(0, length)),
         false,
         'truncated frame must fail closed',
       );
@@ -363,6 +369,11 @@ export async function documentReplay({ full, seed }) {
       before,
       'flood and boundary failures cannot mutate B',
     );
+    assert.deepEqual(
+      project(a),
+      originalSourceState,
+      'ciphertext and boundary failures cannot mutate the intended document',
+    );
     return {
       scope:
         'Same signing authority and shared key material across two actual documents; raw AEAD ingress, signed document/parent/context binding, and ciphertext boundary mutations.',
@@ -372,6 +383,7 @@ export async function documentReplay({ full, seed }) {
         parentTamperingRejected: true,
         decryptionSucceededBeforeRouting: decryptedAtCryptoLayer,
         corruptedFrames: count,
+        uncorruptedIntendedDocumentControlAccepted: true,
         truncatedFrames: 9,
         wrongContexts: 3,
         recipientStateUnchanged: true,
