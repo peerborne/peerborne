@@ -64,6 +64,11 @@ directories. Its 74 controls cover 24 accepted originals, 46 semantic/vacuity
 mutations, stale generated code, `assume false`, body-less lemmas and unproved
 imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
+All accepted originals receive full-unit verification. Four expensive tree
+mutations check only the changed function and require that exact function to
+fail an obligation; the report labels these counterexample checks explicitly.
+The checked production program is always verified in full. This avoids
+reproving unchanged arithmetic helpers for each deliberately broken program.
 
 `verify:formal:inventory` audits all library selections against the manifest.
 It also audits all fast-check imports/assertions for explicit fixed seeds and

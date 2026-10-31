@@ -40,7 +40,7 @@ function copyProject(label) {
   }
   return root;
 }
-function verify(root, source, regenerate = false) {
+function verify(root, source, regenerate = false, targetFunction) {
   const result = spawnSync(
     process.execPath,
     [
@@ -48,6 +48,9 @@ function verify(root, source, regenerate = false) {
       regenerate ? 'regen' : 'check',
       '--backend=dafny',
       '--time-limit=15',
+      ...(targetFunction
+        ? [`--extra-flags=--filter-symbol=${targetFunction}`]
+        : []),
       source,
     ],
     {
@@ -80,6 +83,13 @@ function requireResult(condition, name, result) {
     name,
     passed: true,
     failedMembers: result?.record?.failed ?? [],
+    verificationScope: result?.record
+      ? result.record.stage === 'diff'
+        ? 'source-drift'
+        : result.record.partial
+          ? 'counterexample-function'
+          : 'full-unit'
+      : 'assumption-audit',
   });
   console.log(`${name}: passed`);
 }
@@ -90,6 +100,7 @@ try {
     requireResult(
       result.status === 0 &&
         result.record?.stage === 'ok' &&
+        !result.record.partial &&
         result.record.passed.includes(entry.witness),
       `positive/${entry.path}`,
       result,
@@ -319,24 +330,28 @@ try {
       'tree-index.ts',
       'return POWERS_OF_TWO[exponent];',
       'return POWERS_OF_TWO[0];',
+      'powerOfTwo',
     ],
     [
       'wrong-tree-parent-direction',
       'tree-index.ts',
       'return higherBit === 0 ? index + step : index - step;',
       'return higherBit === 0 ? index - step : index + step;',
+      'parentStep',
     ],
     [
       'ragged-child-width-overflow',
       'tree-index.ts',
       'index < width ? index : clampRightChild(leftChild(index), width)',
       'index < width ? index : clampRightChild(leftChild(index), width + 1)',
+      'clampRightChild',
     ],
     [
       'missing-path-parent',
       'tree-index.ts',
       'return [parent, ...treeDirectPath(parent, leaves)];',
       'return treeDirectPath(parent, leaves);',
+      'treeDirectPath',
     ],
     [
       'query-descending-direction',
@@ -369,7 +384,7 @@ try {
       '//@ verify\n  //@ requires false',
     ],
   ];
-  for (const [name, file, before, after] of mutations) {
+  for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);
     const source = file.startsWith('packages/')
       ? file
@@ -427,11 +442,15 @@ try {
       const end = sourceTokens[matches[0] + target.length - 1].end;
       writeFileSync(path, text.slice(0, begin) + after + text.slice(end));
     }
-    const result = verify(root, source, true);
+    const result = verify(root, source, true, targetFunction);
     requireResult(
       result.status !== 0 &&
         result.record?.stage === 'verify' &&
         result.record.failed.length > 0 &&
+        (targetFunction
+          ? result.record.partial &&
+            result.record.failed.includes(targetFunction)
+          : !result.record.partial) &&
         /Dafny program verifier finished with \d+ verified, [1-9]\d* errors?/.test(
           result.stdout ?? '',
         ),
