@@ -26,7 +26,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
-The root has eighteen workspaces: eleven libraries, six examples, and the site.
+The root has nineteen workspaces: eleven libraries, seven examples, and the site.
 
 ## Commands
 

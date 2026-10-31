@@ -21,6 +21,7 @@ do not establish end-to-end peer convergence, durable recovery, or production re
 | Zustand | Vanilla-API snapshot projection recipe with explicit cleanup | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Jotai | Vanilla-API atom projection recipe with explicit cleanup | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Next.js | Server-rendered starter and hydrated browser mutation, using webpack | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| TanStack Start | Server-rendered starter and hydrated browser mutation, using the Hono Node adapter | Live multi-peer behavior, restart recovery, and deployment acceptance |
 
 ## Additional candidates
 

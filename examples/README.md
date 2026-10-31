@@ -11,6 +11,7 @@ source checkout. Use the smallest example that matches what you want to inspect:
 | [`peerborne-note`](./peerborne-note/)     | Automerge and React | Bounded founder-plus-one invitation UX                                | Unit coverage and a strict Chromium startup smoke test    |
 | [`integrations`](./integrations/) | Plain DOM and optional bindings | Framework-free integration examples | Local document mutation acceptance |
 | [`nextjs`](./nextjs/) | Next.js / React | Browser session after server rendering | SSR HTML and hydrated local mutations |
+| [`tanstack-start`](./tanstack-start/) | TanStack Start / React | Browser session after server rendering | SSR HTML and hydrated local mutations |
 
 These are source examples for evaluation and development. Peerborne Note is the
 initial-release demo, but it is still early-stage and not production-ready.
