@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Invitation URLs must not enter automatic failure-page snapshots.
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+
 const baseURL = process.env.PEERBORNE_NOTE_LIVE_URL;
 if (!baseURL || !/^https:\/\/[^/]+\/$/u.test(baseURL)) {
   throw new Error(

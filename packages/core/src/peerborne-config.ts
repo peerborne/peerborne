@@ -229,6 +229,7 @@ export const defaultConfig = (
           ping: ping(),
           pubsub: gossipsub({
             allowPublishToZeroTopicPeers: true,
+            runOnLimitedConnection: true,
             emitSelf: false,
             canRelayMessage: true,
             globalSignaturePolicy: 'StrictSign',
