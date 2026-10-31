@@ -8,7 +8,7 @@ yarn verify:advanced --category network
 yarn verify:advanced:browser --grep 'mesh-saturation|slow-peer'
 yarn verify:advanced --category network --profile full
 PEERBORNE_VERIFY_PROFILE=full yarn verify:advanced:browser --grep 'mesh-saturation|slow-peer'
-bash verification/advanced/run-netem.sh
+bash verification/advanced/run-kernel-loss.sh
 ```
 
 `mesh-saturation` grows a native ordered RTC mesh from 5 through 6 peers in
@@ -48,17 +48,17 @@ include slow-peer progress, buffered bytes and timing relative to baseline.
 Native loss is stochastic; a fixed workload seed does not seed Chromium's
 packet-loss generator or reveal exact SCTP retransmission counters.
 
-On Linux, `run-netem.sh` runs the slow-peer test in a new, unnamed network
-namespace. It requires passwordless sudo, iproute2, `unshare` and `setpriv`.
+On Linux, `run-kernel-loss.sh` runs the slow-peer test in a new, unnamed network
+namespace. It requires passwordless sudo, iproute2, iptables, `unshare` and `setpriv`.
 The IPv4 namespace has loopback and a synthetic veth pair with a default route;
-its interfaces and qdiscs are separate from the host. The test classifies only the slow replica's
-actual UDP candidate ports into a seeded kernel netem loss queue, in both
-directions. A 100% blackout must suppress probe delivery and actual kernel
+its interfaces and packet filters are separate from the host. The test classifies only the slow replica's
+actual UDP candidate ports into a kernel packet filter that passes one of every five datagrams, in both
+directions. The workload seed chooses the initial position in that fixed pattern. A 100% blackout must suppress probe delivery and actual kernel
 drop counters must increase before the workload runs at 80% loss. The CI job
 runs this variant after the portable Chromium probes and collects its report.
 `PEERBORNE_VERIFY_PROFILE=full` also selects the full kernel-loss workload.
 The namespace disappears after its processes stop. Native packet arrival
-schedules still vary; a seeded netem generator is not a bit-for-bit network
+schedules still vary; a fixed kernel packet-drop pattern is not a bit-for-bit network
 replay. Kernel UDP drops do not count SCTP's internal retransmissions.
 Loopback ICE candidates are explicitly allowed for this isolated fixture.
 

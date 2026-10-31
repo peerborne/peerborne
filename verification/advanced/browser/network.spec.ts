@@ -19,14 +19,13 @@ const definitions = (await catalog()).filter(
 );
 const execute = promisify(execFile);
 async function kernelLoss(page: Page) {
+  if (process.platform !== 'linux')
+    throw new Error('Kernel loss requires Linux');
   const own = await execute('sudo', ['-n', 'readlink', '/proc/self/ns/net']);
   const initial = await execute('sudo', ['-n', 'readlink', '/proc/1/ns/net']);
-  if (
-    process.platform !== 'linux' ||
-    own.stdout.trim() === initial.stdout.trim()
-  )
+  if (own.stdout.trim() === initial.stdout.trim())
     throw new Error(
-      'Kernel loss requires the private namespace created by run-netem.sh',
+      'Kernel loss requires the private namespace created by run-kernel-loss.sh',
     );
   await execute('ip', ['link', 'show', 'pbverify0']);
   const ports: number[] = await call(page, 'candidatePorts');
@@ -34,78 +33,61 @@ async function kernelLoss(page: Page) {
     ports.length,
     'slow peer must expose actual native UDP candidate ports',
   ).toBeGreaterThan(0);
+  const command = (...args: string[]) =>
+    execute('sudo', ['-n', 'iptables', '-w', '5', ...args]);
+  const chain = 'PBVERIFY_LOSS';
+  await command('-N', chain);
   for (const port of ports) {
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error('Invalid native UDP port');
-    for (const direction of ['sport', 'dport'])
-      await execute('sudo', [
-        '-n',
-        'tc',
-        'filter',
-        'add',
-        'dev',
-        'lo',
-        'protocol',
-        'ip',
-        'parent',
-        '1:',
-        'prio',
-        '1',
-        'u32',
-        'match',
-        'ip',
-        'protocol',
-        '17',
-        '0xff',
-        'match',
-        'ip',
+    for (const direction of ['--sport', '--dport'])
+      await command(
+        '-A',
+        'OUTPUT',
+        '-p',
+        'udp',
         direction,
         String(port),
-        '0xffff',
-        'flowid',
-        '1:3',
-      ]);
+        '-j',
+        chain,
+      );
   }
   return {
     portCount: ports.length,
+    patternOffset: settings.seed % 5,
     async set(percent: number) {
-      await execute('sudo', [
-        '-n',
-        'tc',
-        'qdisc',
-        'change',
-        'dev',
-        'lo',
-        'parent',
-        '1:3',
-        'handle',
-        '30:',
-        'netem',
-        'loss',
-        'random',
-        `${percent}%`,
-        'seed',
-        String(settings.seed),
-      ]);
+      if (![0, 80, 100].includes(percent))
+        throw new Error('Unsupported deterministic loss pattern');
+      await command('-F', chain);
+      if (percent === 80)
+        await command(
+          '-A',
+          chain,
+          '-m',
+          'statistic',
+          '--mode',
+          'nth',
+          '--every',
+          '5',
+          '--packet',
+          String(settings.seed % 5),
+          '-j',
+          'RETURN',
+        );
+      if (percent !== 0) await command('-A', chain, '-j', 'DROP');
     },
     async stats() {
-      const { stdout } = await execute('sudo', [
-        'tc',
-        '-j',
-        '-s',
-        'qdisc',
-        'show',
-        'dev',
-        'lo',
-      ]);
-      const queue = JSON.parse(stdout).find(
-        (entry: any) => entry.kind === 'netem',
-      );
-      return {
-        packets: queue?.packets ?? null,
-        dropped: queue?.drops ?? null,
-        backlogBytes: queue?.backlog ?? null,
-      };
+      const { stdout } = await command('-L', chain, '-v', '-x', '-n');
+      let dropped = 0,
+        forwarded = 0;
+      for (const line of stdout.split('\n')) {
+        const match = line.match(/^\s*(\d+)\s+\d+\s+(DROP|RETURN)\b/);
+        if (match) {
+          if (match[2] === 'DROP') dropped += Number(match[1]);
+          else forwarded += Number(match[1]);
+        }
+      }
+      return { packets: dropped + forwarded, dropped, forwarded };
     },
   };
 }
@@ -478,7 +460,7 @@ async function slowPeer(browser: Browser) {
     };
     let duringBlackout = 10;
     try {
-      if (process.env.PEERBORNE_VERIFY_NETEM === 'isolated') {
+      if (process.env.PEERBORNE_VERIFY_KERNEL_LOSS === 'isolated') {
         kernel = await kernelLoss(group.pages[0]);
         await kernel.set(100);
       } else {
@@ -504,7 +486,7 @@ async function slowPeer(browser: Browser) {
           ],
         });
     } catch (error) {
-      if (process.env.PEERBORNE_VERIFY_NETEM === 'isolated') throw error;
+      if (process.env.PEERBORNE_VERIFY_KERNEL_LOSS === 'isolated') throw error;
     }
     const before = await cpu(group.sessions);
     const started = performance.now();
@@ -543,10 +525,11 @@ async function slowPeer(browser: Browser) {
         blackoutProbeReceipts: duringBlackout,
         lossEnforcementObserved,
         lossBackend: kernel
-          ? 'Linux netem in a private network namespace'
+          ? 'Linux deterministic nth-packet filter in a private network namespace'
           : 'Chromium CDP global P2P rule',
         kernelCounters,
         classifiedNativeUdpPorts: kernel?.portCount ?? null,
+        kernelPacketPatternOffset: kernel?.patternOffset ?? null,
         baselineConvergenceMs: baselineMs,
         healthyConvergenceMs: elapsedMs,
         healthyToBaselineRatio: elapsedMs / baselineMs,
@@ -569,7 +552,7 @@ async function slowPeer(browser: Browser) {
               'CDP packet-loss enforcement was not observed in the blackout control. Results cannot establish SCTP behavior under real 80% packet loss.',
             ]
           : []),
-        'The fixture uses direct per-channel sends; no production libp2p backpressure or slow-peer isolation policy is established. Kernel counters count UDP drops, not SCTP internal retransmissions. CDP acceptance alone is not an exact measured loss percentage; native arrival schedules vary even with a seeded kernel loss generator.',
+        'The fixture uses direct per-channel sends; no production libp2p backpressure or slow-peer isolation policy is established. Kernel counters count UDP drops, not SCTP internal retransmissions. CDP acceptance alone is not an exact measured loss percentage; native arrival schedules vary even with a fixed kernel packet-drop pattern.',
       ],
     };
   } catch (error) {
@@ -583,7 +566,7 @@ async function slowPeer(browser: Browser) {
     };
     throw error;
   } finally {
-    if (kernel) await kernel.set(0);
+    if (kernel) await kernel.set(0).catch(() => {});
     try {
       await group.sessions[0].send('Network.emulateNetworkConditionsByRule', {
         offline: false,
