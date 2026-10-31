@@ -1,0 +1,45 @@
+name: Experimental MLS provider
+
+on:
+  pull_request:
+    paths:
+      - 'verification/mls-provider/**'
+      - 'verification/mls-candidate/probe.mjs'
+      - 'verification/mls-candidate/native-crypto.mjs'
+      - 'packages/core/src/**'
+      - 'yarn.lock'
+      - '.github/workflows/mls-provider.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - run: corepack enable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+          cache: yarn
+          cache-dependency-path: |
+            yarn.lock
+            verification/mls-provider/yarn.lock
+      - run: yarn install --immutable
+      - run: yarn build
+      - run: yarn verify:mls-provider:setup
+      - run: yarn verify:mls-provider:typecheck
+      - run: yarn exec playwright install chromium --with-deps
+      - run: yarn verify:mls-provider
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mls-provider-report
+          path: verification/mls-provider/report.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -110,6 +110,26 @@ and an empty deletion list. Functional ciphertext opening in both environments
 is the failure evidence. The candidate remains unselected; the harness neither
 patches TreeKEM nor changes Peerborne's runtime dependencies or security claims.
 
+The next isolated
+[provider spike](https://github.com/peerborne/peerborne/tree/main/verification/mls-provider)
+uses an explicit Yarn patch for the retention map/deletion list and a second
+secret-tree collection bug exposed by consuming that list. The adapter erases
+obsolete private path entries after tree contraction and validates retained
+private/public key pairs. The patched dependency passes the old-message
+retention test and 13 pinned MLS Working Group suite-1 passive-client cases
+(26 Commit transitions) in both native Node and Chromium. Its authenticated
+adapter also exercises encrypted pending-package/group-state reconstruction,
+controller and credential enforcement, verified membership deltas, self-update,
+terminal removal, and malformed/tampered input without changing accepted state.
+
+This is patched experimental evidence, not selection of the stable release.
+The spike preserves RFC 9420's empty initial transcript and explicit terminal
+removal; the generic coordinator/envelope contracts do not yet support those
+states or a zero-membership-delta self-update. Document ACL/control/quorum
+integration, actual durable process/browser recovery with an independent
+rollback anchor, independent live interoperability, resource budgets, and
+security review remain acceptance gates.
+
 ### `@vanishing.page/webcrypto-mls`
 
 The 2026-09-22 metadata recheck records

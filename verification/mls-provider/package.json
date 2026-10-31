@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@noble/ciphers": "2.1.1",
+    "@noble/hashes": "2.3.0",
+    "ts-mls": "patch:ts-mls@npm%3A1.6.4#~/.yarn/patches/ts-mls-npm-1.6.4-9dcd39acf7.patch"
+  },
+  "name": "peerborne-mls-provider-verification",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "yarn@4.5.0",
+  "resolutions": {
+    "@hpke/common": "1.10.1"
+  }
+}

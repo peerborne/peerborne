@@ -61,7 +61,10 @@
     "verify:formal:controls": "node verification/formal/controls.mjs",
     "verify:formal:inventory": "node verification/formal/inventory.mjs",
     "verify:mls-candidate:setup": "yarn --cwd verification/mls-candidate install --immutable",
-    "verify:mls-candidate": "node verification/mls-candidate/run.mjs"
+    "verify:mls-candidate": "node verification/mls-candidate/run.mjs",
+    "verify:mls-provider:setup": "yarn --cwd verification/mls-provider install --immutable && node verification/mls-provider/setup-vectors.mjs",
+    "verify:mls-provider:typecheck": "yarn workspace @peerborne/core exec tsc -p ../../verification/mls-provider/tsconfig.json",
+    "verify:mls-provider": "node --import tsx verification/mls-provider/run.mjs"
   },
   "packageManager": "yarn@4.5.0"
 }
