@@ -237,15 +237,30 @@ export async function candidatePorts() {
   return [...ports];
 }
 export async function stats() {
+  const iceStates = {};
+  const candidateKinds = { mdns: 0, loopback: 0, syntheticIPv4: 0, other: 0 };
   let udpCandidateEntries = 0,
     selectedCandidatePairs = 0,
     nativeDataChannelsOpened = 0,
     maxBufferedBytes = 0;
   for (const pc of connections.values()) {
+    iceStates[pc.iceConnectionState] =
+      (iceStates[pc.iceConnectionState] ?? 0) + 1;
     const report = await pc.getStats();
     for (const value of report.values()) {
-      if (value.type === 'local-candidate' && value.protocol === 'udp')
+      if (value.type === 'local-candidate' && value.protocol === 'udp') {
         udpCandidateEntries++;
+        const address = value.address ?? value.ip ?? '';
+        candidateKinds[
+          address.endsWith('.local')
+            ? 'mdns'
+            : address.startsWith('127.') || address === '::1'
+              ? 'loopback'
+              : address.startsWith('198.18.')
+                ? 'syntheticIPv4'
+                : 'other'
+        ]++;
+      }
       if (value.type === 'transport' && value.selectedCandidatePairId)
         selectedCandidatePairs++;
       if (value.type === 'peer-connection')
@@ -257,6 +272,8 @@ export async function stats() {
       maxBufferedBytes = Math.max(maxBufferedBytes, channel.bufferedAmount);
   return {
     nativePeerConnectionEndpoints: connections.size,
+    iceStates,
+    candidateKinds,
     udpCandidateEntries,
     selectedCandidatePairs,
     nativeDataChannelsOpened,

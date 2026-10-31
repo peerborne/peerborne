@@ -50,8 +50,8 @@ packet-loss generator or reveal exact SCTP retransmission counters.
 
 On Linux, `run-netem.sh` runs the slow-peer test in a new, unnamed network
 namespace. It requires passwordless sudo, iproute2, `unshare` and `setpriv`.
-The namespace has loopback and a synthetic dummy interface; it cannot change
-the host's interfaces or qdiscs. The test classifies only the slow replica's
+The IPv4 namespace has loopback and a synthetic veth pair with a default route;
+its interfaces and qdiscs are separate from the host. The test classifies only the slow replica's
 actual UDP candidate ports into a seeded kernel netem loss queue, in both
 directions. A 100% blackout must suppress probe delivery and actual kernel
 drop counters must increase before the workload runs at 80% loss. The CI job
@@ -60,6 +60,7 @@ runs this variant after the portable Chromium probes and collects its report.
 The namespace disappears after its processes stop. Native packet arrival
 schedules still vary; a seeded netem generator is not a bit-for-bit network
 replay. Kernel UDP drops do not count SCTP's internal retransmissions.
+Loopback ICE candidates are explicitly allowed for this isolated fixture.
 
 The mesh and slow-peer transports, signaling, shared fixture bootstrap and
 direct per-channel publication are explicit harness components. They do not

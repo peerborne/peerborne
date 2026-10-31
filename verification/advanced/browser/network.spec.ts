@@ -569,9 +569,19 @@ async function slowPeer(browser: Browser) {
               'CDP packet-loss enforcement was not observed in the blackout control. Results cannot establish SCTP behavior under real 80% packet loss.',
             ]
           : []),
-        'The fixture uses direct per-channel sends; no production libp2p backpressure or slow-peer isolation policy is established. Browser SCTP retransmission/loss counters and a seeded native loss schedule are unavailable; accepted CDP configuration is not an exact measured packet-loss percentage.',
+        'The fixture uses direct per-channel sends; no production libp2p backpressure or slow-peer isolation policy is established. Kernel counters count UDP drops, not SCTP internal retransmissions. CDP acceptance alone is not an exact measured loss percentage; native arrival schedules vary even with a seeded kernel loss generator.',
       ],
     };
+  } catch (error) {
+    const observations = await Promise.allSettled(
+      group.pages.map((page) => call(page, 'stats')),
+    );
+    (error as any).advancedMetrics = {
+      native: observations.map((item) =>
+        item.status === 'fulfilled' ? item.value : null,
+      ),
+    };
+    throw error;
   } finally {
     if (kernel) await kernel.set(0);
     try {
@@ -595,7 +605,7 @@ for (const definition of definitions)
     } catch (error) {
       await save(info, definition, {
         scope: 'Browser transport workload did not complete.',
-        metrics: {},
+        metrics: (error as any).advancedMetrics ?? {},
         gaps: [],
         status: 'failed',
       });

@@ -16,9 +16,14 @@ task_cli="$PWD/node_modules/@playwright/test/cli.js"
 # An unprivileged test process then uses sudo for its scoped tc controls.
 exec sudo -n --preserve-env=HOME,PATH unshare --net -- bash -euo pipefail -c '
   ip link set lo up
-  ip link add pbverify0 type dummy
+  sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+  sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  ip link add pbverify0 type veth peer name pbverify1
   ip address add 198.18.0.1/24 dev pbverify0
+  ip address add 198.18.0.2/24 dev pbverify1
   ip link set pbverify0 up
+  ip link set pbverify1 up
+  ip route add default via 198.18.0.2 dev pbverify0
   tc qdisc add dev lo root handle 1: prio bands 3
   tc qdisc add dev lo parent 1:3 handle 30: netem loss 0%
   exec setpriv --reuid "$1" --regid "$2" --init-groups env \
