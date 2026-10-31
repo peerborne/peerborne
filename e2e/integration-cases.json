@@ -6,7 +6,8 @@
     "svelte",
     "loro",
     "tanstack-db",
-    "zustand"
+    "zustand",
+    "jotai"
   ],
   "editors": ["codemirror", "tiptap", "monaco"],
   "ssr": []

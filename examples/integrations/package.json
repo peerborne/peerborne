@@ -17,6 +17,7 @@
     "@tiptap/pm": "^3.32.2",
     "@tiptap/starter-kit": "^3.32.2",
     "@tiptap/y-tiptap": "^3.0.12",
+    "jotai": "^3.0.1",
     "loro-crdt": "^1.17.1",
     "monaco-editor": "^0.57.0",
     "prosemirror-model": "^1.25.12",
