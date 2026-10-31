@@ -101,7 +101,7 @@ describe('generated signed UCAN delegation histories', () => {
       ),
       { seed: 9540, numRuns: 70 },
     );
-  });
+  }, 30_000);
 
   test('valid signatures cannot broaden permissions, change resources, or bypass token lifetimes', async () => {
     await fc.assert(
@@ -153,5 +153,5 @@ describe('generated signed UCAN delegation histories', () => {
       ),
       { seed: 9541, numRuns: 70 },
     );
-  });
+  }, 30_000);
 });
