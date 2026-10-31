@@ -1,0 +1,24 @@
+{
+  "category": "byzantine",
+  "scenarios": [
+    {
+      "id": "operation-authorization",
+      "name": "Raw operations, writer revocation and field privileges",
+      "runtime": "node",
+      "module": "./node/byzantine.mjs",
+      "entry": "authorization"
+    },
+    {
+      "id": "causal-poisoning",
+      "name": "Missing parents, graph budgets and inflated clocks",
+      "runtime": "node",
+      "module": "./node/byzantine.mjs",
+      "entry": "poisoning"
+    },
+    {
+      "id": "tombstone-bomb",
+      "name": "Alternating insert/delete flood through RTC and IndexedDB",
+      "runtime": "browser"
+    }
+  ]
+}

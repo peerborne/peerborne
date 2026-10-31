@@ -6,6 +6,7 @@ export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [wasm()],
   server: {
+    hmr: false,
     fs: { allow: [fileURLToPath(new URL('../../../', import.meta.url))] },
   },
   optimizeDeps: { exclude: ['@automerge/automerge'] },
