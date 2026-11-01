@@ -142,6 +142,15 @@
       "sources": ["packages/core/src/network-stats.ts"]
     },
     {
+      "id": "connection-recovery",
+      "formalBoundary": "The bounded retry admission decision is proved. Native transport error classification, asynchronous failure schedules, AbortSignal cancellation and diagnostic observer isolation remain runtime boundaries.",
+      "evidence": ["packages/core/src/connection.test.ts"],
+      "sources": [
+        "packages/core/src/connection.ts",
+        "packages/core/src/policy/connection-retry.ts"
+      ]
+    },
+    {
       "id": "graph-adapter",
       "formalBoundary": "Least graph reachability, edge-linear queue bounds and ACL pruning admission are proved for detached nodes and edges. Heap traversal, CID aliases, object snapshots and descendant ACL preservation remain runtime boundaries.",
       "evidence": ["packages/core/src/graph-boundary-properties.test.ts"],
@@ -209,6 +218,7 @@
       "evidence": [
         ".github/workflows/ci.yml",
         "verification/advanced/NETWORK.md",
+        "e2e/peerborne-note-live.spec.ts",
         "e2e/peerborne-nat.spec.ts"
       ]
     },

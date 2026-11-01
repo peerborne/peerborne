@@ -64,6 +64,22 @@ VITE_PEERBORNE_RELAY_MULTIADDR=/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW.
   yarn workspace @peerborne/peerborne-note build:deployment
 ```
 
+Invitation preparation uses one 45-second relay deadline and at most three
+transport attempts. Five-second retry delays respect the demo relay's burst
+limit. Relay reservation and invitation creation failures have separate,
+redacted console diagnostics; automatic retry stops before offer creation.
+
+Opt in to the live stalled-WebSocket regression when verifying a deployment:
+
+```sh
+PEERBORNE_NOTE_LIVE_URL=https://try.peerborne.io/ \
+PEERBORNE_NOTE_LIVE_FAULTS=1 yarn test:e2e:peerborne-note:live
+```
+
+The regression stalls the founder's first WebSocket, then requires a recovered
+invitation and a real recipient edit through the relay. It records no keys,
+invitation URLs, document contents, screenshots, or browser traces.
+
 ## Cloudflare Pages deployment
 
 [`try.peerborne.io`](https://try.peerborne.io/) uses the `peerborne-note`

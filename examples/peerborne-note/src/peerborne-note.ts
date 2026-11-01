@@ -15,6 +15,7 @@ import {
   SubtleCrypto,
   type InvitationOfferV1,
   type InvitationRole,
+  type ConnectionProgress,
 } from '@peerborne/core';
 import {
   assertTrustedRendezvous,
@@ -27,6 +28,7 @@ import {
   NoteStore,
   type BrowserIdentity,
 } from './note-store.js';
+import { NoteSharingError } from './sharing-error.js';
 
 export const MAX_NOTE_CHARACTERS = 20_000;
 
@@ -98,19 +100,30 @@ function applyTextEdit(document: NoteData, next: string): void {
 async function waitForCircuitAddress(
   peerborne: NotePeerborne,
   relayMultiaddr: string,
+  signal: AbortSignal,
 ): Promise<string> {
   const peerId = peerborne.peerId.toString();
-  const deadline = Date.now() + RESERVATION_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  while (true) {
+    signal.throwIfAborted();
     const rendezvous = rendezvousForCircuitReservation(
       peerborne.libp2p.getMultiaddrs().map((address) => address.toString()),
       relayMultiaddr,
       peerId,
     );
     if (rendezvous) return rendezvous;
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, 250);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
   }
-  throw new Error('The relay reservation was not observed in time');
 }
 
 export class PeerborneNoteSession {
@@ -279,6 +292,7 @@ export class PeerborneNoteSession {
   async createInvitation(
     role: InvitationRole,
     currentHref: string,
+    onProgress?: (event: ConnectionProgress) => void | Promise<void>,
   ): Promise<{ readonly href: string; readonly offer: InvitationOfferV1 }> {
     const document = this.requireDocument();
     if (!this.founder) {
@@ -291,16 +305,71 @@ export class PeerborneNoteSession {
       this.founderKemKeyPair = this.identity.kem;
       await document.setKemKeyPair(this.founderKemKeyPair);
     }
-    await this.peerborne.connect([this.relayMultiaddr]);
-    const rendezvous = await waitForCircuitAddress(
-      this.peerborne,
-      this.relayMultiaddr,
+    const started = performance.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException('Relay readiness deadline exceeded', 'TimeoutError'),
+        ),
+      RESERVATION_TIMEOUT_MS,
     );
+    let lastProgress: ConnectionProgress | undefined;
+    let rendezvous: string;
+    try {
+      try {
+        await this.peerborne.connect([this.relayMultiaddr], {
+          signal: controller.signal,
+          maxAttempts: 3,
+          retryDelayMs: 5000,
+          onProgress: (event) => {
+            lastProgress = event;
+            return onProgress?.(event);
+          },
+        });
+      } catch (error) {
+        throw new NoteSharingError(
+          'relay-connection',
+          error,
+          lastProgress?.errorType ?? 'OtherError',
+          lastProgress?.attempt ?? 0,
+          Math.round(performance.now() - started),
+        );
+      }
+      try {
+        rendezvous = await waitForCircuitAddress(
+          this.peerborne,
+          this.relayMultiaddr,
+          controller.signal,
+        );
+      } catch (error) {
+        throw new NoteSharingError(
+          'relay-reservation',
+          error,
+          controller.signal.aborted ? 'TimeoutError' : 'OtherError',
+          lastProgress?.attempt ?? 0,
+          Math.round(performance.now() - started),
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
     assertTrustedRendezvous([rendezvous], this.relayMultiaddr);
-    const offer = await document.createInvitation({
-      role,
-      rendezvous: [rendezvous],
-    });
+    let offer: InvitationOfferV1;
+    try {
+      offer = await document.createInvitation({
+        role,
+        rendezvous: [rendezvous],
+      });
+    } catch (error) {
+      throw new NoteSharingError(
+        'invitation',
+        error,
+        'OtherError',
+        lastProgress?.attempt ?? 0,
+        Math.round(performance.now() - started),
+      );
+    }
     return {
       href: invitationUrl(encodeInvitationOffer(offer), currentHref),
       offer,
