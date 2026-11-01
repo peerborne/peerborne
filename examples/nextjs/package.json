@@ -17,7 +17,7 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "start": "next dev --hostname 127.0.0.1",
+    "start": "next dev --webpack --hostname 127.0.0.1",
     "build": "next build --webpack",
     "preview": "next start --hostname 127.0.0.1"
   },
