@@ -1,3 +1,4 @@
+import { runProductionDocumentChecks } from './document-tests.ts';
 import * as mls from 'ts-mls';
 import { runProbe } from '../mls-candidate/probe.mjs';
 import { observeNativeCrypto } from '../mls-candidate/native-crypto.mjs';
@@ -18,11 +19,13 @@ export async function runChecks() {
     const provider = await runProviderChecks();
     const coordinator = await runCoordinatorChecks();
     const referenceVectors = await runReferenceVectors();
+    const documents = await runProductionDocumentChecks();
     return {
       retention,
       provider,
       coordinator,
       referenceVectors,
+      documents,
       nativeCrypto: observation.counts,
     };
   } finally {

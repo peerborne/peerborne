@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 92 selected production functions have checked
+current proof scope. The 97 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -59,7 +59,7 @@ system-level statuses below.
 | AES-GCM document/change confidentiality | Verified | Encryption and tamper-failure tests | Metadata leakage and traffic analysis are not addressed by the product claim. |
 | Reader/writer ACLs | Partial | ACL, document-boundary, and both CRDT adapter ACL suites | The current-replica writer check is exercised, but stale-writer re-grants and removal across a real partition are not prevented by a wired causal authorization chain. |
 | ACL chain of trust | Partial | The standalone ACL-chain suite | `ACLChain` is not wired into `PeerborneDocument`; outer envelopes are authorized against the receiving replica's current writer set before enclosed ACL nodes are merged. Forked and concurrent ACL histories therefore remain a runtime gap. |
-| Coordinator-owned document admission | Partial | Checked reservation/phase policies and finite-history models; seeded ownership/cancellation/rekey/terminal-anchor/control-ingress suites; native Node/Chromium MLS, AES-GCM and Ed25519 fixture checks | The new coordinator API is not connected to `PeerborneDocument`. The content envelope and controller-writer policy are fixture-only; causal document authorization, content replay persistence, network delivery and device performance qualification remain required. |
+| Coordinator-backed document mode | Partial | [Production document wiring, signed controller/role history, encrypted WAL and replay floors](coordinated-document-security.md); checked policies/history lemmas; seeded boundary/fault properties; actual Automerge/Yjs document API with MLS/native crypto and Chromium IndexedDB over simulated pubsub | Opt-in; requires provider, pinned root, device key and independent persistent anchor. Default BeeKEM mode is separate. Automatic content onboarding/anti-entropy, old-epoch edit recovery, field authorization, epoch-fork reconciliation, real-network and device-performance qualification remain required. |
 | Capability hierarchy and field capabilities | Partial | Standalone capability suite | The document mutation path does not enforce field capabilities. |
 | UCAN creation, signatures, and delegation chains | Verified | Standalone UCAN and UCAN-ACL suites | UCAN capability metadata is process-local and the document mutation path does not evaluate it; it is not replicated or enforced as shared revocation state. |
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |

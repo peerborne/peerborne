@@ -8,6 +8,31 @@ import { runChecks } from './checks.mjs';
 
 const root = import.meta.dirname;
 const evidencePaths = [
+  'packages/core/src/coordinated-document.ts',
+  'packages/core/dist/esm/src/coordinated-document.js',
+  'packages/core/src/document-crdt-session.ts',
+  'packages/core/dist/esm/src/document-crdt-session.js',
+  'packages/core/src/document-security-wire.ts',
+  'packages/core/dist/esm/src/document-security-wire.js',
+  'packages/core/src/document-authority-log.ts',
+  'packages/core/dist/esm/src/document-authority-log.js',
+  'packages/core/src/document-replay-journal.ts',
+  'packages/core/dist/esm/src/document-replay-journal.js',
+  'packages/core/src/document-journal-store.ts',
+  'packages/core/dist/esm/src/document-journal-store.js',
+  'packages/core/src/internal/document-binary.ts',
+  'packages/core/dist/esm/src/internal/document-binary.js',
+  'packages/core/src/policy/document-content.ts',
+  'packages/core/dist/esm/src/policy/document-content.js',
+  'packages/core/src/policy/document-journal.ts',
+  'packages/core/dist/esm/src/policy/document-journal.js',
+  'packages/core/src/peerborne-document.ts',
+  'packages/core/dist/esm/src/peerborne-document.js',
+  'packages/automerge/src/peerborne-automerge.ts',
+  'packages/automerge/dist/esm/src/peerborne-automerge.js',
+  'packages/yjs/src/peerborne-yjs.ts',
+  'packages/yjs/dist/esm/src/peerborne-yjs.js',
+  'verification/mls-provider/document-tests.ts',
   'packages/core/src/group-security-coordinator.ts',
   'packages/core/src/group-document-operation.ts',
   'packages/core/src/policy/document-admission.ts',
@@ -39,7 +64,6 @@ const optional = [
   '@hpke/hybridkem-x-wing',
   '@hpke/dhkem-x448',
   '@hpke/ml-kem',
-  '@noble/curves/ed25519.js',
   '@noble/curves/ed448.js',
   '@noble/curves/nist.js',
   '@noble/post-quantum/ml-dsa.js',
@@ -63,7 +87,7 @@ const server = await preview({
     port: 0,
     headers: {
       'Content-Security-Policy':
-        "default-src 'none'; script-src 'self'; connect-src 'self'",
+        "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'",
       'Cache-Control': 'no-store',
     },
   },
@@ -75,13 +99,21 @@ try {
   browser = await chromium.launch();
   chromiumVersion = browser.version();
   const page = await browser.newPage();
+  const initializationFailure = new Promise((_, reject) =>
+    page.on('pageerror', (error) =>
+      reject(new Error('Browser module failed: ' + error.message)),
+    ),
+  );
   const address = server.httpServer.address();
   await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: 'commit' });
-  await page.waitForFunction(
-    () => window.mlsProviderResult !== undefined,
-    undefined,
-    { timeout: 60_000 },
-  );
+  await Promise.race([
+    initializationFailure,
+    page.waitForFunction(
+      () => window.mlsProviderResult !== undefined,
+      undefined,
+      { timeout: 60_000 },
+    ),
+  ]);
   chromiumResult = await page.evaluate(() => window.mlsProviderResult);
   if (chromiumResult.failed) throw new Error('Chromium provider checks failed');
 } finally {
@@ -121,7 +153,7 @@ const report = {
   remaining: [
     'broader RFC suites and independent live interoperability',
     'obsolete checkpoint ciphertext and persistent-keystore erasure',
-    'document ACL/control/quorum integration',
+    'default document ACL/quorum workflows and coordinated content onboarding/anti-entropy',
     'durable browser process recovery with independent rollback anchor',
     'resource qualification and independent security review',
   ],

@@ -17,6 +17,18 @@ current writer key cannot produce an ordinary sync message that receivers
 accept. A first load has no prior writer set for authenticating its selected
 outer response and instead uses the narrower configured quorum/CID gates.
 
+## Experimental coordinator-backed mode
+
+`swarm.doc(path, { security })` enables a separate signed content format,
+controller/role history and optional device-key encrypted replay journal. The
+actual Automerge/Yjs document path uses staged admission; legacy load and ACL
+handlers cannot bypass it. A pinned authority root, a group-security provider,
+and an independent persistent rollback anchor remain application responsibilities.
+Automatic content onboarding, anti-entropy, field permissions and device
+performance qualification are not supplied by this mode. The default BeeKEM
+workflow described below remains separate. See the repository
+[coordinated document evidence and limits](https://github.com/peerborne/peerborne/blob/main/docs/coordinated-document-security.md).
+
 ## Identity and trust roots
 
 | Key | Algorithm | Purpose | Managed by |

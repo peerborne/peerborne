@@ -448,7 +448,8 @@
       "consumers": [
         "packages/core/src/membership-control-record.ts",
         "packages/core/src/group-security-transition-record.ts",
-        "packages/core/src/invitation-framing.ts"
+        "packages/core/src/invitation-framing.ts",
+        "packages/core/src/internal/document-binary.ts"
       ],
       "verifiedTargets": [
         "boundedFieldEnd_ensures",
@@ -477,6 +478,39 @@
         "documentAdmission_all_histories",
         "DocumentBudgetStep",
         "DocumentBudgetHistory"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/document-content.ts",
+      "functions": [
+        "admitContentSequence",
+        "nextContentSequence",
+        "contentRolePermits"
+      ],
+      "witness": "documentContent_domain",
+      "consumers": ["packages/core/src/coordinated-document.ts"],
+      "verifiedTargets": [
+        "admitContentSequence_ensures",
+        "nextContentSequence_ensures",
+        "contentRolePermits_ensures",
+        "contentPrefix_all_histories"
+      ]
+    },
+    {
+      "path": "packages/core/src/policy/document-journal.ts",
+      "functions": [
+        "classifyDocumentJournalRecovery",
+        "canAdvanceDocumentAuthority"
+      ],
+      "witness": "documentJournal_domain",
+      "consumers": [
+        "packages/core/src/document-replay-journal.ts",
+        "packages/core/src/document-authority-log.ts"
+      ],
+      "verifiedTargets": [
+        "classifyDocumentJournalRecovery_ensures",
+        "canAdvanceDocumentAuthority_ensures",
+        "journalRecovery_all_histories"
       ]
     }
   ]

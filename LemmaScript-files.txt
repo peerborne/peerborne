@@ -26,3 +26,5 @@ packages/core/src/policy/authentication-budget.ts
 packages/core/src/policy/control-chain.ts
 packages/core/src/policy/frame-layout.ts
 packages/core/src/policy/document-admission.ts
+packages/core/src/policy/document-content.ts
+packages/core/src/policy/document-journal.ts

@@ -214,6 +214,24 @@
         "packages/automerge/src/peerborne-automerge.ts",
         "packages/yjs/src/peerborne-yjs.ts"
       ]
+    },
+    {
+      "id": "coordinated-document-security",
+      "formalBoundary": "Sequence, role, epoch advancement and journal recovery decisions and finite-history laws are proved. Native AES-GCM, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, crash cuts, checkpoint reconstruction and rollback anchor conformance require generated runtime histories. These tests do not prove cryptographic primitives, network liveness or secure hardware storage.",
+      "evidence": [
+        "packages/core/src/coordinated-document-properties.test.ts",
+        "packages/core/src/document-journal-properties.test.ts",
+        "packages/core/src/document-authority-properties.test.ts",
+        "packages/core/src/document-wire-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/document-security-wire.ts",
+        "packages/core/src/document-authority-log.ts",
+        "packages/core/src/document-replay-journal.ts",
+        "packages/core/src/document-journal-store.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
     }
   ],
   "integrationBoundaries": [
