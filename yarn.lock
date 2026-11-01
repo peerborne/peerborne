@@ -2022,12 +2022,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@hono/node-server@npm:^1.0.0":
-  version: 1.19.17
-  resolution: "@hono/node-server@npm:1.19.17"
+"@hono/node-server@npm:^2.1.3":
+  version: 2.1.3
+  resolution: "@hono/node-server@npm:2.1.3"
   peerDependencies:
     hono: ^4
-  checksum: 10/b3fb8f627e59caafdcf49b463d5263931ccc404cb2d58999b9863636e68dcf01e919a73a449761db07349bd39dc91983b68a9f549b4c9927fde8c2de7e498689
+  checksum: 10/3b895ebd085504721a31dab0c05dad11a3ad4d23db6a348e60f86deb03cf6967ea67a9258a77a0f38dd445d7e7bc3069e7c24169510a83d3a6b0420112938e36
   languageName: node
   linkType: hard
 
@@ -5057,7 +5057,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/tanstack-start-starter@workspace:examples/tanstack-start"
   dependencies:
-    "@hono/node-server": "npm:^1.0.0"
+    "@hono/node-server": "npm:^2.1.3"
     "@peerborne/core": "workspace:^"
     "@peerborne/react": "workspace:^"
     "@peerborne/store": "workspace:^"
