@@ -3044,7 +3044,10 @@ export class GroupSecurityCoordinator {
     (track ?? this.activeControlWork)?.(work.settlement, work.observable);
     if (!work.observable)
       fail('bad-signature', 'control signature work cannot be safely observed');
-    return (await work.result).value;
+    const value = (await work.result).value;
+    if (typeof value !== 'boolean')
+      fail('bad-signature', 'control signature verifier must return a boolean');
+    return value;
   }
 
   private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {

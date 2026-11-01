@@ -84,6 +84,8 @@ Preparation and all admission verifier/authorizer callbacks use the same
 settlement observer, including historical revalidation during adoption;
 prototype-proxy promises and suppressed caller abort events have execution
 regressions. These JavaScript platform behaviors remain outside the phase proof.
+Boxed non-boolean signature and authorization results are rejected without
+activating thenable hooks, including before an asynchronous verifier return.
 Generated consecutive-epoch schedules also check arrival-order adoption when
 later authentication completes first, while document work continues independently.
 Node/Chromium MLS checks exercise a

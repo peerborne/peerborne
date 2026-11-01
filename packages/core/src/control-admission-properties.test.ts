@@ -493,6 +493,97 @@ describe('control ingress admission', () => {
     );
   });
 
+  test('rejects boxed non-boolean verifier values before an async return can assimilate them', async () => {
+    const base = await sourceDelivery();
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom('then-getter', 'then-function', 'number', 'object'),
+        fc.constantFrom('signature', 'authorization'),
+        async (kind, boundary) => {
+          const target = {
+            ...base.source,
+            provider: new ContractTestProvider(),
+            store: new InMemoryGroupStateStore(),
+            rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+            authorization: new AuthorizationPolicy(
+              base.source.identities.actorId,
+            ),
+          };
+          const native = config(target);
+          let enabled = false;
+          let hookCalls = 0;
+          const invalidResult = () => {
+            const value = kind === 'number' ? 1 : {};
+            const result = Promise.resolve(value);
+            if (kind === 'then-getter')
+              Object.defineProperty(value, 'then', {
+                get() {
+                  hookCalls++;
+                  return (resolve: (value: boolean) => void) => resolve(true);
+                },
+              });
+            if (kind === 'then-function')
+              Object.defineProperty(value, 'then', {
+                value(resolve: (value: boolean) => void) {
+                  hookCalls++;
+                  resolve(true);
+                },
+              });
+            return result as unknown as Promise<boolean>;
+          };
+          const coordinator = await GroupSecurityCoordinator.bootstrap(
+            {
+              ...native,
+              verifyControlSignature: (...args) => {
+                if (!enabled || boundary !== 'signature')
+                  return native.verifyControlSignature(...args);
+                return invalidResult();
+              },
+              authorizeControl: (...args) =>
+                !enabled || boundary !== 'authorization'
+                  ? native.authorizeControl(...args)
+                  : invalidResult(),
+            },
+            createGroupInput,
+            { operationId: id(1), subjectId: base.source.identities.actorId },
+          );
+          enabled = true;
+          await expect(
+            coordinator.applyCommit(
+              base.delivery.commit!,
+              base.delivery.controlRecord,
+              [],
+            ),
+          ).rejects.toMatchObject({
+            code:
+              boundary === 'signature'
+                ? 'bad-signature'
+                : 'unauthorized-control',
+          });
+          expect(hookCalls).toBe(0);
+          expect(coordinator.publicState.epoch).toBe(0n);
+          expect(target.provider.applyCommitCalls).toBe(0);
+          expect(coordinator.pendingControlOperations).toEqual({
+            operations: 0,
+            bytes: 0,
+          });
+        },
+      ),
+      {
+        seed: 2011111,
+        numRuns: 16,
+        examples: [
+          ['then-getter', 'signature'],
+          ['then-function', 'signature'],
+          ['number', 'signature'],
+          ['object', 'signature'],
+          ['then-getter', 'authorization'],
+          ['then-function', 'authorization'],
+        ],
+      },
+    );
+  });
+
   test('preserves control arrival order when later epochs authenticate first without holding the membership queue', async () => {
     const source = await context();
     const sender = await bootstrap(source);
