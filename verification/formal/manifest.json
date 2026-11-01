@@ -152,10 +152,16 @@
     },
     {
       "path": "packages/core/src/policy/anchor-advance.ts",
-      "functions": ["classifyAnchorAdvance"],
+      "functions": [
+        "isRemovalAnchorTransitionAllowed",
+        "classifyAnchorAdvance"
+      ],
       "witness": "anchorAdvance_domain",
       "consumers": ["packages/core/src/group-security-rollback-anchor.ts"],
-      "verifiedTargets": ["classifyAnchorAdvance_ensures"]
+      "verifiedTargets": [
+        "isRemovalAnchorTransitionAllowed_ensures",
+        "classifyAnchorAdvance_ensures"
+      ]
     },
     {
       "path": "packages/core/src/policy/retention.ts",

@@ -224,11 +224,23 @@ export interface GroupSecurityCommitResult {
   readonly appliedMembership: AppliedGroupMembershipDelta;
 }
 
-export interface GroupSecurityApplyResult {
+export interface GroupSecurityActiveApplyResult {
   readonly status: 'applied' | 'duplicate';
   readonly state: GroupSecurityPublicState;
   readonly appliedMembership: AppliedGroupMembershipDelta;
 }
+
+/** A removed member authenticates removal but cannot derive the next epoch state. */
+export interface GroupSecurityRemovedApplyResult {
+  readonly status: 'removed';
+  /** Identity authenticated from the removed local protocol leaf. */
+  readonly memberId: Uint8Array;
+  readonly appliedMembership: AppliedGroupMembershipDelta;
+}
+
+export type GroupSecurityApplyResult =
+  | GroupSecurityActiveApplyResult
+  | GroupSecurityRemovedApplyResult;
 
 export interface GroupStateCiphertext {
   readonly nonce: Uint8Array;
@@ -360,7 +372,11 @@ export interface GroupSecurityProvider {
   createCommit(
     input: CreateGroupCommitInput,
   ): Promise<GroupSecurityCommitResult>;
-  /** Received Add/Update credentials must be authenticated before applying. */
+  /**
+   * Authenticate received protocol messages and Add/Update credentials before
+   * applying. A removed result must erase active private group state and must
+   * not claim next-epoch state the removed member cannot derive.
+   */
   applyCommit(commit: GroupSecurityCommit): Promise<GroupSecurityApplyResult>;
   exportSecret(input: ExportGroupSecretInput): Promise<Uint8Array>;
   getPublicState(): Promise<GroupSecurityPublicState>;

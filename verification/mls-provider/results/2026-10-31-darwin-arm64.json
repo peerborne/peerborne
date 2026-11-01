@@ -1,6 +1,6 @@
 {
   "status": "experimental-adapter-gates-passed",
-  "recordedAt": "2026-11-01T00:32:35.676Z",
+  "recordedAt": "2026-11-01T00:36:12.276Z",
   "node": "v22.19.0",
   "chromium": "145.0.7632.6",
   "platform": "darwin-arm64",
@@ -40,14 +40,14 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          511,
-          511,
-          652,
-          542
+          509,
+          513,
+          654,
+          544
         ],
         "welcomes": [
           802,
-          1022
+          1024
         ],
         "states": [
           1306,
@@ -75,7 +75,10 @@
       "selfUpdate": true,
       "exporterRotationAndConvergence": true,
       "selfUpdateReplay": true,
-      "encryptedSelfUpdateRecovery": true
+      "encryptedSelfUpdateRecovery": true,
+      "terminalRemoval": true,
+      "removedMemberHasNoNextEpochSecrets": true,
+      "removalBlocksCheckpointRollback": true
     },
     "referenceVectors": {
       "cases": 13,
@@ -84,22 +87,22 @@
       "sha256": "b24949fdf857bf79d511f57504a8bdc7ce3247eb199684745e439c11b1a1da21"
     },
     "nativeCrypto": {
-      "generateKey:Ed25519": 22,
-      "generateKey:X25519": 80,
-      "importKey:Ed25519": 453,
-      "sign:Ed25519": 85,
-      "digest:SHA-256": 1961,
-      "importKey:HMAC": 4048,
-      "sign:HMAC": 3943,
-      "verify:Ed25519": 423,
-      "importKey:AES-GCM": 189,
-      "encrypt:AES-GCM": 91,
-      "importKey:X25519": 419,
-      "deriveBits:X25519": 141,
-      "importKey:HKDF": 564,
-      "deriveBits:HKDF": 564,
-      "decrypt:AES-GCM": 126,
-      "verify:HMAC": 105,
+      "generateKey:Ed25519": 23,
+      "generateKey:X25519": 81,
+      "importKey:Ed25519": 461,
+      "sign:Ed25519": 90,
+      "digest:SHA-256": 2015,
+      "importKey:HMAC": 4079,
+      "sign:HMAC": 3973,
+      "verify:Ed25519": 447,
+      "importKey:AES-GCM": 192,
+      "encrypt:AES-GCM": 96,
+      "importKey:X25519": 425,
+      "deriveBits:X25519": 143,
+      "importKey:HKDF": 572,
+      "deriveBits:HKDF": 572,
+      "decrypt:AES-GCM": 127,
+      "verify:HMAC": 106,
       "generateKey:AES-GCM": 3
     }
   },
@@ -136,17 +139,17 @@
       "sizes": {
         "commits": [
           507,
-          509,
-          652,
-          542
+          513,
+          658,
+          548
         ],
         "welcomes": [
-          798,
-          1016
+          804,
+          1026
         ],
         "states": [
-          1302,
-          1302
+          1308,
+          1308
         ]
       }
     },
@@ -170,7 +173,10 @@
       "selfUpdate": true,
       "exporterRotationAndConvergence": true,
       "selfUpdateReplay": true,
-      "encryptedSelfUpdateRecovery": true
+      "encryptedSelfUpdateRecovery": true,
+      "terminalRemoval": true,
+      "removedMemberHasNoNextEpochSecrets": true,
+      "removalBlocksCheckpointRollback": true
     },
     "referenceVectors": {
       "cases": 13,
@@ -179,28 +185,28 @@
       "sha256": "b24949fdf857bf79d511f57504a8bdc7ce3247eb199684745e439c11b1a1da21"
     },
     "nativeCrypto": {
-      "generateKey:Ed25519": 22,
-      "generateKey:X25519": 80,
-      "importKey:Ed25519": 453,
-      "sign:Ed25519": 85,
-      "digest:SHA-256": 1961,
-      "importKey:HMAC": 4048,
-      "sign:HMAC": 3943,
-      "verify:Ed25519": 423,
-      "importKey:AES-GCM": 189,
-      "encrypt:AES-GCM": 91,
-      "importKey:X25519": 419,
-      "deriveBits:X25519": 141,
-      "importKey:HKDF": 564,
-      "deriveBits:HKDF": 564,
-      "decrypt:AES-GCM": 126,
-      "verify:HMAC": 105,
+      "generateKey:Ed25519": 23,
+      "generateKey:X25519": 81,
+      "importKey:Ed25519": 461,
+      "sign:Ed25519": 90,
+      "digest:SHA-256": 2015,
+      "importKey:HMAC": 4079,
+      "sign:HMAC": 3973,
+      "verify:Ed25519": 447,
+      "importKey:AES-GCM": 192,
+      "encrypt:AES-GCM": 96,
+      "importKey:X25519": 425,
+      "deriveBits:X25519": 143,
+      "importKey:HKDF": 572,
+      "deriveBits:HKDF": 572,
+      "decrypt:AES-GCM": 127,
+      "verify:HMAC": 106,
       "generateKey:AES-GCM": 3
     }
   },
   "remaining": [
     "broader RFC suites and independent live interoperability",
-    "provider/coordinator terminal-removal contract",
+    "obsolete checkpoint ciphertext and persistent-keystore erasure",
     "document ACL/control/quorum integration",
     "durable browser process recovery with independent rollback anchor",
     "resource qualification and independent security review"

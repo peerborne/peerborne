@@ -334,6 +334,7 @@ describe('GroupSecurityCoordinator bootstrap', () => {
         controlHead: id(0x35),
         storeCommitment: id(0x36),
         forkPoison: undefined,
+        removal: undefined,
       },
     );
 
@@ -731,6 +732,7 @@ describe('GroupSecurityCoordinator bootstrap', () => {
         storeKey,
       ),
       forkPoison: undefined,
+      removal: undefined,
     });
   });
 });

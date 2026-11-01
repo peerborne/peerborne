@@ -22,6 +22,147 @@ function commitment(value: number): Uint8Array {
 }
 
 describe('InMemoryGroupSecurityRollbackAnchor', () => {
+  const active = () => ({
+    revision: 1,
+    epoch: 0n,
+    controlHead: head(1),
+    storeCommitment: commitment(1),
+    forkPoison: undefined,
+    removal: undefined,
+  });
+  const removal = () => ({
+    epoch: 1n,
+    parentRecordId: head(1),
+    recordId: head(2),
+    memberId: new Uint8Array([7]),
+  });
+
+  test('retires an exact active position irreversibly and retries idempotently', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    const first = active();
+    await anchor.advance(key, undefined, first);
+    const input = removal();
+    const operation = anchor.retire(key, first, input);
+    input.memberId[0] = 99;
+    expect(await operation).toBe(true);
+    expect(await anchor.retire(key, first, removal())).toBe(true);
+    const retired = (await anchor.load(key))!;
+    expect(retired.removal?.memberId).toEqual(new Uint8Array([7]));
+    retired.removal!.recordId[0] = 99;
+    expect((await anchor.load(key))?.removal?.recordId).toEqual(head(2));
+    expect(
+      await anchor.advance(key, first, {
+        ...first,
+        revision: 2,
+        epoch: 1n,
+        controlHead: head(3),
+      }),
+    ).toBe(false);
+    await expect(
+      anchor.advance(key, (await anchor.load(key))!, {
+        ...first,
+        revision: 2,
+        epoch: 1n,
+        controlHead: head(3),
+      }),
+    ).rejects.toThrow(/terminal/);
+    expect(
+      await anchor.retire(key, first, { ...removal(), recordId: head(3) }),
+    ).toBe(false);
+  });
+
+  test.each([
+    { epoch: 0n },
+    { epoch: 2n },
+    { parentRecordId: head(9) },
+    { recordId: head(1) },
+    { memberId: new Uint8Array(0) },
+    { memberId: new Uint8Array(513) },
+    { recordId: new Uint8Array(31) },
+  ])(
+    'rejects an invalid removal without changing the active anchor: %#',
+    async (change) => {
+      const anchor = new InMemoryGroupSecurityRollbackAnchor();
+      const first = active();
+      await anchor.advance(key, undefined, first);
+      await expect(
+        anchor.retire(key, first, { ...removal(), ...change }),
+      ).rejects.toThrow();
+      expect(await anchor.load(key)).toEqual(first);
+    },
+  );
+
+  test('serializes retirement against active advancement in either order', async () => {
+    for (const retireFirst of [true, false]) {
+      const anchor = new InMemoryGroupSecurityRollbackAnchor();
+      const first = active();
+      await anchor.advance(key, undefined, first);
+      const advance = () =>
+        anchor.advance(key, first, {
+          ...first,
+          revision: 2,
+          epoch: 1n,
+          controlHead: head(3),
+        });
+      const retire = () => anchor.retire(key, first, removal());
+      const operations = retireFirst ? [retire, advance] : [advance, retire];
+      expect(
+        await Promise.all(operations.map((operation) => operation())),
+      ).toEqual([true, false]);
+      expect((await anchor.load(key))?.removal !== undefined).toBe(retireFirst);
+    }
+  });
+
+  test('rejects accessors and shared removal bytes without invoking getters', async () => {
+    const anchor = new InMemoryGroupSecurityRollbackAnchor();
+    const first = active();
+    await anchor.advance(key, undefined, first);
+    const input = removal();
+    let reads = 0;
+    Object.defineProperty(input, 'memberId', {
+      enumerable: true,
+      get() {
+        reads++;
+        return new Uint8Array([7]);
+      },
+    });
+    await expect(anchor.retire(key, first, input)).rejects.toThrow();
+    expect(reads).toBe(0);
+    await expect(
+      anchor.retire(key, first, {
+        ...removal(),
+        memberId: new Uint8Array(new SharedArrayBuffer(1)),
+      }),
+    ).rejects.toThrow();
+    expect(await anchor.load(key)).toEqual(first);
+  });
+
+  test('keeps the first terminal marker when retirement races fork poisoning', async () => {
+    const poison = {
+      epoch: 1n,
+      parentRecordId: head(1),
+      firstRecordId: head(2),
+      secondRecordId: head(3),
+      evidenceHash: commitment(4),
+    };
+    for (const retireFirst of [true, false]) {
+      const anchor = new InMemoryGroupSecurityRollbackAnchor();
+      const first = active();
+      await anchor.advance(key, undefined, first);
+      if (retireFirst) {
+        expect(await anchor.retire(key, first, removal())).toBe(true);
+        const result = await anchor.poison(key, poison);
+        expect(result.removal).toEqual(removal());
+        expect(result.forkPoison).toBeUndefined();
+      } else {
+        await anchor.poison(key, poison);
+        expect(await anchor.retire(key, first, removal())).toBe(false);
+        expect((await anchor.load(key))?.forkPoison).toEqual(poison);
+        expect((await anchor.load(key))?.removal).toBeUndefined();
+      }
+    }
+  });
+
   test('keeps store keys stable when the typed-array iterator is replaced', async () => {
     const anchor = new InMemoryGroupSecurityRollbackAnchor();
     const initial = {
@@ -30,6 +171,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     await anchor.advance(key, undefined, initial);
     const prototype = Object.getPrototypeOf(Uint8Array.prototype);
@@ -60,6 +202,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     expect(await anchor.advance(key, undefined, first)).toBe(true);
 
@@ -71,6 +214,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     });
     loaded!.controlHead[0] = 0xee;
     loaded!.storeCommitment[0] = 0xdd;
@@ -86,6 +230,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(9),
           storeCommitment: commitment(1),
           forkPoison: undefined,
+          removal: undefined,
         },
         {
           revision: 2,
@@ -93,6 +238,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(2),
           storeCommitment: commitment(2),
           forkPoison: undefined,
+          removal: undefined,
         },
       ),
     ).toBe(false);
@@ -102,6 +248,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     });
   });
 
@@ -113,6 +260,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     await anchor.advance(key, undefined, first);
 
@@ -123,6 +271,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(2),
         storeCommitment: commitment(2),
         forkPoison: undefined,
+        removal: undefined,
       }),
       anchor.advance(firstKey(), first, {
         revision: 2,
@@ -130,6 +279,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(3),
         storeCommitment: commitment(3),
         forkPoison: undefined,
+        removal: undefined,
       }),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
@@ -143,6 +293,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     await anchor.advance(key, undefined, first);
     await expect(
@@ -152,6 +303,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(2),
         storeCommitment: commitment(2),
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).rejects.toThrow(/revision.*exactly one/);
     await expect(
@@ -161,6 +313,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(2),
         storeCommitment: commitment(2),
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).rejects.toThrow(/epoch/);
     await expect(
@@ -170,6 +323,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(2),
         storeCommitment: commitment(2),
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).rejects.toThrow(/control head/);
   });
@@ -182,6 +336,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     await anchor.advance(key, undefined, active);
     const poisoned = {
@@ -210,6 +365,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(8),
         storeCommitment: commitment(8),
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).rejects.toThrow(/terminal/);
   });
@@ -222,6 +378,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     });
 
     await expect(
@@ -244,6 +401,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(revision),
       storeCommitment: commitment(revision),
       forkPoison: undefined,
+      removal: undefined,
     }));
     await anchor.advance(key, undefined, values[0]);
     const advances = [
@@ -279,6 +437,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     const poison = {
       epoch: 0n,
@@ -304,6 +463,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(7),
           storeCommitment: commitment(7),
           forkPoison: undefined,
+          removal: undefined,
         },
         {
           revision: 3,
@@ -311,6 +471,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(7),
           storeCommitment: commitment(7),
           forkPoison: undefined,
+          removal: undefined,
         },
       ),
     ).toBe(true);
@@ -322,6 +483,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(7),
           storeCommitment: commitment(7),
           forkPoison: undefined,
+          removal: undefined,
         },
         {
           revision: 3,
@@ -329,6 +491,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(8),
           storeCommitment: commitment(7),
           forkPoison: undefined,
+          removal: undefined,
         },
       ),
     ).toBe(false);
@@ -340,6 +503,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(7),
           storeCommitment: commitment(7),
           forkPoison: undefined,
+          removal: undefined,
         },
         {
           revision: 3,
@@ -347,6 +511,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(7),
           storeCommitment: commitment(8),
           forkPoison: undefined,
+          removal: undefined,
         },
       ),
     ).toBe(false);
@@ -377,6 +542,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(1),
         storeCommitment: oversized,
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).rejects.toThrow(/32 unshared bytes/);
 
@@ -392,6 +558,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(1),
           storeCommitment: shared,
           forkPoison: undefined,
+          removal: undefined,
         }),
       ).rejects.toThrow(/unshared/);
     }
@@ -421,6 +588,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: head(1),
         storeCommitment: commitment(1),
         forkPoison: poison,
+        removal: undefined,
       },
       {
         get(target, property, receiver) {
@@ -457,6 +625,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     const next = {
       revision: 2,
@@ -464,6 +633,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(2),
       storeCommitment: commitment(2),
       forkPoison: undefined,
+      removal: undefined,
     };
     const misses = Array.from({ length: 1000 }, (_, index) => {
       const groupId = new Uint8Array(4);
@@ -500,6 +670,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(1),
       storeCommitment: commitment(1),
       forkPoison: undefined,
+      removal: undefined,
     };
     const second = {
       revision: 2,
@@ -507,6 +678,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       controlHead: head(2),
       storeCommitment: commitment(2),
       forkPoison: undefined,
+      removal: undefined,
     };
 
     await expect(
@@ -536,6 +708,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         controlHead: crossRealmHead,
         storeCommitment: crossRealmCommitment,
         forkPoison: undefined,
+        removal: undefined,
       }),
     ).resolves.toBe(true);
     expect((await anchor.load(key))?.controlHead).toEqual(head(6));
@@ -554,6 +727,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           controlHead: head(1),
           storeCommitment: localView,
           forkPoison: undefined,
+          removal: undefined,
         }),
       ).rejects.toThrow(/unshared/);
     }

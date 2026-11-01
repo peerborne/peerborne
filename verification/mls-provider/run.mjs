@@ -94,7 +94,7 @@ const report = {
   browserResult: chromiumResult.result,
   remaining: [
     'broader RFC suites and independent live interoperability',
-    'provider/coordinator terminal-removal contract',
+    'obsolete checkpoint ciphertext and persistent-keystore erasure',
     'document ACL/control/quorum integration',
     'durable browser process recovery with independent rollback anchor',
     'resource qualification and independent security review',

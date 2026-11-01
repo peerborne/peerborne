@@ -221,6 +221,17 @@ repository requires this contract, but its
 `InMemoryGroupSecurityRollbackAnchor` is a same-process test reference and is
 not rollback-resistant storage.
 
+The coordinator also accepts a provider-authenticated local-member removal as
+a terminal result without next-epoch state. It verifies the exact signed
+subject and membership delta, requires the provider to report no active group,
+and atomically records an exact-parent/next-epoch removal marker through the
+anchor contract. Later mutation and reconstruction fail before private-state
+import, even if the rollbackable store still contains the older encrypted
+checkpoint. A failed marker write is not acknowledged and never restores the
+removed private state in that coordinator. Native Node/Chromium evidence uses
+in-memory stores and anchors; persistent backend behavior, old ciphertext
+deletion, and keystore erasure remain separate acceptance gates.
+
 The private-state envelope is authenticated and encrypted with a device-local
 key. Secret state, signing/KEM keys, document keys, and private payloads must
 not enter the replicated datastore, logs, exceptions, analytics, or debug
@@ -241,7 +252,8 @@ An outbound transition is ordered as follows:
    Welcome-recipient KeyPackage-reference set, returned after the receiver's
    authenticated validation and durable commit.
 
-Any pre-durability error restores the provider checkpoint. If rollback fails,
+An error before durability restores an active provider checkpoint. Authenticated
+terminal removal never reloads its erased private state. If rollback fails,
 the coordinator is poisoned and stops. In the target persistent
 implementation, restart recovery revalidates signed control state before the
 outbox resumes. That process/browser restart behavior is not currently tested.

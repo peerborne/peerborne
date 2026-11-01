@@ -15,7 +15,7 @@ EncryptedGroupState,
 EncryptedKeyPackageState,
 ExportGroupSecretInput,
 GroupKeyPackage,
-GroupSecurityApplyResult,
+GroupSecurityActiveApplyResult,
 GroupSecurityCommit,
 GroupSecurityCommitResult,
 GroupSecurityCreateResult,
@@ -29,6 +29,7 @@ import {
 DurableGroupSecurityRollbackAnchor,
 GroupSecurityRollbackAnchorValue,
 GroupSecurityRollbackForkPoison,
+GroupSecurityRollbackRemoval,
 InMemoryGroupSecurityRollbackAnchor,
 } from '../group-security-rollback-anchor.js';
 import { groupSecurityStoreSnapshotCommitment } from '../group-security-store-commitment.js';
@@ -475,7 +476,7 @@ export class ContractTestProvider implements GroupSecurityProvider {
 
   async applyCommit(
     commit: GroupSecurityCommit,
-  ): Promise<GroupSecurityApplyResult> {
+  ): Promise<GroupSecurityActiveApplyResult> {
     const prior = this.requireState();
     this.applyCommitCalls += 1;
     const appliedMembership = deltaFromCommitPayload(commit.payload);
@@ -873,6 +874,10 @@ export class StaticRollbackAnchor
   async poison(): Promise<GroupSecurityRollbackAnchorValue> {
     throw new Error('unexpected poison against static rollback anchor');
   }
+
+  async retire(): Promise<boolean> {
+    throw new Error('unexpected retirement against static rollback anchor');
+  }
 }
 
 export class ReconciliationLoadFailureStore implements DurableGroupStateStore {
@@ -929,6 +934,9 @@ export class ControlledRollbackAnchor
   failNextAdvance = false;
   rejectNextAdvance = false;
   noOpNextPoison = false;
+  failNextRetire = false;
+  rejectNextRetire = false;
+  noOpNextRetire = false;
   malformedNextAdvance?: unknown;
   private readonly delegate = new InMemoryGroupSecurityRollbackAnchor();
 
@@ -936,6 +944,26 @@ export class ControlledRollbackAnchor
     key: GroupStateStoreKey,
   ): Promise<GroupSecurityRollbackAnchorValue | undefined> {
     return this.delegate.load(key);
+  }
+
+  retire(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue,
+    removal: GroupSecurityRollbackRemoval,
+  ): Promise<boolean> {
+    if (this.failNextRetire) {
+      this.failNextRetire = false;
+      return Promise.reject(new Error('injected retirement failure'));
+    }
+    if (this.noOpNextRetire) {
+      this.noOpNextRetire = false;
+      return Promise.resolve(true);
+    }
+    if (this.rejectNextRetire) {
+      this.rejectNextRetire = false;
+      return Promise.resolve(false);
+    }
+    return this.delegate.retire(key, expected, removal);
   }
 
   advance(
@@ -1232,6 +1260,7 @@ export async function advanceAnchorForUnchangedSecurityHead(
         storeKey,
       ),
       forkPoison: undefined,
+      removal: undefined,
     }))
   ) {
     throw new Error('test fixture rollback anchor CAS failed');
@@ -1324,6 +1353,7 @@ export async function restoreFromSignedSnapshot(
       storeKey,
     ),
     forkPoison: undefined,
+    removal: undefined,
   });
   return GroupSecurityCoordinator.restore(
     config({

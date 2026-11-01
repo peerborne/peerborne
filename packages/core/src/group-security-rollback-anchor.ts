@@ -1,4 +1,7 @@
-import { classifyAnchorAdvance } from './policy/anchor-advance.js';
+import {
+  classifyAnchorAdvance,
+  isRemovalAnchorTransitionAllowed,
+} from './policy/anchor-advance.js';
 import { trackQueuedOperation } from './queued-operation.js';
 import type { GroupSecurityProtocol } from './group-security-provider.js';
 import type { GroupStateStoreKey } from './group-state-store.js';
@@ -54,6 +57,15 @@ export interface GroupSecurityRollbackAnchorValue {
   readonly controlHead: Uint8Array;
   readonly storeCommitment: Uint8Array;
   readonly forkPoison: GroupSecurityRollbackForkPoison | undefined;
+  readonly removal: GroupSecurityRollbackRemoval | undefined;
+}
+
+/** Terminal marker written only after authenticating a local-member removal. */
+export interface GroupSecurityRollbackRemoval {
+  readonly epoch: bigint;
+  readonly parentRecordId: Uint8Array;
+  readonly recordId: Uint8Array;
+  readonly memberId: Uint8Array;
 }
 
 /** Irreversible terminal authenticated-fork commitment. */
@@ -124,6 +136,19 @@ export interface DurableGroupSecurityRollbackAnchor {
     forkPoison: GroupSecurityRollbackForkPoison,
     initial?: GroupSecurityRollbackAnchorValue,
   ): Promise<GroupSecurityRollbackAnchorValue>;
+  /**
+   * Durably and atomically retire the exact active position after a verified removal.
+   * The caller authenticates the control and protocol Commit first. Retrying
+   * the identical expected position and marker is idempotent. A different
+   * current position returns false without changing state. Once written, the
+   * marker prevents every later active advance, including after store rollback.
+   * Return true only after the exact terminal marker is durably retained.
+   */
+  retire(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue,
+    removal: GroupSecurityRollbackRemoval,
+  ): Promise<boolean>;
 }
 
 /**
@@ -180,7 +205,7 @@ export class InMemoryGroupSecurityRollbackAnchor
       initialValue === undefined
         ? undefined
         : cloneAndValidateAnchor(initialValue);
-    if (initial?.forkPoison !== undefined) {
+    if (initial?.forkPoison !== undefined || initial?.removal !== undefined) {
       throw new Error('rollback anchor poison initialization must be active');
     }
     const encodedKey = encodeKey(key);
@@ -197,10 +222,46 @@ export class InMemoryGroupSecurityRollbackAnchor
         this.values.set(encodedKey, poisoned);
         return cloneAnchor(poisoned);
       }
-      if (current.forkPoison !== undefined) return cloneAnchor(current);
+      if (current.forkPoison !== undefined || current.removal !== undefined) {
+        return cloneAnchor(current);
+      }
       const poisoned = cloneAnchor({ ...current, forkPoison });
       this.values.set(encodedKey, poisoned);
       return cloneAnchor(poisoned);
+    });
+    return trackQueuedOperation(this.tails, encodedKey, run);
+  }
+
+  async retire(
+    keyValue: GroupStateStoreKey,
+    expectedValue: GroupSecurityRollbackAnchorValue,
+    removalValue: GroupSecurityRollbackRemoval,
+  ): Promise<boolean> {
+    const key = cloneAndValidateKey(keyValue);
+    const expected = cloneAndValidateAnchor(expectedValue);
+    const removal = cloneRemoval(removalValue);
+    if (
+      !isRemovalAnchorTransitionAllowed(
+        expected.forkPoison === undefined && expected.removal === undefined,
+        equalBytes(removal.parentRecordId, expected.controlHead),
+        !equalBytes(removal.recordId, expected.controlHead),
+        expected.epoch,
+        removal.epoch,
+      )
+    ) {
+      throw new Error(
+        'removal must terminate the exact next child of an active anchor',
+      );
+    }
+    const retired = cloneAnchor({ ...expected, removal });
+    const encodedKey = encodeKey(key);
+    const prior = this.tails.get(encodedKey) ?? Promise.resolve();
+    const run = prior.then(() => {
+      const current = this.values.get(encodedKey);
+      if (optionalAnchorEqual(current, retired)) return true;
+      if (!optionalAnchorEqual(current, expected)) return false;
+      this.values.set(encodedKey, retired);
+      return true;
     });
     return trackQueuedOperation(this.tails, encodedKey, run);
   }
@@ -233,12 +294,13 @@ function validateAdvance(
     {
       revision: previous.revision,
       epoch: previous.epoch,
-      poisoned: previous.forkPoison !== undefined,
+      poisoned:
+        previous.forkPoison !== undefined || previous.removal !== undefined,
     },
     {
       revision: next.revision,
       epoch: next.epoch,
-      poisoned: next.forkPoison !== undefined,
+      poisoned: next.forkPoison !== undefined || next.removal !== undefined,
     },
     expected === undefined ||
       equalBytes(next.controlHead, expected.controlHead),
@@ -261,7 +323,14 @@ function cloneAndValidateAnchor(
 ): GroupSecurityRollbackAnchorValue {
   const object = exactPlainObject(
     value,
-    ['revision', 'epoch', 'controlHead', 'storeCommitment', 'forkPoison'],
+    [
+      'revision',
+      'epoch',
+      'controlHead',
+      'storeCommitment',
+      'forkPoison',
+      'removal',
+    ],
     'rollback anchor',
   );
   const revision = dataProperty(object, 'revision');
@@ -269,13 +338,17 @@ function cloneAndValidateAnchor(
   const controlHead = dataProperty(object, 'controlHead');
   const storeCommitment = dataProperty(object, 'storeCommitment');
   const forkPoison = dataProperty(object, 'forkPoison');
+  const removal = dataProperty(object, 'removal');
   if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
     throw new Error('rollback anchor revision must be a positive safe integer');
   }
   if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
     throw new Error('rollback anchor epoch must be an unsigned 64-bit bigint');
   }
-  return {
+  if (forkPoison !== undefined && removal !== undefined) {
+    throw new Error('rollback anchor cannot have two terminal markers');
+  }
+  const snapshot: GroupSecurityRollbackAnchorValue = {
     revision: revision as number,
     epoch,
     controlHead: cloneExactBytes(
@@ -290,7 +363,23 @@ function cloneAndValidateAnchor(
     ),
     forkPoison:
       forkPoison === undefined ? undefined : cloneForkPoison(forkPoison),
+    removal: removal === undefined ? undefined : cloneRemoval(removal),
   };
+  if (
+    snapshot.removal !== undefined &&
+    !isRemovalAnchorTransitionAllowed(
+      snapshot.forkPoison === undefined,
+      equalBytes(snapshot.removal.parentRecordId, snapshot.controlHead),
+      !equalBytes(snapshot.removal.recordId, snapshot.controlHead),
+      snapshot.epoch,
+      snapshot.removal.epoch,
+    )
+  ) {
+    throw new Error(
+      'rollback anchor removal does not bind its active position',
+    );
+  }
+  return snapshot;
 }
 
 function cloneAnchor(
@@ -309,7 +398,52 @@ function optionalAnchorEqual(
     left.epoch === right.epoch &&
     equalBytes(left.controlHead, right.controlHead) &&
     equalBytes(left.storeCommitment, right.storeCommitment) &&
-    optionalForkPoisonEqual(left.forkPoison, right.forkPoison)
+    optionalForkPoisonEqual(left.forkPoison, right.forkPoison) &&
+    optionalRemovalEqual(left.removal, right.removal)
+  );
+}
+
+function cloneRemoval(value: unknown): GroupSecurityRollbackRemoval {
+  const object = exactPlainObject(
+    value,
+    ['epoch', 'parentRecordId', 'recordId', 'memberId'],
+    'rollback anchor removal',
+  );
+  const epoch = dataProperty(object, 'epoch');
+  if (typeof epoch !== 'bigint' || epoch < 1n || epoch > MAX_U64) {
+    throw new Error('removal epoch must be a positive unsigned 64-bit bigint');
+  }
+  return {
+    epoch,
+    parentRecordId: cloneExactBytes(
+      dataProperty(object, 'parentRecordId'),
+      'removal parent',
+      CONTROL_HEAD_LENGTH,
+    ),
+    recordId: cloneExactBytes(
+      dataProperty(object, 'recordId'),
+      'removal record',
+      CONTROL_HEAD_LENGTH,
+    ),
+    memberId: cloneBoundedBytes(
+      dataProperty(object, 'memberId'),
+      'removed member',
+      1,
+      512,
+    ),
+  };
+}
+
+function optionalRemovalEqual(
+  left: GroupSecurityRollbackRemoval | undefined,
+  right: GroupSecurityRollbackRemoval | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.epoch === right.epoch &&
+    equalBytes(left.parentRecordId, right.parentRecordId) &&
+    equalBytes(left.recordId, right.recordId) &&
+    equalBytes(left.memberId, right.memberId)
   );
 }
 
