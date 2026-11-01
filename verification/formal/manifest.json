@@ -2,19 +2,28 @@
   "sources": [
     {
       "path": "packages/core/src/policy/work-budget.ts",
-      "functions": ["consumeWorkBudget"],
+      "functions": [
+        "consumeWorkBudget"
+      ],
       "witness": "workBudget_domain",
       "consumers": [
         "packages/core/src/change-tree-walk.ts",
         "packages/core/src/wire-v2-validation.ts"
       ],
-      "verifiedTargets": ["consumeWorkBudget_ensures"]
+      "verifiedTargets": [
+        "consumeWorkBudget_ensures"
+      ]
     },
     {
       "path": "packages/core/src/policy/beekem-transition.ts",
-      "functions": ["classifyBeeKEMGeneration", "isAppendOnlyLeafCount"],
+      "functions": [
+        "classifyBeeKEMGeneration",
+        "isAppendOnlyLeafCount"
+      ],
       "witness": "beekemTransition_domain",
-      "consumers": ["packages/core/src/beekem/beekem.ts"],
+      "consumers": [
+        "packages/core/src/beekem/beekem.ts"
+      ],
       "verifiedTargets": [
         "classifyBeeKEMGeneration_ensures",
         "isAppendOnlyLeafCount_ensures"
@@ -50,9 +59,14 @@
     },
     {
       "path": "packages/core/src/policy/authority-votes.ts",
-      "functions": ["classifyAuthorityVote", "classifyAuthorityVotes"],
+      "functions": [
+        "classifyAuthorityVote",
+        "classifyAuthorityVotes"
+      ],
       "witness": "authorityVotes_domain",
-      "consumers": ["packages/core/src/load-quorum-orchestrator.ts"],
+      "consumers": [
+        "packages/core/src/load-quorum-orchestrator.ts"
+      ],
       "verifiedTargets": [
         "classifyAuthorityVote_ensures",
         "classifyAuthorityVote_exact",
@@ -110,7 +124,9 @@
         "firstKeychainRewrite"
       ],
       "witness": "keychainOrder_domain",
-      "consumers": ["packages/core/src/keychain-canonical.ts"],
+      "consumers": [
+        "packages/core/src/keychain-canonical.ts"
+      ],
       "verifiedTargets": [
         "sameKeychainEntry_ensures",
         "isKeychainPrefix",
@@ -138,9 +154,14 @@
     },
     {
       "path": "packages/core/src/policy/replay-admission.ts",
-      "functions": ["decideJoinReplay", "decideAcceptanceReplay"],
+      "functions": [
+        "decideJoinReplay",
+        "decideAcceptanceReplay"
+      ],
       "witness": "replayAdmission_domain",
-      "consumers": ["packages/core/src/invitation-replay-guard.ts"],
+      "consumers": [
+        "packages/core/src/invitation-replay-guard.ts"
+      ],
       "verifiedTargets": [
         "decideJoinReplay_ensures",
         "decideAcceptanceReplay_ensures"
@@ -171,7 +192,9 @@
         "classifyAnchorAdvance"
       ],
       "witness": "anchorAdvance_domain",
-      "consumers": ["packages/core/src/group-security-rollback-anchor.ts"],
+      "consumers": [
+        "packages/core/src/group-security-rollback-anchor.ts"
+      ],
       "verifiedTargets": [
         "isRemovalAnchorTransitionAllowed_ensures",
         "classifyAnchorAdvance_ensures"
@@ -179,14 +202,23 @@
     },
     {
       "path": "packages/core/src/policy/retention.ts",
-      "functions": ["selectDeletableCids"],
+      "functions": [
+        "selectDeletableCids"
+      ],
       "witness": "retention_domain",
-      "consumers": ["packages/core/src/blockstore-gc.ts"],
-      "verifiedTargets": ["selectDeletableCids"]
+      "consumers": [
+        "packages/core/src/blockstore-gc.ts"
+      ],
+      "verifiedTargets": [
+        "selectDeletableCids"
+      ]
     },
     {
       "path": "packages/core/src/policy/encoded-size.ts",
-      "functions": ["base64EncodedLength", "base64DecodedUpperBound"],
+      "functions": [
+        "base64EncodedLength",
+        "base64DecodedUpperBound"
+      ],
       "witness": "encodedSize_domain",
       "consumers": [
         "packages/core/src/wire-v2-validation.ts",
@@ -200,10 +232,16 @@
     },
     {
       "path": "packages/index/src/query-budget.ts",
-      "functions": ["boundedCartesianSize"],
+      "functions": [
+        "boundedCartesianSize"
+      ],
       "witness": "queryBudget_domain",
-      "consumers": ["packages/index/src/query-planner.ts"],
-      "verifiedTargets": ["boundedCartesianSize_ensures"]
+      "consumers": [
+        "packages/index/src/query-planner.ts"
+      ],
+      "verifiedTargets": [
+        "boundedCartesianSize_ensures"
+      ]
     },
     {
       "path": "packages/core/src/internal/canonical-encoding.ts",
@@ -228,19 +266,27 @@
     },
     {
       "path": "packages/core/src/bootstrap-config.ts",
-      "functions": ["hasBootstrapPeers"],
+      "functions": [
+        "hasBootstrapPeers"
+      ],
       "witness": "bootstrapConfig_domain",
       "consumers": [
         "packages/core/src/peerborne-config.ts",
         "packages/core/src/peerborne-node.ts"
       ],
-      "verifiedTargets": ["hasBootstrapPeers_ensures"]
+      "verifiedTargets": [
+        "hasBootstrapPeers_ensures"
+      ]
     },
     {
       "path": "packages/react/src/hooks-cache.ts",
-      "functions": ["getPeerborneDocumentCacheKey"],
+      "functions": [
+        "getPeerborneDocumentCacheKey"
+      ],
       "witness": "hooksCache_domain",
-      "consumers": ["packages/react/src/hooks.ts"],
+      "consumers": [
+        "packages/react/src/hooks.ts"
+      ],
       "verifiedTargets": [
         "getPeerborneDocumentCacheKey_ensures",
         "documentCacheKey_injective"
@@ -255,7 +301,9 @@
         "bindOperationToRecord"
       ],
       "witness": "packagePartition_domain",
-      "consumers": ["packages/core/src/group-state-store.ts"],
+      "consumers": [
+        "packages/core/src/group-state-store.ts"
+      ],
       "verifiedTargets": [
         "insertPendingPackage",
         "removePendingPackage",
@@ -272,7 +320,9 @@
         "classifyStoreCommitBaseline"
       ],
       "witness": "storeBudget_domain",
-      "consumers": ["packages/core/src/group-state-store.ts"],
+      "consumers": [
+        "packages/core/src/group-state-store.ts"
+      ],
       "verifiedTargets": [
         "adjustStoreBytes_ensures",
         "nextStoreRevision_ensures",
@@ -312,7 +362,9 @@
         "shouldPruneReplay"
       ],
       "witness": "replayWindow_domain",
-      "consumers": ["packages/core/src/group-security-coordinator.ts"],
+      "consumers": [
+        "packages/core/src/group-security-coordinator.ts"
+      ],
       "verifiedTargets": [
         "replayWindowFloor_ensures",
         "authorizationAnchorFloor_ensures",
@@ -323,7 +375,10 @@
     },
     {
       "path": "packages/core/src/policy/graph-reachability.ts",
-      "functions": ["reachableCids", "shouldPruneDocumentChildren"],
+      "functions": [
+        "reachableCids",
+        "shouldPruneDocumentChildren"
+      ],
       "witness": "graphReachability_domain",
       "consumers": [
         "packages/core/src/blockstore-gc.ts",
@@ -356,7 +411,9 @@
         "treeCopath"
       ],
       "witness": "treeIndex_domain",
-      "consumers": ["packages/core/src/beekem/tree-math.ts"],
+      "consumers": [
+        "packages/core/src/beekem/tree-math.ts"
+      ],
       "verifiedTargets": [
         "powerOfTwo_ensures",
         "nodeLevel_ensures",
@@ -380,7 +437,12 @@
         "tree_right_parent",
         "tree_sibling_children"
       ],
-      "solverSeeds": [1, 2, 7, 19]
+      "solverSeeds": [
+        1,
+        2,
+        7,
+        19
+      ]
     },
     {
       "path": "packages/index/src/query-order.ts",
@@ -412,9 +474,13 @@
     },
     {
       "path": "packages/core/src/policy/authentication-budget.ts",
-      "functions": ["reserveAuthenticationWork"],
+      "functions": [
+        "reserveAuthenticationWork"
+      ],
       "witness": "authenticationBudget_domain",
-      "consumers": ["packages/core/src/initial-load-auth.ts"],
+      "consumers": [
+        "packages/core/src/initial-load-auth.ts"
+      ],
       "verifiedTargets": [
         "reserveAuthenticationWork_ensures",
         "authenticationBudget_history"
@@ -443,7 +509,10 @@
     },
     {
       "path": "packages/core/src/policy/frame-layout.ts",
-      "functions": ["boundedFieldEnd", "frameCopyLength"],
+      "functions": [
+        "boundedFieldEnd",
+        "frameCopyLength"
+      ],
       "witness": "frameLayout_domain",
       "consumers": [
         "packages/core/src/membership-control-record.ts",
@@ -485,6 +554,19 @@
       ]
     },
     {
+      "path": "packages/core/src/policy/connection-retry.ts",
+      "functions": [
+        "shouldRetryConnection"
+      ],
+      "witness": "connectionRetry_domain",
+      "consumers": [
+        "packages/core/src/connection.ts"
+      ],
+      "verifiedTargets": [
+        "shouldRetryConnection_ensures"
+      ]
+    },
+    {
       "path": "packages/core/src/policy/document-content.ts",
       "functions": [
         "admitContentSequence",
@@ -492,7 +574,9 @@
         "contentRolePermits"
       ],
       "witness": "documentContent_domain",
-      "consumers": ["packages/core/src/coordinated-document.ts"],
+      "consumers": [
+        "packages/core/src/coordinated-document.ts"
+      ],
       "verifiedTargets": [
         "admitContentSequence_ensures",
         "nextContentSequence_ensures",

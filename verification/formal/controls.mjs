@@ -684,6 +684,12 @@ method mapOperand_domain()
       "if (false) return 'reject';",
     ],
   ];
+  mutations.push([
+    'connection-retry-after-cancellation',
+    'connection-retry.ts',
+    'return retryable && !aborted && attempt < maximum;',
+    'return retryable && attempt < maximum;',
+  ]);
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);
     const source = file.startsWith('packages/')
