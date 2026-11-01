@@ -16,7 +16,7 @@ corepack enable
 yarn install --immutable
 ```
 
-The seventeen root workspaces are eleven libraries under `packages/`, five browser/SSR examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
+The nineteen root workspaces are eleven libraries under `packages/`, seven browser/SSR examples under `examples/`, and `site/`. `relay-server/` and `e2e/test-app/` are separate projects with their own manifests and lockfiles; they are not root workspaces.
 
 Current workspace package names use `@peerborne/*`. They are not published to npm, so develop and test against repository workspaces only.
 

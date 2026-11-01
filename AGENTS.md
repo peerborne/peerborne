@@ -18,7 +18,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 ## Repository map
 
 - `packages/`: eleven library workspaces
-- `examples/`: browser-test, wiki-swarm, password-manager, peerborne-note, and integrations browser workspaces
+- `examples/`: browser-test, wiki-swarm, password-manager, peerborne-note, and integrations browser workspaces plus SSR starters
 - `site/`: Astro Starlight workspace and TypeDoc integration
 - `relay-server/`: separate relay project and lockfile
 - `e2e/test-app/`: separate integration-test project and lockfile
@@ -26,7 +26,7 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 - `e2e/peerborne-nat.spec.ts`: real Peerborne cross-NAT spec
 - `docs/feature-audit.md`: capability/evidence map
 
-The root has seventeen workspaces: eleven libraries, five examples, and the site.
+The root has nineteen workspaces: eleven libraries, seven examples, and the site.
 
 ## Commands
 

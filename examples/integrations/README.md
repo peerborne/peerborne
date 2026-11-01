@@ -21,6 +21,6 @@ yarn exec playwright install chromium
 yarn test:e2e:integrations
 ```
 
-The suite asserts actual local mutations, editor typing.
+The suite asserts actual local mutations, editor typing, and SSR HTML followed by hydrated browser mutations.
 It does not establish live multi-peer convergence, restart recovery, or production readiness.
 The per-view modules and shared session helper own their teardown explicitly.

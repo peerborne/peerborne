@@ -17,6 +17,8 @@
     "examples/password-manager",
     "examples/peerborne-note",
     "examples/integrations",
+    "examples/nextjs",
+    "examples/tanstack-start",
     "site"
   ],
   "resolutions": {
@@ -32,7 +34,7 @@
   },
   "scripts": {
     "build": "yarn workspaces foreach -Atvi --include '@peerborne/core' --include '@peerborne/automerge' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' --include '@peerborne/loro' --include '@peerborne/tanstack-db' run tsc",
-    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' --include '@peerborne/peerborne-note' --include '@peerborne/integration-examples' run build",
+    "build:examples": "yarn build && yarn workspaces foreach -Avi --include '@peerborne/browser-test' --include '@peerborne/wiki-swarm' --include '@peerborne/password-manager' --include '@peerborne/peerborne-note' --include '@peerborne/integration-examples' --include '@peerborne/nextjs-starter' --include '@peerborne/tanstack-start-starter' run build",
     "test": "yarn workspaces foreach -Apvi --include '@peerborne/core' --include '@peerborne/yjs' --include '@peerborne/react' --include '@peerborne/automerge' --include '@peerborne/redux' --include '@peerborne/index' --include '@peerborne/store' --include '@peerborne/vue' --include '@peerborne/svelte' --include '@peerborne/loro' --include '@peerborne/tanstack-db' run test",
     "test:e2e": "yarn test:e2e:examples",
     "test:e2e:examples": "yarn test:e2e:password-manager && yarn test:e2e:wiki-swarm && yarn test:e2e:browser-test && yarn test:e2e:peerborne-note && yarn test:e2e:integrations",
@@ -68,7 +70,7 @@
     "verify:formal:inventory": "node verification/formal/inventory.mjs",
     "verify:mls-candidate:setup": "yarn --cwd verification/mls-candidate install --immutable",
     "verify:mls-candidate": "node verification/mls-candidate/run.mjs",
-    "build:integrations": "yarn build && yarn workspace @peerborne/integration-examples build",
+    "build:integrations": "yarn build && yarn workspace @peerborne/integration-examples build && yarn workspace @peerborne/nextjs-starter build && yarn workspace @peerborne/tanstack-start-starter build",
     "test:e2e:integrations": "yarn build:integrations && playwright test --config=playwright.integrations.config.ts",
     "verify:mls-provider:setup": "yarn --cwd verification/mls-provider install --immutable && node verification/mls-provider/setup-vectors.mjs",
     "verify:mls-provider:typecheck": "yarn workspace @peerborne/core exec tsc -p ../../verification/mls-provider/tsconfig.json",
