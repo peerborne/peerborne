@@ -694,10 +694,10 @@ export class YjsProvider
         });
       },
       close: () => {
+        closed = true;
         active?.discard();
         document.off('updateV2', onUpdate);
         discardShadow();
-        closed = true;
       },
     };
   }
