@@ -52,6 +52,39 @@ signMembershipControlRecord
 } from './membership-control-record.js';
 
 describe('GroupSecurityCoordinator restore', () => {
+  test('rejects a durable removal before reading a rolled-back store or importing private state', async () => {
+    const first = await context();
+    const coordinator = await bootstrap(first);
+    const active = (await first.rollbackAnchor.load(storeKey))!;
+    expect(
+      await first.rollbackAnchor.retire(storeKey, active, {
+        epoch: 1n,
+        parentRecordId: active.controlHead,
+        recordId: id(0xe7),
+        memberId: first.identities.actorId,
+      }),
+    ).toBe(true);
+    const restartedProvider = new ContractTestProvider();
+    const restarted = cloneContextWithProvider(first, restartedProvider);
+    let loads = 0;
+    restarted.store = {
+      load: async () => {
+        loads++;
+        throw new Error('untrusted rolled-back store');
+      },
+      transaction: first.store.transaction.bind(first.store),
+    };
+    await expect(
+      GroupSecurityCoordinator.restore(config(restarted)),
+    ).rejects.toMatchObject({ code: 'removed-from-group' });
+    expect(loads).toBe(0);
+    expect(restartedProvider.importCalls).toBe(0);
+    await expect(createTransition(coordinator, control(2))).rejects.toMatchObject(
+      { code: 'removed-from-group' },
+    );
+    expect(first.provider.createCommitCalls).toBe(0);
+  });
+
   test('restores the signed chain before provider import and supplies previousRecord authorization context', async () => {
     const first = await context();
     first.authorization.requirePrevious = true;

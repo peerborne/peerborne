@@ -114,11 +114,24 @@ convergence, replay, and encrypted checkpoint restoration through the real
 coordinator. This fixture uses the test JSON codec and in-memory stores/anchors;
 it does not exercise network delivery or durable browser storage.
 
-A removed member cannot derive the next epoch's private secrets. The spike
-reports terminal removal explicitly; the coordinator still needs a durable
-terminal-removal result/store representation before the adapter can implement
-the complete `GroupSecurityProvider` boundary. The self-update fixture rejects
-that unsupported transition explicitly.
+A removed member cannot derive the next epoch's private secrets or verify its
+confirmation tag. The adapter reports an authenticated removal and applied
+membership delta without inventing next-epoch public/private state. The
+coordinator checks the exact signed local-member removal, requires the provider
+to have erased its active group, and writes an irreversible removal marker to
+the independent rollback-anchor contract. It stops further operations and
+rejects reconstruction before reading the older store or importing private
+state. Failed/no-op marker writes never acknowledge success or reload the
+removed provider's checkpoint. The marker's exact-parent/next-epoch admission
+has a formal contract; races, malformed input, and marker readback are checked.
+
+Native Node/Chromium tests remove the joined member through the real
+coordinator, reject its exporter, and block its retained older encrypted
+checkpoint before import. These remain same-process checks using reference
+stores/anchors. The old ciphertext remains in the rollbackable store; persistent
+keystore rotation, obsolete ciphertext deletion, and an independently protected
+durable anchor backend still need qualification. This is not a secure-erasure
+or browser-restart forward-secrecy claim.
 
 Runtime ACL/control-chain authority, verified document-load commitments,
 transactional durable delivery/ACKs, independent rollback protection,

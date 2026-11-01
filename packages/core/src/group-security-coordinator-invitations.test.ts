@@ -123,6 +123,7 @@ describe('GroupSecurityCoordinator invitations', () => {
         storeKey,
       ),
       forkPoison: undefined,
+      removal: undefined,
     });
 
     const restoredProvider = new ContractTestProvider();
@@ -594,6 +595,7 @@ describe('GroupSecurityCoordinator invitations', () => {
         storeKey,
       ),
       forkPoison: undefined,
+      removal: undefined,
     });
     const anchoredProvider = new ContractTestProvider();
     await expect(

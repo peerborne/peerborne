@@ -3,15 +3,33 @@
 
 datatype AnchorPosition = AnchorPosition(revision: int, epoch: int, poisoned: bool)
 
+function isRemovalAnchorTransitionAllowed(active: bool, parentMatches: bool, recordDiffers: bool, previousEpoch: int, removalEpoch: int): bool
+  requires (0 <= previousEpoch)
+  requires (previousEpoch <= MAX_U64)
+  requires (0 <= removalEpoch)
+  requires (removalEpoch <= MAX_U64)
+{
+  ((((active && parentMatches) && recordDiffers) && (previousEpoch < MAX_U64)) && (removalEpoch == (previousEpoch + 1)))
+}
+
+lemma isRemovalAnchorTransitionAllowed_ensures(active: bool, parentMatches: bool, recordDiffers: bool, previousEpoch: int, removalEpoch: int)
+  requires (0 <= previousEpoch)
+  requires (previousEpoch <= MAX_U64)
+  requires (0 <= removalEpoch)
+  requires (removalEpoch <= MAX_U64)
+  ensures (isRemovalAnchorTransitionAllowed(active, parentMatches, recordDiffers, previousEpoch, removalEpoch) <==> ((((active && parentMatches) && recordDiffers) && (previousEpoch < MAX_U64)) && (removalEpoch == (previousEpoch + 1))))
+{
+}
+
 function classifyAnchorAdvance(hasPrevious: bool, previous: AnchorPosition, next: AnchorPosition, sameControlHead: bool): string
   requires (0 <= previous.revision)
   requires (previous.revision <= 9007199254740991)
   requires (0 <= next.revision)
   requires (next.revision <= 9007199254740991)
   requires (0 <= previous.epoch)
-  requires (previous.epoch <= 18446744073709551615)
+  requires (previous.epoch <= MAX_U64)
   requires (0 <= next.epoch)
-  requires (next.epoch <= 18446744073709551615)
+  requires (next.epoch <= MAX_U64)
 {
   if !(hasPrevious) then
     if next.poisoned then
@@ -43,17 +61,24 @@ lemma classifyAnchorAdvance_ensures(hasPrevious: bool, previous: AnchorPosition,
   requires (0 <= next.revision)
   requires (next.revision <= 9007199254740991)
   requires (0 <= previous.epoch)
-  requires (previous.epoch <= 18446744073709551615)
+  requires (previous.epoch <= MAX_U64)
   requires (0 <= next.epoch)
-  requires (next.epoch <= 18446744073709551615)
+  requires (next.epoch <= MAX_U64)
   ensures ((classifyAnchorAdvance(hasPrevious, previous, next, sameControlHead) == "valid") <==> ((!(hasPrevious) && !(next.poisoned)) || ((((((hasPrevious && !(previous.poisoned)) && !(next.poisoned)) && (next.revision == (previous.revision + 1))) && (previous.epoch <= next.epoch)) && (next.epoch <= (previous.epoch + 1))) && ((next.epoch != previous.epoch) || sameControlHead))))
   ensures (hasPrevious ==> previous.poisoned ==> (classifyAnchorAdvance(hasPrevious, previous, next, sameControlHead) == "terminalPoison"))
   ensures ((classifyAnchorAdvance(hasPrevious, previous, next, sameControlHead) == "valid") ==> hasPrevious ==> ((next.revision > previous.revision) && (next.epoch >= previous.epoch)))
 {
 }
 
+const MAX_U64: int := 18446744073709551615
+
 method anchorAdvance_domain()
 {
+  assert isRemovalAnchorTransitionAllowed(true, true, true, 0, 1);
+  assert !isRemovalAnchorTransitionAllowed(false, true, true, 0, 1);
+  assert !isRemovalAnchorTransitionAllowed(true, false, true, 0, 1);
+  assert !isRemovalAnchorTransitionAllowed(true, true, false, 0, 1);
+  assert !isRemovalAnchorTransitionAllowed(true, true, true, 18446744073709551615, 0);
   assert classifyAnchorAdvance(false, AnchorPosition(0, 0, false), AnchorPosition(0, 0, false), false) == "valid";
   assert classifyAnchorAdvance(true, AnchorPosition(0, 0, false), AnchorPosition(1, 1, false), false) == "valid";
   assert classifyAnchorAdvance(true, AnchorPosition(0, 0, true), AnchorPosition(1, 1, false), true) == "terminalPoison";

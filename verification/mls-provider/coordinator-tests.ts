@@ -21,8 +21,24 @@ function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
-// This fixture exercises surviving members; terminal removal remains a separate contract.
-function survivorProvider(engine: MlsProviderSpike): GroupSecurityProvider {
+async function rejects(
+  operation: () => unknown | Promise<unknown>,
+  code?: string,
+) {
+  try {
+    await operation();
+  } catch (error) {
+    if (code)
+      check(
+        error instanceof Error && 'code' in error && error.code === code,
+        'expected terminal coordinator failure',
+      );
+    return;
+  }
+  throw new Error('removed member operation unexpectedly succeeded');
+}
+
+function coordinatorProvider(engine: MlsProviderSpike): GroupSecurityProvider {
   return {
     protocol: engine.protocol,
     lifecycleIdentity: engine.lifecycleIdentity,
@@ -40,13 +56,7 @@ function survivorProvider(engine: MlsProviderSpike): GroupSecurityProvider {
     createGroup: (value) => engine.createGroup(value),
     joinGroup: (value) => engine.joinGroup(value),
     createCommit: (value) => engine.createCommit(value),
-    applyCommit: async (value) => {
-      const result = await engine.applyCommit(value);
-      if (result.status === 'removed') {
-        throw new Error('Terminal removal is outside the self-update fixture');
-      }
-      return result;
-    },
+    applyCommit: (value) => engine.applyCommit(value),
     exportSecret: (value) => engine.exportSecret(value),
     getPublicState: () => engine.getPublicState(),
     exportEncryptedState: (protector) => engine.exportEncryptedState(protector),
@@ -143,7 +153,7 @@ export async function runCoordinatorChecks() {
     engine: MlsProviderSpike,
     index: number,
   ): GroupSecurityCoordinatorConfig => ({
-    provider: survivorProvider(engine),
+    provider: coordinatorProvider(engine),
     store: stores[index],
     storeKey: { protocol: engine.protocol, groupId },
     rollbackAnchor: anchors[index],
@@ -290,10 +300,66 @@ export async function runCoordinatorChecks() {
       equal(await restoredEngine.exportSecret(exporter), next),
     'encrypted self-update checkpoint restores through the coordinator',
   );
+  await recipientEngine.clearGroupState();
+  await controller.createCommit(
+    { changes: [{ kind: 'remove', memberId: members[1] }] },
+    {
+      operationId: random(),
+      requestDigest: await requestDigest('remove', members[1]),
+      action: 'remove',
+      subjectId: members[1],
+    },
+  );
+  const removal = await collect(controller);
+  check(
+    removal.commit && removal.welcomes.length === 0,
+    'removal has no Welcome',
+  );
+  const removed = await restored.applyCommit(
+    removal.commit,
+    removal.controlRecord,
+    [],
+  );
+  check(
+    removed.status === 'removed' && !(await restoredEngine.hasActiveGroup()),
+    'coordinator retires the removed native provider',
+  );
+  await rejects(() => restoredEngine.exportSecret(exporter));
+  await rejects(() => restored.publicState, 'removed-from-group');
+  const survivorSecret = await controllerEngine.exportSecret(exporter);
+  check(
+    !equal(survivorSecret, next),
+    'removal changes the surviving epoch exporter',
+  );
+  survivorSecret.fill(0);
+
+  const restartAfterRemoval = await MlsProviderSpike.initialize(
+    members[1],
+    members[0],
+    policy,
+  );
+  const restartConfig = configuration(restartAfterRemoval, 1);
+  let imports = 0;
+  const importState = restartConfig.provider.importEncryptedState.bind(
+    restartConfig.provider,
+  );
+  restartConfig.provider.importEncryptedState = async (state, protector) => {
+    imports++;
+    return importState(state, protector);
+  };
+  await rejects(
+    () => GroupSecurityCoordinator.restore(restartConfig),
+    'removed-from-group',
+  );
+  check(
+    imports === 0,
+    'retirement blocks the retained older encrypted checkpoint before import',
+  );
+  await restartAfterRemoval.clearGroupState();
   prior.fill(0);
   next.fill(0);
   await Promise.all(
-    [engines[0], controllerEngine, recipientEngine, restoredEngine].map(
+    [engines[0], engines[1], controllerEngine].map(
       (engine) => engine.clearGroupState(),
     ),
   );
@@ -304,5 +370,8 @@ export async function runCoordinatorChecks() {
     exporterRotationAndConvergence: true,
     selfUpdateReplay: true,
     encryptedSelfUpdateRecovery: true,
+    terminalRemoval: true,
+    removedMemberHasNoNextEpochSecrets: true,
+    removalBlocksCheckpointRollback: true,
   };
 }

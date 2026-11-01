@@ -130,8 +130,13 @@ self-updates with an empty membership delta, no Welcome, and changing epoch,
 tree, and transcript commitments. The admission predicate has a formal
 contract; native Node/Chromium tests exercise the real adapter through signed
 genesis, pending-package join, Add, self-update, replay, and encrypted recovery
-using in-memory stores and anchors. The generic coordinator still needs an
-explicit durable terminal-removal contract. Document ACL/control/quorum
+using in-memory stores and anchors. The coordinator now also accepts verified
+local-member removal without next-epoch state and records an irreversible
+removal marker through the protected-anchor contract. Native checks reject the
+removed member's exporter and block reconstruction from the retained older
+checkpoint before private import. A persistent anchor backend, obsolete
+checkpoint ciphertext deletion, and persistent keystore erasure remain
+unqualified. Document ACL/control/quorum
 integration, actual durable process/browser recovery with an independent
 rollback anchor, independent live interoperability, resource budgets, and
 security review remain acceptance gates.

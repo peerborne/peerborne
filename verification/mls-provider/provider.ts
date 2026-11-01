@@ -1015,7 +1015,11 @@ export class MlsProviderSpike {
           wipe(this.#signing);
           wipe(this.#pending);
           this.#pending.clear();
-          return { status: 'removed' as const, memberId: this.#member.slice() };
+          return {
+            status: 'removed' as const,
+            memberId: this.#member.slice(),
+            appliedMembership: { changes: applied },
+          };
         }
         await this.#validateGenerated(result.newState);
         requireValue(result.newState.groupContext.epoch === value.epoch);

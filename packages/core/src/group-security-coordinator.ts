@@ -18,6 +18,8 @@ import {
   EncryptedGroupState,
   EncryptedKeyPackageState,
   GroupSecurityApplyResult,
+  GroupSecurityActiveApplyResult,
+  GroupSecurityRemovedApplyResult,
   GroupSecurityCommit,
   GroupSecurityCommitResult,
   GroupKeyPackage,
@@ -248,7 +250,12 @@ export type GroupSecurityTransitionResult =
       readonly controlRecord: MembershipControlRecord;
       readonly state: GroupSecurityPublicState;
     }
-  | { readonly status: 'duplicate'; readonly recordId: Uint8Array };
+  | { readonly status: 'duplicate'; readonly recordId: Uint8Array }
+  | {
+      readonly status: 'removed';
+      readonly recordId: Uint8Array;
+      readonly controlRecord: MembershipControlRecord;
+    };
 
 export interface GroupSecurityFlushResult {
   readonly delivered: number;
@@ -267,6 +274,7 @@ export type GroupSecurityCoordinatorFailure =
   | 'operation-conflict'
   | 'stale-replay'
   | 'fork-detected'
+  | 'removed-from-group'
   | 'outbox-overflow'
   | 'replay-overflow'
   | 'store-conflict'
@@ -343,6 +351,7 @@ export class GroupSecurityCoordinator {
   private poisonedReason?: Error;
   private forkReason?: GroupSecurityCoordinatorError;
   private emptySelfUpdateHashes?: Promise<readonly [Uint8Array, Uint8Array]>;
+  private removalReason?: GroupSecurityCoordinatorError;
 
   private readonly provider: GroupSecurityProvider;
   private readonly store: DurableGroupStateStore;
@@ -1141,7 +1150,7 @@ export class GroupSecurityCoordinator {
 
   private async restoreInternal(): Promise<void> {
     const loadedAnchor = await this.loadRollbackAnchor();
-    this.rejectRollbackForkPoison(loadedAnchor);
+    this.rejectRollbackTerminalState(loadedAnchor);
     const snapshot = await this.requireSnapshot();
     if (snapshot.encryptedState === undefined) {
       fail('malformed-state', 'stored group has no encrypted provider state');
@@ -1699,6 +1708,21 @@ export class GroupSecurityCoordinator {
       const applied = cloneGroupSecurityApplyResult(
         await this.provider.applyCommit(cloneCommit(commit)),
       );
+      if (applied.status === 'removed') {
+        await this.acceptLocalRemoval(
+          applied,
+          commit,
+          controlRecord,
+          validated.recordId,
+          validated.stateCommitment,
+          welcomes,
+        );
+        return {
+          status: 'removed',
+          recordId: new Uint8Array(validated.recordId),
+          controlRecord: cloneControlRecord(controlRecord),
+        };
+      }
       if (applied.status !== 'applied') {
         fail('control-mismatch', 'provider rejected a new authenticated record');
       }
@@ -1738,6 +1762,77 @@ export class GroupSecurityCoordinator {
         state: clonePublicState(applied.state),
       };
     });
+  }
+
+  private async acceptLocalRemoval(
+    result: GroupSecurityRemovedApplyResult,
+    commit: GroupSecurityCommit,
+    record: MembershipControlRecord,
+    recordId: Uint8Array,
+    expected: GroupSecurityStateCommitment,
+    welcomes: ReadonlyArray<GroupWelcome>,
+  ): Promise<void> {
+    const change = requireSingleAppliedMembershipChange(
+      result.appliedMembership,
+    );
+    if (
+      record.action !== 'remove' ||
+      change.kind !== 'remove' ||
+      !equalBytes(record.subjectId, this.actorId) ||
+      !equalBytes(result.memberId, this.actorId) ||
+      !equalBytes(change.memberId, this.actorId) ||
+      welcomes.length !== 0 ||
+      !equalBytes(
+        await appliedGroupMembershipDeltaHash(result.appliedMembership),
+        expected.appliedMembershipDeltaHash,
+      )
+    ) {
+      fail(
+        'control-mismatch',
+        'removed result must authenticate the exact local-member removal',
+      );
+    }
+    if (await this.providerHasActiveGroup()) {
+      fail(
+        'control-mismatch',
+        'removed provider must erase its active private group state',
+      );
+    }
+    const prior = this.requireCurrentRollbackAnchor();
+    const removal = {
+      epoch: commit.epoch,
+      parentRecordId: new Uint8Array(prior.controlHead),
+      recordId: new Uint8Array(recordId),
+      memberId: new Uint8Array(this.actorId),
+    };
+    this.removalReason = new GroupSecurityCoordinatorError(
+      'removed-from-group',
+      'local membership is irreversibly removed',
+    );
+    try {
+      const accepted = await this.rollbackAnchor.retire(
+        cloneStoreKey(this.storeKey),
+        cloneGroupSecurityRollbackAnchor(prior),
+        removal,
+      );
+      if (accepted !== true) {
+        await this.reconcileControlFork([record], [recordId]);
+        throw new Error('removal anchor compare-and-set failed');
+      }
+      const actual = await this.loadRollbackAnchor();
+      if (!groupSecurityRollbackAnchorsEqual(actual, { ...prior, removal })) {
+        throw new Error(
+          'removal anchor did not retain its exact terminal marker',
+        );
+      }
+      this.rollbackAnchorValue = actual;
+    } catch (error) {
+      fail(
+        'rollback-failed',
+        'authenticated removal could not be durably anchored; discard this coordinator',
+        error,
+      );
+    }
   }
 
   private async persistTransition(
@@ -1974,6 +2069,7 @@ export class GroupSecurityCoordinator {
       if (
         firstAnchorCandidate === undefined ||
         firstAnchorCandidate.forkPoison !== undefined ||
+        firstAnchorCandidate.removal !== undefined ||
         firstAnchorCandidate.epoch !== candidate.epoch ||
         !equalBytes(firstAnchorCandidate.controlHead, candidateId)
       ) {
@@ -3034,7 +3130,7 @@ export class GroupSecurityCoordinator {
   }
 
   private async validateApplyResult(
-    result: GroupSecurityApplyResult,
+    result: GroupSecurityActiveApplyResult,
     commit: GroupSecurityCommit,
     controlRecord: MembershipControlRecord,
     expected: GroupSecurityStateCommitment,
@@ -3747,7 +3843,9 @@ export class GroupSecurityCoordinator {
     try {
       return await operation();
     } catch (error) {
-      if (this.poisonedReason !== undefined) throw error;
+      if (this.poisonedReason !== undefined || this.removalReason !== undefined) {
+        throw error;
+      }
       try {
         const rollbackEnvelope = snapshotEncryptedGroupState(checkpoint);
         const restored = clonePublicState(
@@ -3793,9 +3891,22 @@ export class GroupSecurityCoordinator {
     }
   }
 
-  private rejectRollbackForkPoison(
+  private rejectRollbackTerminalState(
     value: GroupSecurityRollbackAnchorValue | undefined,
   ): void {
+    if (value?.removal !== undefined) {
+      if (!equalBytes(value.removal.memberId, this.actorId)) {
+        fail(
+          'rollback-detected',
+          'removal anchor belongs to another local member',
+        );
+      }
+      this.removalReason = new GroupSecurityCoordinatorError(
+        'removed-from-group',
+        'local membership is irreversibly removed',
+      );
+      throw this.removalReason;
+    }
     if (value?.forkPoison === undefined) return;
     const error = new GroupSecurityCoordinatorError(
       'fork-detected',
@@ -3823,7 +3934,7 @@ export class GroupSecurityCoordinator {
       );
     }
     const actual = await this.loadRollbackAnchor();
-    this.rejectRollbackForkPoison(actual);
+    this.rejectRollbackTerminalState(actual);
     if (
       actual === undefined ||
       actual.revision !== snapshot.revision ||
@@ -3920,13 +4031,14 @@ export class GroupSecurityCoordinator {
       );
     }
     const actual = await this.loadRollbackAnchor();
-    this.rejectRollbackForkPoison(actual);
+    this.rejectRollbackTerminalState(actual);
     const observed = cloneGroupSecurityRollbackAnchor({
       revision: snapshot.revision,
       epoch: expected.epoch,
       controlHead: expected.controlHead,
       storeCommitment,
       forkPoison: undefined,
+      removal: undefined,
     });
     if (
       !groupSecurityRollbackAnchorsEqual(actual, expected) ||
@@ -4048,7 +4160,7 @@ export class GroupSecurityCoordinator {
     expectedView: CoordinatorView,
   ): Promise<void> {
     const actualAnchor = await this.loadRollbackAnchor();
-    this.rejectRollbackForkPoison(actualAnchor);
+    this.rejectRollbackTerminalState(actualAnchor);
     if (
       !groupSecurityRollbackAnchorsEqual(actualAnchor, expectedAnchor) ||
       !equalBytes(expectedAnchor.controlHead, expectedView.headRecordId)
@@ -4084,7 +4196,7 @@ export class GroupSecurityCoordinator {
       );
     }
     const finalAnchor = await this.loadRollbackAnchor();
-    this.rejectRollbackForkPoison(finalAnchor);
+    this.rejectRollbackTerminalState(finalAnchor);
     if (!groupSecurityRollbackAnchorsEqual(finalAnchor, expectedAnchor)) {
       fail(
         'rollback-detected',
@@ -4151,6 +4263,7 @@ export class GroupSecurityCoordinator {
   }
 
   private assertUsable(): void {
+    if (this.removalReason !== undefined) throw this.removalReason;
     const admission = coordinatorAdmission(
       this.forkReason !== undefined,
       this.poisonedReason !== undefined,
@@ -4240,6 +4353,7 @@ function rollbackAnchorValue(
     controlHead: new Uint8Array(controlHead),
     storeCommitment: new Uint8Array(storeCommitment),
     forkPoison: undefined,
+    removal: undefined,
   });
 }
 
@@ -4691,10 +4805,11 @@ function validateCoordinatorConfig(config: GroupSecurityCoordinatorConfig): void
     typeof config.rollbackAnchor !== 'object' ||
     typeof config.rollbackAnchor.load !== 'function' ||
     typeof config.rollbackAnchor.advance !== 'function' ||
-    typeof config.rollbackAnchor.poison !== 'function'
+    typeof config.rollbackAnchor.poison !== 'function' ||
+    typeof config.rollbackAnchor.retire !== 'function'
   ) {
     throw new Error(
-      'rollbackAnchor must implement durable load, advance, and atomic poison',
+      'rollbackAnchor must implement durable load, advance, atomic poison, and retirement',
     );
   }
   if (!sameProtocol(config.provider.protocol, config.storeKey.protocol)) {
@@ -6021,6 +6136,7 @@ async function rollbackFirstAnchorAmbiguityPoison(
 ): Promise<GroupSecurityRollbackForkPoison> {
   if (
     initial.forkPoison !== undefined ||
+    initial.removal !== undefined ||
     initial.epoch !== candidate.epoch ||
     !equalBytes(initial.controlHead, candidateRecordId)
   ) {
@@ -6388,11 +6504,28 @@ function cloneGroupSecurityApplyResult(
 ): GroupSecurityApplyResult {
   const raw = exactOwnDataValues(
     result,
-    ['status', 'state', 'appliedMembership'],
+    ['status', 'appliedMembership'],
     'provider apply result',
-    [],
+    ['state', 'memberId'],
     true,
   );
+  if (raw.status === 'removed') {
+    if (Object.prototype.hasOwnProperty.call(raw, 'state')) {
+      throw new Error('removed provider cannot report a next-epoch state');
+    }
+    return {
+      status: 'removed',
+      memberId: copyControlRecordBytes(
+        raw.memberId,
+        'removed memberId',
+        1,
+        MAX_IDENTITY_BYTES,
+      ),
+      appliedMembership: cloneAppliedGroupMembershipDelta(
+        raw.appliedMembership as AppliedGroupMembershipDelta,
+      ),
+    };
+  }
   if (raw.status !== 'applied' && raw.status !== 'duplicate') {
     throw new Error('provider apply result is invalid');
   }

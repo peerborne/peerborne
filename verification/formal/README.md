@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 84 selected production functions in 27 proof units are compiled from their
+The 85 selected production functions in 27 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
