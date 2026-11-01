@@ -528,15 +528,53 @@ export class YjsProvider
       if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
         throw new Error('Document change has missing causal dependencies');
     };
+    const idle = (value: Doc) =>
+      value._transaction === null && value._transactionCleanups.length === 0;
+    const hasPending = (value: Doc) =>
+      value.store.pendingStructs !== null || value.store.pendingDs !== null;
+    const rootType = (value: AbstractType<any>) => {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype === AbstractType.prototype) return undefined;
+      if (prototype === YMap.prototype) return YMap;
+      if (prototype === YArray.prototype) return YArray;
+      if (prototype === YText.prototype) return YText;
+      throw new TypeError(
+        'Coordinated Yjs documents support shared Y.Map, Y.Array and Y.Text values',
+      );
+    };
+    const compatibleRoots = (source: Doc, target: Doc) => {
+      for (const [name, value] of source.share) {
+        const expected = rootType(value);
+        const existing = target.share.get(name);
+        const actual = existing && rootType(existing);
+        if (expected && actual && expected !== actual) return false;
+      }
+      return true;
+    };
+    const copyRootTypes = (source: Doc, target: Doc) => {
+      for (const [name, value] of source.share) {
+        const constructor = rootType(value);
+        if (constructor) target.get(name, constructor);
+      }
+    };
     const stage = (prepare: (value: Doc) => Uint8Array) => {
       assertHealthy();
       if (active || preparing) throw new Error('Document session is busy');
       preparing = true;
       try {
+        if (!idle(document))
+          throw new Error('Document transaction is still active');
         complete(document);
-        if (shadow && shadowVersion !== acceptedShadowVersion) discardShadow();
+        if (
+          shadow &&
+          (shadowVersion !== acceptedShadowVersion ||
+            !idle(shadow) ||
+            hasPending(shadow))
+        )
+          discardShadow();
         if (!shadow) {
           shadow = new Doc({ gc: document.gc });
+          copyRootTypes(document, shadow);
           applyUpdateV2(shadow, this.getSnapshot(document));
           shadowVersion = 0;
           acceptedShadowVersion = 0;
@@ -548,8 +586,13 @@ export class YjsProvider
         const baseRevision = revision;
         let stable: Uint8Array;
         try {
+          copyRootTypes(document, shadow);
           stable = new Uint8Array(prepare(shadow));
           assertHealthy();
+          if (!idle(document) || !idle(shadow))
+            throw new Error('Document transaction is still active');
+          if (!compatibleRoots(document, shadow))
+            throw new Error('Document root type changed during preparation');
           assertStagedYjsValues(decodeUpdateV2(stable).structs);
           complete(shadow);
         } catch (error) {
@@ -564,12 +607,20 @@ export class YjsProvider
             !invalidated &&
             active === plan &&
             revision === baseRevision &&
-            shadowVersion === stagedVersion,
+            shadowVersion === stagedVersion &&
+            idle(document) &&
+            idle(shadow!) &&
+            !hasPending(document) &&
+            !hasPending(shadow!) &&
+            compatibleRoots(document, shadow!),
           () => {
             try {
               document.transact((transaction) => {
                 commitTransaction = transaction;
                 if (
+                  hasPending(document) ||
+                  hasPending(shadow!) ||
+                  !compatibleRoots(document, shadow!) ||
                   transaction.deleteSet.clients.size !== 0 ||
                   transaction.beforeState.size !==
                     document.store.clients.size ||
@@ -583,6 +634,7 @@ export class YjsProvider
                     'Document changed before admitted transaction application',
                   );
                 }
+                copyRootTypes(shadow!, document);
                 applyUpdateV2(document, stable, commitOrigin);
               }, commitOrigin);
             } finally {

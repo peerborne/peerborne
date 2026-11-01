@@ -1,7 +1,13 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
 import { YjsProvider } from './peerborne-yjs.js';
-import { type Doc, Map as SharedMap, XmlElement } from 'yjs';
+import {
+  type Doc,
+  Map as SharedMap,
+  Text as SharedText,
+  applyUpdateV2,
+  XmlElement,
+} from 'yjs';
 
 describe('Yjs admitted document sessions', () => {
   test('keeps preparation private and rejects escaped-stage mutations', () => {
@@ -286,3 +292,127 @@ test.each(['update-listener', 'before-transaction'] as const)(
     document.destroy();
   },
 );
+
+test.each(['insert', 'delete'] as const)(
+  'discards silent pending %s dependencies before reusing a retained mirror',
+  (kind) => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1, maxLength: 30 }), (text) => {
+        const provider = new YjsProvider(),
+          session = provider.createDocumentSession(provider.newDocument()),
+          sender = provider.newDocument();
+        let escaped!: Doc;
+        session
+          .prepareLocal('', (draft) => {
+            escaped = draft;
+            draft.getMap('values').set('accepted', 1);
+          })
+          .commit();
+        const [, first] = provider.localChange(sender, '', (draft) => {
+          draft.getText('body').insert(0, text);
+        });
+        const [, second] = provider.localChange(sender, '', (draft) => {
+          if (kind === 'insert')
+            draft.getText('body').insert(text.length, 'unadmitted');
+          else draft.getText('body').delete(0, text.length);
+        });
+        applyUpdateV2(escaped, second);
+        expect(
+          kind === 'insert'
+            ? escaped.store.pendingStructs
+            : escaped.store.pendingDs,
+        ).not.toBeNull();
+        const next = session.prepareRemote(first);
+        const checkpoint = provider.newDocument();
+        applyUpdateV2(checkpoint, next.snapshot!());
+        expect(checkpoint.getText('body').toString()).toBe(text);
+        next.commit();
+        expect(session.document.getText('body').toString()).toBe(text);
+        session.close();
+        sender.destroy();
+        checkpoint.destroy();
+      }),
+      { seed: 2011125, numRuns: 30 },
+    );
+  },
+);
+
+test.each([
+  'mirror-transaction',
+  'visible-transaction',
+  'mirror-pending',
+  'visible-pending',
+  'before-transaction-pending',
+] as const)(
+  'rejects silent native changes at %s before checkpoint or commit',
+  (phase) => {
+    const provider = new YjsProvider(),
+      document = provider.newDocument(),
+      sender = provider.newDocument(),
+      session = provider.createDocumentSession(document);
+    const [, first] = provider.localChange(sender, '', (draft) =>
+      draft.getText('body').insert(0, 'first'),
+    );
+    const [, second] = provider.localChange(sender, '', (draft) =>
+      draft.getText('body').insert(5, 'unadmitted'),
+    );
+    let escaped!: Doc;
+    const plan = session.prepareLocal('', (draft) => {
+      escaped = draft;
+      draft.getMap('values').set('accepted', 1);
+    });
+    const stale = () => {
+      expect(plan.isCurrent()).toBe(false);
+      expect(() => plan.snapshot!()).toThrow('Stale');
+      expect(() => plan.commit()).toThrow('stale');
+    };
+    if (phase.endsWith('transaction')) {
+      const target = phase.startsWith('mirror') ? escaped : document;
+      target.transact(() => {
+        target.getMap('values').set('outside', 9);
+        stale();
+      });
+    } else if (phase === 'before-transaction-pending') {
+      document.on('beforeTransaction', () => applyUpdateV2(document, second));
+      expect(() => plan.commit()).toThrow('before admitted');
+      expect(document.getMap('values').has('accepted')).toBe(false);
+    } else {
+      applyUpdateV2(phase === 'mirror-pending' ? escaped : document, second);
+      stale();
+    }
+    plan.discard();
+    session.close();
+    document.destroy();
+    sender.destroy();
+    expect(first.length).toBeGreaterThan(0);
+  },
+);
+
+test('preserves known root types in mirrors and publishes new typed roots', () => {
+  const provider = new YjsProvider(),
+    document = provider.newDocument();
+  document.getText('body').insert(0, 'existing');
+  const session = provider.createDocumentSession(document);
+  expect(() =>
+    session.prepareLocal('', (draft) => {
+      draft.getMap('body').set('invisible', 1);
+    }),
+  ).toThrow();
+  session
+    .prepareLocal('', (draft) => {
+      draft.getText('body').insert(8, '!');
+      draft.getMap('values').set('value', 2);
+    })
+    .commit();
+  expect(document.share.get('body')).toBeInstanceOf(SharedText);
+  expect(document.share.get('values')).toBeInstanceOf(SharedMap);
+  expect(document.getText('body').toString()).toBe('existing!');
+  expect(document.getMap('values').toJSON()).toEqual({ value: 2 });
+  expect(() =>
+    session.prepareLocal('', (draft) =>
+      draft.getText('values').insert(0, 'invisible'),
+    ),
+  ).toThrow();
+  session.close();
+  document.destroy();
+});
