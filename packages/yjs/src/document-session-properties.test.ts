@@ -230,3 +230,59 @@ test('shared Map values retain update tracking while opaque XML metadata is reje
   session.close();
   document.destroy();
 });
+
+test('a captured origin cannot authorize transactions outside the active internal commit', () => {
+  const provider = new YjsProvider(),
+    document = provider.newDocument();
+  let captured: unknown;
+  document.on('updateV2', (_update: Uint8Array, origin: unknown) => {
+    captured = origin;
+  });
+  const session = provider.createDocumentSession(document);
+  session
+    .prepareLocal('', (draft) => {
+      draft.getMap('values').set('accepted', 1);
+    })
+    .commit();
+  document.transact(() => {
+    document.getMap('values').set('outside', 2);
+  }, captured);
+  expect(() =>
+    session.prepareLocal('', (draft) => {
+      draft.getMap('values').set('next', 3);
+    }),
+  ).toThrow('outside');
+  session.close();
+  document.destroy();
+});
+
+test.each(['update-listener', 'before-transaction'] as const)(
+  'isolates a spoofed origin from %s callbacks during commit',
+  (phase) => {
+    const provider = new YjsProvider(),
+      document = provider.newDocument(),
+      session = provider.createDocumentSession(document);
+    let injected = false;
+    if (phase === 'update-listener')
+      document.on('updateV2', (_update: Uint8Array, origin: unknown) => {
+        if (injected) return;
+        injected = true;
+        document.transact(() => {
+          document.getMap('values').set('outside', 2);
+        }, origin);
+      });
+    else
+      document.on('beforeTransaction', () => {
+        if (injected) return;
+        injected = true;
+        document.getMap('values').set('outside', 2);
+      });
+    const plan = session.prepareLocal('', (draft) => {
+      draft.getMap('values').set('accepted', 1);
+    });
+    expect(() => plan.commit()).toThrow();
+    expect(() => session.document).toThrow();
+    session.close();
+    document.destroy();
+  },
+);

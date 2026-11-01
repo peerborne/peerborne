@@ -133,3 +133,32 @@ test('reserves callbacks and checkpoints atomically, merges concurrent state, an
     { seed: 2011123, numRuns: 35 },
   );
 });
+
+test('burns discarded actor positions before a later plan can meet retained changes or checkpoints', () => {
+  const provider = new AutomergeProvider<{
+      discarded?: number;
+      accepted?: number;
+    }>(),
+    source = provider.createDocumentSession(provider.newDocument()),
+    target = provider.createDocumentSession(provider.newDocument());
+  const discarded = source.prepareLocal('', (draft) => {
+    draft.discarded = 1;
+  });
+  const checkpoint = discarded.snapshot!(),
+    changes = discarded.changes;
+  discarded.discard();
+  const accepted = source.prepareLocal('', (draft) => {
+    draft.accepted = 2;
+  });
+  accepted.commit();
+  target.prepareSnapshot!(checkpoint).commit();
+  expect(() => target.prepareRemote(accepted.changes).commit()).not.toThrow();
+  expect(target.document).toMatchObject({ discarded: 1, accepted: 2 });
+  const fromChanges = provider.createDocumentSession(provider.newDocument());
+  fromChanges.prepareRemote(changes).commit();
+  fromChanges.prepareRemote(accepted.changes).commit();
+  expect(fromChanges.document).toMatchObject({ discarded: 1, accepted: 2 });
+  source.close();
+  target.close();
+  fromChanges.close();
+});

@@ -94,7 +94,7 @@ export class AutomergeProvider<T = any>
     let document = initial;
     let active: PreparedDocumentChange<BinaryChange[]> | undefined;
     let closed = false;
-    const actor = getActorId(initial);
+    let actor: string | undefined = getActorId(initial);
     let preparing = false;
     const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]]) => {
       if (closed || active || preparing)
@@ -102,7 +102,9 @@ export class AutomergeProvider<T = any>
       preparing = true;
       try {
         const base = document;
-        const owned = clone(base, { actor });
+        const owned =
+          actor === undefined ? clone(base) : clone(base, { actor });
+        actor = getActorId(owned);
         let next: Doc<T> | undefined;
         try {
           let delta: BinaryChange[];
@@ -126,12 +128,14 @@ export class AutomergeProvider<T = any>
               () => {
                 free(staged);
                 active = undefined;
+                actor = undefined;
               },
               () => this.getSnapshot(staged),
             );
           active = plan;
           return plan;
         } catch (error) {
+          actor = undefined;
           free(next ?? owned);
           throw error;
         }
