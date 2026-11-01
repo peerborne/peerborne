@@ -106,6 +106,84 @@ try {
       result,
     );
   }
+  const calibration = copyProject('map-operand-calibration');
+  const calibrationSource = 'map-operand-calibration.ts';
+  writeFileSync(
+    join(calibration, calibrationSource),
+    String.raw`
+export function mapOperandCalibration(value: number, values: Map<string, number>, key: string, operator: number): boolean {
+  //@ verify
+  //@ requires -9007199254740991 <= value && value <= 9007199254740991
+  //@ requires values.has(key) && values.get(key) === value
+  //@ requires 0 <= operator && operator <= 3
+  //@ ensures operator === 0 ==> (\result <==> values[key] >= 1)
+  //@ ensures operator === 1 ==> (\result <==> values[key] > 1)
+  //@ ensures operator === 2 ==> (\result <==> values[key] <= 1)
+  //@ ensures operator === 3 ==> (\result <==> values[key] < 1)
+  if (operator === 0) return value >= 1;
+  if (operator === 1) return value > 1;
+  if (operator === 2) return value <= 1;
+  return value < 1;
+}
+`,
+  );
+  const generated = spawnSync(
+    process.execPath,
+    [lsc, 'regen', '--backend=dafny', '--no-verify', calibrationSource],
+    {
+      cwd: calibration,
+      env: proverEnvironment(),
+      encoding: 'utf8',
+      timeout: 120000,
+    },
+  );
+  if (generated.status !== 0)
+    throw new Error(
+      `Map calibration generation failed: ${generated.stdout}${generated.stderr}`,
+    );
+  const calibrationProof = proofPaths(calibrationSource, calibration).proof;
+  writeFileSync(
+    calibrationProof,
+    readFileSync(calibrationProof, 'utf8') +
+      `
+method mapOperand_domain()
+{
+  assert !mapOperandCalibration(0, map["k" := 0], "k", 0);
+  assert mapOperandCalibration(1, map["k" := 1], "k", 0);
+  assert !mapOperandCalibration(1, map["k" := 1], "k", 1);
+  assert mapOperandCalibration(2, map["k" := 2], "k", 1);
+  assert mapOperandCalibration(1, map["k" := 1], "k", 2);
+  assert !mapOperandCalibration(2, map["k" := 2], "k", 2);
+  assert mapOperandCalibration(0, map["k" := 0], "k", 3);
+  assert !mapOperandCalibration(1, map["k" := 1], "k", 3);
+}
+`,
+  );
+  const calibrated = verify(calibration, calibrationSource);
+  const calibrationAudit = spawnSync(
+    dafny,
+    [
+      'audit',
+      calibrationProof,
+      '--unicode-char:false',
+      '--allow-deprecation',
+      '--report-format',
+      'md',
+      '--report-file',
+      join(calibration, 'map-operands.audit.md'),
+    ],
+    { cwd: calibration, encoding: 'utf8', timeout: 120000 },
+  );
+  requireResult(
+    calibrated.status === 0 &&
+      calibrated.record?.stage === 'ok' &&
+      !calibrated.record.partial &&
+      calibrated.record.passed.includes('mapOperand_domain') &&
+      calibrationAudit.status === 0 &&
+      /Dafny auditor completed with 0 findings/.test(calibrationAudit.stdout),
+    'positive/map-operand-calibration',
+    calibrated,
+  );
   const mutations = [
     [
       'unpaired-surrogate',
@@ -424,6 +502,54 @@ try {
       'frame-layout.ts',
       'return remaining < available ? remaining : available;',
       'return available;',
+    ],
+    [
+      'duplicate-eligible-peer',
+      'quorum.ts',
+      'eligible[index] && !seen.has(peerIds[index])',
+      'eligible[index]',
+    ],
+    [
+      'ineligible-peer-credit',
+      'quorum.ts',
+      'eligible[index] && !seen.has(peerIds[index])',
+      '!seen.has(peerIds[index])',
+    ],
+    [
+      'peer-identity-confusion',
+      'quorum.ts',
+      'seen.add(peerIds[index]);',
+      'seen.add("different");',
+    ],
+    [
+      'digest-repeat-count-loss',
+      'quorum.ts',
+      'const count = previous === undefined ? 0 : previous;',
+      'const count = 0;',
+    ],
+    [
+      'digest-count-inflation',
+      'quorum.ts',
+      'const count = previous === undefined ? 0 : previous;',
+      'const count = previous === undefined ? 1 : previous;',
+    ],
+    [
+      'nonagreeing-cohort-inclusion',
+      'quorum.ts',
+      'if (agreeing.has(peerIds[index])) selected.push(index);',
+      'if (!agreeing.has(peerIds[index])) selected.push(index);',
+    ],
+    [
+      'quorum-conflict-reason-loss',
+      'quorum.ts',
+      "if (conflicting) return 'conflicting-quorum';",
+      "if (false) return 'conflicting-quorum';",
+    ],
+    [
+      'quorum-response-boundary',
+      'quorum.ts',
+      'responding < threshold',
+      'responding <= threshold',
     ],
     [
       'vacuous-precondition',

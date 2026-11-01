@@ -177,6 +177,15 @@
         "packages/core/src/membership-control-record.ts",
         "packages/core/src/invitation-framing.ts"
       ]
+    },
+    {
+      "id": "authenticated-quorum-runtime",
+      "formalBoundary": "Exact first-eligible identity selection, digest multiplicities, strict-majority uniqueness, stable cohort projection and failure precedence are proved. Native bytes and map iteration, authority attribution, reflected probe results, Promise completion order, caller mutation and private error handling require runtime properties. Probe signatures and authorizer correctness remain caller responsibilities.",
+      "evidence": ["packages/core/src/quorum-boundary-properties.test.ts"],
+      "sources": [
+        "packages/core/src/load-quorum.ts",
+        "packages/core/src/load-quorum-orchestrator.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

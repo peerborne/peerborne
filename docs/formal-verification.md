@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 85 production functions in 27 proof units. The runtime calls
+LemmaScript checks 89 production functions in 27 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -33,7 +33,7 @@ consumer, proof obligation and non-vacuity witness.
 | --------------------------------------------------------------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                                      |
 | [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                                             |
-| [Quorum](../packages/core/src/policy/quorum.ts)                             |         3 | Strict-majority default, explicit trust floor, and exactly one qualifying digest bucket; ambiguous or absent winners are rejected.                                                                        |
+| [Quorum](../packages/core/src/policy/quorum.ts) | 7 | Strict-majority default and explicit trust floor; exact first-eligible peer selection, distinct identities, digest multiplicities, stable cohort projection and failure precedence. Distinct digests cannot both reach a strict majority of the counted votes; ambiguous threshold winners are rejected. |
 | [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
 | [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
 | [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
@@ -65,6 +65,23 @@ proved integer arithmetic exactly. Callers still have to supply validated,
 detached values. A proof of a pure decision does not authenticate its inputs,
 make its commit atomic, establish storage durability or prove eventual progress.
 The cache-key proof does not prove WeakMap identity or namespace allocation.
+
+The quorum tally proves the exact multiplicity of every digest, including
+zero for absent digests, against a checked recursive occurrence count. The
+first-eligible selector credits each transport identity once without letting
+an unusable earlier entry consume its slot. The cohort selector returns
+exactly the agreeing candidate positions in their original order. A separate
+checked lemma establishes that distinct digests cannot both reach a strict
+majority of the counted votes. Signing-authority deduplication and equivocation
+remain distinct from transport-identity deduplication.
+
+Native properties cover map insertion order, hash buffers and offsets,
+reflection, malformed/shared-memory responses, authority attribution and
+reordered Promise completions against an independent tally. Candidate object
+references and IDs are captured before multi-peer probes start; later edits
+to the caller's array cannot substitute unprobed objects into the cohort.
+This does not freeze arbitrary peer objects or authenticate callbacks. The
+orchestrator still relies on the probe callback to verify signatures and trust.
 
 The additional algorithm domains match the runtime guards: at most 32,768
 node occurrences and 131,072 edges for graph input; at most 2^30 BeeKEM leaves
@@ -128,8 +145,8 @@ post-compromise security, key erasure or cryptographic unforgeability.
 
 ## Property testing after proofs
 
-The inventory audits 32 property-suite files containing 64 explicit
-`fast-check` assertions across all six library packages. Seeds and workload
+The inventory audits 33 property-suite files containing 68 explicit
+`fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
 properties can invoke the same assertion more than once.
@@ -167,6 +184,14 @@ property suites. Bootstrap example tests and capability-hierarchy example
 tables were removed because their laws are now proved. Regex parsing,
 signature, rollback, serialization, browser and attack regressions remain
 where they check behavior outside the contracts.
+
+Quorum properties also exposed two runtime bugs: a caller could replace the
+peer array during a delayed probe round and receive unprobed replacement
+objects in the winning cohort, and rejected probe error names/messages were
+copied into logs. The round now projects only its captured candidates and
+emits fixed failure diagnostics without inspecting rejected error objects.
+Generated schedules preserve the reproductions; these are local orchestration
+findings, not evidence of a remote exploit or a complete loader proof.
 
 ## Cost and remaining work
 
@@ -213,6 +238,12 @@ assumption audit must find zero escapes. Generated implementation lines cannot
 be edited in proof additions. Domain witnesses guard against contradictory
 preconditions. Deliberate semantic mutations must reach the verifier and fail
 an obligation; a parser or generated-drift failure is insufficient.
+
+The pinned compiler has an ordered map-index expression limitation documented
+in the formal workflow. Accepted ordered map-index comparisons keep the lookup
+on the left. A separate audited calibration checks all four supported operators
+against scalar comparisons. Contract translation remains part of the trusted
+toolchain and requires review of the emitted program.
 
 A proof replaces tests only for the same property, implementation, model and
 preconditions. Runtime adapters, compiler behavior, native APIs, dependencies
