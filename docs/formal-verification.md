@@ -83,6 +83,8 @@ quarantine when native promise settlement cannot be safely observed.
 Preparation and both control-verifier phases use the same settlement observer;
 prototype-proxy promises and suppressed caller abort events have execution
 regressions. These JavaScript platform behaviors remain outside the phase proof.
+Generated consecutive-epoch schedules also check arrival-order adoption when
+later authentication completes first, while document work continues independently.
 Node/Chromium MLS checks exercise a
 fixture-only AES-GCM/Ed25519 content envelope, cross-document replay, a reader
 forging a writer message, tampering, rekey retry, credential revocation without

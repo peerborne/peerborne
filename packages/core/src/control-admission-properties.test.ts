@@ -459,6 +459,124 @@ describe('control ingress admission', () => {
     );
   });
 
+  test('preserves control arrival order when later epochs authenticate first without holding the membership queue', async () => {
+    const source = await context();
+    const sender = await bootstrap(source);
+    await flushAndCollect(sender);
+    const deliveries: Awaited<ReturnType<typeof flushAndCollect>> = [];
+    for (let index = 0; index < 4; index++) {
+      await sender.createCommit(
+        { changes: [] },
+        control(index + 2, 'update', source.identities.actorId),
+      );
+      deliveries.push(...(await flushAndCollect(sender)));
+    }
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer({ min: 2, max: 4 }),
+        fc.boolean(),
+        async (count, invalidHead) => {
+          const target = {
+            ...source,
+            provider: new ContractTestProvider(),
+            store: new InMemoryGroupStateStore(),
+            rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+            authorization: new AuthorizationPolicy(source.identities.actorId),
+          };
+          const release = deferred();
+          const laterAuthenticated = deferred();
+          let enabled = false;
+          let calls = 0;
+          let later = 0;
+          const coordinator = await GroupSecurityCoordinator.bootstrap(
+            {
+              ...config(target),
+              verifyControlSignature: async (payload, signature, actor) => {
+                const call = enabled ? ++calls : 0;
+                if (call === 1) await release.promise;
+                const valid = await source.identities.verify(
+                  payload,
+                  signature,
+                  actor,
+                );
+                if (call > 1 && ++later === count - 1 + (invalidHead ? 1 : 0))
+                  laterAuthenticated.resolve();
+                return valid;
+              },
+            },
+            createGroupInput,
+            { operationId: id(1), subjectId: source.identities.actorId },
+          );
+          enabled = true;
+          let settled = 0;
+          const incoming = deliveries.slice(0, count);
+          if (invalidHead)
+            incoming.unshift({
+              ...incoming[0],
+              controlRecord: {
+                ...incoming[0].controlRecord,
+                signature: new Uint8Array([0xde, 0xad]),
+              },
+            });
+          const pending = incoming.map((delivery) =>
+            coordinator
+              .applyCommit(delivery.commit!, delivery.controlRecord, [])
+              .then(
+                (result) => {
+                  settled++;
+                  return result.status;
+                },
+                (error: { code: string }) => {
+                  settled++;
+                  return error.code;
+                },
+              ),
+          );
+          try {
+            await laterAuthenticated.promise;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(settled).toBe(0);
+            expect(coordinator.publicState.epoch).toBe(0n);
+            let localApplied = false;
+            await coordinator.runDocumentOperation(
+              coordinator.documentContext,
+              new Uint8Array([1]),
+              async () =>
+                prepared(() => {
+                  localApplied = true;
+                }),
+            );
+            expect(localApplied).toBe(true);
+            release.resolve();
+            expect(await Promise.all(pending)).toEqual(
+              invalidHead
+                ? ['bad-signature', ...Array(count).fill('committed')]
+                : Array(count).fill('committed'),
+            );
+            expect(coordinator.publicState.epoch).toBe(BigInt(count));
+            expect(coordinator.pendingControlOperations).toEqual({
+              operations: 0,
+              bytes: 0,
+            });
+          } finally {
+            release.resolve();
+            await Promise.all(pending);
+          }
+        },
+      ),
+      {
+        seed: 2011110,
+        numRuns: 16,
+        examples: [
+          [2, false],
+          [4, false],
+          [2, true],
+          [4, true],
+        ],
+      },
+    );
+  });
+
   test('bounds aliased Welcome sets returned by a decoder before visiting the whole set', async () => {
     await fc.assert(
       fc.asyncProperty(

@@ -543,6 +543,10 @@ one-use certificate binds that check to the owned record. The verifier runs
 again at adoption to observe application trust changes. Parent/epoch admission,
 causal authorization, fork handling and provider adoption remain
 serialized. Malformed attachments do not hide an authenticated sibling fork.
+An independent bounded ingress queue preserves control arrival order even when
+later epochs authenticate first. It waits outside the membership queue, so
+document finalization and local membership work can still progress. Rejected
+authentication advances the ingress position; quarantined capacity remains charged.
 Decoder-returned Welcome sets are checked for aggregate size before cloning
 the complete set.
 

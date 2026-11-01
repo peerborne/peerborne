@@ -402,6 +402,7 @@ export class GroupSecurityCoordinator {
   private readonly pendingControls: GroupDocumentOperationBudget;
   private readonly authenticatedControlRecords =
     new WeakSet<MembershipControlRecord>();
+  private controlIngress: Promise<void> = Promise.resolve();
 
   private constructor(config: GroupSecurityCoordinatorConfig) {
     const snapshot = snapshotCoordinatorConfig(config);
@@ -706,24 +707,38 @@ export class GroupSecurityCoordinator {
             ),
           );
       };
-      const work = this.verifyControlAuthenticity(controlSnapshot, track)
-        .then(() => {
-          this.authenticatedControlRecords.add(controlSnapshot);
-          return this.runExclusive(() =>
-            this.applyCommitInternal(
-              commitSnapshot,
-              controlSnapshot,
-              welcomeSnapshots,
-              attachmentError,
-              track,
-            ),
-          );
-        })
-        .finally(async () => {
-          await Promise.all(retainedWork);
-          releaseLocal!();
-          releaseShared!();
-        });
+      const predecessor = this.controlIngress;
+      let finishPosition!: () => void;
+      this.controlIngress = new Promise<void>((resolve) => {
+        finishPosition = resolve;
+      });
+      const authenticated = this.verifyControlAuthenticity(
+        controlSnapshot,
+        track,
+      ).then(
+        () => ({ accepted: true as const }),
+        (error: unknown) => ({ accepted: false as const, error }),
+      );
+      const adoption = predecessor.then(async () => {
+        const authentication = await authenticated;
+        if (!authentication.accepted) throw authentication.error;
+        this.authenticatedControlRecords.add(controlSnapshot);
+        return this.runExclusive(() =>
+          this.applyCommitInternal(
+            commitSnapshot,
+            controlSnapshot,
+            welcomeSnapshots,
+            attachmentError,
+            track,
+          ),
+        );
+      });
+      void adoption.then(finishPosition, finishPosition);
+      const work = adoption.finally(async () => {
+        await Promise.all(retainedWork);
+        releaseLocal!();
+        releaseShared!();
+      });
       return Promise.race([work, unobservable]);
     } catch (error) {
       releaseLocal?.();
