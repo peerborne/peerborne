@@ -766,3 +766,122 @@ describe('anchored document admission boundaries', () => {
     expect(gate.budget.usage).toEqual({ operations: 0, bytes: 0 });
   });
 });
+
+test('holds nested preparation work after cancellation and rejects an escaped preparation scope', async () => {
+  const value = await context(),
+    coordinator = await bootstrap(value);
+  const entered = deferred(),
+    release = deferred(),
+    abort = new AbortController();
+  let scope!: import('./group-security-coordinator.js').GroupSecurityDocumentPreparation;
+  let commits = 0;
+  const pending = coordinator.runDocumentOperation(
+    coordinator.documentContext,
+    new Uint8Array(32),
+    async (_captured, _input, _signal, work) => {
+      scope = work;
+      const wait = work.observe(release.promise);
+      entered.resolve();
+      await wait;
+      return prepared(() => {
+        commits++;
+      });
+    },
+    { signal: abort.signal },
+  );
+  const outcome = pending.then(
+    () => 'accepted',
+    (error: { code: string }) => error.code,
+  );
+  await entered.promise;
+  abort.abort();
+  expect(await outcome).toBe('aborted');
+  expect(coordinator.pendingDocumentOperations).toEqual({
+    operations: 1,
+    bytes: 32,
+  });
+  release.resolve();
+  await turn();
+  await turn();
+  expect(commits).toBe(0);
+  expect(coordinator.pendingDocumentOperations).toEqual({
+    operations: 0,
+    bytes: 0,
+  });
+  await expect(scope.observe(Promise.resolve(1))).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+  await expect(scope.deriveEncryptionMaterial('/late')).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+});
+
+test('scoped native exporter keys bind the document and exact authenticated epoch without accepting repaired Unicode paths', async () => {
+  const value = await context(),
+    coordinator = await bootstrap(value);
+  const labels: string[] = [];
+  value.provider.exportSecret = async (input) => {
+    labels.push(input.label);
+    const bytes = new TextEncoder().encode(input.label);
+    const material = new Uint8Array(bytes.length + input.context.length);
+    material.set(bytes);
+    material.set(input.context, bytes.length);
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+  };
+  const derive = async (path: string) => {
+    let result!: import('./group-security-coordinator.js').GroupDocumentEncryptionMaterial;
+    await coordinator.runDocumentOperation(
+      coordinator.documentContext,
+      new Uint8Array(),
+      async (_context, _input, _signal, scope) => {
+        result = await scope.deriveEncryptionMaterial(path);
+        return prepared();
+      },
+    );
+    return result;
+  };
+  const first = await derive('/a'),
+    other = await derive('/b');
+  expect(labels).toEqual([
+    'peerborne/document-content-encryption/v1',
+    'peerborne/document-epoch-routing/v1',
+    'peerborne/document-content-encryption/v1',
+    'peerborne/document-epoch-routing/v1',
+  ]);
+  expect(first.epochTag).not.toEqual(other.epochTag);
+  const nonce = new Uint8Array(12),
+    data = new Uint8Array([1, 2, 3]);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce },
+    first.key,
+    data,
+  );
+  expect(
+    new Uint8Array(
+      await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: nonce },
+        first.key,
+        ciphertext,
+      ),
+    ),
+  ).toEqual(data);
+  await expect(
+    crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce },
+      other.key,
+      ciphertext,
+    ),
+  ).rejects.toThrow();
+  await expect(derive('/\ud800')).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+  await coordinator.createCommit(
+    { changes: [] },
+    control(2, 'update', value.identities.actorId),
+  );
+  const next = await derive('/a');
+  expect(next.epochTag).not.toEqual(first.epochTag);
+  await expect(
+    crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, next.key, ciphertext),
+  ).rejects.toThrow();
+});

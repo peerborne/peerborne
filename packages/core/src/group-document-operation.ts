@@ -109,12 +109,19 @@ export interface PreparedGroupDocumentOperation {
   readonly commit: () => void;
 }
 
+/** Observe actual nested work without thenable assimilation or early credit release. */
+export interface GroupDocumentPreparationWork {
+  isActive(): boolean;
+  observe<T>(work: unknown): Promise<{ readonly value: T }>;
+}
+
 export interface GroupDocumentOperationHooks<Context> {
   capture(signal: AbortSignal): Promise<Context>;
   prepare(
     context: Context,
     input: Uint8Array,
     signal: AbortSignal,
+    work: GroupDocumentPreparationWork,
   ): Promise<PreparedGroupDocumentOperation>;
   commit(
     context: Context,
@@ -207,13 +214,37 @@ export class GroupDocumentOperationGate {
     const invalid = new Promise<never>((_, reject) => {
       rejectInvalid = reject;
     });
-    const unexpectedWork: Promise<unknown>[] = [];
+    const unexpectedWork = new Set<Promise<unknown>>();
+    let preparationActive = false;
+    const retain = (pending: Promise<unknown>) => {
+      unexpectedWork.add(pending);
+      void pending.then(() => {
+        unexpectedWork.delete(pending);
+      });
+    };
     const invalidPreparation = (result: unknown) => {
       const pending = observeRejectedNativePromise(result);
-      if (pending !== undefined) unexpectedWork.push(pending);
+      if (pending !== undefined) retain(pending);
       const error = new GroupDocumentOperationError('invalid-preparation');
       if (pending !== undefined) rejectInvalid(error);
       return error;
+    };
+    const preparationWork: GroupDocumentPreparationWork = {
+      isActive: () => preparationActive,
+      observe: <T>(value: unknown) => {
+        if (!preparationActive)
+          return Promise.reject(
+            new GroupDocumentOperationError('invalid-preparation'),
+          );
+        const observed = observeAdmissionWork<T>(value);
+        retain(observed.settlement);
+        if (!observed.observable) {
+          const error = new GroupDocumentOperationError('invalid-preparation');
+          rejectInvalid(error);
+          return Promise.reject(error);
+        }
+        return observed.result;
+      },
     };
     const cancel = (code: 'aborted' | 'timeout') => {
       if (phase === 'committed' || cancelled !== undefined) return;
@@ -240,17 +271,29 @@ export class GroupDocumentOperationGate {
       checkActive();
       const context = await hooks.capture(controller.signal);
       checkActive();
-      const preparation = observeAdmissionWork<PreparedGroupDocumentOperation>(
-        hooks.prepare(context, payload, controller.signal),
-      );
-      unexpectedWork.push(preparation.settlement);
-      if (!preparation.observable) {
+      let staged: PreparedGroupDocumentOperation;
+      preparationActive = true;
+      try {
+        const preparation =
+          observeAdmissionWork<PreparedGroupDocumentOperation>(
+            hooks.prepare(context, payload, controller.signal, preparationWork),
+          );
+        retain(preparation.settlement);
+        if (!preparation.observable) {
+          const error = new GroupDocumentOperationError('invalid-preparation');
+          rejectInvalid(error);
+          throw error;
+        }
+        staged = (await preparation.result).value;
+      } finally {
+        preparationActive = false;
+      }
+      checkActive();
+      if (unexpectedWork.size !== 0) {
         const error = new GroupDocumentOperationError('invalid-preparation');
         rejectInvalid(error);
         throw error;
       }
-      const { value: staged } = await preparation.result;
-      checkActive();
       let stagedSnapshot: PreparedGroupDocumentOperation;
       try {
         stagedSnapshot =

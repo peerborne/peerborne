@@ -7,6 +7,9 @@ import {
   PreparedACLChange,
   CRDTChangeNodeWire,
   CRDTProvider,
+  CRDTDocumentSession,
+  PreparedDocumentChange,
+  preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
   validateInitialLoadSignerAuthority,
@@ -444,6 +447,123 @@ export type YjsDocumentChangeHandler = PeerborneDocumentChangeHandler<
 export class YjsProvider
   implements CRDTProvider<Doc, Uint8Array, (doc: Doc) => void>
 {
+  createDocumentSession(
+    document: Doc,
+  ): CRDTDocumentSession<Doc, Uint8Array, (doc: Doc) => void> {
+    let active: PreparedDocumentChange<Uint8Array> | undefined;
+    let shadow: Doc | undefined;
+    let shadowVersion = 0;
+    let acceptedShadowVersion = 0;
+    let revision = 0;
+    let closed = false;
+    let invalidated = false;
+    const commitOrigin = {};
+    const onUpdate = (_update: Uint8Array, origin: unknown) => {
+      if (revision === Number.MAX_SAFE_INTEGER) invalidated = true;
+      else revision++;
+      if (origin !== commitOrigin) invalidated = true;
+    };
+    document.on('updateV2', onUpdate);
+    const assertHealthy = () => {
+      if (closed || invalidated)
+        throw new Error(
+          'Document session is closed or changed outside admission',
+        );
+    };
+    const discardShadow = () => {
+      const previous = shadow;
+      shadow = undefined;
+      previous?.destroy();
+    };
+    const complete = (value: Doc) => {
+      if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
+        throw new Error('Document change has missing causal dependencies');
+    };
+    const stage = (prepare: (value: Doc) => Uint8Array) => {
+      assertHealthy();
+      if (active) throw new Error('Document session is busy');
+      complete(document);
+      if (shadow && shadowVersion !== acceptedShadowVersion) discardShadow();
+      if (!shadow) {
+        shadow = new Doc({ gc: document.gc });
+        applyUpdateV2(shadow, this.getSnapshot(document));
+        shadowVersion = 0;
+        acceptedShadowVersion = 0;
+        shadow.on('updateV2', () => {
+          shadowVersion++;
+        });
+      }
+      const baseRevision = revision;
+      let stable: Uint8Array;
+      try {
+        stable = new Uint8Array(prepare(shadow));
+        complete(shadow);
+      } catch (error) {
+        discardShadow();
+        throw error;
+      }
+      const stagedVersion = shadowVersion;
+      const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
+        new Uint8Array(stable),
+        () =>
+          !closed &&
+          !invalidated &&
+          active === plan &&
+          revision === baseRevision &&
+          shadowVersion === stagedVersion,
+        () => {
+          applyUpdateV2(document, stable, commitOrigin);
+          complete(document);
+          if (invalidated)
+            throw new Error(
+              'Document changed outside admission while committing',
+            );
+          acceptedShadowVersion = stagedVersion;
+          active = undefined;
+        },
+        () => {
+          discardShadow();
+          active = undefined;
+        },
+        () => this.getSnapshot(shadow!),
+      );
+      active = plan;
+      return plan;
+    };
+    return {
+      get document() {
+        assertHealthy();
+        return document;
+      },
+      prepareLocal: (_message, change) =>
+        stage((value) => {
+          const before = encodeStateVector(value);
+          change(value);
+          return encodeStateAsUpdateV2(value, before);
+        }),
+      prepareRemote: (changes) => {
+        const owned = new Uint8Array(changes);
+        return stage((value) => {
+          applyUpdateV2(value, owned);
+          return owned;
+        });
+      },
+      prepareSnapshot: (changes) => {
+        const owned = new Uint8Array(changes);
+        return stage((value) => {
+          applyUpdateV2(value, owned);
+          return owned;
+        });
+      },
+      close: () => {
+        active?.discard();
+        document.off('updateV2', onUpdate);
+        discardShadow();
+        closed = true;
+      },
+    };
+  }
+
   newDocument(): Doc {
     return new Doc();
   }

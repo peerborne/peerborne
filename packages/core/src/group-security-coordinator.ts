@@ -1,3 +1,4 @@
+import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import { isSelfUpdateTransitionAllowed } from './policy/control-chain.js';
 import { observeAdmissionWork } from './internal/admission-work.js';
 import {
@@ -6,6 +7,7 @@ import {
   GroupDocumentOperationBudget,
   type GroupDocumentOperationOptions,
   type PreparedGroupDocumentOperation,
+  type GroupDocumentPreparationWork,
 } from './group-document-operation.js';
 import {
   coordinatorAdmission,
@@ -241,6 +243,16 @@ export interface GroupSecurityCoordinatorConfig {
 export interface GroupSecurityDocumentContext {
   readonly state: GroupSecurityPublicState;
   readonly controlHead: Uint8Array;
+}
+
+export interface GroupDocumentEncryptionMaterial {
+  readonly key: CryptoKey;
+  readonly epochTag: Uint8Array;
+}
+
+export interface GroupSecurityDocumentPreparation {
+  observe<T>(work: unknown): Promise<{ readonly value: T }>;
+  deriveEncryptionMaterial(documentId: string): Promise<GroupDocumentEncryptionMaterial>;
 }
 
 /**
@@ -519,6 +531,20 @@ export class GroupSecurityCoordinator {
     };
   }
 
+  usesControlAuthorizer(authorizer: MembershipControlAuthorizer): boolean {
+    return this.authorizeControl === authorizer;
+  }
+
+  get localMemberId(): Uint8Array {
+    this.assertUsable();
+    return new Uint8Array(this.actorId);
+  }
+
+  get currentControlRecord(): MembershipControlRecord {
+    this.assertUsable();
+    return cloneControlRecord(this.view.lastControlRecord);
+  }
+
   get pendingDocumentOperations(): Readonly<{
     operations: number;
     bytes: number;
@@ -556,6 +582,7 @@ export class GroupSecurityCoordinator {
       context: GroupSecurityDocumentContext,
       input: Uint8Array,
       signal: AbortSignal,
+      work: GroupSecurityDocumentPreparation,
     ) => Promise<PreparedGroupDocumentOperation>,
     options?: GroupDocumentOperationOptions,
   ): Promise<void> {
@@ -580,8 +607,12 @@ export class GroupSecurityCoordinator {
               throw new GroupDocumentOperationError('stale-context');
             return current;
           }),
-        prepare: (captured, payload, signal) =>
-          prepare(snapshotDocumentContext(captured), payload, signal),
+        prepare: (captured, payload, signal, work) =>
+          prepare(snapshotDocumentContext(captured), payload, signal, {
+            observe: <T,>(value: unknown) => work.observe<T>(value),
+            deriveEncryptionMaterial: (documentId) =>
+              this.deriveDocumentEncryptionMaterial(captured, documentId, work),
+          }),
         commit: (captured, finish, signal) =>
           this.runExclusive(async () => {
             if (signal.aborted)
@@ -608,6 +639,71 @@ export class GroupSecurityCoordinator {
     if (!groupSecurityRollbackAnchorsEqual(actual, expected))
       fail('rollback-detected', 'document operation anchor is not current');
     return this.documentContext;
+  }
+
+  private async deriveDocumentEncryptionMaterial(
+    expected: GroupSecurityDocumentContext,
+    documentId: string,
+    work: GroupDocumentPreparationWork,
+  ): Promise<GroupDocumentEncryptionMaterial> {
+    if (
+      !work.isActive() ||
+      typeof documentId !== 'string' ||
+      documentId.length === 0 ||
+      documentId.length > 4096 ||
+      !isWellFormedUtf16(documentId)
+    )
+      throw new GroupDocumentOperationError('invalid-preparation');
+    const path = new TextEncoder().encode(documentId);
+    const context = concat([
+      new TextEncoder().encode('peerborne/document-key-context/v1\0'),
+      bytes16(path),
+      canonicalGroupSecurityState(expected.state),
+      expected.controlHead,
+    ]);
+    const secrets = await this.runExclusive(async () => {
+      if (
+        !work.isActive() ||
+        !documentContextsEqual(await this.anchoredDocumentContext(), expected)
+      )
+        throw new GroupDocumentOperationError('stale-context');
+      const exportBytes = async (label: string) => {
+        const { value } = await work.observe<Uint8Array>(
+          this.provider.exportSecret({
+            label,
+            context: new Uint8Array(context),
+            length: 32,
+          }),
+        );
+        return copyControlRecordBytes(value, 'document exporter', 32, 32);
+      };
+      const secret = await exportBytes(
+        'peerborne/document-content-encryption/v1',
+      );
+      try {
+        const tag = await exportBytes('peerborne/document-epoch-routing/v1');
+        return { secret, tag };
+      } catch (error) {
+        secret.fill(0);
+        throw error;
+      }
+    });
+    try {
+      const { value: key } = await work.observe<CryptoKey>(
+        (async () =>
+          crypto.subtle.importKey(
+            'raw',
+            secrets.secret as Uint8Array<ArrayBuffer>,
+            'AES-GCM',
+            false,
+            ['encrypt', 'decrypt'],
+          ))(),
+      );
+      return { key, epochTag: secrets.tag.slice(0, 16) };
+    } finally {
+      secrets.secret.fill(0);
+      secrets.tag.fill(0);
+    }
   }
 
   pendingOutboxCount(): Promise<number> {

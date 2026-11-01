@@ -465,7 +465,10 @@
         "advanceDocumentOperation"
       ],
       "witness": "documentAdmission_domain",
-      "consumers": ["packages/core/src/group-document-operation.ts"],
+      "consumers": [
+        "packages/core/src/group-document-operation.ts",
+        "packages/core/src/document-crdt-session.ts"
+      ],
       "verifiedTargets": [
         "canReserveDocumentOperation_ensures",
         "releaseDocumentOperationBytes_ensures",

@@ -42,3 +42,5 @@ export * from './group-security-transition-record.js';
 export * from './webcrypto-group-state-protector.js';
 
 export { canonicalKeychain } from './keychain-canonical.js';
+
+export * from './document-crdt-session.js';

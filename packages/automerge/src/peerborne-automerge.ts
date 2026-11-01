@@ -17,6 +17,7 @@ import {
   save,
   load,
   merge,
+  free,
 } from '@automerge/automerge';
 
 import {
@@ -28,6 +29,9 @@ import {
   PreparedACLChange,
   CRDTChangeNodeWire,
   CRDTProvider,
+  CRDTDocumentSession,
+  PreparedDocumentChange,
+  preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
   validateInitialLoadSignerAuthority,
@@ -83,6 +87,73 @@ export class AutomergeProvider<T = any>
 {
   readonly initialInvitationCapacityProfile =
     INITIAL_INVITATION_CAPACITY_PROFILE;
+
+  createDocumentSession(
+    initial: Doc<T>,
+  ): CRDTDocumentSession<Doc<T>, BinaryChange[], (doc: T) => void> {
+    let document = initial;
+    let active: PreparedDocumentChange<BinaryChange[]> | undefined;
+    let closed = false;
+    const actor = getActorId(initial);
+    const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]]) => {
+      if (closed || active)
+        throw new Error('Document session is closed or busy');
+      const base = document;
+      const owned = clone(base, { actor });
+      let next: Doc<T>;
+      let delta: BinaryChange[];
+      try {
+        [next, delta] = apply(owned);
+        if (getMissingDeps(next, []).length !== 0)
+          throw new Error('Document change has missing causal dependencies');
+      } catch (error) {
+        free(owned);
+        throw error;
+      }
+      const changes = delta.map(
+        (bytes) => new Uint8Array(bytes) as BinaryChange,
+      );
+      const plan: PreparedDocumentChange<BinaryChange[]> =
+        preparedDocumentChange(
+          changes,
+          () => !closed && document === base && active === plan,
+          () => {
+            document = next;
+            active = undefined;
+          },
+          () => {
+            free(next);
+            active = undefined;
+          },
+          () => this.getSnapshot(next),
+        );
+      active = plan;
+      return plan;
+    };
+    return {
+      get document() {
+        return document;
+      },
+      prepareLocal: (message, fn) =>
+        stage((base) => this.localChange(base, message, fn)),
+      prepareRemote: (changes) => {
+        const owned = changes.map(
+          (bytes) => new Uint8Array(bytes) as BinaryChange,
+        );
+        return stage((base) => [this.remoteChange(base, owned), owned]);
+      },
+      prepareSnapshot: (snapshot) => {
+        const owned = snapshot.map(
+          (bytes) => new Uint8Array(bytes) as BinaryChange,
+        );
+        return stage((base) => [this.applySnapshot(base, owned), owned]);
+      },
+      close: () => {
+        active?.discard();
+        closed = true;
+      },
+    };
+  }
 
   newDocument(): Doc<T> {
     return init();
