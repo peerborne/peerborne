@@ -1,6 +1,6 @@
 {
   "status": "experimental-adapter-gates-passed",
-  "recordedAt": "2026-10-31T23:46:18.654Z",
+  "recordedAt": "2026-11-01T00:32:35.676Z",
   "node": "v22.19.0",
   "chromium": "145.0.7632.6",
   "platform": "darwin-arm64",
@@ -40,18 +40,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          519,
-          503,
+          511,
+          511,
           652,
           542
         ],
         "welcomes": [
-          810,
+          802,
           1022
         ],
         "states": [
-          1314,
-          1314
+          1306,
+          1306
         ]
       }
     },
@@ -88,7 +88,7 @@
       "generateKey:X25519": 80,
       "importKey:Ed25519": 453,
       "sign:Ed25519": 85,
-      "digest:SHA-256": 1997,
+      "digest:SHA-256": 1961,
       "importKey:HMAC": 4048,
       "sign:HMAC": 3943,
       "verify:Ed25519": 423,
@@ -135,18 +135,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          505,
-          505,
-          660,
-          550
+          507,
+          509,
+          652,
+          542
         ],
         "welcomes": [
-          804,
-          1018
+          798,
+          1016
         ],
         "states": [
-          1308,
-          1308
+          1302,
+          1302
         ]
       }
     },
@@ -183,7 +183,7 @@
       "generateKey:X25519": 80,
       "importKey:Ed25519": 453,
       "sign:Ed25519": 85,
-      "digest:SHA-256": 1997,
+      "digest:SHA-256": 1961,
       "importKey:HMAC": 4048,
       "sign:HMAC": 3943,
       "verify:Ed25519": 423,

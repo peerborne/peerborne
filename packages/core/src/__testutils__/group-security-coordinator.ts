@@ -128,11 +128,13 @@ export function commitPayload(
 export function deltaFromCommitPayload(
   payload: Uint8Array,
 ): AppliedGroupMembershipDelta {
-  const decoded = JSON.parse(decoder.decode(payload)) as {
-    kind: 'add' | 'remove' | 'update' | 'self-update';
-    memberId: string;
-    keyPackageRef?: string;
-  };
+  const decoded = JSON.parse(decoder.decode(payload)) as
+    | { kind: 'self-update' }
+    | {
+        kind: 'add' | 'remove' | 'update';
+        memberId: string;
+        keyPackageRef?: string;
+      };
   if (decoded.kind === 'self-update') return { changes: [] };
   const memberId = fromHex(decoded.memberId);
   if (decoded.kind === 'remove') {

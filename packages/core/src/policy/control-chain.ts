@@ -1,3 +1,5 @@
+const MAX_U64 = 18446744073709551615n;
+
 export function isControlActionValid(
   hasPrevious: boolean,
   creating: boolean,
@@ -17,14 +19,14 @@ export function isSelfUpdateTransitionAllowed(
   transcriptChanged: boolean,
 ): boolean {
   //@ verify
-  //@ requires 0n <= priorEpoch && priorEpoch <= 18446744073709551615n
-  //@ requires 0n <= nextEpoch && nextEpoch <= 18446744073709551615n
-  //@ ensures \result <==> updating && actorIsSubject && noWelcomes && priorEpoch < 18446744073709551615n && nextEpoch === priorEpoch + 1n && treeChanged && transcriptChanged
+  //@ requires 0n <= priorEpoch && priorEpoch <= MAX_U64
+  //@ requires 0n <= nextEpoch && nextEpoch <= MAX_U64
+  //@ ensures \result <==> updating && actorIsSubject && noWelcomes && priorEpoch < MAX_U64 && nextEpoch === priorEpoch + 1n && treeChanged && transcriptChanged
   return (
     updating &&
     actorIsSubject &&
     noWelcomes &&
-    priorEpoch < 18446744073709551615n &&
+    priorEpoch < MAX_U64 &&
     nextEpoch === priorEpoch + 1n &&
     treeChanged &&
     transcriptChanged
@@ -39,15 +41,15 @@ export function controlEpochFollows(
   creating: boolean,
 ): boolean {
   //@ verify
-  //@ requires 0n <= previousEpoch && previousEpoch <= 18446744073709551615n
-  //@ requires 0n <= initialEpoch && initialEpoch <= 18446744073709551615n
-  //@ requires 0n <= incomingEpoch && incomingEpoch <= 18446744073709551615n
-  //@ ensures \result <==> isControlActionValid(hasPrevious, creating) && (hasPrevious ? previousEpoch < 18446744073709551615n && incomingEpoch === previousEpoch + 1n : incomingEpoch === initialEpoch)
+  //@ requires 0n <= previousEpoch && previousEpoch <= MAX_U64
+  //@ requires 0n <= initialEpoch && initialEpoch <= MAX_U64
+  //@ requires 0n <= incomingEpoch && incomingEpoch <= MAX_U64
+  //@ ensures \result <==> isControlActionValid(hasPrevious, creating) && (hasPrevious ? previousEpoch < MAX_U64 && incomingEpoch === previousEpoch + 1n : incomingEpoch === initialEpoch)
   //@ ensures \result && hasPrevious ==> previousEpoch < incomingEpoch
-  //@ ensures hasPrevious && previousEpoch === 18446744073709551615n ==> !\result
+  //@ ensures hasPrevious && previousEpoch === MAX_U64 ==> !\result
   if (!isControlActionValid(hasPrevious, creating)) return false;
   return hasPrevious
-    ? previousEpoch < 18446744073709551615n &&
+    ? previousEpoch < MAX_U64 &&
         incomingEpoch === previousEpoch + 1n
     : incomingEpoch === initialEpoch;
 }
@@ -68,9 +70,9 @@ export function classifyControlAppend(
   | 'epoch-out-of-order'
   | 'parent-mismatch' {
   //@ verify
-  //@ requires 0n <= previousEpoch && previousEpoch <= 18446744073709551615n
-  //@ requires 0n <= initialEpoch && initialEpoch <= 18446744073709551615n
-  //@ requires 0n <= incomingEpoch && incomingEpoch <= 18446744073709551615n
+  //@ requires 0n <= previousEpoch && previousEpoch <= MAX_U64
+  //@ requires 0n <= initialEpoch && initialEpoch <= MAX_U64
+  //@ requires 0n <= incomingEpoch && incomingEpoch <= MAX_U64
   //@ ensures \result === "operation-id-conflict" <==> operationKnown
   //@ ensures \result === "epoch-out-of-order" <==> !operationKnown && !controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating)
   //@ ensures \result === "parent-mismatch" <==> !operationKnown && controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating) && !(hasPrevious ? hasParent && parentMatches : !hasParent)

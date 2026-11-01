@@ -342,6 +342,7 @@ export class GroupSecurityCoordinator {
   private rollbackAnchorValue?: GroupSecurityRollbackAnchorValue;
   private poisonedReason?: Error;
   private forkReason?: GroupSecurityCoordinatorError;
+  private emptySelfUpdateHashes?: Promise<readonly [Uint8Array, Uint8Array]>;
 
   private readonly provider: GroupSecurityProvider;
   private readonly store: DurableGroupStateStore;
@@ -1604,6 +1605,7 @@ export class GroupSecurityCoordinator {
         result,
         priorState,
         requestedMembership,
+        control,
       );
       const unsigned: UnsignedMembershipControlRecord = {
         version: MEMBERSHIP_CONTROL_VERSION,
@@ -2665,14 +2667,16 @@ export class GroupSecurityCoordinator {
     if (valid !== true) fail('bad-signature', 'control signature is invalid');
     if (record.action !== 'create') {
       const binding = parseControlBinding(record);
+      const [emptyMembershipHash, emptyWelcomesHash] =
+        await this.selfUpdateBindingHashes();
       if (
         equalBytes(
           binding.appliedMembershipDeltaHash,
-          await appliedGroupMembershipDeltaHash({ changes: [] }),
+          emptyMembershipHash,
         ) &&
         (record.action !== 'update' ||
           !equalBytes(record.actorId, record.subjectId) ||
-          !equalBytes(binding.welcomeSetHash, await welcomeSetHash([])))
+          !equalBytes(binding.welcomeSetHash, emptyWelcomesHash))
       ) {
         fail(
           'control-mismatch',
@@ -2680,6 +2684,19 @@ export class GroupSecurityCoordinator {
         );
       }
     }
+  }
+
+  private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {
+    if (this.emptySelfUpdateHashes === undefined) {
+      this.emptySelfUpdateHashes = Promise.all([
+        appliedGroupMembershipDeltaHash({ changes: [] }),
+        welcomeSetHash([]),
+      ]).catch((error) => {
+        this.emptySelfUpdateHashes = undefined;
+        throw error;
+      });
+    }
+    return this.emptySelfUpdateHashes;
   }
 
   private async authorizeControlRecord(
@@ -2964,6 +2981,7 @@ export class GroupSecurityCoordinator {
     result: GroupSecurityCommitResult,
     prior: GroupSecurityPublicState,
     requestedMembership: AppliedGroupMembershipChange | undefined,
+    control: GroupSecurityControlInput,
   ): Promise<void> {
     validateCommit(result.commit);
     const expectedEpoch = incrementEpoch(prior.epoch);
@@ -2992,8 +3010,8 @@ export class GroupSecurityCoordinator {
     if (
       requestedMembership === undefined &&
       !isSelfUpdateTransitionAllowed(
-        true,
-        true,
+        control.action === 'update',
+        equalBytes(this.actorId, control.subjectId),
         result.welcomes.length === 0,
         prior.epoch,
         result.state.epoch,
