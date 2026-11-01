@@ -2,12 +2,14 @@ import type {
   DocumentJournalSnapshot,
   DocumentJournalStore,
   DocumentJournalPublication,
+  DocumentJournalStagedPublication,
 } from './document-replay-journal.js';
 import {
   MAX_DOCUMENT_JOURNAL_BYTES,
   MAX_DOCUMENT_JOURNAL_ENTRIES,
   DocumentJournalCapacityError,
   DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD,
+  MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
 } from './document-replay-journal.js';
 import { documentBytesEqual } from './internal/document-binary.js';
 import { copyUnsharedUint8Array } from './utils.js';
@@ -60,7 +62,7 @@ function clone(
       'pending journal entry',
     ),
     ...(value.pending.publication
-      ? { publication: ownPublication(value.pending.publication) }
+      ? { publication: ownStagedPublication(value.pending.publication) }
       : {}),
   };
   return {
@@ -79,9 +81,24 @@ function ownPublication(
     frame: copyUnsharedUint8Array(
       value.frame,
       1,
-      1024 * 1024,
+      MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
       'publication frame',
     ),
+  };
+}
+
+function ownStagedPublication(
+  value: DocumentJournalStagedPublication,
+): DocumentJournalStagedPublication {
+  if (
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes < 1 ||
+    value.bytes > MAX_DOCUMENT_STORED_PUBLICATION_BYTES
+  )
+    throw new Error('Invalid publication reservation');
+  return {
+    id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
+    bytes: value.bytes,
   };
 }
 
@@ -90,7 +107,7 @@ function staged(
   revision: number,
   token: Uint8Array,
   entry: Uint8Array,
-  publication?: DocumentJournalPublication,
+  publication?: DocumentJournalStagedPublication,
   checkpoint = false,
 ): DocumentJournalSnapshot {
   if (current.revision !== revision || current.pending)
@@ -100,7 +117,7 @@ function staged(
     ((current.publications?.length ?? 0) >= 16 ||
       (current.publications ?? []).reduce(
         (sum, value) => sum + value.frame.length,
-        publication.frame.length,
+        publication.bytes,
       ) >
         16 * 1024 * 1024)
   )
@@ -130,6 +147,7 @@ function committed(
   token: Uint8Array,
   checkpoint: boolean,
   acceptedEntry: Uint8Array,
+  acceptedPublication?: DocumentJournalPublication,
 ): DocumentJournalSnapshot {
   if (
     current.revision !== revision ||
@@ -143,6 +161,17 @@ function committed(
     current.pending.entry.length + DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD
   )
     throw new Error('Invalid accepted journal framing');
+  if (
+    !!current.pending.publication !== !!acceptedPublication ||
+    (acceptedPublication &&
+      (!documentBytesEqual(
+        acceptedPublication.id,
+        current.pending.publication!.id,
+      ) ||
+        acceptedPublication.frame.length !==
+          current.pending.publication!.bytes))
+  )
+    throw new Error('Accepted publication does not match reservation');
   const entries = checkpoint
     ? [acceptedEntry]
     : [...current.entries, acceptedEntry];
@@ -157,7 +186,7 @@ function committed(
     entries,
     publications: [
       ...(current.publications ?? []),
-      ...(current.pending.publication ? [current.pending.publication] : []),
+      ...(acceptedPublication ? [acceptedPublication] : []),
     ],
   };
 }
@@ -200,7 +229,7 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
     revision: number,
     token: Uint8Array,
     entry: Uint8Array,
-    publication?: DocumentJournalPublication,
+    publication?: DocumentJournalStagedPublication,
     checkpoint = false,
   ): Promise<void> {
     const ownToken = copyUnsharedUint8Array(token, 32, 32, 'journal token'),
@@ -217,7 +246,7 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
         revision,
         ownToken,
         ownEntry,
-        publication && ownPublication(publication),
+        publication && ownStagedPublication(publication),
         checkpoint,
       ),
     );
@@ -228,6 +257,7 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
     token: Uint8Array,
     checkpoint: boolean,
     acceptedEntry: Uint8Array,
+    acceptedPublication?: DocumentJournalPublication,
   ): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
     const accepted = copyUnsharedUint8Array(
@@ -236,6 +266,8 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
       MAX_DOCUMENT_JOURNAL_BYTES,
       'accepted journal entry',
     );
+    const publication =
+      acceptedPublication && ownPublication(acceptedPublication);
     this.documents.set(
       key,
       committed(
@@ -244,6 +276,7 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
         owned,
         checkpoint,
         accepted,
+        publication,
       ),
     );
   }
@@ -309,7 +342,7 @@ function readHead(value: JournalHead | undefined): JournalHead {
       seen.has(publication.id) ||
       !Number.isSafeInteger(publication.bytes) ||
       publication.bytes < 1 ||
-      publication.bytes > 1024 * 1024
+      publication.bytes > MAX_DOCUMENT_STORED_PUBLICATION_BYTES
     )
       throw new Error('Invalid publication index');
     seen.add(publication.id);
@@ -331,7 +364,7 @@ function readHead(value: JournalHead | undefined): JournalHead {
       typeof value.pending.checkpoint !== 'boolean' ||
       !Number.isSafeInteger(value.pending.publicationBytes) ||
       value.pending.publicationBytes < 0 ||
-      value.pending.publicationBytes > 1024 * 1024
+      value.pending.publicationBytes > MAX_DOCUMENT_STORED_PUBLICATION_BYTES
     )
       throw new Error('Invalid pending journal index');
   }
@@ -447,7 +480,11 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                     'pending entry',
                   ),
                   ...(item.result.publication
-                    ? { publication: ownPublication(item.result.publication) }
+                    ? {
+                        publication: ownStagedPublication(
+                          item.result.publication,
+                        ),
+                      }
                     : {}),
                 };
               });
@@ -569,7 +606,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
     revision: number,
     token: Uint8Array,
     entry: Uint8Array,
-    publication?: DocumentJournalPublication,
+    publication?: DocumentJournalStagedPublication,
     checkpoint = false,
   ): Promise<void> {
     const ownedToken = copyUnsharedUint8Array(token, 32, 32, 'journal token'),
@@ -579,7 +616,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         MAX_DOCUMENT_JOURNAL_BYTES,
         'journal entry',
       ),
-      ownedPublication = publication && ownPublication(publication);
+      ownedPublication = publication && ownStagedPublication(publication);
     return this.update(key, ['pending'], (head, transaction) => {
       if (head.revision !== revision || head.pending)
         throw new Error('Journal stage conflict');
@@ -599,7 +636,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
           (head.publications.length >= 16 ||
             head.publications.reduce(
               (sum, value) => sum + value.bytes,
-              ownedPublication.frame.length,
+              ownedPublication.bytes,
             ) >
               16 * 1024 * 1024))
       )
@@ -619,7 +656,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             token: ownedToken,
             bytes: ownedEntry.length,
             checkpoint,
-            publicationBytes: ownedPublication?.frame.length ?? 0,
+            publicationBytes: ownedPublication?.bytes ?? 0,
           },
         },
         key,
@@ -633,6 +670,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
     token: Uint8Array,
     checkpoint: boolean,
     acceptedEntry: Uint8Array,
+    acceptedPublication?: DocumentJournalPublication,
   ): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
     const accepted = copyUnsharedUint8Array(
@@ -641,6 +679,8 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       MAX_DOCUMENT_JOURNAL_BYTES,
       'accepted journal entry',
     );
+    const publication =
+      acceptedPublication && ownPublication(acceptedPublication);
     return this.update(
       key,
       ['pending', 'entries', 'publications'],
@@ -665,11 +705,16 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               pending.entry.length !== head.pending!.bytes
             )
               throw new Error('Pending journal changed');
-            const publication =
-              pending.publication && ownPublication(pending.publication);
+            const reservation =
+              pending.publication && ownStagedPublication(pending.publication);
             if (
+              !!reservation !== !!publication ||
               (publication?.frame.length ?? 0) !==
-              head.pending!.publicationBytes
+                head.pending!.publicationBytes ||
+              (reservation &&
+                (!publication ||
+                  reservation.bytes !== publication.frame.length ||
+                  !documentBytesEqual(reservation.id, publication.id)))
             )
               throw new Error('Pending publication changed');
             const next = revision + 1;

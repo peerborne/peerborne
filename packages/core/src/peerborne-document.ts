@@ -6621,6 +6621,7 @@ export class PeerborneDocument<
   public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
     if (!this._coordinated)
       throw new Error('Document does not use coordinated security');
+    if (!this._subscribed) throw new Error('Coordinated document is not open');
     const applied = await this._coordinated.receive(frame);
     if (applied) {
       this._document = this._coordinated.document;
@@ -6642,6 +6643,7 @@ export class PeerborneDocument<
   ): Promise<void> {
     if (!this._coordinated)
       throw new Error('Document does not use coordinated security');
+    if (!this._subscribed) throw new Error('Coordinated document is not open');
     await this._coordinated.applyAuthorityUpdate(encoded);
   }
 

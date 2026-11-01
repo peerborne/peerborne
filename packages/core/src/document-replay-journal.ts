@@ -35,6 +35,10 @@ export interface DocumentJournalPublication {
   readonly id: Uint8Array;
   readonly frame: Uint8Array;
 }
+export interface DocumentJournalStagedPublication {
+  readonly id: Uint8Array;
+  readonly bytes: number;
+}
 export interface DocumentJournalSnapshot {
   readonly revision: number;
   readonly entries: ReadonlyArray<Uint8Array>;
@@ -42,7 +46,7 @@ export interface DocumentJournalSnapshot {
   readonly pending?: {
     readonly token: Uint8Array;
     readonly entry: Uint8Array;
-    readonly publication?: DocumentJournalPublication;
+    readonly publication?: DocumentJournalStagedPublication;
   };
 }
 /** Each mutation is one atomic transaction. A pending entry is never restored as accepted. */
@@ -59,7 +63,7 @@ export interface DocumentJournalStore {
     expectedRevision: number,
     token: Uint8Array,
     entry: Uint8Array,
-    publication?: DocumentJournalPublication,
+    publication?: DocumentJournalStagedPublication,
     checkpoint?: boolean,
   ): Promise<void>;
   commit(
@@ -68,6 +72,7 @@ export interface DocumentJournalStore {
     token: Uint8Array,
     checkpoint: boolean,
     acceptedEntry: Uint8Array,
+    acceptedPublication?: DocumentJournalPublication,
   ): Promise<void>;
   discard(key: string, token: Uint8Array): Promise<void>;
   publicationSent?(key: string, id: Uint8Array): Promise<void>;
@@ -98,6 +103,13 @@ const DOMAIN = Uint8Array.from(
 const MAX_SNAPSHOT = 64 * 1024 * 1024,
   MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024;
 export const DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD = 32;
+export const DOCUMENT_PUBLICATION_OVERHEAD = 40;
+export const MAX_DOCUMENT_STORED_PUBLICATION_BYTES =
+  1024 * 1024 + DOCUMENT_PUBLICATION_OVERHEAD;
+const PUBLICATION_DOMAIN = Uint8Array.from(
+  'peerborne/document-journal-publication/v1\0',
+  (value) => value.charCodeAt(0),
+);
 const ACCEPTED_DOMAIN = Uint8Array.from(
   'peerborne/document-journal-accepted/v1\0',
   (value) => value.charCodeAt(0),
@@ -526,11 +538,14 @@ export class DocumentReplayJournal {
       const publication =
         outboundFrame === undefined
           ? undefined
-          : { frame: outboundFrame, id: new Uint8Array() as Uint8Array };
+          : {
+              bytes: outboundFrame.length + DOCUMENT_PUBLICATION_OVERHEAD,
+              id: new Uint8Array() as Uint8Array,
+            };
       if (publication) {
         if (typeof this.store.publicationSent !== 'function')
           throw new Error('Journal store lacks publication support');
-        publication.id = await digest(publication.frame);
+        publication.id = await digest(outboundFrame!);
       }
       await this.store.stage(
         this.storageKey,
@@ -539,7 +554,7 @@ export class DocumentReplayJournal {
         entry.slice(),
         publication && {
           id: publication.id.slice(),
-          frame: publication.frame.slice(),
+          bytes: publication.bytes,
         },
         checkpoint,
       );
@@ -557,6 +572,14 @@ export class DocumentReplayJournal {
               token.slice(),
               checkpoint,
               accepted.slice(),
+              publication && {
+                id: publication.id.slice(),
+                frame: await this.sealPublication(
+                  revision,
+                  publication.id,
+                  outboundFrame!,
+                ),
+              },
             );
             const actual = this.store.loadAcceptedHead
               ? await this.store.loadAcceptedHead(this.storageKey)
@@ -629,24 +652,117 @@ export class DocumentReplayJournal {
   }
 
   async pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
-    const publications = this.store.loadPublications
-      ? await this.store.loadPublications(this.storageKey)
-      : (await this.store.load(this.storageKey)).publications;
-    if (!Array.isArray(publications) || publications.length > 16) {
+    if (!this.opened || this.failed || this.active)
+      throw new Error('Document journal is unavailable');
+    try {
+      const publications = this.store.loadPublications
+        ? await this.store.loadPublications(this.storageKey)
+        : (await this.store.load(this.storageKey)).publications;
       if (publications === undefined) return [];
-      throw new Error('Invalid document publication queue');
+      if (!Array.isArray(publications) || publications.length > 16)
+        throw new Error('Invalid document publication queue');
+      let bytes = 0;
+      const owned = publications.map((value) => {
+        const frame = copyUnsharedUint8Array(
+          value.frame,
+          1,
+          Math.min(
+            MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
+            16 * 1024 * 1024 - bytes,
+          ),
+          'stored document publication',
+        );
+        bytes += frame.length;
+        return {
+          id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
+          frame,
+        };
+      });
+      const result: Uint8Array[] = [];
+      for (const publication of owned) {
+        const reader = new DocumentBinaryReader(
+          publication.frame,
+          MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
+        );
+        const revision = reader.number(8),
+          nonce = reader.fixed(12),
+          ciphertext = reader.bytes(1024 * 1024 + 16);
+        reader.end();
+        if (revision < 1 || revision > this.revision)
+          throw new Error('Unaccepted publication revision');
+        const plaintext = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: nonce as Uint8Array<ArrayBuffer>,
+            additionalData: this.publicationAAD(
+              revision,
+              publication.id,
+            ) as Uint8Array<ArrayBuffer>,
+          },
+          this.key,
+          ciphertext as Uint8Array<ArrayBuffer>,
+        );
+        const frame = copyUnsharedUint8Array(
+          new Uint8Array(plaintext),
+          1,
+          1024 * 1024,
+          'accepted publication',
+        );
+        if (!documentBytesEqual(await digest(frame), publication.id))
+          throw new Error('Publication commitment mismatch');
+        result.push(frame);
+      }
+      if (
+        this.failed ||
+        this.active ||
+        !documentJournalAnchorsEqual(
+          this.head,
+          copyAnchor(await this.anchor.load(this.storageKey)),
+        )
+      )
+        throw new Error('Publication anchor is not current');
+      return result;
+    } catch (error) {
+      this.failed = true;
+      throw error;
     }
-    let bytes = 0;
-    return publications.map((value) => {
-      const frame = copyUnsharedUint8Array(
-        value.frame,
-        1,
-        Math.min(1024 * 1024, 16 * 1024 * 1024 - bytes),
-        'outbound document frame',
-      );
-      bytes += frame.length;
-      return frame;
-    });
+  }
+
+  private publicationAAD(revision: number, id: Uint8Array): Uint8Array {
+    return new DocumentBinaryWriter()
+      .fixed(PUBLICATION_DOMAIN)
+      .text(this.documentId)
+      .fixed(this.genesis)
+      .integer(revision, 8)
+      .fixed(id)
+      .finish();
+  }
+
+  private async sealPublication(
+    revision: number,
+    id: Uint8Array,
+    frame: Uint8Array,
+  ): Promise<Uint8Array> {
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce,
+          additionalData: this.publicationAAD(
+            revision,
+            id,
+          ) as Uint8Array<ArrayBuffer>,
+        },
+        this.key,
+        frame as Uint8Array<ArrayBuffer>,
+      ),
+    );
+    return new DocumentBinaryWriter(MAX_DOCUMENT_STORED_PUBLICATION_BYTES)
+      .integer(revision, 8)
+      .fixed(nonce)
+      .bytes(ciphertext, 1024 * 1024 + 16)
+      .finish();
   }
 
   async publicationSent(frame: Uint8Array): Promise<void> {

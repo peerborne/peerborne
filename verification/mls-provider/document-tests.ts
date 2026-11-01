@@ -402,6 +402,8 @@ export async function runProductionDocumentChecks() {
       hex(f.logs[0].genesisId),
     );
     const duplicate = makeDocument(0);
+    await rejects(() => duplicate.receiveSecurityFrame(first[0].data));
+    await rejects(() => duplicate.applySecurityAuthorityUpdate(new Uint8Array([1])));
     await rejects(() => duplicate.open());
     const afterDuplicate = await journalStores[0].load(
       hex(f.logs[0].genesisId),

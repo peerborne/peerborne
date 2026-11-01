@@ -146,6 +146,13 @@ anchor. Without a journal, receipts and the bounded outbox are process-local.
 Outbox reads and acknowledgments run through the document queue; publication
 cannot observe an accepted store record before its anchor decision completes.
 Concurrent retry calls coalesce behind the active publication batch.
+Staged storage contains only a publication hash and size reservation. The
+network-ready frame stays in private memory until admission succeeds, then the
+journal seals it with the device key under a separate publication domain bound
+to its document, genesis, accepted revision and frame hash. Every recovered
+publication is authenticated independently of retained history, including after
+checkpoint pruning. Storage can suppress or replay previously accepted outbox
+records; it cannot turn a rejected preparation into a publishable frame.
 
 ## Evidence and remaining boundaries
 

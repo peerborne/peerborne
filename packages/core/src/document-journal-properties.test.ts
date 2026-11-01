@@ -298,58 +298,79 @@ describe('accepted document WAL and replay persistence', () => {
   });
 });
 
-test('retains a bounded encrypted outbox across generated restarts and resumes after capacity is freed', async () => {
-  await fc.assert(
-    fc.asyncProperty(
-      fc.array(fc.record({ send: fc.boolean(), restart: fc.boolean() }), {
-        minLength: 18,
-        maxLength: 30,
-      }),
-      async (actions) => {
-        const f = await documentFixture(),
-          key = await deviceKey(),
-          store = new IndexedDBDocumentJournalStore(
-            'outbox',
-            new FakeIDBFactory(),
-          ),
-          anchor = new InMemoryDocumentJournalRollbackAnchor();
-        let document = engine(f, key, store, anchor, true),
-          accepted = 0;
-        await document.activate();
-        for (const action of actions) {
-          const pending = await document.pendingPublications();
-          if (pending.length === 16)
-            await expect(
-              document.change((doc) => {
-                doc.push(99);
-              }),
-            ).rejects.toThrow('capacity');
-          else {
-            await document.change((doc) => {
-              doc.push(accepted);
-            });
-            accepted++;
+test.each([0, 1, 2, 3])(
+  'retains a bounded encrypted outbox across generated restarts and resumes after capacity is freed (batch %s)',
+  async (batch) => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.record({ send: fc.boolean(), restart: fc.boolean() }), {
+          minLength: 18,
+          maxLength: 30,
+        }),
+        async (actions) => {
+          const f = await documentFixture(),
+            key = await deviceKey(),
+            store = new IndexedDBDocumentJournalStore(
+              'outbox',
+              new FakeIDBFactory(),
+            ),
+            anchor = new InMemoryDocumentJournalRollbackAnchor();
+          let document = engine(f, key, store, anchor, true),
+            accepted = 0;
+          await document.activate();
+          for (const action of actions) {
+            const pending = await document.pendingPublications();
+            if (pending.length === 16)
+              await expect(
+                document.change((doc) => {
+                  doc.push(99);
+                }),
+              ).rejects.toThrow('capacity');
+            else {
+              await document.change((doc) => {
+                doc.push(accepted);
+              });
+              accepted++;
+            }
+            if (action.send)
+              for (const frame of await document.pendingPublications())
+                await document.publicationSent(frame);
+            const unsent = await document.pendingPublications();
+            expect(unsent.length).toBeLessThanOrEqual(16);
+            if (action.restart) {
+              await document.close();
+              document = engine(f, key, store, anchor, true);
+              await document.activate();
+              expect(await document.pendingPublications()).toEqual(unsent);
+            }
+            expect(document.document).toHaveLength(accepted);
           }
-          if (action.send)
-            for (const frame of await document.pendingPublications())
-              await document.publicationSent(frame);
-          const unsent = await document.pendingPublications();
-          expect(unsent.length).toBeLessThanOrEqual(16);
-          if (action.restart) {
-            await document.close();
-            document = engine(f, key, store, anchor, true);
-            await document.activate();
-            expect(await document.pendingPublications()).toEqual(unsent);
-          }
-          expect(document.document).toHaveLength(accepted);
-        }
-        await document.close();
-        await store.close();
+          await document.close();
+          await store.close();
+        },
+      ),
+      {
+        seed:
+          batch === 0
+            ? 2011143
+            : batch === 1
+              ? 2011145
+              : batch === 2
+                ? 2011146
+                : 2011147,
+        numRuns: 4,
+        examples: [
+          [
+            Array.from({ length: 19 }, (_, index) => ({
+              send: index === 17,
+              restart: index === 16,
+            })),
+          ],
+        ],
       },
-    ),
-    { seed: 2011143, numRuns: 16 },
-  );
-});
+    );
+  },
+);
 
 test('IndexedDB delta commits and outbox draining never read or rewrite a two-megabyte checkpoint', async () => {
   const f = await documentFixture(),
@@ -383,15 +404,24 @@ test('IndexedDB delta commits and outbox draining never read or rewrite a two-me
   const getSpy = jest
     .spyOn(FakeObjectStore.prototype, 'get')
     .mockImplementation(function (this: any, ...args: any[]) {
-      if (this.name === 'entries' && Array.isArray(args[0]) && args[0][1] === 1)
+      if (
+        this.transaction.db.name === 'io-proportionality' &&
+        this.name === 'entries' &&
+        Array.isArray(args[0]) &&
+        args[0][1] === 1
+      )
         checkpointReads++;
       return Reflect.apply(get, this, args);
     });
   const putSpy = jest
     .spyOn(FakeObjectStore.prototype, 'put')
     .mockImplementation(function (this: any, value: any, ...args: any[]) {
-      if (this.name === 'entries') writtenBytes += value.byteLength;
-      if (this.name === 'pending') writtenBytes += value.entry.byteLength;
+      if (this.transaction.db.name === 'io-proportionality') {
+        if (this.name === 'entries') writtenBytes += value.byteLength;
+        if (this.name === 'pending') writtenBytes += value.entry.byteLength;
+        if (this.name === 'publications')
+          writtenBytes += value.frame.byteLength;
+      }
       return Reflect.apply(put, this, [value, ...args]);
     });
   try {
@@ -692,8 +722,12 @@ test('coordinated IndexedDB writes stay proportional to deltas with a large sign
   const putSpy = jest
     .spyOn(FakeObjectStore.prototype, 'put')
     .mockImplementation(function (this: any, value: any, ...args: any[]) {
-      if (this.name === 'entries') writtenBytes += value.byteLength;
-      if (this.name === 'pending') writtenBytes += value.entry.byteLength;
+      if (this.transaction.db.name === 'authority-cost') {
+        if (this.name === 'entries') writtenBytes += value.byteLength;
+        if (this.name === 'pending') writtenBytes += value.entry.byteLength;
+        if (this.name === 'publications')
+          writtenBytes += value.frame.byteLength;
+      }
       return Reflect.apply(put, this, [value, ...args]);
     });
   try {
@@ -709,4 +743,87 @@ test('coordinated IndexedDB writes stay proportional to deltas with a large sign
     await document.close();
     await store.close();
   }
+});
+
+test('staging reveals no publishable ciphertext and rejected admission cannot mint an outbox entry', async () => {
+  const f = await documentFixture(),
+    key = await deviceKey(),
+    store = new InMemoryDocumentJournalStore(),
+    anchor = new InMemoryDocumentJournalRollbackAnchor();
+  const stage = store.stage.bind(store);
+  let reservation: unknown;
+  store.stage = async (...args) => {
+    reservation = args[4];
+    await stage(...args);
+    f.authority.version++;
+  };
+  const document = engine(f, key, store, anchor, true);
+  await document.activate();
+  await expect(
+    document.change((draft) => {
+      draft.push(99);
+    }),
+  ).rejects.toThrow();
+  expect(reservation).toEqual({
+    id: expect.any(Uint8Array),
+    bytes: expect.any(Number),
+  });
+  const snapshot = await store.load(documentBytesId(f.authority.genesisId));
+  expect(snapshot.publications).toEqual([]);
+  expect(snapshot.pending).toBeUndefined();
+  expect(document.document).toEqual([]);
+  await document.close();
+});
+
+test('authenticates each stored publication after its original journal entry was pruned', async () => {
+  const f = await documentFixture(),
+    key = await deviceKey(),
+    store = new InMemoryDocumentJournalStore(),
+    anchor = new InMemoryDocumentJournalRollbackAnchor();
+  const document = engine(f, key, store, anchor, true);
+  await document.activate();
+  let first!: Uint8Array;
+  for (let index = 0; index < 130; index++) {
+    const frame = await document.change((draft) => {
+      draft.push(index);
+    });
+    if (index === 0) first = frame;
+    else await document.publicationSent(frame);
+  }
+  expect(await document.pendingPublications()).toEqual([first]);
+  await document.close();
+  const snapshot = await store.load(documentBytesId(f.authority.genesisId));
+  expect(snapshot.entries.length).toBeLessThan(10);
+  expect(snapshot.publications).toHaveLength(1);
+  const publication = snapshot.publications![0];
+  expect(publication.frame).not.toEqual(first);
+  await fc.assert(
+    fc.asyncProperty(
+      fc.integer({ min: 0, max: publication.frame.length - 1 }),
+      fc.integer({ min: 1, max: 255 }),
+      async (offset, mask) => {
+        const corrupt = publication.frame.slice();
+        corrupt[offset] ^= mask;
+        const hostile: DocumentJournalStore = {
+          load: async () => snapshot,
+          loadPublications: async () => [
+            { id: publication.id, frame: corrupt },
+          ],
+          stage: async () => {},
+          commit: async () => {},
+          discard: async () => {},
+        };
+        const journal = new DocumentReplayJournal(
+          f.authority.documentId,
+          f.authority.genesisId,
+          key,
+          hostile,
+          anchor,
+        );
+        await journal.restore();
+        await expect(journal.pendingPublications()).rejects.toThrow();
+      },
+    ),
+    { seed: 2011148, numRuns: 24 },
+  );
 });
