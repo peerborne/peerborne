@@ -1,5 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   captureConnectOptions,
   connectWithRetry,
@@ -56,6 +58,7 @@ describe('connection recovery and diagnostics', () => {
 
   test.each([
     'UnexpectedPeerError',
+    'EncryptionFailedError',
     'InvalidCryptoExchangeError',
     'DialError',
     'TypeError',
@@ -75,6 +78,19 @@ describe('connection recovery and diagnostics', () => {
     ).rejects.toBe(error);
     expect(dial).toHaveBeenCalledTimes(1);
   });
+
+  test('checks native Noise authentication rejection and active WebSocket cancellation', async () => {
+    await promisify(execFile)(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--test',
+        `${__dirname}/connection-native.fixture.mjs`,
+      ],
+      { timeout: 30_000 },
+    );
+  }, 40_000);
 
   test('keeps one attempt as the default', async () => {
     const dial = jest

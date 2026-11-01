@@ -10,6 +10,7 @@ export type ConnectionErrorType =
   | 'AbortError'
   | 'DialError'
   | 'UnexpectedPeerError'
+  | 'EncryptionFailedError'
   | 'InvalidCryptoExchangeError'
   | 'OtherError';
 
@@ -80,6 +81,7 @@ function errorType(error: unknown): ConnectionErrorType {
     case 'AbortError':
     case 'DialError':
     case 'UnexpectedPeerError':
+    case 'EncryptionFailedError':
     case 'InvalidCryptoExchangeError':
       return name;
     default:
