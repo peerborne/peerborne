@@ -421,3 +421,25 @@ test('preserves known root types in mirrors and publishes new typed roots', () =
   session.close();
   document.destroy();
 });
+
+test('closes admission before mirror destruction can invoke an escaped listener', () => {
+  const provider = new YjsProvider(),
+    document = provider.newDocument(),
+    session = provider.createDocumentSession(document);
+  let escaped!: Doc,
+    destroyed = 0;
+  session
+    .prepareLocal('', (draft) => {
+      escaped = draft;
+      draft.getMap('values').set('accepted', 1);
+    })
+    .commit();
+  escaped.on('destroy', () => {
+    destroyed++;
+    expect(() => session.prepareLocal('', () => {})).toThrow('closed');
+  });
+  session.close();
+  expect(destroyed).toBe(1);
+  expect(() => session.document).toThrow('closed');
+  document.destroy();
+});
