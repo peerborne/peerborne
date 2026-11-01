@@ -16,7 +16,7 @@ import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
 import { classifyAuthorityVotes } from './policy/authority-votes.js';
 import type { AuthorityVote } from './policy/authority-votes.js';
-import { requiredQuorumQ } from './policy/quorum.js';
+import { requiredQuorumQ, quorumCohortIndices } from './policy/quorum.js';
 
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -87,17 +87,6 @@ function normalizeLoadQuorumProbeResult(
   }
 }
 
-function describeProbeError(err: unknown): string {
-  try {
-    if (err instanceof Error) {
-      return `Cause: ${String(err.name)}: ${String(err.message)}`;
-    }
-  } catch {
-    // Fall through: a hostile error object must not break the tally.
-  }
-  return 'Cause: non-Error rejection';
-}
-
 function snapshotVoteHash(value: unknown): Uint8Array | undefined {
   try {
     return copyUnsharedUint8Array(
@@ -150,8 +139,8 @@ export type LoadQuorumOrchestratorResult<T> =
  * @param peers The de-duplicated list of candidate peers (typically Multiaddrs
  *   from `getConnections()`). Order is preserved into `narrowedPeers` so the
  *   caller's preferred-peer placement survives.
- * @param peerIdOf Extracts a stable peer-id key from each peer entry; used
- *   to match agreeing-cohort PeerIds back to the original peer entries.
+ * @param peerIdOf Captures identities before multi-peer probes start;
+ *   the same identities are used for tallying and cohort projection.
  * @param probeFn Probes one peer for a current V4 vote whose
  *   signer authority the callback has already authenticated and authorized.
  *   This orchestrator does not verify that claim. Return `null` for any
@@ -338,10 +327,10 @@ export async function runLoadQuorum<T>(opts: {
     let probe: LoadQuorumProbeResult;
     try {
       probe = await probeFn(probedPeer);
-    } catch (err) {
+    } catch {
       console.warn(
         `[${documentPath}] Initial-load quorum single-peer probe threw; ` +
-          `recording as non-vote. ${describeProbeError(err)}`,
+          `recording as non-vote.`,
       );
       probe = null;
     }
@@ -376,21 +365,22 @@ export async function runLoadQuorum<T>(opts: {
   // `LoadQuorumFailedError` API the caller is written against —
   // surfacing a raw probe error from `load()` instead of the structured
   // `LoadQuorumFailedError(insufficient-responses)` callers expect.
-  const probedPeers = peers.slice(0, k);
+  const probedPeers = peers.slice(0, k).map((peer) => ({
+    peer,
+    peerId: peerIdOf(peer),
+  }));
   const probeResults = await Promise.all(
-    probedPeers.map(async (peer) => {
+    probedPeers.map(async ({ peer, peerId }) => {
       let result: LoadQuorumProbeResult;
       try {
         result = await probeFn(peer);
-      } catch (err) {
+      } catch {
         console.warn(
-          `[${documentPath}] Initial-load quorum probe for peer ${peerIdOf(
-            peer,
-          )} threw; recording as non-vote. ${describeProbeError(err)}`,
+          `[${documentPath}] Initial-load quorum probe for peer ${peerId} threw; recording as non-vote.`,
         );
         result = null;
       }
-      return { peer, result: normalizeLoadQuorumProbeResult(result) };
+      return { peer, peerId, result: normalizeLoadQuorumProbeResult(result) };
     }),
   );
   // V4 votes are attributed to the signing authority that `probeFn` already
@@ -413,13 +403,13 @@ export async function runLoadQuorum<T>(opts: {
   const classification = classifyAuthorityVotes(signedVotes);
   let voteIndex = 0;
   const advertisements: PeerLoadQuorumVote[] = probeResults.map(
-    ({ peer, result }) => {
+    ({ peerId, result }) => {
       let hash: Uint8Array | null = null;
       if (result.kind === 'vote') {
         if (classification.firstVotes[voteIndex]) hash = result.hash;
         voteIndex++;
       }
-      return { peerId: peerIdOf(peer), hash };
+      return { peerId, hash };
     },
   );
   if (classification.equivocating) {
@@ -457,23 +447,13 @@ export async function runLoadQuorum<T>(opts: {
       `${decision.agreeingPeerIds.length}/${decision.respondingCount} ` +
       `peers agreed on digest=${decision.winningHashHex.slice(0, 12)}...`,
   );
-  // Narrow `peers` to only the agreeing cohort. The caller then asks one of
-  // these peers for the full state; with quorum agreement, any single
-  // agreeing peer's load is defended by Q-1 other peers attesting to the
-  // same tip set. Order is preserved.
+  // Use only the candidates and identities captured before probing.
   const agreeingSet = new Set(decision.agreeingPeerIds);
-  const narrowed = peers.filter((p) => agreeingSet.has(peerIdOf(p)));
-  // Defensive: at least one agreeing peer must remain. If peer-id
-  // extraction loses every peer (should be impossible because we built
-  // `agreeingSet` from `peerIdOf` outputs over the same `peers` array),
-  // FAIL CLOSED rather than silently widening the load to ALL peers --
-  // which would re-introduce non-agreeing peers into the load path and
-  // bypass the very narrowing the quorum gate is meant to enforce. The
-  // previous fallback (`narrowed.length > 0 ? narrowed : [...peers]`)
-  // expanded trust scope to escape a no-op edge case, which is exactly
-  // the kind of silent-degrade-to-unsafe-default that the gate exists to
-  // prevent. Surface as a structured `LoadQuorumFailedError` so callers
-  // see the same error contract as any other quorum failure.
+  const narrowed = quorumCohortIndices(
+    probedPeers.map(({ peerId }) => peerId),
+    agreeingSet,
+  ).map((index) => probedPeers[index].peer);
+  // A winner must map to a captured candidate; keep this boundary fail-closed.
   if (narrowed.length === 0) {
     throw new LoadQuorumFailedError({
       documentPath,

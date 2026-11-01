@@ -22,7 +22,15 @@
     },
     {
       "path": "packages/core/src/policy/quorum.ts",
-      "functions": ["selectQuorumBucket", "defaultQuorumQ", "requiredQuorumQ"],
+      "functions": [
+        "selectQuorumBucket",
+        "defaultQuorumQ",
+        "requiredQuorumQ",
+        "firstEligiblePeerIndices",
+        "countQuorumDigests",
+        "quorumCohortIndices",
+        "quorumFailureReason"
+      ],
       "witness": "quorum_domain",
       "consumers": [
         "packages/core/src/load-quorum.ts",
@@ -31,7 +39,13 @@
       "verifiedTargets": [
         "selectQuorumBucket",
         "defaultQuorumQ_ensures",
-        "requiredQuorumQ_ensures"
+        "requiredQuorumQ_ensures",
+        "firstEligiblePeerIndices",
+        "countQuorumDigests",
+        "quorumCohortIndices",
+        "quorumFailureReason_ensures",
+        "quorumTally_majority",
+        "quorumTally_domain"
       ]
     },
     {

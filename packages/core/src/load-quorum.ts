@@ -1,6 +1,11 @@
 import { tipsHashToHex } from './tips-hash.js';
 import { copyUnsharedUint8Array } from './utils.js';
-import { selectQuorumBucket } from './policy/quorum.js';
+import {
+  selectQuorumBucket,
+  firstEligiblePeerIndices,
+  countQuorumDigests,
+  quorumFailureReason,
+} from './policy/quorum.js';
 export { defaultQuorumQ } from './policy/quorum.js';
 
 /** One vote after the caller has authenticated and deduplicated its authority. */
@@ -44,36 +49,36 @@ export function decideLoadQuorum(
       `decideLoadQuorum: q must be a positive integer; got ${String(q)}`,
     );
   }
-  const agreement = new Map<string, string[]>();
-  let respondingCount = 0;
-  const seenPeers = new Set<string>();
-  for (const advertisement of advertisements) {
-    if (seenPeers.has(advertisement.peerId)) continue;
-    let hash: Uint8Array;
+  const captured = advertisements.map((advertisement) => {
+    const peerId = advertisement.peerId;
+    let digest: string | undefined;
     try {
-      hash = copyUnsharedUint8Array(
+      const hash = copyUnsharedUint8Array(
         advertisement.hash,
         32,
         32,
         'load-quorum vote hash',
       );
-    } catch {
-      continue;
-    }
-    seenPeers.add(advertisement.peerId);
-    respondingCount++;
-    const hex = tipsHashToHex(hash);
-    const bucket = agreement.get(hex) ?? [];
-    bucket.push(advertisement.peerId);
-    agreement.set(hex, bucket);
-  }
+      digest = tipsHashToHex(hash);
+    } catch {}
+    return { peerId, digest };
+  });
+  const selected = firstEligiblePeerIndices(
+    captured.map(({ peerId }) => peerId),
+    captured.map(({ digest }) => digest !== undefined),
+  ).map((index) => captured[index]);
+  const respondingCount = selected.length;
+  const agreement = countQuorumDigests(selected.map(({ digest }) => digest!));
   const buckets = [...agreement];
   const winner = selectQuorumBucket(
-    buckets.map(([, peers]) => peers.length),
+    buckets.map(([, count]) => count),
     q,
   );
   if (winner >= 0) {
-    const [winningHashHex, agreeingPeerIds] = buckets[winner];
+    const [winningHashHex] = buckets[winner];
+    const agreeingPeerIds = selected
+      .filter(({ digest }) => digest === winningHashHex)
+      .map(({ peerId }) => peerId);
     return {
       ok: true,
       winningHashHex,
@@ -84,19 +89,15 @@ export function decideLoadQuorum(
   }
   return {
     ok: false,
-    reason:
-      advertisements.length === 0
-        ? 'no-peers-queried'
-        : winner === -2
-          ? 'conflicting-quorum'
-          : respondingCount < q
-            ? 'insufficient-responses'
-            : 'no-agreement',
+    reason: quorumFailureReason(
+      captured.length,
+      respondingCount,
+      q,
+      winner === -2,
+    ),
     respondingCount,
     effectiveQ: q,
-    agreement: new Map(
-      [...agreement].map(([hex, peers]) => [hex, peers.length]),
-    ),
+    agreement,
   };
 }
 
@@ -116,15 +117,11 @@ export function dedupePeersByPeerId<T>(
   peers: readonly T[],
   peerIdOf: (peer: T) => string,
 ): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const peer of peers) {
-    const id = peerIdOf(peer);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push(peer);
-  }
-  return out;
+  const captured = peers.map((peer) => ({ peer, id: peerIdOf(peer) }));
+  return firstEligiblePeerIndices(
+    captured.map(({ id }) => id),
+    captured.map(() => true),
+  ).map((index) => captured[index].peer);
 }
 
 /**
@@ -492,19 +489,19 @@ export class LoadQuorumFailedError extends Error {
             ? (opts.detail ?? 'invalid load-quorum configuration')
             : opts.reason === 'conflicting-quorum'
               ? `more than one state digest reached the required ${opts.requiredQ} votes`
-            : opts.reason === 'equivocating-authority'
-              ? 'a signing authority voted for conflicting state digests'
-            : opts.reason === 'bind-check-failed-all-agreeing-peers'
-              ? `quorum agreed on a state digest but every peer in the agreeing cohort ` +
-                `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +
-                `response that did not match the agreed digest (or omitted tips entirely); ` +
-                `treating as coordinated Byzantine equivocation on the load step`
-              : opts.reason === 'agreeing-peers-unreachable'
-                ? `quorum agreed on a state digest but every peer in the agreeing ` +
-                  `cohort failed to serve a full load (transport / protocol error, ` +
-                  `not a bind mismatch); the document is known to exist but cannot ` +
-                  `currently be retrieved from this peer set`
-                : `no state digest reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
+              : opts.reason === 'equivocating-authority'
+                ? 'a signing authority voted for conflicting state digests'
+                : opts.reason === 'bind-check-failed-all-agreeing-peers'
+                  ? `quorum agreed on a state digest but every peer in the agreeing cohort ` +
+                    `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +
+                    `response that did not match the agreed digest (or omitted tips entirely); ` +
+                    `treating as coordinated Byzantine equivocation on the load step`
+                  : opts.reason === 'agreeing-peers-unreachable'
+                    ? `quorum agreed on a state digest but every peer in the agreeing ` +
+                      `cohort failed to serve a full load (transport / protocol error, ` +
+                      `not a bind mismatch); the document is known to exist but cannot ` +
+                      `currently be retrieved from this peer set`
+                    : `no state digest reached the required ${opts.requiredQ}-of-${opts.respondingCount} agreement`;
     super(
       `Initial-load quorum failed for "${opts.documentPath}": ${detail}. ` +
         `Configure PeerborneConfig.loadQuorumK/Q/loadQuorumTimeoutMs, ` +
