@@ -37,6 +37,6 @@ Server-rendered starter and hydrated browser mutation, using webpack. See the [s
 
 ## TanStack Start
 
-Server-rendered starter and hydrated browser mutation, using the Hono Node adapter. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
+Server-rendered starter and hydrated browser mutation, using the Hono Node adapter. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/tanstack-start) and [integration status](../../reference/integration-status/).
 
 The React hook uses `@peerborne/react/store`, requires no context caches, and returns a stable server snapshot. Initialize the node only in the browser. Bindings acquire ownership after mounting; state projections keep the CRDT authoritative rather than creating another mutation/sync authority.
