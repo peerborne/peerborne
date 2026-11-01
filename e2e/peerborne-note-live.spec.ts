@@ -10,7 +10,7 @@ let lastTestFinishedAt: number | undefined;
 test.beforeEach(async () => {
   if (lastTestFinishedAt === undefined) return;
   // Separate independent sessions to respect the public demo relay's burst cap.
-  const cooldown = Math.max(0, 15_000 - (Date.now() - lastTestFinishedAt));
+  const cooldown = Math.max(0, 25_000 - (Date.now() - lastTestFinishedAt));
   if (cooldown > 0)
     await new Promise((resolve) => setTimeout(resolve, cooldown));
 });
@@ -165,6 +165,69 @@ test('deployed reader invitation receives edits and remains read-only after a br
   } finally {
     await recipientContext.close();
     await rm(profile, { recursive: true, force: true });
+    await founderContext.close();
+  }
+});
+
+test('recovers when the first relay WebSocket never opens, then shares a fresh edit', async ({
+  browser,
+}) => {
+  test.skip(
+    process.env.PEERBORNE_NOTE_LIVE_FAULTS !== '1',
+    'Opt in to live transport fault injection',
+  );
+  const founderContext = await browser.newContext();
+  const recipientContext = await browser.newContext();
+  await founderContext.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    let injected = false;
+    class PendingWebSocket extends EventTarget {
+      binaryType = 'arraybuffer';
+      readyState: number = NativeWebSocket.CONNECTING;
+      close() {
+        this.readyState = NativeWebSocket.CLOSED;
+        this.dispatchEvent(new CloseEvent('close'));
+      }
+    }
+    window.WebSocket = new Proxy(NativeWebSocket, {
+      construct(target, args) {
+        if (
+          !injected &&
+          new URL(String(args[0])).hostname === 'relay.peerborne.io'
+        ) {
+          injected = true;
+          return new PendingWebSocket();
+        }
+        return Reflect.construct(target, args);
+      },
+    });
+  });
+  const founder = await founderContext.newPage();
+  const recipient = await recipientContext.newPage();
+  const founderErrors = failOnRuntimeErrors(founder);
+  const recipientErrors = failOnRuntimeErrors(recipient);
+  let observedRetry = false;
+  founder.on('console', (message) => {
+    if (
+      message.type() === 'info' &&
+      message.text().startsWith('Peerborne Note relay retry')
+    )
+      observedRetry = true;
+  });
+  try {
+    const shared = await createSharedNote(founder, 'Editor');
+    expect(observedRetry).toBe(true);
+    await recipient.goto(shared.invitationUrl);
+    await recipient.getByRole('button', { name: 'Accept invitation' }).click();
+    const editor = recipient.getByRole('textbox', { name: 'Note text' });
+    await expect(editor).toHaveValue(shared.initial);
+    const next = `Recovered ${crypto.randomUUID()}`;
+    await editor.fill(next);
+    await expect(shared.editor).toHaveValue(next);
+    expect(founderErrors).toEqual([]);
+    expect(recipientErrors).toEqual([]);
+  } finally {
+    await recipientContext.close();
     await founderContext.close();
   }
 });

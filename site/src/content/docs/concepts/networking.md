@@ -140,6 +140,34 @@ Relays are the most important infrastructure component in a Peerborne deployment
 
 A relay that loses its identity file restarts with a new peer ID and breaks clients pinned to the old identity. The standard relay image persists an app-managed key on its `/shared` volume; hosted deployments must likewise mount durable storage at `RELAY_IDENTITY_KEY_PATH`. DNS (`/dns4/...`) changes address resolution but `/p2p/<peerID>` still pins the relay identity. Never share one private identity between concurrently running relays.
 
+## Diagnose connection failures
+
+Use the SDK's structured progress callback to distinguish dialing, transport
+opening, secure-channel setup, retries, and final failure:
+
+```ts
+await peerborne.connect([relayMultiaddr], {
+  signal: AbortSignal.timeout(30_000),
+  maxAttempts: 3,
+  retryDelayMs: 1000,
+  onProgress: (event) => console.info('Peerborne connection', event),
+});
+```
+
+Events contain only stage, address index/count, attempt limits, elapsed time,
+cancellation state, and a fixed error-type label. Native progress details,
+addresses, raw errors, invitation URLs, and document data are not included.
+The rejected error remains available to the caller for controlled debugging;
+use the progress event when recording diagnostics. Observer exceptions and
+rejections are isolated from the operation.
+
+The default is one attempt. At most three attempts are allowed, and only
+transport failures, closed connections, or timeouts qualify for retry.
+Authentication failures and caller cancellation stop the attempt sequence.
+An established transport does not establish a relay reservation or verify an
+invitation. Applications should report those later phases separately.
+The optional `NetworkStats` container still requires explicit `record*()` calls.
+
 ## Operational limits
 
 - **Relay identity requires durable storage.** Restart preserves the peer ID only while the configured identity file survives. Losing it requires clients to learn a new peer ID.
