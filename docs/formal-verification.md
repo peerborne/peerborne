@@ -80,7 +80,8 @@ rekey/removal/fork invalidation, shared limits, aliased decoder outputs, native
 byte views, current-authorization changes, opaque finalizer failures,
 single-capture proxy fields, resizable backing buffers, and conservative
 quarantine when native promise settlement cannot be safely observed.
-Preparation and both control-verifier phases use the same settlement observer;
+Preparation and all admission verifier/authorizer callbacks use the same
+settlement observer, including historical revalidation during adoption;
 prototype-proxy promises and suppressed caller abort events have execution
 regressions. These JavaScript platform behaviors remain outside the phase proof.
 Generated consecutive-epoch schedules also check arrival-order adoption when

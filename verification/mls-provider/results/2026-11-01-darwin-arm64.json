@@ -1,6 +1,6 @@
 {
   "status": "experimental-adapter-gates-passed",
-  "recordedAt": "2026-11-01T14:17:53.494Z",
+  "recordedAt": "2026-11-01T14:40:45.291Z",
   "node": "v22.19.0",
   "chromium": "145.0.7632.6",
   "platform": "darwin-arm64",
@@ -9,12 +9,12 @@
     "ts-mls-npm-1.6.4-9dcd39acf7.patch": "de53b866b7c744df80bb905480af751632636336f111f690b21eb70e23455a4e"
   },
   "firstPartySources": {
-    "packages/core/src/group-security-coordinator.ts": "f135287d5f724c901d76d9ff4223ed1d48e1bc81095f746b76c21cb534820d42",
+    "packages/core/src/group-security-coordinator.ts": "6e424ea2a586d33bd3b7b69153d6d7c210e513529b451e1eb67787327d2b94dd",
     "packages/core/src/group-document-operation.ts": "ee08ce18cf2c6f91eb40fe8995939d1275287261cc066e0a1a67f11679d08ebf",
     "packages/core/src/policy/document-admission.ts": "c76b7ff773e4b697848052ff31ffbf5bdd9a345ff7764e3a5fbe2d89da42ed47",
     "packages/core/src/internal/admission-work.ts": "1ac2e9e4f4d26ca9311ab48eae8cad09af0d2bd16af82a8fc40917c8f6af1fd5",
     "packages/core/src/internal/native-promise-observation.ts": "407e35997f1efe8bf052159bafcfeef40a5fe49267b578ae976250098efa43c1",
-    "packages/core/dist/esm/src/group-security-coordinator.js": "c4b2d0959582e340627c932f6afc95854881bb96200d385d132d661daa2ed7cc",
+    "packages/core/dist/esm/src/group-security-coordinator.js": "8c529bb1dc67e76443659ce706c80a047a5bbb30e7570986b6b7878635d3dac6",
     "packages/core/dist/esm/src/group-document-operation.js": "4acbeb69ce698d3c9fc3460e4634590c49cc7046a2786c8bef50bc07262513f5",
     "packages/core/dist/esm/src/internal/admission-work.js": "709b4e137fa054545fbda93f7a02648206fb071c0d7e4ccbaeb76a019dcad41d",
     "packages/core/dist/esm/src/internal/native-promise-observation.js": "98932b95b9b92e5490890bb082a5377ff90a93fa5215c29ef10e5481077c0000",
@@ -53,18 +53,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          509,
+          507,
           511,
-          660,
-          550
+          656,
+          546
         ],
         "welcomes": [
-          808,
-          1028
+          802,
+          1022
         ],
         "states": [
-          1312,
-          1312
+          1306,
+          1306
         ]
       }
     },
@@ -158,18 +158,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          511,
-          513,
-          662,
-          552
+          509,
+          515,
+          660,
+          550
         ],
         "welcomes": [
-          812,
-          1034
+          808,
+          1032
         ],
         "states": [
-          1316,
-          1316
+          1312,
+          1312
         ]
       }
     },

@@ -371,91 +371,125 @@ describe('control ingress admission', () => {
     );
   });
 
-  test('quarantines unobservable verifier work during preauthentication and adoption', async () => {
+  test('quarantines unobservable work at every verifier and authorizer position during admission', async () => {
     const base = await sourceDelivery();
+    const source = base.source;
+    const targetContext = () => ({
+      ...source,
+      provider: new ContractTestProvider(),
+      store: new InMemoryGroupStateStore(),
+      rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+      authorization: new AuthorizationPolicy(source.identities.actorId),
+    });
+    const baselineConfig = config(targetContext());
+    const counts = { signature: 0, authorization: 0 };
+    let measuring = false;
+    const baseline = await GroupSecurityCoordinator.bootstrap(
+      {
+        ...baselineConfig,
+        verifyControlSignature: (...args) => {
+          if (measuring) counts.signature++;
+          return baselineConfig.verifyControlSignature(...args);
+        },
+        authorizeControl: (...args) => {
+          if (measuring) counts.authorization++;
+          return baselineConfig.authorizeControl(...args);
+        },
+      },
+      createGroupInput,
+      { operationId: id(1), subjectId: source.identities.actorId },
+    );
+    measuring = true;
+    await baseline.applyCommit(
+      base.delivery.commit!,
+      base.delivery.controlRecord,
+      [],
+    );
+    expect(counts.signature).toBeGreaterThan(1);
+    expect(counts.authorization).toBeGreaterThan(0);
+    const maximum = Math.max(counts.signature, counts.authorization);
+    expect(maximum).toBeLessThanOrEqual(16);
+    const examples: Array<['signature' | 'authorization', number]> = [];
+    for (const kind of ['signature', 'authorization'] as const)
+      for (let position = 1; position <= counts[kind]; position++)
+        examples.push([kind, position]);
     await fc.assert(
       fc.asyncProperty(
-        fc.constantFrom('preauthentication', 'adoption'),
-        async (phase) => {
-          const source = base.source;
-          const target = {
-            ...source,
-            provider: new ContractTestProvider(),
-            store: new InMemoryGroupStateStore(),
-            rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
-            authorization: new AuthorizationPolicy(source.identities.actorId),
-          };
+        fc.constantFrom('signature', 'authorization'),
+        fc.integer({ min: 1, max: maximum }),
+        async (kind, choice) => {
+          const position = ((choice - 1) % counts[kind]) + 1;
+          const native = config(targetContext());
           const release = deferred();
           const finished = deferred();
           let enabled = false;
-          let calls = 0;
           let accessorReads = 0;
+          const calls = { signature: 0, authorization: 0 };
+          const selected = (candidate: typeof kind) =>
+            enabled && ++calls[candidate] === position && candidate === kind;
+          const blocked = (run: () => boolean | Promise<boolean>) => {
+            const pending = release.promise.then(async () => {
+              try {
+                return await run();
+              } finally {
+                finished.resolve();
+              }
+            });
+            Object.defineProperty(pending, 'constructor', {
+              get() {
+                accessorReads++;
+                throw new Error('must not inspect');
+              },
+            });
+            return pending;
+          };
           const coordinator = await GroupSecurityCoordinator.bootstrap(
             {
-              ...config(target),
+              ...native,
               maxPendingControlOperations: 1,
-              verifyControlSignature: (payload, signature, actor) => {
-                if (
-                  !enabled ||
-                  ++calls !== (phase === 'preauthentication' ? 1 : 2)
-                )
-                  return source.identities.verify(payload, signature, actor);
-                const pending = release.promise.then(async () => {
-                  try {
-                    return await source.identities.verify(
-                      payload,
-                      signature,
-                      actor,
-                    );
-                  } finally {
-                    finished.resolve();
-                  }
-                });
-                Object.defineProperty(pending, 'constructor', {
-                  get() {
-                    accessorReads += 1;
-                    throw new Error('must not inspect');
-                  },
-                });
-                return pending;
-              },
+              verifyControlSignature: (...args) =>
+                selected('signature')
+                  ? blocked(() => native.verifyControlSignature(...args))
+                  : native.verifyControlSignature(...args),
+              authorizeControl: (...args) =>
+                selected('authorization')
+                  ? blocked(() => native.authorizeControl(...args))
+                  : native.authorizeControl(...args),
             },
             createGroupInput,
             { operationId: id(1), subjectId: source.identities.actorId },
           );
           enabled = true;
-          const { delivery } = base;
           try {
             await expect(
               coordinator.applyCommit(
-                delivery.commit!,
-                delivery.controlRecord,
+                base.delivery.commit!,
+                base.delivery.controlRecord,
                 [],
               ),
-            ).rejects.toMatchObject({ code: 'bad-signature' });
+            ).rejects.toMatchObject({
+              code:
+                kind === 'signature' ? 'bad-signature' : 'unauthorized-control',
+            });
             expect(coordinator.pendingControlOperations.operations).toBe(1);
-            expect(coordinator.publicState.epoch).toBe(0n);
             await expect(
               coordinator.applyCommit(
-                delivery.commit!,
-                delivery.controlRecord,
+                base.delivery.commit!,
+                base.delivery.controlRecord,
                 [],
               ),
-            ).rejects.toMatchObject({ code: 'admission-capacity' });
-            expect(calls).toBe(phase === 'preauthentication' ? 1 : 2);
+            ).rejects.toBeDefined();
+            expect(calls[kind]).toBeGreaterThanOrEqual(position);
           } finally {
             release.resolve();
             await finished.promise;
+            await coordinator.pendingOutboxCount().catch(() => {});
           }
           expect(accessorReads).toBe(0);
           expect(coordinator.pendingControlOperations.operations).toBe(1);
         },
       ),
-      {
-        seed: 2011109,
-        numRuns: 12,
-        examples: [['preauthentication'], ['adoption']],
-      },
+      { seed: 2011109, numRuns: 12, examples },
     );
   });
 

@@ -145,7 +145,11 @@ const sharedControlBudget = new GroupDocumentOperationBudget(
   64 * 1024 * 1024,
 );
 const GENESIS_FORK_PARENT_ID = new Uint8Array(FIXED_ID_LENGTH);
-type TrackControlWork = (settlement: Promise<void>, observable: boolean) => void;
+type TrackControlWork = (
+  settlement: Promise<void>,
+  observable: boolean,
+  failure?: 'bad-signature' | 'unauthorized-control',
+) => void;
 const MAX_U64 = (1n << 64n) - 1n;
 const mapSizeGetterValue = Object.getOwnPropertyDescriptor(
   Map.prototype,
@@ -403,6 +407,7 @@ export class GroupSecurityCoordinator {
   private readonly authenticatedControlRecords =
     new WeakSet<MembershipControlRecord>();
   private controlIngress: Promise<void> = Promise.resolve();
+  private activeControlWork: TrackControlWork | undefined;
 
   private constructor(config: GroupSecurityCoordinatorConfig) {
     const snapshot = snapshotCoordinatorConfig(config);
@@ -692,18 +697,25 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         attachmentError = error;
       }
-      const retainedWork: Promise<void>[] = [];
+      const retainedWork = new Set<Promise<void>>();
       let rejectUnobservable!: (error: GroupSecurityCoordinatorError) => void;
       const unobservable = new Promise<never>((_, reject) => {
         rejectUnobservable = reject;
       });
-      const track: TrackControlWork = (settlement, observable) => {
-        retainedWork.push(settlement);
+      const track: TrackControlWork = (
+        settlement,
+        observable,
+        failure = 'bad-signature',
+      ) => {
+        retainedWork.add(settlement);
+        void settlement.then(() => {
+          retainedWork.delete(settlement);
+        });
         if (!observable)
           rejectUnobservable(
             new GroupSecurityCoordinatorError(
-              'bad-signature',
-              'control signature work cannot be safely observed',
+              failure,
+              'control admission work cannot be safely observed',
             ),
           );
       };
@@ -723,15 +735,20 @@ export class GroupSecurityCoordinator {
         const authentication = await authenticated;
         if (!authentication.accepted) throw authentication.error;
         this.authenticatedControlRecords.add(controlSnapshot);
-        return this.runExclusive(() =>
-          this.applyCommitInternal(
-            commitSnapshot,
-            controlSnapshot,
-            welcomeSnapshots,
-            attachmentError,
-            track,
-          ),
-        );
+        return this.runExclusive(async () => {
+          this.activeControlWork = track;
+          try {
+            return await this.applyCommitInternal(
+              commitSnapshot,
+              controlSnapshot,
+              welcomeSnapshots,
+              attachmentError,
+              track,
+            );
+          } finally {
+            this.activeControlWork = undefined;
+          }
+        });
       });
       void adoption.then(finishPosition, finishPosition);
       const work = adoption.finally(async () => {
@@ -2640,7 +2657,8 @@ export class GroupSecurityCoordinator {
     const chain = new MembershipControlChain({
       protocol: this.storeKey.protocol,
       groupId: this.storeKey.groupId,
-      verifySignature: this.verifyControlSignature,
+      verifySignature: (payload, signature, actor) =>
+        this.verifySignature(payload, signature, actor),
       authorize: this.authorizeControl,
     });
     for (const record of invitation.controlPrefix) {
@@ -2987,20 +3005,12 @@ export class GroupSecurityCoordinator {
     const canonical = canonicalMembershipControlPayload(record);
     let valid: unknown = false;
     try {
-      const work = observeAdmissionWork<boolean>(
-        this.verifyControlSignature(
-          new Uint8Array(canonical),
-          new Uint8Array(record.signature),
-          new Uint8Array(record.actorId),
-        ),
+      valid = await this.verifySignature(
+        new Uint8Array(canonical),
+        new Uint8Array(record.signature),
+        new Uint8Array(record.actorId),
+        track,
       );
-      track?.(work.settlement, work.observable);
-      if (!work.observable)
-        fail(
-          'bad-signature',
-          'control signature work cannot be safely observed',
-        );
-      valid = (await work.result).value;
     } catch (error) {
       fail('bad-signature', 'control signature verifier failed', error);
     }
@@ -3022,6 +3032,21 @@ export class GroupSecurityCoordinator {
       }
     }
   }
+  private async verifySignature(
+    payload: Uint8Array,
+    signature: Uint8Array,
+    actor: Uint8Array,
+    track?: TrackControlWork,
+  ): Promise<boolean> {
+    const work = observeAdmissionWork<boolean>(
+      this.verifyControlSignature(payload, signature, actor),
+    );
+    (track ?? this.activeControlWork)?.(work.settlement, work.observable);
+    if (!work.observable)
+      fail('bad-signature', 'control signature work cannot be safely observed');
+    return (await work.result).value;
+  }
+
   private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {
     if (this.emptySelfUpdateHashes === undefined) {
       this.emptySelfUpdateHashes = Promise.all([
@@ -3055,7 +3080,20 @@ export class GroupSecurityCoordinator {
     };
     let authorized: unknown = false;
     try {
-      authorized = await this.authorizeControl(context);
+      const work = observeAdmissionWork<boolean>(
+        this.authorizeControl(context),
+      );
+      this.activeControlWork?.(
+        work.settlement,
+        work.observable,
+        'unauthorized-control',
+      );
+      if (!work.observable)
+        fail(
+          'unauthorized-control',
+          'control authorization work cannot be safely observed',
+        );
+      authorized = (await work.result).value;
     } catch (error) {
       fail('unauthorized-control', 'control authorizer failed', error);
     }

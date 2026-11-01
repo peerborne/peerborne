@@ -528,8 +528,11 @@ constructor, species or `then` accessors to reclaim capacity. This conservative
 quarantine contains a callback contract violation; recovering the lost shared
 capacity requires restarting the owning runtime.
 
-Preparation and both control-signature checks observe the actual callback
-return without ordinary thenable assimilation. They accept native promises
+Preparation, control preauthentication, and all verification/authorization
+callbacks during adoption observe the actual callback return without ordinary
+thenable assimilation. Adoption tracking includes store/replay-history
+revalidation and recovery; settled work leaves the pending set promptly.
+They accept native promises
 with a directly trusted constructor path; inherited custom promise prototypes
 are quarantined. Separate settlement signals keep credits charged even if
 unsafe observation rejects the caller first. The gate uses a private dependent
