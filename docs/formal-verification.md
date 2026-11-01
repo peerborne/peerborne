@@ -189,7 +189,10 @@ values, subdocuments and XML child types are rejected before visible application
 These values can change without a parent update event; accepting them would break
 the stage-version model. This restriction applies to the new staging capability,
 not the existing legacy provider methods. Native regressions cover recursive
-preparation, escaped references and staged checkpoint merge/discard.
+preparation, escaped references, native dependency queues, unfinished transactions,
+root shared-type preservation and staged checkpoint merge/discard. Native update
+bytes do not encode root-type declarations; applications must use the same root
+schema on each replica.
 
 The [coordinator-backed document mode](coordinated-document-security.md) calls the
 proved content-sequence, role, journal-recovery and epoch-advancement policies
@@ -204,7 +207,7 @@ same-revision substitution at every modeled step.
 
 ## Property testing after proofs
 
-The inventory audits 41 property-suite files containing 90 explicit
+The inventory audits 41 property-suite files containing 91 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
