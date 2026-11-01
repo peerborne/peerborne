@@ -53,6 +53,7 @@ import {
   Item,
   ContentType,
   ContentFormat,
+  type Transaction,
 } from 'yjs';
 import { Base64 } from 'js-base64';
 
@@ -495,10 +496,21 @@ export class YjsProvider
     let closed = false;
     let invalidated = false;
     const commitOrigin = {};
-    const onUpdate = (_update: Uint8Array, origin: unknown) => {
+    let commitTransaction: Transaction | undefined;
+    const onUpdate = (
+      _update: Uint8Array,
+      origin: unknown,
+      _document: Doc,
+      transaction: Transaction,
+    ) => {
       if (revision === Number.MAX_SAFE_INTEGER) invalidated = true;
       else revision++;
-      if (origin !== commitOrigin) invalidated = true;
+      if (
+        commitTransaction === undefined ||
+        transaction !== commitTransaction ||
+        origin !== commitOrigin
+      )
+        invalidated = true;
     };
     document.on('updateV2', onUpdate);
     const assertHealthy = () => {
@@ -554,9 +566,30 @@ export class YjsProvider
             revision === baseRevision &&
             shadowVersion === stagedVersion,
           () => {
-            applyUpdateV2(document, stable, commitOrigin);
+            try {
+              document.transact((transaction) => {
+                commitTransaction = transaction;
+                if (
+                  transaction.deleteSet.clients.size !== 0 ||
+                  transaction.beforeState.size !==
+                    document.store.clients.size ||
+                  [...transaction.beforeState].some(
+                    ([client, clock]) =>
+                      getState(document.store, client) !== clock,
+                  )
+                ) {
+                  invalidated = true;
+                  throw new Error(
+                    'Document changed before admitted transaction application',
+                  );
+                }
+                applyUpdateV2(document, stable, commitOrigin);
+              }, commitOrigin);
+            } finally {
+              commitTransaction = undefined;
+            }
             complete(document);
-            if (invalidated)
+            if (closed || invalidated)
               throw new Error(
                 'Document changed outside admission while committing',
               );
