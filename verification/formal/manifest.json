@@ -482,6 +482,13 @@
         "PreparedChangeCompletions",
         "preparedChange_all_histories"
       ]
+    },
+    {
+      "path": "packages/core/src/policy/connection-retry.ts",
+      "functions": ["shouldRetryConnection"],
+      "witness": "connectionRetry_domain",
+      "consumers": ["packages/core/src/connection.ts"],
+      "verifiedTargets": ["shouldRetryConnection_ensures"]
     }
   ]
 }

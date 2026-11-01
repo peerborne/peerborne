@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 93 production functions in 28 proof units. The runtime calls
+LemmaScript checks 94 production functions in 29 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -59,6 +59,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Control-chain admission](../packages/core/src/policy/control-chain.ts)       |         4 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection, authenticated self-update admission and error priority; valid epoch sequences do not wrap.                                                                                                    |
 | [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         3 | Exact count/byte reservation, safe release and terminal preparation phases. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
+| [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 
 The coordinator uses these admission policies for bounded document preparation
 and incoming membership deliveries. Document preparation runs outside the
@@ -194,7 +195,7 @@ schema on each replica.
 
 ## Property testing after proofs
 
-The inventory audits 37 property-suite files containing 85 explicit
+The inventory audits 38 property-suite files containing 86 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

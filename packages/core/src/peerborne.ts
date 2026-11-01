@@ -37,6 +37,11 @@ import {
   readInvitationProtocolMessage,
 } from './invitation-framing.js';
 import { NetworkStats } from './network-stats.js';
+import {
+  captureConnectOptions,
+  connectWithRetry,
+  type ConnectOptions,
+} from './connection.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { ACLProvider } from './acl-provider.js';
@@ -1305,25 +1310,39 @@ export class Peerborne<
   /**
    * Connects to a peerborne swarm.
    *
-   * An address of any peer of the desired swarm will work. Providing multiple addresses will cause
-   * each to be connected to in sequence.
+   * An address of any peer of the desired swarm will work. Multiple addresses are
+   * connected independently in parallel.
    *
    * @param addresses Peers that should be connected to identified by their address.
+   * @param options Cancellation, bounded transport retry, and safe progress metadata.
    */
-  public async connect(addresses: string[]) {
+  public async connect(addresses: string[], options: ConnectOptions = {}) {
+    const captured = captureConnectOptions(options);
+    const targets = [...addresses];
     // Connect to bootstrapping node(s).
     const connectionPromises: Promise<unknown>[] = [];
-    for (const address of addresses) {
+    for (const [index, address] of targets.entries()) {
       // Multiaddr strings start with '/'; bare peer IDs need conversion.
       // multiaddr() validates the address format and fails fast on invalid input.
       // Cast required: @multiformats/multiaddr types are structurally incompatible
       // with the version bundled in @libp2p/interface due to sub-dependency version
       // mismatches in the dependency tree.
-      const dialTarget = address.startsWith('/')
-        ? multiaddr(address) as any
-        : peerIdFromString(address);
       connectionPromises.push(
-        this.heliaNode.libp2p.dial(dialTarget),
+        connectWithRetry(
+          (attempt, onProgress) => {
+            const dialTarget = address.startsWith('/')
+              ? (multiaddr(address) as any)
+              : peerIdFromString(address);
+            return this.heliaNode.libp2p.dial(dialTarget, {
+              signal: captured.signal,
+              force: attempt > 1,
+              onProgress,
+            });
+          },
+          captured,
+          index,
+          targets.length,
+        ),
       );
     }
     await Promise.all(connectionPromises);

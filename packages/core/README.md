@@ -27,6 +27,27 @@ Applications can instead supply compatible provider, serializer, ACL, and keycha
 - `@peerborne/core/node` — the Node-only `PeerborneNode` runtime and default node configuration
 - `@peerborne/core/browser-primitives` — targeted browser-safe primitives without the full libp2p and Helia stack
 
+## Diagnose connections
+
+`connect()` accepts cancellation, opt-in transport retries, and structured progress:
+
+```ts
+await peerborne.connect([relayMultiaddr], {
+  signal: AbortSignal.timeout(30_000),
+  maxAttempts: 3,
+  retryDelayMs: 1000,
+  onProgress: (event) => console.info('Peerborne connection', event),
+});
+```
+
+Progress includes the stage, address index, attempt, elapsed time, cancellation,
+and an allowlisted error type. It excludes addresses, error messages, native
+progress details, invitation links, and private data. Observer failures do not
+change the connection outcome. The original failure still rejects the operation.
+One attempt remains the default. Retries cover transport establishment only;
+they do not repeat invitation acceptance or security verification. A connected
+transport still needs its relay reservation before it can serve as a rendezvous.
+
 ## Start here
 
 - [Quick start from source](https://peerborne.io/getting-started/quick-start/)

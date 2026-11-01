@@ -14,6 +14,7 @@ import {
 } from './invitation-link.js';
 import { MAX_NOTE_CHARACTERS, PeerborneNoteSession } from './peerborne-note.js';
 import { acquireSingleTabLease, type SingleTabLease } from './single-tab.js';
+import { NoteSharingError } from './sharing-error.js';
 
 type Screen = 'booting' | 'blocked' | 'ready' | 'review' | 'note' | 'fatal';
 type SaveState = 'idle' | 'pending' | 'saved' | 'error';
@@ -435,6 +436,14 @@ export default function App({ initialFragment }: AppProps) {
       const invitation = await session.createInvitation(
         shareRole,
         window.location.href,
+        (event) => {
+          if (event.type === 'retrying') {
+            setNotice('The relay connection was interrupted. Retrying…');
+            console.info('Peerborne Note relay retry', event);
+          } else if (event.type === 'connected') {
+            setNotice('Waiting for a relay reservation…');
+          }
+        },
       );
       setShareHref(invitation.href);
       setShareExpiresAtMs(invitation.offer.expiresAtMs);
@@ -442,10 +451,18 @@ export default function App({ initialFragment }: AppProps) {
       setNotice(
         'Invitation ready. Keep this tab open until the other browser accepts it.',
       );
-    } catch {
+    } catch (error) {
       setNotice(undefined);
+      console.warn(
+        'Peerborne Note sharing failed',
+        error instanceof NoteSharingError
+          ? error.diagnostic
+          : { stage: 'preparation', errorType: 'OtherError' },
+      );
       setErrorMessage(
-        'A share link could not be created. Check the relay configuration and connection, then try again.',
+        error instanceof NoteSharingError
+          ? error.message
+          : 'A share link could not be created. Check the relay configuration and connection, then try again.',
       );
     } finally {
       setBusy(false);
