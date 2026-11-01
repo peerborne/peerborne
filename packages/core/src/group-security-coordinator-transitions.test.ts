@@ -33,11 +33,151 @@ import {
 InMemoryGroupStateStore
 } from './group-state-store.js';
 import {
-MembershipControlRecord,
-serializeMembershipControlRecord
+  MembershipControlRecord,
+  signMembershipControlRecord,
+  serializeMembershipControlRecord,
 } from './membership-control-record.js';
 
 describe('GroupSecurityCoordinator transitions', () => {
+  test('persists, applies, and restores a signed self-update with no membership delta', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    const genesis = await value.store.load(storeKey);
+    const genesisAnchor = await value.rollbackAnchor.load(storeKey);
+    await flushAndCollect(coordinator);
+    const result = await coordinator.createCommit(
+      { changes: [] },
+      control(2, 'update', value.identities.actorId),
+    );
+    expect(result.status).toBe('committed');
+    const [delivery] = await flushAndCollect(coordinator);
+    expect(delivery.welcomes).toHaveLength(0);
+    const receiver = {
+      ...cloneContextWithProvider(value, new ContractTestProvider()),
+      store: new InMemoryGroupStateStore(),
+      rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+    };
+    await receiver.store.transaction(storeKey, (transaction) => {
+      transaction.setEncryptedState(genesis!.encryptedState!);
+      for (const entry of genesis!.replay) transaction.markReplay(entry);
+      for (const entry of genesis!.outbox) transaction.enqueueOutbox(entry);
+    });
+    await receiver.rollbackAnchor.advance(storeKey, undefined, genesisAnchor!);
+    const receiving = await GroupSecurityCoordinator.restore(config(receiver));
+    await receiving.applyCommit(
+      delivery.commit!,
+      delivery.controlRecord,
+      delivery.welcomes,
+    );
+    expect(receiving.publicState.epoch).toBe(1n);
+    const { signature, ...unsigned } = delivery.controlRecord;
+    const invalidSibling = await signMembershipControlRecord(
+      { ...unsigned, subjectId: id(0xee) },
+      value.identities.sign,
+    );
+    await expect(
+      receiving.applyCommit(delivery.commit!, invalidSibling, []),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    expect(
+      (await receiver.rollbackAnchor.load(storeKey))?.forkPoison,
+    ).toBeUndefined();
+    const restored = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(receiver, new ContractTestProvider())),
+    );
+    expect(restored.publicState.epoch).toBe(1n);
+    expect(restored.publicState.treeHash).toEqual(
+      coordinator.publicState.treeHash,
+    );
+  });
+
+  test('rejects an empty change set for another subject or action before calling the provider', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    await expect(
+      coordinator.createCommit({ changes: [] }, control(2, 'update', id(0xee))),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    await expect(
+      coordinator.createCommit(
+        { changes: [] },
+        control(3, 'remove', value.identities.actorId),
+      ),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    expect(value.provider.createCommitCalls).toBe(0);
+    expect(coordinator.publicState.epoch).toBe(0n);
+  });
+
+  test('rolls back when a self-update reports a membership delta', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    value.provider.createDeltaOverride = {
+      changes: [{ kind: 'remove', memberId: value.identities.actorId }],
+    };
+    await expect(
+      coordinator.createCommit(
+        { changes: [] },
+        control(2, 'update', value.identities.actorId),
+      ),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    expect(coordinator.publicState.epoch).toBe(0n);
+    expect((await value.provider.getPublicState()).epoch).toBe(0n);
+  });
+
+  test('rolls back when a self-update distributes a Welcome', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    const create = value.provider.createCommit.bind(value.provider);
+    value.provider.createCommit = async (input) => {
+      const result = await create(input);
+      return {
+        ...result,
+        welcomes: [
+          {
+            protocol: result.commit.protocol,
+            groupId: result.commit.groupId,
+            epoch: result.commit.epoch,
+            recipientKeyPackageRef: id(0xac),
+            payload: new Uint8Array([1]),
+          },
+        ],
+      };
+    };
+    await expect(
+      coordinator.createCommit(
+        { changes: [] },
+        control(2, 'update', value.identities.actorId),
+      ),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    expect(coordinator.publicState.epoch).toBe(0n);
+    expect((await value.provider.getPublicState()).epoch).toBe(0n);
+  });
+
+  test.each(['treeHash', 'confirmedTranscriptHash'] as const)(
+    'rejects a self-update that leaves %s unchanged',
+    async (field) => {
+      const value = await context();
+      const coordinator = await bootstrap(value);
+      const previous = coordinator.publicState;
+      const create = value.provider.createCommit.bind(value.provider);
+      value.provider.createCommit = async (input) => {
+        const result = await create(input);
+        return {
+          ...result,
+          state: { ...result.state, [field]: previous[field] },
+        };
+      };
+      await expect(
+        coordinator.createCommit(
+          { changes: [] },
+          control(2, 'update', value.identities.actorId),
+        ),
+      ).rejects.toThrow(
+        'self-update must advance epoch and both public commitments',
+      );
+      expect(coordinator.publicState.epoch).toBe(0n);
+      expect((await value.provider.getPublicState()).epoch).toBe(0n);
+    },
+  );
+
   test('serializes concurrent transitions for one group', async () => {
     const value = await context();
     const coordinator = await bootstrap(value);

@@ -125,8 +125,13 @@ terminal removal, and malformed/tampered input without changing accepted state.
 This is patched experimental evidence, not selection of the stable release.
 The spike preserves RFC 9420's empty initial transcript through encrypted
 persistence and signed genesis restoration. Post-genesis transcripts and tree
-hashes remain nonempty. The generic coordinator still needs explicit terminal
-removal and zero-membership-delta self-update contracts. Document ACL/control/quorum
+hashes remain nonempty. Its generic coordinator now accepts authenticated
+self-updates with an empty membership delta, no Welcome, and changing epoch,
+tree, and transcript commitments. The admission predicate has a formal
+contract; native Node/Chromium tests exercise the real adapter through signed
+genesis, pending-package join, Add, self-update, replay, and encrypted recovery
+using in-memory stores and anchors. The generic coordinator still needs an
+explicit durable terminal-removal contract. Document ACL/control/quorum
 integration, actual durable process/browser recovery with an independent
 rollback anchor, independent live interoperability, resource budgets, and
 security review remain acceptance gates.

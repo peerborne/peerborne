@@ -11,43 +11,61 @@ lemma isControlActionValid_ensures(hasPrevious: bool, creating: bool)
 {
 }
 
+function isSelfUpdateTransitionAllowed(updating: bool, actorIsSubject: bool, noWelcomes: bool, priorEpoch: int, nextEpoch: int, treeChanged: bool, transcriptChanged: bool): bool
+  requires (0 <= priorEpoch)
+  requires (priorEpoch <= MAX_U64)
+  requires (0 <= nextEpoch)
+  requires (nextEpoch <= MAX_U64)
+{
+  ((((((updating && actorIsSubject) && noWelcomes) && (priorEpoch < MAX_U64)) && (nextEpoch == (priorEpoch + 1))) && treeChanged) && transcriptChanged)
+}
+
+lemma isSelfUpdateTransitionAllowed_ensures(updating: bool, actorIsSubject: bool, noWelcomes: bool, priorEpoch: int, nextEpoch: int, treeChanged: bool, transcriptChanged: bool)
+  requires (0 <= priorEpoch)
+  requires (priorEpoch <= MAX_U64)
+  requires (0 <= nextEpoch)
+  requires (nextEpoch <= MAX_U64)
+  ensures (isSelfUpdateTransitionAllowed(updating, actorIsSubject, noWelcomes, priorEpoch, nextEpoch, treeChanged, transcriptChanged) <==> ((((((updating && actorIsSubject) && noWelcomes) && (priorEpoch < MAX_U64)) && (nextEpoch == (priorEpoch + 1))) && treeChanged) && transcriptChanged))
+{
+}
+
 function controlEpochFollows(hasPrevious: bool, previousEpoch: int, initialEpoch: int, incomingEpoch: int, creating: bool): bool
   requires (0 <= previousEpoch)
-  requires (previousEpoch <= 18446744073709551615)
+  requires (previousEpoch <= MAX_U64)
   requires (0 <= initialEpoch)
-  requires (initialEpoch <= 18446744073709551615)
+  requires (initialEpoch <= MAX_U64)
   requires (0 <= incomingEpoch)
-  requires (incomingEpoch <= 18446744073709551615)
+  requires (incomingEpoch <= MAX_U64)
 {
   if !(isControlActionValid(hasPrevious, creating)) then
     false
   else
     if hasPrevious then
-      ((previousEpoch < 18446744073709551615) && (incomingEpoch == (previousEpoch + 1)))
+      ((previousEpoch < MAX_U64) && (incomingEpoch == (previousEpoch + 1)))
     else
       (incomingEpoch == initialEpoch)
 }
 
 lemma controlEpochFollows_ensures(hasPrevious: bool, previousEpoch: int, initialEpoch: int, incomingEpoch: int, creating: bool)
   requires (0 <= previousEpoch)
-  requires (previousEpoch <= 18446744073709551615)
+  requires (previousEpoch <= MAX_U64)
   requires (0 <= initialEpoch)
-  requires (initialEpoch <= 18446744073709551615)
+  requires (initialEpoch <= MAX_U64)
   requires (0 <= incomingEpoch)
-  requires (incomingEpoch <= 18446744073709551615)
-  ensures (controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating) <==> (isControlActionValid(hasPrevious, creating) && (if hasPrevious then ((previousEpoch < 18446744073709551615) && (incomingEpoch == (previousEpoch + 1))) else (incomingEpoch == initialEpoch))))
+  requires (incomingEpoch <= MAX_U64)
+  ensures (controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating) <==> (isControlActionValid(hasPrevious, creating) && (if hasPrevious then ((previousEpoch < MAX_U64) && (incomingEpoch == (previousEpoch + 1))) else (incomingEpoch == initialEpoch))))
   ensures (controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating) ==> hasPrevious ==> (previousEpoch < incomingEpoch))
-  ensures (hasPrevious ==> (previousEpoch == 18446744073709551615) ==> !(controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating)))
+  ensures (hasPrevious ==> (previousEpoch == MAX_U64) ==> !(controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating)))
 {
 }
 
 function classifyControlAppend(hasPrevious: bool, previousEpoch: int, initialEpoch: int, incomingEpoch: int, creating: bool, hasParent: bool, parentMatches: bool, operationKnown: bool): string
   requires (0 <= previousEpoch)
-  requires (previousEpoch <= 18446744073709551615)
+  requires (previousEpoch <= MAX_U64)
   requires (0 <= initialEpoch)
-  requires (initialEpoch <= 18446744073709551615)
+  requires (initialEpoch <= MAX_U64)
   requires (0 <= incomingEpoch)
-  requires (incomingEpoch <= 18446744073709551615)
+  requires (incomingEpoch <= MAX_U64)
 {
   if operationKnown then
     "operation-id-conflict"
@@ -63,14 +81,16 @@ function classifyControlAppend(hasPrevious: bool, previousEpoch: int, initialEpo
 
 lemma classifyControlAppend_ensures(hasPrevious: bool, previousEpoch: int, initialEpoch: int, incomingEpoch: int, creating: bool, hasParent: bool, parentMatches: bool, operationKnown: bool)
   requires (0 <= previousEpoch)
-  requires (previousEpoch <= 18446744073709551615)
+  requires (previousEpoch <= MAX_U64)
   requires (0 <= initialEpoch)
-  requires (initialEpoch <= 18446744073709551615)
+  requires (initialEpoch <= MAX_U64)
   requires (0 <= incomingEpoch)
-  requires (incomingEpoch <= 18446744073709551615)
+  requires (incomingEpoch <= MAX_U64)
   ensures ((classifyControlAppend(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating, hasParent, parentMatches, operationKnown) == "operation-id-conflict") <==> operationKnown)
   ensures ((classifyControlAppend(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating, hasParent, parentMatches, operationKnown) == "epoch-out-of-order") <==> (!(operationKnown) && !(controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating))))
   ensures ((classifyControlAppend(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating, hasParent, parentMatches, operationKnown) == "parent-mismatch") <==> ((!(operationKnown) && controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating)) && !((if hasPrevious then (hasParent && parentMatches) else !(hasParent)))))
   ensures ((classifyControlAppend(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating, hasParent, parentMatches, operationKnown) == "ready") <==> ((!(operationKnown) && controlEpochFollows(hasPrevious, previousEpoch, initialEpoch, incomingEpoch, creating)) && (if hasPrevious then (hasParent && parentMatches) else !(hasParent))))
 {
 }
+
+const MAX_U64: int := 18446744073709551615

@@ -107,9 +107,11 @@ epoch. Add/remove records carry matching group proposals. The target MLS
 integration represents each role-only change as a self-update so its
 authorization boundary also receives a fresh epoch.
 
-Current implementation limitation: the protocol-neutral coordinator accepts
-exactly one provider-applied cryptographic add/remove/update and rejects a
-role-only control with no applied membership delta.
+The protocol-neutral coordinator accepts one provider-applied cryptographic
+add/remove/package-update, or an empty-delta self-update whose authenticated
+actor is its subject and whose epoch, tree, and transcript advance without a
+Welcome. Materializing a role-only change for another member from that control
+is still an application integration requirement.
 
 This prevents honest peers from creating competing Commits. Two valid-looking
 children of the same control head are a security fork: clients stop accepting

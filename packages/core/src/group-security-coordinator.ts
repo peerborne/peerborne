@@ -1,3 +1,4 @@
+import { isSelfUpdateTransitionAllowed } from './policy/control-chain.js';
 import {
   coordinatorAdmission,
   failedCommitRecovery,
@@ -208,8 +209,8 @@ export interface GroupSecurityCoordinatorConfig {
 }
 
 /**
- * Metadata for exactly one cryptographic add/remove/update. A role-only change
- * that produces no provider membership delta is intentionally not accepted.
+ * Metadata for one add/remove/package-update, or a cryptographic self-update
+ * with an empty change set whose subject is the authenticated actor.
  */
 export interface GroupSecurityControlInput {
   readonly operationId: Uint8Array;
@@ -341,6 +342,7 @@ export class GroupSecurityCoordinator {
   private rollbackAnchorValue?: GroupSecurityRollbackAnchorValue;
   private poisonedReason?: Error;
   private forkReason?: GroupSecurityCoordinatorError;
+  private emptySelfUpdateHashes?: Promise<readonly [Uint8Array, Uint8Array]>;
 
   private readonly provider: GroupSecurityProvider;
   private readonly store: DurableGroupStateStore;
@@ -1577,10 +1579,14 @@ export class GroupSecurityCoordinator {
       inputValue,
       control,
       this.storeKey,
+      this.actorId,
     );
     const input = cloneCreateGroupCommitInput(inputValue, this.storeKey);
     const requestedChange = input.changes[0];
-    if (requestedChange.kind === 'add' || requestedChange.kind === 'update') {
+    if (
+      requestedChange &&
+      (requestedChange.kind === 'add' || requestedChange.kind === 'update')
+    ) {
       await this.requireAuthenticatedKeyPackageMember(
         requestedChange.keyPackage,
         requestedChange.memberId,
@@ -1599,6 +1605,7 @@ export class GroupSecurityCoordinator {
         result,
         priorState,
         requestedMembership,
+        control,
       );
       const unsigned: UnsignedMembershipControlRecord = {
         version: MEMBERSHIP_CONTROL_VERSION,
@@ -1701,6 +1708,7 @@ export class GroupSecurityCoordinator {
         controlRecord,
         validated.stateCommitment,
         welcomes,
+        priorState,
       );
       const encryptedState = await this.exportAndValidateState(applied.state);
       const outbox = await this.makeOutboxEntry({
@@ -2103,7 +2111,7 @@ export class GroupSecurityCoordinator {
           entry,
           this.outboxCodec.decode(new Uint8Array(entry.payload)),
         );
-        await this.verifyControlSignatureOnly(delivery.controlRecord);
+        await this.verifyControlAuthenticity(delivery.controlRecord);
         const accepted = this.view.recordsById.get(toHex(entry.id));
         if (
           accepted === undefined ||
@@ -2492,7 +2500,7 @@ export class GroupSecurityCoordinator {
     ) {
       fail('control-mismatch', 'genesis control does not bind group state');
     }
-    await this.verifyControlSignatureOnly(record);
+    await this.verifyControlAuthenticity(record);
     const recordId = await membershipControlRecordId(record);
     await this.authorizeControlRecord(record, recordId, undefined, undefined);
     return recordId;
@@ -2516,7 +2524,7 @@ export class GroupSecurityCoordinator {
       fail('group-mismatch', 'control group does not match');
     }
     const recordId = await membershipControlRecordId(record);
-    await this.verifyControlSignatureOnly(record);
+    await this.verifyControlAuthenticity(record);
     try {
       if (record.action === 'create') {
         validateGenesisControlPayload(record, this.storeKey);
@@ -2642,7 +2650,7 @@ export class GroupSecurityCoordinator {
     return { status: 'new', recordId, stateCommitment: binding };
   }
 
-  private async verifyControlSignatureOnly(
+  private async verifyControlAuthenticity(
     record: MembershipControlRecord,
   ): Promise<void> {
     const canonical = canonicalMembershipControlPayload(record);
@@ -2657,6 +2665,38 @@ export class GroupSecurityCoordinator {
       fail('bad-signature', 'control signature verifier failed', error);
     }
     if (valid !== true) fail('bad-signature', 'control signature is invalid');
+    if (record.action !== 'create') {
+      const binding = parseControlBinding(record);
+      const [emptyMembershipHash, emptyWelcomesHash] =
+        await this.selfUpdateBindingHashes();
+      if (
+        equalBytes(
+          binding.appliedMembershipDeltaHash,
+          emptyMembershipHash,
+        ) &&
+        (record.action !== 'update' ||
+          !equalBytes(record.actorId, record.subjectId) ||
+          !equalBytes(binding.welcomeSetHash, emptyWelcomesHash))
+      ) {
+        fail(
+          'control-mismatch',
+          'signed self-update must bind its actor and an empty Welcome set',
+        );
+      }
+    }
+  }
+
+  private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {
+    if (this.emptySelfUpdateHashes === undefined) {
+      this.emptySelfUpdateHashes = Promise.all([
+        appliedGroupMembershipDeltaHash({ changes: [] }),
+        welcomeSetHash([]),
+      ]).catch((error) => {
+        this.emptySelfUpdateHashes = undefined;
+        throw error;
+      });
+    }
+    return this.emptySelfUpdateHashes;
   }
 
   private async authorizeControlRecord(
@@ -2792,7 +2832,7 @@ export class GroupSecurityCoordinator {
           error,
         );
       }
-      await this.verifyControlSignatureOnly(record);
+      await this.verifyControlAuthenticity(record);
 
       const recordHex = toHex(entry.recordId);
       const operationHex = toHex(record.operationId);
@@ -2940,7 +2980,8 @@ export class GroupSecurityCoordinator {
   private async validateCommitResult(
     result: GroupSecurityCommitResult,
     prior: GroupSecurityPublicState,
-    requestedMembership: AppliedGroupMembershipChange,
+    requestedMembership: AppliedGroupMembershipChange | undefined,
+    control: GroupSecurityControlInput,
   ): Promise<void> {
     validateCommit(result.commit);
     const expectedEpoch = incrementEpoch(prior.epoch);
@@ -2966,6 +3007,26 @@ export class GroupSecurityCoordinator {
       requestedMembership,
       result.welcomes,
     );
+    if (
+      requestedMembership === undefined &&
+      !isSelfUpdateTransitionAllowed(
+        control.action === 'update',
+        equalBytes(this.actorId, control.subjectId),
+        result.welcomes.length === 0,
+        prior.epoch,
+        result.state.epoch,
+        !equalBytes(prior.treeHash, result.state.treeHash),
+        !equalBytes(
+          prior.confirmedTranscriptHash,
+          result.state.confirmedTranscriptHash,
+        ),
+      )
+    ) {
+      fail(
+        'control-mismatch',
+        'self-update must advance epoch and both public commitments',
+      );
+    }
     assertSamePublicState(
       await this.providerPublicStateSnapshot(),
       result.state,
@@ -2978,6 +3039,7 @@ export class GroupSecurityCoordinator {
     controlRecord: MembershipControlRecord,
     expected: GroupSecurityStateCommitment,
     welcomes: ReadonlyArray<GroupWelcome>,
+    prior: GroupSecurityPublicState,
   ): Promise<void> {
     assertSamePublicStateShape(result.state, commit.protocol, commit.groupId);
     if (result.state.epoch !== commit.epoch) {
@@ -3000,6 +3062,26 @@ export class GroupSecurityCoordinator {
       controlRecord,
       welcomes,
     );
+    if (
+      result.appliedMembership.changes.length === 0 &&
+      !isSelfUpdateTransitionAllowed(
+        controlRecord.action === 'update',
+        equalBytes(controlRecord.actorId, controlRecord.subjectId),
+        welcomes.length === 0,
+        prior.epoch,
+        result.state.epoch,
+        !equalBytes(prior.treeHash, result.state.treeHash),
+        !equalBytes(
+          prior.confirmedTranscriptHash,
+          result.state.confirmedTranscriptHash,
+        ),
+      )
+    ) {
+      fail(
+        'control-mismatch',
+        'applied self-update must advance epoch and both public commitments',
+      );
+    }
     if (
       !equalBytes(
         await appliedGroupMembershipDeltaHash(result.appliedMembership),
@@ -3130,7 +3212,7 @@ export class GroupSecurityCoordinator {
         entry,
         this.outboxCodec.decode(new Uint8Array(payload)),
       );
-      await this.verifyControlSignatureOnly(first.controlRecord);
+      await this.verifyControlAuthenticity(first.controlRecord);
       if (
         !sameDelivery(first, expectedDelivery) ||
         !sameDelivery(second, expectedDelivery)
@@ -3380,8 +3462,8 @@ export class GroupSecurityCoordinator {
         parseControlBinding(first);
         parseControlBinding(second);
       }
-      await this.verifyControlSignatureOnly(first);
-      await this.verifyControlSignatureOnly(second);
+      await this.verifyControlAuthenticity(first);
+      await this.verifyControlAuthenticity(second);
 
       const acceptedEntry = view.replay.find(
         (entry) => entry.epoch === evidence.epoch,
@@ -4674,16 +4756,17 @@ function validateRequestedMembershipIntent(
   input: CreateGroupCommitInput,
   control: GroupSecurityControlInput,
   storeKey: GroupStateStoreKey,
-): AppliedGroupMembershipChange {
+  actorId: Uint8Array,
+): AppliedGroupMembershipChange | undefined {
   if (
     input === null ||
     typeof input !== 'object' ||
     !Array.isArray(input.changes) ||
-    input.changes.length !== 1
+    input.changes.length > 1
   ) {
     fail(
       'control-mismatch',
-      'each authenticated control must contain exactly one membership change',
+      'each authenticated control must contain at most one membership change',
     );
   }
   if (input.authenticatedData !== undefined) {
@@ -4693,6 +4776,15 @@ function validateRequestedMembershipIntent(
       0,
       MAX_PROTOCOL_PAYLOAD_BYTES,
     );
+  }
+  if (input.changes.length === 0) {
+    if (control.action !== 'update' || !equalBytes(control.subjectId, actorId)) {
+      fail(
+        'control-mismatch',
+        'an empty change set must be a self-update by its actor',
+      );
+    }
+    return undefined;
   }
   const requested = input.changes[0];
   if (requested === null || typeof requested !== 'object') {
@@ -4724,9 +4816,18 @@ function validateRequestedMembershipIntent(
 
 function validateProviderMembershipAgainstRequest(
   delta: AppliedGroupMembershipDelta,
-  requested: AppliedGroupMembershipChange,
+  requested: AppliedGroupMembershipChange | undefined,
   welcomes: ReadonlyArray<GroupWelcome>,
 ): void {
+  if (requested === undefined) {
+    if (delta.changes.length !== 0 || welcomes.length !== 0) {
+      fail(
+        'control-mismatch',
+        'self-update must have no membership delta or Welcome',
+      );
+    }
+    return;
+  }
   const applied = requireSingleAppliedMembershipChange(delta);
   if (
     applied.kind !== requested.kind ||
@@ -5318,15 +5419,29 @@ function cloneCreateGroupCommitInput(
     changes = snapshotExactArray(
       inputSnapshot.changes,
       'create-commit changes',
-      1,
+      0,
       1,
     );
   } catch (error) {
     fail(
       'control-mismatch',
-      'create-commit input must contain exactly one change',
+      'create-commit input must contain at most one change',
       error,
     );
+  }
+  if (changes.length === 0) {
+    return {
+      changes: [],
+      authenticatedData:
+        inputSnapshot.authenticatedData === undefined
+          ? undefined
+          : copyControlRecordBytes(
+              inputSnapshot.authenticatedData,
+              'create-commit authenticatedData',
+              0,
+              MAX_PROTOCOL_PAYLOAD_BYTES,
+            ),
+    };
   }
   const changeSnapshot = exactOwnDataValues(
     changes[0],
@@ -5418,6 +5533,19 @@ function validateProviderMembershipAgainstControl(
   control: MembershipControlRecord,
   welcomes: ReadonlyArray<GroupWelcome>,
 ): void {
+  if (delta.changes.length === 0) {
+    if (
+      control.action !== 'update' ||
+      !equalBytes(control.actorId, control.subjectId) ||
+      welcomes.length !== 0
+    ) {
+      fail(
+        'control-mismatch',
+        'empty membership delta is only valid for a signed self-update',
+      );
+    }
+    return;
+  }
   const applied = requireSingleAppliedMembershipChange(delta);
   if (
     control.action === 'create' ||
@@ -5755,9 +5883,13 @@ function snapshotWelcome(value: unknown, label: string): GroupWelcome {
 
 async function welcomeSetHash(
   welcomes: ReadonlyArray<GroupWelcome>,
-  commit: GroupSecurityCommit,
+  commit?: GroupSecurityCommit,
 ): Promise<Uint8Array> {
-  const snapshots = validateWelcomes(welcomes, commit);
+  if (commit === undefined && welcomes.length !== 0) {
+    fail('control-mismatch', 'nonempty Welcome hashing requires a commit');
+  }
+  const snapshots =
+    commit === undefined ? [] : validateWelcomes(welcomes, commit);
   const parts: Uint8Array[] = [WELCOME_SET_DOMAIN, u16(snapshots.length)];
   for (const welcome of snapshots) {
     parts.push(
@@ -6286,7 +6418,7 @@ function cloneAppliedGroupMembershipDelta(
   const rawChanges = snapshotExactArray(
     rawDelta.changes,
     'applied membership changes',
-    1,
+    0,
     MAX_MEMBERSHIP_CHANGES,
   );
   const changes: AppliedGroupMembershipChange[] = [];

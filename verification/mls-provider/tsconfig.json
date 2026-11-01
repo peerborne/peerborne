@@ -8,5 +8,10 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["provider.ts", "provider-tests.ts", "check-node.ts"]
+  "include": [
+    "provider.ts",
+    "provider-tests.ts",
+    "coordinator-tests.ts",
+    "check-node.ts"
+  ]
 }
