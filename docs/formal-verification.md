@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 89 production functions in 27 proof units. The runtime calls
+LemmaScript checks 92 production functions in 28 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -41,7 +41,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)        |         2 | Complete conflict/replay/fresh-admission classification; an identical replay does not consume fresh capacity.                                                                                             |
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
-| [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)            |         1 | Exact valid-advance conditions: revision +1, epoch unchanged or +1, same-epoch control-head binding and terminal poison.                                                                                  |
+| [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
 | [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                                            |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
@@ -56,8 +56,36 @@ consumer, proof obligation and non-vacuity witness.
 | [BeeKEM tree indices](../packages/core/src/policy/tree-index.ts)            |        17 | Exact levels, roots, leaf-index inverses, parent/child identities including ragged trees, sibling pairs, bounded path links to the root and matching copaths.                                             |
 | [Query order and pages](../packages/index/src/query-order.ts)               |         4 | UTF-16/finite-real scalar order, lazy first-difference/direction/path ordering, symmetry and transitivity under per-field order laws, and exact reconstruction by successive positive-sized prefix pages. |
 | [Authentication budget](../packages/core/src/policy/authentication-budget.ts) | 1 | Attempts and bytes are reserved atomically; either both advance exactly or neither changes. Arbitrary finite reservation histories conserve admitted counts and byte totals within both limits. |
-| [Control-chain admission](../packages/core/src/policy/control-chain.ts) | 3 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection and error priority; valid epoch sequences equal the initial epoch plus their index without wraparound. |
+| [Control-chain admission](../packages/core/src/policy/control-chain.ts)       |         4 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection, authenticated self-update admission and error priority; valid epoch sequences do not wrap.                                                                                                    |
 | [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
+| [Document admission](../packages/core/src/policy/document-admission.ts)       |         3 | Exact count/byte reservation, safe release and terminal preparation phases. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
+
+The coordinator uses these admission policies for bounded document preparation
+and incoming membership deliveries. Document preparation runs outside the
+membership queue; finalization rechecks the protected anchor and complete
+captured group/control context inside that queue, then requires a pure
+synchronous guard to confirm that preparation's authorization is still current.
+Identity or role changes therefore need not wait for a rekey to invalidate
+prepared work. Signature verification for
+incoming membership deliveries starts outside it, using a private one-use
+authentication certificate for the owned record. The verifier is checked again
+at adoption because application trust can change; causal authorization and state
+adoption remain serialized. The native certificate, scheduling, protected storage and actual
+context comparisons are property/integration boundaries, not proved by the
+scalar policies or the recursive phase model.
+
+The generated suites cover cancellation without premature credit release,
+producer and preparation-context mutation, metadata-only outbox progress,
+rekey/removal/fork invalidation, shared limits, aliased decoder outputs, native
+byte views, current-authorization changes, and opaque finalizer failures.
+Node/Chromium MLS checks exercise a
+fixture-only AES-GCM/Ed25519 content envelope, cross-document replay, a reader
+forging a writer message, tampering, rekey retry, credential revocation without
+rekey, and removal during preparation.
+This is a coordinator seam. `PeerborneDocument` does not yet route through it;
+it supplies no document wire format, causal role engine, durable content replay
+log or cryptographic secrecy proof. A trusted preparation callback must verify
+signatures and causal authorization and stage without visible mutation.
 
 The capability tables are frozen to preserve the constant-model assumption.
 Numeric contracts bound arithmetic to domains where JavaScript executes the
@@ -145,14 +173,14 @@ post-compromise security, key erasure or cryptographic unforgeability.
 
 ## Property testing after proofs
 
-The inventory audits 33 property-suite files containing 68 explicit
+The inventory audits 35 property-suite files containing 74 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
 properties can invoke the same assertion more than once.
 
 | Unproved boundary                       | Generated evidence                                                                                                                                                                                                                          |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |

@@ -25,3 +25,4 @@ packages/index/src/query-order.ts
 packages/core/src/policy/authentication-budget.ts
 packages/core/src/policy/control-chain.ts
 packages/core/src/policy/frame-layout.ts
+packages/core/src/policy/document-admission.ts

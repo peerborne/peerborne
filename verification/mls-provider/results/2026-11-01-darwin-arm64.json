@@ -1,0 +1,236 @@
+{
+  "status": "experimental-adapter-gates-passed",
+  "recordedAt": "2026-11-01T13:09:39.474Z",
+  "node": "v22.19.0",
+  "chromium": "145.0.7632.6",
+  "platform": "darwin-arm64",
+  "upstream": "ts-mls@1.6.4",
+  "sourcePatches": {
+    "ts-mls-npm-1.6.4-9dcd39acf7.patch": "de53b866b7c744df80bb905480af751632636336f111f690b21eb70e23455a4e"
+  },
+  "firstPartySources": {
+    "packages/core/src/group-security-coordinator.ts": "444129d7683cbd591a22f4eaea0ea77ba9cc42137802c1cbfa0fa9d6fa20c429",
+    "packages/core/src/group-document-operation.ts": "4df28de058546b5c41e206cb28035066f0a7da7dd6c03cfd7b4e17569f1e7f2c",
+    "packages/core/src/policy/document-admission.ts": "c76b7ff773e4b697848052ff31ffbf5bdd9a345ff7764e3a5fbe2d89da42ed47",
+    "packages/core/dist/esm/src/group-security-coordinator.js": "7580aa6584fb4665d8f5eb4612058a4209cee75a3591ae0279078cdc54b7f975",
+    "packages/core/dist/esm/src/group-document-operation.js": "e7001b0942ed59049d611ff3d1c9501e0acc389fff5b9ea947c621d5b9b50235",
+    "verification/mls-provider/coordinator-tests.ts": "c56a3ccd38a966b0c3bd56b04422e77d9e011413a8ce85f9a07572a0859b77f1"
+  },
+  "nodeResult": {
+    "retention": {
+      "suite": "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      "members": 3,
+      "epoch": 4,
+      "sequentialAdds": true,
+      "selfUpdate": true,
+      "removalExclusion": true,
+      "removedExporterDiffers": true,
+      "applicationReplayRejected": true,
+      "commitReplayRejected": true,
+      "tamperedCommitRejected": true,
+      "credentialRejections": {
+        "unknown": true,
+        "substituted": true,
+        "expired": true,
+        "revoked": true
+      },
+      "authorizedAddControl": true,
+      "stateRoundTrip": true,
+      "retentionObservation": {
+        "requestedEpochRetention": 0,
+        "retainedEpochCounts": [
+          0,
+          0,
+          0
+        ],
+        "delayedEpochReadable": false
+      },
+      "zeroEpochRetentionHonored": true,
+      "sizes": {
+        "commits": [
+          517,
+          513,
+          660,
+          550
+        ],
+        "welcomes": [
+          816,
+          1038
+        ],
+        "states": [
+          1320,
+          1320
+        ]
+      }
+    },
+    "provider": {
+      "encryptedGenesisRecovery": true,
+      "pendingKeyPackageRecovery": true,
+      "stablePendingExport": true,
+      "authenticatedAdds": true,
+      "selfUpdate": true,
+      "exporterConvergence": true,
+      "encryptedStateRecovery": true,
+      "atomicInvalidImport": true,
+      "credentialRevocation": true,
+      "controllerEnforcement": true,
+      "terminalRemoval": true,
+      "consumedPackageRejection": true
+    },
+    "coordinator": {
+      "signedGenesisRecovery": true,
+      "pendingJoinRecovery": true,
+      "selfUpdate": true,
+      "exporterRotationAndConvergence": true,
+      "selfUpdateReplay": true,
+      "encryptedSelfUpdateRecovery": true,
+      "terminalRemoval": true,
+      "removedMemberHasNoNextEpochSecrets": true,
+      "removalBlocksCheckpointRollback": true,
+      "documentAdmissionNativeCrypto": true,
+      "documentAdmissionRejectsCrossDocumentReplay": true,
+      "documentAdmissionRejectsReaderForgery": true,
+      "documentAdmissionRejectsTampering": true,
+      "documentAdmissionRekeyRaceAndRetry": true,
+      "documentAdmissionRemovalRace": true,
+      "documentAdmissionMutableAuthorization": true
+    },
+    "referenceVectors": {
+      "cases": 13,
+      "epochs": 26,
+      "revision": "2034fe72e0c805a683ba76165660c834f2a8142a",
+      "sha256": "b24949fdf857bf79d511f57504a8bdc7ce3247eb199684745e439c11b1a1da21"
+    },
+    "nativeCrypto": {
+      "generateKey:Ed25519": 23,
+      "generateKey:X25519": 81,
+      "importKey:Ed25519": 461,
+      "sign:Ed25519": 96,
+      "digest:SHA-256": 2015,
+      "importKey:HMAC": 4079,
+      "sign:HMAC": 3973,
+      "verify:Ed25519": 458,
+      "importKey:AES-GCM": 198,
+      "encrypt:AES-GCM": 102,
+      "importKey:X25519": 425,
+      "deriveBits:X25519": 143,
+      "importKey:HKDF": 572,
+      "deriveBits:HKDF": 572,
+      "decrypt:AES-GCM": 132,
+      "verify:HMAC": 106,
+      "generateKey:AES-GCM": 3
+    }
+  },
+  "browserResult": {
+    "retention": {
+      "suite": "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      "members": 3,
+      "epoch": 4,
+      "sequentialAdds": true,
+      "selfUpdate": true,
+      "removalExclusion": true,
+      "removedExporterDiffers": true,
+      "applicationReplayRejected": true,
+      "commitReplayRejected": true,
+      "tamperedCommitRejected": true,
+      "credentialRejections": {
+        "unknown": true,
+        "substituted": true,
+        "expired": true,
+        "revoked": true
+      },
+      "authorizedAddControl": true,
+      "stateRoundTrip": true,
+      "retentionObservation": {
+        "requestedEpochRetention": 0,
+        "retainedEpochCounts": [
+          0,
+          0,
+          0
+        ],
+        "delayedEpochReadable": false
+      },
+      "zeroEpochRetentionHonored": true,
+      "sizes": {
+        "commits": [
+          513,
+          513,
+          656,
+          546
+        ],
+        "welcomes": [
+          808,
+          1030
+        ],
+        "states": [
+          1312,
+          1312
+        ]
+      }
+    },
+    "provider": {
+      "encryptedGenesisRecovery": true,
+      "pendingKeyPackageRecovery": true,
+      "stablePendingExport": true,
+      "authenticatedAdds": true,
+      "selfUpdate": true,
+      "exporterConvergence": true,
+      "encryptedStateRecovery": true,
+      "atomicInvalidImport": true,
+      "credentialRevocation": true,
+      "controllerEnforcement": true,
+      "terminalRemoval": true,
+      "consumedPackageRejection": true
+    },
+    "coordinator": {
+      "signedGenesisRecovery": true,
+      "pendingJoinRecovery": true,
+      "selfUpdate": true,
+      "exporterRotationAndConvergence": true,
+      "selfUpdateReplay": true,
+      "encryptedSelfUpdateRecovery": true,
+      "terminalRemoval": true,
+      "removedMemberHasNoNextEpochSecrets": true,
+      "removalBlocksCheckpointRollback": true,
+      "documentAdmissionNativeCrypto": true,
+      "documentAdmissionRejectsCrossDocumentReplay": true,
+      "documentAdmissionRejectsReaderForgery": true,
+      "documentAdmissionRejectsTampering": true,
+      "documentAdmissionRekeyRaceAndRetry": true,
+      "documentAdmissionRemovalRace": true,
+      "documentAdmissionMutableAuthorization": true
+    },
+    "referenceVectors": {
+      "cases": 13,
+      "epochs": 26,
+      "revision": "2034fe72e0c805a683ba76165660c834f2a8142a",
+      "sha256": "b24949fdf857bf79d511f57504a8bdc7ce3247eb199684745e439c11b1a1da21"
+    },
+    "nativeCrypto": {
+      "generateKey:Ed25519": 23,
+      "generateKey:X25519": 81,
+      "importKey:Ed25519": 461,
+      "sign:Ed25519": 96,
+      "digest:SHA-256": 2015,
+      "importKey:HMAC": 4079,
+      "sign:HMAC": 3973,
+      "verify:Ed25519": 458,
+      "importKey:AES-GCM": 198,
+      "encrypt:AES-GCM": 102,
+      "importKey:X25519": 425,
+      "deriveBits:X25519": 143,
+      "importKey:HKDF": 572,
+      "deriveBits:HKDF": 572,
+      "decrypt:AES-GCM": 132,
+      "verify:HMAC": 106,
+      "generateKey:AES-GCM": 3
+    }
+  },
+  "remaining": [
+    "broader RFC suites and independent live interoperability",
+    "obsolete checkpoint ciphertext and persistent-keystore erasure",
+    "document ACL/control/quorum integration",
+    "durable browser process recovery with independent rollback anchor",
+    "resource qualification and independent security review"
+  ]
+}

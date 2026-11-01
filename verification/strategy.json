@@ -186,6 +186,19 @@
         "packages/core/src/load-quorum.ts",
         "packages/core/src/load-quorum-orchestrator.ts"
       ]
+    },
+    {
+      "id": "anchored-document-admission",
+      "formalBoundary": "Production reservation and phase transitions have checked contracts and unbounded finite-history accounting/commit laws requiring both matching context and authorization. Promise cancellation, byte ownership, exact native closure accounting, protected anchor freshness, current-authorization guards, preparation/finalizer contracts and queue isolation remain runtime boundaries. Authentication and causal role authorization are trusted preparation obligations; this is not a whole-document or cryptographic secrecy proof.",
+      "evidence": [
+        "packages/core/src/document-admission-properties.test.ts",
+        "packages/core/src/control-admission-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/group-document-operation.ts",
+        "packages/core/src/group-security-coordinator.ts",
+        "packages/core/src/policy/document-admission.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

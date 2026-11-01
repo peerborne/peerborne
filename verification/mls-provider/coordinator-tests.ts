@@ -8,6 +8,7 @@ import {
   type GroupSecurityDelivery,
   type GroupSecurityProvider,
   type MembershipControlSignatureVerifier,
+  type GroupSecurityDocumentContext,
 } from '@peerborne/core/browser-primitives';
 import { JsonTestCodec } from '../../packages/core/src/__testutils__/group-security-coordinator.js';
 import { MlsProviderSpike } from './provider.js';
@@ -174,6 +175,134 @@ export async function runCoordinatorChecks() {
     outboxCodec: new JsonTestCodec(),
   });
 
+  function joinBytes(...parts: Uint8Array[]) {
+    const result = new Uint8Array(
+      parts.reduce((total, part) => total + part.length, 0),
+    );
+    let offset = 0;
+    for (const part of parts) {
+      result.set(part, offset);
+      offset += part.length;
+    }
+    return result;
+  }
+
+  const documentBinding = (
+    context: GroupSecurityDocumentContext,
+    documentId: string,
+  ) =>
+    encoder.encode(
+      JSON.stringify({
+        domain: 'peerborne/document-admission-fixture/v1',
+        documentId,
+        kind: 'document-change',
+        causalParents: [],
+        protocol: context.state.protocol,
+        group: label(context.state.groupId),
+        epoch: context.state.epoch.toString(),
+        controlHead: label(context.controlHead),
+        tree: label(context.state.treeHash),
+        transcript: label(context.state.confirmedTranscriptHash),
+      }),
+    );
+
+  // A fixture-only content envelope and pinned controller-writer policy.
+  // The coordinator supplies admission, not a document wire format or role policy.
+  async function documentFrame(
+    coordinator: GroupSecurityCoordinator,
+    secret: Uint8Array,
+    signer = 0,
+  ) {
+    const expected = coordinator.documentContext;
+    const documentId = 'fixture/document-a';
+    const key = await crypto.subtle.importKey(
+      'raw',
+      secret as BufferSource,
+      'AES-GCM',
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const binding = documentBinding(expected, documentId);
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: nonce, additionalData: binding },
+        key,
+        encoder.encode('synthetic authenticated document content'),
+      ),
+    );
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        'Ed25519',
+        signingKeys[signer].privateKey,
+        joinBytes(binding, nonce, ciphertext) as BufferSource,
+      ),
+    );
+    check(signature.length === 64, 'fixture uses the Ed25519 signature width');
+    const frame = joinBytes(nonce, signature, ciphertext);
+    let applied = 0;
+    const prepareFor =
+      (path: string) =>
+      async (captured: GroupSecurityDocumentContext, owned: Uint8Array) => {
+        const currentPin = trustedMls.get(label(members[0]));
+        check(currentPin !== undefined, 'controller credential is trusted');
+        const credentialPin = new Uint8Array(currentPin);
+        const writerKey = signingKeys[0].publicKey;
+        check(owned.length > 76, 'content frame is complete');
+        const iv = owned.subarray(0, 12);
+        const sig = owned.subarray(12, 76);
+        const body = owned.subarray(76);
+        const aad = documentBinding(captured, path);
+        check(
+          await crypto.subtle.verify(
+            'Ed25519',
+            writerKey,
+            sig as BufferSource,
+            joinBytes(aad, iv, body) as BufferSource,
+          ),
+          'content must be signed by the pinned writer',
+        );
+        const plaintext = new Uint8Array(
+          await crypto.subtle.decrypt(
+            {
+              name: 'AES-GCM',
+              iv: iv as BufferSource,
+              additionalData: aad as BufferSource,
+            },
+            key,
+            body as BufferSource,
+          ),
+        );
+        check(
+          equal(
+            plaintext,
+            encoder.encode('synthetic authenticated document content'),
+          ),
+          'authenticated content decrypts',
+        );
+        return {
+          isAuthorizationCurrent: () => {
+            const current = trustedMls.get(label(members[0]));
+            return (
+              current !== undefined &&
+              equal(current, credentialPin) &&
+              signingKeys[0].publicKey === writerKey
+            );
+          },
+          commit: () => {
+            applied += 1;
+          },
+        };
+      };
+    return {
+      expected,
+      frame,
+      prepare: prepareFor(documentId),
+      otherDocument: prepareFor('fixture/document-b'),
+      applied: () => applied,
+    };
+  }
+
   const original = await GroupSecurityCoordinator.bootstrap(
     configuration(engines[0], 0),
     {
@@ -251,6 +380,90 @@ export async function runCoordinatorChecks() {
     'joined exporter convergence',
   );
 
+  const validDocument = await documentFrame(recipient, prior);
+  await recipient.runDocumentOperation(
+    validDocument.expected,
+    validDocument.frame,
+    validDocument.prepare,
+  );
+  check(validDocument.applied() === 1, 'authenticated document finalizes once');
+  const changingAuthorization = await documentFrame(recipient, prior);
+  const controllerPin = trustedMls.get(label(members[0]))!;
+  try {
+    await rejects(
+      () =>
+        recipient.runDocumentOperation(
+          changingAuthorization.expected,
+          changingAuthorization.frame,
+          async (...args) => {
+            const staged = await changingAuthorization.prepare(
+              args[0],
+              args[1],
+            );
+            trustedMls.delete(label(members[0]));
+            return staged;
+          },
+        ),
+      'authorization-changed',
+    );
+    check(
+      changingAuthorization.applied() === 0,
+      'application trust changes invalidate prepared content without a rekey',
+    );
+  } finally {
+    trustedMls.set(label(members[0]), controllerPin);
+  }
+  await rejects(() =>
+    recipient.runDocumentOperation(
+      validDocument.expected,
+      validDocument.frame,
+      validDocument.otherDocument,
+    ),
+  );
+  const forgedDocument = await documentFrame(recipient, prior, 1);
+  await rejects(() =>
+    recipient.runDocumentOperation(
+      forgedDocument.expected,
+      forgedDocument.frame,
+      forgedDocument.prepare,
+    ),
+  );
+  const corrupted = new Uint8Array(validDocument.frame);
+  corrupted[corrupted.length - 1] ^= 1;
+  await rejects(() =>
+    recipient.runDocumentOperation(
+      validDocument.expected,
+      corrupted,
+      validDocument.prepare,
+    ),
+  );
+  check(
+    validDocument.applied() === 1 && forgedDocument.applied() === 0,
+    'replay across documents, reader forgery and tampering do not finalize',
+  );
+
+  let resumeRekey!: () => void;
+  let rekeyEntered!: () => void;
+  const rekeyReady = new Promise<void>((resolve) => {
+    rekeyEntered = resolve;
+  });
+  const rekeyWait = new Promise<void>((resolve) => {
+    resumeRekey = resolve;
+  });
+  const beforeRekey = await documentFrame(recipient, prior);
+  const pendingRekey = recipient.runDocumentOperation(
+    beforeRekey.expected,
+    beforeRekey.frame,
+    async (...args) => {
+      const finalize = await beforeRekey.prepare(args[0], args[1]);
+      rekeyEntered();
+      await rekeyWait;
+      return finalize;
+    },
+  );
+  const rejectedRekey = rejects(() => pendingRekey, 'stale-context');
+  await rekeyReady;
+
   await controller.createCommit(
     { changes: [] },
     {
@@ -270,6 +483,12 @@ export async function runCoordinatorChecks() {
     update.controlRecord,
     update.welcomes,
   );
+  resumeRekey();
+  await rejectedRekey;
+  check(
+    beforeRekey.applied() === 0,
+    'a completed ratchet invalidates prepared old-epoch content',
+  );
   const next = await controllerEngine.exportSecret(exporter);
   check(
     equal(next, await recipientEngine.exportSecret(exporter)) &&
@@ -279,6 +498,16 @@ export async function runCoordinatorChecks() {
   check(
     recipient.publicState.epoch === 2n,
     'self-update advances exactly one epoch',
+  );
+  const afterRekey = await documentFrame(recipient, next);
+  await recipient.runDocumentOperation(
+    afterRekey.expected,
+    afterRekey.frame,
+    afterRekey.prepare,
+  );
+  check(
+    afterRekey.applied() === 1,
+    'fresh content succeeds after rekey invalidation',
   );
   const replay = await recipient.applyCommit(
     update.commit,
@@ -301,6 +530,27 @@ export async function runCoordinatorChecks() {
     'encrypted self-update checkpoint restores through the coordinator',
   );
   await recipientEngine.clearGroupState();
+  let resumeRemoval!: () => void;
+  let removalEntered!: () => void;
+  const removalReady = new Promise<void>((resolve) => {
+    removalEntered = resolve;
+  });
+  const removalWait = new Promise<void>((resolve) => {
+    resumeRemoval = resolve;
+  });
+  const beforeRemoval = await documentFrame(restored, next);
+  const pendingRemoval = restored.runDocumentOperation(
+    beforeRemoval.expected,
+    beforeRemoval.frame,
+    async (...args) => {
+      const finalize = await beforeRemoval.prepare(args[0], args[1]);
+      removalEntered();
+      await removalWait;
+      return finalize;
+    },
+  );
+  const rejectedRemoval = rejects(() => pendingRemoval, 'removed-from-group');
+  await removalReady;
   await controller.createCommit(
     { changes: [{ kind: 'remove', memberId: members[1] }] },
     {
@@ -319,6 +569,12 @@ export async function runCoordinatorChecks() {
     removal.commit,
     removal.controlRecord,
     [],
+  );
+  resumeRemoval();
+  await rejectedRemoval;
+  check(
+    beforeRemoval.applied() === 0,
+    'authenticated removal invalidates prepared content',
   );
   check(
     removed.status === 'removed' && !(await restoredEngine.hasActiveGroup()),
@@ -359,8 +615,8 @@ export async function runCoordinatorChecks() {
   prior.fill(0);
   next.fill(0);
   await Promise.all(
-    [engines[0], engines[1], controllerEngine].map(
-      (engine) => engine.clearGroupState(),
+    [engines[0], engines[1], controllerEngine].map((engine) =>
+      engine.clearGroupState(),
     ),
   );
   return {
@@ -373,5 +629,12 @@ export async function runCoordinatorChecks() {
     terminalRemoval: true,
     removedMemberHasNoNextEpochSecrets: true,
     removalBlocksCheckpointRollback: true,
+    documentAdmissionNativeCrypto: true,
+    documentAdmissionRejectsCrossDocumentReplay: true,
+    documentAdmissionRejectsReaderForgery: true,
+    documentAdmissionRejectsTampering: true,
+    documentAdmissionRekeyRaceAndRetry: true,
+    documentAdmissionRemovalRace: true,
+    documentAdmissionMutableAuthorization: true,
   };
 }

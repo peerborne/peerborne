@@ -456,6 +456,25 @@
         "frameLayout_disjoint",
         "frameLayout_chunks"
       ]
+    },
+    {
+      "path": "packages/core/src/policy/document-admission.ts",
+      "functions": [
+        "canReserveDocumentOperation",
+        "releaseDocumentOperationBytes",
+        "advanceDocumentOperation"
+      ],
+      "witness": "documentAdmission_domain",
+      "consumers": ["packages/core/src/group-document-operation.ts"],
+      "verifiedTargets": [
+        "canReserveDocumentOperation_ensures",
+        "releaseDocumentOperationBytes_ensures",
+        "advanceDocumentOperation_ensures",
+        "DocumentCommitCount",
+        "documentAdmission_all_histories",
+        "DocumentBudgetStep",
+        "DocumentBudgetHistory"
+      ]
     }
   ]
 }

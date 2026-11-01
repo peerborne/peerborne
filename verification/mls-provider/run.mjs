@@ -7,6 +7,26 @@ import { resolve } from 'node:path';
 import { runChecks } from './checks.mjs';
 
 const root = import.meta.dirname;
+const evidencePaths = [
+  'packages/core/src/group-security-coordinator.ts',
+  'packages/core/src/group-document-operation.ts',
+  'packages/core/src/policy/document-admission.ts',
+  'packages/core/dist/esm/src/group-security-coordinator.js',
+  'packages/core/dist/esm/src/group-document-operation.js',
+  'verification/mls-provider/coordinator-tests.ts',
+];
+const evidenceHashes = async () =>
+  Object.fromEntries(
+    await Promise.all(
+      evidencePaths.map(async (path) => [
+        path,
+        createHash('sha256')
+          .update(await readFile(resolve(root, '../..', path)))
+          .digest('hex'),
+      ]),
+    ),
+  );
+const firstPartySources = await evidenceHashes();
 await rm(resolve(root, 'report.json'), { force: true });
 const node = await runChecks();
 const optional = [
@@ -90,6 +110,7 @@ const report = {
   platform: `${platform()}-${arch()}`,
   upstream: 'ts-mls@1.6.4',
   sourcePatches: patches,
+  firstPartySources,
   nodeResult: node,
   browserResult: chromiumResult.result,
   remaining: [
@@ -100,6 +121,12 @@ const report = {
     'resource qualification and independent security review',
   ],
 };
+if (
+  JSON.stringify(firstPartySources) !== JSON.stringify(await evidenceHashes())
+)
+  throw new Error(
+    'Verification sources or built artifacts changed during execution',
+  );
 await writeFile(
   resolve(root, 'report.json'),
   JSON.stringify(report, null, 2) + '\n',
