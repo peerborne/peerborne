@@ -640,21 +640,26 @@ export class GroupSecurityCoordinator {
     let releaseLocal: (() => void) | undefined;
     let releaseShared: (() => void) | undefined;
     try {
-      const controlBytes = measureControlInputBytes(controlRecord);
+      const capturedControl = captureControlInput(controlRecord);
       let attachmentBytes = 0;
+      let capturedCommit: GroupSecurityCommit | undefined;
+      let capturedWelcomes: GroupWelcome[] | undefined;
       let attachmentPreflightError: unknown;
       try {
-        attachmentBytes =
-          measureCommitInputBytes(commit) + measureWelcomeInputBytes(welcomes);
+        const commitInput = captureCommitInput(commit);
+        const welcomeInput = captureWelcomeInputs(welcomes);
+        capturedCommit = commitInput.value;
+        capturedWelcomes = welcomeInput.value;
+        attachmentBytes = commitInput.bytes + welcomeInput.bytes;
       } catch (error) {
         attachmentPreflightError = error;
       }
       try {
         releaseShared = sharedControlBudget.reserve(
-          controlBytes + attachmentBytes,
+          capturedControl.bytes + attachmentBytes,
         );
         releaseLocal = this.pendingControls.reserve(
-          controlBytes + attachmentBytes,
+          capturedControl.bytes + attachmentBytes,
         );
       } catch {
         releaseShared?.();
@@ -664,7 +669,7 @@ export class GroupSecurityCoordinator {
         );
       }
       const controlSnapshot = snapshotControlRecord(
-        controlRecord,
+        capturedControl.value,
         'incoming control record',
       );
       serializeMembershipControlRecord(controlSnapshot);
@@ -678,8 +683,8 @@ export class GroupSecurityCoordinator {
       try {
         if (attachmentPreflightError !== undefined)
           throw attachmentPreflightError;
-        commitSnapshot = cloneCommit(commit);
-        welcomeSnapshots = validateWelcomes(welcomes, commitSnapshot);
+        commitSnapshot = cloneCommit(capturedCommit!);
+        welcomeSnapshots = validateWelcomes(capturedWelcomes!, commitSnapshot);
       } catch (error) {
         attachmentError = error;
       }
@@ -5438,22 +5443,50 @@ function snapshotExactArray(
   return entries;
 }
 
-function measuredInputBytes(
+function captureInputBytes(
   value: unknown,
   field: string,
   minimum: number,
   maximum: number,
-): number {
+): Uint8Array {
   validateBytes(value as Uint8Array, field, minimum, maximum);
-  return Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
+  const length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
+  const offset = Reflect.apply(typedArrayByteOffsetGetter, value, []) as number;
+  const buffer = Reflect.apply(
+    typedArrayBufferGetter,
+    value,
+    [],
+  ) as ArrayBuffer;
+  return new Uint8Array(buffer, offset, length);
 }
 
-function measureControlInputBytes(value: unknown): number {
+function captureInputProtocol(
+  value: unknown,
+  allowUnknown = true,
+): GroupSecurityProtocol {
+  const raw = exactOwnDataValues(
+    value,
+    ['id', 'version'],
+    'input protocol',
+    [],
+    allowUnknown,
+  );
+  return { id: raw.id as string, version: raw.version as number };
+}
+
+function captureControlInput(value: unknown): {
+  value: MembershipControlRecord;
+  bytes: number;
+} {
   const raw = exactOwnDataValues(
     value,
     [
+      'version',
+      'protocol',
       'groupId',
+      'epoch',
       'operationId',
+      'action',
       'actorId',
       'subjectId',
       'controlPayload',
@@ -5463,89 +5496,149 @@ function measureControlInputBytes(value: unknown): number {
     ['parentRecordId'],
     true,
   );
-  return (
-    4096 +
-    measuredInputBytes(raw.groupId, 'control group', 1, MAX_GROUP_ID_BYTES) +
-    measuredInputBytes(raw.operationId, 'control operation', 32, 32) +
-    measuredInputBytes(raw.actorId, 'control actor', 1, MAX_IDENTITY_BYTES) +
-    measuredInputBytes(
+  const captured: MembershipControlRecord = {
+    version: raw.version as number,
+    protocol: captureInputProtocol(raw.protocol),
+    groupId: captureInputBytes(
+      raw.groupId,
+      'control group',
+      1,
+      MAX_GROUP_ID_BYTES,
+    ),
+    epoch: raw.epoch as bigint,
+    operationId: captureInputBytes(
+      raw.operationId,
+      'control operation',
+      32,
+      32,
+    ),
+    action: raw.action as MembershipControlAction,
+    actorId: captureInputBytes(
+      raw.actorId,
+      'control actor',
+      1,
+      MAX_IDENTITY_BYTES,
+    ),
+    subjectId: captureInputBytes(
       raw.subjectId,
       'control subject',
       1,
       MAX_IDENTITY_BYTES,
-    ) +
-    measuredInputBytes(
+    ),
+    controlPayload: captureInputBytes(
       raw.controlPayload,
       'control payload',
       1,
       MAX_CONTROL_PAYLOAD_BYTES,
-    ) +
-    measuredInputBytes(
+    ),
+    signature: captureInputBytes(
       raw.signature,
       'control signature',
       1,
       MAX_CONTROL_SIGNATURE_BYTES,
-    ) +
-    (raw.parentRecordId === undefined
-      ? 0
-      : measuredInputBytes(raw.parentRecordId, 'control parent', 32, 32))
-  );
+    ),
+    parentRecordId:
+      raw.parentRecordId === undefined
+        ? undefined
+        : captureInputBytes(raw.parentRecordId, 'control parent', 32, 32),
+  };
+  return {
+    value: captured,
+    bytes:
+      4096 +
+      captured.groupId.byteLength +
+      captured.operationId.byteLength +
+      captured.actorId.byteLength +
+      captured.subjectId.byteLength +
+      captured.controlPayload.byteLength +
+      captured.signature.byteLength +
+      (captured.parentRecordId?.byteLength ?? 0),
+  };
 }
 
-function measureCommitInputBytes(value: unknown): number {
+function captureCommitInput(value: unknown): {
+  value: GroupSecurityCommit;
+  bytes: number;
+} {
   const raw = exactOwnDataValues(
     value,
-    ['groupId', 'payload'],
+    ['protocol', 'groupId', 'priorEpoch', 'epoch', 'payload'],
     'incoming commit budget',
     [],
     true,
   );
-  return (
-    4096 +
-    measuredInputBytes(raw.groupId, 'commit group', 1, MAX_GROUP_ID_BYTES) +
-    measuredInputBytes(
+  const captured: GroupSecurityCommit = {
+    protocol: captureInputProtocol(raw.protocol),
+    groupId: captureInputBytes(
+      raw.groupId,
+      'commit group',
+      1,
+      MAX_GROUP_ID_BYTES,
+    ),
+    priorEpoch: raw.priorEpoch as bigint,
+    epoch: raw.epoch as bigint,
+    payload: captureInputBytes(
       raw.payload,
       'commit payload',
       1,
       MAX_PROTOCOL_PAYLOAD_BYTES,
-    )
-  );
+    ),
+  };
+  return {
+    value: captured,
+    bytes: 4096 + captured.groupId.byteLength + captured.payload.byteLength,
+  };
 }
 
-function measureWelcomeInputBytes(value: unknown): number {
+function captureWelcomeInputs(value: unknown): {
+  value: GroupWelcome[];
+  bytes: number;
+} {
   const values = snapshotExactArray(
     value,
     'incoming Welcome budget',
     0,
     MAX_WELCOMES,
   );
+  const captured: GroupWelcome[] = [];
   let bytes = 0;
   for (const welcome of values) {
     const raw = exactOwnDataValues(
       welcome,
-      ['groupId', 'recipientKeyPackageRef', 'payload'],
+      ['protocol', 'groupId', 'epoch', 'recipientKeyPackageRef', 'payload'],
       'incoming Welcome budget',
-      [],
-      true,
     );
-    bytes +=
-      measuredInputBytes(raw.groupId, 'Welcome group', 1, MAX_GROUP_ID_BYTES) +
-      measuredInputBytes(
+    const entry: GroupWelcome = {
+      protocol: captureInputProtocol(raw.protocol, false),
+      groupId: captureInputBytes(
+        raw.groupId,
+        'Welcome group',
+        1,
+        MAX_GROUP_ID_BYTES,
+      ),
+      epoch: raw.epoch as bigint,
+      recipientKeyPackageRef: captureInputBytes(
         raw.recipientKeyPackageRef,
         'Welcome reference',
         1,
         MAX_IDENTITY_BYTES,
-      ) +
-      measuredInputBytes(
+      ),
+      payload: captureInputBytes(
         raw.payload,
         'Welcome payload',
         1,
         MAX_PROTOCOL_PAYLOAD_BYTES,
-      );
+      ),
+    };
+    bytes +=
+      entry.groupId.byteLength +
+      entry.recipientKeyPackageRef.byteLength +
+      entry.payload.byteLength;
     if (bytes > MAX_CANONICAL_WELCOME_SET_BYTES)
       throw new Error('Welcome input exceeds aggregate byte limit');
+    captured.push(entry);
   }
-  return bytes + values.length * 512;
+  return { value: captured, bytes: bytes + captured.length * 512 };
 }
 
 function snapshotControlRecord(
@@ -6969,11 +7062,11 @@ function cloneDelivery(delivery: GroupSecurityDelivery): GroupSecurityDelivery {
   );
   if (commit === undefined && values.length !== 0)
     throw new Error('Welcome delivery requires a commit');
-  measureWelcomeInputBytes(values);
+  const capturedWelcomes = captureWelcomeInputs(values);
   const welcomes =
     commit === undefined
       ? []
-      : validateWelcomes(values as GroupWelcome[], commit);
+      : validateWelcomes(capturedWelcomes.value, commit);
   return {
     controlRecord: snapshotControlRecord(
       raw.controlRecord,

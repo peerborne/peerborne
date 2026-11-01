@@ -77,7 +77,9 @@ scalar policies or the recursive phase model.
 The generated suites cover cancellation without premature credit release,
 producer and preparation-context mutation, metadata-only outbox progress,
 rekey/removal/fork invalidation, shared limits, aliased decoder outputs, native
-byte views, current-authorization changes, and opaque finalizer failures.
+byte views, current-authorization changes, opaque finalizer failures,
+single-capture proxy fields, resizable backing buffers, and conservative
+quarantine when native promise settlement cannot be safely observed.
 Node/Chromium MLS checks exercise a
 fixture-only AES-GCM/Ed25519 content envelope, cross-document replay, a reader
 forging a writer message, tampering, rekey retry, credential revocation without

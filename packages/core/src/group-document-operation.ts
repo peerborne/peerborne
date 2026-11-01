@@ -9,6 +9,7 @@ import {
   unsharedUint8ArrayByteLength,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
+import { canSafelyObserveNativePromise } from './internal/native-promise-observation.js';
 
 export const DEFAULT_DOCUMENT_OPERATION_COUNT = 16;
 export const DEFAULT_DOCUMENT_OPERATION_BYTES = 16 * 1024 * 1024;
@@ -317,10 +318,20 @@ export class GroupDocumentOperationGate {
 function observeRejectedNativePromise(
   value: unknown,
 ): Promise<unknown> | undefined {
+  if (
+    (typeof value !== 'object' || value === null) &&
+    typeof value !== 'function'
+  )
+    return undefined;
   try {
-    return Reflect.apply(nativePromiseThen, value, [
-      () => undefined,
-      () => undefined,
-    ]) as Promise<unknown>;
+    if (canSafelyObserveNativePromise(value, 'invalid preparation result')) {
+      return Reflect.apply(nativePromiseThen, value, [
+        () => undefined,
+        () => undefined,
+      ]) as Promise<unknown>;
+    }
   } catch {}
+  // A forbidden object can hide a branded promise. Without safe settlement
+  // observation, never reclaim the reservation on the caller's behalf.
+  return new Promise<never>(() => {});
 }

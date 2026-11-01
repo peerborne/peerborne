@@ -495,7 +495,9 @@ describe('anchored document admission boundaries', () => {
       await turn();
       expect(getterReads).toBe(0);
       expect(() => coordinator.documentContext).toThrow(/poisoned/);
-      expect(coordinator.pendingDocumentOperations.operations).toBe(0);
+      expect(coordinator.pendingDocumentOperations.operations).toBe(
+        kind === 'then-getter' ? 1 : 0,
+      );
     }
   });
   test('requires a current strict-boolean authorization guard without invoking prepared-record accessors', async () => {
@@ -558,7 +560,9 @@ describe('anchored document admission boundaries', () => {
       });
       expect(applied).toBe(0);
       expect(reads).toBe(0);
-      expect(coordinator.pendingDocumentOperations.operations).toBe(0);
+      expect(coordinator.pendingDocumentOperations.operations).toBe(
+        kind === 'then-getter' ? 1 : 0,
+      );
       expect(coordinator.publicState.epoch).toBe(0n);
     }
   });
@@ -621,5 +625,77 @@ describe('anchored document admission boundaries', () => {
     );
     expect(original).toBe(1);
     expect(replacement).toBe(0);
+  });
+
+  test('quarantines unobservable decorated promise work without invoking constructor, species or then accessors', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom(
+          'constructor',
+          'species',
+          'species-proxy',
+          'invalid-constructor',
+          'then',
+          'frozen',
+        ),
+        fc.boolean(),
+        async (decoration, guard) => {
+          const held = deferred<void>();
+          let accessorReads = 0;
+          const forbidden = () => {
+            accessorReads += 1;
+            throw new Error('must not inspect');
+          };
+          if (decoration === 'constructor')
+            Object.defineProperty(held.promise, 'constructor', {
+              get: forbidden,
+            });
+          if (decoration === 'species')
+            Object.defineProperty(held.promise, 'constructor', {
+              value: Object.defineProperty({}, Symbol.species, {
+                get: forbidden,
+              }),
+            });
+          if (decoration === 'species-proxy')
+            Object.defineProperty(held.promise, 'constructor', {
+              value: new Proxy(
+                {},
+                { get: forbidden, getOwnPropertyDescriptor: forbidden },
+              ),
+            });
+          if (decoration === 'invalid-constructor')
+            Object.defineProperty(held.promise, 'constructor', { value: 1 });
+          if (decoration === 'then')
+            Object.defineProperty(held.promise, 'then', { get: forbidden });
+          if (decoration === 'frozen') Object.freeze(held.promise);
+          const aggregate = new GroupDocumentOperationBudget(1, 16);
+          const gate = new GroupDocumentOperationGate(1, 16, 1000, aggregate);
+          const stage = {
+            isAuthorizationCurrent: guard ? () => held.promise : () => true,
+            commit: guard ? () => {} : () => held.promise,
+          };
+          await expect(
+            gate.run(new Uint8Array(1), {
+              capture: async () => 0,
+              prepare: async () =>
+                stage as unknown as PreparedGroupDocumentOperation,
+              commit: async (_, finish) => finish(true),
+              poison: () => {},
+            }),
+          ).rejects.toMatchObject({ code: 'invalid-preparation' });
+          expect(gate.budget.usage).toEqual({ operations: 1, bytes: 1 });
+          held.resolve();
+          await turn();
+          const observable = decoration === 'then' || decoration === 'frozen';
+          const expected = observable
+            ? { operations: 0, bytes: 0 }
+            : { operations: 1, bytes: 1 };
+          expect(gate.budget.usage).toEqual(expected);
+          expect(aggregate.usage).toEqual(expected);
+          expect(accessorReads).toBe(0);
+        },
+      ),
+      { seed: 2011108, numRuns: 24 },
+    );
   });
 });

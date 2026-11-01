@@ -246,6 +246,131 @@ describe('control ingress admission', () => {
     });
   });
 
+  test('charges and copies the same captured proxy fields', async () => {
+    const base = await sourceDelivery();
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom('control', 'commit', 'welcome'),
+        fc.integer({ min: 1024, max: 64 * 1024 }),
+        fc.boolean(),
+        async (field, expansion, resizeDuringCapture) => {
+          const value = await fixture(1, 1024 * 1024, false, base);
+          const originalLength =
+            value.delivery.controlRecord.controlPayload.length;
+          const backing = new ArrayBuffer(originalLength, {
+            maxByteLength: originalLength + expansion,
+          });
+          const tracking = new Uint8Array(backing);
+          tracking.set(value.delivery.controlRecord.controlPayload);
+          const originalControl = {
+            ...value.delivery.controlRecord,
+            controlPayload: tracking,
+          };
+          const originalCommit = value.delivery.commit!;
+          const originalWelcome: GroupWelcome = {
+            protocol: originalCommit.protocol,
+            groupId: originalCommit.groupId,
+            epoch: originalCommit.epoch,
+            recipientKeyPackageRef: id(5),
+            payload: new Uint8Array(1),
+          };
+          let reads = 0;
+          const replacing = <T extends object>(
+            target: T,
+            property: string,
+            onPayload?: () => void,
+          ): T =>
+            new Proxy(
+              { ...target },
+              {
+                getOwnPropertyDescriptor(object, key) {
+                  if (key === 'payload') onPayload?.();
+                  const descriptor = Reflect.getOwnPropertyDescriptor(
+                    object,
+                    key,
+                  );
+                  if (key !== property) return descriptor;
+                  reads += 1;
+                  return {
+                    ...descriptor,
+                    value:
+                      reads === 1
+                        ? descriptor!.value
+                        : new Uint8Array(expansion),
+                  };
+                },
+              },
+            );
+          const incomingControl =
+            field === 'control'
+              ? replacing(originalControl, 'controlPayload')
+              : originalControl;
+          const incomingCommit = resizeDuringCapture
+            ? replacing(
+                originalCommit,
+                field === 'commit' ? 'payload' : '',
+                () => backing.resize(originalLength + expansion),
+              )
+            : field === 'commit'
+              ? replacing(originalCommit, 'payload')
+              : originalCommit;
+          const welcomes =
+            field === 'welcome' ? [replacing(originalWelcome, 'payload')] : [];
+          const charge =
+            4096 +
+            originalControl.groupId.length +
+            originalControl.operationId.length +
+            originalControl.actorId.length +
+            originalControl.subjectId.length +
+            originalControl.controlPayload.length +
+            originalControl.signature.length +
+            (originalControl.parentRecordId?.length ?? 0) +
+            4096 +
+            originalCommit.groupId.length +
+            originalCommit.payload.length +
+            (field === 'welcome'
+              ? 512 +
+                originalWelcome.groupId.length +
+                originalWelcome.recipientKeyPackageRef.length +
+                1
+              : 0);
+          const pending = value.coordinator
+            .applyCommit(incomingCommit, incomingControl, welcomes)
+            .then(
+              (result) => result.status,
+              (error: { code: string }) => error.code,
+            );
+          try {
+            await Promise.race([
+              value.entered.promise,
+              pending.then((code) => {
+                throw new Error(`authentication did not start: ${code}`);
+              }),
+            ]);
+            expect(reads).toBe(1);
+            expect(value.coordinator.pendingControlOperations).toEqual({
+              operations: 1,
+              bytes: charge,
+            });
+            value.release.resolve();
+            expect(await pending).toBe(
+              field === 'welcome' ? 'control-mismatch' : 'committed',
+            );
+            expect(reads).toBe(1);
+            expect(value.coordinator.pendingControlOperations).toEqual({
+              operations: 0,
+              bytes: 0,
+            });
+          } finally {
+            value.release.resolve();
+            await pending;
+          }
+        },
+      ),
+      { seed: 2011107, numRuns: 30 },
+    );
+  });
+
   test('bounds aliased Welcome sets returned by a decoder before visiting the whole set', async () => {
     await fc.assert(
       fc.asyncProperty(

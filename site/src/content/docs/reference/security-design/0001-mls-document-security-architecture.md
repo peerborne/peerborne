@@ -522,6 +522,12 @@ finalizer also retains its credits until settlement. These are accounted pending
 JavaScript heap or frame-time guarantee. Large content needs bounded framing
 or explicit profile qualification.
 
+Malformed object results whose settlement cannot be safely observed retain
+their reservation for the loaded module's lifetime. Core does not invoke their
+constructor, species or `then` accessors to reclaim capacity. This conservative
+quarantine contains a callback contract violation; recovering the lost shared
+capacity requires restarting the owning runtime.
+
 Incoming control deliveries have separate local count/byte limits and a
 separate module-wide 64-operation/64-MiB budget. Their charge includes input
 byte fields plus fixed metadata allowances. Preflight reserves before large
@@ -532,6 +538,11 @@ causal authorization, fork handling and provider adoption remain
 serialized. Malformed attachments do not hide an authenticated sibling fork.
 Decoder-returned Welcome sets are checked for aggregate size before cloning
 the complete set.
+
+Preflight captures metadata and fixed-length native byte views once. The
+reservation and subsequent copies use that captured representation. Proxy
+descriptor changes and later growth of resizable input buffers cannot replace
+the measured payload with a larger one.
 
 This adds an early outer-signature verification to the adoption-time check.
 Removing that repeat safely requires a pinned or versioned identity-verification
