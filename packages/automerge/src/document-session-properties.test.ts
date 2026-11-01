@@ -73,3 +73,63 @@ describe('Automerge admitted document sessions', () => {
     receiver.close();
   });
 });
+
+test('reserves callbacks and checkpoints atomically, merges concurrent state, and rejects malformed saves', () => {
+  fc.assert(
+    fc.property(fc.integer(), fc.integer(), (value, concurrent) => {
+      const provider = new AutomergeProvider<{
+        value?: number;
+        concurrent?: number;
+      }>();
+      const source = provider.createDocumentSession(provider.newDocument());
+      const target = provider.createDocumentSession(provider.newDocument());
+      target
+        .prepareLocal('', (draft) => {
+          draft.concurrent = concurrent;
+        })
+        .commit();
+      const pending = source.prepareLocal('', (draft) => {
+        draft.value = value;
+        expect(() =>
+          source.prepareLocal('', (nested) => {
+            nested.value = 99;
+          }),
+        ).toThrow('busy');
+        expect(() =>
+          source.prepareSnapshot!(provider.getSnapshot(provider.newDocument())),
+        ).toThrow('busy');
+      });
+      const checkpoint = pending.snapshot!();
+      expect(source.document.value).toBeUndefined();
+      const discarded = target.prepareSnapshot!(checkpoint);
+      expect(target.document.value).toBeUndefined();
+      const merged = discarded.snapshot!();
+      discarded.discard();
+      expect(() => discarded.snapshot!()).toThrow('Stale');
+      expect(target.document).toMatchObject({ concurrent });
+      const accepted = target.prepareSnapshot!(merged);
+      accepted.commit();
+      expect(target.document).toMatchObject({ value, concurrent });
+      expect(() => accepted.snapshot!()).toThrow('Stale');
+      pending.commit();
+      expect(() => pending.snapshot!()).toThrow('Stale');
+      expect(() =>
+        source.prepareLocal('', () => {
+          throw new Error('callback failed');
+        }),
+      ).toThrow('callback failed');
+      source
+        .prepareLocal('', (draft) => {
+          draft.value = 2;
+        })
+        .commit();
+      expect(() =>
+        target.prepareSnapshot!([new Uint8Array([1, 2, 3]) as any]),
+      ).toThrow();
+      expect(target.document).toMatchObject({ value, concurrent });
+      source.close();
+      target.close();
+    }),
+    { seed: 2011123, numRuns: 35 },
+  );
+});

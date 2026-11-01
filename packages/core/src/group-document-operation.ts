@@ -230,7 +230,7 @@ export class GroupDocumentOperationGate {
       return error;
     };
     const preparationWork: GroupDocumentPreparationWork = {
-      isActive: () => preparationActive,
+      isActive: () => preparationActive && !isAborted(controller.signal),
       observe: <T>(value: unknown) => {
         if (!preparationActive)
           return Promise.reject(

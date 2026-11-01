@@ -95,40 +95,49 @@ export class AutomergeProvider<T = any>
     let active: PreparedDocumentChange<BinaryChange[]> | undefined;
     let closed = false;
     const actor = getActorId(initial);
+    let preparing = false;
     const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]]) => {
-      if (closed || active)
+      if (closed || active || preparing)
         throw new Error('Document session is closed or busy');
-      const base = document;
-      const owned = clone(base, { actor });
-      let next: Doc<T>;
-      let delta: BinaryChange[];
+      preparing = true;
       try {
-        [next, delta] = apply(owned);
-        if (getMissingDeps(next, []).length !== 0)
-          throw new Error('Document change has missing causal dependencies');
-      } catch (error) {
-        free(owned);
-        throw error;
+        const base = document;
+        const owned = clone(base, { actor });
+        let next: Doc<T> | undefined;
+        try {
+          let delta: BinaryChange[];
+          [next, delta] = apply(owned);
+          if (closed)
+            throw new Error('Document session closed during preparation');
+          if (getMissingDeps(next, []).length !== 0)
+            throw new Error('Document change has missing causal dependencies');
+          const staged = next;
+          const changes = delta.map(
+            (bytes) => new Uint8Array(bytes) as BinaryChange,
+          );
+          const plan: PreparedDocumentChange<BinaryChange[]> =
+            preparedDocumentChange(
+              changes,
+              () => !closed && document === base && active === plan,
+              () => {
+                document = staged;
+                active = undefined;
+              },
+              () => {
+                free(staged);
+                active = undefined;
+              },
+              () => this.getSnapshot(staged),
+            );
+          active = plan;
+          return plan;
+        } catch (error) {
+          free(next ?? owned);
+          throw error;
+        }
+      } finally {
+        preparing = false;
       }
-      const changes = delta.map(
-        (bytes) => new Uint8Array(bytes) as BinaryChange,
-      );
-      const plan: PreparedDocumentChange<BinaryChange[]> =
-        preparedDocumentChange(
-          changes,
-          () => !closed && document === base && active === plan,
-          () => {
-            document = next;
-            active = undefined;
-          },
-          () => {
-            free(next);
-            active = undefined;
-          },
-          () => this.getSnapshot(next),
-        );
-      active = plan;
-      return plan;
     };
     return {
       get document() {
@@ -137,16 +146,24 @@ export class AutomergeProvider<T = any>
       prepareLocal: (message, fn) =>
         stage((base) => this.localChange(base, message, fn)),
       prepareRemote: (changes) => {
-        const owned = changes.map(
-          (bytes) => new Uint8Array(bytes) as BinaryChange,
-        );
-        return stage((base) => [this.remoteChange(base, owned), owned]);
+        return stage((base) => {
+          const owned = changes.map(
+            (bytes) => new Uint8Array(bytes) as BinaryChange,
+          );
+          return [this.remoteChange(base, owned), owned];
+        });
       },
       prepareSnapshot: (snapshot) => {
-        const owned = snapshot.map(
-          (bytes) => new Uint8Array(bytes) as BinaryChange,
-        );
-        return stage((base) => [this.applySnapshot(base, owned), owned]);
+        return stage((base) => {
+          if (!Array.isArray(snapshot) || snapshot.length !== 1)
+            throw new TypeError(
+              'Document checkpoint must contain exactly one Automerge save',
+            );
+          const owned = snapshot.map(
+            (bytes) => new Uint8Array(bytes) as BinaryChange,
+          );
+          return [this.applySnapshot(base, owned), owned];
+        });
       },
       close: () => {
         active?.discard();

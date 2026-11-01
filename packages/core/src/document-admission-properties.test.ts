@@ -885,3 +885,86 @@ test('scoped native exporter keys bind the document and exact authenticated epoc
     crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, next.key, ciphertext),
   ).rejects.toThrow();
 });
+
+test.each(['anchor', 'first-export', 'second-export', 'key-import'] as const)(
+  'retains the complete unawaited derivation across a closed scope at %s',
+  async (phase) => {
+    const value = await context(),
+      coordinator = await bootstrap(value),
+      entered = deferred(),
+      release = deferred();
+    const originalLoad = value.rollbackAnchor.load.bind(value.rollbackAnchor);
+    let loads = 0,
+      exports = 0,
+      commits = 0;
+    value.rollbackAnchor.load = async (...args) => {
+      loads++;
+      if (phase === 'anchor' && loads === 2) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalLoad(...args);
+    };
+    value.provider.exportSecret = async (input) => {
+      exports++;
+      if (
+        (phase === 'first-export' && exports === 1) ||
+        (phase === 'second-export' && exports === 2)
+      ) {
+        entered.resolve();
+        await release.promise;
+      }
+      return new Uint8Array(input.length).fill(7);
+    };
+    const originalImport = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest.spyOn(crypto.subtle, 'importKey');
+    if (phase === 'key-import')
+      importSpy.mockImplementationOnce((...args: any[]) => {
+        const pending = Reflect.apply(originalImport, undefined, args);
+        entered.resolve();
+        return (async () => {
+          await release.promise;
+          return await pending;
+        })();
+      });
+    let derivation!: Promise<unknown>;
+    try {
+      const pending = coordinator.runDocumentOperation(
+        coordinator.documentContext,
+        new Uint8Array(9),
+        async (_context, _input, _signal, scope) => {
+          derivation = scope.deriveEncryptionMaterial('/scope');
+          void derivation.catch(() => {});
+          await entered.promise;
+          return prepared(() => {
+            commits++;
+          });
+        },
+      );
+      await expect(pending).rejects.toMatchObject({
+        code: 'invalid-preparation',
+      });
+      expect(coordinator.pendingDocumentOperations).toEqual({
+        operations: 1,
+        bytes: 9,
+      });
+      expect(commits).toBe(0);
+      release.resolve();
+      await expect(derivation).rejects.toThrow();
+      await turn();
+      await turn();
+      expect(exports).toBe(
+        phase === 'anchor' ? 0 : phase === 'first-export' ? 1 : 2,
+      );
+      if (phase === 'key-import') expect(importSpy).toHaveBeenCalledTimes(1);
+      else expect(importSpy).not.toHaveBeenCalled();
+      expect(coordinator.pendingDocumentOperations).toEqual({
+        operations: 0,
+        bytes: 0,
+      });
+    } finally {
+      release.resolve();
+      importSpy.mockRestore();
+    }
+  },
+);

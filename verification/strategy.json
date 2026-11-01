@@ -204,7 +204,7 @@
     },
     {
       "id": "admitted-crdt-staging",
-      "formalBoundary": "The common stage lifecycle is proved. Automerge immutable cloning, native missing-dependency detection, Yjs mirror isolation, escaped references, checkpoints and constant-actor reuse require native generated execution histories.",
+      "formalBoundary": "The common stage lifecycle is proved. Automerge immutable cloning, native missing-dependency detection, recursive callbacks, Yjs scalar/shared-type payload restrictions, escaped references, checkpoint merge/discard and constant-actor reuse require native generated execution histories.",
       "evidence": [
         "packages/automerge/src/document-session-properties.test.ts",
         "packages/yjs/src/document-session-properties.test.ts"

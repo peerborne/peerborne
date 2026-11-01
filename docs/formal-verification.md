@@ -181,9 +181,17 @@ capability implication does not establish field-level enforcement on the
 document mutation path. None of these proofs establishes forward secrecy,
 post-compromise security, key erasure or cryptographic unforgeability.
 
+Staged Yjs sessions accept immutable scalar values and shared `Y.Map`, `Y.Array`
+and `Y.Text` values. Opaque object/array/binary payloads, embeds with mutable
+values, subdocuments and XML child types are rejected before visible application.
+These values can change without a parent update event; accepting them would break
+the stage-version model. This restriction applies to the new staging capability,
+not the existing legacy provider methods. Native regressions cover recursive
+preparation, escaped references and staged checkpoint merge/discard.
+
 ## Property testing after proofs
 
-The inventory audits 37 property-suite files containing 81 explicit
+The inventory audits 37 property-suite files containing 83 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

@@ -610,8 +610,20 @@ export class GroupSecurityCoordinator {
         prepare: (captured, payload, signal, work) =>
           prepare(snapshotDocumentContext(captured), payload, signal, {
             observe: <T,>(value: unknown) => work.observe<T>(value),
-            deriveEncryptionMaterial: (documentId) =>
-              this.deriveDocumentEncryptionMaterial(captured, documentId, work),
+            deriveEncryptionMaterial: (documentId) => {
+              if (!work.isActive())
+                return Promise.reject(
+                  new GroupDocumentOperationError('invalid-preparation'),
+                );
+              const pending = this.deriveDocumentEncryptionMaterial(
+                captured,
+                documentId,
+                work,
+              );
+              return work
+                .observe<GroupDocumentEncryptionMaterial>(pending)
+                .then(({ value }) => value);
+            },
           }),
         commit: (captured, finish, signal) =>
           this.runExclusive(async () => {
@@ -668,6 +680,8 @@ export class GroupSecurityCoordinator {
       )
         throw new GroupDocumentOperationError('stale-context');
       const exportBytes = async (label: string) => {
+        if (!work.isActive())
+          throw new GroupDocumentOperationError('invalid-preparation');
         const { value } = await work.observe<Uint8Array>(
           this.provider.exportSecret({
             label,
@@ -675,7 +689,17 @@ export class GroupSecurityCoordinator {
             length: 32,
           }),
         );
-        return copyControlRecordBytes(value, 'document exporter', 32, 32);
+        const owned = copyControlRecordBytes(
+          value,
+          'document exporter',
+          32,
+          32,
+        );
+        if (!work.isActive()) {
+          owned.fill(0);
+          throw new GroupDocumentOperationError('invalid-preparation');
+        }
+        return owned;
       };
       const secret = await exportBytes(
         'peerborne/document-content-encryption/v1',
@@ -689,6 +713,8 @@ export class GroupSecurityCoordinator {
       }
     });
     try {
+      if (!work.isActive())
+        throw new GroupDocumentOperationError('invalid-preparation');
       const { value: key } = await work.observe<CryptoKey>(
         (async () =>
           crypto.subtle.importKey(
@@ -699,6 +725,8 @@ export class GroupSecurityCoordinator {
             ['encrypt', 'decrypt'],
           ))(),
       );
+      if (!work.isActive())
+        throw new GroupDocumentOperationError('invalid-preparation');
       return { key, epochTag: secrets.tag.slice(0, 16) };
     } finally {
       secrets.secret.fill(0);

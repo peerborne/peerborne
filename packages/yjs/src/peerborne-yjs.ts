@@ -39,6 +39,8 @@ import {
 import {
   AbstractType,
   Map as YMap,
+  Array as YArray,
+  Text as YText,
   applyUpdateV2,
   ContentAny,
   ContentDeleted,
@@ -49,6 +51,8 @@ import {
   getState,
   ID,
   Item,
+  ContentType,
+  ContentFormat,
 } from 'yjs';
 import { Base64 } from 'js-base64';
 
@@ -444,12 +448,45 @@ export type YjsDocumentChangeHandler = PeerborneDocumentChangeHandler<
   CryptoKey
 >;
 
+function assertStagedYjsValues(structs: Iterable<unknown>): void {
+  const mutable = (value: unknown) =>
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function');
+  for (const struct of structs) {
+    if (!(struct instanceof Item)) continue;
+    const content = struct.content;
+    if (content instanceof ContentType) {
+      const prototype = Object.getPrototypeOf(content.type);
+      if (
+        prototype === YMap.prototype ||
+        prototype === YArray.prototype ||
+        prototype === YText.prototype
+      )
+        continue;
+      throw new TypeError(
+        'Coordinated Yjs documents support shared Y.Map, Y.Array and Y.Text values',
+      );
+    }
+    if (
+      (content instanceof ContentFormat && mutable(content.value)) ||
+      content.getContent().some(mutable)
+    )
+      throw new TypeError(
+        'Coordinated Yjs documents require shared Yjs types for structured or binary values',
+      );
+  }
+}
+
 export class YjsProvider
   implements CRDTProvider<Doc, Uint8Array, (doc: Doc) => void>
 {
+  /** Staging accepts scalars and shared Map/Array/Text values, not opaque mutable payloads. */
   createDocumentSession(
     document: Doc,
   ): CRDTDocumentSession<Doc, Uint8Array, (doc: Doc) => void> {
+    for (const structs of document.store.clients.values())
+      assertStagedYjsValues(structs);
+    let preparing = false;
     let active: PreparedDocumentChange<Uint8Array> | undefined;
     let shadow: Doc | undefined;
     let shadowVersion = 0;
@@ -481,54 +518,62 @@ export class YjsProvider
     };
     const stage = (prepare: (value: Doc) => Uint8Array) => {
       assertHealthy();
-      if (active) throw new Error('Document session is busy');
-      complete(document);
-      if (shadow && shadowVersion !== acceptedShadowVersion) discardShadow();
-      if (!shadow) {
-        shadow = new Doc({ gc: document.gc });
-        applyUpdateV2(shadow, this.getSnapshot(document));
-        shadowVersion = 0;
-        acceptedShadowVersion = 0;
-        shadow.on('updateV2', () => {
-          shadowVersion++;
-        });
-      }
-      const baseRevision = revision;
-      let stable: Uint8Array;
+      if (active || preparing) throw new Error('Document session is busy');
+      preparing = true;
       try {
-        stable = new Uint8Array(prepare(shadow));
-        complete(shadow);
-      } catch (error) {
-        discardShadow();
-        throw error;
-      }
-      const stagedVersion = shadowVersion;
-      const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
-        new Uint8Array(stable),
-        () =>
-          !closed &&
-          !invalidated &&
-          active === plan &&
-          revision === baseRevision &&
-          shadowVersion === stagedVersion,
-        () => {
-          applyUpdateV2(document, stable, commitOrigin);
-          complete(document);
-          if (invalidated)
-            throw new Error(
-              'Document changed outside admission while committing',
-            );
-          acceptedShadowVersion = stagedVersion;
-          active = undefined;
-        },
-        () => {
+        complete(document);
+        if (shadow && shadowVersion !== acceptedShadowVersion) discardShadow();
+        if (!shadow) {
+          shadow = new Doc({ gc: document.gc });
+          applyUpdateV2(shadow, this.getSnapshot(document));
+          shadowVersion = 0;
+          acceptedShadowVersion = 0;
+          shadow.on('updateV2', () => {
+            if (shadowVersion === Number.MAX_SAFE_INTEGER) invalidated = true;
+            else shadowVersion++;
+          });
+        }
+        const baseRevision = revision;
+        let stable: Uint8Array;
+        try {
+          stable = new Uint8Array(prepare(shadow));
+          assertHealthy();
+          assertStagedYjsValues(decodeUpdateV2(stable).structs);
+          complete(shadow);
+        } catch (error) {
           discardShadow();
-          active = undefined;
-        },
-        () => this.getSnapshot(shadow!),
-      );
-      active = plan;
-      return plan;
+          throw error;
+        }
+        const stagedVersion = shadowVersion;
+        const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
+          new Uint8Array(stable),
+          () =>
+            !closed &&
+            !invalidated &&
+            active === plan &&
+            revision === baseRevision &&
+            shadowVersion === stagedVersion,
+          () => {
+            applyUpdateV2(document, stable, commitOrigin);
+            complete(document);
+            if (invalidated)
+              throw new Error(
+                'Document changed outside admission while committing',
+              );
+            acceptedShadowVersion = stagedVersion;
+            active = undefined;
+          },
+          () => {
+            discardShadow();
+            active = undefined;
+          },
+          () => this.getSnapshot(shadow!),
+        );
+        active = plan;
+        return plan;
+      } finally {
+        preparing = false;
+      }
     };
     return {
       get document() {
